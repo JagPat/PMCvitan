@@ -91,7 +91,7 @@ import {
 } from './projectCreateHold';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, isSiteVisitOp, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
-import { clearVisitPhotoStart, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, storageAvailable, visitPhotoScope, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { clearVisitPhotoStart, everKeptVisitPhotos, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, storageAvailable, visitPhotoScope, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
@@ -2505,8 +2505,9 @@ export const useStore = create<Store>()(
         }
         if (putBackVisitPhotos(rows) && get().online) void get().flushOutbox();
       } catch {
-        // not read: a photo may be waiting with no act queued, so the flush that reads again is not left to chance
-        retryVisitPhotos();
+        // not read: a photo may be waiting with no act queued, so the flush that reads again is not left to chance. A
+        // phone that never kept one for this project has none to wait for (Codex 4322430052)
+        if (everKeptVisitPhotos(scope, projectId)) retryVisitPhotos();
       }
     };
     /** How long a flush waits for its own read of the kept photos before it sends the rest of the queue without the
@@ -2522,11 +2523,13 @@ export const useStore = create<Store>()(
     // the longest a server's own wait is honoured: a bad answer never parks a photo for longer
     const VISIT_PHOTO_RETRY_AFTER_MAX_MS = 10 * 60_000;
     let visitPhotoRetryMs = VISIT_PHOTO_WAIT_MS;
-    let visitPhotoRetry: { timer: ReturnType<typeof setTimeout>; mine: () => boolean } | null = null;
+    let visitPhotoRetry: { timer: ReturnType<typeof setTimeout>; mine: () => boolean; at: number } | null = null;
     // the queue the wait was last grown for: another queue starts from 5 seconds
     let visitPhotoRetryFor: (() => boolean) | null = null;
     const retryVisitPhotos = (atLeastMs = 0): void => {
-      if (visitPhotoRetry?.mine()) return;
+      // one armed for this queue stands, unless a server's own wait ends after it: then it moves to that later time,
+      // never sooner (Codex 4322430055)
+      if (visitPhotoRetry?.mine() && Date.now() + atLeastMs <= visitPhotoRetry.at) return;
       if (visitPhotoRetry) clearTimeout(visitPhotoRetry.timer);
       if (!visitPhotoRetryFor?.()) visitPhotoRetryMs = VISIT_PHOTO_WAIT_MS;
       const g = gateway;
@@ -2545,7 +2548,7 @@ export const useStore = create<Store>()(
         if (g) tellSiteVisits({ kind: 'retry', project: g.project, generation: scope.generation });
         void get().flushOutbox();
       }, wait);
-      visitPhotoRetry = { timer, mine };
+      visitPhotoRetry = { timer, mine, at: Date.now() + wait };
     };
     /** Gate round-3: an evidence COMMAND (offline capture / Retry / Delete)
      *  crosses an IndexedDB await too. Its durable operation must run under the
@@ -5943,7 +5946,10 @@ export const useStore = create<Store>()(
       }
     },
     queueSiteVisitAct: (op, offlineMsg) => runWriteAhead(op, 'Site visit', '', offlineMsg),
-    retrySiteVisits: () => { if (get().online) retryVisitPhotos(); },
+    // a phone that never kept a visit photo for this project has none to wait for (Codex 4322430052)
+    retrySiteVisits: () => {
+      if (get().online && everKeptVisitPhotos(visitPhotoScope(get().sessionToken, get().sessionUserId), get().activeProjectId)) retryVisitPhotos();
+    },
     flushOutbox: async (opts) => {
       // A flush that did not actually process this call's ops (no gateway, coalesced, or empty) reports
       // `ran:false`/empty so a caller confirming its own ops never mistakes "not run" for "succeeded".
@@ -5960,13 +5966,15 @@ export const useStore = create<Store>()(
       // still goes, but no site visit act does: they wait, in order, for a read that succeeds (Codex 4320690147,
       // 4321084738)
       let holdVisits = false;
+      const keptBy = visitPhotoScope(get().sessionToken, get().sessionUserId);
+      const keptFor = get().activeProjectId;
       if (storageAvailable()) {
         const readScope = currentScope();
         const readKey = outboxKey();
         const readGateway = gateway;
         const readToken = get().sessionToken;
         let late = false;
-        const read = listVisitPhotos(visitPhotoScope(get().sessionToken, get().sessionUserId), get().activeProjectId).then(
+        const read = listVisitPhotos(keptBy, keptFor).then(
           (rows) => {
             // a read that came too late, or for a queue no longer on show, puts nothing back: the next flush reads again
             if (late || !scopeStillCurrent(readScope) || outboxKey() !== readKey) return false;
@@ -5977,7 +5985,9 @@ export const useStore = create<Store>()(
         );
         let timer: ReturnType<typeof setTimeout> | undefined;
         const waited = new Promise<false>((r) => { timer = setTimeout(() => r(false), VISIT_PHOTO_WAIT_MS); });
-        holdVisits = !(await Promise.race([read, waited]));
+        // a phone that never kept a visit photo for this project holds none, so it has nothing to wait for when its
+        // IndexedDB fails (Codex 4322430052): the mark is written before any row, apart from IndexedDB
+        holdVisits = !(await Promise.race([read, waited])) && everKeptVisitPhotos(keptBy, keptFor);
         clearTimeout(timer);
         late = true;
         // the project, sign-in or queue changed during the read: this call's queue is no longer the one on show, and

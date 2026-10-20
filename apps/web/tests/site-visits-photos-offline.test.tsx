@@ -5,7 +5,7 @@ import type { ProjectMember, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { moveSiteVisitOps, type ApiGateway, type OutboxOp, type SiteVisit } from '@/data/apiGateway';
-import { failVisitPhoto, listVisitPhotos, putVisitPhoto, visitPhotoScope } from '@/data/visitPhotoStore';
+import { failVisitPhoto, fileVisitPhoto, listVisitPhotos, putVisitPhoto, visitPhotoScope } from '@/data/visitPhotoStore';
 import { refreshSiteVisits } from '@/lib/useSiteVisits';
 
 /**
@@ -59,6 +59,9 @@ async function pick(visitId: string) {
 }
 const queuedFile = () => useStore.getState().outbox.find((o) => o.t === 'siteVisitAddFile') as Extract<OutboxOp, { t: 'siteVisitAddFile' }> | undefined;
 const rows = () => listVisitPhotos(visitPhotoScope(null, CONSULTANT), useStore.getState().activeProjectId);
+/** this phone kept a visit photo on this project before: the mark is written once, before any row, so a phone whose
+ *  localStorage is full later still keeps photos */
+const markKept = () => localStorage.setItem(`vitan.visitPhotosKept.${visitPhotoScope(null, CONSULTANT)}.${useStore.getState().activeProjectId}`, '1');
 /** the rows still to send or refused: a sent photo's row stays, filed, until a Site Visits read settles it */
 const waiting = async () => (await rows()).filter((r) => r.state !== 'filed');
 const network = () => new Error('network');
@@ -107,6 +110,7 @@ describe('Site Visits SV2: a photo kept on the phone until it is sent (#792)', (
     const uploadMedia = vi.fn().mockRejectedValue(network());
     const gw = fakeGateway([visit()], { uploadMedia });
     await mount(gw);
+    markKept();
     // localStorage is full: every write to it fails, silently
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('QuotaExceededError'); });
     await pick('v-1');
@@ -384,7 +388,9 @@ describe('Site Visits SV2: a kept photo is never stranded (#792, #999 round 1)',
     const startSiteVisit = vi.fn().mockRejectedValue(network());
     const uploadMedia = vi.fn().mockRejectedValue(network());
     const gw = fakeGateway([], { startSiteVisit, uploadMedia });
-    // localStorage keeps nothing: the start lives only in memory
+    // localStorage keeps nothing new: the start lives only in memory
+    setUp('consultant', gw);
+    markKept();
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('QuotaExceededError'); });
     await mount(gw, [startOp()]);
     await vi.waitFor(() => expect(screen.getByTestId('sv-photo-file-v-tmp')).toBeTruthy());
@@ -963,5 +969,117 @@ describe('Site Visits SV2: a sent photo is kept until the server lists it; queue
     expect(order).toEqual(['start', 'photo']);
     // once the server took the start, the kept photo no longer carries it: it is not sent again
     expect((await rows()).map((r) => r.start ?? null)).toEqual([null]);
+  });
+});
+
+/**
+ * #1012's round 1 (head af14e65): a phone whose IndexedDB always fails held every site visit act for good; a server's
+ * longer wait arriving after a retry was armed was not honoured; another tab's refusal could undo a confirmed upload.
+ * Each test fails at af14e65.
+ */
+describe('Site Visits SV2: holds only what a kept photo needs, for as long as the server asks (#792, #1012 round 1)', () => {
+  const fileOp = (): Extract<OutboxOp, { t: 'siteVisitAddFile' }> => ({
+    t: 'siteVisitAddFile', visitId: 'v-1', scope: visitPhotoScope(null, CONSULTANT), idempotencyKey: 'k-f',
+    by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, file: { id: 'c-1', mime: 'image/png' },
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it.each([
+    ['fails to open', () => { throw new Error('UnknownError'); }],
+    ['never answers', () => ({}) as IDBOpenDBRequest],
+  ])('sends a close on a phone whose database %s, when it never kept a visit photo here (Codex 4322430052)', async (_label, open) => {
+    const closeSiteVisit = vi.fn(async () => visit({ status: 'closed', closeReason: 'Done' }));
+    setUp('consultant', fakeGateway([visit()], { closeSiteVisit }));
+    const close: OutboxOp = { t: 'siteVisitClose', visitId: 'v-1', reason: 'Done', idempotencyKey: 'k-c' };
+    localStorage.setItem(`vitan.siteVisitQueue.dev:${CONSULTANT}.${useStore.getState().activeProjectId}`, JSON.stringify([close]));
+    vi.spyOn(indexedDB, 'open').mockImplementation(open);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    useStore.getState().hydrateOutbox();
+    const flushing = useStore.getState().flushOutbox();
+    await vi.advanceTimersByTimeAsync(5000);
+    await flushing;
+    // no photo was ever kept on this phone for this project, so none can be waiting ahead of the close
+    expect(closeSiteVisit).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().outbox).toHaveLength(0);
+  });
+
+  it('adds nothing, and says why, when the phone cannot note that it keeps visit photos (Codex 4322430052)', async () => {
+    const uploadMedia = vi.fn();
+    await mount(fakeGateway([visit()], { uploadMedia }));
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
+    await pick('v-1');
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This photo was not added: it could not be saved on this phone. Free some space on the phone, then add it again.'));
+    expect(uploadMedia).not.toHaveBeenCalled();
+    expect(useStore.getState().outbox).toHaveLength(0);
+    expect(await rows()).toEqual([]);
+  });
+
+  it('sends a close after a photo was refused because the phone’s database would not open (Codex 4322430052)', async () => {
+    const uploadMedia = vi.fn();
+    const closeSiteVisit = vi.fn(async () => visit({ status: 'closed', closeReason: 'Done' }));
+    await mount(fakeGateway([visit()], { uploadMedia, closeSiteVisit }));
+    vi.spyOn(indexedDB, 'open').mockImplementation(() => { throw new Error('UnknownError'); });
+    await pick('v-1');
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This photo was not added: it could not be saved on this phone. Free some space on the phone, then add it again.'));
+    // the refused photo left no mark, so nothing holds the visit's later acts
+    expect(Object.keys(localStorage).filter((k) => k.startsWith('vitan.visitPhotosKept.'))).toEqual([]);
+    useStore.getState().queueSiteVisitAct({ t: 'siteVisitClose', visitId: 'v-1', reason: 'Done', idempotencyKey: 'k-c' }, 'queued');
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    expect(closeSiteVisit).toHaveBeenCalledTimes(1);
+    expect(uploadMedia).not.toHaveBeenCalled();
+    expect(useStore.getState().outbox).toHaveLength(0);
+  });
+
+  it('sends a close on a phone whose localStorage cannot be read and whose database fails (Codex 4322430052)', async () => {
+    const closeSiteVisit = vi.fn(async () => visit({ status: 'closed', closeReason: 'Done' }));
+    const close: OutboxOp = { t: 'siteVisitClose', visitId: 'v-1', reason: 'Done', idempotencyKey: 'k-c' };
+    setUp('consultant', fakeGateway([visit()], { closeSiteVisit }), [close]);
+    // site storage blocked: every localStorage read throws, and the database will not open
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError'); });
+    vi.spyOn(indexedDB, 'open').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError'); });
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    // no photo could have been kept here: a row is only written after this localStorage was read and marked
+    expect(closeSiteVisit).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().outbox).toHaveLength(0);
+  });
+
+  it('moves an armed retry later when the server then asks for a longer wait, never sooner (Codex 4322430055)', async () => {
+    const uploadMedia = vi.fn()
+      .mockRejectedValueOnce(network())
+      .mockRejectedValueOnce(Object.assign(refusal(429, 'Slow down'), { retryAfter: 60 }))
+      .mockRejectedValueOnce(network())
+      .mockResolvedValue({ id: 'm-1', url: '/media/m-1' });
+    setUp('consultant', fakeGateway([visit()], { uploadMedia }));
+    await putVisitPhoto(visitPhotoScope(null, CONSULTANT), useStore.getState().activeProjectId, fileOp(), 'AQID');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    await useStore.getState().flushOutbox(); // no answer: a retry is armed for 5 seconds
+    await vi.advanceTimersByTimeAsync(1000);
+    await useStore.getState().flushOutbox(); // the server asks for a minute
+    await vi.advanceTimersByTimeAsync(1000);
+    await useStore.getState().flushOutbox(); // no answer again: the minute stands
+    expect(uploadMedia).toHaveBeenCalledTimes(3);
+    // the minute counts from the server's answer, at 1 second: not at 5 seconds, nor before 61
+    await vi.advanceTimersByTimeAsync(59_000 - 1);
+    expect(uploadMedia).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(4));
+    await vi.waitFor(async () => expect(await waiting()).toEqual([]));
+  });
+
+  it('never lets a refusal undo a confirmed upload, and a confirmed upload outranks a refusal (Codex 4322430064)', async () => {
+    const owner = visitPhotoScope(null, CONSULTANT);
+    const project = useStore.getState().activeProjectId;
+    // one tab's upload is confirmed, then another tab's send of the same photo is refused
+    await putVisitPhoto(owner, project, fileOp(), 'AQID');
+    await fileVisitPhoto(owner, project, 'c-1');
+    await failVisitPhoto(owner, project, 'c-1', 'This site visit was closed by the PMC and takes no more files');
+    expect((await rows()).map((r) => [r.state, r.reason])).toEqual([['filed', null]]);
+    // the other way round: the refusal lands first, then the confirmation
+    await act(async () => { await new Promise((done) => { const q = indexedDB.deleteDatabase('vitan-visit-photos'); q.onsuccess = q.onerror = q.onblocked = () => done(null); }); });
+    await putVisitPhoto(owner, project, fileOp(), 'AQID');
+    await failVisitPhoto(owner, project, 'c-1', 'Busy');
+    await fileVisitPhoto(owner, project, 'c-1');
+    expect((await rows()).map((r) => [r.state, r.reason])).toEqual([['filed', null]]);
   });
 });

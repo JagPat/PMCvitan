@@ -118,7 +118,25 @@ export function visitPhotoScope(sessionToken: string | null, sessionUserId: stri
   return sub;
 }
 
-/** Keep a queued photo with the act that sends it. Resolves only once committed. */
+const keptMarkKey = (userScope: string, projectId: string): string => `vitan.visitPhotosKept.${userScope}.${projectId}`;
+
+/** Whether this phone has kept a visit photo for (user, project): marked in localStorage, apart from IndexedDB, inside
+ *  the transaction that writes the first row, after the database has opened, and never cleared. Where it is not marked
+ *  no row can exist, so a phone whose IndexedDB fails cannot be holding a photo that a later visit act must not overtake
+ *  (Codex 4322430052). A mark that cannot be read counts as not marked: a row is only ever written after this same
+ *  localStorage was read and marked, so where it cannot be read none was written. */
+export function everKeptVisitPhotos(userScope: string, projectId: string): boolean {
+  try {
+    const storage = globalThis.localStorage;
+    return !!storage && storage.getItem(keptMarkKey(userScope, projectId)) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/** Keep a queued photo with the act that sends it. Resolves only once committed. The mark (`everKeptVisitPhotos`) is
+ *  written in the same transaction, just before the row: a database that cannot be opened refuses the photo with no
+ *  mark, and a mark that cannot be written refuses it before anything is kept. */
 export function putVisitPhoto(
   userScope: string, projectId: string, op: SiteVisitAddFileOp, data: string, start: SiteVisitStartOp | null = null,
 ): Promise<void> {
@@ -126,7 +144,13 @@ export function putVisitPhoto(
     key: keyOf(userScope, projectId, op.file.id), userScope, projectId, clientKey: op.file.id, op, start, data,
     state: 'queued', reason: null, createdAt: Date.now(),
   };
-  return tx<void>('readwrite', (s) => { s.put(row); });
+  return tx<void>('readwrite', (s) => {
+    const storage = globalThis.localStorage;
+    if (!storage) throw new Error('no localStorage');
+    // written once: a phone whose localStorage later fills up still keeps photos here
+    if (storage.getItem(keptMarkKey(userScope, projectId)) === null) storage.setItem(keptMarkKey(userScope, projectId), '1');
+    s.put(row);
+  });
 }
 
 export function getVisitPhoto(userScope: string, projectId: string, clientKey: string): Promise<VisitPhotoRow | null> {
@@ -148,14 +172,15 @@ export function deleteVisitPhoto(userScope: string, projectId: string, clientKey
   return tx<void>('readwrite', (s) => { s.delete(keyOf(userScope, projectId, clientKey)); });
 }
 
-/** The server took it: kept as `filed`, to be shown until a read sent after now answers. Only a queued row is marked: one
- *  the person dismissed meanwhile stays gone. */
+/** The server took it: kept as `filed`, to be shown until a read sent after now answers. A row another tab marked as
+ *  refused is marked filed too: the server holds the photo (Codex 4322430064). One the person dismissed stays gone, and
+ *  one already filed keeps its time. Read and written in one transaction. */
 export function fileVisitPhoto(userScope: string, projectId: string, clientKey: string): Promise<void> {
   return tx<void>('readwrite', (s) => {
     const req = s.get(keyOf(userScope, projectId, clientKey));
     req.onsuccess = () => {
       const row = req.result as VisitPhotoRow | undefined;
-      if (row && row.state === 'queued') s.put({ ...row, state: 'filed', reason: null, filedAt: Date.now() });
+      if (row && row.state !== 'filed') s.put({ ...row, state: 'filed', reason: null, filedAt: Date.now() });
     };
   });
 }
@@ -172,13 +197,15 @@ export function settleFiledVisitPhotos(userScope: string, projectId: string, rea
   });
 }
 
-/** Refused for good: kept, with the reason, until the person dismisses it. */
+/** Refused for good: kept, with the reason, until the person dismisses it. Never a row already filed: another tab's
+ *  send of the same photo was confirmed, and the server holds it (Codex 4322430064). Read and written in one
+ *  transaction. */
 export function failVisitPhoto(userScope: string, projectId: string, clientKey: string, reason: string | null): Promise<void> {
   return tx<void>('readwrite', (s) => {
     const req = s.get(keyOf(userScope, projectId, clientKey));
     req.onsuccess = () => {
       const row = req.result as VisitPhotoRow | undefined;
-      if (row) s.put({ ...row, state: 'failed', reason });
+      if (row && row.state !== 'filed') s.put({ ...row, state: 'failed', reason });
     };
   });
 }
