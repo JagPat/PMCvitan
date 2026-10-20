@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { NotFoundException, BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
+import { NotFoundException, BadRequestException, ConflictException, ForbiddenException, GoneException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { MediaService } from './media.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
@@ -49,6 +49,8 @@ function make(
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'med1', ...data })),
       delete: vi.fn(async () => ({})),
     },
+    // #482 — no key here was ever retired
+    mediaTombstone: { findUnique: vi.fn(async () => null), create: vi.fn(async () => ({})) },
     projectNode: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
         const n = nodes.find((x) => x.id === where.id);
@@ -192,6 +194,14 @@ describe('MediaService.remove', () => {
     expect(dispatcher.dispatchCommitted).toHaveBeenCalledTimes(1);
   });
 
+  it('a keyed photo\'s delete writes no record itself: the database writes it in the delete\'s statement (#482)', async () => {
+    const { svc, prisma } = make(null);
+    prisma.media.findUnique.mockResolvedValueOnce({ id: 'm', projectId: 'ambli', storageKey: 'ambli/progress/m.jpg', clientKey: 'k' });
+    expect(await svc.remove('m', user)).toBe(true);
+    expect(prisma.media.delete).toHaveBeenCalledWith({ where: { id: 'm' } });
+    expect(prisma.mediaTombstone.create).not.toHaveBeenCalled();
+  });
+
   it('refuses to delete media from another project (tenant isolation)', async () => {
     const { svc, prisma, storage } = make(null);
     prisma.media.findUnique.mockResolvedValueOnce({ id: 'm', projectId: 'other', storageKey: 'k' });
@@ -271,13 +281,13 @@ describe('MediaService.remove — evidence deletion ordering', () => {
 
 describe('MediaService — a replayed upload key (#482)', () => {
   const contractor = { sub: 'c1', role: 'contractor', projectId: 'ambli' } as never;
-  const p2002 = () => new Prisma.PrismaClientKnownRequestError('dup', { code: 'P2002', clientVersion: 'test' });
+  const p2002 = (target: unknown = ['projectId', 'clientKey']) => new Prisma.PrismaClientKnownRequestError('dup', { code: 'P2002', clientVersion: 'test', meta: { target } });
 
   it('a concurrent replay onto another member\'s evidence is refused, and this request\'s object is cleaned up', async () => {
     const { svc, prisma, storage } = make(null);
     prisma.media.create.mockRejectedValueOnce(p2002());
     Object.assign(prisma.media, {
-      findUniqueOrThrow: vi.fn(async () => ({ id: 'pmc-evidence', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'material', uploadedBy: 'pmc-1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null })),
+      findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ id: 'pmc-evidence', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'material', uploadedBy: 'pmc-1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null }),
       findFirst: vi.fn(async () => null),
     });
     await expect(svc.create('ambli', contractor, { ...input, clientKey: 'k' })).rejects.toBeInstanceOf(ForbiddenException);
@@ -288,7 +298,7 @@ describe('MediaService — a replayed upload key (#482)', () => {
     const { svc, prisma, storage } = make(null);
     prisma.media.create.mockRejectedValueOnce(p2002());
     Object.assign(prisma.media, {
-      findUniqueOrThrow: vi.fn(async () => ({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null })),
+      findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null }),
       findFirst: vi.fn(async () => null),
     });
     expect(await svc.create('ambli', contractor, { ...input, clientKey: 'k' })).toEqual({ id: 'own', url: '/media/own?t=tok', at: '2026-10-19T09:30:00.000Z' });
@@ -297,11 +307,65 @@ describe('MediaService — a replayed upload key (#482)', () => {
     expect(storage.remove).toHaveBeenCalledWith('ambli/progress/med1.jpg');
   });
 
+  it('a concurrent replay whose winner was deleted before it could be read is answered 410, and this request\'s object is cleaned up', async () => {
+    const { svc, prisma, storage } = make(null);
+    prisma.media.create.mockRejectedValueOnce(p2002());
+    Object.assign(prisma.media, { findUnique: vi.fn(async () => null), findFirst: vi.fn(async () => null) });
+    // the fast read before the bytes finds no record; the read after the conflict does (the winner's delete wrote it)
+    prisma.mediaTombstone.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValueOnce({ projectId: 'ambli', clientKey: 'k' });
+    await expect(svc.create('ambli', contractor, { ...input, clientKey: 'k' })).rejects.toBeInstanceOf(GoneException);
+    expect(storage.remove).toHaveBeenCalledWith('ambli/progress/med1.jpg');
+  });
+
+  it('a conflict with no winner and no record of the key is not "deleted": the original error stands, after the cleanup', async () => {
+    const { svc, prisma, storage } = make(null);
+    const conflict = p2002();
+    prisma.media.create.mockRejectedValueOnce(conflict);
+    Object.assign(prisma.media, { findUnique: vi.fn(async () => null), findFirst: vi.fn(async () => null) });
+    await expect(svc.create('ambli', contractor, { ...input, clientKey: 'k' })).rejects.toBe(conflict);
+    expect(storage.remove).toHaveBeenCalledWith('ambli/progress/med1.jpg');
+  });
+
+  it('a conflict on another unique is never read as a replay or a deleted photo', async () => {
+    const { svc, prisma, storage } = make(null);
+    const conflict = p2002(['storageKey']);
+    prisma.media.create.mockRejectedValueOnce(conflict);
+    Object.assign(prisma.media, { findUnique: vi.fn(async () => null), findFirst: vi.fn(async () => null) });
+    await expect(svc.create('ambli', contractor, { ...input, clientKey: 'k' })).rejects.toBe(conflict);
+    expect(prisma.media.findUnique).toHaveBeenCalledTimes(1);
+    expect(storage.remove).toHaveBeenCalledWith('ambli/progress/med1.jpg');
+  });
+
+  it('the database\'s refusal of a deleted key (MT410) is answered 410, after the same cleanup', async () => {
+    const { svc, prisma, storage } = make(null);
+    prisma.media.create.mockRejectedValueOnce(new Prisma.PrismaClientUnknownRequestError(
+      'Error occurred during query execution: ConnectorError(... PostgresError { code: "MT410", message: "media: this photo was deleted (ambli, k)" ...', { clientVersion: 'test' }));
+    Object.assign(prisma.media, { findUnique: vi.fn(async () => null), findFirst: vi.fn(async () => null) });
+    await expect(svc.create('ambli', contractor, { ...input, clientKey: 'k' })).rejects.toBeInstanceOf(GoneException);
+    expect(storage.remove).toHaveBeenCalledWith('ambli/progress/med1.jpg');
+  });
+
+  it('only MT410 itself is a deleted photo: the guard\'s isolation refusal (MTISO) stays a server error, never a 4xx', async () => {
+    // a 4xx is final on the web and would drop a photo that was never deleted; a 5xx is kept and sent again
+    for (const err of [
+      new Prisma.PrismaClientUnknownRequestError(
+        'Error occurred during query execution: ConnectorError(... PostgresError { code: "MTISO", message: "media: a photo with a send key is stored only under READ COMMITTED, not repeatable read" ...', { clientVersion: 'test' }),
+      new Prisma.PrismaClientKnownRequestError('raw', { code: 'P2010', clientVersion: 'test', meta: { code: 'MTISO' } }),
+      new Prisma.PrismaClientKnownRequestError('raw', { code: 'P2010', clientVersion: 'test', meta: { code: 'MT41' } }),
+    ]) {
+      const { svc, prisma, storage } = make(null);
+      prisma.media.create.mockRejectedValueOnce(err);
+      Object.assign(prisma.media, { findUnique: vi.fn(async () => null), findFirst: vi.fn(async () => null) });
+      await expect(svc.create('ambli', contractor, { ...input, clientKey: 'k' })).rejects.toBe(err);
+      expect(storage.remove).toHaveBeenCalledWith('ambli/progress/med1.jpg');
+    }
+  });
+
   it('a concurrent replay keeps this request\'s object when a row still references it', async () => {
     const { svc, prisma, storage } = make(null);
     prisma.media.create.mockRejectedValueOnce(p2002());
     Object.assign(prisma.media, {
-      findUniqueOrThrow: vi.fn(async () => ({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null })),
+      findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null }),
       findFirst: vi.fn(async () => ({ id: 'own' })),
     });
     expect(await svc.create('ambli', contractor, { ...input, clientKey: 'k' })).toEqual({ id: 'own', url: '/media/own?t=tok', at: '2026-10-19T09:30:00.000Z' });
