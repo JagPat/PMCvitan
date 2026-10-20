@@ -8,6 +8,7 @@ import { orgsManifest } from '../../src/orgs/orgs.manifest';
 import { AuthService } from '../../src/auth/auth.service';
 import { recordAudit } from '../../src/platform/audit';
 import { systemActor } from '../../src/common/actor';
+import { OPS_DOOR_FAILURES_PER_ADDRESS } from '../../src/platform/ops/ops-token.guard';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 
@@ -543,8 +544,12 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
   });
 
   it('Codex P2 on #1020: thirty-odd calls without the token never lock the operator out of the QA mark', async () => {
-    for (let i = 0; i < 35; i++) expect((await http().post(`/ops/orgs/${ids.org}/qa-only`).send(why)).status).toBe(401);
-    const r = await door(`/ops/orgs/${ids.org}/qa-only`).send(why);
+    // wrong tokens are counted in the door guard's own window (429 over it); the operator's token never reads it
+    const from = '198.51.100.7';
+    const statuses: number[] = [];
+    for (let i = 0; i < 35; i++) statuses.push((await http().post(`/ops/orgs/${ids.org}/qa-only`).set('X-Forwarded-For', from).send(why)).status);
+    expect(statuses).toEqual([...Array(OPS_DOOR_FAILURES_PER_ADDRESS).fill(401), ...Array(35 - OPS_DOOR_FAILURES_PER_ADDRESS).fill(429)]);
+    const r = await door(`/ops/orgs/${ids.org}/qa-only`).set('X-Forwarded-For', from).send(why);
     expect(r.status, r.text).toBe(200);
     expect(r.body).toEqual({ ok: true, orgId: ids.org, changed: false });
   });

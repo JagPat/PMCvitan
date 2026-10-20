@@ -21,7 +21,8 @@ const WINDOW = 10 * 60 * 1000;
  * #482 operator door — the auth routes behind `OPS_TOKEN`. Its own controller so the door guard runs BEFORE the
  * rate limiter (Codex P2 on #983): Nest runs a class's guards before a method's, and `AuthController` throttles at
  * class level, so there a closed door would answer 429 after ten calls and reveal the route. Here a closed door is
- * 404 every time, and only a caller holding the token is counted.
+ * 404 every time, and only a caller holding the token spends this limit; wrong tokens are counted in the guard's
+ * own window (429 over it).
  */
 @Controller('auth/ops')
 @UseGuards(OpsTokenGuard, ThrottleGuard)

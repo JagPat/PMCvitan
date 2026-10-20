@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { HOME_NAV_CAPABILITY } from '../../src/platform/capabilities.service';
-import { OPS_TOKEN_MIN_LENGTH } from '../../src/platform/ops/ops-token.guard';
+import { OPS_DOOR_FAILURES_GLOBAL, OPS_DOOR_FAILURES_PER_ADDRESS, OPS_DOOR_WINDOW_MS, OPS_TOKEN_MIN_LENGTH } from '../../src/platform/ops/ops-token.guard';
 
 /**
  * #482 operator door — the operator commands (the project list and the home-nav switch) as
@@ -134,5 +134,89 @@ describe('#482 operator door (live PG)', () => {
     } finally {
       await t.prisma.project.update({ where: { id: f.projectB.id }, data: { archivedAt: null } });
     }
+  });
+
+  // the four OpsController routes, and the QA routes the same guard keeps, for the loops below
+  const ROUTES = (projectId: string) => [
+    { method: 'get', path: '/ops/projects' },
+    { method: 'get', path: '/ops/people' },
+    { method: 'post', path: `/ops/projects/${projectId}/capabilities/home-nav/enable` },
+    { method: 'post', path: `/ops/projects/${projectId}/capabilities/home-nav/disable` },
+  ] as const;
+  const call = (r: { method: 'get' | 'post'; path: string }, from?: string, token?: string) => {
+    let q = r.method === 'get' ? http().get(r.path) : http().post(r.path).send(body);
+    if (from) q = q.set('X-Forwarded-For', from);
+    if (token) q = q.set('Authorization', `Bearer ${token}`);
+    return q;
+  };
+
+  it('stays 404 while closed however often it is called, on all four routes: the door is checked before any count', async () => {
+    delete process.env.OPS_TOKEN;
+    for (let i = 0; i < 35; i++) {
+      for (const r of ROUTES(f.projectA.id)) expect((await call(r, '192.0.2.1')).status, `${r.method} ${r.path}`).toBe(404);
+    }
+  });
+
+  it('answers a closed route exactly as a path the server does not have, HEAD included', async () => {
+    delete process.env.OPS_TOKEN;
+    const pairs = [
+      ['get', '/ops/people?x=1', '/ops/nobody?x=1'],
+      ['post', `/ops/projects/${f.projectA.id}/capabilities/home-nav/enable`, `/ops/nowhere/${f.projectA.id}/capabilities/home-nav/enable`],
+      ['post', '/auth/ops/qa-sign-in', '/auth/ops/qa-sign-up'],
+    ] as const;
+    for (const [method, closedPath, unroutedPath] of pairs) {
+      const closed = await http()[method](closedPath);
+      const unrouted = await http()[method](unroutedPath);
+      expect(closed.status).toBe(404);
+      expect(unrouted.status).toBe(404);
+      expect(closed.body).toEqual({ ...unrouted.body, message: (unrouted.body.message as string).replace(unroutedPath, closedPath) });
+    }
+    // the same length of path, so the same Content-Length: HEAD cannot tell them apart either
+    const head = await http().head('/ops/projects');
+    const none = await http().head('/ops/projectz');
+    expect(head.status).toBe(404);
+    expect(none.status).toBe(404);
+    expect(head.headers['content-length']).toBe(none.headers['content-length']);
+    expect(head.headers['content-type']).toBe(none.headers['content-type']);
+  });
+
+  describe('wrong tokens are counted in the guard\'s own window', () => {
+    // each test starts in a window no earlier call reached: only the clock is faked, the HTTP stack runs as usual
+    let ahead = Date.now();
+    beforeEach(() => {
+      ahead += 2 * OPS_DOOR_WINDOW_MS;
+      vi.useFakeTimers({ toFake: ['Date'], now: ahead });
+    });
+    afterEach(() => vi.useRealTimers());
+
+    it('per address, across every route the guard keeps (QA ones included): 401 up to the limit, then 429; the token still opens it', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      const routes = [...ROUTES(f.projectA.id), { method: 'post', path: '/auth/ops/qa-sign-in' }, { method: 'post', path: `/ops/orgs/${f.orgA.id}/qa-only` }] as const;
+      const from = '203.0.113.10';
+      for (let i = 0; i < OPS_DOOR_FAILURES_PER_ADDRESS; i++) {
+        const r = routes[i % routes.length];
+        expect((await call(r, from, i % 2 ? `${TOKEN}x` : undefined)).status, `${r.method} ${r.path}`).toBe(401);
+      }
+      for (const r of routes) expect((await call(r, from)).status, `${r.method} ${r.path}`).toBe(429);
+      // the operator, from that same address, is never locked out: a correct token does not read the counter
+      const ok = await call(ROUTES(f.projectA.id)[1], from, TOKEN);
+      expect(ok.status, ok.text).toBe(200);
+      // another address has its own window
+      expect((await call(ROUTES(f.projectA.id)[0], '203.0.113.11')).status).toBe(401);
+    });
+
+    it('across all addresses: rotating addresses meets the shared cap; the token still opens it, and a closed door is never 429', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      const [projects, people] = ROUTES(f.projectA.id);
+      const perAddress = OPS_DOOR_FAILURES_PER_ADDRESS / 2;
+      for (let i = 0; i < OPS_DOOR_FAILURES_GLOBAL; i++) {
+        expect((await call(projects, `198.51.100.${Math.floor(i / perAddress)}`)).status).toBe(401);
+      }
+      expect((await call(projects, '198.51.100.250')).status).toBe(429);
+      const ok = await call(people, '198.51.100.250', TOKEN);
+      expect(ok.status, ok.text).toBe(200);
+      delete process.env.OPS_TOKEN;
+      for (const r of ROUTES(f.projectA.id)) expect((await call(r, '198.51.100.251')).status).toBe(404);
+    });
   });
 });
