@@ -11,6 +11,7 @@ set -uo pipefail
 API="${API:-https://pms-api.vitan.in}"
 PROJECT="${PROJECT:-ambli}"
 RUN_MEDIA=0
+FAILED=0
 [ "${1:-}" = "--media" ] && RUN_MEDIA=1
 
 jqget() { python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('$1',''))" 2>/dev/null; }
@@ -60,11 +61,16 @@ if [ "$RUN_MEDIA" = "1" ] && [ -n "${tok:-}" ]; then
         echo "MEDIA  : STUB  (DB — $url served directly, HTTP 200)"
       elif [ "$code" = "302" ] && [ -n "$signed" ]; then
         got=$(curl -sS -m 20 -o /dev/null -w '%{http_code} %{content_type}' "$signed")
-        echo "MEDIA  : LIVE  (R2 — $url → 302 to ${signed%%\?*}; signed GET answered: $got)"
+        # LIVE only when the signed read itself works: a key that can write but not read
+        # (no Object Read) still uploads and redirects, but every image then fails to load.
+        case "$got" in
+          "200 image/png"*) echo "MEDIA  : LIVE  (R2 — $url → 302 to ${signed%%\?*}; signed GET answered: $got)";;
+          *) echo "MEDIA  : FAIL  (R2 — $url → 302 to ${signed%%\?*}, but the signed GET answered '$got', not 200 image/png)"; FAILED=1;;
+        esac
       else
-        echo "MEDIA  : ?     (unexpected answer from $url: $first)"
+        echo "MEDIA  : FAIL  (unexpected answer from $url: $first)"; FAILED=1
       fi;;
-    *) echo "MEDIA  : ?     (unexpected: $m)";;
+    *) echo "MEDIA  : FAIL  (unexpected: $m)"; FAILED=1;;
   esac
   echo "         (created test media id: $id — irreversible via API)"
 elif [ "$RUN_MEDIA" = "1" ]; then
@@ -74,3 +80,4 @@ else
 fi
 
 echo "=== done ==="
+exit "$FAILED"

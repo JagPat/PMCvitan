@@ -103,7 +103,19 @@ Flips `StorageService` from keeping bytes in Postgres (served from `/media/:id`)
 1. Create a Cloudflare account (if none) and open **R2**. Create a bucket, e.g. `vitan-media`.
 2. **R2 → Manage R2 API Tokens → Create API Token**, permission **Object Read & Write** (scope to the bucket). Copy the **Access Key ID** and **Secret Access Key** (shown once).
 3. Note the **S3 API endpoint**: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` (R2 → bucket → Settings, or the token page).
-4. Keep the bucket **private**: leave the **Public Development URL** (`r2.dev`) **disabled** and attach no public custom domain. The app never links to a public address; it signs every read (see DEPLOY.md, "Private file delivery"). A public URL would let anyone holding a file's address open it without the app's check.
+4. Keep the bucket **private**: attach no public custom domain, and keep the **Public Development URL** (`r2.dev`) **disabled**. The app never links to a public address; it signs every read (see DEPLOY.md, "Private file delivery"). A public URL would let anyone holding a file's address open it without the app's check.
+   - **A new bucket:** leave `r2.dev` disabled from the start.
+   - **A bucket that once served through `r2.dev`:** turn it off only after the read-only count below prints `0 0 0`. A row with only a public `url` (no bytes, no `storageKey`) is served by redirecting to that `url` (`media.service.ts` `fetch`, `drawings.service.ts` `fetchRevision`), so turning `r2.dev` off makes every such file unreadable. If any count is above 0, those rows are repointed to their `storageKey` first, by a reviewed change; no tool for that exists today, so `r2.dev` stays on until it lands. Run it in the API container (Coolify → API → Terminal):
+     ```bash
+     cd /app/apps/api && node - <<'EOF'
+     const { PrismaClient } = require('@prisma/client'); const p = new PrismaClient();
+     const urlOnly = { url: { not: null }, storageKey: null, data: null };
+     Promise.all([p.media.count({ where: urlOnly }), p.drawingRevision.count({ where: urlOnly }),
+       p.decisionOption.count({ where: { photoUrl: { startsWith: 'http' } } })])
+       .then((n) => console.log(n.join(' '))).catch((e) => console.log('read failed:', e.name)).finally(() => p.$disconnect());
+     EOF
+     ```
+     The three numbers are: photos served only from a public link, drawings served only from a public link, and decision options whose sample photo is an absolute link. It reads counts only and prints no addresses.
 
 ### Env vars
 | Name | Example | Notes |
@@ -129,7 +141,7 @@ curl -sS -X POST $API/projects/ambli/media -H "Authorization: Bearer $TOK" \
   -H 'Content-Type: application/json' -d "{\"kind\":\"progress\",\"mime\":\"image/png\",\"data\":\"$PNG\"}"
 ```
 - **STUB:** `{"id":"…","url":"/media/…"}` — **relative** URL (DB).
-- **LIVE (R2):** the same relative signed path. `curl -sS -o /dev/null -D - "$API<that url>"` → HTTP 302 to a signed link on the `S3_ENDPOINT` host, and following it with a plain GET (`curl -sS -o /dev/null -D - -L "$API<that url>"`) → 200, `content-type: image/png`. Use GET, not `-I`: the signed link is signed for GET, and R2 refuses a HEAD on it. (For the stub, the first request → 200, `content-length: 70`.) `scripts/validate-live.sh --media` makes the same two requests and reports STUB or LIVE.
+- **LIVE (R2):** the same relative signed path. `curl -sS -o /dev/null -D - "$API<that url>"` → HTTP 302 to a signed link on the `S3_ENDPOINT` host, and following it with a plain GET (`curl -sS -o /dev/null -D - -L "$API<that url>"`) → 200, `content-type: image/png`. Use GET, not `-I`: the signed link is signed for GET, and R2 refuses a HEAD on it. (For the stub, the first request → 200, `content-length: 70`.) `scripts/validate-live.sh --media` makes the same two requests and reports STUB, LIVE only when the signed GET answers 200 `image/png`, or FAIL (exit 1) otherwise, for example when the key cannot read.
 
 **Failure modes:** wrong endpoint/region → send fails; token lacks write → 403; a key without Object Read → signed links 403 and images fail in the UI; wrong var names (`S3_ACCESS_KEY` vs `S3_ACCESS_KEY_ID`) → gate silently stays false, no error.
 
