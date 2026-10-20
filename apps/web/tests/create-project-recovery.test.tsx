@@ -5,6 +5,7 @@ import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway } from '@/data/apiGateway';
 import { CreateProjectModal } from '@/layout/ProjectSwitcher';
 import { resetLiveCreateSendsForTests } from '@/store/projectCreateHold';
+import { QW } from '@/lib/queueWords';
 
 /**
  * Legacy-copy recovery — creating a project from a source whose structure the server refuses to
@@ -160,6 +161,46 @@ describe('create project from a source the server refuses to copy', () => {
     expect(r.getByTestId('host-closed')).toBeTruthy();
     expect(calls.switchProject).toHaveBeenCalledWith('p-new');
     expect(calls.createProject).toHaveBeenCalledWith('org-1', expect.objectContaining({ structureFrom: 'legacy' }), expect.any(String)); // the attempt's idempotency key
+  });
+
+  describe('a create while updates are not kept on this phone (#1028 r2, 4330762375)', () => {
+    const unkept = () => useStore.setState((st) => {
+      st.outbox = [{ t: 'startActivity', activityId: 'A-1', idempotencyKey: 'k-1' }];
+      st.queueUnkept = ['k:k-1'];
+    });
+
+    it('closes with no failure line, and the question stays; Cancel keeps the person here and says where to open it', async () => {
+      const { gw, create, calls } = fakeGateway();
+      s()._setGateway(gw);
+      unkept();
+      const r = mount();
+      fireEvent.click(createButton(r));
+      create.resolve({ id: 'p-new', name: 'Residence at Thaltej', short: 'Thaltej' });
+      await settle();
+      expect(r.getByTestId('host-closed')).toBeTruthy();
+      expect(s().toast ?? '').not.toMatch(/could not be opened/);
+      expect(s().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch', projectId: 'p-new', created: true }));
+      expect(calls.switchProject).not.toHaveBeenCalled();
+      act(() => s().cancelLeave());
+      expect(s().toast).toBe(QW.createdOpenLater.en);
+      expect(calls.switchProject).not.toHaveBeenCalled();
+      expect(s().outbox).toHaveLength(1);
+    });
+
+    it('Continue opens the new project', async () => {
+      const { gw, create, calls } = fakeGateway();
+      s()._setGateway(gw);
+      unkept();
+      const r = mount();
+      fireEvent.click(createButton(r));
+      create.resolve({ id: 'p-new', name: 'Residence at Thaltej', short: 'Thaltej' });
+      await settle();
+      act(() => s().confirmLeave());
+      await settle();
+      expect(calls.switchProject).toHaveBeenCalledWith('p-new');
+      expect(s().activeProjectId).toBe('p-new');
+      expect(s().toast ?? '').not.toMatch(/could not be opened/);
+    });
   });
 
   it('created but not opened still closes — the project exists, so a retry would duplicate it', async () => {

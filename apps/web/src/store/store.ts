@@ -429,8 +429,12 @@ export interface AppState {
   queueScope: string | null;
   /** WEB-02: the acts in memory that no write stored ("not kept"), by `queueActIdent` (see `queueUnkept.ts`) */
   queueUnkept: string[];
-  /** WEB-02: a project switch or sign-out the person asked for, held while "not kept" acts would be lost by it */
-  leaveConfirm: { action: 'switch'; projectId: string; targetScreen?: ScreenKey; targetItem?: string } | { action: 'signOut' } | null;
+  /** WEB-02: a project switch, persona switch or sign-out the person asked for, held while "not kept" acts would be
+   *  lost by it. `created`: the switch opens a project just created (Cancel says where to find it) */
+  leaveConfirm: { action: 'switch'; projectId: string; targetScreen?: ScreenKey; targetItem?: string; created?: true } | { action: 'persona'; role: Role } | { action: 'signOut' } | null;
+  /** WEB-02: how many times the person picked Cancel at that question: an answer, never the question being asked, is
+   *  what puts a routed switch's URL back (#1028 r2, 4330762359) */
+  leaveCancels: number;
   /** #482 site photos unit 3 — this device's online photo uploads for a log, from the pick until the server's own
    *  count is seen to hold them (`dailyLog.myPhotoKeys`); memory only (a reload re-reads the server's count). */
   photoUploadsInFlight: { clientKey: string; dailyLogId: string; settled: boolean }[];
@@ -730,7 +734,8 @@ export interface AppActions {
    *  the switch was authenticated. `targetScreen` survives the switch when the new
    *  role is allowed to see it (deep links); `targetItem`, when given, is the one record it opens there
    *  (Top 10 #3 gap 13, #799 — a brief task about one record in another project). */
-  switchProject: (projectId: string, targetScreen?: ScreenKey, targetItem?: string) => Promise<boolean>;
+  /** true once switched, false when it did not; 'asked' while the "not kept" question holds it (Continue goes on) */
+  switchProject: (projectId: string, targetScreen?: ScreenKey, targetItem?: string) => Promise<boolean | 'asked'>;
   /** Resolves to what happened, so the new-project dialog closes only on a confirmed create and
    *  keeps its inputs with the reason otherwise (see `CreateProjectOutcome`). */
   createProject: (orgId: string, input: NewProjectInput) => Promise<CreateProjectOutcome>;
@@ -1452,6 +1457,7 @@ export function getInitialState(): AppState {
     queueScope: '*',
     queueUnkept: [],
     leaveConfirm: null,
+    leaveCancels: 0,
     photoUploadsInFlight: [],
     failedEvidence: [],
     pendingEvidenceCount: 0,
@@ -1717,6 +1723,12 @@ export const useStore = create<Store>()(
       }
       get().flash('Project created: ' + created.short + '.');
       const opened = await get().switchProject(created.id);
+      // held by the "not kept" question: not a failure. Continue opens it; Cancel says where to find it (#1028 r2,
+      // 4330762375)
+      if (opened === 'asked') {
+        set((s) => { if (s.leaveConfirm?.action === 'switch' && s.leaveConfirm.projectId === created.id) s.leaveConfirm.created = true; });
+        return { kind: 'created', projectId: created.id, opened: false };
+      }
       if (!opened && sameUser()) get().flash('Project created: ' + created.short + ', but it could not be opened — pick it from the project switcher.');
       return { kind: 'created', projectId: created.id, opened };
     };
@@ -3162,6 +3174,12 @@ export const useStore = create<Store>()(
 
     // ---- shell ----
     setRole: (role) => {
+      // WEB-02: a persona switch leaves this scope, so acts no write stored are lost by it: the person is asked first,
+      // as for a project switch or sign-out (`confirmLeave` goes on) (#1028 r2, 4330762383)
+      if (!leaveConfirmed && role !== get().role && unkeptCount(get()) > 0) {
+        set((s) => { s.leaveConfirm = { action: 'persona', role }; });
+        return;
+      }
       const first = screensFor(role)[0]?.key ?? 'inbox';
       const applySwitch = () => { clearSession(); set((s) => {
         s.role = role;
@@ -5166,7 +5184,7 @@ export const useStore = create<Store>()(
       // WEB-02: acts no write stored are lost by a switch: the person is asked first (`confirmLeave` goes on)
       if (!leaveConfirmed && gateway && projectId !== get().activeProjectId && unkeptCount(get()) > 0) {
         set((s) => { s.leaveConfirm = { action: 'switch', projectId, targetScreen, targetItem }; });
-        return Promise.resolve(false);
+        return Promise.resolve('asked');
       }
       if (!gateway || projectId === get().activeProjectId) return Promise.resolve(false);
       const membership = get().memberships.find((m) => m.projectId === projectId);
@@ -6208,12 +6226,22 @@ export const useStore = create<Store>()(
       if (held.action === 'signOut') { get().signOut(); return; }
       leaveConfirmed = true;
       try {
-        void get().switchProject(held.projectId, held.targetScreen, held.targetItem);
+        if (held.action === 'persona') get().setRole(held.role);
+        else void get().switchProject(held.projectId, held.targetScreen, held.targetItem);
       } finally {
         leaveConfirmed = false;
       }
     },
-    cancelLeave: () => set((s) => { s.leaveConfirm = null; }),
+    cancelLeave: () => {
+      const held = get().leaveConfirm;
+      if (!held) return;
+      set((s) => {
+        s.leaveConfirm = null;
+        s.leaveCancels += 1;
+      });
+      // a project just created stays where it is: the person is told where to open it (#1028 r2, 4330762375)
+      if (held.action === 'switch' && held.created) get().flash(QW.createdOpenLater[get().lang]);
+    },
     setAsideUnreadableQueue: () => {
       const listed = get().queueUnreadable;
       if (!listed) return;

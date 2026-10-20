@@ -416,4 +416,67 @@ describe('RouteBridge — a routed switch the person cancels at the "not kept" q
     expect(currentPath).toBe('/projects/ambli/dashboard');
     expect(gw.switchProject).not.toHaveBeenCalled();
   });
+  it('a switch from the project switcher the person continues at the question pushes its entry, so Back returns to the first project (#1028 r2, 4330762359)', async () => {
+    const gw = { switchProject: vi.fn().mockResolvedValue({ token: 'JWT-b', role: 'pmc', projectId: 'project-b' }) };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.memberships = [
+        { projectId: 'ambli', name: 'Residence at Ambli', short: 'Residence at Ambli', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' },
+      ];
+      st.outbox = [{ t: 'startActivity', activityId: 'A-1', idempotencyKey: 'k-1' }];
+      st.queueUnkept = ['k:k-1'];
+    });
+    render(
+      <MemoryRouter initialEntries={['/projects/ambli/dashboard']}>
+        <RouteBridge />
+        <PathProbe />
+        <NavProbe />
+      </MemoryRouter>,
+    );
+    await flush();
+    // the project switcher (store-initiated): the question is asked, and the person continues
+    await act(async () => { expect(await useStore.getState().switchProject('project-b')).toBe('asked'); });
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    await act(async () => { useStore.getState().confirmLeave(); });
+    await flush();
+    useStore.setState((st) => { st.projectLoadState = 'ready'; });
+    await flush();
+    expect(useStore.getState().activeProjectId).toBe('project-b');
+    expect(currentPath).toMatch(/^\/projects\/project-b\//);
+    // a normal entry: Back goes to the first project's, as a switch that was never asked about does
+    act(() => go(-1));
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+  });
+
+  it('a switch from the project switcher the person cancels leaves the URL and history as they were', async () => {
+    const gw = { switchProject: vi.fn() };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.memberships = [
+        { projectId: 'ambli', name: 'Residence at Ambli', short: 'Residence at Ambli', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' },
+      ];
+      st.outbox = [{ t: 'startActivity', activityId: 'A-1', idempotencyKey: 'k-1' }];
+      st.queueUnkept = ['k:k-1'];
+    });
+    render(
+      <MemoryRouter initialEntries={['/projects/ambli/schedule', '/projects/ambli/dashboard']} initialIndex={1}>
+        <RouteBridge />
+        <PathProbe />
+        <NavProbe />
+      </MemoryRouter>,
+    );
+    await flush();
+    await act(async () => { await useStore.getState().switchProject('project-b'); });
+    act(() => useStore.getState().cancelLeave());
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    expect(gw.switchProject).not.toHaveBeenCalled();
+    act(() => go(-1));
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/schedule');
+  });
 });

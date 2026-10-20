@@ -42,6 +42,12 @@ export const QW = {
     gu: '{n} ફેરફારો આ ફોન પર સચવાયા નથી અને ખોવાઈ જશે. ચાલુ રાખવું છે?',
   },
   leaveContinue: { en: 'Continue', hi: 'जारी रखें', gu: 'ચાલુ રાખો' },
+  // a project created while acts were not kept, its opening cancelled at the question (#1028 r2, 4330762375)
+  createdOpenLater: {
+    en: 'The new project was created. Open it from the project list when you’re ready.',
+    hi: 'नया प्रोजेक्ट बन गया है। जब आप तैयार हों, इसे प्रोजेक्ट सूची से खोलें।',
+    gu: 'નવો પ્રોજેક્ટ બની ગયો છે. તમે તૈયાર હો ત્યારે તેને પ્રોજેક્ટ યાદીમાંથી ખોલો.',
+  },
   unkeptLost: {
     en: '{n} updates that were not kept on this phone were lost.',
     hi: '{n} बदलाव जो इस फ़ोन पर नहीं रखे गए थे, खो गए।',

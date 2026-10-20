@@ -282,12 +282,34 @@ describe('the scope change itself, before the new scope loads (WEB-02)', () => {
     expect(useStore.getState().queueUnkept).toEqual([]);
   });
 
+  it('a persona switch with acts this phone did not keep asks first; Cancel keeps them, Continue switches and says how many were lost (#1028 r2, 4330762383)', async () => {
+    signedInOnP1([]);
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
+    useStore.getState().startActivity('A-2');
+    expect(useStore.getState().toast).toBe(QW.notKept.en);
+    act(() => useStore.getState().setRole('pmc'));
+    expect(useStore.getState().leaveConfirm).toEqual({ action: 'persona', role: 'pmc' });
+    expect(useStore.getState().role).toBe('engineer');
+    expect(useStore.getState().outbox).toEqual([expect.objectContaining({ activityId: 'A-2' })]);
+    render(<LeaveUnkept />);
+    expect(screen.getByTestId('leave-unkept').textContent).toContain(QW.leaveTitle.en.replace('{n}', '1'));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(useStore.getState().leaveConfirm).toBeNull();
+    expect(useStore.getState().role).toBe('engineer');
+    expect(useStore.getState().outbox).toEqual([expect.objectContaining({ activityId: 'A-2' })]);
+    act(() => useStore.getState().setRole('pmc'));
+    fireEvent.click(screen.getByRole('button', { name: QW.leaveContinue.en }));
+    expect(useStore.getState().role).toBe('pmc');
+    expect(useStore.getState().outbox).toEqual([]);
+    expect(useStore.getState().toast).toBe(QW.unkeptLost.en.replace('{n}', '1'));
+  });
+
   it('a switch with acts this phone did not keep asks first; Cancel stays, Continue switches and says how many were lost', async () => {
     const gw = signedInOnP1([]);
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
     useStore.getState().startActivity('A-2');
     expect(useStore.getState().toast).toBe(QW.notKept.en);
-    expect(await useStore.getState().switchProject(P2)).toBe(false);
+    expect(await useStore.getState().switchProject(P2)).toBe('asked');
     expect(gw.switchProject).not.toHaveBeenCalled();
     render(<LeaveUnkept />);
     expect(screen.getByTestId('leave-unkept').textContent).toContain(QW.leaveTitle.en.replace('{n}', '1'));
@@ -301,6 +323,16 @@ describe('the scope change itself, before the new scope loads (WEB-02)', () => {
     expect(gw.switchProject).toHaveBeenCalledWith(P2);
     expect(useStore.getState().outbox).toEqual([]);
     expect(useStore.getState().toast).toBe(QW.unkeptLost.en.replace('{n}', '1'));
+  });
+
+  it('a reload or closed tab with acts this phone did not keep is asked by the browser; with none it is not (#1028 r2 audit)', () => {
+    signedInOnP1([]);
+    render(<LeaveUnkept />);
+    const leave = () => { const e = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; };
+    expect(leave()).toBe(false);
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
+    useStore.getState().startActivity('A-2');
+    expect(leave()).toBe(true);
   });
 
   it('sign-out with acts this phone did not keep asks first; with none it signs out at once', () => {
