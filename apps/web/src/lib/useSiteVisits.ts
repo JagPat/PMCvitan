@@ -349,8 +349,13 @@ export function useSiteVisits() {
   const cursor = useRef<string | undefined>(undefined);
   // bumped by every read sent and every act answered: a read answers only if nothing has happened since it was sent
   const turn = useRef(0);
-  // the turn of the last read sent
+  // the turn of the read the screen waits on: the last read sent, or the newest still out once every read after it failed
   const lastRead = useRef(0);
+  // the reads sent and not yet settled, by turn, with their scope
+  const readsOut = useRef(new Map<number, ProjectScope>());
+  // a read that answered while a newer read was out, by that newer read's turn (with whether it started over): if that
+  // read then fails, what the answer would have shown is read again (#1029 round 3, Codex 4331011118)
+  const owedTo = useRef(new Map<number, boolean>());
   // whether a read has answered since the screen last started over
   const answered = useRef(false);
   // bumped on every ping from the server, so the screen can read its own lists again too
@@ -448,6 +453,7 @@ export function useSiteVisits() {
     const heard = new Set(filedHeard.current);
     const mine = (turn.current += 1);
     lastRead.current = mine;
+    readsOut.current.set(mine, scope);
     // a markup open's read is one of the screen's reads: it takes the screen's turn, so a screen read already out is
     // overtaken by it. Stopped before it settles while still the newest, it hands the turn back as one plain read, so
     // what the read it overtook would have shown is still shown (m3-r2 check gap 1)
@@ -462,10 +468,16 @@ export function useSiteVisits() {
     ])
       .then(([shown, open]): boolean | Promise<boolean> => {
         settled = true;
+        readsOut.current.delete(mine);
+        const owed = owedTo.current.get(mine);
+        owedTo.current.delete(mine);
         if (!live(scope)) return false;
         if (mine !== turn.current) {
           // overtaken by an answer alone: what else changed is still unread, so read again after it
-          if (lastRead.current === mine) return readHead(fresh, signal);
+          // (only on an open screen, and on the screen's life when this read had no signal of its own: m1029 r3 check G1)
+          if (lastRead.current === mine) return mounted.current ? readHead(fresh || owed === true, signal ?? life.current.signal) : false;
+          // overtaken by a read still out: that one serves, and if it fails this answer is read again
+          if (readsOut.current.has(lastRead.current)) owedTo.current.set(lastRead.current, fresh || owed === true || owedTo.current.get(lastRead.current) === true);
           return false;
         }
         const read = [...open.rows, ...shown.rows.filter((v) => !open.rows.some((o) => o.id === v.id))];
@@ -485,11 +497,26 @@ export function useSiteVisits() {
         void withinWait(() => settleFiledVisitPhotos(owner, scope.projectId, sentAt, heard, listed, spoken)).then(() => { if (live(scope)) readKept(); }, () => {});
         return true;
       })
-      // the latest read failed before any read answered (an overtaken first read included): offer Try again. A read
-      // stopped while it was the newest gave its turn back to the screen then, so it is overtaken here and says nothing
+      // the latest read failed: what a read it overtook would have shown is not lost (#1029 round 3, Codex 4331011118).
+      // An older read still out serves in its place; one that answered while this was out is read again, as one plain
+      // read. With neither, it failed before any read answered (an overtaken first read included): offer Try again. A
+      // read stopped while it was the newest gave its turn back to the screen then, so it is overtaken here and says
+      // nothing
       .catch(() => {
         settled = true;
-        if (mounted.current && live(scope) && mine === lastRead.current && !answered.current) setLoad('error');
+        readsOut.current.delete(mine);
+        const owed = owedTo.current.get(mine);
+        owedTo.current.delete(mine);
+        if (!mounted.current || !live(scope)) return false;
+        // overtaken by a read still out: an answer owed to this one is owed to that one instead, as in .then
+        if (mine !== lastRead.current) {
+          if (owed !== undefined && readsOut.current.has(lastRead.current)) owedTo.current.set(lastRead.current, owed || owedTo.current.get(lastRead.current) === true);
+          return false;
+        }
+        const older = Math.max(0, ...[...readsOut.current].filter(([t, s]) => t < mine && live(s)).map(([t]) => t));
+        if (older > 0) { lastRead.current = older; if (owed !== undefined) owedTo.current.set(older, owed || owedTo.current.get(older) === true); return false; }
+        if (owed !== undefined) { void readHead(fresh || owed, life.current.signal); return false; }
+        if (!answered.current) setLoad('error');
         return false;
       });
     latestRead.current = sent;

@@ -820,6 +820,154 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
           await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
           expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
         });
+
+        describe('a failed newest read keeps what a read it overtook would have shown (#1029 round 3, Codex 4331011118)', () => {
+          /** the server: while `holding`, each page request waits on its gate, which answers or fails it */
+          function gated() {
+            const state = { others: false, holding: false, gates: [] as { done: () => void; fail: () => void }[] };
+            const list = (q: Q) => {
+              if (q?.before) return Promise.resolve(older(null));
+              const rows = q?.status === 'open' ? (state.others ? [other] : []) : newer;
+              if (!state.holding) return Promise.resolve(rows);
+              return new Promise<SiteVisit[]>((done, fail) => { state.gates.push({ done: () => done(rows), fail: () => fail(network()) }); });
+            };
+            return { state, list };
+          }
+          /** a refresh out (2 requests), then the open's read for the refused link (2 requests), all held */
+          async function refreshThenOpen() {
+            const { state, list } = gated();
+            const gw = await openWith(list, async () => {
+              await act(async () => {});
+              state.others = true;
+              state.holding = true;
+              await act(async () => { refreshSiteVisits(); });
+            });
+            await vi.waitFor(() => expect(state.gates).toHaveLength(4));
+            state.holding = false;
+            return { state, gw };
+          }
+
+          it('the open’s read fails, then the refresh it overtook answers: the visit started on another device appears', async () => {
+            const { state } = await refreshThenOpen();
+            await act(async () => { state.gates[2].fail(); state.gates[3].fail(); });
+            await act(async () => { state.gates[0].done(); state.gates[1].done(); });
+            expect(await screen.findByTestId('sv-visit-v-other')).toBeTruthy();
+          });
+
+          it('the refresh answers first, then the open’s read fails: the screen reads again, and the visit appears', async () => {
+            const { state, gw } = await refreshThenOpen();
+            await act(async () => { state.gates[0].done(); state.gates[1].done(); });
+            const asked = gw.listSiteVisits!.mock.calls.length;
+            await act(async () => { state.gates[2].fail(); state.gates[3].fail(); });
+            expect(await screen.findByTestId('sv-visit-v-other')).toBeTruthy();
+            // one plain read handed back: its first page and its open visits, on the screen's own signal (the open,
+            // following the newest read, then reads on its older pages for the old visit's link)
+            expect(gw.listSiteVisits!.mock.calls.slice(asked).filter(([q]) => !(q as Q)?.before).map(([q, signal]) => [(q as Q)?.status ?? 'page', (signal as AbortSignal | undefined)?.aborted])).toEqual([['page', false], ['open', false]]);
+          });
+
+          it.each([
+            ['the newer fails first, then the older answers', [2, 3], [0, 1]],
+            ['the older answers first, then the newer fails', [0, 1], [2, 3]],
+          ])('two screen refreshes, %s: the visit appears (sibling path)', async (_label, first, second) => {
+            const { state, list } = gated();
+            const gw = fakeGateway([], { listSiteVisits: vi.fn(list) });
+            setUp('consultant', CONSULTANT, gw, []);
+            render(<SiteVisitsScreen />);
+            await act(async () => {});
+            state.others = true;
+            state.holding = true;
+            await act(async () => { refreshSiteVisits(); });
+            await act(async () => { refreshSiteVisits(); });
+            await vi.waitFor(() => expect(state.gates).toHaveLength(4));
+            state.holding = false;
+            const settle = (n: number) => (n >= 2 ? state.gates[n].fail() : state.gates[n].done());
+            await act(async () => { for (const n of first) settle(n); });
+            await act(async () => { for (const n of second) settle(n); });
+            expect(await screen.findByTestId('sv-visit-v-other')).toBeTruthy();
+            expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+          });
+
+          it('a failed first read in a new project offers Try again, though a read of the project left is still out (pins the scope check)', async () => {
+            const { state, list } = gated();
+            const gw = fakeGateway([], { listSiteVisits: vi.fn(list) });
+            setUp('consultant', CONSULTANT, gw, []);
+            render(<SiteVisitsScreen />);
+            await act(async () => {});
+            state.holding = true;
+            await act(async () => { refreshSiteVisits(); });
+            await vi.waitFor(() => expect(state.gates).toHaveLength(2));
+            gw.switchProject = vi.fn(() => new Promise(() => {}));
+            await act(async () => { void useStore.getState().switchProject('other'); });
+            // the new project's own first read, held, then failed: the left project's read must not stand in for it
+            await vi.waitFor(() => expect(state.gates).toHaveLength(4));
+            await act(async () => { state.gates[2].fail(); state.gates[3].fail(); });
+            expect(await screen.findByRole('button', { name: 'Try again' })).toBeTruthy();
+          });
+
+          it('a failed refresh that overtook nothing reads nothing again (no read loops while the server fails)', async () => {
+            const { state, list } = gated();
+            const gw = fakeGateway([], { listSiteVisits: vi.fn(list) });
+            setUp('consultant', CONSULTANT, gw, []);
+            render(<SiteVisitsScreen />);
+            await act(async () => {});
+            state.holding = true;
+            await act(async () => { refreshSiteVisits(); });
+            await vi.waitFor(() => expect(state.gates).toHaveLength(2));
+            const asked = gw.listSiteVisits!.mock.calls.length;
+            await act(async () => { state.gates[0].fail(); state.gates[1].fail(); });
+            await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+            expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
+          });
+
+          it('the open’s read fails and the screen closes: the refresh standing in reads nothing when it answers (m1029 r3 check G1)', async () => {
+            const { state, gw } = await refreshThenOpen();
+            await act(async () => { state.gates[2].fail(); state.gates[3].fail(); });
+            await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+            const asked = gw.listSiteVisits!.mock.calls.length;
+            cleanup();
+            await act(async () => { state.gates[0].done(); state.gates[1].done(); });
+            await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+            expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
+          });
+
+          it('the refresh answers while the open’s read is newest, a refresh is sent, the open’s read fails, then that refresh fails: the visit appears (m1029 r3 check G2)', async () => {
+            const { state } = await refreshThenOpen();
+            state.holding = true;
+            await act(async () => { state.gates[0].done(); state.gates[1].done(); });
+            await act(async () => { refreshSiteVisits(); });
+            await vi.waitFor(() => expect(state.gates).toHaveLength(6));
+            state.holding = false;
+            await act(async () => { state.gates[2].fail(); state.gates[3].fail(); });
+            await act(async () => { state.gates[4].fail(); state.gates[5].fail(); });
+            expect(await screen.findByTestId('sv-visit-v-other')).toBeTruthy();
+          });
+
+          it.each([
+            ['three out; the 1st answers, the 3rd fails, then the 2nd fails: the answer owed to the 3rd moves to the 2nd standing in (m1029 r3 check G3)', false],
+            ['two out; the 1st answers, a 3rd is sent, the 2nd fails, then the 3rd fails: the answer owed to the 2nd moves to the 3rd (m1029 r3 check G2)', true],
+          ] as const)('screen refreshes, %s', async (_label, thirdAfter) => {
+            const { state, list } = gated();
+            const gw = fakeGateway([], { listSiteVisits: vi.fn(list) });
+            setUp('consultant', CONSULTANT, gw, []);
+            render(<SiteVisitsScreen />);
+            await act(async () => {});
+            state.others = true;
+            state.holding = true;
+            await act(async () => { refreshSiteVisits(); });
+            await act(async () => { refreshSiteVisits(); });
+            if (!thirdAfter) await act(async () => { refreshSiteVisits(); });
+            await vi.waitFor(() => expect(state.gates).toHaveLength(thirdAfter ? 4 : 6));
+            await act(async () => { state.gates[0].done(); state.gates[1].done(); });
+            if (thirdAfter) {
+              await act(async () => { refreshSiteVisits(); });
+              await vi.waitFor(() => expect(state.gates).toHaveLength(6));
+            }
+            state.holding = false;
+            const fail = (a: number) => act(async () => { state.gates[a].fail(); state.gates[a + 1].fail(); });
+            if (thirdAfter) { await fail(2); await fail(4); } else { await fail(4); await fail(2); }
+            expect(await screen.findByTestId('sv-visit-v-other')).toBeTruthy();
+          });
+        });
       });
     });
 
