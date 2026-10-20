@@ -93,6 +93,7 @@ import { StorageService } from './media/storage.service';
 import { SignedUrlService } from './media/signed-url.service';
 import { MediaService } from './media/media.service';
 import { MediaQueryService } from './media/media.query';
+import { MediaDisposability } from './media/media-disposability';
 import { MediaController } from './media/media.controller';
 import { DrawingsService } from './drawings/drawings.service';
 import { DrawingsQueryService } from './drawings/drawings.query';
@@ -240,6 +241,7 @@ import { MediaParticipant } from './media/media.participant';
     SignedUrlService,
     MediaService,
     MediaQueryService,
+    MediaDisposability,
     DrawingsService,
     DrawingsQueryService,
     PushService,

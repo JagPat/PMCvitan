@@ -14,6 +14,7 @@ import { LabourRequirementParticipant } from '../labour/labour.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { CommercialParticipant } from '../commercial/commercial.participant';
 import { SiteVisitFilesParticipant } from '../site-visits/site-visit-files.participant';
+import { MediaDisposability } from './media-disposability';
 import { isPlaceHiddenFrom, previewPublishedProjectNode, resolvePublishedProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
@@ -82,7 +83,12 @@ export class MediaService {
     private readonly commercialParticipant: CommercialParticipant,
     // #792 SV2 — a file added on a site visit is linked to it by the site-visits participant, in the upload's transaction
     private readonly siteVisitFiles: SiteVisitFilesParticipant,
-  ) {}
+  ) {
+    this.disposability = new MediaDisposability(prisma, inspectionParticipant, inventoryParticipant, labourParticipant, activityParticipant, commercialParticipant, siteVisitFiles);
+  }
+
+  /** What may be deleted as far as the records citing a photo go — the guards the snapshot asks as well (Codex 4320129763). */
+  private readonly disposability: MediaDisposability;
 
   /** A clientKey replay returns the stored row only when the caller could have created it: for the roles
    *  narrowed to plain site photos, that is their OWN plain photo — never another member's evidence.
@@ -367,25 +373,9 @@ export class MediaService {
       if (ownSitePhoto && row.dailyLogId && sent.has(row.dailyLogId)) {
         throw new ForbiddenException('This photo is part of a daily log that was already sent');
       }
-      // Phase 3 Task 4 — the §C stock ledger is immutable, so a photo cited as stock quality
-      // evidence can never be unlinked: the inventory participant REFUSES the delete (409)
-      // before anything is touched (the ledger's composite FK is the database backstop).
-      await this.inventoryParticipant.assertMediaDisposable(tx, projectId, id);
-      // Phase 4 Task 3 correction (F2) — the same rule for LABOUR presence evidence: a muster is an
-      // append-only observation the Team gate reads, so its selfie/QR capture cannot be deleted
-      // while cited (the attendance composite FK is the database backstop).
-      await this.labourParticipant.assertMediaDisposable(tx, projectId, id);
-      // Phase 4 Task 5 (§I): a photo cited as measured-output evidence is not deletable
-      await this.activityParticipant.assertMediaDisposable(tx, projectId, id);
-      // Phase 5 Task 3 (§D): nor one cited as MEASUREMENT evidence — a measurement is immutable
-      // and becomes a payable quantity, so this is the strictest case of the same rule.
-      await this.commercialParticipant.assertMediaDisposable(tx, projectId, id);
-      // #792 SV2: nor one added on a site visit — it is part of the visit's record, which keeps it
-      await this.siteVisitFiles.assertMediaDisposable(tx, projectId, id);
-      // #571 round 9, finding 1 — and the same rule for ASSIGNED inspection evidence: while an
-      // assignment binds, only its assignee may destroy the photos that stand behind that work.
-      // This is the sharpest case of the whole assignment rule, because a delete does not come back.
-      const observedEvidence = await this.inspectionParticipant.assertEvidenceDisposable(tx, { projectId, mediaId: id, actorUserId: user.sub });
+      // every record that keeps this photo as evidence (stock ledger, labour muster, measured output, measurement, site
+      // visit, assigned inspection) refuses the delete before anything is touched — the same questions the snapshot asks
+      const observedEvidence = await this.disposability.assertDisposable(tx, { projectId, mediaId: id, actorUserId: user.sub });
       // Task 10 (Module 3) correction — unlink any inspection-owned evidence FIRST (participant appends
       // `inspection.evidence_removed` when a link existed), THEN delete the media row, so the projection
       // observes the removal. `null` when this media was not item-level evidence.

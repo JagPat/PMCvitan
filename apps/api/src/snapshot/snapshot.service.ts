@@ -16,6 +16,7 @@ import { readViewerFeed, servedNotifications } from './served-notifications';
 import { hiddenDraftNodeIds } from '../nodes/node-scope';
 import { hiddenMediaIds, mediaOnNodes } from './hidden-media';
 import { OrgsParticipant } from '../orgs/orgs.participant';
+import { MediaDisposability } from '../media/media-disposability';
 
 @Injectable()
 export class SnapshotService {
@@ -37,6 +38,9 @@ export class SnapshotService {
     private readonly activitiesQuery: ActivitiesQueryService,
     // #482 site photos — who added a photo, and their role here, is an orgs answer (platform → orgs participant).
     private readonly orgs: OrgsParticipant,
+    // #482 site photos — whether a record still keeps a photo as evidence is asked of the modules that keep it, through
+    // the media module's one list of those questions (Codex 4320129763)
+    private readonly disposability: MediaDisposability,
   ) {}
 
   /**
@@ -174,7 +178,11 @@ export class SnapshotService {
       && m.createdAt.getTime() + SITE_PHOTO_DELETE_WINDOW_MS > nowMs;
     const ownLogIds = [...new Set(siteMedia.flatMap((m) => (m.dailyLogId && ownRecent(m) ? [m.dailyLogId] : [])))];
     const sentLogs = ownLogIds.length > 0 ? await this.dailyLogQuery.sentLogs(projectId, ownLogIds) : new Set<string>();
-    const deletable = (m: (typeof siteMedia)[number]): boolean => ownRecent(m) && !(m.dailyLogId && sentLogs.has(m.dailyLogId));
+    // nor while a record keeps it as evidence (a stock ledger row, a muster, measured output, a measurement, an
+    // assigned inspection): the delete would refuse it, so it is not offered (Codex 4320129763)
+    const candidates = siteMedia.filter((m) => ownRecent(m) && !(m.dailyLogId && sentLogs.has(m.dailyLogId))).map((m) => m.id);
+    const disposable = userId ? await this.disposability.disposable(projectId, candidates, userId) : new Set<string>();
+    const deletable = (m: (typeof siteMedia)[number]): boolean => disposable.has(m.id);
     const photoDtos = siteMedia.map((m) => ({
       id: m.id,
       url: this.signed.mediaPath(m.id),

@@ -153,6 +153,40 @@ describe('a member deletes their own site photo within the hour (live PG)', () =
     await t.prisma.dailyLog.deleteMany({ where: { id: sent.id } });
   });
 
+  it('a photo a record keeps as evidence is never offered for delete, as the delete refuses it (Codex 4320129763)', async () => {
+    const cited = await photo(contractorId(), minutesAgo(2));
+    const free = await photo(contractorId(), minutesAgo(2));
+    // the contractor's own plain photo, cited on an inspection assigned to the site engineer: only the assignee may
+    // remove it now
+    const engineerId = `${f.projectA.id}-del-engineer`;
+    await t.prisma.user.create({ data: { id: engineerId, projectId: f.projectA.id, role: 'engineer', name: 'Asha Shah', email: `${engineerId}@test.local` } });
+    await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: engineerId, role: 'engineer', status: 'active' } });
+    const inspectionId = `${f.projectA.id}-del-insp`;
+    await t.prisma.inspection.create({
+      data: { id: inspectionId, projectId: f.projectA.id, kind: 'review', title: 'Slab check', zone: 'Zone A', date: '20 Oct', submitted: true },
+    });
+    const item = await t.prisma.inspectionItem.create({ data: { inspectionId, name: 'Cover', result: 'PASS' } });
+    await t.prisma.inspectionEvidence.create({ data: { projectId: f.projectA.id, inspectionId, inspectionItemId: item.id, mediaId: cited } });
+    // linked first, then assigned (the evidence trigger lets only an assignee link once one is set)
+    await t.prisma.inspection.update({ where: { id: inspectionId }, data: { assigneeId: engineerId } });
+    try {
+      const snap = await t.app.get(SnapshotService).build(f.projectA.id, 'contractor', contractorId());
+      expect(snap.photos.find((p) => p.id === cited)).toBeDefined();
+      expect(snap.photos.find((p) => p.id === cited)).not.toHaveProperty('deletableUntil');
+      expect(snap.photos.find((p) => p.id === free)?.deletableUntil).toBeDefined();
+      // the delete agrees with what the snapshot offered
+      expect((await del(cited, contractor)).status).toBe(403);
+      expect(await exists(cited)).toBe(true);
+      expect((await del(free, contractor)).status).toBe(200);
+    } finally {
+      await t.prisma.inspectionEvidence.deleteMany({ where: { inspectionId } });
+      await t.prisma.inspectionItem.deleteMany({ where: { inspectionId } });
+      await t.prisma.inspection.deleteMany({ where: { id: inspectionId } });
+      await t.prisma.membership.deleteMany({ where: { userId: engineerId } });
+      await t.prisma.user.deleteMany({ where: { id: engineerId } });
+    }
+  });
+
   it('a role the delete route refuses is never offered it, even on a photo it added (Codex 4319006650)', async () => {
     const own = await photo(contractorId(), minutesAgo(2));
     const asArchitect = await t.app.get(SnapshotService).build(f.projectA.id, 'architect', contractorId());

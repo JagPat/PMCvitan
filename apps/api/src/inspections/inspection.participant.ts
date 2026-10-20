@@ -119,13 +119,13 @@ export class InspectionParticipant {
    */
   async assertEvidenceDisposable(
     tx: Prisma.TransactionClient,
-    params: { projectId: string; mediaId: string; actorUserId: string },
+    params: { projectId: string; mediaId: string; actorUserId: string; forUpdate?: boolean },
   ): Promise<Array<{ inspectionId: string; observedAssigneeId: string | null }>> {
-    const { projectId, mediaId, actorUserId } = params;
+    const { projectId, mediaId, actorUserId, forUpdate = true } = params;
     const links = await tx.inspectionEvidence.findMany({ where: { projectId, mediaId }, select: { inspectionId: true } });
     const observed: Array<{ inspectionId: string; observedAssigneeId: string | null }> = [];
     for (const inspectionId of new Set(links.map((l) => l.inspectionId))) {
-      const { observedAssigneeId } = await this.assertEvidenceMutable(tx, { projectId, inspectionId, actorUserId });
+      const { observedAssigneeId } = await this.assertEvidenceMutable(tx, { projectId, inspectionId, actorUserId, forUpdate });
       observed.push({ inspectionId, observedAssigneeId });
     }
     // handed to `removeEvidence` so the DELETE is fenced against the assignment it was authorised
