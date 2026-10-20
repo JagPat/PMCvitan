@@ -102,6 +102,11 @@ export const SV = {
     hi: 'यह फ़ोटो नहीं जोड़ी गई: इसे इस फ़ोन पर सहेजा नहीं जा सका। फ़ोन में कुछ जगह खाली करें, फिर से जोड़ें।',
     gu: 'આ ફોટો ઉમેરાયો નથી: તેને આ ફોન પર સાચવી શકાયો નહીં. ફોનમાં થોડી જગ્યા ખાલી કરો, પછી ફરી ઉમેરો.',
   },
+  photoMaybeNotKept: {
+    en: 'This photo may not have been saved: the phone did not say in time. If it does not appear on the visit soon, add it again.',
+    hi: 'हो सकता है यह फ़ोटो सहेजी न गई हो: फ़ोन ने समय पर नहीं बताया। अगर यह जल्द ही विज़िट पर न दिखे, तो इसे फिर से जोड़ें।',
+    gu: 'આ ફોટો કદાચ સચવાયો ન હોય: ફોને સમયસર જણાવ્યું નહીં. જો તે થોડી વારમાં મુલાકાત પર ન દેખાય, તો તેને ફરી ઉમેરો.',
+  },
   photoPlaceGone: {
     en: 'The place you chose was removed from this visit. Choose the place again, then add the photo.',
     hi: 'आपकी चुनी जगह इस विज़िट से हटा दी गई। जगह फिर से चुनें, फिर फ़ोटो जोड़ें।',

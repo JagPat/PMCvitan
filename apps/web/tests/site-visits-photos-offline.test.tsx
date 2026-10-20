@@ -1508,3 +1508,119 @@ describe('Site Visits SV2: a photo is shown in the state its row holds, and sent
     expect(closeSiteVisit).toHaveBeenCalledTimes(1);
   }, 20_000);
 });
+
+/**
+ * #1017's round 1 (head 14d62f8): two writes of the phone's record had no bound: the flush's clearing of a started
+ * visit's start from its photos, and a new photo's first save. A database that never answered held the flush's lock, or
+ * the photo controls, for the rest of the page load. Each test fails at 14d62f8.
+ */
+describe('Site Visits SV2: every write of a kept photo is bounded (#792, #1017 round 1)', () => {
+  /** opens of the phone's database wait while `held` is true, and run when let go (a slow or stuck database) */
+  const stallOpens = () => {
+    const real = indexedDB.open.bind(indexedDB);
+    const waiting: (() => void)[] = [];
+    const ctl = { held: true, opens: 0, letGo: () => { ctl.held = false; for (const run of waiting.splice(0)) run(); } };
+    vi.spyOn(indexedDB, 'open').mockImplementation((name: string, version?: number) => {
+      ctl.opens += 1;
+      if (!ctl.held) return real(name, version);
+      let inner: IDBOpenDBRequest | null = null;
+      const outer = {
+        onsuccess: null as ((e: Event) => void) | null, onerror: null as ((e: Event) => void) | null,
+        onupgradeneeded: null as ((e: Event) => void) | null,
+        get result() { return inner!.result; }, get error() { return inner!.error; },
+      };
+      waiting.push(() => {
+        inner = real(name, version);
+        inner.onupgradeneeded = (e) => outer.onupgradeneeded?.(e);
+        inner.onsuccess = (e) => outer.onsuccess?.(e);
+        inner.onerror = (e) => outer.onerror?.(e);
+      });
+      return outer as unknown as IDBOpenDBRequest;
+    });
+    return ctl;
+  };
+
+  it('gives the controls back and says the photo was not kept when its save never answers, and never sends it after (Codex 4324453905)', async () => {
+    const uploadMedia = vi.fn(async () => ({ id: 'm-1', url: '/media/m-1' }));
+    await mount(fakeGateway([visit()], { uploadMedia }));
+    const ctl = stallOpens();
+    await act(async () => { fireEvent.change(screen.getByTestId('sv-photo-file-v-1'), { target: { files: [photo()] } }); });
+    // the save is stuck: the controls wait, then come back with the reason
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toContain('This photo was not added'), { timeout: 8000 });
+    expect(screen.getByRole('button', { name: 'Add photo' }).hasAttribute('disabled')).toBe(false);
+    // the database answers late: the save it was asked for does not land, so nothing is kept or sent behind the person
+    ctl.letGo();
+    await act(async () => { await new Promise((r) => setTimeout(r, 200)); });
+    expect(await rows()).toEqual([]);
+    expect(heldKeys()).toEqual([]);
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    expect(uploadMedia).not.toHaveBeenCalled();
+    expect(queuedFile()).toBeUndefined();
+  }, 20_000);
+
+  it('gives the controls back as unconfirmed when the phone never says whether the save or its stop won, and keeps a save that lands late (Codex 4324453905)', async () => {
+    const uploadMedia = vi.fn().mockRejectedValue(network());
+    await mount(fakeGateway([visit()], { uploadMedia }));
+    // the database opens, but a write's transaction never reports its end, and ignores the stop (a wedged connection)
+    const held: (() => void)[] = [];
+    const real = IDBDatabase.prototype.transaction;
+    vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...args: Parameters<IDBDatabase['transaction']>) {
+      const t = real.apply(this, args);
+      if (args[1] !== 'readwrite') return t;
+      return new Proxy(t, {
+        set: (target, prop, value) => {
+          if (prop === 'oncomplete') { target.oncomplete = () => held.push(() => (value as () => void)()); return true; }
+          if (prop === 'onabort' || prop === 'onerror') return true;
+          return Reflect.set(target, prop, value);
+        },
+        get: (target, prop) => {
+          const v = Reflect.get(target, prop);
+          return typeof v === 'function' ? v.bind(target) : v;
+        },
+      });
+    });
+    await act(async () => { fireEvent.change(screen.getByTestId('sv-photo-file-v-1'), { target: { files: [photo()] } }); });
+    // the controls come back, saying the photo may not have been saved: never that it definitely was not
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toContain('This photo may not have been saved'), { timeout: 9000 });
+    expect(screen.getByRole('button', { name: 'Add photo' }).hasAttribute('disabled')).toBe(false);
+    expect(queuedFile()).toBeUndefined();
+    // the phone reports the save after all: the photo is kept, queued and shown from its row, waiting to send
+    vi.mocked(IDBDatabase.prototype.transaction).mockRestore();
+    await act(async () => { for (const end of held.splice(0)) end(); });
+    await vi.waitFor(() => expect(queuedFile()).toBeTruthy());
+    const key = queuedFile()!.file.id;
+    expect((await rows()).map((r) => [r.clientKey, r.state])).toEqual([[key, 'queued']]);
+    await vi.waitFor(() => expect(screen.getByTestId(`sv-file-${key}`).textContent).toContain('waiting to send'));
+  }, 20_000);
+
+  it('lets a flush go on when clearing a started visit’s start from its photos never answers, and clears it on the next (Codex 4324453897)', async () => {
+    const startSiteVisit = vi.fn(async (_body: unknown, _key?: string) => visit({ id: 'v-tmp' }));
+    const uploadMedia = vi.fn(async () => ({ id: 'm-1', url: '/media/m-1' }));
+    setUp('consultant', fakeGateway([], { startSiteVisit, uploadMedia }));
+    const owner = visitPhotoScope(null, CONSULTANT);
+    const project = useStore.getState().activeProjectId;
+    const start: OutboxOp = { t: 'siteVisitStart', idempotencyKey: 'k-s', body: { id: 'v-tmp', claimedAt: '2026-10-14T04:30:00.000Z' }, visitor: { name: 'Kiran Rao', role: 'consultant', placeName: null } } as OutboxOp;
+    const photoOp = { t: 'siteVisitAddFile', visitId: 'v-tmp', scope: owner, idempotencyKey: 'k-f', by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, file: { id: 'c-1', mime: 'image/png' } } as Extract<OutboxOp, { t: 'siteVisitAddFile' }>;
+    await putVisitPhoto(owner, project, photoOp, 'AQID', start as Extract<OutboxOp, { t: 'siteVisitStart' }>);
+    useStore.setState({ outbox: [start, photoOp] });
+    // the flush's read of the rows answers; the clearing write after the start, and every open after it, stalls
+    const real = indexedDB.open.bind(indexedDB);
+    let opens = 0;
+    vi.spyOn(indexedDB, 'open').mockImplementation((name: string, version?: number) => {
+      opens += 1;
+      return opens === 1 ? real(name, version) : ({} as IDBOpenDBRequest);
+    });
+    const first = await useStore.getState().flushOutbox();
+    expect(first.ran).toBe(true);
+    expect(startSiteVisit).toHaveBeenCalledTimes(1);
+    // the lock is let go: the next send runs and sends the photo
+    vi.restoreAllMocks();
+    void useStore.getState().flushOutbox();
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1), { timeout: 8000 });
+    await vi.waitFor(() => expect(useStore.getState().outbox).toHaveLength(0));
+    // and the start the rows still carried was sent again under its own key (the server answers that replay with the
+    // same visit) and cleared
+    expect(startSiteVisit.mock.calls.map((c) => c[1])).toEqual(['k-s', 'k-s']);
+    expect((await rows()).map((r) => [r.state, r.start])).toEqual([['filed', null]]);
+  }, 30_000);
+});

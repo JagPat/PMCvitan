@@ -35,8 +35,8 @@ describe('Site Visits SV2 — adding files to a visit (live PG)', () => {
     http().post(`/projects/${f.projectA.id}/media`).set('Authorization', `Bearer ${token}`).send({ mime: 'image/png', data: px, ...body });
   const visitFile = (token: string, visit: string, extraBody: Record<string, unknown> = {}, siteVisit: Record<string, unknown> = {}) =>
     upload(token, { kind: 'visit', siteVisit: { visitId: visit, ...siteVisit }, ...extraBody });
-  const readVisit = async (visit: string) => {
-    const res = await http().get(visits()).set('Authorization', `Bearer ${clientToken}`);
+  const readVisit = async (visit: string, token = clientToken) => {
+    const res = await http().get(visits()).set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
     return res.body.find((v: { id: string }) => v.id === visit);
   };
@@ -176,9 +176,24 @@ describe('Site Visits SV2 — adding files to a visit (live PG)', () => {
     expect(again.status).toBe(201);
     expect(again.body.id).toBe(first.body.id);
     expect(await t.prisma.siteVisitMedia.count({ where: { mediaId: first.body.id } })).toBe(1);
-    expect(await t.prisma.domainEvent.count({ where: { eventType: 'media.uploaded', entityId: first.body.id } })).toBe(1);    // the visit names the file's key, so the phone that queued it knows its copy is stored (web #992)
-    const listed = (await readVisit(visitId)).files.find((x: { mediaId: string }) => x.mediaId === first.body.id);
+    expect(await t.prisma.domainEvent.count({ where: { eventType: 'media.uploaded', entityId: first.body.id } })).toBe(1);    // the visit names the file's key to its uploader, so the phone that queued it knows its copy is stored (web #992)
+    const listed = (await readVisit(visitId, consultantToken)).files.find((x: { mediaId: string }) => x.mediaId === first.body.id);
     expect(listed.clientKey).toBe(key);
+  });
+
+  it('names a file’s upload key to its uploader only, in the list and in an act’s answer (Codex 4324453890)', async () => {
+    const key = `sv2f-own-${run}`;
+    const sent = await visitFile(consultantToken, visitId, { clientKey: key });
+    expect(sent.status).toBe(201);
+    const keyOf = (v: { files: Array<{ mediaId: string; clientKey: string | null }> }) => v.files.find((x) => x.mediaId === sent.body.id)?.clientKey;
+    expect(keyOf(await readVisit(visitId, consultantToken))).toBe(key);
+    // every other member reads the file, never its key
+    for (const token of [clientToken, pmcToken, engineerToken]) expect(keyOf(await readVisit(visitId, token))).toBeNull();
+    // the visit an act answers with is read for whoever acted: the visitor's place answer carries no one else's key
+    const placed = await http().post(`${visits()}/${visitId}/places`).set('Authorization', `Bearer ${pmcToken}`)
+      .send({ id: randomUUID(), nodeId: place.id, claimedAt: new Date().toISOString() });
+    expect(placed.status).toBe(201);
+    expect(keyOf(placed.body)).toBeNull();
   });
 
   it('visit files stay inside their visit: not on the Site Map, the Dashboard photos or the daily log', async () => {

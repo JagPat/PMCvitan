@@ -374,19 +374,40 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
   it('waits at least a minute after a failed link refresh, doubling to ten, never tightening as the link nears its end (Codex 4323247775)', () => {
     const now = Date.now();
     const sec = Math.floor(now / 1000);
-    const near = [visit({ files: [file({ url: `/media/a?t=${sec + 10}.s` })] })];
+    // a link with three hours left: the floor alone decides
+    const far = [visit({ files: [file({ url: `/media/a?t=${sec + 3 * 3600}.s` })] })];
     const gone = [visit({ files: [file({ url: `/media/a?t=${sec - 10}.s` })] })];
-    expect(linkRefreshDelay(near, now, null, 0)).toBe(5000 - (now % 1000) / 2);
-    expect(linkRefreshDelay(near, now, null, 1)).toBe(60_000);
-    expect(linkRefreshDelay(near, now, null, 2)).toBe(120_000);
-    expect(linkRefreshDelay(near, now, null, 4)).toBe(480_000);
-    expect(linkRefreshDelay(near, now, null, 5)).toBe(600_000);
-    expect(linkRefreshDelay(near, now, null, 500)).toBe(600_000);
+    const half = (3 * 3600 * 1000 - (now % 1000)) / 2;
+    expect(linkRefreshDelay(far, now, null, 1)).toBe(Math.max(half, 60_000));
+    expect(linkRefreshDelay(far, now, { expiry: (sec + 3 * 3600) * 1000, times: 2 }, 1)).toBe(3 * 3600 * 1000 - (now % 1000) - 1000);
     expect(linkRefreshDelay(gone, now, null, 0)).toBe(LINK_REFRESH_RETRY_MS);
+    expect(linkRefreshDelay(gone, now, null, 1)).toBe(60_000);
+    expect(linkRefreshDelay(gone, now, null, 2)).toBe(120_000);
     expect(linkRefreshDelay(gone, now, null, 3)).toBe(240_000);
+    expect(linkRefreshDelay(gone, now, null, 5)).toBe(600_000);
+    expect(linkRefreshDelay(gone, now, null, 500)).toBe(600_000);
   });
 
-  it('spaces failed link refreshes out on the screen: four tries in the last half hour of an hour-long link, not a run (Codex 4323247775)', async () => {
+  it('tries a failed link refresh again before a link with less than the floor left expires, then waits it out (Codex 4324453880)', () => {
+    const now = Date.now();
+    const sec = Math.floor(now / 1000);
+    const at = (s: number) => [visit({ files: [file({ url: `/media/a?t=${sec + s}.s` })] })];
+    const left = (s: number) => s * 1000 - (now % 1000);
+    // 30 seconds left after a failure: tried a second before it ends, not a minute on, when it is already dead
+    expect(linkRefreshDelay(at(30), now, null, 1)).toBe(left(30) - 1000);
+    expect(linkRefreshDelay(at(30), now, null, 6)).toBe(left(30) - 1000);
+    // a server giving 90-second links (under two minutes): its half-life read failed, 45 seconds left
+    expect(linkRefreshDelay(at(45), now, null, 1)).toBe(left(45) - 1000);
+    // the try just before the end failed too: the link is waited out (no run of tries), then the floor holds
+    expect(linkRefreshDelay(at(1), now, null, 2)).toBe(left(1));
+    expect(linkRefreshDelay(at(0), now + 1000, null, 2)).toBe(120_000);
+    // an expiry that is not a real time is not used; a far one is read again within a day
+    expect(linkRefreshDelay([visit({ files: [file({ url: `/media/a?t=${'9'.repeat(400)}.s` })] })], now)).toBeNull();
+    expect(linkRefreshDelay([visit({ files: [file({ url: '/media/a?t=0.s' })] })], now)).toBeNull();
+    expect(linkRefreshDelay(at(400 * 86_400), now)).toBe(24 * 60 * 60_000);
+  });
+
+  it('spaces failed link refreshes out on the screen: five tries in the last half hour of an hour-long link, the last just before it ends, not a run (Codex 4323247775, 4324453880)', async () => {
     const sec = Math.floor(Date.now() / 1000);
     const list = vi.fn(async () => [visit({ files: [file({ url: `/media/m-1?t=${sec + 3600}.s` })] })]);
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
@@ -398,8 +419,8 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
       // the hour passes, the screen drawn again after each step
       for (let t = 0; t < 360; t += 1) await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
       // at half-life (30m), then 15m, 7.5m and 4m on (each wait at least a minute, doubling): 30m, 45m, 52.5m, 56.5m;
-      // never a run of tries as the end nears
-      expect((list.mock.calls.length - before) / 2).toBe(4);
+      // then once more just before the link ends (never after it is dead), and then it is waited out: never a run
+      expect((list.mock.calls.length - before) / 2).toBe(5);
     } finally {
       vi.useRealTimers();
     }

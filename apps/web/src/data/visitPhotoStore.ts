@@ -17,7 +17,7 @@
  * visit photo is not.
  */
 import type { OutboxOp } from './apiGateway';
-import { setClampedTimeout } from '@/lib/clampedTimer';
+import { setClampedTimeout, type ClampedTimer } from '@/lib/clampedTimer';
 
 export type SiteVisitAddFileOp = Extract<OutboxOp, { t: 'siteVisitAddFile' }>;
 export type SiteVisitStartOp = Extract<OutboxOp, { t: 'siteVisitStart' }>;
@@ -56,6 +56,15 @@ export const VISIT_PHOTO_READ_WAIT_MS = 5000;
 export class VisitPhotoUnreadable extends Error {
   constructor() { super('the visit photo kept on this phone could not be read or updated'); }
 }
+
+/** A photo's save was stopped at its bound, but the phone never said whether the stop or the save won (a database wedged
+ *  after it opened): the photo may yet be kept. If its save lands after all, `onLateCommit` is told, and the row is
+ *  kept and queued like any other. */
+export class VisitPhotoUnconfirmed extends Error {
+  constructor() { super('the phone did not say whether the visit photo was saved'); }
+}
+/** How long a stopped save waits for the phone to confirm the stop before it is reported as unconfirmed. */
+export const VISIT_PHOTO_ABORT_WAIT_MS = 1000;
 
 /** `work` within `VISIT_PHOTO_READ_WAIT_MS`: a database that fails, or never answers, rejects with
  *  `VisitPhotoUnreadable` instead of holding the flush. A late answer is harmless: every transition re-reads its row. */
@@ -205,31 +214,70 @@ export function visitsHeldByPhotos(userScope: string, projectId: string): Readon
 
 /** Keep a queued photo with the act that sends it. Resolves only once committed. Its key (see `heldPrefix`) is written in
  *  the same transaction, once it runs, just before the row; a database that cannot be opened, or a key or row that
- *  cannot be written, refuses the photo, and the key is let go. */
+ *  cannot be written, refuses the photo, and the key is let go. Bounded by `VISIT_PHOTO_READ_WAIT_MS` (Codex
+ *  4324453905): when that passes, the write is stopped where it stands (a database still opening never writes; a
+ *  transaction still open is aborted) and the photo is refused. A write that committed first is never refused: its own
+ *  completion answers, so a refusal (`VisitPhotoUnreadable`, or the transaction's own error) always means nothing was
+ *  written. When the phone confirms neither the stop nor the save within `VISIT_PHOTO_ABORT_WAIT_MS` after it, the put
+ *  rejects with `VisitPhotoUnconfirmed`; a save that lands later calls `onLateCommit` (the row is then kept and queued). */
 export function putVisitPhoto(
   userScope: string, projectId: string, op: SiteVisitAddFileOp, data: string, start: SiteVisitStartOp | null = null,
+  onLateCommit?: () => void,
 ): Promise<void> {
   const row: VisitPhotoRow = {
     key: keyOf(userScope, projectId, op.file.id), userScope, projectId, clientKey: op.file.id, op, start, data,
     state: 'queued', reason: null, createdAt: Date.now(),
   };
   let held = false;
-  return tx<void>('readwrite', (s) => {
-    // a request first: its callback runs only once this transaction does, never beside a read that prunes keys
-    const req = s.get(row.key);
-    req.onsuccess = () => {
-      try {
-        holdVisitsFor(userScope, projectId, op.file.id, [op.visitId]);
-        held = true;
-        s.put(row);
-      } catch {
-        s.transaction.abort();
-      }
+  let late = false;
+  let txn: IDBTransaction | undefined;
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let unconfirmed: ClampedTimer | undefined;
+    const settle = (err?: unknown): void => {
+      if (settled) return;
+      settled = true;
+      if (err === undefined) resolve(); else reject(err);
     };
-  }).catch((err: unknown) => {
-    // not committed: this key is this put's alone
-    if (held) letGoOf(userScope, projectId, [op.file.id]);
-    throw err;
+    const timer = setClampedTimeout(() => {
+      late = true;
+      // not running yet (the database has not opened): it never will write, so the photo is refused now
+      if (!txn) { settle(new VisitPhotoUnreadable()); return; }
+      // running: stopped before it commits, and its own abort refuses the photo. One that committed already cannot be
+      // aborted, and its completion says it is kept. A phone that says neither leaves it unconfirmed
+      try { txn.abort(); } catch { /* committed */ }
+      unconfirmed = setClampedTimeout(() => settle(new VisitPhotoUnconfirmed()), VISIT_PHOTO_ABORT_WAIT_MS);
+    }, VISIT_PHOTO_READ_WAIT_MS);
+    tx<void>('readwrite', (s) => {
+      txn = s.transaction;
+      if (late) { s.transaction.abort(); return; }
+      // a request first: its callback runs only once this transaction does, never beside a read that prunes keys
+      const req = s.get(row.key);
+      req.onsuccess = () => {
+        if (late) { s.transaction.abort(); return; }
+        try {
+          holdVisitsFor(userScope, projectId, op.file.id, [op.visitId]);
+          held = true;
+          s.put(row);
+        } catch {
+          s.transaction.abort();
+        }
+      };
+    }).then(
+      () => {
+        timer.clear();
+        unconfirmed?.clear();
+        // committed after it was reported unconfirmed: kept after all
+        if (settled) onLateCommit?.(); else settle();
+      },
+      (err: unknown) => {
+        timer.clear();
+        unconfirmed?.clear();
+        // not committed: this key is this put's alone
+        if (held) letGoOf(userScope, projectId, [op.file.id]);
+        settle(err ?? new VisitPhotoUnreadable());
+      },
+    );
   });
 }
 

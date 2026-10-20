@@ -8,7 +8,7 @@ import {
   type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitOp,
   type SiteVisitRating,
 } from '@/data/apiGateway';
-import { deleteVisitPhoto, listVisitPhotos, putVisitPhoto, settleFiledVisitPhotos, storageAvailable, visitPhotoScope, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { deleteVisitPhoto, listVisitPhotos, putVisitPhoto, settleFiledVisitPhotos, storageAvailable, visitPhotoScope, withinWait, VisitPhotoUnconfirmed, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { setClampedTimeout } from './clampedTimer';
 import { captureStamp } from './captureStamp';
 import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto';
@@ -110,7 +110,9 @@ export function soonestLinkExpiry(visits: SiteVisit[]): number | null {
     for (const f of v.files ?? []) {
       // a signed path carries its own expiry: `?t=<expEpochSec>.<signature>` (SignedUrlService.mediaPath)
       const exp = /[?&]t=(\d+)\./.exec(f.url)?.[1];
-      if (exp) soonest = Math.min(soonest, Number(exp) * 1000);
+      // a server-given time: used only when it is a real, positive time (Codex 4324453880)
+      const at = exp ? Number(exp) * 1000 : NaN;
+      if (Number.isSafeInteger(at) && at > 0) soonest = Math.min(soonest, at);
     }
   }
   return soonest === Infinity ? null : soonest;
@@ -126,8 +128,12 @@ export function soonestLinkExpiry(visits: SiteVisit[]): number | null {
  *  since failed), the next read is `LINK_REFRESH_RETRY_MS` away; null when no link is shown. `failed` counts the
  *  refreshes that failed in a row since one last answered: each waits at least `LINK_FAILED_RETRY_MS`, doubling to
  *  `LINK_FAILED_RETRY_MAX_MS`, with no limit on tries, so failures never tighten into a loop as the link nears its end
- *  (Codex 4323247775). */
+ *  (Codex 4323247775). That floor holds once a link has expired; before then, a retry after a failure is never later
+ *  than just before the link ends, so a link with less than the floor left is still tried while it lives, and the
+ *  try at its end is followed by waiting it out, never a run (Codex 4324453880). No wait is longer than
+ *  `LINK_REFRESH_MAX_MS`, however far off a link's expiry. */
 export const LINK_REFRESH_RETRY_MS = 15_000;
+export const LINK_REFRESH_MAX_MS = 24 * 60 * 60_000;
 export const LINK_REFRESH_LEAD_MS = 1000;
 export const LINK_FAILED_RETRY_MS = 60_000;
 export const LINK_FAILED_RETRY_MAX_MS = 10 * 60_000;
@@ -139,9 +145,13 @@ export function linkRefreshDelay(visits: SiteVisit[], nowMs: number, tried: Link
   const left = soonest - nowMs;
   if (left <= 0) return Math.max(LINK_REFRESH_RETRY_MS, floor);
   const times = tried?.expiry === soonest ? tried.times : 0;
-  if (times >= 2) return Math.max(left, floor);
-  const delay = times === 1 ? left - Math.min(LINK_REFRESH_LEAD_MS, left / 2) : left / 2;
-  return Math.max(delay, Math.min(LINK_REFRESH_LEAD_MS, left / 2), floor);
+  const delay = times >= 2
+    ? Math.max(left, floor)
+    : Math.max(times === 1 ? left - Math.min(LINK_REFRESH_LEAD_MS, left / 2) : left / 2, Math.min(LINK_REFRESH_LEAD_MS, left / 2), floor);
+  if (failed === 0) return Math.min(delay, LINK_REFRESH_MAX_MS);
+  // after a failure, the floor gives way to the link's life: tried again just before it ends; at its end, waited out
+  const last = left - LINK_REFRESH_LEAD_MS;
+  return Math.min(last > 0 ? Math.min(delay, last) : left, LINK_REFRESH_MAX_MS);
 }
 
 /** What a Site Visits read says about the photos this phone has filed: the keys it lists, and the visits it read with
@@ -621,13 +631,26 @@ export function useSiteVisits() {
         // outlives the act it needs (Codex 4320122186)
         const start = s.outbox.find((o): o is SiteVisitStartOp => o.t === 'siteVisitStart' && o.body.id === visitId) ?? null;
         // kept before it is queued: "waiting to send" means written
-        try { await putVisitPhoto(owner, s.activeProjectId, op, m[2], start); } catch { say(SV.photoNotKept); return false; }
+        // bounded: a database that never answers refuses the photo, and the controls come back (Codex 4324453905)
+        // one the phone neither saved nor refused in time is said to be uncertain, never "not kept": if its save lands
+        // later, it is kept and queued like any other, and shown from its row
+        const lateCommit = () => {
+          if (!live(scope)) return; // its own scope's next load queues it (Codex 4320122181)
+          readKept();
+          void useStore.getState().flushOutbox();
+        };
+        try {
+          await putVisitPhoto(owner, s.activeProjectId, op, m[2], start, lateCommit);
+        } catch (err) {
+          say(err instanceof VisitPhotoUnconfirmed ? SV.photoMaybeNotKept : SV.photoNotKept);
+          return false;
+        }
         // the person signed out or moved to another project while it was written: the row stays, kept for the user and
         // project it was taken in, and that scope's next load queues it (Codex 4320122181)
         if (!live(scope)) return false;
         const queuedHere = useStore.getState().queueSiteVisitAct(op, SV.queued[useStore.getState().lang]);
         // not queued (the server went away meanwhile): the row is let go too, or the next load would send it
-        if (!queuedHere) await deleteVisitPhoto(owner, s.activeProjectId, op.file.id).catch(() => {});
+        if (!queuedHere) await withinWait(() => deleteVisitPhoto(owner, s.activeProjectId, op.file.id)).catch(() => {});
         readKept();
         return queuedHere;
       } finally {
