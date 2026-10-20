@@ -38,6 +38,9 @@ export const webmTrack = (n: number, type: number, codec: string) =>
 export const blockBody = (track: number, frame: Buffer = Buffer.from([0xfc, 0xff, 0xfe, 1, 2, 3])) =>
   Buffer.concat([Buffer.from([0x80 | track, 0, 0, 0x80]), frame]);
 export const simpleBlock = (track = 1, frame?: Buffer) => ebml(WEBM.simpleBlock, blockBody(track, frame));
+/** a laced SimpleBlock: flags name the lacing (1 Xiph, 2 fixed-size, 3 EBML), then the frame count less one, the lace table, and the frames */
+export const lacedBlock = (track: number, lacing: 1 | 2 | 3, frameCount: number, table: Buffer, frames: Buffer) =>
+  ebml(WEBM.simpleBlock, Buffer.concat([Buffer.from([0x80 | track, 0, 0, 0x80 | (lacing << 1), frameCount - 1]), table, frames]));
 export const webmCluster = (blocks: Buffer[] = [simpleBlock(), simpleBlock()], unknown = true) =>
   ebml(WEBM.cluster, Buffer.concat([ebml(WEBM.timestamp, uint(0)), ...blocks]), unknown);
 
@@ -73,6 +76,16 @@ export const oggPage = (headerType: number, serial: number, sequence: number, pa
   head.writeUInt32LE(sequence, 18);
   head[26] = lacing.length;
   return Buffer.concat([head, Buffer.from(lacing), ...packets]);
+};
+/** one Ogg page with the lacing values given as they are, so a packet can be left open (a last value of 255) */
+export const oggPageRaw = (headerType: number, serial: number, sequence: number, lacing: number[], data: Buffer): Buffer => {
+  const head = Buffer.alloc(27);
+  head.write('OggS', 0, 'latin1');
+  head[5] = headerType;
+  head.writeUInt32LE(serial, 14);
+  head.writeUInt32LE(sequence, 18);
+  head[26] = lacing.length;
+  return Buffer.concat([head, Buffer.from(lacing), data]);
 };
 export const OPUS_HEAD = Buffer.concat([Buffer.from('OpusHead', 'latin1'), Buffer.from([1, 1, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0])]);
 export const OPUS_TAGS = Buffer.concat([Buffer.from('OpusTags', 'latin1'), Buffer.from([7, 0, 0, 0]), Buffer.from('Mozilla', 'latin1'), Buffer.alloc(4)]);
@@ -118,36 +131,56 @@ export const hdlr = (handler: string) => box('hdlr', Buffer.concat([Buffer.alloc
 export const tkhd = (trackId: number) => fullBox('tkhd', 0, 3, [u32(0, 0, trackId), Buffer.alloc(72)]);
 /** stsz: one size for every sample, or (size 0) a table of sizes */
 export const stsz = (sizes: number[]) => fullBox('stsz', 0, 0, [u32(0, sizes.length), u32(...sizes)]);
-export const stbl = (sizes: number[]) => box('stbl', [box('stsd', Buffer.alloc(8)), fullBox('stts', 0, 0, u32(0)), fullBox('stsc', 0, 0, u32(0)), stsz(sizes), fullBox('stco', 0, 0, u32(0))]);
-export const trak = (handler: string, trackId = 1, sizes: number[] = []) =>
-  box('trak', [tkhd(trackId), box('mdia', [box('mdhd', Buffer.alloc(24)), hdlr(handler), box('minf', stbl(sizes))])]);
+/** stsc: one run, every sample in chunk 1 (none when there are no samples) */
+export const stsc = (samples: number) => fullBox('stsc', 0, 0, samples ? u32(1, 1, samples, 1) : u32(0));
+/** stco: one chunk at `offset` (none when there are no samples) */
+export const stco = (samples: number, offset: number) => fullBox('stco', 0, 0, samples ? u32(1, offset) : u32(0));
+export const stbl = (sizes: number[], offset = 0) =>
+  box('stbl', [box('stsd', Buffer.alloc(8)), fullBox('stts', 0, 0, u32(0)), stsc(sizes.length), stsz(sizes), stco(sizes.length, offset)]);
+/** a track whose samples (if any) sit in one chunk at `offset` */
+export const trak = (handler: string, trackId = 1, sizes: number[] = [], offset = 0) =>
+  box('trak', [tkhd(trackId), box('mdia', [box('mdhd', Buffer.alloc(24)), hdlr(handler), box('minf', stbl(sizes, offset))])]);
 export const mdat = (bytes: number) => box('mdat', Buffer.alloc(bytes, 7));
+/**
+ * `head(offset)` laid out before an mdat whose header is `mdatHeader` bytes: `offset` is where that mdat's payload
+ * starts, for the chunk offsets the head writes (their width does not change the head's length).
+ */
+export const laidOut = (head: (offset: number) => Buffer, mdatHeader = 8) => head(head(0).length + mdatHeader);
 
-/** a plain MP4: ftyp, moov whose sample table lists the audio samples, then the media data */
+/** a plain MP4: ftyp, moov whose sample table lists the audio samples in one chunk, then the media data holding it */
 export const mp4File = (handlers: string[] = ['soun'], brand = 'M4A ', sizes = [4, 4]): Buffer =>
-  Buffer.concat([ftyp(brand), box('moov', [box('mvhd', Buffer.alloc(100)), ...handlers.map((h, i) => trak(h, i + 1, sizes))]), mdat(sizes.reduce((a, s) => a + s, 0))]);
+  Buffer.concat([
+    laidOut((o) => Buffer.concat([ftyp(brand), box('moov', [box('mvhd', Buffer.alloc(100)), ...handlers.map((h, i) => trak(h, i + 1, sizes, o))])])),
+    mdat(sizes.reduce((a, s) => a + s, 0)),
+  ]);
 export const mp4VideoOnly = () => mp4File(['vide'], 'isom');
-/** ftyp and an audio moov with no media data */
-export const mp4HeaderOnly = () => Buffer.concat([ftyp(), box('moov', [box('mvhd', Buffer.alloc(100)), trak('soun', 1, [4, 4])])]);
+/** ftyp and an audio moov whose chunk points past the end, with no media data */
+export const mp4HeaderOnly = () =>
+  laidOut((o) => Buffer.concat([ftyp(), box('moov', [box('mvhd', Buffer.alloc(100)), trak('soun', 1, [4, 4], o)])]));
 
 /** trex: the track's defaults for its fragments */
 export const trex = (trackId: number, defaultSize = 0) => fullBox('trex', 0, 0, u32(trackId, 1, 0, defaultSize, 0));
 /** tfhd with default-base-is-moof, and a default sample size when given */
 export const tfhd = (trackId: number, defaultSize?: number) =>
   fullBox('tfhd', 0, 0x020000 | (defaultSize !== undefined ? 0x10 : 0), u32(trackId, ...(defaultSize !== undefined ? [defaultSize] : [])));
-/** trun with a data offset, and per-sample sizes when given (else the defaults apply to `count` samples) */
-export const trun = (sizes: number[] | { count: number }) =>
+/** trun with a data offset from its base, and per-sample sizes when given (else the defaults apply to `count` samples) */
+export const trun = (sizes: number[] | { count: number }, dataOffset = 0) =>
   Array.isArray(sizes)
-    ? fullBox('trun', 0, 0x000201, [u32(sizes.length, 0), u32(...sizes)])
-    : fullBox('trun', 0, 0x000001, u32(sizes.count, 0));
+    ? fullBox('trun', 0, 0x000201, [u32(sizes.length, dataOffset), u32(...sizes)])
+    : fullBox('trun', 0, 0x000001, u32(sizes.count, dataOffset));
 export const moof = (sequence: number, traf: Buffer[]) => box('moof', [fullBox('mfhd', 0, 0, u32(sequence)), box('traf', traf)]);
+/** a moof whose trafs are `traf(offset)`, where `offset` is the distance from the moof's start to the next mdat's payload */
+export const fragment = (sequence: number, traf: (offset: number) => Buffer[]) => {
+  const size = moof(sequence, traf(0)).length;
+  return moof(sequence, traf(size + 8));
+};
 
 /** a fragmented MP4 as iOS Safari's MediaRecorder writes it: an empty sample table, mvex/trex, then moof + mdat pairs */
 export const mp4Fragmented = (fragments: number[][] = [[4, 4], [4]], trexSize = 0): Buffer =>
   Buffer.concat([
     ftyp('iso5'),
     box('moov', [box('mvhd', Buffer.alloc(100)), trak('soun', 1, []), box('mvex', trex(1, trexSize))]),
-    ...fragments.flatMap((sizes, i) => [moof(i + 1, [tfhd(1), trun(sizes)]), mdat(sizes.reduce((a, s) => a + s, 0))]),
+    ...fragments.flatMap((sizes, i) => [fragment(i + 1, (o) => [tfhd(1), trun(sizes, o)]), mdat(sizes.reduce((a, s) => a + s, 0))]),
   ]);
 
 export const base64 = (b: Buffer) => b.toString('base64');

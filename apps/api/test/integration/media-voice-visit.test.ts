@@ -71,6 +71,15 @@ describe('Stage 1 voice — a voice note on a site visit (live PG)', () => {
     const served = await http().get(new URL(res.body.url, 'http://x').pathname + new URL(res.body.url, 'http://x').search);
     expect(served.status).toBe(200);
     expect(served.headers['content-type']).toMatch(/^audio\/webm/);
+    // a reload reads the note's length back with the visit, and a photo on the visit reads none (Codex P2 on #1013)
+    const photo = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64'), siteVisit: { visitId } });
+    expect(photo.status).toBe(201);
+    const list = await http().get(visits()).set('Authorization', `Bearer ${pmcToken}`);
+    expect(list.status).toBe(200);
+    const files = (list.body as Array<{ id: string; files: Array<{ mediaId: string; mime: string; durationSec: number | null }> }>)
+      .find((v) => v.id === visitId)!.files;
+    expect(files.find((x) => x.mediaId === res.body.id)).toMatchObject({ mime: 'audio/webm', durationSec: 42 });
+    expect(files.find((x) => x.mediaId === photo.body.id)).toMatchObject({ mime: 'image/png', durationSec: null });
   });
 
   it('an iPhone MP4 and a Firefox Ogg note are accepted', async () => {
