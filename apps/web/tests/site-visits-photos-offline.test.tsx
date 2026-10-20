@@ -83,15 +83,92 @@ const sendsSettled = () => {
   return vi.waitFor(() => expect(useStore.getState()._outboxFlushing()).toBe(false), { timeout: 10_000 });
 };
 /** The test's own send: a send still running from an earlier act (the pick's, the save's) settles first, or the store
- *  would coalesce this one into it and return before anything was sent. */
+ *  would coalesce this one into it and return before anything was sent. Another send can still start in the await
+ *  between the two (a put-back, a late save, the photo retry), so the flush must say it ran: a coalesced one fails the
+ *  test here instead of passing on a flush that did nothing. */
 const flushOwn = async () => {
   await sendsSettled();
-  await useStore.getState().flushOutbox();
+  expect((await useStore.getState().flushOutbox()).ran).toBe(true);
+};
+/** One turn of the event loop, inside `act`: every promise already settled has run its callbacks, and React has drawn
+ *  what they set. */
+const turn = () => act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+/** The next file read's own end (`loadend`). A photo is refused after its read with no timer or I/O left, so after this
+ *  and one `turn()` the refusal is on screen. */
+const readEnded = () => new Promise<void>((done) => {
+  const real = FileReader.prototype.readAsDataURL;
+  vi.spyOn(FileReader.prototype, 'readAsDataURL').mockImplementationOnce(function (this: FileReader, blob: Blob) {
+    this.addEventListener('loadend', () => done(), { once: true });
+    real.call(this, blob);
+  });
+});
+/** The next phone-storage transaction this test's code aborts: its `abort` event. A photo the phone refused to keep is
+ *  refused with no timer or I/O left after it, so after this and one `turn()` the refusal is on screen. */
+const abortEnded = () => new Promise<void>((done) => {
+  const real = IDBTransaction.prototype.abort;
+  vi.spyOn(IDBTransaction.prototype, 'abort').mockImplementationOnce(function (this: IDBTransaction) {
+    this.addEventListener('abort', () => done(), { once: true });
+    real.call(this);
+  });
+});
+/** Every flush the store starts, by its own promise. The store calls every flush through `get().flushOutbox`, its own
+ *  reruns included, so wrapping it at the start of each test sees them all. */
+const flushes = new Set<Promise<unknown>>();
+let flushStarted: ((p: Promise<unknown>) => void) | null = null;
+/** Every flush still running, and every phone-storage open, transaction and flush started after this call. The returned
+ *  wait settles on the event that ends the last of them (a request's `success`/`error`, a transaction's
+ *  `complete`/`abort`, a flush's own promise), once a turn has passed with none started after it, so a screen's read of
+ *  its kept photos has been drawn. No clock: it waits as long as the work does. */
+const trackStorage = () => {
+  let running = 0;
+  let idle: (() => void) | null = null;
+  const settle = () => setTimeout(() => {
+    if (running === 0 && idle) { const done = idle; idle = null; done(); }
+  }, 0);
+  const ended = () => { running -= 1; if (running === 0) settle(); };
+  const watch = (target: EventTarget, events: string[]) => {
+    running += 1;
+    let over = false;
+    for (const e of events) target.addEventListener(e, () => { if (!over) { over = true; ended(); } }, { once: true });
+  };
+  const open = indexedDB.open.bind(indexedDB);
+  vi.spyOn(indexedDB, 'open').mockImplementation((name: string, version?: number) => {
+    const req = open(name, version);
+    watch(req, ['success', 'error']);
+    return req;
+  });
+  const transaction = IDBDatabase.prototype.transaction;
+  vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...args: Parameters<IDBDatabase['transaction']>) {
+    const t = transaction.apply(this, args);
+    watch(t, ['complete', 'abort']);
+    return t;
+  });
+  const follow = (p: Promise<unknown>) => { running += 1; p.then(ended, ended); };
+  for (const p of flushes) follow(p);
+  flushStarted = follow;
+  return async () => {
+    await act(() => new Promise<void>((done) => { idle = done; settle(); }));
+    await turn();
+    expect(useStore.getState()._outboxFlushing()).toBe(false);
+  };
 };
 
 // every test begins with no flush running: one left from the test before would take this test's sends into its rerun
 beforeEach(() => {
   expect(useStore.getState()._outboxFlushing()).toBe(false);
+  flushes.clear();
+  const flush = useStore.getState().flushOutbox;
+  useStore.setState({
+    flushOutbox: (opts) => {
+      const p = flush(opts);
+      flushes.add(p);
+      const out = () => { flushes.delete(p); };
+      p.then(out, out);
+      flushStarted?.(p);
+      return p;
+    },
+  });
+  onTestFinished(() => { flushStarted = null; useStore.setState({ flushOutbox: flush }); });
 });
 
 afterEach(async () => {
@@ -145,6 +222,7 @@ describe('Site Visits SV2: a photo kept on the phone until it is sent (#792)', (
     await pick('v-1');
     await vi.waitFor(() => expect(queuedFile()).toBeTruthy());
     const key = queuedFile()!.file.id;
+    await sendsSettled();
     cleanup();
     // a reload: the in-memory queue is gone, and localStorage never held the act
     setUp('consultant', gw);
@@ -152,7 +230,7 @@ describe('Site Visits SV2: a photo kept on the phone until it is sent (#792)', (
     useStore.getState().hydrateOutbox();
     await vi.waitFor(() => expect(queuedFile()?.file.id).toBe(key));
     uploadMedia.mockResolvedValue({ id: 'm-4', url: '/media/m-4' });
-    await act(async () => { await useStore.getState().flushOutbox(); });
+    await act(async () => { await flushOwn(); });
     expect(uploadMedia).toHaveBeenLastCalledWith(expect.objectContaining({ clientKey: key, data: 'AQID' }));
     expect(useStore.getState().outbox).toHaveLength(0);
     expect(await waiting()).toEqual([]);
@@ -252,9 +330,12 @@ describe('Site Visits SV2: a photo kept on the phone until it is sent (#792)', (
     await mount(fakeGateway([visit()], { uploadMedia }));
     const note = within(screen.getByTestId('sv-visit-v-1')).getByLabelText('Note (optional)') as HTMLInputElement;
     fireEvent.change(note, { target: { value: 'Crack' } });
+    const read = readEnded();
     await pick('v-1');
-    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe(
-      'This photo was not added: this browser cannot save photos on the phone (private browsing cannot). Open the app in a normal browser window and add it again.'));
+    await read;
+    await turn();
+    expect(screen.getByRole('alert').textContent).toBe(
+      'This photo was not added: this browser cannot save photos on the phone (private browsing cannot). Open the app in a normal browser window and add it again.');
     // nothing went, nothing waits, and the note is still there to try again
     expect(uploadMedia).not.toHaveBeenCalled();
     expect(useStore.getState().outbox).toHaveLength(0);
@@ -265,8 +346,12 @@ describe('Site Visits SV2: a photo kept on the phone until it is sent (#792)', (
     vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
     const uploadMedia = vi.fn();
     await mount(fakeGateway([visit()], { uploadMedia }));
+    // the save is refused and its transaction aborted, then the screen says so
+    const aborted = abortEnded();
     await pick('v-1');
-    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This photo was not added: it could not be saved on this phone. Free some space on the phone, then add it again.'));
+    await aborted;
+    await turn();
+    expect(screen.getByRole('alert').textContent).toBe('This photo was not added: it could not be saved on this phone. Free some space on the phone, then add it again.');
     expect(uploadMedia).not.toHaveBeenCalled();
     expect(useStore.getState().outbox).toHaveLength(0);
   });
@@ -346,15 +431,22 @@ describe('Site Visits SV2: every photo is kept until the server answers it (#792
     await pick('v-1');
     await vi.waitFor(() => expect(queuedFile()).toBeTruthy());
     const key = queuedFile()!.file.id;
+    // the pick's own send is tried, and fails, before the person leaves
+    await sendsSettled();
+    expect(sent(uploadMedia)).toHaveLength(1);
     // another screen: Site Visits is unmounted, the project and sign-in stay
     cleanup();
     render(<SiteVisitsScreen />);
     await vi.waitFor(() => expect(screen.getByTestId(`sv-file-${key}`).textContent).toContain('waiting to send'));
+    // the send started on the way back in ends first, or Send now would be folded into it
+    await sendsSettled();
+    expect(sent(uploadMedia)).toHaveLength(2);
     uploadMedia.mockResolvedValue({ id: 'm-1', url: '/media/m-1' });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send now' })); });
-    await vi.waitFor(() => expect(useStore.getState().outbox).toHaveLength(0));
-    // tried on the way back in and by Send now: always the one photo, under its key
-    expect(sent(uploadMedia).length).toBeGreaterThan(1);
+    await sendsSettled();
+    expect(useStore.getState().outbox).toHaveLength(0);
+    // tried after the pick, on the way back in and by Send now: always the one photo, under its key
+    expect(sent(uploadMedia)).toHaveLength(3);
     expect(new Set(sent(uploadMedia).map((i) => i.clientKey))).toEqual(new Set([key]));
   });
 
@@ -508,11 +600,14 @@ describe('Site Visits SV2: a kept photo is never stranded (#792, #999 round 1)',
     const project = useStore.getState().activeProjectId;
     await putVisitPhoto(visitPhotoScope(null, CONSULTANT), project, fileOp(), 'AQID');
     await failVisitPhoto(visitPhotoScope(null, CONSULTANT), project, 'c-1', 'This site visit was closed by the PMC and takes no more files');
+    const stored = trackStorage();
     for (const lang of ['hi', 'gu'] as const) {
       setUp('consultant', fakeGateway([visit()]));
       useStore.setState({ lang });
       render(<SiteVisitsScreen />);
-      const row = await screen.findByTestId('sv-not-sent-c-1');
+      // the screen's read of its kept photos has answered and been drawn
+      await stored();
+      const row = screen.getByTestId('sv-not-sent-c-1');
       expect(row.textContent).toContain('This site visit was closed by the PMC and takes no more files');
       cleanup();
     }
@@ -537,6 +632,7 @@ describe('Site Visits SV2: a kept photo lives in its row alone (#792, #999 round
     await pick('v-tmp');
     await vi.waitFor(() => expect(queuedFile()?.visitId).toBe('v-tmp'));
     const project = useStore.getState().activeProjectId;
+    await sendsSettled();
     cleanup();
     // the start is refused for an open visit, and the person switches project while that visit is looked up
     startSiteVisit.mockRejectedValue(refusal(409, 'You already have a site visit open on this project'));
@@ -544,11 +640,12 @@ describe('Site Visits SV2: a kept photo lives in its row alone (#792, #999 round
       useStore.setState({ activeProjectId: 'p-other', projectScopeGeneration: useStore.getState().projectScopeGeneration + 1 });
       return [visit({ id: 'v-open' })];
     });
-    await act(async () => { await useStore.getState().flushOutbox(); });
+    await act(async () => { await flushOwn(); });
     const starts = startSiteVisit.mock.calls.length;
     // back on the project, after a reload: the photo goes to the open visit, and the refused start is not sent again
     gw.listSiteVisits!.mockImplementation(async () => [visit({ id: 'v-open' })]);
     uploadMedia.mockResolvedValue({ id: 'm-1', url: '/media/m-1' });
+    await sendsSettled();
     setUp('consultant', gw);
     expect(useStore.getState().activeProjectId).toBe(project);
     useStore.getState().hydrateOutbox();
@@ -564,14 +661,18 @@ describe('Site Visits SV2: a kept photo lives in its row alone (#792, #999 round
     await pick('v-tmp');
     await vi.waitFor(() => expect(queuedFile()).toBeTruthy());
     const key = queuedFile()!.file.id;
+    await sendsSettled();
     startSiteVisit.mockRejectedValue(refusal(422, 'Project is archived'));
     const update = vi.spyOn(IDBCursor.prototype, 'update').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
-    await act(async () => { await useStore.getState().flushOutbox(); });
+    const tried = startSiteVisit.mock.calls.length;
+    await act(async () => { await flushOwn(); });
+    // the start was sent, and refused, in this flush
+    expect(startSiteVisit.mock.calls.length).toBe(tried + 1);
     // nothing is let go while its row still says queued
     expect(useStore.getState().outbox.map((o) => o.t)).toEqual(['siteVisitStart', 'siteVisitAddFile']);
     expect((await rows()).map((r) => r.state)).toEqual(['queued']);
     update.mockRestore();
-    await act(async () => { await useStore.getState().flushOutbox(); });
+    await act(async () => { await flushOwn(); });
     expect(useStore.getState().outbox).toHaveLength(0);
     expect((await rows()).map((r) => [r.clientKey, r.state, r.reason])).toEqual([[key, 'failed', 'Project is archived']]);
     expect(uploadMedia).not.toHaveBeenCalled();
@@ -1037,8 +1138,12 @@ describe('Site Visits SV2: holds only what a kept photo needs, for as long as th
     const uploadMedia = vi.fn();
     await mount(fakeGateway([visit()], { uploadMedia }));
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
+    // the note is refused and the save's transaction aborted, then the screen says so
+    const aborted = abortEnded();
     await pick('v-1');
-    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This photo was not added: it could not be saved on this phone. Free some space on the phone, then add it again.'));
+    await aborted;
+    await turn();
+    expect(screen.getByRole('alert').textContent).toBe('This photo was not added: it could not be saved on this phone. Free some space on the phone, then add it again.');
     expect(uploadMedia).not.toHaveBeenCalled();
     expect(useStore.getState().outbox).toHaveLength(0);
     expect(await rows()).toEqual([]);
@@ -1049,12 +1154,16 @@ describe('Site Visits SV2: holds only what a kept photo needs, for as long as th
     const closeSiteVisit = vi.fn(async () => visit({ status: 'closed', closeReason: 'Done' }));
     await mount(fakeGateway([visit()], { uploadMedia, closeSiteVisit }));
     vi.spyOn(indexedDB, 'open').mockImplementation(() => { throw new Error('UnknownError'); });
+    const read = readEnded();
     await pick('v-1');
-    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This photo was not added: it could not be saved on this phone. Free some space on the phone, then add it again.'));
+    await read;
+    await turn();
+    expect(screen.getByRole('alert').textContent).toBe('This photo was not added: it could not be saved on this phone. Free some space on the phone, then add it again.');
     // the refused photo left no mark, so nothing holds the visit's later acts
     expect(heldKeys()).toEqual([]);
+    // queuing the close sends it: that send is the one waited for
     useStore.getState().queueSiteVisitAct({ t: 'siteVisitClose', visitId: 'v-1', reason: 'Done', idempotencyKey: 'k-c' }, 'queued');
-    await act(async () => { await useStore.getState().flushOutbox(); });
+    await act(async () => { await sendsSettled(); });
     expect(closeSiteVisit).toHaveBeenCalledTimes(1);
     expect(uploadMedia).not.toHaveBeenCalled();
     expect(useStore.getState().outbox).toHaveLength(0);
@@ -1486,19 +1595,22 @@ describe('Site Visits SV2: a photo is shown in the state its row holds, and sent
     await pick('v-1');
     await vi.waitFor(() => expect(queuedFile()).toBeTruthy());
     const photoKey = queuedFile()!.idempotencyKey;
+    // the pick's own send is tried, and fails, before anything else is queued
+    await sendsSettled();
     // a close of this visit and an end of another, queued after the photo; then the phone's database stops opening
     const close: OutboxOp = { t: 'siteVisitClose', visitId: 'v-1', reason: 'Done', idempotencyKey: 'k-c' };
     const end = { t: 'siteVisitEnd', visitId: 'v-2', claimedAt: '2026-10-14T05:00:00.000Z', idempotencyKey: 'k-e' } as OutboxOp;
     useStore.setState({ outbox: [...useStore.getState().outbox, close, end] });
     uploadMedia.mockClear();
     vi.spyOn(indexedDB, 'open').mockImplementation(() => { throw new DOMException('broken', 'UnknownError'); });
-    await act(async () => { await useStore.getState().flushOutbox(); });
+    await act(async () => { await flushOwn(); });
     expect(endSiteVisit).toHaveBeenCalledTimes(1);
     expect(closeSiteVisit).not.toHaveBeenCalled();
     const held = await screen.findByTestId('sv-held-v-1');
     // Send anyway: the close goes; the photo, which can only be sent from its row, stays queued
     await act(async () => { fireEvent.click(within(held).getByRole('button', { name: 'Send anyway' })); });
-    await vi.waitFor(() => expect(closeSiteVisit).toHaveBeenCalledTimes(1));
+    await sendsSettled();
+    expect(closeSiteVisit).toHaveBeenCalledTimes(1);
     expect(uploadMedia).not.toHaveBeenCalled();
     expect(useStore.getState().outbox.map((o) => ('idempotencyKey' in o ? o.idempotencyKey : o.t))).toEqual([photoKey]);
   });

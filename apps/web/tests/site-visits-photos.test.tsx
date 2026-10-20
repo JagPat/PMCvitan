@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, onTestFinished, vi } from 'vitest';
 import { render, cleanup, fireEvent, act, screen, within } from '@testing-library/react';
 import type { Lang, ProjectMember, ProjectNode, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
@@ -59,9 +59,76 @@ async function mount(role: Role, me: string, gw: Fake, lang: Lang = 'en', outbox
   return view;
 }
 
+/** One turn of the event loop, inside `act`: every promise already settled has run its callbacks, and React has drawn
+ *  what they set. */
+const turn = () => act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+/** The next file read's own end (`loadend`). A photo is refused after its read with no timer or I/O left, so after this
+ *  and one `turn()` the refusal is on screen. */
+const readEnded = () => new Promise<void>((done) => {
+  const real = FileReader.prototype.readAsDataURL;
+  vi.spyOn(FileReader.prototype, 'readAsDataURL').mockImplementationOnce(function (this: FileReader, blob: Blob) {
+    this.addEventListener('loadend', () => done(), { once: true });
+    real.call(this, blob);
+  });
+});
+/** Every flush the store starts, by its own promise. The store calls every flush through `get().flushOutbox`, its own
+ *  reruns included, so wrapping it at the start of each test sees them all. */
+const flushes = new Set<Promise<unknown>>();
+let flushStarted: ((p: Promise<unknown>) => void) | null = null;
+/** Every flush still running, and every phone-storage open, transaction and flush started after this call. The returned
+ *  wait settles on the event that ends the last of them (a request's `success`/`error`, a transaction's
+ *  `complete`/`abort`, a flush's own promise), once a turn has passed with none started after it, so a screen's read of
+ *  its kept photos has been drawn. No clock: it waits as long as the work does. */
+const trackStorage = () => {
+  let running = 0;
+  let idle: (() => void) | null = null;
+  const settle = () => setTimeout(() => {
+    if (running === 0 && idle) { const done = idle; idle = null; done(); }
+  }, 0);
+  const ended = () => { running -= 1; if (running === 0) settle(); };
+  const watch = (target: EventTarget, events: string[]) => {
+    running += 1;
+    let over = false;
+    for (const e of events) target.addEventListener(e, () => { if (!over) { over = true; ended(); } }, { once: true });
+  };
+  const open = indexedDB.open.bind(indexedDB);
+  vi.spyOn(indexedDB, 'open').mockImplementation((name: string, version?: number) => {
+    const req = open(name, version);
+    watch(req, ['success', 'error']);
+    return req;
+  });
+  const transaction = IDBDatabase.prototype.transaction;
+  vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...args: Parameters<IDBDatabase['transaction']>) {
+    const t = transaction.apply(this, args);
+    watch(t, ['complete', 'abort']);
+    return t;
+  });
+  const follow = (p: Promise<unknown>) => { running += 1; p.then(ended, ended); };
+  for (const p of flushes) follow(p);
+  flushStarted = follow;
+  return async () => {
+    await act(() => new Promise<void>((done) => { idle = done; settle(); }));
+    await turn();
+    expect(useStore.getState()._outboxFlushing()).toBe(false);
+  };
+};
+
 // every test begins with no flush running: one left from the test before would take this test's sends into its rerun
 beforeEach(() => {
   expect(useStore.getState()._outboxFlushing()).toBe(false);
+  flushes.clear();
+  const flush = useStore.getState().flushOutbox;
+  useStore.setState({
+    flushOutbox: (opts) => {
+      const p = flush(opts);
+      flushes.add(p);
+      const out = () => { flushes.delete(p); };
+      p.then(out, out);
+      flushStarted?.(p);
+      return p;
+    },
+  });
+  onTestFinished(() => { flushStarted = null; useStore.setState({ flushOutbox: flush }); });
 });
 
 afterEach(async () => {
@@ -69,6 +136,7 @@ afterEach(async () => {
   // gateway, or the next test's flushes are coalesced into it and its put-back reads the next test's rows
   await vi.waitFor(() => expect(useStore.getState()._outboxFlushing()).toBe(false), { timeout: 10_000 });
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   cleanup();
   useStore.getState()._setGateway(null);
   localStorage.clear();
@@ -152,8 +220,11 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
     // 3 bytes per 4 base64 characters: one byte over makes the photo's base64 longer than the limit
     const bytes = (MAX_PHOTO_BASE64 / 4) * 3 + 1;
+    const read = readEnded();
     await pick('v-1', new File([new Uint8Array(bytes)], 'huge.jpg', { type: 'image/jpeg' }));
-    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This photo is too large to send. Try a smaller one.'));
+    await read;
+    await turn();
+    expect(screen.getByRole('alert').textContent).toBe('This photo is too large to send. Try a smaller one.');
     expect(uploadMedia).not.toHaveBeenCalled();
   });
 
@@ -166,8 +237,11 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     vi.stubGlobal('createImageBitmap', undefined);
     const uploadMedia = vi.fn();
     await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
+    const read = readEnded();
     await pick('v-1', new File([new Uint8Array((13_000_000 / 4) * 3)], 'big.heic', { type: 'image/heic' }));
-    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This photo is too large to send. Try a smaller one.'));
+    await read;
+    await turn();
+    expect(screen.getByRole('alert').textContent).toBe('This photo is too large to send. Try a smaller one.');
     expect(uploadMedia).not.toHaveBeenCalled();
     expect(useStore.getState().outbox).toHaveLength(0);
   });
@@ -175,8 +249,11 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
   it('refuses before sending an image type the upload does not take and the phone cannot redraw (Codex 4318755312)', async () => {
     const uploadMedia = vi.fn();
     await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
+    const read = readEnded();
     await pick('v-1', new File(['<svg/>'], 'plan.svg', { type: 'image/svg+xml' }));
-    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This photo could not be read. Try another.'));
+    await read;
+    await turn();
+    expect(screen.getByRole('alert').textContent).toBe('This photo could not be read. Try another.');
     expect(useStore.getState().outbox).toHaveLength(0);
     expect(uploadMedia).not.toHaveBeenCalled();
   });
@@ -241,13 +318,16 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     });
     const three = [visit(), visit({ id: 'v-2', status: 'ended', startedAt: '2026-10-13T04:30:00.000Z' }), visit({ id: 'v-3', status: 'ended', startedAt: '2026-10-12T04:30:00.000Z' })];
     await mount('consultant', CONSULTANT, fakeGateway(three, { uploadMedia }));
-    // two visits' photos are refused, each for its own reason; a third visit's photo then has no answer
-    await pick('v-1');
-    await vi.waitFor(() => expect(screen.getAllByTestId(/^sv-not-sent-/)).toHaveLength(1));
-    await pick('v-2', new File([new Uint8Array([7])], 'b.png', { type: 'image/png' }));
-    await vi.waitFor(() => expect(screen.getAllByTestId(/^sv-not-sent-/)).toHaveLength(2));
-    await pick('v-3', new File([new Uint8Array([8])], 'c.png', { type: 'image/png' }));
-    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(3));
+    // two visits' photos are refused, each for its own reason; a third visit's photo then has no answer. Each pick's
+    // send, and the screen's read of its kept photos after it, end before the next
+    const stored = trackStorage();
+    const picked = async (visitId: string, f?: File) => { const read = readEnded(); await pick(visitId, f); await read; await stored(); };
+    await picked('v-1');
+    expect(screen.getAllByTestId(/^sv-not-sent-/)).toHaveLength(1);
+    await picked('v-2', new File([new Uint8Array([7])], 'b.png', { type: 'image/png' }));
+    expect(screen.getAllByTestId(/^sv-not-sent-/)).toHaveLength(2);
+    await picked('v-3', new File([new Uint8Array([8])], 'c.png', { type: 'image/png' }));
+    expect(uploadMedia).toHaveBeenCalledTimes(3);
     const waitingKey = (uploadMedia.mock.calls[2] as unknown as [{ clientKey: string }])[0].clientKey;
     // each reason stays beside its own photo: the later photo and its outcome replace neither
     const reasons = () => screen.getAllByTestId(/^sv-not-sent-/).map((li) => li.textContent ?? '');
@@ -304,11 +384,14 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     fireEvent.change(within(card).getByLabelText('Place (optional)'), { target: { value: 'n-kit' } });
     gw.listSiteVisits!.mockImplementation(async () => [visit({ places: [{ ...walked[0], retiredAt: '2026-10-14T04:50:00.000Z' }] })]);
     // the photo is picked, and while it is read the place is removed by another device
+    const read = readEnded();
     await act(async () => {
       fireEvent.change(screen.getByTestId('sv-photo-file-v-1'), { target: { files: [photo()] } });
       refreshSiteVisits();
     });
-    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('The place you chose was removed from this visit. Choose the place again, then add the photo.'));
+    await read;
+    await turn();
+    expect(screen.getByRole('alert').textContent).toBe('The place you chose was removed from this visit. Choose the place again, then add the photo.');
     expect(uploadMedia).not.toHaveBeenCalled();
   });
 
