@@ -334,6 +334,21 @@ export async function removeProject(prisma: PrismaClient, opts: RemovalOptions):
 
       const cat = await readCatalog(tx);
       const disabled = triggersBefore.filter((t) => tables.includes(t.table) && t.enabled !== 'D' && t.onDelete);
+      // Every table whose triggers are switched off is locked here, all in one statement and without waiting. Taken one
+      // by one in the loop below, the locks went in name order ("DomainEvent" before "Media"), while a photo write takes
+      // them in another order, so the two could deadlock (#482 site photos). By now the run already holds the rehomed
+      // "User" rows and a read lock on every table it snapshotted; it stays out of any cycle because this statement is
+      // NOWAIT and never waits, and app routes refuse an archived project. A writer holding any of these tables makes
+      // the run refuse at once and change nothing.
+      const locked = sorted(new Set(disabled.map((t) => t.table)));
+      if (locked.length) {
+        try {
+          await tx.$executeRawUnsafe(`LOCK TABLE ${locked.map(q).join(', ')} IN SHARE ROW EXCLUSIVE MODE NOWAIT`);
+        } catch (e) {
+          if (!/55P03|could not obtain lock/i.test(String((e as Error).message))) throw e;
+          throw new Refusal(`another transaction is writing one of ${locked.join(', ')}; nothing was changed, run it again`);
+        }
+      }
       for (const t of disabled) await tx.$executeRawUnsafe(`ALTER TABLE ${q(t.table)} DISABLE TRIGGER ${q(t.name)}`);
       record.triggers.disabled = disabled.map(({ table, name, enabled }) => ({ table, name, enabled }));
 
