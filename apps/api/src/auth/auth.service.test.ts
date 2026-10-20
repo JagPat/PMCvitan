@@ -8,6 +8,7 @@ import { EmailService } from '../platform/email.service';
 import { GoogleAuthService } from './google.service';
 import { PhoneSignInService, ResendWait } from './phone-sign-in.service';
 import type { PrismaService } from '../prisma.service';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 
 interface FakeUser {
   id: string;
@@ -597,5 +598,38 @@ describe('ResendWait — the per-number wait for phone sign-in codes', () => {
     expect(wait.size).toBe(100);
     wait.claim('9876543210', 30_000);
     expect(wait.size).toBe(1);
+  });
+});
+
+describe('AuthService.qaSignIn — the countersign boundary (#482, Codex P2 on #983)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  // An architect seat cannot exist before 4d-iii (the database refuses the row), so the landing is stubbed: the
+  // point is the ORDER, the minted-architect refusal before the audit transaction, so no row records a sign-in
+  // the countersign interceptor would then refuse to deliver.
+  function architectLanding() {
+    const prisma = fakePrisma([{ id: 'qa1', projectId: 'qa', role: 'architect', name: 'QA Architect', email: 'qa.architect@vitan.in' }], [], []);
+    const { auth } = make(prisma);
+    vi.spyOn(OrgsParticipant.prototype, 'qaSignInAllowed').mockResolvedValue(true);
+    const landing = vi.spyOn(auth as unknown as { signInAccess: () => Promise<unknown> }, 'signInAccess').mockResolvedValue({ role: 'architect', projectId: 'qa' });
+    const audit = vi.fn(async () => undefined);
+    const tx = { auditLog: { create: audit } };
+    (prisma as unknown as { $transaction: unknown }).$transaction = (fn: (tx: unknown) => Promise<unknown>) => fn(tx);
+    return { auth, audit, landing, tx };
+  }
+
+  it('refuses a minted architect token to a client without countersign-v1 BEFORE recording the sign-in', async () => {
+    const { auth, audit } = architectLanding();
+    await expect(auth.qaSignIn({ email: 'qa.architect@vitan.in', operator: 'claude', reason: 'qa', contract: 'none' })).rejects.toBeInstanceOf(ConflictException);
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it('signs a countersign-v1 client in as the architect, recording it', async () => {
+    const { auth, audit, landing, tx } = architectLanding();
+    const r = await auth.qaSignIn({ email: 'qa.architect@vitan.in', operator: 'claude', reason: 'qa', contract: 'countersign-v1' });
+    expect(r.role).toBe('architect');
+    expect(audit).toHaveBeenCalledTimes(1);
+    // the landing is read in the same transaction as the check and the audit row
+    expect(landing).toHaveBeenCalledWith(expect.objectContaining({ id: 'qa1' }), tx);
   });
 });

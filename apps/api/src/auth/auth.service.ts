@@ -1,6 +1,7 @@
 import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'node:crypto';
+import type { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma.service';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -9,6 +10,10 @@ import { EmailService } from '../platform/email.service';
 import { GoogleAuthService } from './google.service';
 import { PhoneSignInService } from './phone-sign-in.service';
 import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
+import { recordAudit } from '../platform/audit';
+import { systemActor } from '../common/actor';
+import { OrgsParticipant, QA_ACCOUNT_EMAIL, rethrowQaLock } from '../orgs/orgs.participant';
+import { countersignReloadMessage, understandsCountersign, type DecisionsContract } from '../common/decisions-contract';
 import type { Role } from '../common/auth';
 import type {
   SessionInput,
@@ -39,6 +44,7 @@ export interface TokenResult {
 @Injectable()
 export class AuthService {
   private readonly log = new Logger(AuthService.name);
+  private readonly orgs = new OrgsParticipant();
 
   constructor(
     private readonly jwt: JwtService,
@@ -89,21 +95,21 @@ export class AuthService {
    * backfills any pre-membership legacy account, so this stays complete.
    * Returns null when access is denied.
    */
-  private async resolveProjectRole(user: { id: string }, projectId: string): Promise<Role | null> {
-    const membership = await this.prisma.membership.findUnique({
+  private async resolveProjectRole(user: { id: string }, projectId: string, db: Prisma.TransactionClient = this.prisma): Promise<Role | null> {
+    const membership = await db.membership.findUnique({
       where: { projectId_userId: { projectId, userId: user.id } },
     });
     if (membership?.status === 'active') return membership.role as Role;
-    if (await this.isOrgAdminOfProject(user.id, projectId)) return 'pmc';
+    if (await this.isOrgAdminOfProject(user.id, projectId, db)) return 'pmc';
     return null;
   }
 
   /** The role a sign-in may land with on this project: none when it is missing or archived, else the one
    *  access rule's answer. */
-  private async landingAccess(user: { id: string }, projectId: string): Promise<{ projectId: string; role: Role } | null> {
-    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { archivedAt: true } });
+  private async landingAccess(user: { id: string }, projectId: string, db: Prisma.TransactionClient = this.prisma): Promise<{ projectId: string; role: Role } | null> {
+    const project = await db.project.findUnique({ where: { id: projectId }, select: { archivedAt: true } });
     if (!project || project.archivedAt) return null;
-    const role = await this.resolveProjectRole(user, projectId);
+    const role = await this.resolveProjectRole(user, projectId, db);
     return role ? { projectId, role } : null;
   }
 
@@ -116,22 +122,22 @@ export class AuthService {
    * `lastProjectId` is a plain stamp: it only chooses among projects the access
    * rule already grants, and the role always comes from that rule.
    */
-  private async signInAccess(user: { id: string; projectId: string; role: string; lastProjectId?: string | null }): Promise<{ projectId: string; role: Role }> {
-    const last = user.lastProjectId ? await this.landingAccess(user, user.lastProjectId) : null;
+  private async signInAccess(user: { id: string; projectId: string; role: string; lastProjectId?: string | null }, db: Prisma.TransactionClient = this.prisma): Promise<{ projectId: string; role: Role }> {
+    const last = user.lastProjectId ? await this.landingAccess(user, user.lastProjectId, db) : null;
     if (last) return last;
-    const home = await this.landingAccess(user, user.projectId);
+    const home = await this.landingAccess(user, user.projectId, db);
     if (home) return home;
-    const membership = await this.prisma.membership.findFirst({
+    const membership = await db.membership.findFirst({
       where: { userId: user.id, status: 'active', project: { archivedAt: null } },
       orderBy: { createdAt: 'asc' },
     });
     if (membership) return { projectId: membership.projectId, role: membership.role as Role };
-    const adminOrgs = await this.prisma.orgMembership.findMany({
+    const adminOrgs = await db.orgMembership.findMany({
       where: { userId: user.id, role: { in: ['owner', 'admin'] } },
       select: { orgId: true },
     });
     if (adminOrgs.length) {
-      const project = await this.prisma.project.findFirst({
+      const project = await db.project.findFirst({
         where: { orgId: { in: adminOrgs.map((o) => o.orgId) }, archivedAt: null },
       });
       if (project) return { projectId: project.id, role: 'pmc' };
@@ -182,7 +188,7 @@ export class AuthService {
         // active membership (or org-admin reach), never from the User row's fields.
         await tx.membership.create({
           data: { projectId: input.projectId, userId: user.id, role: 'engineer', status: 'active' },
-        });
+        }).catch(rethrowQaLock); // #482: a QA address joins only a QA-only company
         return user;
       });
       return { token: this.issueNamedUser(created, 'engineer', created.projectId), role: 'engineer', projectId: created.projectId, name: created.name };
@@ -222,6 +228,49 @@ export class AuthService {
       token: this.issue(`dev-${input.role}`, input.role, input.projectId),
       role: input.role,
       projectId: input.projectId,
+    };
+  }
+
+  /**
+   * #482 QA sign-in (Jagrut, 19 Oct 2026, "Lift it"; rebuilt 20 Oct 2026, "Rebuild it") — the operator door signs
+   * Claude in as one of the QA accounts, so live QA runs without a stored password. Only an account whose email is a
+   * QA address (`qa.<letters>@vitan.in`) and whose every company is marked QA-only (`OrgsParticipant.qaSignInAllowed`)
+   * is signed in; a real person, or a QA account still in an unmarked company, is refused (403). The database's QA
+   * company lock keeps that answer true for the life of the session (no real person can join a QA-only company, and
+   * a QA account cannot join any other), so the session is an ordinary one with no per-request re-check. The route is
+   * behind `OPS_TOKEN`; each sign-in leaves an audit row on the landing project with the operator and reason.
+   */
+  async qaSignIn(input: { email: string; operator: string; reason: string; contract?: DecisionsContract }): Promise<TokenResult> {
+    const email = input.email.trim().toLowerCase();
+    if (!QA_ACCOUNT_EMAIL.test(email)) throw new ForbiddenException('only a QA account can be signed in here');
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user) throw new NotFoundException('no such QA account');
+    // the check, the landing and the audit row share one transaction, and the check's locks hold the answer until it
+    // commits: a membership removal or an email change waits for the sign-in, or the sign-in waits for it and is
+    // refused (403, nothing written). The token is issued only after the commit.
+    const access = await this.prisma.$transaction(async (tx) => {
+      if (!(await this.orgs.qaSignInAllowed(tx, user.id))) throw new ForbiddenException('this account is not in a QA-only company');
+      const landing = await this.signInAccess(user, tx);
+      // the countersign boundary refuses a minted architect token to a lesser client AFTER this returns (Codex P2 on
+      // #983); refuse it here first, so no audit row records a sign-in the caller never received
+      if (landing.role === 'architect' && !understandsCountersign(input.contract)) {
+        throw new ConflictException(countersignReloadMessage('The architect role'));
+      }
+      await recordAudit(tx, {
+        projectId: landing.projectId,
+        actor: systemActor(input.operator, input.operator, 'operator'),
+        action: 'auth.qaSignIn',
+        entity: 'User',
+        entityId: user.id,
+        payload: { reason: input.reason, via: 'ops-api' },
+      });
+      return landing;
+    });
+    return {
+      token: this.issueNamedUser(user, access.role, access.projectId),
+      role: access.role,
+      projectId: access.projectId,
+      name: user.name,
     };
   }
 
@@ -403,10 +452,10 @@ export class AuthService {
   }
 
   /** Is this user an owner/admin of the org that owns this project? (org super-admin). */
-  private async isOrgAdminOfProject(userId: string, projectId: string): Promise<boolean> {
-    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
+  private async isOrgAdminOfProject(userId: string, projectId: string, db: Prisma.TransactionClient = this.prisma): Promise<boolean> {
+    const project = await db.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
     if (!project?.orgId) return false;
-    const om = await this.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId: project.orgId, userId } } });
+    const om = await db.orgMembership.findUnique({ where: { orgId_userId: { orgId: project.orgId, userId } } });
     return om?.role === 'owner' || om?.role === 'admin';
   }
 

@@ -15,7 +15,7 @@ import { InspectionParticipant } from '../inspections/inspection.participant';
 import { ActivitiesQueryService } from '../activities/activities.query';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { DecisionsParticipant } from '../decisions/decisions.participant';
-import { OrgsParticipant } from './orgs.participant';
+import { OrgsParticipant, rethrowQaLock } from './orgs.participant';
 import { InvitationsService } from './invitations.service';
 import { lockOrgStanding, lockProjectReadiness } from '../common/readiness-lock';
 import { assertOrgStandingSnapshotCurrent, holdsOrgStanding, lockOrgStandingWriters } from './org-standing';
@@ -258,7 +258,8 @@ export class OrgsService {
     const org = await this.prisma.$transaction(async (tx) => {
       const created = await tx.org.create({ data: { name: input.name, slug } });
       await lockOrgStandingWriters(tx, created.id);
-      await tx.orgMembership.create({ data: { orgId: created.id, userId, role: 'owner' } });
+      // #482: a QA account owns only a QA-only company, and a new company is not one
+      await tx.orgMembership.create({ data: { orgId: created.id, userId, role: 'owner' } }).catch(rethrowQaLock);
       return created;
     });
     return { id: org.id, name: org.name, slug: org.slug };
@@ -308,15 +309,13 @@ export class OrgsService {
 
     const email = input.email?.toLowerCase();
     const phone = input.phone;
-    let user =
+    const existing =
       (email && (await this.prisma.user.findUnique({ where: { email } }))) ||
       (phone && (await this.prisma.user.findUnique({ where: { phone } }))) ||
       null;
-    if (!user) {
-      // Least-privilege home role: dormant now (access is membership + org-role only),
-      // but if the field is ever consulted again it must not read as `pmc`.
-      user = await this.prisma.user.create({ data: { projectId: homeProject.id, role: 'contractor', name: input.name, email, phone } });
-    }
+    // #482: a new identity is provisioned inside the roster write's own transaction, so a refusal there (the QA
+    // company lock's, or the holder guard's) rolls it back and a refused add leaves no User row behind
+    const userId = existing?.id ?? randomUUID();
 
     // round-6 Codex F2 — the upsert's UPDATE arm is a ROLE CHANGE exactly like
     // updateOrgMemberRole's: re-adding an identity already on the org with a lower role
@@ -324,13 +323,21 @@ export class OrgsService {
     // over covered projects in stable order; the DB seal's raise translated to the deliberate
     // 409) instead of a bare upsert the trigger would fail as an unhandled error.
     // (4d-ii-a / A3c: the existing role is read inside, under the org key)
-    const membership = await this.guardedOrgStandingWrite(orgId, user.id, input.role, (tx) =>
-      tx.orgMembership.upsert({
-        where: { orgId_userId: { orgId, userId: user.id } },
+    const { user, membership } = await this.guardedOrgStandingWrite(orgId, userId, input.role, async (tx) => {
+      // Least-privilege home role: dormant now (access is membership + org-role only),
+      // but if the field is ever consulted again it must not read as `pmc`.
+      const user = existing ?? (await tx.user.create({ data: { id: userId, projectId: homeProject.id, role: 'contractor', name: input.name, email, phone } })
+        .catch((e: unknown) => {
+          if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') throw new ConflictException('This person was just registered by someone else; try adding them again');
+          throw e;
+        }));
+      const membership = await tx.orgMembership.upsert({
+        where: { orgId_userId: { orgId, userId } },
         update: { role: input.role },
-        create: { orgId, userId: user.id, role: input.role },
-      }),
-    );
+        create: { orgId, userId, role: input.role },
+      }).catch(rethrowQaLock);
+      return { user, membership };
+    });
     // AFTER the guarded standing write commits, success path only. `notify` never throws, so a
     // mail failure cannot report a roster grant that IS in the database as a failed add.
     //
@@ -399,7 +406,7 @@ export class OrgsService {
           throw new BadRequestException('This account has already established its sign-in credential');
         }
 
-        const user = await tx.user.update({ where: { id: userId }, data: { email } });
+        const user = await tx.user.update({ where: { id: userId }, data: { email } }).catch(rethrowQaLock);
         await tx.passwordCredentialChallenge.updateMany({
           where: { userId, consumedAt: null },
           data: { consumedAt: now },
@@ -577,7 +584,7 @@ export class OrgsService {
       });
       // the creator runs the project as its PMC — a membership write, under the new project's key
       // (taken before the `Project` insert, just after the org key: the one lock order)
-      await tx.membership.create({ data: { projectId: id, userId, role: 'pmc', status: 'active' } });
+      await tx.membership.create({ data: { projectId: id, userId, role: 'pmc', status: 'active' } }).catch(rethrowQaLock);
       await emitEvent(tx, { projectId: id, actor, eventType: 'project.created', entityType: 'Project', entityId: id, payload: { name: input.name }, effectKey: 'project.created', dispatch: {} });
 
       const state: InitWriteState = {

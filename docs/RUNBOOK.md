@@ -2612,6 +2612,29 @@ the usual `capability.enable` / `capability.disable` audit row, with the operato
 `via: "ops-api"`. A wrong or missing token gets 401, and each route allows 30 calls a minute per address.
 No route takes SQL or touches project data. The T3C seal check stays a terminal command (`t3c:seals`).
 
+**QA companies and QA sign-in** (#482, Jagrut's "Rebuild it", 20 Oct 2026). A company marked QA-only holds only
+QA accounts (`qa.<word>@vitan.in`), and a QA account belongs only to QA-only companies. The database enforces both
+(migration `20280116000000_qa_company_lock`): adding a real person to a QA-only company or its projects, adding a
+QA account anywhere else, changing an email across that line, or starting a company as a QA account is refused
+with 409 and writes nothing. Mark a company QA-only once it holds only QA accounts (409 otherwise; there is no
+unmark route):
+
+    curl -X POST -H "Authorization: Bearer $OPS_TOKEN" -H 'Content-Type: application/json' \
+         -d '{"operator":"<you>","reason":"<text>"}' https://pms-api.vitan.in/ops/orgs/<orgId>/qa-only
+
+`GET /ops/people` shows each company's `qaOnly`. Each mark writes an `org.qaOnly` audit row on the company's live
+projects. Then `POST /auth/ops/qa-sign-in` (same `OPS_TOKEN`, 10 calls per 10 minutes) returns a normal sign-in
+(`token`, `role`, `projectId`) for a QA account, so live QA runs without a stored password:
+
+    curl -X POST -H "Authorization: Bearer $OPS_TOKEN" -H 'Content-Type: application/json' \
+         -d '{"email":"qa.pmc@vitan.in","operator":"<you>","reason":"<text>"}' \
+         https://pms-api.vitan.in/auth/ops/qa-sign-in
+
+It signs in only a QA account that reaches at least one company, all of them QA-only; any other account gets 403,
+and a QA address with no account 404.
+Because the database keeps real people out of those companies, the session needs no re-check while it lasts.
+Each sign-in writes an `auth.qaSignIn` audit row with the operator and reason.
+
 ## §DS. Database snapshot (read-only)
 
 Records every table's rows by key, so a removal can be checked row by row (#482: the archived
