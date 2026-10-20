@@ -27,10 +27,22 @@ async function fetchPhoto(url: string): Promise<Blob> {
   return r.blob();
 }
 
-/** A stored photo's signed URL can expire while the page stays open; `refresh` mints a fresh one for a single retry. */
-/** The photo's bytes arrived but this browser cannot decode their type (HEIC outside Safari, #1006). */
-class UndecodablePhoto extends Error {}
+/** The photo's bytes arrived but did not decode: `heic` when it is an iPhone HEIC or HEIF photo (by its type or file
+ *  name), which only some browsers decode (#1006); otherwise the file itself is damaged or is not a photo (#1007). */
+class UndecodablePhoto extends Error {
+  readonly heic: boolean;
+  constructor(heic: boolean) {
+    super('photo did not decode');
+    this.heic = heic;
+  }
+}
 
+function isHeic(blob: Blob): boolean {
+  if (/^image\/hei[cf]$/i.test(blob.type)) return true;
+  return blob instanceof File && /\.hei[cf]$/i.test(blob.name);
+}
+
+/** A stored photo's signed URL can expire while the page stays open; `refresh` mints a fresh one for a single retry. */
 async function loadPhoto(source: Blob | string, refresh?: () => Promise<string>): Promise<HTMLImageElement> {
   let blob: Blob;
   if (typeof source !== 'string') blob = source;
@@ -47,7 +59,7 @@ async function loadPhoto(source: Blob | string, refresh?: () => Promise<string>)
     return await new Promise<HTMLImageElement>((resolve, reject) => {
       const img = new Image();
       img.onload = () => resolve(img);
-      img.onerror = () => reject(new UndecodablePhoto('photo did not decode'));
+      img.onerror = () => reject(new UndecodablePhoto(isHeic(blob)));
       img.src = url;
     });
   } finally {
@@ -75,8 +87,8 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [photo, setPhoto] = useState<HTMLImageElement | null>(null);
-  // why the photo did not open: its link or the signal, or a type this device cannot decode
-  const [failed, setFailed] = useState<false | 'open' | 'decode'>(false);
+  // why the photo did not open: its link or the signal, a type this device cannot decode, or a file that is not a photo
+  const [failed, setFailed] = useState<false | 'open' | 'decode' | 'read'>(false);
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
   const [tool, setTool] = useState<MarkupTool>('arrow');
   const [colour, setColour] = useState<MarkupColour>('red');
@@ -111,7 +123,7 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
       if (!live) return;
       setPhoto(img);
       setSize(fitWithin(img.naturalWidth || img.width, img.naturalHeight || img.height));
-    }, (e: unknown) => { if (live) setFailed(e instanceof UndecodablePhoto ? 'decode' : 'open'); });
+    }, (e: unknown) => { if (live) setFailed(e instanceof UndecodablePhoto ? (e.heic ? 'decode' : 'read') : 'open'); });
     return () => { live = false; };
   }, [source]);
 
@@ -148,7 +160,19 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
       const ctx = canvasRef.current?.getContext('2d');
       // measured on the canvas in the font it is drawn in; the estimate is only for a canvas that cannot measure
       const measure: MeasureLabel | undefined = ctx && typeof ctx.measureText === 'function'
-        ? (t, px) => { ctx.font = labelFont(px); return ctx.measureText(t).width; }
+        ? (t, px) => {
+          ctx.font = labelFont(px);
+          ctx.textBaseline = 'middle';
+          const m = ctx.measureText(t);
+          // the painted ink where the canvas reports it; the advance width alone where it does not
+          const box = typeof m.actualBoundingBoxLeft === 'number' && typeof m.actualBoundingBoxRight === 'number'
+            ? { left: Math.max(0, m.actualBoundingBoxLeft), right: Math.max(m.actualBoundingBoxRight, 0) }
+            : { left: 0, right: m.width };
+          // above and below the middle line the label is drawn on (`textBaseline` is set to it while measuring)
+          return typeof m.actualBoundingBoxAscent === 'number' && typeof m.actualBoundingBoxDescent === 'number'
+            ? { ...box, up: Math.max(0, m.actualBoundingBoxAscent), down: Math.max(0, m.actualBoundingBoxDescent) }
+            : box;
+        }
         : undefined;
       const fit = size ? fitLabel(p, text, penWidth(size.width, size.height), size.width, size.height, measure) : null;
       setShapes((xs) => [...xs, fit ? { tool: 'text', colour, at: fit.at, text, px: fit.px } : { tool: 'text', colour, at: p, text }]);
@@ -246,7 +270,7 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
           />
         )}
         {failed ? (
-          <div role="alert">{failed === 'decode' ? MK.cannotDecode[lang] : MK.cannotOpen[lang]}</div>
+          <div role="alert">{failed === 'decode' ? MK.cannotDecode[lang] : failed === 'read' ? MK.cannotRead[lang] : MK.cannotOpen[lang]}</div>
         ) : !size ? (
           <div>{MK.loading[lang]}</div>
         ) : (

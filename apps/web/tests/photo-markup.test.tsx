@@ -366,10 +366,10 @@ describe('photo markup: the editor', () => {
 
   it('fitLabel measures with the measure it is given and leaves room for the outline', () => {
     const w = penWidth(1600, 1200);
-    const wide = (text: string, px: number) => [...text].length * px;
+    const wide = (text: string, px: number) => ({ left: 0, right: [...text].length * px });
     const fit = fitLabel({ x: 1599, y: 600 }, 'MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM', w, 1600, 1200, wide);
     expect(fit.at.x - w / 2).toBeGreaterThanOrEqual(0);
-    expect(fit.at.x + wide('M'.repeat(42), fit.px) + w / 2).toBeLessThanOrEqual(1600);
+    expect(fit.at.x + wide('M'.repeat(42), fit.px).right + w / 2).toBeLessThanOrEqual(1600);
     const left = fitLabel({ x: 0, y: 600 }, 'Crack', w, 1600, 1200, wide);
     expect(left.at.x).toBeGreaterThanOrEqual(w / 2);
   });
@@ -413,6 +413,81 @@ describe('photo markup: the editor', () => {
     expect(screen.getByRole('button', { name: MK.undo.en })).toBeEnabled();
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  // round 1 on #1007 (273afa4): each failed there
+
+  it('a label is fitted on the ink it paints, so a leading mark or an overhang never clips at an edge (r4321009371)', async () => {
+    // ink reaches one font-size left of where the text starts, and half a font-size past its advance on the right
+    const texts: Array<{ text: string; x: number; font: string }> = [];
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function () {
+      const { pen } = recordingPen();
+      return Object.assign(pen, {
+        drawImage: () => {},
+        measureText(this: { font: string }, text: string) {
+          const px = Number(/(\d+)px/.exec(this.font)?.[1] ?? 10);
+          const n = [...text].length;
+          return { width: n * px, actualBoundingBoxLeft: px, actualBoundingBoxRight: n * px + px / 2 } as TextMetrics;
+        },
+        fillText(this: { font: string }, text: string, x: number) { texts.push({ text, x, font: this.font }); },
+      }) as unknown as CanvasRenderingContext2D;
+    } as never);
+    render(<PhotoMarkup source={PHOTO} lang="en" onSave={() => {}} onCancel={() => {}} />);
+    const canvas = await screen.findByTestId('photo-markup-canvas');
+    fireEvent.click(screen.getByRole('button', { name: MK.text.en }));
+    const w = penWidth(1600, 1200);
+    for (const [clientX, text] of [[0, 'Crack'], [799, 'Seepage']] as const) {
+      fireEvent.change(screen.getByLabelText(MK.label.en), { target: { value: text } });
+      fireEvent.pointerDown(canvas, { clientX, clientY: 300, pointerId: 1 });
+      const placed = texts.filter((t) => t.text === text).at(-1)!;
+      const px = Number(/(\d+)px/.exec(placed.font)![1]);
+      expect(placed.x - px - w / 2).toBeGreaterThanOrEqual(0);
+      expect(placed.x + [...text].length * px + px / 2 + w / 2).toBeLessThanOrEqual(1600);
+    }
+  });
+
+  it('fitLabel fits the painted extent it is given, left of the start and right of it', () => {
+    const w = penWidth(1600, 1200);
+    const ink = (text: string, px: number) => ({ left: px, right: [...text].length * px + px / 2 });
+    const left = fitLabel({ x: 0, y: 600 }, 'Crack', w, 1600, 1200, ink);
+    expect(left.at.x - left.px - w / 2).toBeGreaterThanOrEqual(0);
+    const long = fitLabel({ x: 1599, y: 600 }, 'M'.repeat(42), w, 1600, 1200, ink);
+    expect(long.at.x - long.px - w / 2).toBeGreaterThanOrEqual(0);
+    expect(long.at.x + ink('M'.repeat(42), long.px).right + w / 2).toBeLessThanOrEqual(1600);
+  });
+
+  it('a label whose vowel signs reach past half its size is moved in from the top and bottom by its measured ink', () => {
+    const w = penWidth(1600, 1200);
+    const ink = (_: string, px: number) => ({ left: 0, right: px * 3, up: px, down: px * 0.8 });
+    const top = fitLabel({ x: 100, y: 0 }, 'कि', w, 1600, 1200, ink);
+    expect(top.at.y - top.px - w / 2).toBeGreaterThanOrEqual(0);
+    const bottom = fitLabel({ x: 100, y: 1199 }, 'कु', w, 1600, 1200, ink);
+    expect(bottom.at.y + bottom.px * 0.8 + w / 2).toBeLessThanOrEqual(1200);
+    // a photo too short for the label's ink: drawn smaller so all of it fits
+    const short = fitLabel({ x: 100, y: 20 }, 'कि', w, 1600, 40, ink);
+    expect(short.px * 1.8 + 2 * Math.ceil(w / 2)).toBeLessThanOrEqual(40);
+  });
+
+  it('a photo that will not decode for another reason (a damaged JPEG) is not called an unsupported type (r4321009379)', async () => {
+    vi.stubGlobal('Image', class {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_: string) { setTimeout(() => this.onerror?.(), 0); }
+    });
+    render(<PhotoMarkup source={new Blob(['not a photo'], { type: 'image/jpeg' })} lang="hi" onSave={() => {}} onCancel={() => {}} />);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(MK.cannotRead.hi);
+    expect(alert).not.toHaveTextContent(MK.cannotDecode.hi);
+  });
+
+  it('an iPhone photo known by its file name alone (no type given) is still named as a type this device cannot open', async () => {
+    vi.stubGlobal('Image', class {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_: string) { setTimeout(() => this.onerror?.(), 0); }
+    });
+    render(<PhotoMarkup source={new File(['x'], 'IMG_0042.HEIC')} lang="en" onSave={() => {}} onCancel={() => {}} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(MK.cannotDecode.en);
   });
 
   it('Cancel closes without saving', async () => {

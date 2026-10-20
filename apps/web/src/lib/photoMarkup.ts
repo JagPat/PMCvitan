@@ -49,8 +49,10 @@ export function labelFont(px: number): string {
   return `bold ${px}px system-ui, sans-serif`;
 }
 
-/** How wide `text` is drawn at a bold font of `px`, outline excluded. */
-export type MeasureLabel = (text: string, px: number) => number;
+/** The ink `text` paints at a bold font of `px`, outline excluded: how far it reaches left of where it starts and right
+ *  of it (a leading combining mark or an overhang can reach past the advance box, #1007), and, where known, above and
+ *  below its middle line (a Hindi or Gujarati vowel sign can reach past half the font size). */
+export type MeasureLabel = (text: string, px: number) => { left: number; right: number; up?: number; down?: number };
 
 /** A label's width at a bold font of `px`, estimated from its letters when there is no canvas to measure on. */
 export function labelWidth(text: string, px: number): number {
@@ -65,19 +67,27 @@ export function labelWidth(text: string, px: number): number {
  * wide, half of it outside the letters on every side.
  */
 export function fitLabel(
-  p: Point, text: string, w: number, width: number, height: number, measure: MeasureLabel = labelWidth,
+  p: Point, text: string, w: number, width: number, height: number,
+  measure: MeasureLabel = (t, px) => ({ left: 0, right: labelWidth(t, px) }),
 ): { at: Point; px: number } {
   const half = Math.ceil(w / 2);
   const room = Math.max(1, width - 2 * half);
-  let px = Math.max(1, Math.min(w * 6, height - 2 * half));
+  const tall = Math.max(1, height - 2 * half);
+  // the ink above and below the middle line: measured where known, half the font size each way otherwise
+  const up = (px: number, ink: ReturnType<MeasureLabel>) => Math.max(px / 2, ink.up ?? 0);
+  const down = (px: number, ink: ReturnType<MeasureLabel>) => Math.max(px / 2, ink.down ?? 0);
+  const fits = (px: number) => {
+    const ink = measure(text, px);
+    return ink.left + ink.right <= room && up(px, ink) + down(px, ink) <= tall;
+  };
+  let px = Math.max(1, Math.min(w * 6, tall));
   const first = measure(text, px);
-  if (first > room) px = Math.max(1, Math.floor((px * room) / first));
-  // a measure is not exactly proportional (hinting, kerning): step down until it fits
-  while (px > 1 && measure(text, px) > room) px -= 1;
-  const drawn = Math.ceil(measure(text, px));
-  const x = Math.max(half, Math.min(p.x, width - half - drawn));
-  const yHalf = Math.ceil(px / 2) + half;
-  const y = Math.max(yHalf, Math.min(p.y, height - yHalf));
+  if (first.left + first.right > room) px = Math.max(1, Math.floor((px * room) / (first.left + first.right)));
+  // a measure is not exactly proportional (hinting, kerning, tall vowel signs): step down until it fits
+  while (px > 1 && !fits(px)) px -= 1;
+  const ink = measure(text, px);
+  const x = Math.max(half + Math.ceil(ink.left), Math.min(p.x, width - half - Math.ceil(ink.right)));
+  const y = Math.max(half + Math.ceil(up(px, ink)), Math.min(p.y, height - half - Math.ceil(down(px, ink))));
   return { at: { x, y }, px };
 }
 
@@ -165,6 +175,7 @@ export const MK = {
   original: { en: 'The original photo is kept as it is.', hi: 'मूल फ़ोटो जैसी है वैसी रखी जाती है।', gu: 'મૂળ ફોટો જેવો છે તેવો જ રહે છે.' },
   loading: { en: 'Opening the photo…', hi: 'फ़ोटो खुल रही है…', gu: 'ફોટો ખૂલે છે…' },
   cannotDecode: { en: 'This photo type cannot be marked up on this device.', hi: 'इस तरह की फ़ोटो पर इस डिवाइस में निशान नहीं लगाए जा सकते।', gu: 'આ પ્રકારના ફોટા પર આ ડિવાઇસમાં નિશાન કરી શકાતાં નથી.' },
+  cannotRead: { en: 'This photo could not be opened.', hi: 'यह फ़ोटो नहीं खुल सकी।', gu: 'આ ફોટો ખૂલી શક્યો નહીં.' },
   cannotOpen: { en: 'This photo could not be opened for marking. Check the signal and try again.', hi: 'यह फ़ोटो निशान लगाने के लिए नहीं खुल सकी। सिग्नल देखें और फिर से कोशिश करें।', gu: 'આ ફોટો નિશાન કરવા માટે ખૂલી શક્યો નહીં. સિગ્નલ તપાસો અને ફરી પ્રયાસ કરો.' },
   tooLarge: { en: 'This copy is too large to send. Undo some marks or try a smaller photo.', hi: 'यह कॉपी भेजने के लिए बहुत बड़ी है। कुछ निशान हटाएँ या छोटी फ़ोटो लें।', gu: 'આ નકલ મોકલવા માટે બહુ મોટી છે. થોડાં નિશાન પાછાં કરો અથવા નાનો ફોટો લો.' },
   keys: { en: 'Photo to mark. With a keyboard: arrow keys move the marker, Enter starts and ends a mark.', hi: 'निशान लगाने के लिए फ़ोटो। कीबोर्ड से: तीर कुंजियाँ निशानक हिलाती हैं, Enter से निशान शुरू और खत्म होता है।', gu: 'નિશાન કરવા માટેનો ફોટો. કીબોર્ડથી: તીર કી માર્કર ખસેડે છે, Enter થી નિશાન શરૂ અને પૂરું થાય છે.' },
