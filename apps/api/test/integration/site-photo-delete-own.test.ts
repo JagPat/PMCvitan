@@ -4,6 +4,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { vi } from 'vitest';
+import { SNAPSHOT_SITE_PHOTO_LIMIT } from '@vitan/shared';
 import { SnapshotService } from '../../src/snapshot/snapshot.service';
 import { InventoryParticipant } from '../../src/inventory/inventory.participant';
 import { InspectionParticipant } from '../../src/inspections/inspection.participant';
@@ -338,5 +339,26 @@ describe('a member deletes their own site photo within the hour (live PG)', () =
     expect(asArchitect.photos.find((p) => p.id === own)).not.toHaveProperty('deletableUntil');
     const asContractor = await t.app.get(SnapshotService).build(f.projectA.id, 'contractor', contractorId());
     expect(asContractor.photos.find((p) => p.id === own)?.deletableUntil).toBeDefined();
+  });
+
+  it('keeps the member\'s own photo in their hour reachable past the newest window (Codex 4322459282)', async () => {
+    await t.prisma.media.deleteMany({ where: { projectId: f.projectA.id } });
+    const own = await photo(contractorId(), minutesAgo(30));
+    const stale = await photo(contractorId(), minutesAgo(61));
+    await t.prisma.media.createMany({
+      data: Array.from({ length: SNAPSHOT_SITE_PHOTO_LIMIT }, () => ({ projectId: f.projectA.id, kind: 'progress', mime: 'image/png', uploadedBy: f.clientUser.id, data: px, createdAt: minutesAgo(1) })),
+    });
+    try {
+      const snap = await t.app.get(SnapshotService).build(f.projectA.id, 'contractor', contractorId());
+      expect(snap.photos.find((p) => p.id === own)).toMatchObject({ deletable: true });
+      expect(snap.photos.find((p) => p.id === own)?.deletableUntil).toBeDefined();
+      // past the hour it is not the member's to delete, so it is not carried
+      expect(snap.photos.some((p) => p.id === stale)).toBe(false);
+      expect(snap.photos).toHaveLength(SNAPSHOT_SITE_PHOTO_LIMIT + 1);
+      // the PMC's window is the newest only
+      expect((await t.app.get(SnapshotService).build(f.projectA.id, 'pmc', f.memberUser.id)).photos).toHaveLength(SNAPSHOT_SITE_PHOTO_LIMIT);
+    } finally {
+      await t.prisma.media.deleteMany({ where: { projectId: f.projectA.id } });
+    }
   });
 });

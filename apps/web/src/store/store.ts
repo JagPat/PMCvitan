@@ -80,7 +80,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoLabels as SPL } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoDeletable, sitePhotoLabels as SPL } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -4091,6 +4091,9 @@ export const useStore = create<Store>()(
           .deleteMedia(photoId)
           .then((res) => {
             if (!scopeStillCurrent(scope)) return;
+            // a pull begun while the DELETE was on its way may have read the photo before it went: every pull begun
+            // before this answer is superseded here, whether it is still waiting or already back (Codex 4322459274)
+            beginSnapshotLease(scope);
             // the server's yes is the delete: the photo leaves at once, and a fresh snapshot then settles the counts.
             // A failed refresh never turns a done delete into a "try again" (Codex 4316959524).
             set((s) => {
@@ -4103,7 +4106,9 @@ export const useStore = create<Store>()(
               if (res.dailyLogId && s.dailyLog?.id === res.dailyLogId) s.dailyLogPhotoCountAfter = snapshotSeq;
             });
             get().flash(SPL.deleted[lang()]);
-            void requestFreshSnapshot(scope);
+            // the reconcile every command owes: only a pull begun after this answer settles it, and one that fails
+            // leaves it owed, with Retry, while the photo stays gone
+            scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
           })
           .catch((err: unknown) => {
             if (!scopeStillCurrent(scope)) return;
@@ -5795,8 +5800,12 @@ export const useStore = create<Store>()(
                   // no Delete yet: whether it is the viewer's to delete (the log it went on may be sent by now) is the
                   // server's to say, on the refresh asked for below (Codex 4317884803)
                 });
-                // the snapshot's window is the newest SNAPSHOT_SITE_PHOTO_LIMIT photos; a new one keeps it that size
-                if (s.photos.length > SNAPSHOT_SITE_PHOTO_LIMIT) s.photos.length = SNAPSHOT_SITE_PHOTO_LIMIT;
+                // the snapshot's window is the newest SNAPSHOT_SITE_PHOTO_LIMIT photos; a new one keeps it that size, but
+                // never by dropping one the viewer may still delete in their hour (Codex 4322459282)
+                if (s.photos.length > SNAPSHOT_SITE_PHOTO_LIMIT) {
+                  const now = Date.now();
+                  s.photos = s.photos.filter((p, i) => i < SNAPSHOT_SITE_PHOTO_LIMIT || (p.deletableUntil !== undefined && sitePhotoDeletable(p, now)));
+                }
               }
               // another log on screen now: the server holds the photo on its own log, and the next snapshot shows it
               const log = onPickedLog(s);

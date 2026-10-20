@@ -272,6 +272,71 @@ describe('a confirmed delete stays done (#482 redesign after #987)', () => {
   });
 });
 
+describe('a pull begun while the delete was on its way (#482, Codex 4322459274)', () => {
+  it('never brings the photo or its evidence back, even when the pull after the delete fails', async () => {
+    const own: Photo = { id: 'own', url: 'http://api.test/media/own?t=a', kind: 'inspection', at: minutesAgo(5), deletable: true };
+    const checklist = { id: 'c1', title: 'Slab', items: [{ id: 'i1', name: 'i1', state: 'fail', photos: 1, note: '', evidence: ['http://api.test/media/own?t=b'] }] };
+    const { useStore } = await load('en', [own], { role: 'pmc', checklist, openChecklists: [checklist] });
+    let answer!: (v: unknown) => void;
+    let racing!: (snap: unknown) => void;
+    const snapshot = vi.fn()
+      .mockReturnValueOnce(new Promise((res) => { racing = res; }))
+      .mockRejectedValue(new TypeError('Failed to fetch'));
+    useStore.getState()._setGateway({ deleteMedia: vi.fn().mockReturnValue(new Promise((res) => { answer = res; })), snapshot } as never);
+    const deleting = useStore.getState().deleteSitePhoto('own');
+    // a socket ping asks for a pull after the DELETE went out, and the server reads it before the delete commits
+    useStore.getState().requestFreshSnapshot();
+    await waitFor(() => expect(snapshot).toHaveBeenCalledTimes(1));
+    await act(async () => { answer({ ok: true, dailyLogId: null }); await deleting; });
+    expect(useStore.getState().photos).toEqual([]);
+    // that pull lands after the delete was confirmed, carrying the photo and its evidence as they were
+    await act(async () => { racing({ ...snapOf([own]), checklist, openChecklists: [checklist] }); });
+    await waitFor(() => expect(snapshot).toHaveBeenCalledTimes(2));
+    await act(async () => { await new Promise((res) => setTimeout(res, 0)); });
+    expect(useStore.getState().photos).toEqual([]);
+    const st = useStore.getState() as unknown as { checklist: typeof checklist };
+    expect(st.checklist.items[0]!.evidence).toEqual([]);
+  });
+});
+
+describe('a delete answered after a project switch (#482)', () => {
+  it('leaves the project now on screen untouched', async () => {
+    const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), deletable: true, deletableUntil: until(5) };
+    const { useStore } = await load('en', [own]);
+    let answer!: (v: unknown) => void;
+    const snapshot = vi.fn().mockReturnValue(new Promise(() => {}));
+    useStore.getState()._setGateway({ deleteMedia: vi.fn().mockReturnValue(new Promise((res) => { answer = res; })), snapshot } as never);
+    const deleting = useStore.getState().deleteSitePhoto('own');
+    // the member switches project while the DELETE is on its way; the other project lists a photo of the same id
+    const other: Photo = { ...own, url: '/media/own?other' };
+    useStore.setState({ activeProjectId: 'villa-c', projectScopeGeneration: 2, photos: [other] } as never);
+    await act(async () => { answer({ ok: true, dailyLogId: null }); await deleting; });
+    expect(useStore.getState().photos).toEqual([other]);
+    expect(snapshot).not.toHaveBeenCalled();
+  });
+});
+
+describe('the viewer\'s photo in their hour beyond the newest 300 (#482, Codex 4322459282)', () => {
+  it('a new upload keeps it, and its Delete stays reachable', async () => {
+    const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(30), deletable: true, deletableUntil: until(30) };
+    const newer = Array.from({ length: 299 }, (_, n): Photo => ({ id: `n${n}`, url: `/media/n${n}`, kind: 'progress', at: minutesAgo(1), by: 'Ravi Patel' }));
+    const { r, useStore } = await load('en', [...newer, own], { userName: 'Asha Shah' });
+    useStore.getState()._setGateway({ uploadMedia: vi.fn().mockResolvedValue({ id: 'new', url: 'http://api.test/new.jpg', at: new Date().toISOString() }), snapshot: vi.fn().mockReturnValue(new Promise(() => {})) } as never);
+    class SyncFileReader {
+      result: string | null = null;
+      onload: (() => void) | null = null;
+      readAsDataURL() { this.result = 'data:image/jpeg;base64,AAAA'; this.onload?.(); }
+    }
+    vi.stubGlobal('FileReader', SyncFileReader);
+    fireEvent.change(r.getByTestId('add-site-photo-file'), { target: { files: [new File(['x'], 'p.jpg', { type: 'image/jpeg' })] } });
+    await waitFor(() => expect(useStore.getState().photos.some((p) => p.id === 'new')).toBe(true));
+    expect(useStore.getState().photos.some((p) => p.id === 'own')).toBe(true);
+    // the window stays the newest 300, with the viewer's own photo kept past it
+    expect(useStore.getState().photos).toHaveLength(301);
+    await waitFor(() => expect(r.getAllByTestId('site-photo-delete')).toHaveLength(1));
+  });
+});
+
 describe('sitePhotoDeletable', () => {
   it('holds until the time the server gave', () => {
     const deletableUntil = '2026-10-19T10:30:00.000Z';

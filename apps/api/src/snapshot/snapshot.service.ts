@@ -138,14 +138,29 @@ export class SnapshotService {
       // capped, newest first; carries nodeId so a photo can be shown at its location. A photo filed
       // on someone else's private draft (before #881) is as private as the place: the nodes module
       // names the viewer's hidden drafts, and their photos are left out (unfiled photos stay).
-      hiddenNodes.then((hidden) =>
-        this.prisma.media.findMany({
-          where: { projectId, kind: { in: ['progress', 'inspection', 'material'] }, ...(hidden.length > 0 ? { OR: [{ nodeId: null }, { nodeId: { notIn: hidden } }] } : {}) },
+      hiddenNodes.then(async (hidden) => {
+        const visible = hidden.length > 0 ? { OR: [{ nodeId: null }, { nodeId: { notIn: hidden } }] } : {};
+        const select = { id: true, kind: true, url: true, takenAt: true, nodeId: true, uploadedBy: true, clientKey: true, createdAt: true, dailyLogId: true, decisionId: true, inspectionId: true, inspectionItemId: true } as const;
+        const newest = await this.prisma.media.findMany({
+          where: { projectId, kind: { in: ['progress', 'inspection', 'material'] }, ...visible },
           orderBy: { createdAt: 'desc' },
           take: SNAPSHOT_SITE_PHOTO_LIMIT,
-          select: { id: true, kind: true, url: true, takenAt: true, nodeId: true, uploadedBy: true, clientKey: true, createdAt: true, dailyLogId: true, decisionId: true, inspectionId: true, inspectionItemId: true },
-        }),
-      ),
+          select,
+        });
+        // #482 site photos — a member's own site photos still in their delete hour stay reachable past the newest
+        // window, which a busy hour can fill (Codex 4322459282). The PMC and the engineer delete from the window.
+        if (!userId || SITE_RECORD_ROLES.has(role) || newest.length < SNAPSHOT_SITE_PHOTO_LIMIT) return newest;
+        const own = await this.prisma.media.findMany({
+          where: {
+            projectId, kind: 'progress', uploadedBy: userId, decisionId: null, inspectionId: null, inspectionItemId: null,
+            createdAt: { gt: new Date(Date.now() - SITE_PHOTO_DELETE_WINDOW_MS) }, id: { notIn: newest.map((m) => m.id) }, ...visible,
+          },
+          orderBy: { createdAt: 'desc' },
+          take: SNAPSHOT_SITE_PHOTO_LIMIT,
+          select,
+        });
+        return [...newest, ...own];
+      }),
       // Task 10 — the drawings register comes from the module's query (the baked per-viewer register:
       // draft-author visibility + the viewer's ack/recipient state + fresh signed urls), never a direct
       // `prisma.drawing` read. Byte-identical to the pre-extraction inline shaping.
