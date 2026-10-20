@@ -163,6 +163,9 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // the suites reset it with `Notification` (its composite key references that table), so the seal is bypassed
   // here by name, as every other sealed register is.
   { table: 'NotificationReceipt', trigger: 'NotificationReceipt_no_truncate' },
+  // #482 site photos — the deleted-photo record refuses TRUNCATE, and its key cascades from `Project`, so a reset that
+  // truncates `Project` with CASCADE reaches it; the seal is bypassed here by name (#1018 r4325096705).
+  { table: 'MediaTombstone', trigger: 'MediaTombstone_no_truncate' },
 ];
 
 /**
