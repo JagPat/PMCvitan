@@ -562,6 +562,193 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
       expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('1.old'), expect.stringContaining('9.fresh')]);
       expect(failed()).toBe(false);
     });
+
+    describe('the open’s fresh read, followed to the newest and stopped with the open (Codex 4328350105, 4328350114)', () => {
+      it('follows any number of overtaken reads to the newest, and opens with the one that answers', async () => {
+        // the open's own read (2) and four reads after it (3 to 6): each one is overtaken by the next before it answers,
+        // and only the last answers. The open must follow all of them, with no cap on how many
+        const held: (() => void)[] = [];
+        let reads = 0;
+        const { fetchMock } = await openOld((q) => {
+          if (q?.status === 'open') return Promise.resolve([]);
+          if (q?.before) return Promise.resolve(older(null));
+          reads += 1;
+          if (reads === 1) return Promise.resolve(newer);
+          const rows = reads === 6 ? [{ ...old, files: [stored({ url: '/media/m-1?t=9.fresh' })] }] : newer;
+          return new Promise<SiteVisit[]>((done) => { held[reads] = () => done(rows); });
+        });
+        await vi.waitFor(() => expect(held[2]).toBeDefined());
+        for (let n = 3; n <= 5; n += 1) {
+          // a newer read is sent, then the one the open is waiting on comes back overtaken
+          await act(async () => { refreshSiteVisits(); });
+          await vi.waitFor(() => expect(held[n]).toBeDefined());
+          await act(async () => { held[n - 1](); });
+          expect(failed()).toBe(false);
+        }
+        await act(async () => { refreshSiteVisits(); });
+        await vi.waitFor(() => expect(held[6]).toBeDefined());
+        await act(async () => { held[5](); });
+        expect(failed()).toBe(false);
+        // the newest answers last, after four overtaken reads
+        await act(async () => { held[6](); });
+        await screen.findByTestId('photo-markup-canvas');
+        expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('1.old'), expect.stringContaining('9.fresh')]);
+        expect(failed()).toBe(false);
+        expect(reads).toBe(6);
+      });
+
+      it('ends as could not be opened when its own read fails and nothing newer was sent: it never waits on it again', async () => {
+        // a wait on the same settled read again would spin on microtasks, where no timer can end it: each wait adds an
+        // abort listener, so past 50 the spin is ended by a throw and counted, and the test fails at once
+        let added = 0;
+        const listen = AbortSignal.prototype.addEventListener;
+        vi.spyOn(AbortSignal.prototype, 'addEventListener').mockImplementation(function (this: AbortSignal, ...args: Parameters<AbortSignal['addEventListener']>) {
+          if (args[0] === 'abort' && (added += 1) > 50) throw new Error('waited on the same read again');
+          return listen.apply(this, args);
+        });
+        let reads = 0;
+        const { fetchMock } = await openOld((q) => {
+          if (q?.status === 'open') return Promise.resolve([]);
+          reads += 1;
+          // mount's read answers; the open's own fails, and it is still the newest read
+          return reads === 1 ? Promise.resolve(newer) : Promise.reject(network());
+        });
+        await vi.waitFor(() => expect(failed()).toBe(true));
+        expect(added).toBeLessThanOrEqual(50);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(screen.queryByRole('dialog')).toBeNull();
+      });
+
+      it.each([
+        ['a full page: no further page is asked for, and nothing it read is shown', 200],
+        ['the last page: nothing it read is shown', 3],
+      ])('stops its read on Cancel, answered after with %s', async (_label, size) => {
+        // the open's own read of the open visits is held, and answers after Cancel
+        const late = Array.from({ length: size }, (_, i) => visit({ id: `v-late${i}`, files: [] }));
+        let openReads = 0;
+        let answer: (() => void) | null = null;
+        const signals: (AbortSignal | undefined)[] = [];
+        const { gw } = await openOld((q, signal) => {
+          if (q?.status !== 'open') return Promise.resolve(q?.before ? older(null) : newer);
+          if (q.before) return Promise.resolve([]);
+          openReads += 1;
+          if (openReads !== 2) return Promise.resolve([]);
+          signals.push(signal);
+          return new Promise<SiteVisit[]>((done) => { answer = () => done(late); });
+        });
+        await vi.waitFor(() => expect(answer).not.toBeNull());
+        expect(signals[0]?.aborted).toBe(false);
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
+        expect(signals[0]?.aborted).toBe(true);
+        const asked = gw.listSiteVisits!.mock.calls.length;
+        await act(async () => { answer!(); });
+        await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+        expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
+        expect(screen.queryByTestId('sv-visit-v-late0')).toBeNull();
+        expect(screen.queryByRole('alert')).toBeNull();
+      });
+
+      it('sends the open’s read again with its signal when an act’s answer overtakes it, and Cancel stops that read too', async () => {
+        const signals: (AbortSignal | undefined)[] = [];
+        const held: (() => void)[] = [];
+        let reads = 0;
+        await openOld((q, signal) => {
+          if (q?.status === 'open') return Promise.resolve([]);
+          if (q?.before) return Promise.resolve(older(null));
+          reads += 1;
+          if (reads === 1) return Promise.resolve(newer);
+          signals.push(signal);
+          return new Promise<SiteVisit[]>((done) => { held.push(() => done(newer)); });
+        });
+        await vi.waitFor(() => expect(held).toHaveLength(1));
+        // an act's answer lands while the open's read is out: the read comes back overtaken and is sent again
+        await act(async () => { tellSiteVisits({ kind: 'answer', project: useStore.getState().activeProjectId, generation: useStore.getState().projectScopeGeneration, visit: newer[0] }); });
+        await act(async () => { held[0](); });
+        await vi.waitFor(() => expect(held).toHaveLength(2));
+        expect(signals[1]).toBe(signals[0]);
+        expect(signals[1]?.aborted).toBe(false);
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
+        expect(signals[1]?.aborted).toBe(true);
+      });
+
+      describe('a stopped open gives the screen back its read (m3-r2 check gap 1)', () => {
+        const other = visit({ id: 'v-other', files: [] });
+        /** the server: `others` holds a visit started on another device once it is set; page reads are held while
+         *  `holding`, each answered by its gate, and a held request whose signal aborts fails, as the browser's does */
+        function server() {
+          const state = { others: false, holding: false, gates: [] as (() => void)[] };
+          const list = (q: Q, signal?: AbortSignal) => {
+            if (q?.before) return Promise.resolve(older(null));
+            const rows = q?.status === 'open' ? (state.others ? [other] : []) : newer;
+            if (!state.holding) return Promise.resolve(rows);
+            return new Promise<SiteVisit[]>((done, fail) => {
+              state.gates.push(() => done(rows));
+              signal?.addEventListener('abort', () => fail(new DOMException('aborted', 'AbortError')));
+            });
+          };
+          return { state, list };
+        }
+        async function openWith(list: (q: Q, signal?: AbortSignal) => Promise<SiteVisit[]>, beforeOpen: () => Promise<void>) {
+          const gw = fakeGateway([], { listSiteVisits: vi.fn(list) });
+          vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 403 })));
+          const end: OutboxOp = { t: 'siteVisitEnd', visitId: 'v-old', claimedAt: '2026-10-01T05:30:00.000Z', idempotencyKey: 'k-end' };
+          setUp('consultant', CONSULTANT, gw, [end]);
+          useStore.setState({ online: false });
+          render(<SiteVisitsScreen />);
+          await beforeOpen();
+          await act(async () => { tellSiteVisits({ kind: 'answer', project: gw.project as unknown as string, generation: useStore.getState().projectScopeGeneration, visit: old }); });
+          await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-1')).toBeTruthy());
+          thumb('m-1');
+          await act(async () => { fireEvent.click(markUp('m-1')!); });
+          return gw;
+        }
+
+        it('a refresh the open’s read overtook is still shown after Cancel: a visit started on another device appears', async () => {
+          const { state, list } = server();
+          await openWith(list, async () => {
+            await act(async () => {});
+            // a refresh is out (a ping, a reconnect) when the open sends its read
+            state.others = true;
+            state.holding = true;
+            await act(async () => { refreshSiteVisits(); });
+          });
+          // both reads are out: the refresh's two requests, then the open's two
+          await vi.waitFor(() => expect(state.gates).toHaveLength(4));
+          state.holding = false;
+          await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
+          await act(async () => { for (const g of state.gates) g(); });
+          expect(await screen.findByTestId('sv-visit-v-other')).toBeTruthy();
+        });
+
+        it('a first read still out when the open is cancelled leaves the screen ready, with Start visit shown', async () => {
+          const { state, list } = server();
+          state.holding = true;
+          await openWith(list, async () => {});
+          await vi.waitFor(() => expect(state.gates).toHaveLength(4));
+          state.holding = false;
+          await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
+          await act(async () => { for (const g of state.gates) g(); });
+          // the read it handed back answered: no Try again, as the stopped read did not fail
+          expect(await screen.findByTestId('sv-start')).toBeTruthy();
+          expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+          expect(screen.queryByRole('alert')).toBeNull();
+        });
+
+        it('sends no read of its own on Cancel when a newer screen read is already out: that one serves', async () => {
+          const { state, list } = server();
+          const gw = await openWith(list, async () => { await act(async () => {}); state.holding = true; });
+          await vi.waitFor(() => expect(state.gates).toHaveLength(2));
+          state.others = true;
+          await act(async () => { refreshSiteVisits(); });
+          await vi.waitFor(() => expect(state.gates).toHaveLength(4));
+          const asked = gw.listSiteVisits!.mock.calls.length;
+          await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
+          expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
+          await act(async () => { for (const g of state.gates) g(); });
+          expect(await screen.findByTestId('sv-visit-v-other')).toBeTruthy();
+        });
+      });
+    });
   });
 
   it('hands the page read’s signal to the request, so a stopped read is cancelled', async () => {

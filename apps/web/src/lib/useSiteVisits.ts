@@ -178,13 +178,16 @@ function ordered(list: SiteVisit[]): SiteVisit[] {
 }
 
 /** The pages of `query`, newest first, until a short page (the list ended) or a page `enough` accepts: the rows
- *  read and whether the list ended. */
+ *  read and whether the list ended. Once `signal` aborts, no further page is asked for and the one in flight is
+ *  cancelled (M3: a markup open stopped or past its bound). */
 async function readPages(
-  gw: ApiGateway, query: { limit: number; status?: 'open' }, enough: (page: SiteVisit[]) => boolean,
+  gw: ApiGateway, query: { limit: number; status?: 'open' }, enough: (page: SiteVisit[]) => boolean, signal?: AbortSignal,
 ): Promise<{ rows: SiteVisit[]; ended: boolean }> {
   const rows: SiteVisit[] = [];
   for (let before: string | undefined; ;) {
-    const page = await gw.listSiteVisits({ ...query, ...(before ? { before } : {}) });
+    if (signal?.aborted) throw new Error('aborted');
+    const q = { ...query, ...(before ? { before } : {}) };
+    const page = await (signal ? gw.listSiteVisits(q, signal) : gw.listSiteVisits(q));
     rows.push(...page);
     if (page.length < query.limit) return { rows, ended: true };
     if (enough(page)) return { rows, ended: false };
@@ -425,8 +428,10 @@ export function useSiteVisits() {
    *  sign-in); otherwise it is a refresh that reads again every page already shown. Every open visit is in the open
    *  read and every shown page in the page read, so the two replace the rows shown; only a row an act answered with
    *  from beyond the pages read is kept. Resolves whether it answered. One that answers settles the photos filed before
-   *  it was sent: the server's list now shows them, or no longer holds them (Codex 4321998475). */
-  const readHead = useCallback(function readHead(fresh: boolean): Promise<boolean> {
+   *  it was sent: the server's list now shows them, or no longer holds them (Codex 4321998475). A read given a `signal`
+   *  (a markup open's) stops asking for pages when it aborts and, still the newest, hands the screen's turn back as one
+   *  plain read; it is then overtaken, so it writes nothing (Codex 4328350114; m3-r2 check gap 1). */
+  const readHead = useCallback(function readHead(fresh: boolean, signal?: AbortSignal): Promise<boolean> {
     const gw = useStore.getState().serverGateway();
     if (!gw) return Promise.resolve(false);
     const st = useStore.getState();
@@ -436,18 +441,24 @@ export function useSiteVisits() {
     const heard = new Set(filedHeard.current);
     const mine = (turn.current += 1);
     lastRead.current = mine;
+    // a markup open's read is one of the screen's reads: it takes the screen's turn, so a screen read already out is
+    // overtaken by it. Stopped before it settles while still the newest, it hands the turn back as one plain read, so
+    // what the read it overtook would have shown is still shown (m3-r2 check gap 1)
+    let settled = false;
+    signal?.addEventListener('abort', () => { if (!settled && live(scope) && lastRead.current === mine) void readHead(fresh); }, { once: true });
     if (fresh) { answered.current = false; setLoad('loading'); }
     // the first page alone when starting over; otherwise down to the page holding the last visit shown
     const upTo = fresh ? undefined : cursor.current;
     const sent = Promise.all([
-      readPages(gw, { limit: VISIT_PAGE }, (page) => upTo === undefined || page.some((v) => v.id === upTo)),
-      readPages(gw, { status: 'open', limit: OPEN_LIMIT }, () => false),
+      readPages(gw, { limit: VISIT_PAGE }, (page) => upTo === undefined || page.some((v) => v.id === upTo), signal),
+      readPages(gw, { status: 'open', limit: OPEN_LIMIT }, () => false, signal),
     ])
       .then(([shown, open]): boolean | Promise<boolean> => {
+        settled = true;
         if (!live(scope)) return false;
         if (mine !== turn.current) {
           // overtaken by an answer alone: what else changed is still unread, so read again after it
-          if (lastRead.current === mine) return readHead(fresh);
+          if (lastRead.current === mine) return readHead(fresh, signal);
           return false;
         }
         const read = [...open.rows, ...shown.rows.filter((v) => !open.rows.some((o) => o.id === v.id))];
@@ -467,8 +478,10 @@ export function useSiteVisits() {
         void withinWait(() => settleFiledVisitPhotos(owner, scope.projectId, sentAt, heard, listed, spoken)).then(() => { if (live(scope)) readKept(); }, () => {});
         return true;
       })
-      // the latest read failed before any read answered (an overtaken first read included): offer Try again
+      // the latest read failed before any read answered (an overtaken first read included): offer Try again. A read
+      // stopped while it was the newest gave its turn back to the screen then, so it is overtaken here and says nothing
       .catch(() => {
+        settled = true;
         if (live(scope) && mine === lastRead.current && !answered.current) setLoad('error');
         return false;
       });
@@ -778,11 +791,17 @@ export function useSiteVisits() {
             // from beyond it), and one more try with the link it brings; none once the open is stopped
             if (ctrl.signal.aborted) return { fail: 'open' };
             const before = headReads.current;
-            let answered = await untilAborted(readHead(false), ctrl.signal);
-            // overtaken by a newer read (one sent after it): that read's answer serves, so "could not be opened" comes
-            // only after a read that failed
-            for (let n = 0; !answered && headReads.current === before && latestRead.current && n < 3; n += 1) {
-              answered = await untilAborted(latestRead.current, ctrl.signal);
+            // this open's read carries its signal: Cancel, the bound or leaving stops its page requests (Codex 4328350114)
+            let awaited = readHead(false, ctrl.signal);
+            let answered = await untilAborted(awaited, ctrl.signal);
+            // overtaken by a newer read (one sent after it): that read's answer serves, and so on to the newest, however
+            // many came after, until one answers or the open is stopped (Codex 4328350105). The read waited on that is
+            // still the newest and came back without answering failed: that ends the open, never a wait on it again
+            while (!answered && headReads.current === before) {
+              const newest = latestRead.current;
+              if (!newest || newest === awaited) break;
+              awaited = newest;
+              answered = await untilAborted(newest, ctrl.signal);
             }
             answered ||= headReads.current !== before;
             let again = answered ? urlIn(headRead.current) : undefined;
