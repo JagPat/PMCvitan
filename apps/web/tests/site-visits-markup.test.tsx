@@ -747,6 +747,44 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
           await act(async () => { for (const g of state.gates) g(); });
           expect(await screen.findByTestId('sv-visit-v-other')).toBeTruthy();
         });
+
+        it('sends no read on Cancel once the open’s own read has answered: it has nothing to hand back (pins `!settled`)', async () => {
+          // mount's first read answers with the newer visits; the open's own read answers with the old visit's fresh link
+          let reads = 0;
+          const gw = await openWith((q) => {
+            if (q?.status === 'open') return Promise.resolve([]);
+            if (q?.before) return Promise.resolve(older(null));
+            reads += 1;
+            return Promise.resolve(reads === 1 ? newer : [{ ...old, files: [stored({ url: '/media/m-1?t=9.fresh' })] }]);
+          }, async () => {
+            await act(async () => {});
+            // the expired link fails; the fresh one is held, so Cancel lands during the second download
+            const held = heldFetch();
+            vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit) => (url.includes('fresh') ? held.fetch(url, init) : Promise.resolve(new Response('', { status: 403 })))));
+          });
+          await vi.waitFor(() => expect(vi.mocked(fetch).mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('1.old'), expect.stringContaining('9.fresh')]));
+          expect(reads).toBe(2);
+          const asked = gw.listSiteVisits!.mock.calls.length;
+          await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
+          await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+          expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
+          expect(screen.queryByRole('alert')).toBeNull();
+        });
+
+        it('sends no read into the new project when a project switch stops the open: only that project’s own fresh read (pins `live(scope)`)', async () => {
+          const { state, list } = server();
+          const gw = await openWith(list, async () => { await act(async () => {}); state.holding = true; });
+          gw.switchProject = vi.fn(() => new Promise(() => {}));
+          // the open's own read is out, and the newest, when the project changes: the switch stops the open
+          await vi.waitFor(() => expect(state.gates).toHaveLength(2));
+          const asked = gw.listSiteVisits!.mock.calls.length;
+          state.holding = false;
+          await act(async () => { void useStore.getState().switchProject('other'); });
+          await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+          expect(screen.queryByRole('dialog')).toBeNull();
+          // one first page and one open read: the new project's own; the stopped read hands nothing back into it
+          expect(gw.listSiteVisits!.mock.calls.slice(asked).map(([q]) => (q as Q)?.status ?? 'page')).toEqual(['page', 'open']);
+        });
       });
     });
   });
