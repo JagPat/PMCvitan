@@ -285,6 +285,60 @@ describe('#482 QA company lock (live PG)', () => {
     expect(await t.prisma.membership.count({ where: { userId: qa2 } })).toBe(0);
   });
 
+  it('marking reads a QA account\'s other companies without a lock: it never waits, and refuses while any other membership is visible', async () => {
+    // org_qa_lock holds only its own company's row (the UPDATE); the Q2 read of the person's other companies takes no
+    // lock, so it can wait on nothing and adds no lock cycle. Each case below finishes while the other write is open.
+    const holdOpen = async (write: (tx: Prisma.TransactionClient) => Promise<unknown>) => {
+      let written!: () => void;
+      let release!: () => void;
+      const wrote = new Promise<void>((r) => (written = r));
+      const released = new Promise<void>((r) => (release = r));
+      const done = t.prisma.$transaction(async (tx) => {
+        await write(tx);
+        written();
+        await released;
+      }, { timeout: 30_000 });
+      await Promise.race([wrote, done]);
+      return { release: () => { release(); return done; } };
+    };
+    const qaOnly = async (orgId: string) => (await t.prisma.org.findUniqueOrThrow({ where: { id: orgId } })).qaOnly;
+
+    // two companies sharing a QA account, marked at the same moment: each reads the other unmarked, so both refuse
+    const a = await company();
+    const b = await company();
+    const shared = await person(a.projectId, true);
+    await before(async () => {
+      await joinOrg(a.orgId, shared);
+      await joinProject(b.projectId, shared);
+    });
+    const both = await Promise.allSettled([mark(a.orgId), mark(b.orgId)]);
+    expect(both.map((r) => r.status)).toEqual(['rejected', 'rejected']);
+    expect([await qaOnly(a.orgId), await qaOnly(b.orgId)]).toEqual([false, false]);
+
+    // marking while the account is being removed from the other company: refused until the removal commits, then marked
+    const removing = await holdOpen((tx) => tx.$executeRawUnsafe(
+      `UPDATE "Membership" SET "status" = 'removed' WHERE "userId" = $1 AND "projectId" = $2`, shared, b.projectId));
+    await expect(mark(a.orgId)).rejects.toThrow(/still belongs to company/);
+    await removing.release();
+    await mark(a.orgId);
+    expect(await qaOnly(a.orgId)).toBe(true);
+
+    // marking while the account is being added to another company: an unmarked one refuses the add whatever the mark does,
+    // and a marked one is not read, so the mark goes through while the add is still open, and both hold once it commits
+    const c = await company();
+    const shared2 = await person(c.projectId, true);
+    await before(() => joinOrg(c.orgId, shared2));
+    const plain = await company();
+    await expect(joinProject(plain.projectId, shared2)).rejects.toThrow(/is a QA account, and company/);
+    const qaOther = await company();
+    await mark(qaOther.orgId);
+    const adding = await holdOpen((tx) => tx.membership.create({ data: { projectId: qaOther.projectId, userId: shared2, role: 'engineer', status: 'active' } }));
+    await mark(c.orgId);
+    await adding.release();
+    expect([await qaOnly(c.orgId), await qaOnly(qaOther.orgId)]).toEqual([true, true]);
+    expect(await t.prisma.membership.count({ where: { userId: shared2, projectId: qaOther.projectId, status: 'active' } })).toBe(1);
+  });
+
   it('the file re-runs over itself and keeps every marked company and refusal', async () => {
     const c = await company();
     await mark(c.orgId);
