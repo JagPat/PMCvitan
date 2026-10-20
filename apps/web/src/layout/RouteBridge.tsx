@@ -75,6 +75,10 @@ export function RouteBridge() {
   // the Cancels already answered here: a new one (the person picked Cancel, not merely was asked) has the next pass
   // replace the URL it corrects; a switch they continued pushes its entry as any switch does (#1028 r2, 4330762359)
   const seenCancels = useRef(leaveCancels);
+  // a Cancel that left the URL naming a project that was not opened: that entry is put back in place once the pass can
+  // navigate (a load may be running). A Cancel with nothing to put back is spent at once, so it never rewrites the
+  // entry of a later switch the person continued (#1028 r2 re-check G1)
+  const putBack = useRef(false);
   // B6 — the item a URL CHANGE asked for, held until its project is active and loaded (a deep link
   // into another project, or a cold API load, empties the project scope that holds it), then
   // adopted once. Only a URL change sets it, so a stale URL never overwrites an in-app selection.
@@ -216,10 +220,15 @@ export function RouteBridge() {
     // the question is still open: the URL waits for its answer. Once it closes, a switch that went on is navigated as
     // any switch is; one that was cancelled has its URL put back in place
     if (live.leaveConfirm !== null) return;
+    if (live.leaveCancels !== seenCancels.current) {
+      seenCancels.current = live.leaveCancels;
+      const named = parseLocation(location.pathname).projectId;
+      putBack.current = !!named && named !== live.activeProjectId;
+    }
     if (live.pendingProjectId !== null || live.projectLoadState === 'switching' || live.projectLoadState === 'loading') return;
     // a Cancel answered while a load runs is still put back once the load is done (#1028 r2 check G3)
-    const wasCancelled = live.leaveCancels !== seenCancels.current;
-    seenCancels.current = live.leaveCancels;
+    const wasCancelled = putBack.current;
+    putBack.current = false;
     // a routed item for a project that was not opened (the switch was cancelled) is never adopted later
     if (pendingItem.current && pendingItem.current.projectId !== live.activeProjectId) pendingItem.current = null;
     const target = pathForScreen(live.screen, live.activeProjectId, routeItemOf(live));

@@ -209,6 +209,21 @@ describe('create project from a source the server refuses to copy', () => {
       expect(calls.switchProject).not.toHaveBeenCalled();
     });
 
+    it('a create answered while a switch to another project is asked about leaves that question as it is (#1028 r2 re-check G3)', async () => {
+      const { gw, create, calls } = fakeGateway();
+      s()._setGateway(gw);
+      unkept();
+      const r = mount();
+      fireEvent.click(createButton(r));
+      await settle();
+      await act(async () => { expect(await s().switchProject('p-other')).toBe('asked'); });
+      create.resolve({ id: 'p-new', name: 'Residence at Thaltej', short: 'Thaltej' });
+      await settle();
+      expect(s().leaveConfirm).toEqual({ action: 'switch', projectId: 'p-other', targetScreen: undefined, targetItem: undefined });
+      expect(s().toast).toBe(QW.createdOpenLater.en);
+      expect(calls.switchProject).not.toHaveBeenCalled();
+    });
+
     it('Continue opens the new project', async () => {
       const { gw, create, calls } = fakeGateway();
       s()._setGateway(gw);

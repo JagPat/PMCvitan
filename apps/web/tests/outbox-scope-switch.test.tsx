@@ -57,6 +57,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   useStore.getState()._setGateway(null);
   localStorage.clear();
+  sessionStorage.clear();
 });
 
 describe('a project switch onto a queue that cannot be read (WEB-02)', () => {
@@ -378,6 +379,76 @@ describe('the scope change itself, before the new scope loads (WEB-02)', () => {
     expect(useStore.getState().toast).toBe(QW.unkeptLost.en.replace('{n}', '1'));
   });
 
+  it.each([
+    ['email code', (gw: Record<string, unknown>, answer: unknown) => {
+      gw.emailOtpVerify = vi.fn(async () => answer);
+      useStore.setState((st) => { st.access.email = 'other@example.com'; st.access.otp = '1234'; });
+      useStore.getState().emailOtpVerify();
+    }],
+    ['password setup', (gw: Record<string, unknown>, answer: unknown) => {
+      gw.passwordCredentialComplete = vi.fn(async () => answer);
+      useStore.setState((st) => { st.access.passwordSetupToken = 'setup-1'; });
+      useStore.getState().completePasswordSetup('a-long-password-1', 'a-long-password-1');
+    }],
+    ['phone code', (gw: Record<string, unknown>, answer: unknown) => {
+      gw.verifyOtp = vi.fn(async () => answer);
+      useStore.setState((st) => { st.access.who = 'team'; st.access.phone = '9999999999'; st.access.otp = '1234'; st.access.codeLength = 4; });
+      useStore.getState().otpVerify();
+    }],
+  ] as const)('a %s sign-in as someone else asks first, saves no session while asked, and Continue adopts it (#1028 r2 re-check G4)', async (_label, signIn) => {
+    const gw = signedInOnP1([]) as unknown as Record<string, unknown>;
+    const other = `h.${btoa(JSON.stringify({ sub: 'u-other' }))}.s`;
+    oneUnkept();
+    await act(async () => { signIn(gw, { role: 'engineer', token: other, projectId: P1 }); });
+    await vi.waitFor(() => expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'signIn' })));
+    expect(useStore.getState().sessionToken).toBe(token);
+    // held, not adopted: a reload now could not restore the other person's session
+    expect(sessionStorage.getItem('vitan.session.v1')).toBeNull();
+    keptA2();
+    act(() => useStore.getState().confirmLeave());
+    expect(useStore.getState().sessionToken).toBe(other);
+    expect(useStore.getState().outbox).toEqual([]);
+  });
+
+  it('a sign-in answer that lands while another question is open never replaces it, and is not adopted (#1028 r2 re-check G3)', async () => {
+    const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { login: ReturnType<typeof vi.fn> };
+    const other = `h.${btoa(JSON.stringify({ sub: 'u-other' }))}.s`;
+    gw.login = vi.fn(async () => ({ role: 'engineer', token: other, projectId: P1 }));
+    oneUnkept();
+    expect(await useStore.getState().switchProject(P2)).toBe('asked');
+    await act(async () => { useStore.getState().login('other@example.com', 'pw'); });
+    await vi.waitFor(() => expect(gw.login).toHaveBeenCalled());
+    await act(async () => {});
+    expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch', projectId: P2 }));
+    expect(useStore.getState().sessionToken).toBe(token);
+    expect(sessionStorage.getItem('vitan.session.v1')).toBeNull();
+    keptA2();
+  });
+
+  it('archiving the open project while another question is open never replaces it, and sends nothing (#1028 r2 re-check G3)', async () => {
+    const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { deleteProject: ReturnType<typeof vi.fn> };
+    gw.deleteProject = vi.fn(async () => {});
+    oneUnkept();
+    expect(await useStore.getState().switchProject(P2)).toBe('asked');
+    act(() => useStore.getState().deleteProject('o', P1));
+    expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch', projectId: P2 }));
+    expect(gw.deleteProject).not.toHaveBeenCalled();
+  });
+
+  it('after a sign-out on a push-capable browser, the next session asks again: the finished teardown is not still under way (#1028 r2 re-check G3)', async () => {
+    const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { pushUnlink?: ReturnType<typeof vi.fn> };
+    gw.pushUnlink = vi.fn(async () => ({}));
+    vi.stubGlobal('navigator', { ...globalThis.navigator, serviceWorker: { ready: Promise.resolve({ pushManager: { getSubscription: async () => null } }) } });
+    vi.stubGlobal('PushManager', function PushManager() {} as unknown);
+    act(() => useStore.getState().requestSignOut());
+    await vi.waitFor(() => expect(useStore.getState().sessionToken).toBeNull());
+    // signed in again on P1, an act not kept: a switch asks
+    useStore.setState({ sessionToken: token, sessionUserId: USER, activeProjectId: P1, role: 'engineer' });
+    useStore.getState().hydrateOutbox();
+    oneUnkept();
+    expect(await useStore.getState().switchProject(P2)).toBe('asked');
+  });
+
   it('a sign-in to the same person and project is adopted without a question, and keeps the acts', async () => {
     const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { login: ReturnType<typeof vi.fn> };
     gw.login = vi.fn(async () => ({ role: 'engineer', token, projectId: P1 }));
@@ -492,8 +563,10 @@ describe('the scope change itself, before the new scope loads (WEB-02)', () => {
     vi.stubGlobal('PushManager', function PushManager() {} as unknown);
     oneUnkept();
     act(() => useStore.getState().setRole('pmc'));
+    const generation = useStore.getState().projectScopeGeneration;
     act(() => useStore.getState().confirmLeave());
-    // the unlink is out: the role has not changed yet, and a second tap asks nothing
+    // the unlink is out: the role has not changed yet, and a second tap asks nothing and starts no second teardown
+    // (#1028 r2 re-check G2)
     expect(useStore.getState().role).toBe('engineer');
     act(() => useStore.getState().setRole('pmc'));
     expect(useStore.getState().leaveConfirm).toBeNull();
@@ -502,6 +575,9 @@ describe('the scope change itself, before the new scope loads (WEB-02)', () => {
     expect(useStore.getState().outbox).toEqual([]);
     expect(useStore.getState().toast).toBe(QW.unkeptLost.en.replace('{n}', '1'));
     expect(useStore.getState().leaveConfirm).toBeNull();
+    // one teardown: the scope moved once, and a load that lands now is not let go by a second
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(useStore.getState().projectScopeGeneration).toBe(generation + 1);
   });
 
   it('sign-out with acts this phone did not keep asks first; with none it signs out at once', () => {

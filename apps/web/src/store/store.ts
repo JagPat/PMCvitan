@@ -2548,6 +2548,8 @@ export const useStore = create<Store>()(
     let leaveConfirmed = false;
     /** a persona switch or sign-out waiting on its push unlink before it lets go of this scope */
     let teardownPending = false;
+    /** the persona a pending persona-switch teardown is switching to */
+    let teardownRole: Role | null = null;
     /** WEB-02: a leave is already under way (a project switch out, or a persona switch or sign-out in its push unlink):
      *  acts not kept now go with it, so nothing asks again; a second question would outlive the leave (#1028 r2 check
      *  G3) */
@@ -3210,14 +3212,15 @@ export const useStore = create<Store>()(
       // WEB-02: a persona switch leaves this scope, so acts no write stored are lost by it: the person is asked first,
       // as for a project switch or sign-out (`confirmLeave` goes on) (#1028 r2, 4330762383)
       // the persona already active: nothing changes, and nothing is let go (#1028 r2 check G1)
-      if (role === get().role) return;
+      // nor the persona a switch under way is already switching to (#1028 r2 re-check G2)
+      if (role === get().role || (teardownPending && role === teardownRole)) return;
       if (!leaveConfirmed && (get().leaveConfirm !== null || (unkeptCount(get()) > 0 && !leaveUnderway()))) {
         // an open question is never replaced by another (#1028 r2 check G4)
         if (get().leaveConfirm === null) set((s) => { s.leaveConfirm = { action: 'persona', role }; });
         return;
       }
       const first = screensFor(role)[0]?.key ?? 'inbox';
-      const applySwitch = () => { teardownPending = false; clearSession(); set((s) => {
+      const applySwitch = () => { teardownPending = false; teardownRole = null; clearSession(); set((s) => {
         s.role = role;
         s.screen = first;
         s.notifOpen = false;
@@ -3263,6 +3266,7 @@ export const useStore = create<Store>()(
       if (gateway && (get().sessionToken !== null || get().sessionUserId !== null) && pushCapable) {
         const gw = gateway;
         teardownPending = true;
+        teardownRole = role;
         void Promise.race([
           unlinkPushOnSignOut(gw),
           new Promise<void>((resolve) => setTimeout(resolve, 1500)),
@@ -3317,6 +3321,7 @@ export const useStore = create<Store>()(
      *  push-capable browser (round-1 Codex F1) while every other environment stays synchronous. */
     completeSignOut: () => {
       teardownPending = false;
+      teardownRole = null;
       clearSession();
       restoreSwitchTarget = null;
       // WEB-02: acts no write stored leave with the session; a sign-out the person asked for was confirmed first

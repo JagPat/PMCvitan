@@ -196,6 +196,42 @@ describe('#948 Codex round 1', () => {
     expect(useStore.getState().sessionToken).toBe(valid);
   });
 
+  /** a restored session on qa-test-d135, offline, holding one act this phone did not keep */
+  async function restoredWithUnkept(gw: Record<string, unknown>) {
+    const useStore = await freshStore();
+    globalThis.sessionStorage.setItem('vitan.session.v1', JSON.stringify({ token: valid, role: 'pmc', projectId: 'qa-test-d135' }));
+    useStore.getState().restoreSession();
+    useStore.getState()._setGateway({ authToken: valid, ...gw } as never);
+    useStore.setState({ online: false });
+    useStore.getState().hydrateOutbox();
+    const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
+    useStore.getState().startActivity('A-1');
+    write.mockRestore();
+    expect(useStore.getState().queueUnkept).toHaveLength(1);
+    return useStore;
+  }
+
+  it('a sign-out the server forces (401) asks nothing and says how many updates were lost (#1028 r2 re-check G4)', async () => {
+    const refused = Object.assign(new Error('/projects/qa-test-d135/snapshot 401'), { status: 401 });
+    const useStore = await restoredWithUnkept({ snapshot: vi.fn().mockRejectedValue(refused) });
+    useStore.getState().retryProjectLoad();
+    await vi.waitFor(() => expect(useStore.getState().sessionToken).toBeNull());
+    expect(useStore.getState().leaveConfirm).toBeNull();
+    expect(useStore.getState().outbox).toEqual([]);
+    expect(useStore.getState().toast).toMatch(/^1 updates that were not kept on this phone were lost\.$/);
+  });
+
+  it('a link to another project, opened on a restored session holding an act not kept, asks before it switches (#1028 r2 re-check G4)', async () => {
+    window.history.replaceState(null, '', '/projects/villa-b/decisions');
+    const switchProject = vi.fn();
+    const listMemberships = vi.fn().mockResolvedValue(['qa-test-d135', 'villa-b'].map((projectId) => ({ projectId, name: projectId, short: projectId, role: 'pmc' })));
+    const useStore = await restoredWithUnkept({ listMemberships, switchProject, myOrgs: vi.fn().mockResolvedValue([]) });
+    useStore.getState().loadOrgData();
+    await vi.waitFor(() => expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch', projectId: 'villa-b' })));
+    expect(switchProject).not.toHaveBeenCalled();
+    expect(useStore.getState().activeProjectId).toBe('qa-test-d135');
+  });
+
   it('a saved session whose role is not a web role is dropped, never adopted (no blank page on reload)', async () => {
     const useStore = await freshStore();
     for (const role of ['owner', 'worker']) {

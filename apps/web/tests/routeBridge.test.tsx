@@ -493,6 +493,44 @@ describe('RouteBridge — a routed switch the person cancels at the "not kept" q
     expect(gw.switchProject).not.toHaveBeenCalled();
   });
 
+  it('a switcher Cancel answered during a load is never applied to a later switch the person continued: Back still reaches the first project (#1028 r2 re-check G1)', async () => {
+    const gw = { switchProject: vi.fn().mockResolvedValue({ token: 'JWT-c', role: 'pmc', projectId: 'project-c' }) };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.memberships = [
+        { projectId: 'ambli', name: 'Residence at Ambli', short: 'Residence at Ambli', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-c', name: 'C', short: 'C', role: 'pmc', orgId: 'o', orgName: 'V' },
+      ];
+      st.outbox = [{ t: 'startActivity', activityId: 'A-1', idempotencyKey: 'k-1' }];
+      st.queueUnkept = ['k:k-1'];
+    });
+    render(
+      <MemoryRouter initialEntries={['/projects/ambli/schedule', '/projects/ambli/dashboard']} initialIndex={1}>
+        <RouteBridge />
+        <PathProbe />
+        <NavProbe />
+      </MemoryRouter>,
+    );
+    await flush();
+    // the open project is loading; the switcher asks for project-b, and the person cancels
+    act(() => { useStore.setState((st) => { st.projectLoadState = 'loading'; }); });
+    await act(async () => { expect(await useStore.getState().switchProject('project-b')).toBe('asked'); });
+    act(() => useStore.getState().cancelLeave());
+    await flush();
+    // still in that load, the switcher asks for project-c, and the person continues
+    await act(async () => { expect(await useStore.getState().switchProject('project-c')).toBe('asked'); });
+    await act(async () => { useStore.getState().confirmLeave(); });
+    await flush();
+    useStore.setState((st) => { st.projectLoadState = 'ready'; });
+    await flush();
+    expect(useStore.getState().activeProjectId).toBe('project-c');
+    expect(currentPath).toMatch(/^\/projects\/project-c\//);
+    act(() => go(-1));
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+  });
+
   it('a switch from the project switcher the person cancels leaves the URL and history as they were', async () => {
     const gw = { switchProject: vi.fn() };
     useStore.getState()._setGateway(gw as unknown as ApiGateway);
