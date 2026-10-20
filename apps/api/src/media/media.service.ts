@@ -98,6 +98,19 @@ export class MediaService {
     return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString() };
   }
 
+  /** The photo a marked-up copy is drawn on: an image of this project that is a file on the same visit. The copy takes
+   *  its camera time and location. The database refuses a copy of anything else as well (#990, K1 and K4). */
+  private async markupSource(
+    db: Prisma.TransactionClient | PrismaService, projectId: string, visitId: string, mediaId: string,
+  ): Promise<{ id: string; takenAt: string | null; geoLat: number | null; geoLng: number | null }> {
+    const row = await db.media.findFirst({ where: { projectId, id: mediaId }, select: { id: true, mime: true, takenAt: true, geoLat: true, geoLng: true } });
+    if (!row || !(await this.siteVisitFiles.isFileOnVisit(db, projectId, visitId, mediaId))) {
+      throw new NotFoundException('The photo to mark up is not on this site visit');
+    }
+    if (!row.mime.startsWith('image/')) throw new BadRequestException('Only a photo can be marked up');
+    return { id: row.id, takenAt: row.takenAt, geoLat: row.geoLat, geoLng: row.geoLng };
+  }
+
   /** Persist an uploaded photo and return its id + a signed, resolvable URL.
    *  IDEMPOTENT per (projectId, clientKey): replaying the same key returns the
    *  already-stored row — an offline photo uploads exactly once (Phase 1 Task 4). */
@@ -110,6 +123,14 @@ export class MediaService {
     // about another photo's key and leaves nothing in the bucket.
     if (input.siteVisit && !isSiteVisitFile(input)) {
       throw new BadRequestException('A file on a site visit is filed on the visit only, not on a log, a decision or an inspection');
+    }
+    // Stage 1 markup, site visits first (Jagrut, 19 Oct 2026): a marked-up copy goes on the visit beside the photo it
+    // was drawn on, and keeps that photo's camera time and location, which the device does not send again
+    if (input.sourceMediaId !== undefined) {
+      if (!isSiteVisitFile(input)) throw new BadRequestException('A marked-up copy is added on a site visit, beside the photo it was drawn on');
+      if (input.takenAt !== undefined || input.geoLat !== undefined || input.geoLng !== undefined) {
+        throw new BadRequestException('A marked-up copy keeps the camera time and location of the photo it was drawn on');
+      }
     }
     if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input) && !isSiteVisitFile(input)) {
       throw new ForbiddenException('Your role may add a site photo, not evidence linked to a record');
@@ -129,6 +150,7 @@ export class MediaService {
     // A visit file: the visit is this project's, not closed, and the caller is on it (an early no, as above)
     const visit = input.siteVisit;
     if (visit) await this.siteVisitFiles.assertMayAdd(projectId, visit.visitId, user.sub);
+    const source = visit && input.sourceMediaId ? await this.markupSource(this.prisma, projectId, visit.visitId, input.sourceMediaId) : null;
     // Project-owned references: a photo may only point at THIS project's decision/log.
     const decisionId = await this.decisions.resolveRefInProject(projectId, input.decisionId, 'decisionId');
     // Task 10 — a daily-log reference is validated through the daily-log module's query, not `project-ref`.
@@ -167,6 +189,8 @@ export class MediaService {
         // a visit file's first statements are a visit act's: the readiness lock, the tree lock and the visit row, and
         // the adder is judged again under them (#792 SV2; the order that keeps a place's removal from interleaving)
         if (visit) await this.siteVisitFiles.lockForFile(tx, projectId, visit.visitId, user.sub);
+        // ... and a copy's original is asked again under them (a visit's file is never taken off it, nor deleted)
+        if (visit && source) await this.markupSource(tx, projectId, visit.visitId, source.id);
         // first statement otherwise: the place's publication under the tree lock's shared side (a refusal here
         // rolls back and goes through the earned object cleanup below)
         await resolvePublishedProjectNode(tx, projectId, nodeId);
@@ -180,9 +204,10 @@ export class MediaService {
             storageKey: key,
             data: bucketUrl ? null : bytes, // bucket mode drops the bytes; stub keeps them
             url: null, // never store a public bucket URL (private-file delivery)
-            geoLat: input.geoLat,
-            geoLng: input.geoLng,
-            takenAt: input.takenAt,
+            geoLat: source ? source.geoLat : input.geoLat,
+            geoLng: source ? source.geoLng : input.geoLng,
+            takenAt: source ? source.takenAt : input.takenAt,
+            sourceMediaId: source?.id ?? null,
             decisionId,
             dailyLogId,
             nodeId,
