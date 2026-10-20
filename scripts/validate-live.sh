@@ -49,10 +49,22 @@ if [ "$RUN_MEDIA" = "1" ] && [ -n "${tok:-}" ]; then
       -H 'Content-Type: application/json' -d "{\"kind\":\"progress\",\"mime\":\"image/png\",\"data\":\"$PNG\"}")
   url=$(printf '%s' "$m" | jqget url)
   id=$(printf '%s' "$m" | jqget id)
+  # Both modes return the same relative `/media/…` path, so the mode is read from what that path
+  # answers: the DB stub serves the bytes (200); R2 redirects (302) to a signed GET on the
+  # S3_ENDPOINT host. Plain GETs throughout: the signed link is bound to GET, and R2 refuses HEAD on it.
   case "$url" in
-    https://*) echo "MEDIA  : LIVE  (R2 — absolute url: $url)";;
-    /media/*)  echo "MEDIA  : STUB  (DB — relative url: $url)";;
-    *)         echo "MEDIA  : ?     (unexpected: $m)";;
+    /media/*)
+      first=$(curl -sS -m 20 -o /dev/null -w '%{http_code} %{redirect_url}' "$API$url")
+      code=${first%% *}; signed=${first#* }
+      if [ "$code" = "200" ]; then
+        echo "MEDIA  : STUB  (DB — $url served directly, HTTP 200)"
+      elif [ "$code" = "302" ] && [ -n "$signed" ]; then
+        got=$(curl -sS -m 20 -o /dev/null -w '%{http_code} %{content_type}' "$signed")
+        echo "MEDIA  : LIVE  (R2 — $url → 302 to ${signed%%\?*}; signed GET answered: $got)"
+      else
+        echo "MEDIA  : ?     (unexpected answer from $url: $first)"
+      fi;;
+    *) echo "MEDIA  : ?     (unexpected: $m)";;
   esac
   echo "         (created test media id: $id — irreversible via API)"
 elif [ "$RUN_MEDIA" = "1" ]; then

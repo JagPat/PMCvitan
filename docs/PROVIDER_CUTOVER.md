@@ -129,11 +129,11 @@ curl -sS -X POST $API/projects/ambli/media -H "Authorization: Bearer $TOK" \
   -H 'Content-Type: application/json' -d "{\"kind\":\"progress\",\"mime\":\"image/png\",\"data\":\"$PNG\"}"
 ```
 - **STUB:** `{"id":"…","url":"/media/…"}` — **relative** URL (DB).
-- **LIVE (R2):** the same relative signed path. `curl -sSI "$API<that url>"` → HTTP 302 to a signed link on the `S3_ENDPOINT` host, and following it (`curl -sSIL`) → 200, `content-type: image/png`. (For the stub, the same `curl -sSI` → 200, `content-length: 70`.)
+- **LIVE (R2):** the same relative signed path. `curl -sS -o /dev/null -D - "$API<that url>"` → HTTP 302 to a signed link on the `S3_ENDPOINT` host, and following it with a plain GET (`curl -sS -o /dev/null -D - -L "$API<that url>"`) → 200, `content-type: image/png`. Use GET, not `-I`: the signed link is signed for GET, and R2 refuses a HEAD on it. (For the stub, the first request → 200, `content-length: 70`.) `scripts/validate-live.sh --media` makes the same two requests and reports STUB or LIVE.
 
 **Failure modes:** wrong endpoint/region → send fails; token lacks write → 403; a key without Object Read → signed links 403 and images fail in the UI; wrong var names (`S3_ACCESS_KEY` vs `S3_ACCESS_KEY_ID`) → gate silently stays false, no error.
 
-**Rollback:** blank `S3_ACCESS_KEY_ID` + `S3_SECRET_ACCESS_KEY` (or all four) + redeploy → back to DB stub.
+**Rollback:** redeploy the previous release with the same S3 vars kept. Do **not** blank the S3 vars once any file is in the bucket: a bucket-backed row holds no bytes, and with the gate off the app cannot sign a read (`presignGet` returns null), so every such photo and drawing answers 404. An older row that still carries a public `url` would redirect to the `r2.dev` address, which step 4 keeps disabled. Going back to the DB stub therefore needs every object copied back into its row first; no tool for that exists today.
 
 ⚠️ **Prod side effects:** every validation upload writes a durable `media` row under `projectId=ambli, kind=progress`, fires a realtime `changed` (connected clients refetch), and — in **live** mode — puts a real object in the R2 bucket. There is **no DELETE endpoint** (`MediaController` is POST + GET only), so test artifacts are removable **only** via the DB / bucket console. The earlier probe already left `media` id `cmr5rf3160001n33ty72mq2an` in prod. Use a maintenance window or accept the test pixel in the gallery.
 
