@@ -40,12 +40,20 @@ if [ "$RUN_OTP" = "1" ] && ! [[ "${TEST_PHONE:-}" =~ ^[0-9]{10}$ ]]; then
   # No fallback number: once MSG91 is live, a default would send a real, billed SMS to a stranger.
   echo "OTP    : FAIL  (--otp needs TEST_PHONE set to a 10-digit number you control; nothing was sent)"; FAILED=1
 elif [ "$RUN_OTP" = "1" ]; then
-otp=$(curl -sS -m 15 -X POST "$API/auth/otp/request" -H 'Content-Type: application/json' \
+resp=$(curl -sS -m 15 -w '\n%{http_code}' -X POST "$API/auth/otp/request" -H 'Content-Type: application/json' \
       -d "{\"phone\":\"$TEST_PHONE\",\"projectId\":\"$PROJECT\"}")
+rc=$?
+code=${resp##*$'\n'}; otp=${resp%$'\n'*}
 live=$(printf '%s' "$otp" | jqget live)
 dev=$(printf '%s' "$otp" | jqget devCode)
-if [ "$live" = "True" ] || [ "$live" = "true" ]; then echo "OTP    : LIVE  (live:true, no devCode — real SMS sent to TEST_PHONE)"
-else echo "OTP    : STUB  (live:false, devCode:$dev)"; fi
+ch=$(printf '%s' "$otp" | jqget channel)
+# Only an explicit live:true or live:false answer counts. A refused send (MSG91 rejecting it
+# answers 503), any other status or no answer is a FAIL, never read as the stub.
+if [ "$rc" != "0" ]; then echo "OTP    : FAIL  (no answer from the API: curl exit $rc)"; FAILED=1
+elif [ "${code:0:1}" != "2" ]; then echo "OTP    : FAIL  (the OTP request answered HTTP $code, not a sent code)"; FAILED=1
+elif [ "$live" = "True" ]; then echo "OTP    : LIVE  (live:true via ${ch:-?}, no devCode — a real code was sent for TEST_PHONE)"
+elif [ "$live" = "False" ] && [ -n "$dev" ]; then echo "OTP    : STUB  (live:false, devCode:$dev)"
+else echo "OTP    : FAIL  (HTTP $code, but the answer has no live:true or live:false with a devCode)"; FAILED=1; fi
 else
   echo "OTP    : skipped (pass --otp to test; it sends a real SMS once MSG91 is live)"
 fi
