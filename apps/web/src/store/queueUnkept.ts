@@ -13,6 +13,17 @@ export const queueActIdent = (o: OutboxOp): string => {
 
 type UnkeptInputs = { outbox: OutboxOp[]; queueUnkept: string[] };
 
+/** a day-log draft no write stored (its key could not be read, or the write failed) is "not kept" too, under these
+ *  marks: no act's identity starts with `draft:` */
+export const DRAFT_UNKEPT = { current: 'draft:current', legacy: 'draft:legacy' } as const;
+
+/** how many updates held in memory would be lost by leaving: the acts never stored, and each draft never stored */
+export function unkeptCount(s: UnkeptInputs & { dailyLogDraft: unknown; legacyDailyLogDraft: unknown }): number {
+  const drafts = (s.dailyLogDraft && s.queueUnkept.includes(DRAFT_UNKEPT.current) ? 1 : 0)
+    + (s.legacyDailyLogDraft && s.queueUnkept.includes(DRAFT_UNKEPT.legacy) ? 1 : 0);
+  return unkeptActs(s).length + drafts;
+}
+
 /** the acts in the queue now that were never stored */
 export function unkeptActs(s: UnkeptInputs): OutboxOp[] {
   if (s.queueUnkept.length === 0) return [];

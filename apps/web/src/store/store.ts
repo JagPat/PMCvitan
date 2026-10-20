@@ -73,7 +73,7 @@ import {
 import { routableScreensFor, screensFor } from '@/lib/screens';
 import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
-import { type DailyLogDraft, adoptLegacyDraft, dailyLogKey, draftAppliesTo, draftHoldsWork, legacyDraftExtras, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
+import { type DailyLogDraft, adoptLegacyDraft, canAdoptLegacyDraft, dailyLogKey, draftAppliesTo, draftHoldsWork, legacyDraftExtras, mergeHeldDraft, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type NodeCreatePending, type ProjectLoadState, type ProjectScope } from './projectScope';
 import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, planSeenChunks, reconcileSeen, type NotifSeenState } from '@/lib/notificationSeen';
 import type { MaterialsView } from './materials';
@@ -104,7 +104,7 @@ import { emitGuideOutcome, guideRunToken } from '@/guide/outcomes';
 import { saveSession, clearSession, loadSession } from '@/lib/sessionPersist';
 import { readDeviceLang } from '@/lib/langPreference';
 import { QW } from '@/lib/queueWords';
-import { queueActIdent, unkeptActs } from '@/store/queueUnkept';
+import { DRAFT_UNKEPT, queueActIdent, unkeptCount } from '@/store/queueUnkept';
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -422,7 +422,8 @@ export interface AppState {
   /** WEB-02 (#792): this scope's queue keys this phone holds but could not read at load (bad JSON, not a list, or
    *  storage refusing the read). They are never written; the shell says so, with "Set aside and continue".
    *  `failed` once a set-aside could not copy them. Memory only: the next load reads the keys again. */
-  queueUnreadable: { keys: string[]; failed: boolean } | null;
+  /** `readable`: keys listed again only because a draft in them could not be copied aside (they read) */
+  queueUnreadable: { keys: string[]; failed: boolean; readable?: string[] } | null;
   /** WEB-02 (#792): the queue key (`vitan.outbox.<sub>.<project>`) whose acts memory holds, set by `hydrateOutbox`;
    *  null from a scope change until that scope's load: no queue key is written meanwhile. '*' before the first load. */
   queueScope: string | null;
@@ -1725,24 +1726,32 @@ export const useStore = create<Store>()(
     // the kept-aside legacy draft (owner ruling, #692), under its own key in the same scope
     const legacyDailyLogDraftKey = (): string => `vitan.dailyLogDraft.legacy.${sessionSub()}.${get().activeProjectId}`;
     const persistDailyLogDraft = (): void => {
-      try {
-        const storage = globalThis.localStorage;
-        if (!storage) return;
-        // WEB-02: a draft key this phone could not read is never written or removed, nor any while memory holds
-        // another scope's queue
-        const blocked = get().queueUnreadable?.keys ?? [];
-        const q = get().queueScope;
-        if (q !== '*' && q !== outboxKey()) return;
-        const draft = get().dailyLogDraft;
-        if (blocked.includes(dailyLogDraftKey())) { /* left as it is */ } else if (!draft) storage.removeItem(dailyLogDraftKey());
-        else if (draft.projectId === get().activeProjectId) storage.setItem(dailyLogDraftKey(), JSON.stringify(draft));
-        // a draft for another project is never written under this project's key
-        const legacy = get().legacyDailyLogDraft;
-        if (blocked.includes(legacyDailyLogDraftKey())) { /* left as it is */ } else if (!legacy) storage.removeItem(legacyDailyLogDraftKey());
-        else if (legacy.projectId === get().activeProjectId) storage.setItem(legacyDailyLogDraftKey(), JSON.stringify(legacy));
-      } catch {
-        /* storage unavailable — the in-session draft still works */
-      }
+      // WEB-02: a draft key this phone could not read is never written or removed, nor any while memory holds
+      // another scope's queue
+      const q = get().queueScope;
+      if (q !== '*' && q !== outboxKey()) return;
+      const blocked = get().queueUnreadable?.keys ?? [];
+      /** write one draft key; false when a draft held here is not stored (its key is listed, or storage refused) */
+      const write = (key: string, draft: DailyLogDraft | null): boolean => {
+        if (blocked.includes(key)) return !draft; // left as it is
+        try {
+          const storage = globalThis.localStorage;
+          if (!storage) return !draft;
+          if (!draft) storage.removeItem(key);
+          // a draft for another project is never written under this project's key
+          else if (draft.projectId === get().activeProjectId) storage.setItem(key, JSON.stringify(draft));
+          return true;
+        } catch {
+          return !draft; // storage unavailable or full: the in-session draft still works, and is not kept
+        }
+      };
+      const marks: [string, boolean][] = [
+        [DRAFT_UNKEPT.current, write(dailyLogDraftKey(), get().dailyLogDraft)],
+        [DRAFT_UNKEPT.legacy, write(legacyDailyLogDraftKey(), get().legacyDailyLogDraft)],
+      ];
+      // a draft no write stored counts as "not kept", so a switch or sign-out asks before it is lost (#1028 r1)
+      const next = [...get().queueUnkept.filter((i) => !i.startsWith('draft:')), ...marks.filter(([, kept]) => !kept).map(([m]) => m)];
+      if (next.length !== get().queueUnkept.length || next.some((i, n) => i !== get().queueUnkept[n])) set((st) => { st.queueUnkept = next; });
     };
     /** A queued photo upload from an earlier release has no `clientKey`; give it one (#482), so each replay of it
      *  is the same photo on the server. Ops that already carry a key, and every other op, pass unchanged.
@@ -2442,7 +2451,7 @@ export const useStore = create<Store>()(
       }
       const unkept = new Set([...get().queueUnkept.filter((i) => !stored.has(i)), ...ops.filter((o) => !stored.has(queueActIdent(o))).map(queueActIdent)]);
       const held = new Set(get().outbox.map(queueActIdent));
-      const next = [...unkept].filter((i) => held.has(i));
+      const next = [...unkept].filter((i) => held.has(i) || i.startsWith('draft:'));
       if (next.length !== get().queueUnkept.length || next.some((i, n) => i !== get().queueUnkept[n])) set((st) => { st.queueUnkept = next; });
       return kept;
     };
@@ -2515,7 +2524,7 @@ export const useStore = create<Store>()(
     let leaveConfirmed = false;
     const leaveQueueScope = (): void => {
       if (get().queueScope === outboxKey()) return;
-      const lost = unkeptActs(get()).length;
+      const lost = unkeptCount(get());
       set((s) => {
         emptyQueueState(s);
         s.queueUnreadable = null;
@@ -3213,7 +3222,7 @@ export const useStore = create<Store>()(
      * With dev auth off, the AppShell auth-gate then shows the sign-in screen.
      */
     requestSignOut: () => {
-      if (unkeptActs(get()).length > 0) { set((s) => { s.leaveConfirm = { action: 'signOut' }; }); return; }
+      if (unkeptCount(get()) > 0) { set((s) => { s.leaveConfirm = { action: 'signOut' }; }); return; }
       get().signOut();
     },
     signOut: () => {
@@ -3252,7 +3261,7 @@ export const useStore = create<Store>()(
       clearSession();
       restoreSwitchTarget = null;
       // WEB-02: acts no write stored leave with the session; a sign-out the person asked for was confirmed first
-      const lost = unkeptActs(get()).length;
+      const lost = unkeptCount(get());
       set((s) => {
         s.sessionToken = null;
         s.userName = null;
@@ -5155,7 +5164,7 @@ export const useStore = create<Store>()(
     },
     switchProject: (projectId, targetScreen, targetItem) => {
       // WEB-02: acts no write stored are lost by a switch: the person is asked first (`confirmLeave` goes on)
-      if (!leaveConfirmed && gateway && projectId !== get().activeProjectId && unkeptActs(get()).length > 0) {
+      if (!leaveConfirmed && gateway && projectId !== get().activeProjectId && unkeptCount(get()) > 0) {
         set((s) => { s.leaveConfirm = { action: 'switch', projectId, targetScreen, targetItem }; });
         return Promise.resolve(false);
       }
@@ -6208,7 +6217,15 @@ export const useStore = create<Store>()(
     setAsideUnreadableQueue: () => {
       const listed = get().queueUnreadable;
       if (!listed) return;
-      const storage = globalThis.localStorage;
+      // reaching storage can itself throw (a browser that blocks it): nothing is moved, and the strip says so (#1028 r1)
+      let storage: Storage;
+      try {
+        storage = globalThis.localStorage;
+        if (!storage) throw new Error('no storage');
+      } catch {
+        set((s) => { s.queueUnreadable = { keys: listed.keys, failed: true }; });
+        return;
+      }
       const drafts = [dailyLogDraftKey(), legacyDailyLogDraftKey()];
       const readable = (key: string): boolean => (drafts.includes(key) ? readDraftKey(storage, key) !== null : readQueueKey(storage, key) !== null);
       const at = new Date().toISOString();
@@ -6221,8 +6238,17 @@ export const useStore = create<Store>()(
           const raw = storage.getItem(key);
           if (raw === null) return false;
           const aside = `vitan.unreadable.${key}.${at}`;
+          // a copy is never written over another (G2 re-check G-b): one already there keeps the key
+          if (storage.getItem(aside) !== null) { failed = true; return true; }
           storage.setItem(aside, raw);
           if (storage.getItem(aside) !== raw) { failed = true; return true; } // not the same bytes: keep the key
+          // another tab may have rewritten the key since it was read: only the bytes copied are removed. A key that
+          // now reads loads below; one still unreadable stays listed and is said not to be cleared (#1028 r1)
+          if (storage.getItem(key) !== raw) {
+            if (readable(key)) return false;
+            failed = true;
+            return true;
+          }
           storage.removeItem(key);
           return false;
         } catch {
@@ -6245,13 +6271,62 @@ export const useStore = create<Store>()(
       get().hydrateOutbox();
       const loaded = new Set(get().outbox.map(queueActIdent));
       const extra = held.filter((o) => !loaded.has(queueActIdent(o)));
+      // a draft held here meets the one another tab stored: merged, never replaced (#1028 r1). What cannot be merged is
+      // kept, never dropped: a draft of another log (r1 check G2) and a crew row another row took the place of (G2
+      // re-check G-c). An older release's draft (no log id) is the #692 legacy draft, so it takes the legacy slot when
+      // that is empty, its key is not listed, and a write of it there reads back (G-a); any other is copied aside under
+      // a name of its own, never over an existing copy (G-b), and the person is told (G-d). A copy refused leaves that
+      // slot as it was: memory keeps its own draft (not kept, so counted), the key stays as stored and listed again, and
+      // the strip says it could not be set aside. The photos are added when this tab could not read the key (G-e)
+      const st = get();
+      const draftKey = dailyLogDraftKey();
+      const legacyKey = legacyDailyLogDraftKey();
+      const sameDay = canAdoptLegacyDraft(heldLegacy ?? st.legacyDailyLogDraft, st.dailyLog, st.activeProjectId) ? st.dailyLog : null;
+      const current = mergeHeldDraft(st.dailyLogDraft, heldDraft, st.dailyLog, st.activeProjectId, listed.keys.includes(draftKey));
+      const legacy = mergeHeldDraft(st.legacyDailyLogDraft, heldLegacy, sameDay, st.activeProjectId, listed.keys.includes(legacyKey));
+      let legacyDraft = legacy.draft;
+      /** `draft` written to `key` and read back the same */
+      const wrote = (key: string, draft: DailyLogDraft): boolean => {
+        try {
+          const raw = JSON.stringify(draft);
+          storage.setItem(key, raw);
+          return storage.getItem(key) === raw;
+        } catch {
+          return false;
+        }
+      };
+      const losers: [string, DailyLogDraft][] = [];
+      for (const [key, loser] of [[draftKey, current.loser], [legacyKey, legacy.loser]] as const) {
+        if (!loser || !draftHoldsWork(loser)) continue;
+        if (!loser.logId && !legacyDraft && !get().queueUnreadable?.keys.includes(legacyKey) && wrote(legacyKey, loser)) legacyDraft = loser;
+        else losers.push([key, loser]);
+      }
+      for (const [key, rows] of [[draftKey, current.rows], [legacyKey, legacy.rows]] as const) if (rows) losers.push([key, rows]);
+      /** a copy aside of a draft, under a name no copy holds yet */
+      const copied = (key: string, draft: DailyLogDraft): boolean => {
+        try {
+          let n = 1;
+          while (storage.getItem(`vitan.unreadable.${key}.${at}.draft${n}`) !== null) n += 1;
+          return wrote(`vitan.unreadable.${key}.${at}.draft${n}`, draft);
+        } catch {
+          return false;
+        }
+      };
+      const stuck = [...new Set(losers.filter(([key, draft]) => !copied(key, draft)).map(([key]) => key))];
+      const kept = losers.filter(([key]) => !stuck.includes(key));
       set((s) => {
         s.outbox.push(...extra);
-        if (!s.dailyLogDraft && heldDraft) s.dailyLogDraft = heldDraft;
-        if (!s.legacyDailyLogDraft && heldLegacy) s.legacyDailyLogDraft = heldLegacy;
+        s.dailyLogDraft = castDraft(stuck.includes(draftKey) ? heldDraft : current.draft);
+        s.legacyDailyLogDraft = castDraft(stuck.includes(legacyKey) ? heldLegacy : legacyDraft);
         deriveQueueState(s);
-        if (s.queueUnreadable && failed) s.queueUnreadable.failed = true;
+        // a key listed again here reads: it is said to be not set aside, never unreadable (G-d)
+        if (stuck.length) s.queueUnreadable = { keys: [...(s.queueUnreadable?.keys ?? []), ...stuck], failed: true, readable: stuck };
+        else if (s.queueUnreadable && failed) s.queueUnreadable.failed = true;
       });
+      if (kept.length > 0) {
+        const logKey = kept[0][1].logKey;
+        get().flash(QW.draftKeptAside[get().lang].replace('{date}', logKey.slice(logKey.indexOf(':') + 1)));
+      }
       persistOutbox(extra);
       persistDailyLogDraft();
     },
@@ -6614,6 +6689,9 @@ export const useStore = create<Store>()(
       if (synced > 0 && !opts?.okMsg) parts.push(SYNC.synced(synced, lang));
       if (dropped > 0) parts.push(SYNC.dropped(dropped, lang));
       if (remaining.length > 0) parts.push(SYNC.pending(remaining.length, lang));
+      // an act still waiting that no write stored is said to be not kept: it is sent only from this page (#1028 r1)
+      const unkept = new Set(get().queueUnkept);
+      if (remaining.some((o) => unkept.has(queueActIdent(o)))) parts.push(QW.notKept[lang]);
       if (parts.length) get().flash(SYNC.join(parts, lang));
       // the chain refusals carry the server's words, so they are not folded into the count above
       if (chainRefusals.length) get().flash(chainRefusals.join(' '));

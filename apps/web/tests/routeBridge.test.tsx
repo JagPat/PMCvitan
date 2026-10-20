@@ -371,3 +371,49 @@ describe('RouteBridge — Codex 4213640388: a legacy cold record gets the CANONI
     expect(visited.filter((p) => p === `/projects/${active}/review`)).toHaveLength(1);
   });
 });
+
+describe('RouteBridge — a routed switch the person cancels at the "not kept" question (#1028 r1, 4329769588)', () => {
+  let go!: (to: string | number) => void;
+  function NavProbe() {
+    const navigate = useNavigate();
+    go = (to) => (typeof to === 'number' ? navigate(to) : navigate(to));
+    return null;
+  }
+  it('puts the URL back on the open project, in place, and never opens the item it named later', async () => {
+    const gw = { switchProject: vi.fn() };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.memberships = [
+        { projectId: 'ambli', name: 'Residence at Ambli', short: 'Residence at Ambli', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' },
+      ];
+      // an act this phone did not keep
+      st.outbox = [{ t: 'startActivity', activityId: 'A-1', idempotencyKey: 'k-1' }];
+      st.queueUnkept = ['k:k-1'];
+    });
+    render(
+      <MemoryRouter initialEntries={['/projects/ambli/dashboard']}>
+        <RouteBridge />
+        <PathProbe />
+        <NavProbe />
+      </MemoryRouter>,
+    );
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    // Back/Forward (here a link) to the other project asks first
+    act(() => go('/projects/project-b/decisions'));
+    await flush();
+    expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch', projectId: 'project-b' }));
+    expect(gw.switchProject).not.toHaveBeenCalled();
+    expect(currentPath).toBe('/projects/project-b/decisions');
+    act(() => useStore.getState().cancelLeave());
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    expect(useStore.getState().activeProjectId).toBe('ambli');
+    // in place: Back goes where it went before the link, not to the rejected project
+    act(() => go(-1));
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    expect(gw.switchProject).not.toHaveBeenCalled();
+  });
+});

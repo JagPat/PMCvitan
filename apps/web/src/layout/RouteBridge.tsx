@@ -64,10 +64,16 @@ export function RouteBridge() {
   const switchProject = useStore((s) => s.switchProject);
   const setRouteItem = useStore((s) => s.setRouteItem);
   const routeItem = useStore((s) => routeItemOf(s));
+  // WEB-02 (#1028 r1) — a switch asked for by the URL may wait on the "not kept" question: Cancel leaves the URL naming
+  // the project that was not opened, so the store->URL pass below runs again when the question closes
+  const leaveAsked = useStore((s) => s.leaveConfirm !== null);
   const navigate = useNavigate();
   const location = useLocation();
   const didInit = useRef(false);
   const lastPath = useRef<string | null>(null);
+  // set while the "not kept" question is open, so the pass that follows its answer replaces the URL it corrects
+  const cancelled = useRef(false);
+  if (leaveAsked) cancelled.current = true;
   // B6 — the item a URL CHANGE asked for, held until its project is active and loaded (a deep link
   // into another project, or a cold API load, empties the project scope that holds it), then
   // adopted once. Only a URL change sets it, so a stale URL never overwrites an in-app selection.
@@ -206,14 +212,22 @@ export function RouteBridge() {
   // in this very commit, and the subscribed values here would still be pre-switch.
   useEffect(() => {
     const live = useStore.getState();
+    // the question is still open: the URL waits for its answer. Once it closes, a switch that went on is navigated as
+    // any switch is; one that was cancelled has its URL put back in place
+    if (live.leaveConfirm !== null) return;
+    const wasAsked = cancelled.current;
+    cancelled.current = false;
     if (live.pendingProjectId !== null || live.projectLoadState === 'switching' || live.projectLoadState === 'loading') return;
+    // a routed item for a project that was not opened (the switch was cancelled) is never adopted later
+    if (pendingItem.current && pendingItem.current.projectId !== live.activeProjectId) pendingItem.current = null;
     const target = pathForScreen(live.screen, live.activeProjectId, routeItemOf(live));
     if (location.pathname !== target) {
-      navigate(target, { replace: !didInit.current });
+      // a cancelled switch's entry is put back on the open project in place, so Back and Forward stay as they were
+      navigate(target, { replace: !didInit.current || wasAsked });
     }
     didInit.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, routeItem, activeProjectId, pendingProjectId, projectLoadState]);
+  }, [screen, routeItem, activeProjectId, pendingProjectId, projectLoadState, leaveAsked]);
 
   return null;
 }
