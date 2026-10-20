@@ -141,7 +141,7 @@ curl -sS -X POST $API/projects/ambli/media -H "Authorization: Bearer $TOK" \
   -H 'Content-Type: application/json' -d "{\"kind\":\"progress\",\"mime\":\"image/png\",\"data\":\"$PNG\"}"
 ```
 - **STUB:** `{"id":"…","url":"/media/…"}` — **relative** URL (DB).
-- **LIVE (R2):** the same relative signed path. `curl -sS -o /dev/null -w '%{http_code}\n' "$API<that url>"` → `302` (a redirect to a signed link on the `S3_ENDPOINT` host), and following it with a plain GET (`curl -sS -o /dev/null -L -w '%{http_code} %{content_type}\n' "$API<that url>"`) → `200 image/png`. Print only the status and type, never the headers: the `Location` header is the whole signed link, with the account host, the access key id and the signature. Use GET, not `-I`: the signed link is signed for GET, and R2 refuses a HEAD on it. (For the stub, the first request → `200`.) `scripts/validate-live.sh --media` makes the same two requests and reports STUB, LIVE only when the signed GET answers 200 `image/png`, or FAIL (exit 1) otherwise, for example when the key cannot read.
+- **LIVE (R2):** the same relative signed path. `curl -sS -o /dev/null -w '%{http_code}\n' "$API<that url>"` → `302` (a redirect to a signed link on the `S3_ENDPOINT` host), and following it with a plain GET (`curl -sS -o /dev/null -L -w '%{http_code} %{content_type}\n' "$API<that url>"`) → `200 image/png`. Print only the status and type, never the headers: the `Location` header is the whole signed link, with the account host, the access key id and the signature. Use GET, not `-I`: the signed link is signed for GET, and R2 refuses a HEAD on it. (For the stub, the first request → `200`.) `scripts/validate-live.sh --media` makes the same two requests (against a non-production API only, since it needs dev auth; see Safety & housekeeping) and reports STUB, LIVE only when the signed GET answers 200 `image/png`, or FAIL (exit 1) otherwise, for example when the key cannot read.
 
 **Failure modes:** wrong endpoint/region → send fails; token lacks write → 403; a key without Object Read → signed links 403 and images fail in the UI (fix the existing token's permission in place; never switch to an Admin token or a different key); wrong var names (`S3_ACCESS_KEY` vs `S3_ACCESS_KEY_ID`) → gate silently stays false, no error.
 
@@ -178,28 +178,29 @@ API=https://pms-api.vitan.in
 curl -sS -X POST $API/auth/otp/request -H 'Content-Type: application/json' \
   -d '{"phone":"<REAL_TEST_NUMBER>","projectId":"ambli"}'
 ```
-- **STUB:** `{"sent":true,"live":false,"devCode":"1234"}` (HTTP 201) — `live:false` + a devCode.
-- **LIVE:** `{"sent":true,"live":true}` (HTTP 201) — `live:true`, **no** `devCode`, and a real SMS is sent. Capture the **body** — an HTTP-code-only check can't tell stub from live (both 201). A `503` means MSG91 *rejected* the send (bad key/template/whitelist).
+- **No provider, prod:** HTTP `503` "no SMS provider is configured" (`sms.service.ts:121-123`): prod runs `NODE_ENV=production` (`apps/api/Dockerfile:43`) and never hands out a dev code.
+- **STUB (non-production API only):** `{"sent":true,"live":false,"devCode":"1234"}` (HTTP 201) — `live:false` + a devCode.
+- **LIVE:** `{"sent":true,"live":true,"channel":"sms",…}` (HTTP 201) — `live:true` with `channel:"sms"`, **no** `devCode`, and a real SMS is sent. Capture the **body**: `channel` says which provider sent it (`fast2sms` or `telegram` is not MSG91). A `503` with MSG91 set means MSG91 *rejected* the send (bad key/template/whitelist); read the body's message to tell it from the no-provider `503`.
 
 **Human-only:** completing **verify** in live mode — the agent can't read the SMS. `POST /auth/otp/verify {phone,code,projectId}` → 201 `{token,role:"engineer",…}`. ⚠️ Each live `/auth/otp/request` sends a **real, billed** SMS — never use the sample number `9876543210` live; use a controlled handset.
 
-**Failure modes:** sender not DLT-approved / template mismatch / server IP not whitelisted → `503`; `MSG91_TEMPLATE_ID` blank → silently stays stub.
+**Failure modes:** sender not DLT-approved / template mismatch / server IP not whitelisted → `503`; `MSG91_TEMPLATE_ID` blank → the gate stays false: `503` "no SMS provider is configured" on prod, the stub elsewhere.
 
-**Rollback:** blank `MSG91_TEMPLATE_ID` + redeploy → back to stub.
+**Rollback:** blank `MSG91_TEMPLATE_ID` + redeploy → the gate is false again (on prod, phone sign-in answers `503` until a provider is set).
 
 ---
 
 ## Safety & housekeeping
 
-- **`ALLOW_DEV_AUTH` sequencing.** Headless R2 validation needs a JWT, obtained via `POST /auth/session` (dev auth), which is currently **enabled** in prod (a standalone note: this permits passwordless persona switching). If you set `ALLOW_DEV_AUTH=false`, do it **after** R2 validation, or hand the agent a real JWT — otherwise `/auth/session` returns 403 and headless media validation is impossible.
+- **Dev auth is off on prod.** `POST /auth/session` is hard-disabled whenever `NODE_ENV=production`, whatever `ALLOW_DEV_AUTH` says (`auth.controller.ts:67`, `GO_LIVE.md`). So on prod `validate-live.sh` gets no token: `SNAP` reads `n/a` and `--media` prints `FAIL (… no dev-auth token …)`. Validate R2 on prod with the manual check in the media section instead, using a signed-in PMC's token as `$TOK`. The script's `--media` check works only against a non-production API with `ALLOW_DEV_AUTH=true`.
 - **Rotate the Coolify API token** after the cutovers if it was shared in plaintext (Coolify → Keys & Tokens → revoke, create a fresh one scoped `write`+`deploy`).
 - **Secret flag** on env values is a **dashboard-only** toggle; the API sets values but can't mark them hidden.
-- **Test media rows** can be removed by a PMC with `DELETE /media/:id` (for example the probe's `cmr5rf3160001n33ty72mq2an`).
+- **Test media rows** can be removed by a PMC with `DELETE /media/:id` (for example the probe's `cmr5rf3160001n33ty72mq2an`). In R2 mode the bucket delete is best-effort: a failed bucket delete is swallowed and the call still succeeds (`media.service.ts:402`), so check the bucket afterwards as the media section's side-effects note says.
 - **Single-replica assumption:** stub OTP verify keys the code in a per-process `Map`; it only works with one API replica and if the process doesn't restart between request and verify.
 
 ## Validation script
 
-`scripts/validate-live.sh` prints a stub/live verdict per provider (no credentials needed). By default it only reads. `--otp` also asks for an OTP for `TEST_PHONE` (required, a 10-digit number you control; without it the check fails and nothing is sent), which sends a real SMS once MSG91 is live; `--media` also uploads one test photo (see the safety note). It exits 1 when a check that was asked for fails or cannot run, and it never prints a file token or a signed link. Run it any time to see current state:
+`scripts/validate-live.sh` prints a stub/live verdict per provider (no credentials needed). By default it only reads. `--otp` also asks for an OTP for `TEST_PHONE` (required, a 10-digit number you control; without it the check fails and nothing is sent), which sends a real SMS once MSG91 is live; `--media` also uploads one test photo (see the safety note), and needs dev auth, so on prod it fails and the manual check is used instead. On prod with no SMS provider, `--otp` reports FAIL (HTTP 503), which is the expected state there. It exits 1 when a check that was asked for fails or cannot run, and it never prints a file token or a signed link. Run it any time to see current state:
 
 ```bash
 bash scripts/validate-live.sh            # push only, read-only

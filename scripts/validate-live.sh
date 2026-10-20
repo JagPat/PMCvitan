@@ -82,27 +82,31 @@ if [ "$RUN_MEDIA" = "1" ] && [ -n "${tok:-}" ]; then
   # S3_ENDPOINT host. Plain GETs throughout: the signed link is bound to GET, and R2 refuses HEAD on it.
   # Nothing secret is printed: the `?t=` file token is cut from the path, and the signed link (its
   # host names the account, its query the access key id) is never echoed, only its status.
-  path=${url%%\?*}
-  case "$url" in
-    /media/*)
-      first=$(curl -sS -m 20 -o /dev/null -w '%{http_code} %{redirect_url}' "$API$url")
-      code=${first%% *}; signed=${first#* }
-      if [ "$code" = "200" ]; then
-        echo "MEDIA  : STUB  (DB — $path served directly, HTTP 200)"
-      elif [ "$code" = "302" ] && case "$signed" in *X-Amz-Signature=*) true;; *) false;; esac; then
-        got=$(curl -sS -m 20 -o /dev/null -w '%{http_code} %{content_type}' "$signed")
-        # LIVE only when the signed read itself works: a key that can write but not read
-        # (no Object Read) still uploads and redirects, but every image then fails to load.
-        case "$got" in
-          "200 image/png"*) echo "MEDIA  : LIVE  (R2 — $path → 302 to a signed link; signed GET answered: $got)";;
-          *) echo "MEDIA  : FAIL  (R2 — $path → 302 to a signed link, but the signed GET answered '$got', not 200 image/png)"; FAILED=1;;
-        esac
-      else
-        echo "MEDIA  : FAIL  (unexpected answer from $path: HTTP $code, not 200 or a 302 to a signed link)"; FAILED=1
-      fi;;
-    *) echo "MEDIA  : FAIL  (the upload answered no /media/ path)"; FAILED=1;;
-  esac
-  echo "         (created test media id: $id — remove it with DELETE /media/$id as a PMC; in R2 mode also check the bucket, see PROVIDER_CUTOVER.md)"
+  if [ -z "$id" ]; then
+    echo "MEDIA  : FAIL  (the upload answered no media id, so no test photo was created)"; FAILED=1
+  else
+    path=${url%%\?*}
+    case "$url" in
+      /media/*)
+        first=$(curl -sS -m 20 -o /dev/null -w '%{http_code} %{redirect_url}' "$API$url")
+        code=${first%% *}; signed=${first#* }
+        if [ "$code" = "200" ]; then
+          echo "MEDIA  : STUB  (DB — $path served directly, HTTP 200)"
+        elif [ "$code" = "302" ] && case "$signed" in *X-Amz-Signature=*) true;; *) false;; esac; then
+          got=$(curl -sS -m 20 -o /dev/null -w '%{http_code} %{content_type}' "$signed")
+          # LIVE only when the signed read itself works: a key that can write but not read
+          # (no Object Read) still uploads and redirects, but every image then fails to load.
+          case "$got" in
+            "200 image/png"*) echo "MEDIA  : LIVE  (R2 — $path → 302 to a signed link; signed GET answered: $got)";;
+            *) echo "MEDIA  : FAIL  (R2 — $path → 302 to a signed link, but the signed GET answered '$got', not 200 image/png)"; FAILED=1;;
+          esac
+        else
+          echo "MEDIA  : FAIL  (unexpected answer from $path: HTTP $code, not 200 or a 302 to a signed link)"; FAILED=1
+        fi;;
+      *) echo "MEDIA  : FAIL  (the upload answered no /media/ path)"; FAILED=1;;
+    esac
+    echo "         (created test media id: $id — remove it with DELETE /media/$id as a PMC; in R2 mode also check the bucket, see PROVIDER_CUTOVER.md)"
+  fi
 elif [ "$RUN_MEDIA" = "1" ]; then
   echo "MEDIA  : FAIL  (--media asked, but no dev-auth token, so the storage check did not run)"; FAILED=1
 else

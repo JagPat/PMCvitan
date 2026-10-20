@@ -36,11 +36,13 @@ export COOLIFY_TOKEN='<paste>'                 # from the human
 
 ## Steps
 
-### 1. Preflight — confirm it's currently STUB
+### 1. Preflight — confirm no SMS provider is live yet
 ```bash
-TEST_PHONE="$TEST_PHONE" bash scripts/validate-live.sh --otp    # expect: OTP : STUB (live:false, devCode:…)
+TEST_PHONE="$TEST_PHONE" bash scripts/validate-live.sh --otp
 ```
-If it already says `OTP : LIVE`, stop — nothing to do.
+- **Prod** (`NODE_ENV=production`, `apps/api/Dockerfile:43`) with no SMS provider answers `503` (`sms.service.ts:121-123`), so expect `OTP : FAIL (the OTP request answered HTTP 503, not a sent code)` and exit 1. That is the expected preflight result on prod.
+- `OTP : STUB (live:false, devCode:…)` appears only on a non-production API.
+- If it says `OTP : LIVE (live:true via sms …)`, MSG91 is already live: stop, nothing to do. `OTP : LIVE (live:true via fast2sms …)` or `via telegram` means a different provider is live, not MSG91.
 
 ### 2. Set the env vars (create new; PATCH only if updating an existing key)
 `MSG91_TEMPLATE_ID` and `MSG91_SENDER_ID` are new → create with POST. (`MSG91_AUTH_KEY` already exists; only touch it if it changed, using `PATCH $CO/applications/$APP/envs` with `{"key":"MSG91_AUTH_KEY","value":"…"}`.)
@@ -84,9 +86,9 @@ done
 curl -sS -X POST "$API/auth/otp/request" -H 'Content-Type: application/json' \
   -d "{\"phone\":\"$TEST_PHONE\",\"projectId\":\"ambli\"}"
 ```
-- **SUCCESS (LIVE):** `{"sent":true,"live":true}` — `live:true`, **no** `devCode`. A real SMS is on its way. ✅ Cutover done.
-- **Still STUB:** `{"sent":true,"live":false,"devCode":"…"}` — the gate is false. Recheck that BOTH `MSG91_AUTH_KEY` and `MSG91_TEMPLATE_ID` are non-empty on the app and that the redeploy finished. (POST returns HTTP **201** in both cases — do not gate on status code.)
-- **`503`:** MSG91 rejected the send — bad auth key, template mismatch, sender not DLT-approved, or IP not whitelisted. Report the body.
+- **SUCCESS (LIVE):** `{"sent":true,"live":true,"channel":"sms",…}` — `live:true` with `channel:"sms"`, **no** `devCode`. A real SMS is on its way. ✅ Cutover done. (`channel` `fast2sms` or `telegram` means another provider answered, not MSG91.)
+- **Gate still false:** on prod this answers `503` "no SMS provider is configured" (`sms.service.ts:121-123`). On a non-production API it answers `{"sent":true,"live":false,"devCode":"…"}` (HTTP 201). Either way, recheck that BOTH `MSG91_AUTH_KEY` and `MSG91_TEMPLATE_ID` are non-empty on the app and that the redeploy finished.
+- **`503` with MSG91 set:** MSG91 rejected the send — bad auth key, template mismatch, sender not DLT-approved, or IP not whitelisted. Report the body. On prod a `503` alone does not tell a false gate from a rejected send: read the body's message.
 
 ### 7. Complete verify — HUMAN-ONLY
 The agent cannot read the SMS. The human reads the 4-digit code, then:
@@ -99,7 +101,7 @@ curl -sS -X POST "$API/auth/otp/verify" -H 'Content-Type: application/json' \
 ---
 
 ## Success criteria
-- `TEST_PHONE="$TEST_PHONE" bash scripts/validate-live.sh --otp` (the script sends to `TEST_PHONE` only, and fails without it) shows `OTP : LIVE`, **and**
+- `TEST_PHONE="$TEST_PHONE" bash scripts/validate-live.sh --otp` (the script sends to `TEST_PHONE` only, and fails without it) shows `OTP : LIVE (live:true via sms …)`, **and**
 - an SMS arrives, **and** step 7 returns a 201 engineer token.
 
 ## Rollback (instant, safe)
