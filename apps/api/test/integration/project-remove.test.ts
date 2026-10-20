@@ -97,7 +97,14 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
   it('refuses a list that no longer matches the database, and an archived destination', async () => {
     await t.prisma.user.create({ data: { id: qaId, projectId: f.projectA.id, lastProjectId: f.projectB.id, role: 'pmc', name: 'qa', email: qaEmail } });
     await t.prisma.user.create({ data: { id: staffId, projectId: f.projectB.id, lastProjectId: f.projectA.id, role: 'pmc', name: 'staff', email: staffEmail } });
-    await t.prisma.membership.create({ data: { projectId: f.projectB.id, userId: qaId, role: 'pmc', status: 'active' } });
+    // the QA account's membership on the destination is a row from before the #482 QA company lock, as the live QA
+    // accounts' are: the lock refuses a QA account in an unmarked company, and this fixture's company holds real people
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "Membership" DISABLE TRIGGER "Membership_qa_lock"`);
+    try {
+      await t.prisma.membership.create({ data: { projectId: f.projectB.id, userId: qaId, role: 'pmc', status: 'active' } });
+    } finally {
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "Membership" ENABLE TRIGGER "Membership_qa_lock"`);
+    }
     const stale = await opts();
     const node = await t.prisma.projectNode.create({ data: { projectId: f.projectA.id, name: 'Late', kind: 'zone' } });
     const r = await removeProject(t.prisma, stale);

@@ -984,6 +984,9 @@ model Org {
   name              String
   slug              String             @unique
   createdAt         DateTime           @default(now())
+  // #482 QA company lock (20280116): a QA-only company holds only QA accounts, and a QA account belongs only to
+  // QA-only companies. Database triggers enforce both; an operator marks the QA company.
+  qaOnly            Boolean            @default(false)
   projects          Project[]
   members           OrgMembership[]
   modules           TemplateModule[]
