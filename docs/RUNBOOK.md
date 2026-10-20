@@ -2631,7 +2631,8 @@ projects. Then `POST /auth/ops/qa-sign-in` (same `OPS_TOKEN`, 10 calls per 10 mi
          https://pms-api.vitan.in/auth/ops/qa-sign-in
 
 It signs in only a QA account that reaches at least one company, all of them QA-only; any other account gets 403,
-and a QA address with no account 404.
+a QA address with no account 404, and 409 while a sign-in or membership change for that account is in progress right
+now (nothing is written; try again).
 Because the database keeps real people out of those companies, the session needs no re-check while it lasts.
 Each sign-in writes an `auth.qaSignIn` audit row with the operator and reason.
 

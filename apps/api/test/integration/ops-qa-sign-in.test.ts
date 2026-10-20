@@ -26,7 +26,7 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
   const run = `qa-${letters}`;
   const qaEmail = `qa.pmc${letters}@vitan.in`;
   const qaClientEmail = `qa.client${letters}@vitan.in`;
-  const ids = { org: `it-org-${run}`, project: `it-proj-${run}`, pmc: `it-pmc-${run}`, client: `it-client-${run}`, early: `it-early-${run}`, loner: `it-loner-${run}`, twinOrg: `it-org-twin-${run}`, twinProject: `it-proj-twin-${run}`, twin: `it-twin-${run}`, earlyOrg: `it-org-early-${run}`, earlyProject: `it-proj-early-${run}`, raceOrg: `it-org-race-${run}`, raceProject: `it-proj-race-${run}`, racer: `it-racer-${run}`, leaver: `it-leaver-${run}`, addOrg: `it-org-add-${run}`, addProject: `it-proj-add-${run}`, adder: `it-adder-${run}`, gap: `it-gap-${run}`, taker: `it-taker-${run}`, lander: `it-lander-${run}`, landProject: `it-proj-land-${run}` };
+  const ids = { org: `it-org-${run}`, project: `it-proj-${run}`, pmc: `it-pmc-${run}`, client: `it-client-${run}`, early: `it-early-${run}`, loner: `it-loner-${run}`, twinOrg: `it-org-twin-${run}`, twinProject: `it-proj-twin-${run}`, twin: `it-twin-${run}`, earlyOrg: `it-org-early-${run}`, earlyProject: `it-proj-early-${run}`, raceOrg: `it-org-race-${run}`, raceProject: `it-proj-race-${run}`, racer: `it-racer-${run}`, leaver: `it-leaver-${run}`, addOrg: `it-org-add-${run}`, addProject: `it-proj-add-${run}`, adder: `it-adder-${run}`, gap: `it-gap-${run}`, taker: `it-taker-${run}`, lander: `it-lander-${run}`, landProject: `it-proj-land-${run}`, phantom: `it-phantom-${run}`, phantomProject: `it-proj-phantom-${run}` };
   const projectData = (id: string, orgId: string) => ({
     id, orgId, name: `QA project ${id}`, short: 'QA', descriptor: '', stage: 'Planning',
     siteCode: 'QA', projStart: '01 Jan 2026', projEnd: '31 Dec 2026', elapsedPct: 0, todayDay: 0, milestonePct: 0,
@@ -55,13 +55,13 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
     process.env.OPS_TOKEN = TOKEN;
   });
   afterAll(async () => {
-    const projects = [ids.project, ids.earlyProject, ids.twinProject, ids.raceProject, ids.addProject, ids.landProject];
+    const projects = [ids.project, ids.earlyProject, ids.twinProject, ids.raceProject, ids.addProject, ids.landProject, ids.phantomProject];
     const orgs = [ids.org, ids.earlyOrg, ids.twinOrg, ids.raceOrg, ids.addOrg];
     await t?.prisma.$transaction([
       t.prisma.auditLog.deleteMany({ where: { projectId: { in: projects } } }),
       t.prisma.membership.deleteMany({ where: { projectId: { in: projects } } }),
       t.prisma.orgMembership.deleteMany({ where: { OR: [{ orgId: { in: orgs } }, { userId: ids.twin }] } }),
-      t.prisma.user.deleteMany({ where: { id: { in: [ids.pmc, ids.client, ids.early, ids.loner, ids.twin, ids.racer, ids.leaver, ids.adder, ids.gap, ids.taker, ids.lander] } } }),
+      t.prisma.user.deleteMany({ where: { id: { in: [ids.pmc, ids.client, ids.early, ids.loner, ids.twin, ids.racer, ids.leaver, ids.adder, ids.gap, ids.taker, ids.lander, ids.phantom] } } }),
       t.prisma.project.deleteMany({ where: { id: { in: projects } } }),
       t.prisma.org.deleteMany({ where: { id: { in: orgs } } }),
     ]);
@@ -437,6 +437,74 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
     expect(late.ok?.projectId, 'a token landing on an archived project').not.toBe(ids.landProject);
     expect(late.error?.getStatus?.()).toBe(409);
     expect(await audited()).toBe(1);
+  });
+
+  it('Codex P2 on #1020 (membership phantoms): a membership that arrives after the locks waits for the sign-in, so none is counted, landed on and then taken away', async () => {
+    // the account's home project is one it is not yet a member of; it reaches the QA company through another project
+    await t.prisma.project.create({ data: projectData(ids.phantomProject, ids.org) });
+    const address = `qa.phantom${letters}@vitan.in`;
+    await t.prisma.user.create({ data: { id: ids.phantom, projectId: ids.phantomProject, role: 'engineer', name: 'QA Phantom', email: address } });
+    await t.prisma.membership.create({ data: { projectId: ids.project, userId: ids.phantom, role: 'engineer', status: 'active' } });
+    const audited = () => t.prisma.auditLog.count({ where: { action: 'auth.qaSignIn', entityId: ids.phantom } });
+    /** start a write on its own connection and go on once it has committed or is waiting on a lock (never awaiting it) */
+    const started = async (sql: string, args: unknown[], tag: string) => {
+      let done = false;
+      const write = t.prisma.$executeRawUnsafe(sql, ...args).then((n) => { done = true; return n; });
+      for (let i = 0; !done; i++) {
+        const [{ c }] = await t.prisma.$queryRawUnsafe<Array<{ c: number }>>(
+          `SELECT COUNT(*)::int AS c FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE $1`, `%${tag}%`);
+        if (c > 0) break;
+        if (i >= 400) throw new Error(`${tag} neither committed nor waited`);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      return { write, committedFirst: done };
+    };
+    const arrivals = [
+      {
+        why: 'a new membership',
+        arrive: () => started(`/* phantom-arrive */ INSERT INTO "Membership" ("id", "projectId", "userId", "role", "status") VALUES ($1, $2, $3, 'engineer', 'active')`,
+          [`it-m-phantom-${run}`, ids.phantomProject, ids.phantom], 'phantom-arrive'),
+      },
+      {
+        why: 'a removed membership brought back',
+        before: () => t.prisma.membership.create({ data: { id: `it-m-phantom-${run}`, projectId: ids.phantomProject, userId: ids.phantom, role: 'engineer', status: 'removed' } }),
+        arrive: () => started(`/* phantom-arrive */ UPDATE "Membership" SET "status" = 'active' WHERE "id" = $1`, [`it-m-phantom-${run}`], 'phantom-arrive'),
+      },
+    ];
+    for (const a of arrivals) {
+      await t.prisma.membership.deleteMany({ where: { projectId: ids.phantomProject } });
+      await a.before?.();
+      let arrival: Awaited<ReturnType<typeof started>> | undefined;
+      let leaving: Awaited<ReturnType<typeof started>> | undefined;
+      const original = t.prisma.$transaction.bind(t.prisma);
+      const spy = vi.spyOn(t.prisma, '$transaction').mockImplementationOnce((async (fn: (tx: Prisma.TransactionClient) => Promise<unknown>, opts?: unknown) =>
+        original(async (tx) => fn(new Proxy(tx, {
+          get(target, prop, receiver) {
+            if (prop !== '$queryRawUnsafe') return Reflect.get(target, prop, receiver);
+            return async (sql: string, ...args: unknown[]) => {
+              // after the sign-in's locks, before it counts what the account reaches: the membership arrives
+              if (!arrival && sql.includes('WITH reach AS')) arrival = await a.arrive();
+              // after the landing is chosen, before the sign-in commits: the membership is taken away again
+              if (!leaving && sql.includes('FROM "Project" WHERE "id" = $1 FOR SHARE NOWAIT')) {
+                leaving = await started(`/* phantom-leave */ UPDATE "Membership" SET "status" = 'removed' WHERE "id" = $1`, [`it-m-phantom-${run}`], 'phantom-leave');
+              }
+              return target.$queryRawUnsafe(sql, ...args);
+            };
+          },
+        })), opts as never)) as never);
+      const before = await audited();
+      const r = await signIn(address);
+      spy.mockRestore();
+      expect(arrival, a.why).toBeDefined();
+      expect(leaving, a.why).toBeDefined();
+      expect.soft(r.ok?.projectId, `${a.why}: a token landing where the membership was then taken away`).toBe(ids.project);
+      expect.soft(arrival!.committedFirst, `${a.why} committed inside the sign-in`).toBe(false);
+      expect.soft(await audited()).toBe(before + 1);
+      // the arrival goes through once the sign-in commits; the removal does too where the row already existed (a new row is invisible to it, so it changes nothing)
+      await arrival!.write;
+      await leaving!.write;
+    }
   });
 
   it('Codex P2 on #1020: thirty-odd calls without the token never lock the operator out of the QA mark', async () => {

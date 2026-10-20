@@ -111,16 +111,17 @@ export class OrgsParticipant {
 
   /**
    * #482 QA sign-in (Codex P1 on #1020) — the account that owns this address now, found and locked inside the
-   * sign-in's own transaction, before anything else is read: `FOR SHARE NOWAIT` on the User row the address names. A
-   * rename in flight refuses the sign-in (409, try again) instead of waiting; one committed before the lock leaves
-   * the address with its new owner or with none, and PostgreSQL re-reads a row changed after the statement began, so
-   * a row that no longer holds the address is not returned. The lock then holds the address on that account until
-   * the sign-in commits. Null when no account holds it.
+   * sign-in's own transaction, before anything else is read: `FOR UPDATE NOWAIT` on the User row the address names
+   * (the strength `qaSignInAllowed` needs, taken at once, so two sign-ins of one account never both hold a share and
+   * refuse each other's upgrade: the second gets the 409). A rename in flight refuses the sign-in (409, try again)
+   * instead of waiting; one committed before the lock leaves the address with its new owner or with none, and
+   * PostgreSQL re-reads a row changed after the statement began, so a row that no longer holds the address is not
+   * returned. The lock then holds the address on that account until the sign-in commits. Null when no account holds it.
    */
   async lockQaAccountByEmail(tx: Prisma.TransactionClient, email: string): Promise<string | null> {
     const client = tx as OrgsParticipantClient;
     const rows = await lockedNow(() => client.$queryRawUnsafe<Array<{ id: string; email: string }>>(
-      `SELECT "id", "email" FROM "User" WHERE "email" = $1 FOR SHARE NOWAIT`, email));
+      `SELECT "id", "email" FROM "User" WHERE "email" = $1 FOR UPDATE NOWAIT`, email));
     const row = rows[0];
     // the locked row still owns the address it was found by (it cannot change under the lock; checked, not assumed)
     return row && row.email === email ? row.id : null;
@@ -151,14 +152,20 @@ export class OrgsParticipant {
   async qaSignInAllowed(tx: Prisma.TransactionClient, userId: string): Promise<boolean> {
     const client = tx as OrgsParticipantClient;
     // Asked inside the sign-in's own transaction, under locks that conflict with every way the answer can flip before
-    // the token is issued: the company rows and project memberships counted (FOR SHARE blocks their removal), the
-    // companies they reach (blocks unmarking), and the person (blocks an email change). Project rows need no lock: a
-    // project never moves company (`Project.orgId` is frozen). Every lock is NOWAIT, so the sign-in never waits on a
-    // writer and can never sit in a lock cycle with one, whatever order that writer takes its rows in: a row being
-    // changed at this moment refuses the sign-in (409, try again), and a writer that comes second waits for it.
+    // the token is issued. First the person, FOR UPDATE (Codex P2 on #1020, "membership phantoms"): every new company
+    // row or project membership, and every membership brought back from removed, takes a lock on its User row (the
+    // foreign key's FOR KEY SHARE, and the QA company lock's FOR SHARE), and both conflict with FOR UPDATE. So one in
+    // flight refuses the sign-in, and one that starts later waits until it commits: the rows read below are all the
+    // rows there will be. The lock also blocks an email change. Then the company rows and every project membership,
+    // removed ones too (FOR SHARE blocks their removal or return), and the companies they reach (blocks unmarking).
+    // Project rows need no lock: a project never moves company (`Project.orgId` is frozen). Every lock is NOWAIT, so
+    // the sign-in never waits on a writer and can never sit in a lock cycle with one, whatever order that writer takes
+    // its rows in: a row being changed at this moment refuses the sign-in (409, try again), and a writer that comes
+    // second waits for it.
     await lockedNow(async () => {
+      await client.$queryRawUnsafe(`SELECT 1 FROM "User" WHERE "id" = $1 FOR UPDATE NOWAIT`, userId);
       await client.$queryRawUnsafe(`SELECT 1 FROM "OrgMembership" WHERE "userId" = $1 ORDER BY "id" FOR SHARE NOWAIT`, userId);
-      await client.$queryRawUnsafe(`SELECT 1 FROM "Membership" WHERE "userId" = $1 AND "status" <> 'removed' ORDER BY "id" FOR SHARE NOWAIT`, userId);
+      await client.$queryRawUnsafe(`SELECT 1 FROM "Membership" WHERE "userId" = $1 ORDER BY "id" FOR SHARE NOWAIT`, userId);
       await client.$queryRawUnsafe(
         `SELECT 1 FROM "Org" o WHERE o."id" IN (
            SELECT om."orgId" FROM "OrgMembership" om WHERE om."userId" = $1
@@ -167,7 +174,6 @@ export class OrgsParticipant {
          ) ORDER BY o."id" FOR SHARE OF o NOWAIT`,
         userId,
       );
-      await client.$queryRawUnsafe(`SELECT 1 FROM "User" WHERE "id" = $1 FOR SHARE NOWAIT`, userId);
     });
     const rows = await client.$queryRawUnsafe<Array<{ self: boolean; reach: number; unmarked: number }>>(
       `WITH reach AS (
