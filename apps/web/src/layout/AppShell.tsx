@@ -11,6 +11,8 @@ import { ScreenView } from './ScreenView';
 import { RouteBridge } from './RouteBridge';
 import { ProjectLoadBoundary } from './ProjectLoadBoundary';
 import { AuthGate } from './AuthGate';
+import { QueueUnreadable } from './QueueUnreadable';
+import { LeaveUnkept } from './LeaveUnkept';
 import { LangPreference } from './LangPreference';
 import { GuideHost } from '@/guide/GuideHost';
 import { GuideMe } from '@/guide/GuideMe';
@@ -38,6 +40,7 @@ export function AppShell() {
         <main className={`${styles.stage} vscroll`}>
           <div className={`drawing-grid ${styles.backdrop}`} />
           <div className={styles.stageInner}>
+            <QueueUnreadable />
             {/* On a project transition the previous project's records are ALREADY cleared;
                 the boundary covers the gap until the new project's snapshot lands, and a
                 failed transition shows a recoverable error — never stale records. */}
@@ -58,6 +61,7 @@ export function AppShell() {
       <GuideHost />
       <NotificationPanel />
       <ModalHost />
+      <LeaveUnkept />
       {toast && <Toast message={toast} />}
     </div>
   );

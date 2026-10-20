@@ -31,7 +31,7 @@ export function LeftRail() {
   const role = useStore((s) => s.role);
   const lang = useStore((s) => s.lang);
   const userName = useStore((s) => s.userName);
-  const signOut = useStore((s) => s.signOut);
+  const signOut = useStore((s) => s.requestSignOut);
   const memberships = useStore(useShallow((s) => s.memberships));
   const activeProjectId = useStore((s) => s.activeProjectId);
   // live project identity from the snapshot; the membership short is a fast label during a switch
