@@ -126,5 +126,7 @@ export const MK = {
   original: { en: 'The original photo is kept as it is.', hi: 'मूल फ़ोटो जैसी है वैसी रखी जाती है।', gu: 'મૂળ ફોટો જેવો છે તેવો જ રહે છે.' },
   loading: { en: 'Opening the photo…', hi: 'फ़ोटो खुल रही है…', gu: 'ફોટો ખૂલે છે…' },
   cannotOpen: { en: 'This photo could not be opened for marking. Check the signal and try again.', hi: 'यह फ़ोटो निशान लगाने के लिए नहीं खुल सकी। सिग्नल देखें और फिर से कोशिश करें।', gu: 'આ ફોટો નિશાન કરવા માટે ખૂલી શક્યો નહીં. સિગ્નલ તપાસો અને ફરી પ્રયાસ કરો.' },
+  tooLarge: { en: 'This copy is too large to send. Undo some marks or try a smaller photo.', hi: 'यह कॉपी भेजने के लिए बहुत बड़ी है। कुछ निशान हटाएँ या छोटी फ़ोटो लें।', gu: 'આ નકલ મોકલવા માટે બહુ મોટી છે. થોડાં નિશાન પાછાં કરો અથવા નાનો ફોટો લો.' },
+  keys: { en: 'Photo to mark. With a keyboard: arrow keys move the marker, Enter starts and ends a mark.', hi: 'निशान लगाने के लिए फ़ोटो। कीबोर्ड से: तीर कुंजियाँ निशानक हिलाती हैं, Enter से निशान शुरू और खत्म होता है।', gu: 'નિશાન કરવા માટેનો ફોટો. કીબોર્ડથી: તીર કી માર્કર ખસેડે છે, Enter થી નિશાન શરૂ અને પૂરું થાય છે.' },
   nothing: { en: 'Draw on the photo first', hi: 'पहले फ़ोटो पर कुछ बनाएँ', gu: 'પહેલાં ફોટા પર કંઈક દોરો' },
 } satisfies Record<string, Record<Lang, string>>;
