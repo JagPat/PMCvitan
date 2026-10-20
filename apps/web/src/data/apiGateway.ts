@@ -518,6 +518,9 @@ export interface UploadMediaInput {
   geoLat?: number;
   geoLng?: number;
   takenAt?: string;
+  // Stage 1 markup on a visit (M3): a marked-up copy names the visit file it was drawn on, and sends no camera time or
+  // location (it keeps the original's)
+  sourceMediaId?: string;
 }
 
 /** Resolve a snapshot media URL: dev-stub rows are relative (/media/:id) → prefix the API base. */
@@ -1553,6 +1556,8 @@ export interface SiteVisitFile {
    *  copy by it. */
   clientKey?: string | null;
   takenAt: string | null;
+  /** A marked-up copy's original, a file on the same visit (M3); null or absent (an API before M3) for a photo as taken. */
+  sourceMediaId?: string | null;
   note: string | null;
   rating: SiteVisitRating | null;
   /** The place the file showed when it was added, with the name it had then. */
@@ -1573,6 +1578,9 @@ export interface SiteVisitFileBody {
   nodeId?: string;
   note?: string;
   rating?: SiteVisitRating;
+  /** A marked-up copy (M3): the visit file it was drawn on. It carries no takenAt or location: the server gives it
+   *  the original's. */
+  sourceMediaId?: string;
 }
 export interface StartSiteVisitBody {
   id: string;

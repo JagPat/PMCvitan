@@ -121,6 +121,25 @@ export const SV = {
   notSent: { en: 'Photos not sent', hi: 'फ़ोटो जो नहीं भेजी गईं', gu: 'ન મોકલાયેલા ફોટા' },
   dismiss: { en: 'Dismiss', hi: 'हटाएँ', gu: 'દૂર કરો' },
   photoOpen: { en: 'Open photo', hi: 'फ़ोटो खोलें', gu: 'ફોટો ખોલો' },
+  // M3: marking up a photo on the visit; the copy is a new photo, the original stays as it was
+  markUp: { en: 'Mark up', hi: 'निशान लगाएँ', gu: 'નિશાન કરો' },
+  markupCopy: { en: 'Marked-up copy', hi: 'निशान लगी कॉपी', gu: 'નિશાનવાળી નકલ' },
+  markupOpening: { en: 'Opening the photo…', hi: 'फ़ोटो खुल रही है…', gu: 'ફોટો ખૂલી રહ્યો છે…' },
+  markupCannotOpen: {
+    en: 'This phone cannot open this photo for marking.',
+    hi: 'यह फ़ोन इस फ़ोटो को निशान लगाने के लिए नहीं खोल सकता।',
+    gu: 'આ ફોન આ ફોટાને નિશાન કરવા માટે ખોલી શકતો નથી.',
+  },
+  markupOpenFailed: {
+    en: 'The photo could not be opened. Check the signal, then try again.',
+    hi: 'फ़ोटो खुल नहीं सकी। सिग्नल देखें, फिर से कोशिश करें।',
+    gu: 'ફોટો ખૂલી શક્યો નહીં. સિગ્નલ તપાસો, પછી ફરી પ્રયત્ન કરો.',
+  },
+  markupTooBig: {
+    en: 'This marked-up copy is too large to send.',
+    hi: 'निशान लगी यह कॉपी भेजने के लिए बहुत बड़ी है।',
+    gu: 'આ નિશાનવાળી નકલ મોકલવા માટે બહુ મોટી છે.',
+  },
 } satisfies Record<string, Words>;
 
 /** A server time as the viewer reads it, in India's time: "14 Oct, 15:30" in the viewer's language. */
