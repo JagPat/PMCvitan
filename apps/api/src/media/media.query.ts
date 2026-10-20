@@ -15,14 +15,15 @@ export class MediaQueryService {
     return this.prisma.media.count({ where: { projectId, kind: 'progress', createdAt: { gte: since } } });
   }
 
-  /** #792 SV2 — what a visit's files show beside their link: each file's type, when the device took it, and, to its
-   *  own uploader (`viewerId`) alone, the uploading device's key for it (so that phone can tell its queued copy from
-   *  the stored file; nobody else's key is sent, as the snapshot's photos: Codex 4324453890), by id. */
-  async fileFacts(projectId: string, ids: string[], viewerId: string): Promise<Map<string, { mime: string; takenAt: string | null; clientKey: string | null }>> {
+  /** #792 SV2 — what a visit's files show beside their link: each file's type, when the device took it, a voice
+   *  note's length in whole seconds (#482, Codex P2 on #1013), and, to its own uploader (`viewerId`) alone, the
+   *  uploading device's key for it (so that phone can tell its queued copy from the stored file; nobody else's key
+   *  is sent, as the snapshot's photos: Codex 4324453890), by id. */
+  async fileFacts(projectId: string, ids: string[], viewerId: string): Promise<Map<string, { mime: string; takenAt: string | null; clientKey: string | null; durationSec: number | null }>> {
     if (ids.length === 0) return new Map();
     const rows = await this.prisma.media.findMany({
-      where: { projectId, id: { in: ids } }, select: { id: true, mime: true, takenAt: true, clientKey: true, uploadedBy: true },
+      where: { projectId, id: { in: ids } }, select: { id: true, mime: true, takenAt: true, clientKey: true, uploadedBy: true, durationSec: true },
     });
-    return new Map(rows.map((r) => [r.id, { mime: r.mime, takenAt: r.takenAt, clientKey: r.uploadedBy === viewerId ? r.clientKey : null }]));
+    return new Map(rows.map((r) => [r.id, { mime: r.mime, takenAt: r.takenAt, clientKey: r.uploadedBy === viewerId ? r.clientKey : null, durationSec: r.durationSec }]));
   }
 }
