@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
+import { warmImports } from './warm-imports';
 
 /**
  * Phase 6 unit 4b, round-7 Codex F3 — the DEV_AUTH path issues its JWT inside the gateway
@@ -24,6 +25,8 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 
 /** A structurally valid JWT whose payload carries the given sub (signature irrelevant client-side). */
 const fakeJwt = (sub: string) => `h.${btoa(JSON.stringify({ sub, role: 'engineer' }))}.s`;
+
+await warmImports(() => import('@/store/store'), () => import('@/data/useApiSync'));
 
 describe('useApiSync — dev-auth records the issued session identity (4b round-7, Codex F3)', () => {
   beforeEach(() => {

@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import type { DailyLog, Role } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 (QA 15 Oct, item 7) — on the Daily Site Log the PMC reviews the site's day, the engineer runs it: the
@@ -30,6 +31,8 @@ async function screen(role: Role, dailyLog: DailyLog | null) {
   const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
   return render(<DailyLogScreen />);
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DailyLogScreen'));
 
 afterEach(() => {
   cleanup();

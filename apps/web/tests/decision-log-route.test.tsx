@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
+import { warmImports } from './warm-imports';
 
 /**
  * Live bug 1a (Codex 4204448859, 4204448863) — `/decisions/<id>` names ONE decision. While the
@@ -7,6 +8,8 @@ import { render, cleanup, fireEvent, act } from '@testing-library/react';
  * is not in the retained slice, the screen shows the load boundary: never the whole register standing
  * in for it, and never "not found" before the slice can say so.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/screens/DecisionLogScreen'));
 
 afterEach(() => {
   cleanup();

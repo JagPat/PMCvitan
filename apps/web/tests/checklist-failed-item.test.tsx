@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import type { Checklist } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 QA item 4 (live visual QA, 15 Oct) — on the engineer's checklist a failed item's evidence photo showed
@@ -38,6 +39,8 @@ async function mount(c: Checklist) {
   const { EngineerChecklistScreen } = await import('@/screens/EngineerChecklistScreen');
   return render(<EngineerChecklistScreen />);
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/screens/EngineerChecklistScreen'));
 
 afterEach(() => {
   cleanup();

@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { Checklist, Lang, MembershipSummary, Role } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 6251162266 V-1018-3 — in Hindi and Gujarati the desktop rail kept its frame in English for every role
@@ -9,6 +10,8 @@ import { leftoverEnglish } from './leftover-english';
  * frame. "VITAN" is the firm's name and "PMC" stays in brackets (#827); project and people's names are data.
  * V-1018-4 — the engineer's checklist showed its served date "18 Oct 2026" in English while the review localised it.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/layout/LeftRail'), () => import('@/layout/TopBar'), () => import('@/layout/MobileSheet'), () => import('@/screens/EngineerChecklistScreen'));
 
 afterEach(() => {
   cleanup();

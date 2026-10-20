@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { Drawing, DrawingRevision, Lang, ProjectNode } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 QA item 3 — the Drawings register in Hindi and Gujarati: every state of the screen (loading,
@@ -47,6 +48,8 @@ async function load(lang: Lang, over: Record<string, unknown>, { mode = 'snapsho
   const mod = await import('@/screens/DrawingsScreen');
   return { useStore, ...mod };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DrawingsScreen'));
 
 afterEach(() => {
   cleanup();

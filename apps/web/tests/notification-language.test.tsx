@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { Lang } from '@vitan/shared';
 import { noticeTime } from '@/lib/notifications';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #827 (Top 10 #5, the bell) — the notification panel in Hindi and Gujarati: its own words, each notice,
@@ -10,6 +11,8 @@ import { leftoverEnglish } from './leftover-english';
  * text is unchanged, so the bell's links still read it (a tap still opens the same screen). English stays
  * byte-identical. Titles, names and materials the notices quote are shown as written.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/layout/NotificationPanel'));
 
 afterEach(() => {
   cleanup();

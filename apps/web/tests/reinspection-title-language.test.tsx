@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import { inspectionTitle, type Checklist, type Lang, type PlacedInspection, type ProjectNode, type Review } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 V-1018-5 — the server wrote the fixed English words "Re-inspection: " into every re-inspection's stored
@@ -8,6 +9,8 @@ import { inspectionTitle, type Checklist, type Lang, type PlacedInspection, type
  * inspection's own title, and every screen labels a re-inspection from its `reinspectionOfId` in the reader's
  * language. A title is never read for its words: one that merely starts "Re-inspection: " is shown as recorded.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/EngineerChecklistScreen'), () => import('@/screens/InspectionReviewScreen'), () => import('@/screens/PlacesScreen'), () => import('@/store/selectors'));
 
 afterEach(() => {
   cleanup();

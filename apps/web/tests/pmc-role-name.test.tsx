@@ -2,12 +2,15 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, screen } from '@testing-library/react';
 import { forYouRole, type Lang } from '@vitan/shared';
 import { ROLE_LABEL } from '@/lib/screens';
+import { warmImports } from './warm-imports';
 
 /**
  * #827 (Board decision: rename the PMC role) — the role reads "Project manager (PMC)" wherever the app names
  * it: the persona switcher, the signed-in line, the Team and Portfolio chips, and the For You eyebrow (in
  * Hindi and Gujarati too). "PMC" stays in brackets, so people who know the short name still find it.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/layout/RolePicker'), () => import('@/screens/InboxScreen'));
 
 afterEach(() => {
   cleanup();

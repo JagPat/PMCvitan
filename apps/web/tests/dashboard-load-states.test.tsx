@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { Role } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * #818 (Codex round 2) — with the Dashboard every role's home (#811), its unsettled and demo-only parts must hold
@@ -26,6 +27,8 @@ async function loadDashboard(env: Record<string, string>, role: Role, overrides:
   const { DashboardScreen } = await import('@/screens/DashboardScreen');
   return { useStore, r: render(<DashboardScreen />) };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DashboardScreen'));
 
 beforeEach(() => vi.unstubAllEnvs());
 afterEach(() => {

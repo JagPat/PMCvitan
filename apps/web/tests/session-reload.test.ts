@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 6227430525 (Stage 1 live check) — a browser reload on /projects/qa-test-d135/dashboard signed qa.pmc
@@ -21,6 +22,8 @@ async function freshStore() {
   useStore.setState(getInitialState());
   return useStore;
 }
+
+await warmImports(() => import('@/store/store'));
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });

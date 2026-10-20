@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { Checklist, Decision, Lang, Review } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 6249090755 V-1018-2 — in Hindi and Gujarati the PMC's Inspection Review translated only the sidebar: "Reject
@@ -10,6 +11,8 @@ import { leftoverEnglish } from './leftover-english';
  * the decisions line). V-1018-1 — an item with no photo showed a placeholder that read as a thumbnail, with no tag.
  * Review titles, item names, notes, people, places and ids are project data, shown as recorded.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/screens/InspectionReviewScreen'), () => import('@/store/projectScope'), () => import('@/screens/ClientHealthScreen'), () => import('@/store/selectors'));
 
 afterEach(() => {
   cleanup();

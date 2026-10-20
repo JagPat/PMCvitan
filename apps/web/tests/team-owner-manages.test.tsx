@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import type { Role } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 (live 19 Oct, Samumil bunglow) — the server lets the project's PMC or an owner/admin of the project's org
@@ -33,6 +34,8 @@ const controls = (r: ReturnType<typeof render>) => ({
   role: !!r.queryByTestId('member-role-u-ramesh'),
   remove: !!r.queryByRole('button', { name: 'Remove Ramesh' }),
 });
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/TeamScreen'));
 
 afterEach(() => {
   cleanup();

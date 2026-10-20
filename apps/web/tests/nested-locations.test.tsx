@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { ProjectNode } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * Phase 6 task 2 — nested locations, the §C reader probes P9 (the Locations dialog can
@@ -50,6 +51,8 @@ async function loadStore(nodes: ProjectNode[], overrides: Record<string, unknown
   } as any);
   return useStore;
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/components/LocationPicker'), () => import('@/screens/modals/ManageLocationsModal'), () => import('@/layout/ProjectSwitcher'));
 
 afterEach(() => {
   cleanup();

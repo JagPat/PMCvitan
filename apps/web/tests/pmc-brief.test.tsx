@@ -2,12 +2,15 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { PmcBriefProject } from '@vitan/shared';
 import { pmcBrief } from '@/lib/pmcBrief';
+import { warmImports } from './warm-imports';
 
 /**
  * U3b (design review, PMC · Brief board): the PMC's home is their brief across every project they
  * run, from `GET /me/brief` (U3a). "Do these first" is a fixed, stated rule (client-held decisions
  * longest-waiting first, then reviews, then unsent site logs); no schedule verdict and no nudge.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/InboxScreen'), () => import('@/lib/pmcBrief'), () => import('@/data/useApiSync'));
 
 afterEach(() => {
   cleanup();

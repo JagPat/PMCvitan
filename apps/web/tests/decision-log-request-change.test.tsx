@@ -1,11 +1,14 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 QA (Jagrut, 15 Oct 2026, item 5) — reopening an approved decision is the client's call (and the PMC's,
  * on their behalf). The engineer, contractor and consultant see a locked decision as locked, with no
  * "Request change" button; the server refuses them too (`decision.change` is pmc + client).
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/screens/DecisionLogScreen'));
 
 afterEach(() => {
   cleanup();

@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { Activity, Lang, Phase, ProjectNode } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 QA item 3 — the site activity schedule in Hindi and Gujarati: every state of the screen (loading,
@@ -58,6 +59,8 @@ async function load(lang: Lang, over: Record<string, unknown> = {}, { mode = 'sn
   const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
   return { useStore, ScheduleScreen };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/ScheduleScreen'), () => import('@/components'));
 
 afterEach(() => {
   cleanup();

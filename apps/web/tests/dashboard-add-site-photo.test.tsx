@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import type { Lang, Role } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 site photos — every member the server lets upload adds a site photo from the Dashboard with one button.
@@ -45,6 +46,8 @@ function stubFileReader(dataUrl: string) {
 
 const pick = (r: ReturnType<typeof render>, name = 'p.jpg') =>
   fireEvent.change(r.getByTestId('add-site-photo-file'), { target: { files: [new File(['x'], name, { type: 'image/jpeg' })] } });
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DashboardScreen'), () => import('@/lib/civilDate'));
 
 beforeEach(() => vi.unstubAllEnvs());
 afterEach(() => {
