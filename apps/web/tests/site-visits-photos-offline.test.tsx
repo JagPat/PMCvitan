@@ -5,7 +5,7 @@ import type { ProjectMember, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { moveSiteVisitOps, type ApiGateway, type OutboxOp, type SiteVisit } from '@/data/apiGateway';
-import { failVisitPhoto, fileVisitPhoto, listVisitPhotos, moveVisitPhotos, putVisitPhoto, visitPhotoScope, visitsHeldByPhotos } from '@/data/visitPhotoStore';
+import { failVisitPhoto, fileVisitPhoto, listVisitPhotos, moveVisitPhotos, putVisitPhoto, settleFiledVisitPhotos, visitPhotoScope, visitsHeldByPhotos } from '@/data/visitPhotoStore';
 import { refreshSiteVisits } from '@/lib/useSiteVisits';
 
 /**
@@ -1034,17 +1034,39 @@ describe('Site Visits SV2: holds only what a kept photo needs, for as long as th
     expect(useStore.getState().outbox).toHaveLength(0);
   });
 
-  it('sends a close on a phone whose localStorage cannot be read and whose database fails (Codex 4322430052)', async () => {
+  it('holds a visit’s acts while the phone can read neither its photo keys nor its database, says so, and sends them on Send anyway (Codex 4323247780)', async () => {
     const closeSiteVisit = vi.fn(async () => visit({ status: 'closed', closeReason: 'Done' }));
     const close: OutboxOp = { t: 'siteVisitClose', visitId: 'v-1', reason: 'Done', idempotencyKey: 'k-c' };
-    setUp('consultant', fakeGateway([visit()], { closeSiteVisit }), [close]);
-    // site storage blocked: every localStorage read throws, and the database will not open
-    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError'); });
+    // site storage blocked: the photo keys cannot be listed, and the database will not open. A photo kept on an earlier
+    // page load may still be waiting on this visit
+    const gw = fakeGateway([visit()], { closeSiteVisit });
+    setUp('consultant', gw, [close]);
+    vi.spyOn(globalThis, 'localStorage', 'get').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError'); });
     vi.spyOn(indexedDB, 'open').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError'); });
     await act(async () => { await useStore.getState().flushOutbox(); });
-    // no photo could have been kept here: a row is only written after this localStorage was read and marked
-    expect(closeSiteVisit).toHaveBeenCalledTimes(1);
+    render(<SiteVisitsScreen />);
+    // the close does not overtake it: it waits, and the visit says why
+    expect(closeSiteVisit).not.toHaveBeenCalled();
+    const held = await screen.findByTestId('sv-held-v-1');
+    expect(held.textContent).toContain('this phone’s storage cannot be read right now');
+    // the person chooses to send it anyway
+    await act(async () => { fireEvent.click(within(held).getByRole('button', { name: 'Send anyway' })); });
+    await vi.waitFor(() => expect(closeSiteVisit).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(screen.queryByTestId('sv-held-v-1')).toBeNull());
     expect(useStore.getState().outbox).toHaveLength(0);
+  });
+
+  it.each([
+    ['signing out', () => useStore.getState().completeSignOut()],
+    ['switching project', () => { void useStore.getState().switchProject('other'); }],
+  ])('forgets a Send anyway and a held visit on %s, so neither carries over to the next person or project', async (_label, leave) => {
+    setUp('consultant', fakeGateway([visit()], { switchProject: vi.fn(() => new Promise(() => {})) }));
+    useStore.setState({ siteVisitsHeld: { project: useStore.getState().activeProjectId, generation: useStore.getState().projectScopeGeneration, visits: ['v-1'] } });
+    useStore.getState().sendSiteVisitAnyway('v-1');
+    expect(useStore.getState().siteVisitsSentAnyway).toHaveLength(1);
+    await act(async () => { leave(); });
+    expect(useStore.getState().siteVisitsSentAnyway).toEqual([]);
+    expect(useStore.getState().siteVisitsHeld).toBeNull();
   });
 
   it('moves an armed retry later when the server then asks for a longer wait, never sooner (Codex 4322430055)', async () => {
@@ -1212,5 +1234,127 @@ describe('Site Visits SV2: a photo’s key never outlives its row, and holds onl
     setUp('consultant', fakeGateway([visit()]));
     localStorage.setItem(`vitan.visitPhotoHeld.${owner()}.${project()}.c-1`, '{not json');
     expect(visitsHeldByPhotos(owner(), project())).toBe('all');
+  });
+});
+
+/**
+ * #1014's round 1 (head c8eb37f): an older server's answer settled filed photos it never listed, and a sent photo
+ * vanished when the phone's database and the server both failed to read just after it was sent. Each test fails at
+ * c8eb37f. (Its other two findings are tested beside their own code: the held-visit note in "#1012 round 1" above, and
+ * the link refresh in site-visits-photos.test.tsx.)
+ */
+describe('Site Visits SV2: a sent photo stays until a read that can speak for it (#792, #1014 round 1)', () => {
+  const fileOp = (): Extract<OutboxOp, { t: 'siteVisitAddFile' }> => ({
+    t: 'siteVisitAddFile', visitId: 'v-1', scope: visitPhotoScope(null, CONSULTANT), idempotencyKey: 'k-f',
+    by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, file: { id: 'c-1', mime: 'image/png' },
+  });
+  const serverFile = (clientKey: string) => ({
+    mediaId: 'm-1', url: '/media/m-1', mime: 'image/png', clientKey, takenAt: null, note: null, rating: null, place: null,
+    addedById: CONSULTANT, addedByName: 'Kiran Rao', addedByRole: 'consultant', addedAt: '2026-10-14T04:50:00.000Z',
+  });
+  /** a visit as an API from before SV2 answers it: no `files` at all */
+  const olderApi = (): SiteVisit => { const { files: _files, ...v } = visit(); return v as SiteVisit; };
+
+  it('keeps a sent photo when an older server answers without files, and settles it once a read lists it (Codex 4323247753)', async () => {
+    const uploadMedia = vi.fn(async () => ({ id: 'm-1', url: '/media/m-1' }));
+    const gw = fakeGateway([olderApi()], { uploadMedia });
+    gw.listSiteVisits!.mockImplementation(async () => [olderApi()]);
+    await mount(gw);
+    await putVisitPhoto(visitPhotoScope(null, CONSULTANT), useStore.getState().activeProjectId, fileOp(), 'AQID');
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    // the older server answers, and says nothing of the photo: it stays on the phone, and on the screen
+    await act(async () => { refreshSiteVisits(); });
+    await act(async () => {});
+    expect((await rows()).map((r) => r.state)).toEqual(['filed']);
+    await vi.waitFor(() => expect(screen.getByTestId('sv-file-c-1').querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AQID'));
+    // a read that lists it settles it
+    gw.listSiteVisits!.mockImplementation(async () => [visit({ files: [serverFile('c-1')] })]);
+    await act(async () => { refreshSiteVisits(); });
+    await vi.waitFor(async () => expect(await rows()).toEqual([]));
+    expect(screen.getByTestId('sv-file-m-1')).toBeTruthy();
+  });
+
+  it('keeps a sent photo when a read sent before it was filed answers after, covering its visit without it', async () => {
+    let filed = false;
+    let online = false;
+    const uploadMedia = vi.fn(async () => { if (!online) throw network(); filed = true; return { id: 'm-1', url: '/media/m-1' }; });
+    const gw = fakeGateway([visit()], { uploadMedia });
+    await mount(gw);
+    await putVisitPhoto(visitPhotoScope(null, CONSULTANT), useStore.getState().activeProjectId, fileOp(), 'AQID');
+    // a read goes out before the upload, and its answer is slow; every read after the upload fails
+    const early: (() => void)[] = [];
+    gw.listSiteVisits!.mockImplementation(() => (filed
+      ? Promise.reject(network())
+      : new Promise<SiteVisit[]>((done) => { early.push(() => done([visit({ files: [] })])); })));
+    await act(async () => { refreshSiteVisits(); });
+    await vi.waitFor(() => expect(early.length).toBeGreaterThanOrEqual(2));
+    online = true;
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    await vi.waitFor(async () => expect((await rows()).map((r) => r.state)).toEqual(['filed']));
+    expect(filed).toBe(true);
+    // the early read answers now: it covers the visit, with files, but was sent before the photo was filed
+    await act(async () => { for (const answer of early) answer(); });
+    await act(async () => {});
+    expect((await rows()).map((r) => r.state)).toEqual(['filed']);
+  });
+
+  it('settles a filed photo on a read that covers its visit only when that read was sent after it was filed', async () => {
+    setUp('consultant', fakeGateway([visit()]));
+    const owner = visitPhotoScope(null, CONSULTANT);
+    const project = useStore.getState().activeProjectId;
+    const before = Date.now() - 1;
+    await putVisitPhoto(owner, project, fileOp(), 'AQID');
+    await fileVisitPhoto(owner, project, 'c-1');
+    // sent before it was filed: covering its visit with files, not listing it, says nothing of it
+    await settleFiledVisitPhotos(owner, project, before, new Set(), new Set(), new Set(['v-1']));
+    expect((await rows()).map((r) => r.state)).toEqual(['filed']);
+    // nor does one sent after, that neither lists it nor covers its visit
+    await settleFiledVisitPhotos(owner, project, Date.now() + 1, new Set(), new Set(), new Set(['v-2']));
+    expect((await rows()).map((r) => r.state)).toEqual(['filed']);
+    // one sent after, covering its visit, does
+    await settleFiledVisitPhotos(owner, project, Date.now() + 1, new Set(), new Set(), new Set(['v-1']));
+    expect(await rows()).toEqual([]);
+  });
+
+  it('lets a sent photo go when a read of its visit with its files no longer holds it', async () => {
+    const uploadMedia = vi.fn(async () => ({ id: 'm-1', url: '/media/m-1' }));
+    const gw = fakeGateway([visit()], { uploadMedia });
+    gw.listSiteVisits!.mockImplementation(async () => [olderApi()]);
+    await mount(gw);
+    await putVisitPhoto(visitPhotoScope(null, CONSULTANT), useStore.getState().activeProjectId, fileOp(), 'AQID');
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    // the server read the visit with its files, and the photo is not among them (removed since)
+    gw.listSiteVisits!.mockImplementation(async () => [visit({ files: [] })]);
+    await act(async () => { refreshSiteVisits(); });
+    await vi.waitFor(async () => expect(await rows()).toEqual([]));
+  });
+
+  it('keeps a sent photo on screen when the phone’s database and the server both fail to read just after it was sent (Codex 4323247762)', async () => {
+    const uploadMedia = vi.fn().mockRejectedValue(network());
+    const gw = fakeGateway([visit()], { uploadMedia });
+    await mount(gw);
+    await pick('v-1');
+    await vi.waitFor(() => expect(queuedFile()).toBeTruthy());
+    const key = queuedFile()!.file.id;
+    await vi.waitFor(() => expect(screen.getByTestId(`sv-file-${key}`).textContent).toContain('waiting to send'));
+    // the upload goes through; just then the phone's database can no longer list its rows, and the server's read fails
+    let broken = false;
+    const realCursor = IDBObjectStore.prototype.openCursor;
+    vi.spyOn(IDBObjectStore.prototype, 'openCursor').mockImplementation(function (this: IDBObjectStore, ...args: Parameters<IDBObjectStore['openCursor']>) {
+      if (broken) throw new DOMException('broken', 'UnknownError');
+      return realCursor.apply(this, args);
+    });
+    uploadMedia.mockImplementation(async () => {
+      broken = true;
+      gw.listSiteVisits!.mockRejectedValue(network());
+      return { id: 'm-9', url: '/media/m-9' };
+    });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send now' })); });
+    await vi.waitFor(() => expect(useStore.getState().outbox).toHaveLength(0));
+    await act(async () => {});
+    // still shown from the phone's own copy, and not as waiting to send
+    expect(screen.getByTestId(`sv-file-${key}`).querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AQID');
+    expect(screen.getByTestId(`sv-file-${key}`).textContent).not.toContain('waiting to send');
   });
 });

@@ -410,6 +410,12 @@ export interface AppState {
   online: boolean;
   syncQueue: string[];
   outbox: OutboxOp[];
+  /** SV2: the visits whose acts the last flush held behind a photo this phone may still keep but could not read, for the
+   *  project and sign-in it ran in; null when it held none. The Site Visits screen says so, with "Send anyway". */
+  siteVisitsHeld: { project: string; generation: number; visits: string[] } | null;
+  /** SV2: the held visits the person chose to send anyway (`sendSiteVisitAnyway`), by user, project and visit; memory
+   *  only, so a reload holds them again until the phone can read its photos. */
+  siteVisitsSentAnyway: string[];
   /** #482 site photos unit 3 — this device's online photo uploads for a log, from the pick until the server's own
    *  count is seen to hold them (`dailyLog.myPhotoKeys`); memory only (a reload re-reads the server's count). */
   photoUploadsInFlight: { clientKey: string; dailyLogId: string; settled: boolean }[];
@@ -814,6 +820,9 @@ export interface AppActions {
   queueSiteVisitAct: (op: OutboxOp, offlineMsg: string) => boolean;
   /** SV2: a visit photo the server took has not shown in its list yet: read again on the visit photo retry. */
   retrySiteVisits: () => void;
+  /** SV2: the person sends a held visit's acts without waiting for a photo the phone cannot read just now: for this page
+   *  load only (Codex 4323247780). */
+  sendSiteVisitAnyway: (visitId: string) => void;
   hydrateOutbox: () => void;
   // team access
   accWho: (who: Exclude<AccessWho, null>) => void;
@@ -1410,6 +1419,8 @@ export function getInitialState(): AppState {
     online: true,
     syncQueue: [],
     outbox: [],
+    siteVisitsHeld: null,
+    siteVisitsSentAnyway: [],
     photoUploadsInFlight: [],
     failedEvidence: [],
     pendingEvidenceCount: 0,
@@ -2519,6 +2530,8 @@ export const useStore = create<Store>()(
      *  nothing (the browser's `online` sends everything), and it belongs to the queue it was armed for: after a
      *  project switch, sign-in or sign-out it sends nothing, and the queue then on show arms its own. */
     const VISIT_PHOTO_WAIT_MS = 5000;
+    // a visit the person chose to send without waiting for a photo the phone could not read (`siteVisitsSentAnyway`)
+    const releaseKey = (scope: string, projectId: string, visitId: string): string => JSON.stringify([scope, projectId, visitId]);
     const keepsVisitPhotos = (scope: string, projectId: string): boolean => {
       const held = visitsHeldByPhotos(scope, projectId);
       return held === 'all' || held.size > 0;
@@ -2847,6 +2860,9 @@ export const useStore = create<Store>()(
         // SAME project: a different user/role sees different records) can never
         // satisfy the current scope guard. Codex gate finding 6.
         s.projectScopeGeneration += 1;
+        // SV2: a held visit, and a person's Send anyway, belong to the scope they were made in
+        s.siteVisitsHeld = null;
+        s.siteVisitsSentAnyway = [];
         // Codex 4210609591 — a new scope owes nothing of the old one's commands (its coordinator is abandoned)
         s.commandReconcilePending = false;
         s.commandReconcileOwed = noReconcileOwed();
@@ -2965,6 +2981,9 @@ export const useStore = create<Store>()(
         // local demo (no gateway) keeps its seeded store.
         if (gateway) {
           s.projectScopeGeneration += 1;
+          // SV2: a held visit, and a person's Send anyway, belong to the scope they were made in
+          s.siteVisitsHeld = null;
+          s.siteVisitsSentAnyway = [];
           s.commandReconcilePending = false;
           s.commandReconcileOwed = noReconcileOwed();
           Object.assign(s, emptyProjectData());
@@ -3056,6 +3075,9 @@ export const useStore = create<Store>()(
         // user's records leave memory, and the generation bump refuses any of their
         // replies still in flight — nothing survives for the next identity to see.
         s.projectScopeGeneration += 1;
+        // SV2: a held visit, and a person's Send anyway, belong to the scope they were made in
+        s.siteVisitsHeld = null;
+        s.siteVisitsSentAnyway = [];
         // Codex 4210609591 — a new scope owes nothing of the old one's commands (its coordinator is abandoned)
         s.commandReconcilePending = false;
         s.commandReconcileOwed = noReconcileOwed();
@@ -4939,6 +4961,9 @@ export const useStore = create<Store>()(
       // arrive while authorization is pending.
       set((s) => {
         s.projectScopeGeneration += 1;
+        // SV2: a held visit, and a person's Send anyway, belong to the scope they were made in
+        s.siteVisitsHeld = null;
+        s.siteVisitsSentAnyway = [];
         // Codex 4210609591 — a new scope owes nothing of the old one's commands (its coordinator is abandoned)
         s.commandReconcilePending = false;
         s.commandReconcileOwed = noReconcileOwed();
@@ -5953,6 +5978,11 @@ export const useStore = create<Store>()(
     // the screen's own reads: a sent photo not listed yet, or its kept photos not read. A retry holds nothing: the flush
     // it runs holds only the visits a kept photo may be on
     retrySiteVisits: () => { if (get().online) retryVisitPhotos(); },
+    sendSiteVisitAnyway: (visitId) => {
+      const key = releaseKey(visitPhotoScope(get().sessionToken, get().sessionUserId), get().activeProjectId, visitId);
+      if (!get().siteVisitsSentAnyway.includes(key)) set({ siteVisitsSentAnyway: [...get().siteVisitsSentAnyway, key] });
+      void get().flushOutbox();
+    },
     flushOutbox: async (opts) => {
       // A flush that did not actually process this call's ops (no gateway, coalesced, or empty) reports
       // `ran:false`/empty so a caller confirming its own ops never mistakes "not run" for "succeeded".
@@ -6013,6 +6043,14 @@ export const useStore = create<Store>()(
       // and of the generic stored lane: a visit photo's act is in neither stored lane, so it is counted in neither
       // (Codex 4321998480)
       const takenGeneric = ops.filter((o) => !isSiteVisitOp(o)).length;
+      const holds = (op: OutboxOp): boolean => !!holdVisits && isSiteVisitOp(op)
+        && (holdVisits === 'all' || holdVisits.has(siteVisitOf(op)))
+        && !get().siteVisitsSentAnyway.includes(releaseKey(keptBy, keptFor, siteVisitOf(op)));
+      // what this flush holds, for the screen to say so and offer to send anyway
+      const heldNow = [...new Set(ops.flatMap((o) => (isSiteVisitOp(o) && holds(o) ? [siteVisitOf(o)] : [])))];
+      if (heldNow.length > 0 || get().siteVisitsHeld) {
+        set({ siteVisitsHeld: heldNow.length > 0 ? { project: keptFor, generation: get().projectScopeGeneration, visits: heldNow } : null });
+      }
       if (ops.length === 0) return { ran: true, scopeMoved: false, succeededKeys: [], droppedKeys: [], pendingKeys: [] };
       // gate round-2 finding 2: the flush is about to change the durable truth
       // (confirmed uploads delete rows, terminal failures dead-letter them) — any
@@ -6093,8 +6131,7 @@ export const useStore = create<Store>()(
           scopeMoved = true;
           break;
         }
-        const op = ops[i];
-        if (holdVisits && isSiteVisitOp(op) && (holdVisits === 'all' || holdVisits.has(siteVisitOf(op)))) { heldVisits.push(op); continue; }
+        if (holds(ops[i])) { heldVisits.push(ops[i]); continue; }
         const mat = isMaterialsOp(ops[i]);
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);

@@ -217,9 +217,9 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     await act(async () => { vi.advanceTimersByTime(31_000); });
     expect(gw.listSiteVisits!.mock.calls.length).toBeGreaterThan(before);
     const failed = gw.listSiteVisits!.mock.calls.length;
-    // signal is back: the refresh is tried again on its own
+    // signal is back: the refresh is tried again on its own, a minute after the one that failed (Codex 4323247775)
     gw.listSiteVisits!.mockImplementation(async () => [visit({ files: [file({ url: `/media/m-1?t=${exp()}.fresh` })] })]);
-    await act(async () => { vi.advanceTimersByTime(31_000); });
+    await act(async () => { vi.advanceTimersByTime(60_000); });
     vi.useRealTimers();
     expect(gw.listSiteVisits!.mock.calls.length).toBeGreaterThan(failed);
     await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-1').querySelector('img')!.getAttribute('src')).toContain('.fresh'));
@@ -352,7 +352,7 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
 
   it('records a link refresh only once it answered, so a failed one is tried again before the link expires (Codex 4321998485)', async () => {
     const sec = Math.floor(Date.now() / 1000);
-    const list = vi.fn(async () => [visit({ files: [file({ url: `/media/m-1?t=${sec + 60}.s` })] })]);
+    const list = vi.fn(async () => [visit({ files: [file({ url: `/media/m-1?t=${sec + 3600}.s` })] })]);
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     try {
       await mount('consultant', CONSULTANT, fakeGateway([], { listSiteVisits: list }));
@@ -360,12 +360,46 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
       // the refresh at half-life finds no signal
       list.mockRejectedValue(new Error('network'));
       const before = list.mock.calls.length;
-      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_800_000); });
       expect(list.mock.calls.length).toBeGreaterThan(before);
       // it is tried again while the link still lives, not only once it has expired
       const failed = list.mock.calls.length;
-      await act(async () => { await vi.advanceTimersByTimeAsync(29_000); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(900_000); });
       expect(list.mock.calls.length).toBeGreaterThan(failed);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waits at least a minute after a failed link refresh, doubling to ten, never tightening as the link nears its end (Codex 4323247775)', () => {
+    const now = Date.now();
+    const sec = Math.floor(now / 1000);
+    const near = [visit({ files: [file({ url: `/media/a?t=${sec + 10}.s` })] })];
+    const gone = [visit({ files: [file({ url: `/media/a?t=${sec - 10}.s` })] })];
+    expect(linkRefreshDelay(near, now, null, 0)).toBe(5000 - (now % 1000) / 2);
+    expect(linkRefreshDelay(near, now, null, 1)).toBe(60_000);
+    expect(linkRefreshDelay(near, now, null, 2)).toBe(120_000);
+    expect(linkRefreshDelay(near, now, null, 4)).toBe(480_000);
+    expect(linkRefreshDelay(near, now, null, 5)).toBe(600_000);
+    expect(linkRefreshDelay(near, now, null, 500)).toBe(600_000);
+    expect(linkRefreshDelay(gone, now, null, 0)).toBe(LINK_REFRESH_RETRY_MS);
+    expect(linkRefreshDelay(gone, now, null, 3)).toBe(240_000);
+  });
+
+  it('spaces failed link refreshes out on the screen: four tries in the last half hour of an hour-long link, not a run (Codex 4323247775)', async () => {
+    const sec = Math.floor(Date.now() / 1000);
+    const list = vi.fn(async () => [visit({ files: [file({ url: `/media/m-1?t=${sec + 3600}.s` })] })]);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      await mount('consultant', CONSULTANT, fakeGateway([], { listSiteVisits: list }));
+      await act(async () => {});
+      list.mockRejectedValue(new Error('network'));
+      const before = list.mock.calls.length;
+      // the hour passes, the screen drawn again after each step
+      for (let t = 0; t < 360; t += 1) await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      // at half-life (30m), then 15m, 7.5m and 4m on (each wait at least a minute, doubling): 30m, 45m, 52.5m, 56.5m;
+      // never a run of tries as the end nears
+      expect((list.mock.calls.length - before) / 2).toBe(4);
     } finally {
       vi.useRealTimers();
     }

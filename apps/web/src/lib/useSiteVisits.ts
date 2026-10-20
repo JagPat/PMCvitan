@@ -122,19 +122,38 @@ export function soonestLinkExpiry(visits: SiteVisit[]): number | null {
  *  short link re-read early can come back unchanged (Codex 4320122174). Then the next read is just before it ends, never
  *  at it (Codex 4321998485); only a second unchanged answer waits that link out. A read that failed counts for nothing,
  *  so it is tried again inside the link's life. Once a link has expired (every read
- *  since failed), the next read is `LINK_REFRESH_RETRY_MS` away; null when no link is shown. */
+ *  since failed), the next read is `LINK_REFRESH_RETRY_MS` away; null when no link is shown. `failed` counts the
+ *  refreshes that failed in a row since one last answered: each waits at least `LINK_FAILED_RETRY_MS`, doubling to
+ *  `LINK_FAILED_RETRY_MAX_MS`, with no limit on tries, so failures never tighten into a loop as the link nears its end
+ *  (Codex 4323247775). */
 export const LINK_REFRESH_RETRY_MS = 15_000;
 export const LINK_REFRESH_LEAD_MS = 1000;
+export const LINK_FAILED_RETRY_MS = 60_000;
+export const LINK_FAILED_RETRY_MAX_MS = 10 * 60_000;
 export type LinkRefreshTried = { expiry: number; times: number };
-export function linkRefreshDelay(visits: SiteVisit[], nowMs: number, tried: LinkRefreshTried | null = null): number | null {
+export function linkRefreshDelay(visits: SiteVisit[], nowMs: number, tried: LinkRefreshTried | null = null, failed = 0): number | null {
   const soonest = soonestLinkExpiry(visits);
   if (soonest === null) return null;
+  const floor = failed > 0 ? Math.min(LINK_FAILED_RETRY_MS * 2 ** Math.min(failed - 1, 16), LINK_FAILED_RETRY_MAX_MS) : 0;
   const left = soonest - nowMs;
-  if (left <= 0) return LINK_REFRESH_RETRY_MS;
+  if (left <= 0) return Math.max(LINK_REFRESH_RETRY_MS, floor);
   const times = tried?.expiry === soonest ? tried.times : 0;
-  if (times >= 2) return left;
+  if (times >= 2) return Math.max(left, floor);
   const delay = times === 1 ? left - Math.min(LINK_REFRESH_LEAD_MS, left / 2) : left / 2;
-  return Math.max(delay, Math.min(LINK_REFRESH_LEAD_MS, left / 2));
+  return Math.max(delay, Math.min(LINK_REFRESH_LEAD_MS, left / 2), floor);
+}
+
+/** What a Site Visits read says about the photos this phone has filed: the keys it lists, and the visits it read with
+ *  their files (an older server's answer, with no `files`, speaks for none: Codex 4323247753). */
+function filedFacts(visits: SiteVisit[]): { listed: Set<string>; spoken: Set<string> } {
+  const listed = new Set<string>();
+  const spoken = new Set<string>();
+  for (const v of visits) {
+    if (!Array.isArray(v.files)) continue;
+    spoken.add(v.id);
+    for (const f of v.files) if (f.clientKey) listed.add(f.clientKey);
+  }
+  return { listed, spoken };
 }
 
 /** The visits as shown: those still open first, then newest start first. */
@@ -261,6 +280,10 @@ export function useSiteVisits() {
   const generation = useStore((s) => s.projectScopeGeneration);
   const me = useStore((s) => s.sessionUserId);
   const queued = useStore(useShallow((s) => s.outbox.filter(isSiteVisitOp)));
+  // the visits whose acts wait behind a photo the phone cannot read just now, for this project and sign-in
+  const heldList = useStore((s) => (s.siteVisitsHeld && s.siteVisitsHeld.project === s.activeProjectId
+    && s.siteVisitsHeld.generation === s.projectScopeGeneration ? s.siteVisitsHeld.visits : null));
+  const held = useMemo(() => new Set(heldList ?? []), [heldList]);
   const [rows, setRows] = useState<SiteVisit[]>([]);
   // the last visit of the newest-first pages read so far; older pages continue from it, and a refresh reads to it
   const cursor = useRef<string | undefined>(undefined);
@@ -285,6 +308,8 @@ export function useSiteVisits() {
   // SV2: this user's visit photos kept on the phone (`visitPhotoStore`), read again whenever one may have settled. The
   // screen's own copy of each: when a row goes, its picture goes with it
   const [kept, setKept] = useState<VisitPhotoRow[]>([]);
+  // bumped by every read of the kept photos and every change made to the screen's copy: only the latest read is taken
+  const keptTurn = useRef(0);
   // bumped when a read made for a filed photo settles, so a read that failed is followed by another
   const [filedReads, setFiledReads] = useState(0);
   // the photos this screen was told were filed: a read sent after that settles them, whatever the clock says
@@ -295,6 +320,8 @@ export function useSiteVisits() {
   const [relinks, setRelinks] = useState(0);
   // the link expiry the last refresh was made for: a read that brings it back unchanged is not halved again
   const relinkedFor = useRef<LinkRefreshTried | null>(null);
+  // how many link refreshes failed in a row since a read last answered
+  const relinkFailed = useRef(0);
 
   const live = (scope: ProjectScope): boolean => {
     const s = useStore.getState();
@@ -305,8 +332,10 @@ export function useSiteVisits() {
   const readKept = useCallback(() => {
     const s = useStore.getState();
     const scope = projectScopeOf(s);
+    const mine = (keptTurn.current += 1);
     listVisitPhotos(visitPhotoScope(s.sessionToken, s.sessionUserId), s.activeProjectId)
-      .then((list) => { if (live(scope)) setKept(list); })
+      // only the latest: a read sent before a photo was marked filed here never puts it back as queued
+      .then((list) => { if (live(scope) && mine === keptTurn.current) setKept(list); })
       // not read: what is shown stays, and it is read again on the visit photo retry
       .catch(() => { if (live(scope)) useStore.getState().retrySiteVisits(); });
   }, []);
@@ -349,8 +378,10 @@ export function useSiteVisits() {
         }
         answered.current = true;
         setLoad('ready');
+        relinkFailed.current = 0;
         // not settled (the phone's database failed): they stay shown, and the next read that answers settles them
-        void settleFiledVisitPhotos(owner, scope.projectId, sentAt, heard).then(() => { if (live(scope)) readKept(); }, () => {});
+        const { listed, spoken } = filedFacts(read);
+        void settleFiledVisitPhotos(owner, scope.projectId, sentAt, heard, listed, spoken).then(() => { if (live(scope)) readKept(); }, () => {});
         return true;
       })
       // the latest read failed before any read answered (an overtaken first read included): offer Try again
@@ -363,16 +394,23 @@ export function useSiteVisits() {
   const readOlder = useCallback((before: string) => {
     const gw = useStore.getState().serverGateway();
     if (!gw) return;
-    const scope = projectScopeOf(useStore.getState());
+    const st = useStore.getState();
+    const scope = projectScopeOf(st);
+    const owner = visitPhotoScope(st.sessionToken, st.sessionUserId);
+    const sentAt = Date.now();
+    const heard = new Set(filedHeard.current);
     gw.listSiteVisits({ before, limit: VISIT_PAGE })
       .then((page) => {
         if (!live(scope)) return;
+        // an older visit's own photos are settled by the page that reads it, as by a refresh
+        const { listed, spoken } = filedFacts(page);
+        void settleFiledVisitPhotos(owner, scope.projectId, sentAt, heard, listed, spoken).then(() => { if (live(scope)) readKept(); }, () => {});
         setRows((old) => merged(page, old));
         if (page.length) cursor.current = page[page.length - 1].id;
         setHasMore(page.length === VISIT_PAGE);
       })
       .catch(() => {});
-  }, []);
+  }, [readKept]);
 
   // a new project, or a new sign-in on it, starts from its own first page, and sends what it has queued
   useEffect(() => {
@@ -403,8 +441,12 @@ export function useSiteVisits() {
         turn.current += 1;
         setRows((old) => merged(old, [e.visit]));
       } else if (e.kind === 'filed') {
-        // the photo's row is now filed: shown from it until a read sent after this answers
+        // the photo's row is now filed: shown from it until a read sent after this answers. The screen's own copy says so
+        // at once, so the photo stays shown even when the phone's database and the server both fail to read just now
+        // (Codex 4323247762)
         filedHeard.current.add(e.clientKey);
+        keptTurn.current += 1;
+        setKept((old) => old.map((r) => (r.clientKey === e.clientKey && r.state !== 'filed' ? { ...r, state: 'filed', reason: null, filedAt: Date.now() } : r)));
         readKept();
         if (known.current.has(e.visitId) || movedTo.current.has(e.visitId)) void readHead(false).finally(() => setFiledReads((n) => n + 1));
       } else if (e.kind === 'retry') {
@@ -468,7 +510,7 @@ export function useSiteVisits() {
   // never overlap, and a read that fails (no signal) leaves the rows as they were, so the timer is set again from the
   // same links: it waits for them to expire, then tries on a steady beat (Codex 4319531884, 4320122174)
   useEffect(() => {
-    const delay = linkRefreshDelay(rows, Date.now(), relinkedFor.current);
+    const delay = linkRefreshDelay(rows, Date.now(), relinkedFor.current, relinkFailed.current);
     if (delay === null) return;
     let gone = false;
     const relink = setTimeout(() => {
@@ -479,6 +521,7 @@ export function useSiteVisits() {
           const tried = relinkedFor.current;
           relinkedFor.current = { expiry, times: tried?.expiry === expiry ? tried.times + 1 : 1 };
         }
+        if (!ok) relinkFailed.current += 1;
         if (!gone) setRelinks((n) => n + 1);
       });
     }, delay);
@@ -490,7 +533,9 @@ export function useSiteVisits() {
   shownRef.current = shown.visits;
 
   return {
-    visits: shown.visits, waiting: shown.waiting, queued: queued.length, load, hasMore, busy, error, notice, pings, notSent,
+    visits: shown.visits, waiting: shown.waiting, queued: queued.length, load, hasMore, busy, error, notice, pings, notSent, held,
+    /** Send a held visit's acts without waiting for a photo the phone cannot read just now (this page load only). */
+    sendAnyway: (visitId: string) => useStore.getState().sendSiteVisitAnyway(visitId),
     /** The person has read why a photo was not sent: the phone lets go of it. */
     dismiss: (key: string) => {
       const s = useStore.getState();

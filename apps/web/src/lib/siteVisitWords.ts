@@ -107,6 +107,12 @@ export const SV = {
     hi: 'आपकी चुनी जगह इस विज़िट से हटा दी गई। जगह फिर से चुनें, फिर फ़ोटो जोड़ें।',
     gu: 'તમે પસંદ કરેલી જગ્યા આ મુલાકાતમાંથી દૂર કરાઈ. જગ્યા ફરી પસંદ કરો, પછી ફોટો ઉમેરો.',
   },
+  heldStorage: {
+    en: 'Updates to this visit are waiting: this phone’s storage cannot be read right now, and a photo may still be waiting on it.',
+    hi: 'इस विज़िट के बदलाव रुके हुए हैं: इस फ़ोन की स्टोरेज अभी पढ़ी नहीं जा सकती, और उसमें कोई फ़ोटो अभी भेजनी बाकी हो सकती है।',
+    gu: 'આ મુલાકાતના ફેરફારો રોકાયેલા છે: આ ફોનનો સ્ટોરેજ હમણાં વાંચી શકાતો નથી, અને તેમાં કોઈ ફોટો હજી મોકલવાનો બાકી હોઈ શકે છે.',
+  },
+  sendAnyway: { en: 'Send anyway', hi: 'फिर भी भेजें', gu: 'તો પણ મોકલો' },
   notSent: { en: 'Photos not sent', hi: 'फ़ोटो जो नहीं भेजी गईं', gu: 'ન મોકલાયેલા ફોટા' },
   dismiss: { en: 'Dismiss', hi: 'हटाएँ', gu: 'દૂર કરો' },
   photoOpen: { en: 'Open photo', hi: 'फ़ोटो खोलें', gu: 'ફોટો ખોલો' },

@@ -222,6 +222,12 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
         <div className={styles.meta}>{SV.location[lang]}{v.location.approximate ? ` (${SV.approximate[lang]})` : ''}</div>
       )}
       {v.status === 'closed' && v.closeReason && <div className={styles.meta}>{SV.closedBecause[lang]} {v.closeReason}</div>}
+      {/* SV2: its acts wait behind a photo the phone cannot read just now; the person may send them anyway (Codex 4323247780) */}
+      {sv.held.has(v.id) && (
+        <div className={styles.note} role="status" data-testid={`sv-held-${v.id}`}>
+          {SV.heldStorage[lang]} <Button variant="light" onClick={() => sv.sendAnyway(v.id)}>{SV.sendAnyway[lang]}</Button>
+        </div>
+      )}
       {v.lateEndedAt && <div className={styles.meta}>{SV.lateEnd[lang]} · {visitTime(v.lateEndedAt, lang)}{adjusted(v.lateEndTimeAdjusted)}</div>}
 
       <h2 className={styles.sub}>{SV.places[lang]}</h2>

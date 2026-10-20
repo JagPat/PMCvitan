@@ -163,8 +163,9 @@ function heldKeys(userScope: string, projectId: string): Map<string, unknown> {
 }
 
 /** The visits whose acts must wait behind a photo this phone may still be keeping, for when IndexedDB cannot be read;
- *  `'all'` when a key cannot be read for its visits. Storage that cannot be read holds none: a row is only ever written
- *  after its key was written to this same storage. */
+ *  `'all'` when a key cannot be read for its visits, or the keys cannot be read at all: a photo kept on an earlier page
+ *  load may be waiting, and a close that overtook it would lose it, where a hold only waits (Codex 4323247780). The
+ *  person can release a hold they see (`sendSiteVisitAnyway`). */
 export function visitsHeldByPhotos(userScope: string, projectId: string): ReadonlySet<string> | 'all' {
   try {
     const visits = new Set<string>();
@@ -174,7 +175,7 @@ export function visitsHeldByPhotos(userScope: string, projectId: string): Readon
     }
     return visits;
   } catch {
-    return new Set();
+    return 'all';
   }
 }
 
@@ -249,15 +250,21 @@ export function fileVisitPhoto(userScope: string, projectId: string, clientKey: 
   }).then(() => letGoOf(userScope, projectId, [clientKey])); // no longer queued, whatever it was
 }
 
-/** A Site Visits read sent at `readAt` answered: every photo filed before then is now the server's to show (listed by
- *  that read, or no longer held), and its row goes. `heard` names photos this screen was told were filed before it sent
- *  that read, for one filed within the same millisecond. */
-export function settleFiledVisitPhotos(userScope: string, projectId: string, readAt: number, heard: ReadonlySet<string> = new Set()): Promise<void> {
+/** A Site Visits read sent at `readAt` answered: a photo filed before then is now the server's to show when that read
+ *  lists it (`listed`, by key) or read its visit with that visit's files (`spoken`) and found it no longer held; its row
+ *  goes. Any other filed row stays, shown, for a later read of its visit. `heard` names photos this screen was told were
+ *  filed before it sent that read, for one filed within the same millisecond. */
+export function settleFiledVisitPhotos(
+  userScope: string, projectId: string, readAt: number, heard: ReadonlySet<string>, listed: ReadonlySet<string>, spoken: ReadonlySet<string>,
+): Promise<void> {
   if (!storageAvailable()) return Promise.resolve(); // nothing was ever filed here
   const gone: string[] = [];
   return tx<void>('readwrite', (s, done) => {
     eachRow(s, userScope, projectId, (row, cursor) => {
-      if (row.state === 'filed' && ((row.filedAt ?? 0) < readAt || heard.has(row.clientKey))) { cursor.delete(); gone.push(row.clientKey); }
+      if (row.state !== 'filed' || !((row.filedAt ?? 0) < readAt || heard.has(row.clientKey))) return;
+      // only a read that lists it, or that read its visit with the visit's files and found it gone: an older server's
+      // answer (no files), or one that did not read its visit, says nothing of it (Codex 4323247753)
+      if (listed.has(row.clientKey) || spoken.has(row.op.visitId)) { cursor.delete(); gone.push(row.clientKey); }
     }, () => done(undefined));
   }).then(() => letGoOf(userScope, projectId, gone));
 }
