@@ -185,7 +185,7 @@ export class SnapshotService {
     const ownWindow = (m: (typeof siteMedia)[number]): boolean => !staff && ownRecent(m) && !(m.dailyLogId && sentLogs.has(m.dailyLogId));
     // staff are offered every photo with no deadline, still never one a record keeps (Codex 4320912804)
     const candidates = siteMedia.filter((m) => staff || ownWindow(m)).map((m) => m.id);
-    const disposable = userId ? await this.disposability.disposable(projectId, candidates, userId) : new Set<string>();
+    const disposable = userId ? await this.disposability.disposable(projectId, candidates, userId, !staff) : new Set<string>();
     const photoDtos = siteMedia.map((m) => ({
       id: m.id,
       url: this.signed.mediaPath(m.id),

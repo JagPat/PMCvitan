@@ -374,7 +374,7 @@ export class MediaService {
       }
       // every record that keeps this photo as evidence (stock ledger, labour muster, measured output, measurement, site
       // visit, assigned inspection) refuses the delete before anything is touched — the same questions the snapshot asks
-      const observedEvidence = await this.disposability.assertDisposable(tx, { projectId, mediaId: id, actorUserId: user.sub });
+      const observedEvidence = await this.disposability.assertDisposable(tx, { projectId, mediaId: id, actorUserId: user.sub, ownSitePhoto });
       // Task 10 (Module 3) correction — unlink any inspection-owned evidence FIRST (participant appends
       // `inspection.evidence_removed` when a link existed), THEN delete the media row, so the projection
       // observes the removal. `null` when this media was not item-level evidence.

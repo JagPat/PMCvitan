@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { InspectionParticipant } from '../inspections/inspection.participant';
@@ -37,9 +37,14 @@ export class MediaDisposability {
    */
   async assertDisposable(
     tx: Prisma.TransactionClient,
-    params: { projectId: string; mediaId: string; actorUserId: string },
+    params: { projectId: string; mediaId: string; actorUserId: string; ownSitePhoto?: boolean },
   ): Promise<Array<{ inspectionId: string; observedAssigneeId: string | null }>> {
-    const { projectId, mediaId: id, actorUserId } = params;
+    const { projectId, mediaId: id, actorUserId, ownSitePhoto = false } = params;
+    // #482 site photos — a member deletes only their own plain site photo, and one linked as inspection evidence is not
+    // plain, whether or not its inspection has an assignee (Codex 4321452704)
+    if (ownSitePhoto && (await this.inspectionParticipant.linkedEvidence(tx, projectId, [id])).size > 0) {
+      throw new ConflictException('This photo is evidence on an inspection and cannot be deleted');
+    }
     // Phase 3 Task 4 — the §C stock ledger is immutable, so a photo cited as stock quality
     // evidence can never be unlinked: the inventory participant REFUSES the delete (409)
     // before anything is touched (the ledger's composite FK is the database backstop).
@@ -64,7 +69,7 @@ export class MediaDisposability {
   /** #482 site photos — which of these photos the delete would let `actorUserId` remove now, record-wise, so the snapshot
    *  offers a delete only where the server would take it. One batched read per owning module for the whole window, never
    *  one per photo (Codex 4320515415); read without locks — the delete asks again and is the authority. */
-  async disposable(projectId: string, ids: string[], actorUserId: string): Promise<Set<string>> {
+  async disposable(projectId: string, ids: string[], actorUserId: string, ownSitePhotos = false): Promise<Set<string>> {
     if (ids.length === 0) return new Set();
     const db = this.prisma as unknown as Prisma.TransactionClient;
     const pinned = await Promise.all([
@@ -73,7 +78,10 @@ export class MediaDisposability {
       this.activityParticipant.pinnedMedia(db, projectId, ids),
       this.commercialParticipant.pinnedMedia(db, projectId, ids),
       this.siteVisitFiles.pinnedMedia(db, projectId, ids),
-      this.inspectionParticipant.pinnedEvidence(db, { projectId, mediaIds: ids, actorUserId }),
+      // a member's own site photos: any inspection link pins them, as on delete; staff: the assignment rule
+      ownSitePhotos
+        ? this.inspectionParticipant.linkedEvidence(db, projectId, ids)
+        : this.inspectionParticipant.pinnedEvidence(db, { projectId, mediaIds: ids, actorUserId }),
     ]);
     return new Set(ids.filter((id) => !pinned.some((set) => set.has(id))));
   }

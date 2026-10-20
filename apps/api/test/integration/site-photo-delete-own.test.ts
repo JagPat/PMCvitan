@@ -181,7 +181,8 @@ describe('a member deletes their own site photo within the hour (live PG)', () =
       expect(snap.photos.find((p) => p.id === cited)).not.toHaveProperty('deletableUntil');
       expect(snap.photos.find((p) => p.id === free)?.deletableUntil).toBeDefined();
       // the delete agrees with what the snapshot offered
-      expect((await del(cited, contractor)).status).toBe(403);
+      // any inspection link makes it evidence, not a plain site photo (Codex 4321452704)
+      expect((await del(cited, contractor)).status).toBe(409);
       expect(await exists(cited)).toBe(true);
       expect((await del(free, contractor)).status).toBe(200);
     } finally {
@@ -307,6 +308,27 @@ describe('a member deletes their own site photo within the hour (live PG)', () =
     } finally {
       check.mockRestore();
       await t.prisma.activity.deleteMany({ where: { id: activityId } });
+    }
+  });
+
+  it('a member\'s photo linked to an unassigned inspection is not theirs to delete, and is not offered (Codex 4321452704)', async () => {
+    const linked = await photo(contractorId(), minutesAgo(2));
+    const inspectionId = `${f.projectA.id}-del-insp-open`;
+    await t.prisma.inspection.create({ data: { id: inspectionId, projectId: f.projectA.id, kind: 'review', title: 'Slab check', zone: 'Zone A', date: '20 Oct', submitted: true } });
+    const item = await t.prisma.inspectionItem.create({ data: { inspectionId, name: 'Cover', result: 'PASS' } });
+    await t.prisma.inspectionEvidence.create({ data: { projectId: f.projectA.id, inspectionId, inspectionItemId: item.id, mediaId: linked } });
+    try {
+      const snap = await t.app.get(SnapshotService).build(f.projectA.id, 'contractor', contractorId());
+      expect(snap.photos.find((p) => p.id === linked)).toBeDefined();
+      expect(snap.photos.find((p) => p.id === linked)).not.toHaveProperty('deletable');
+      expect(snap.photos.find((p) => p.id === linked)).not.toHaveProperty('deletableUntil');
+      expect((await del(linked, contractor)).status).toBe(409);
+      expect(await exists(linked)).toBe(true);
+      expect(await t.prisma.inspectionEvidence.count({ where: { mediaId: linked } })).toBe(1);
+    } finally {
+      await t.prisma.inspectionEvidence.deleteMany({ where: { inspectionId } });
+      await t.prisma.inspectionItem.deleteMany({ where: { inspectionId } });
+      await t.prisma.inspection.deleteMany({ where: { id: inspectionId } });
     }
   });
 
