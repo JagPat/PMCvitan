@@ -1,7 +1,7 @@
 import { ConflictException, ForbiddenException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { OrgsParticipant } from '../orgs/orgs.participant';
-import { assignmentStillBinds } from './assignment-eligibility';
+import { assignmentStillBinds, bindingAssigneeIds } from './assignment-eligibility';
 import { emitEvent } from '../platform/events';
 import type { Actor } from '../common/actor';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
@@ -132,6 +132,41 @@ export class InspectionParticipant {
     // under — one observation per inspection this media is evidence for (#571 round 11, finding 1)
     return observed;
   }
+  /**
+   * #482 site photos — which of these photos are evidence on any inspection at all, assigned or not. A member's own
+   * site photo is never evidence (Board, 14 Oct 2026), so one linked here is not theirs to delete (Codex 4321452704).
+   * Links are written only with a new photo (`MediaService.create`), never onto one that already exists.
+   */
+  async linkedEvidence(db: Prisma.TransactionClient, projectId: string, mediaIds: string[]): Promise<Set<string>> {
+    if (mediaIds.length === 0) return new Set();
+    const links = await db.inspectionEvidence.findMany({ where: { projectId, mediaId: { in: mediaIds } }, select: { mediaId: true }, distinct: ['mediaId'] });
+    return new Set(links.map((l) => l.mediaId));
+  }
+
+  /**
+   * #482 site photos — the batched, lock-free form of {@link assertEvidenceDisposable}: which of these photos are
+   * evidence on an inspection whose binding assignment belongs to someone other than `actorUserId`, so that actor's
+   * delete would be refused. A fixed number of reads for any number of photos (Codex 4320515415); the delete asks again
+   * under its locks and is the authority.
+   */
+  async pinnedEvidence(
+    db: Prisma.TransactionClient,
+    params: { projectId: string; mediaIds: string[]; actorUserId: string },
+  ): Promise<Set<string>> {
+    const { projectId, mediaIds, actorUserId } = params;
+    if (mediaIds.length === 0) return new Set();
+    const links = await db.inspectionEvidence.findMany({ where: { projectId, mediaId: { in: mediaIds } }, select: { inspectionId: true, mediaId: true } });
+    if (links.length === 0) return new Set();
+    const assigned = await db.inspection.findMany({
+      where: { projectId, id: { in: [...new Set(links.map((l) => l.inspectionId))] }, assigneeId: { not: null } },
+      select: { id: true, assigneeId: true },
+    });
+    const others = new Map(assigned.flatMap((i) => (i.assigneeId && i.assigneeId !== actorUserId ? [[i.id, i.assigneeId] as const] : [])));
+    if (others.size === 0) return new Set();
+    const binding = await bindingAssigneeIds(this.orgs, db, projectId, [...new Set(others.values())]);
+    return new Set(links.flatMap((l) => (binding.has(others.get(l.inspectionId) ?? '') ? [l.mediaId] : [])));
+  }
+
   /**
    * Create the closing inspection for a completion claim (edge 1) and append `inspection.closing_created`
    * in the SAME transaction, so the projection observes the new review. ONE default sign-off item makes

@@ -94,6 +94,7 @@ describe('the role vocabulary tripwire (4d-ii-a / A5a)', () => {
     'packages/shared/src/domain/policy.ts :: list members.read': 'answered',
     'packages/shared/src/domain/policy.ts :: list companies.read': 'answered',
     'packages/shared/src/domain/policy.ts :: list media.upload': 'excludes: the architect’s action set is pinned (P28) and holds no upload; until it opens, architects visit as consultant members, who add site photos (#482)',
+    'packages/shared/src/domain/policy.ts :: list media.delete': 'excludes: mirrors media.upload: a member deletes only a site photo they added, within the hour, and the architect adds none (#482)',
     // API
     'apps/api/src/common/auth.ts :: union Role': 'answered',
     'apps/api/src/common/actor.ts :: map ROLE_LABEL': 'answered',
