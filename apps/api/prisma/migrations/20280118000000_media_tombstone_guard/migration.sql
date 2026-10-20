@@ -9,7 +9,8 @@
 -- a record in its project is refused (SQLSTATE MT410, "media: this photo was deleted"). The statement fails and its
 -- transaction rolls back, so nothing of that send is kept. Every writer meets it, whatever its release, ORM or raw SQL,
 -- and whichever of the two columns it sets: a new row, a key given to a row, or a row moved into a project that
--- recorded its key. A row with no key, a key with no record, and the same key in another project are untouched.
+-- recorded its key. A row with no key, a key with no record written at READ COMMITTED, and the same key in another
+-- project are untouched.
 --
 -- WHY AFTER, NOT BEFORE. A send of a key whose earlier row a delete is still removing waits on the
 -- ("projectId", "clientKey") unique index until that delete commits, together with the record its trigger writes. A
@@ -17,22 +18,57 @@
 -- Its lookup is a separate statement in a VOLATILE function, so under READ COMMITTED (every "Media" writer) it takes a
 -- fresh snapshot and sees the record committed during the wait.
 --
+-- READ COMMITTED ONLY. The fresh snapshot above is READ COMMITTED's. Under REPEATABLE READ or SERIALIZABLE the lookup
+-- would use the transaction's snapshot, which can predate the delete and miss its record, so a keyed row written at
+-- any other level is refused outright (SQLSTATE MTISO): fail closed. Every "Media" writer runs at READ COMMITTED. The
+-- refusal is deliberately not MT410: the server answers it 500, which a phone keeps and sends again, never a 4xx,
+-- which it would drop as final and so lose a photo that was never deleted.
+--
 -- THE LOOKUP is one probe of "MediaTombstone_pkey" ("projectId", "clientKey"), the record's primary key. It takes
 -- ACCESS SHARE on "MediaTombstone" only, which conflicts with nothing but ACCESS EXCLUSIVE.
 --
--- Re-runnable, and on `scripts/migrate.sh`'s ALWAYS_EXECUTE: a `db push` baseline has no triggers.
+-- NAMES. Both ends of the record name public."MediaTombstone" and run with search_path pg_catalog, public, pg_temp
+-- (pg_temp last, or it would be searched first), so a writer's search_path or temporary table can neither hide a
+-- record from the guard nor take the record its delete writes. That covers the record's writer too: 20280117's
+-- delete trigger function is replaced here, with the same body, qualified. Migrations apply in name order, on every
+-- path including `scripts/migrate.sh`'s ALWAYS_EXECUTE, so wherever 20280117 runs this file runs after it.
+--
+-- ATOMIC. Each statement replaces its object in place (CREATE OR REPLACE FUNCTION, CREATE OR REPLACE TRIGGER, which
+-- PostgreSQL 14 added; production relies on 15 already, for 20261025's column-list SET NULL). No statement drops the
+-- guard, so no write lands without it and a run interrupted at any point leaves a working guard, under
+-- `prisma migrate deploy` and under psql alike. Re-runnable, and on `scripts/migrate.sh`'s ALWAYS_EXECUTE: a
+-- `db push` baseline has no triggers.
 
-CREATE OR REPLACE FUNCTION media_tombstone_guard() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION public.media_tombstone_on_delete() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
-  IF NEW."clientKey" IS NOT NULL AND EXISTS (
-    SELECT 1 FROM "MediaTombstone" t WHERE t."projectId" = NEW."projectId" AND t."clientKey" = NEW."clientKey"
+  IF OLD."clientKey" IS NOT NULL THEN
+    -- read through "Project", so a row whose project went in the same statement writes nothing
+    INSERT INTO public."MediaTombstone" ("projectId", "clientKey")
+    SELECT p."id", OLD."clientKey" FROM public."Project" p WHERE p."id" = OLD."projectId"
+    ON CONFLICT ("projectId", "clientKey") DO NOTHING;
+  END IF;
+  RETURN NULL;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.media_tombstone_guard() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  IF NEW."clientKey" IS NULL THEN
+    RETURN NULL;
+  END IF;
+  IF current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'media: a photo with a send key is stored only under READ COMMITTED, not %', current_setting('transaction_isolation')
+      USING ERRCODE = 'MTISO';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM public."MediaTombstone" t WHERE t."projectId" = NEW."projectId" AND t."clientKey" = NEW."clientKey"
   ) THEN
     RAISE EXCEPTION 'media: this photo was deleted (%, %)', NEW."projectId", NEW."clientKey" USING ERRCODE = 'MT410';
   END IF;
   RETURN NULL;
 END $$;
 
-DROP TRIGGER IF EXISTS "Media_tombstone_guard" ON "Media";
-CREATE TRIGGER "Media_tombstone_guard"
-  AFTER INSERT OR UPDATE OF "projectId", "clientKey" ON "Media"
-  FOR EACH ROW EXECUTE FUNCTION media_tombstone_guard();
+CREATE OR REPLACE TRIGGER "Media_tombstone_guard"
+  AFTER INSERT OR UPDATE OF "projectId", "clientKey" ON public."Media"
+  FOR EACH ROW EXECUTE FUNCTION public.media_tombstone_guard();

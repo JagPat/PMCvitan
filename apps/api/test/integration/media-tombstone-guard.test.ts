@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { Prisma } from '@prisma/client';
 import { MediaService } from '../../src/media/media.service';
 import { StorageService } from '../../src/media/storage.service';
 import type { AuthUser } from '../../src/common/auth';
@@ -141,6 +143,80 @@ describe('#482 a deleted photo\'s key is refused on every write (live PG)', () =
     expect(await rowsFor(k)).toBe(0);
   });
 
+  it.each([Prisma.TransactionIsolationLevel.RepeatableRead, Prisma.TransactionIsolationLevel.Serializable])('a keyed row written under %s is refused, even when its snapshot predates the delete', async (isolationLevel) => {
+    // that snapshot cannot see a record committed after it, so the guard refuses a keyed row at any level but READ
+    // COMMITTED rather than trust a lookup that may miss it (Codex 4330454253)
+    const ISOLATION = /stored only under READ COMMITTED/;
+    const k = key();
+    const first = await photo(k);
+    let deleted!: () => void;
+    const done = new Promise<void>((r) => { deleted = r; });
+    const late = t.prisma.$transaction(async (tx) => {
+      await tx.$queryRawUnsafe('SELECT 1'); // the snapshot is taken here, before the delete commits
+      await t.prisma.media.delete({ where: { id: first.id } });
+      deleted();
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "Media" ("id", "projectId", "kind", "mime", "data", "sizeBytes", "uploadedBy", "clientKey")
+         VALUES ($1, $2, 'progress', 'image/png', '\\x61'::bytea, 1, 'pmc', $3)`, `guard-iso-${seq}`, f.projectA.id, k);
+    }, { isolationLevel, timeout: 30_000 });
+    await expect(late).rejects.toThrow(ISOLATION);
+    await done;
+    expect(await t.prisma.mediaTombstone.count({ where: { projectId: f.projectA.id, clientKey: k } })).toBe(1);
+    expect(await rowsFor(k)).toBe(0);
+    // fail closed: a keyed row with no record is refused too, while a row with no key is stored
+    await expect(t.prisma.$transaction((tx) => tx.media.create({ data: {
+      projectId: f.projectA.id, kind: 'progress', mime: 'image/png', data: Buffer.from('a'), sizeBytes: 1, uploadedBy: 'pmc', clientKey: key(),
+    } }), { isolationLevel })).rejects.toThrow(ISOLATION);
+    const keyless = await t.prisma.$transaction((tx) => tx.media.create({ data: {
+      projectId: f.projectA.id, kind: 'progress', mime: 'image/png', data: Buffer.from('a'), sizeBytes: 1, uploadedBy: 'pmc', clientKey: null,
+    } }), { isolationLevel });
+    expect(keyless.id).toBeTruthy();
+  });
+
+  it('a temporary "MediaTombstone" table cannot stand in for the record (Codex 4330454272)', async () => {
+    const k = await deletedKey();
+    const err = await t.prisma.$transaction(async (tx) => {
+      // an empty table of the same name in the writer's own temporary schema, which a bare name would find first
+      await tx.$executeRawUnsafe(`CREATE TEMP TABLE "MediaTombstone" ("projectId" text, "clientKey" text) ON COMMIT DROP`);
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "Media" ("id", "projectId", "kind", "mime", "data", "sizeBytes", "uploadedBy", "clientKey")
+         VALUES ($1, $2, 'progress', 'image/png', '\\x61'::bytea, 1, 'pmc', $3)`, `guard-temp-${seq}`, f.projectA.id, k);
+    }).then(() => null, (e: unknown) => e);
+    expect(String((err as Error | null)?.message)).toMatch(REFUSED);
+    expect(await rowsFor(k)).toBe(0);
+  });
+
+  it('a delete under a temporary "MediaTombstone" table still writes the real record, so its key stays refused', async () => {
+    const k = key();
+    const p = await photo(k);
+    await t.prisma.$transaction(async (tx) => {
+      // the record's writer is the delete trigger (20280117); a bare name in it would write into this table instead
+      await tx.$executeRawUnsafe(`CREATE TEMP TABLE "MediaTombstone" ("projectId" text, "clientKey" text, "deletedAt" timestamp(3) DEFAULT now(), PRIMARY KEY ("projectId", "clientKey")) ON COMMIT DROP`);
+      await tx.$executeRawUnsafe(`DELETE FROM "Media" WHERE "id" = $1`, p.id);
+    });
+    expect(await t.prisma.mediaTombstone.count({ where: { projectId: f.projectA.id, clientKey: k } })).toBe(1);
+    await expect(photo(k)).rejects.toThrow(REFUSED);
+    expect(await rowsFor(k)).toBe(0);
+  });
+
+  it('a run interrupted before the trigger statement leaves the guard in place (psql, no transaction)', async () => {
+    // the failure is injected right before the trigger statement, as an operator's psql would meet it
+    const sql = readFileSync(MIGRATION, 'utf8');
+    const at = sql.search(/^CREATE (OR REPLACE )?TRIGGER "Media_tombstone_guard"/m);
+    expect(at).toBeGreaterThan(0);
+    const broken = `${sql.slice(0, at)}SELECT 1/0;\n${sql.slice(at)}`;
+    expect(() => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url], { input: broken, stdio: 'pipe' })).toThrow();
+    try {
+      const [trg] = await t.prisma.$queryRawUnsafe<Array<{ n: number }>>(
+        `SELECT count(*)::int AS n FROM pg_trigger WHERE tgrelid = '"Media"'::regclass AND tgname = 'Media_tombstone_guard' AND tgenabled = 'O'`);
+      expect(trg?.n).toBe(1);
+      const k = await deletedKey();
+      await expect(photo(k)).rejects.toThrow(REFUSED);
+    } finally {
+      replay();
+    }
+  });
+
   it('the file re-runs unchanged', async () => {
     const def = async () => t.prisma.$queryRawUnsafe<Array<{ d: string }>>(
       `SELECT pg_get_triggerdef(oid) AS d FROM pg_trigger WHERE tgrelid = '"Media"'::regclass AND tgname = 'Media_tombstone_guard'`);
@@ -148,6 +224,10 @@ describe('#482 a deleted photo\'s key is refused on every write (live PG)', () =
     expect(before[0]?.d).toMatch(/AFTER INSERT OR UPDATE OF "projectId", "clientKey" ON public."Media" FOR EACH ROW/);
     replay();
     expect(await def()).toEqual(before);
+    // the lookup's names resolve in pg_catalog and public, with the writer's temporary schema searched last
+    const [fn] = await t.prisma.$queryRawUnsafe<Array<{ c: string[] | null }>>(
+      `SELECT proconfig AS c FROM pg_proc WHERE oid = 'public.media_tombstone_guard()'::regprocedure`);
+    expect(fn?.c).toEqual(['search_path=pg_catalog, public, pg_temp']);
   });
 
   it('the lookup is one probe of the record\'s primary key', async () => {
