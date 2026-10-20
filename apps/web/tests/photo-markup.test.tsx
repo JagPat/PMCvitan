@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { PhotoMarkup } from '@/components/PhotoMarkup';
+import { photoDecodes } from '@/lib/photoDecodes';
 import { MK, drawShape, fitLabel, fitWithin, isMeaningful, labelWidth, penWidth, type MarkupPen, type MarkupShape } from '@/lib/photoMarkup';
 
 /** A pen that records what it was asked to draw. */
@@ -332,6 +333,86 @@ describe('photo markup: the editor', () => {
     expect(screen.getByRole('button', { name: MK.undo.en })).toBeDisabled();
     drag(canvas, [10, 10], [300, 200]);
     expect(screen.getByRole('button', { name: MK.undo.en })).toBeEnabled();
+  });
+
+  // #1006: the three review points filed at #1003's round cap; each failed on 44a1811
+
+  it('a label of wide letters, measured on the canvas with its outline, stays whole on the photo (#1006, 4320857017)', async () => {
+    // a font whose letters are each as wide as the font is tall: wider than any estimate from the letter count
+    const texts: Array<{ text: string; x: number; font: string }> = [];
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function () {
+      const { pen } = recordingPen();
+      return Object.assign(pen, {
+        drawImage: () => {},
+        measureText(this: { font: string }, text: string) {
+          const px = Number(/(\d+)px/.exec(this.font)?.[1] ?? 10);
+          return { width: [...text].length * px } as TextMetrics;
+        },
+        fillText(this: { font: string }, text: string, x: number) { texts.push({ text, x, font: this.font }); },
+      }) as unknown as CanvasRenderingContext2D;
+    } as never);
+    render(<PhotoMarkup source={PHOTO} lang="en" onSave={() => {}} onCancel={() => {}} />);
+    const canvas = await screen.findByTestId('photo-markup-canvas');
+    fireEvent.click(screen.getByRole('button', { name: MK.text.en }));
+    fireEvent.change(screen.getByLabelText(MK.label.en), { target: { value: 'WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW' } });
+    fireEvent.pointerDown(canvas, { clientX: 790, clientY: 300, pointerId: 1 });
+    const placed = texts.filter((t) => t.text.startsWith('WWWW')).at(-1)!;
+    const px = Number(/(\d+)px/.exec(placed.font)![1]);
+    const w = penWidth(1600, 1200);
+    // the drawn extent (the measured text and half an outline each side) is inside the 1600 px photo
+    expect(placed.x - w / 2).toBeGreaterThanOrEqual(0);
+    expect(placed.x + 40 * px + w / 2).toBeLessThanOrEqual(1600);
+  });
+
+  it('fitLabel measures with the measure it is given and leaves room for the outline', () => {
+    const w = penWidth(1600, 1200);
+    const wide = (text: string, px: number) => [...text].length * px;
+    const fit = fitLabel({ x: 1599, y: 600 }, 'MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM', w, 1600, 1200, wide);
+    expect(fit.at.x - w / 2).toBeGreaterThanOrEqual(0);
+    expect(fit.at.x + wide('M'.repeat(42), fit.px) + w / 2).toBeLessThanOrEqual(1600);
+    const left = fitLabel({ x: 0, y: 600 }, 'Crack', w, 1600, 1200, wide);
+    expect(left.at.x).toBeGreaterThanOrEqual(w / 2);
+  });
+
+  it('a photo this device cannot decode (an iPhone HEIC on another browser) says so, not "check the signal" (#1006, 4320857021)', async () => {
+    vi.stubGlobal('Image', class {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_: string) { setTimeout(() => this.onerror?.(), 0); }
+    });
+    render(<PhotoMarkup source={new Blob(['x'], { type: 'image/heic' })} lang="gu" onSave={() => {}} onCancel={() => {}} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(MK.cannotDecode.gu);
+    expect(screen.getByRole('alert')).not.toHaveTextContent(MK.cannotOpen.gu);
+    expect(screen.getByRole('button', { name: MK.save.gu })).toBeDisabled();
+  });
+
+  it('photoDecodes tells a caller beforehand whether this device can open a photo for marking (#1006, 4320857021)', async () => {
+    expect(await photoDecodes(new Blob(['x'], { type: 'image/jpeg' }))).toBe(true);
+    vi.stubGlobal('Image', class {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_: string) { setTimeout(() => this.onerror?.(), 0); }
+    });
+    expect(await photoDecodes(new Blob(['x'], { type: 'image/heic' }))).toBe(false);
+  });
+
+  it('while a saved copy is being sent the editor cannot be closed, so a failed send keeps the marks (#1006, 4320857025)', async () => {
+    const onCancel = vi.fn();
+    const { rerender } = render(<PhotoMarkup source={PHOTO} lang="en" onSave={() => {}} onCancel={onCancel} />);
+    const canvas = await screen.findByTestId('photo-markup-canvas');
+    drag(canvas, [10, 10], [300, 200]);
+    rerender(<PhotoMarkup source={PHOTO} lang="en" busy onSave={() => {}} onCancel={onCancel} />);
+    expect(screen.getByRole('button', { name: MK.cancel.en })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: MK.cancel.en }));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    // the backdrop: the dialog's parent
+    fireEvent.click(screen.getByRole('dialog').parentElement!);
+    expect(onCancel).not.toHaveBeenCalled();
+    // the send failed: the caller clears busy, and the mark is still there to save again
+    rerender(<PhotoMarkup source={PHOTO} lang="en" onSave={() => {}} onCancel={onCancel} />);
+    expect(screen.getByRole('button', { name: MK.undo.en })).toBeEnabled();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
   it('Cancel closes without saving', async () => {
