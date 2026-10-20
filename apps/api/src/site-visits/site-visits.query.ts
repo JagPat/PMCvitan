@@ -46,6 +46,9 @@ export interface SiteVisitFileDto {
   mediaId: string;
   url: string;
   mime: string;
+  /** The uploading device's key for the file, sent only to the member who uploaded it (as the snapshot's photos): the
+   *  phone that queued it knows its copy by it. Null for anyone else's file. */
+  clientKey: string | null;
   /** When the device took it, if it said. */
   takenAt: string | null;
   note: string | null;
@@ -95,7 +98,7 @@ type Row = Prisma.SiteVisitGetPayload<{ include: typeof withChildren }>;
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 
 /** What the media module says about a visit's file (`MediaQueryService.fileFacts`). */
-type FileFacts = Map<string, { mime: string; takenAt: string | null }>;
+type FileFacts = Map<string, { mime: string; takenAt: string | null; clientKey: string | null }>;
 
 export function toSiteVisitDto(v: Row, fileUrl: (mediaId: string) => string, facts: FileFacts): SiteVisitDto {
   const device = v.locationKind === 'device' && v.locLat !== null && v.locLng !== null && v.locAccuracyM !== null && v.locAt !== null;
@@ -128,7 +131,8 @@ export function toSiteVisitDto(v: Row, fileUrl: (mediaId: string) => string, fac
     })),
     // a linked file always exists (the link is frozen and the file's delete is refused); the fallback is only types
     files: v.media.map((f) => ({
-      mediaId: f.mediaId, url: fileUrl(f.mediaId), mime: facts.get(f.mediaId)?.mime ?? '', takenAt: facts.get(f.mediaId)?.takenAt ?? null,
+      mediaId: f.mediaId, url: fileUrl(f.mediaId), mime: facts.get(f.mediaId)?.mime ?? '', clientKey: facts.get(f.mediaId)?.clientKey ?? null,
+      takenAt: facts.get(f.mediaId)?.takenAt ?? null,
       note: f.note, rating: f.rating, place: f.placeName !== '' ? { nodeId: f.nodeId, name: f.placeName } : null,
       addedById: f.addedById, addedByName: f.addedByName, addedByRole: f.addedByRole, addedAt: f.addedAt.toISOString(),
     })),
@@ -146,8 +150,9 @@ export class SiteVisitsQueryService {
     private readonly media: MediaQueryService,
   ) {}
 
-  private async toDtos(projectId: string, rows: Row[]): Promise<SiteVisitDto[]> {
-    const facts = await this.media.fileFacts(projectId, rows.flatMap((r) => r.media.map((f) => f.mediaId)));
+  /** `viewerId` is who reads: each file's upload key goes only to its own uploader (Codex 4324453890). */
+  private async toDtos(projectId: string, rows: Row[], viewerId: string): Promise<SiteVisitDto[]> {
+    const facts = await this.media.fileFacts(projectId, rows.flatMap((r) => r.media.map((f) => f.mediaId)), viewerId);
     return rows.map((row) => toSiteVisitDto(row, (id) => this.signed.mediaPath(id), facts));
   }
 
@@ -155,7 +160,7 @@ export class SiteVisitsQueryService {
    * A page of the project's visits, newest start first. `before` names the last visit of the previous page, so
    * every visit stays reachable however many the project has. `status: 'open'` keeps only the visits still open.
    */
-  async list(projectId: string, page: { before?: string; limit?: number; status?: 'open' } = {}): Promise<SiteVisitDto[]> {
+  async list(projectId: string, page: { before?: string; limit?: number; status?: 'open' }, viewerId: string): Promise<SiteVisitDto[]> {
     // The page boundary is the anchor's place in the order (start, then id), not the anchor row itself: under
     // `status: 'open'` the anchor may have ended since the previous page, and a cursor on a row the filter now
     // drops would return an empty page, hiding the older open visits.
@@ -185,13 +190,13 @@ export class SiteVisitsQueryService {
       orderBy: [{ startedAt: 'desc' }, { id: 'desc' }],
       take: page.limit ?? 50,
     });
-    return this.toDtos(projectId, rows);
+    return this.toDtos(projectId, rows, viewerId);
   }
 
-  async get(projectId: string, visitId: string): Promise<SiteVisitDto> {
+  async get(projectId: string, visitId: string, viewerId: string): Promise<SiteVisitDto> {
     const row = await this.prisma.siteVisit.findFirst({ where: { projectId, id: visitId }, include: withChildren });
     if (!row) throw new NotFoundException('Site visit not found');
-    const [dto] = await this.toDtos(projectId, [row]);
+    const [dto] = await this.toDtos(projectId, [row], viewerId);
     return dto!;
   }
 }
