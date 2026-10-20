@@ -147,7 +147,7 @@ curl -sS -X POST $API/projects/ambli/media -H "Authorization: Bearer $TOK" \
 
 **Rollback:** redeploy the previous release with the same S3 vars kept. Do **not** blank the S3 vars once any file is in the bucket: a bucket-backed row holds no bytes, and with the gate off the app cannot sign a read (`presignGet` returns null), so every such photo and drawing answers 404. An older row that still carries a public `url` would redirect to the `r2.dev` address, which step 4 keeps disabled. Going back to the DB stub therefore needs every object copied back into its row first; no tool for that exists today.
 
-⚠️ **Prod side effects:** every validation upload writes a durable `media` row under `projectId=ambli, kind=progress`, fires a realtime `changed` (connected clients refetch), and — in **live** mode — puts a real object in the R2 bucket. A PMC can remove a test photo with `DELETE /media/:id` (`media.controller.ts:69`), which deletes the row and then its bucket object; the script prints the id. The earlier probe already left `media` id `cmr5rf3160001n33ty72mq2an` in prod. Use a maintenance window or accept the test pixel in the gallery.
+⚠️ **Prod side effects:** every validation upload writes a durable `media` row under `projectId=ambli, kind=progress`, fires a realtime `changed` (connected clients refetch), and — in **live** mode — puts a real object in the R2 bucket. A PMC can remove a test photo with `DELETE /media/:id` (`media.controller.ts:69`); the script prints the id. That call deletes the row and then **tries** to delete the bucket object: a failed bucket delete is swallowed and the call still succeeds (`media.service.ts:402`). So after a live test, open the bucket in the Cloudflare dashboard (R2 → the bucket → Objects), look under `ambli/progress/` for the object uploaded at the test time, and delete it there if it is still listed. The earlier probe already left `media` id `cmr5rf3160001n33ty72mq2an` in prod. Use a maintenance window or accept the test pixel in the gallery.
 
 ---
 
@@ -199,9 +199,9 @@ curl -sS -X POST $API/auth/otp/request -H 'Content-Type: application/json' \
 
 ## Validation script
 
-`scripts/validate-live.sh` prints a stub/live verdict per provider (no credentials needed). By default it only reads. `--otp` also asks for an OTP, which sends a real SMS once MSG91 is live; `--media` also uploads one test photo (see the safety note). It exits 1 when a check that was asked for fails or cannot run, and it never prints a file token or a signed link. Run it any time to see current state:
+`scripts/validate-live.sh` prints a stub/live verdict per provider (no credentials needed). By default it only reads. `--otp` also asks for an OTP for `TEST_PHONE` (required, a 10-digit number you control; without it the check fails and nothing is sent), which sends a real SMS once MSG91 is live; `--media` also uploads one test photo (see the safety note). It exits 1 when a check that was asked for fails or cannot run, and it never prints a file token or a signed link. Run it any time to see current state:
 
 ```bash
 bash scripts/validate-live.sh            # push only, read-only
-bash scripts/validate-live.sh --otp --media
+TEST_PHONE=<your 10 digits> bash scripts/validate-live.sh --otp --media
 ```

@@ -3,12 +3,13 @@
 # Reports whether each external provider is on its dev-stub or live, against the
 # deployed API. Reads only by default. Two checks have side effects and run only
 # when asked:
-#   --otp    asks the API to send an OTP, which is a real SMS once MSG91 is live;
+#   --otp    asks the API to send an OTP to $TEST_PHONE (required: a 10-digit number you
+#            control), which is a real, billed SMS once MSG91 is live;
 #   --media  uploads ONE test photo to the ambli project (remove it afterwards
 #            with DELETE /media/<id>; see docs/PROVIDER_CUTOVER.md).
 # Exits 1 when a check that was asked for fails or cannot run.
 #
-# Usage: bash scripts/validate-live.sh [--otp] [--media]
+# Usage: [TEST_PHONE=<10 digits>] bash scripts/validate-live.sh [--otp] [--media]
 set -uo pipefail
 
 API="${API:-https://pms-api.vitan.in}"
@@ -35,12 +36,15 @@ else echo "PUSH   : STUB  (public-key empty — VAPID not set)"; fi
 
 # 2) SMS OTP (MSG91) — read the live/devCode discriminator. Only with --otp: once MSG91 is live
 #    the request sends a real SMS.
-if [ "$RUN_OTP" = "1" ]; then
+if [ "$RUN_OTP" = "1" ] && ! [[ "${TEST_PHONE:-}" =~ ^[0-9]{10}$ ]]; then
+  # No fallback number: once MSG91 is live, a default would send a real, billed SMS to a stranger.
+  echo "OTP    : FAIL  (--otp needs TEST_PHONE set to a 10-digit number you control; nothing was sent)"; FAILED=1
+elif [ "$RUN_OTP" = "1" ]; then
 otp=$(curl -sS -m 15 -X POST "$API/auth/otp/request" -H 'Content-Type: application/json' \
-      -d "{\"phone\":\"9999900000\",\"projectId\":\"$PROJECT\"}")
+      -d "{\"phone\":\"$TEST_PHONE\",\"projectId\":\"$PROJECT\"}")
 live=$(printf '%s' "$otp" | jqget live)
 dev=$(printf '%s' "$otp" | jqget devCode)
-if [ "$live" = "True" ] || [ "$live" = "true" ]; then echo "OTP    : LIVE  (live:true, no devCode — real SMS sent!)"
+if [ "$live" = "True" ] || [ "$live" = "true" ]; then echo "OTP    : LIVE  (live:true, no devCode — real SMS sent to TEST_PHONE)"
 else echo "OTP    : STUB  (live:false, devCode:$dev)"; fi
 else
   echo "OTP    : skipped (pass --otp to test; it sends a real SMS once MSG91 is live)"
@@ -90,7 +94,7 @@ if [ "$RUN_MEDIA" = "1" ] && [ -n "${tok:-}" ]; then
       fi;;
     *) echo "MEDIA  : FAIL  (the upload answered no /media/ path)"; FAILED=1;;
   esac
-  echo "         (created test media id: $id — remove it with DELETE /media/$id as a PMC)"
+  echo "         (created test media id: $id — remove it with DELETE /media/$id as a PMC; in R2 mode also check the bucket, see PROVIDER_CUTOVER.md)"
 elif [ "$RUN_MEDIA" = "1" ]; then
   echo "MEDIA  : FAIL  (--media asked, but no dev-auth token, so the storage check did not run)"; FAILED=1
 else
