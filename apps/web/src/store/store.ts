@@ -91,6 +91,7 @@ import {
 } from './projectCreateHold';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, isSiteVisitOp, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
+import { clearVisitPhotoStart, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, storageAvailable, visitPhotoScope, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
@@ -811,6 +812,8 @@ export interface AppActions {
   /** Site Visits SV1-c unit 2 (#792, F53): put one site-visit act in the durable outbox and send it (write-ahead,
    *  as the Daily Log does); `offlineMsg` is what the viewer is told when the app is offline. False without the server. */
   queueSiteVisitAct: (op: OutboxOp, offlineMsg: string) => boolean;
+  /** SV2: a visit photo the server took has not shown in its list yet: read again on the visit photo retry. */
+  retrySiteVisits: () => void;
   hydrateOutbox: () => void;
   // team access
   accWho: (who: Exclude<AccessWho, null>) => void;
@@ -2353,11 +2356,16 @@ export const useStore = create<Store>()(
     let photoPickSeq = 0;
     const photoPickedAt = new Map<string, number>();
     const siteVisitKeyOf = (key: string): string => key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
+    /** SV2 (#792): a visit photo's act is never stored here. Its one record is its `visitPhotoStore` row (act, bytes,
+     *  and the start it waits on), and the act is rebuilt from that row on every load (`reconcileVisitPhotos`). So a
+     *  release before it, which replays every `siteVisit…` act it finds and has no case for a photo, never meets one,
+     *  and this lane is stored exactly as before (Codex 4320122193, 4320404449, 4320404441). */
+    const isStoredVisitOp = (o: OutboxOp): boolean => isSiteVisitOp(o) && o.t !== 'siteVisitAddFile';
     const persistOutbox = (): void => {
       try {
         const storage = globalThis.localStorage;
         storage?.setItem(outboxKey(), JSON.stringify(get().outbox.filter((o) => !isSiteVisitOp(o))));
-        storage?.setItem(siteVisitKeyOf(outboxKey()), JSON.stringify(get().outbox.filter(isSiteVisitOp)));
+        storage?.setItem(siteVisitKeyOf(outboxKey()), JSON.stringify(get().outbox.filter(isStoredVisitOp)));
       } catch {
         /* storage unavailable — the in-session outbox still works */
       }
@@ -2426,6 +2434,118 @@ export const useStore = create<Store>()(
       } catch {
         /* evidence store unavailable — the mirrors stay empty */
       }
+    };
+    /** Site Visits SV2 (#792): `visitPhotoStore` is the one record of a visit photo, and the outbox holds its act only
+     *  in memory. Each queued row's act is put back, exactly as it was queued (same key: the server adds the file once),
+     *  with the visit's start ahead of it when the row kept one the outbox no longer holds (Codex 4320122186). A
+     *  rebuilt photo goes after its visit's start and before that visit's later acts: it was taken while the visit was
+     *  not closed. Putting back is idempotent, so it is done on every load and at the start of every flush: a row
+     *  whose act the queue lost for any reason (a reload, a photo kept just after its refused start was settled, Codex
+     *  4321084743) has it again by the next send. Returns whether anything was put back. */
+    const putBackVisitPhotos = (rows: VisitPhotoRow[]): boolean => {
+      let rebuilt = false;
+      set((s) => {
+        const queued = new Set(s.outbox.filter(isSiteVisitOp).map((o) => o.idempotencyKey));
+        for (const row of rows) {
+          if (row.state !== 'queued') continue;
+          // the start it needs, when the queue lost it, goes back ahead of it even when the photo's own act is still
+          // queued (one kept just after its start was settled, then queued alone: Codex 4321998492). A start the
+          // server already has answers its replay with the same visit
+          const start = row.start && !queued.has(row.start.idempotencyKey) ? row.start : null;
+          const present = queued.has(row.op.idempotencyKey);
+          if (!start && present) continue;
+          const visitId = row.op.visitId;
+          let at: number;
+          if (present) {
+            at = s.outbox.findIndex((o) => isSiteVisitOp(o) && o.idempotencyKey === row.op.idempotencyKey);
+          } else {
+            // before the visit's first later act (an end, a close, a place or person), else last
+            const later = s.outbox.findIndex((o) => isSiteVisitOp(o) && o.t !== 'siteVisitAddFile' && o.t !== 'siteVisitStart' && o.visitId === visitId);
+            at = later >= 0 ? later : s.outbox.length;
+          }
+          const put: OutboxOp[] = [];
+          if (start) {
+            put.push(start);
+            queued.add(start.idempotencyKey);
+          }
+          if (!present) {
+            put.push(row.op);
+            queued.add(row.op.idempotencyKey);
+          }
+          s.outbox.splice(at, 0, ...put);
+          rebuilt = true;
+        }
+      });
+      if (rebuilt) persistOutbox();
+      return rebuilt;
+    };
+    /** The read made on load, so the queue shows a kept photo before anything is sent. One a flush overtook is read
+     *  again when that flush settles; what it rebuilds is sent at once when online: no screen may be open to send it
+     *  (Codex 4320122176). A read that fails changes nothing: every flush reads again before it sends. */
+    let visitPhotoEpoch = 0;
+    // bumped by every flush, at its start and end: a read a flush overtook (not a newer read) must be made again
+    let visitPhotoFlushes = 0;
+    let visitPhotoRecheck = false;
+    const reconcileVisitPhotos = async (): Promise<void> => {
+      const epoch = ++visitPhotoEpoch;
+      const flushes = visitPhotoFlushes;
+      const scope = visitPhotoScope(get().sessionToken, get().sessionUserId);
+      const projectId = get().activeProjectId;
+      const projScope = currentScope();
+      const storageKey = outboxKey();
+      try {
+        const rows = await listVisitPhotos(scope, projectId);
+        if (!scopeStillCurrent(projScope) || outboxKey() !== storageKey) return;
+        if (epoch !== visitPhotoEpoch) {
+          if (visitPhotoFlushes !== flushes) {
+            if (outboxFlushing) visitPhotoRecheck = true;
+            else void reconcileVisitPhotos();
+          }
+          return;
+        }
+        if (putBackVisitPhotos(rows) && get().online) void get().flushOutbox();
+      } catch {
+        // not read: a photo may be waiting with no act queued, so the flush that reads again is not left to chance
+        retryVisitPhotos();
+      }
+    };
+    /** How long a flush waits for its own read of the kept photos before it sends the rest of the queue without the
+     *  site visit acts. A visit photo still waiting arms one retry: when the phone's record of them could not be read
+     *  (on load or in a flush), when its send met no answer, a busy or failing server (after the server's own wait,
+     *  when it gives one), or when one sent has not yet shown in the server's list (`retrySiteVisits`). The delay
+     *  doubles from 5 seconds to a minute and stays there: there is no limit on tries, since every one of these waits
+     *  on something that will change. It starts again at 5 seconds once a visit act goes through. Offline it does
+     *  nothing (the browser's `online` sends everything), and it belongs to the queue it was armed for: after a
+     *  project switch, sign-in or sign-out it sends nothing, and the queue then on show arms its own. */
+    const VISIT_PHOTO_WAIT_MS = 5000;
+    const VISIT_PHOTO_RETRY_MAX_MS = 60_000;
+    // the longest a server's own wait is honoured: a bad answer never parks a photo for longer
+    const VISIT_PHOTO_RETRY_AFTER_MAX_MS = 10 * 60_000;
+    let visitPhotoRetryMs = VISIT_PHOTO_WAIT_MS;
+    let visitPhotoRetry: { timer: ReturnType<typeof setTimeout>; mine: () => boolean } | null = null;
+    // the queue the wait was last grown for: another queue starts from 5 seconds
+    let visitPhotoRetryFor: (() => boolean) | null = null;
+    const retryVisitPhotos = (atLeastMs = 0): void => {
+      if (visitPhotoRetry?.mine()) return;
+      if (visitPhotoRetry) clearTimeout(visitPhotoRetry.timer);
+      if (!visitPhotoRetryFor?.()) visitPhotoRetryMs = VISIT_PHOTO_WAIT_MS;
+      const g = gateway;
+      const scope = currentScope();
+      const key = outboxKey();
+      const token = get().sessionToken;
+      const mine = () => gateway === g && scopeStillCurrent(scope) && outboxKey() === key && get().sessionToken === token;
+      visitPhotoRetryFor = mine;
+      const wait = Math.max(visitPhotoRetryMs, atLeastMs);
+      visitPhotoRetryMs = Math.min(visitPhotoRetryMs * 2, VISIT_PHOTO_RETRY_MAX_MS);
+      const timer = setTimeout(() => {
+        visitPhotoRetry = null;
+        if (!mine()) return;
+        if (!get().online) return;
+        // the Site Visits screen reads again (a sent photo it still waits to see), and the queue is sent
+        if (g) tellSiteVisits({ kind: 'retry', project: g.project, generation: scope.generation });
+        void get().flushOutbox();
+      }, wait);
+      visitPhotoRetry = { timer, mine };
     };
     /** Gate round-3: an evidence COMMAND (offline capture / Retry / Delete)
      *  crosses an IndexedDB await too. Its durable operation must run under the
@@ -5823,6 +5943,7 @@ export const useStore = create<Store>()(
       }
     },
     queueSiteVisitAct: (op, offlineMsg) => runWriteAhead(op, 'Site visit', '', offlineMsg),
+    retrySiteVisits: () => { if (get().online) retryVisitPhotos(); },
     flushOutbox: async (opts) => {
       // A flush that did not actually process this call's ops (no gateway, coalesced, or empty) reports
       // `ran:false`/empty so a caller confirming its own ops never mistakes "not run" for "succeeded".
@@ -5834,16 +5955,54 @@ export const useStore = create<Store>()(
       if (outboxFlushing) { outboxFlushQueued = true; return notRun(); }
       outboxFlushing = true;
       try {
+      // SV2: every kept visit photo's act is put back first, from the phone's own record of it, so a close can never
+      // overtake its photo. When that record could not be read (a failed or too slow read), the rest of the queue
+      // still goes, but no site visit act does: they wait, in order, for a read that succeeds (Codex 4320690147,
+      // 4321084738)
+      let holdVisits = false;
+      if (storageAvailable()) {
+        const readScope = currentScope();
+        const readKey = outboxKey();
+        const readGateway = gateway;
+        const readToken = get().sessionToken;
+        let late = false;
+        const read = listVisitPhotos(visitPhotoScope(get().sessionToken, get().sessionUserId), get().activeProjectId).then(
+          (rows) => {
+            // a read that came too late, or for a queue no longer on show, puts nothing back: the next flush reads again
+            if (late || !scopeStillCurrent(readScope) || outboxKey() !== readKey) return false;
+            putBackVisitPhotos(rows);
+            return true;
+          },
+          () => false,
+        );
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const waited = new Promise<false>((r) => { timer = setTimeout(() => r(false), VISIT_PHOTO_WAIT_MS); });
+        holdVisits = !(await Promise.race([read, waited]));
+        clearTimeout(timer);
+        late = true;
+        // the project, sign-in or queue changed during the read: this call's queue is no longer the one on show, and
+        // nothing was taken from it. It stays stored for its own scope (as a flush whose scope moves before its first
+        // act leaves it), and the queue now on show is sent by its own flush: this one must not take that queue, nor
+        // a snapshot lease for its scope
+        if (!scopeStillCurrent(readScope) || outboxKey() !== readKey || gateway !== readGateway || get().sessionToken !== readToken) return notRun();
+      }
+      // not read: a photo may be waiting whether or not any act is queued, so this is tried again (Codex 4321558423)
+      if (holdVisits) retryVisitPhotos();
+      const heldVisits: OutboxOp[] = [];
       const ops = get().outbox.slice();
       // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
       // take its own acts out of `ops` as it goes)
       const taken = ops.length;
-      const takenVisits = ops.filter(isSiteVisitOp).length;
+      const takenVisits = ops.filter(isStoredVisitOp).length;
+      // and of the generic stored lane: a visit photo's act is in neither stored lane, so it is counted in neither
+      // (Codex 4321998480)
+      const takenGeneric = ops.filter((o) => !isSiteVisitOp(o)).length;
       if (ops.length === 0) return { ran: true, scopeMoved: false, succeededKeys: [], droppedKeys: [], pendingKeys: [] };
       // gate round-2 finding 2: the flush is about to change the durable truth
       // (confirmed uploads delete rows, terminal failures dead-letter them) — any
       // reconciliation already in flight read the PRE-flush world and must not apply
       invalidateEvidenceReconciles();
+      visitPhotoEpoch += 1; visitPhotoFlushes += 1; // and a visit photo reconciliation read before it (SV2)
       // Pin EVERYTHING this flush uses to the moment it started (Codex gate
       // finding 1): the gateway instance, the (project, generation) scope, the
       // session, and the storage key the queue belongs to. The module-level
@@ -5918,15 +6077,23 @@ export const useStore = create<Store>()(
           scopeMoved = true;
           break;
         }
+        if (holdVisits && isSiteVisitOp(ops[i])) { heldVisits.push(ops[i]); continue; }
         const mat = isMaterialsOp(ops[i]);
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);
         try {
           const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation);
           if (snap) lastSnap = snap;
-          // a site visit's answer shows on its own screen, so it is not counted in the "synced" line
+          // a site visit's answer shows on its own screen, so it is not counted in the "synced" line; one that went
+          // through starts the visit photo retry's wait over
           if (!isSiteVisitOp(ops[i])) synced += 1;
+          else visitPhotoRetryMs = VISIT_PHOTO_WAIT_MS;
           if (ops[i].t === 'decideReview') refreshBriefAfterReview(flushedBy);
+          // SV2: a visit started: its kept photos stop carrying the start, so it is not put back and sent again. Not
+          // written (the phone's database failed): the start may be sent again ahead of them, and the server answers
+          // that replay with the same visit, so nothing is lost or doubled
+          const started = ops[i];
+          if (started.t === 'siteVisitStart') await clearVisitPhotoStart(visitPhotoScope(flushToken, flushedBy), flushGateway.project, started.body.id).catch(() => undefined);
           if (ops[i].t === 'startDailyLog') dailyLogCommitted = 'start';
           else if (ops[i].t === 'submitDailyLog') dailyLogCommitted = 'send';
           const k = keyOf(ops[i]); if (k) succeededKeys.push(k);
@@ -5958,10 +6125,19 @@ export const useStore = create<Store>()(
               if (op.t === 'siteVisitStart') {
                 const rest = ops.slice(i + 1);
                 const onIt = rest.filter((o) => isSiteVisitOp(o) && o.t !== 'siteVisitStart' && o.visitId === op.body.id);
+                // SV2: the start's photos are kept with their acts in `visitPhotoStore`; they follow the acts there too
+                const photos = visitPhotoScope(flushToken, flushedBy);
+                // the rows are the photos' only record: a move or mark the phone could not make leaves the start and its
+                // acts queued, to be refused and settled again next time, never rows with no act (Codex 4320404431)
+                const settled = await (open
+                  ? moveVisitPhotos(photos, flushGateway.project, op.body.id, open.id)
+                  : failVisitPhotosOn(photos, flushGateway.project, op.body.id, refusalMessage(err))).then(() => true, () => false);
+                if (!settled) { stoppedAt = i; break; }
                 if (open) {
                   ops.splice(i + 1, rest.length, ...moveSiteVisitOps(rest, op.body.id, open.id));
                   tellSiteVisits({ kind: 'moved', project: flushGateway.project, generation: flushScope.generation, to: open.id, count: onIt.length });
                 } else {
+                  // not sent, and kept with the server's words, so the screen says which photos and why
                   ops.splice(i + 1, rest.length, ...rest.filter((o) => !onIt.includes(o)));
                   for (const o of onIt) { const k = keyOf(o); if (k) droppedKeys.push(k); }
                 }
@@ -5981,6 +6157,13 @@ export const useStore = create<Store>()(
             continue;
           }
           stoppedAt = i; // transient — retry this op and the rest on the next reconnect
+          // SV2: a visit act (a photo above all) is not left for a reconnect that may never come while the socket
+          // stays up: no answer, a busy or failing server is tried again, after the server's own wait when it gives
+          // one (Codex 4321558432)
+          if (isSiteVisitOp(ops[i]) && get().online) {
+            const after = (err as { retryAfter?: unknown } | null)?.retryAfter;
+            retryVisitPhotos(typeof after === 'number' && Number.isFinite(after) && after > 0 ? Math.min(after * 1000, VISIT_PHOTO_RETRY_AFTER_MAX_MS) : 0);
+          }
           if (mat) materialsAttempted = true; // correction 3 finding 3: still refresh truth, keep the op + its coalesceKey
           if (lab) labourAttempted = true; // same for labour: refresh truth, keep the op + its coalesceKey
           if (com) commercialAttempted = true; // and commercial: an uncertain response still refreshes the money
@@ -5996,7 +6179,8 @@ export const useStore = create<Store>()(
         scopeMoved = true;
       }
 
-      const remaining = stoppedAt >= 0 ? ops.slice(stoppedAt) : [];
+      // the held site visit acts came before the stop, so they stay ahead of everything after it, in order
+      const remaining = [...heldVisits, ...(stoppedAt >= 0 ? ops.slice(stoppedAt) : [])];
       const pendingKeys = remaining.map(keyOf).filter((k): k is string => !!k);
       if (scopeMoved) {
         // The in-memory outbox now belongs to the NEW scope (hydrateOutbox swapped
@@ -6012,9 +6196,9 @@ export const useStore = create<Store>()(
               const leftover = Array.isArray(stored) && stored.length >= took ? [...rest, ...after(stored.slice(took) as OutboxOp[])] : rest;
               storage.setItem(key, JSON.stringify(leftover));
             };
-            keep(flushKey, remaining.filter((o) => !isSiteVisitOp(o)), taken - takenVisits, (l) => l);
+            keep(flushKey, remaining.filter((o) => !isSiteVisitOp(o)), takenGeneric, (l) => l);
             // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
-            keep(siteVisitKeyOf(flushKey), remaining.filter(isSiteVisitOp), takenVisits, remapVisits);
+            keep(siteVisitKeyOf(flushKey), remaining.filter(isStoredVisitOp), takenVisits, (l) => remapVisits(l).filter(isStoredVisitOp));
           }
         } catch {
           /* storage unavailable — the persisted queue simply keeps its pre-flush state */
@@ -6025,6 +6209,7 @@ export const useStore = create<Store>()(
       // Preserve anything queued while we were awaiting (shouldn't happen once online, but
       // never drop a write): the original ops were the outbox prefix, so slice past them.
       const appended = remapVisits(get().outbox.slice(taken));
+      visitPhotoEpoch += 1; visitPhotoFlushes += 1; // a visit photo reconciliation read before this flush settled would re-queue a sent photo
       set((s) => {
         s.outbox = [...remaining, ...appended];
         // a photo upload dropped for good (terminal rejection) stops counting on screen in the same update
@@ -6143,11 +6328,18 @@ export const useStore = create<Store>()(
       return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys };
       } finally {
         outboxFlushing = false;
+        // a visit photo reconciliation this flush overtook reads again now, against the settled queue (SV2)
+        if (visitPhotoRecheck) {
+          visitPhotoRecheck = false;
+          void reconcileVisitPhotos();
+        }
         // a command persisted DURING this flush was not replayed here — flush it now (plain, no okMsg,
         // so its success shows via the batch summary). Bounded: the rerun fires at most once per settle.
+        // It runs on an empty queue too: a visit photo kept meanwhile whose act this flush let go (its visit's
+        // start was refused) has it put back there and settled (SV2, Codex 4321084743)
         if (outboxFlushQueued) {
           outboxFlushQueued = false;
-          if (get().online && get().outbox.length > 0) void get().flushOutbox();
+          if (get().online) void get().flushOutbox();
         }
       }
     },
@@ -6193,11 +6385,11 @@ export const useStore = create<Store>()(
               /* storage full — the queue still replays from memory this session */
             }
           }
-          // the site visit acts, from their own key (malformed → none)
+          // the site visit acts, from their own key (malformed → none); a visit photo's act comes from its row (SV2)
           let visitOps: OutboxOp[] = [];
           try {
             const rawVisits: unknown = JSON.parse(storage.getItem(siteVisitKeyOf(outboxKey())) ?? '[]');
-            visitOps = Array.isArray(rawVisits) ? (rawVisits as OutboxOp[]).filter((o) => o && isSiteVisitOp(o)) : [];
+            visitOps = Array.isArray(rawVisits) ? (rawVisits as OutboxOp[]).filter((o) => o && isStoredVisitOp(o)) : [];
           } catch {
             visitOps = [];
           }
@@ -6279,6 +6471,8 @@ export const useStore = create<Store>()(
       // (reconstructing ops a failed/absent setItem lost) and refresh the UI
       // mirrors — this runs even when localStorage is unavailable entirely.
       void reconcileEvidence();
+      // and the same for queued visit photos (SV2)
+      void reconcileVisitPhotos();
     },
 
     // ---- team access / login ----
