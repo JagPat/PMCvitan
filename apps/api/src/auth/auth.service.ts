@@ -1,7 +1,6 @@
 import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'node:crypto';
-import type { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma.service';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -12,7 +11,7 @@ import { PhoneSignInService } from './phone-sign-in.service';
 import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
 import { recordAudit } from '../platform/audit';
 import { systemActor } from '../common/actor';
-import { OrgsParticipant, QA_ACCOUNT_EMAIL, QA_SIGN_IN_BUSY, rethrowQaLock } from '../orgs/orgs.participant';
+import { OrgsParticipant, QA_ACCOUNT_EMAIL, rethrowQaLock } from '../orgs/orgs.participant';
 import { countersignReloadMessage, understandsCountersign, type DecisionsContract } from '../common/decisions-contract';
 import type { Role } from '../common/auth';
 import type {
@@ -25,6 +24,9 @@ import type {
   EmailOtpVerifyInput,
   GoogleSignInInput,
 } from '../contracts';
+
+/** A valid credential whose account the access rule grants no live project (SEC-01). */
+const ACCESS_REMOVED = 'Your project access has been removed. Ask your PMC to re-add you.';
 
 export interface TokenResult {
   token: string;
@@ -93,56 +95,21 @@ export class AuthService {
    * demotion/removal that only touches OrgMembership failed to revoke it. Every
    * provisioning path now writes an explicit Membership, and `ensure-accounts`
    * backfills any pre-membership legacy account, so this stays complete.
-   * Returns null when access is denied.
+   * Returns null when access is denied. The rule itself is `OrgsParticipant.projectRole`, with the rows it reads.
    */
-  private async resolveProjectRole(user: { id: string }, projectId: string, db: Prisma.TransactionClient = this.prisma): Promise<Role | null> {
-    const membership = await db.membership.findUnique({
-      where: { projectId_userId: { projectId, userId: user.id } },
-    });
-    if (membership?.status === 'active') return membership.role as Role;
-    if (await this.isOrgAdminOfProject(user.id, projectId, db)) return 'pmc';
-    return null;
-  }
-
-  /** The role a sign-in may land with on this project: none when it is missing or archived, else the one
-   *  access rule's answer. */
-  private async landingAccess(user: { id: string }, projectId: string, db: Prisma.TransactionClient = this.prisma): Promise<{ projectId: string; role: Role } | null> {
-    const project = await db.project.findUnique({ where: { id: projectId }, select: { archivedAt: true } });
-    if (!project || project.archivedAt) return null;
-    const role = await this.resolveProjectRole(user, projectId, db);
-    return role ? { projectId, role } : null;
+  private async resolveProjectRole(user: { id: string }, projectId: string): Promise<Role | null> {
+    return this.orgs.projectRole(this.prisma, user.id, projectId);
   }
 
   /**
-   * Where a successful credential lands (SEC-01): the project the user last
-   * switched into (#811) when still permitted, else their home project when
-   * still permitted, else their first active membership, else any project in an
-   * org they administer. When none of those hold the account has been revoked
-   * everywhere — reject the sign-in even though the credential was valid.
-   * `lastProjectId` is a plain stamp: it only chooses among projects the access
-   * rule already grants, and the role always comes from that rule.
+   * Where a successful credential lands (SEC-01): the orgs-owned access rule (`OrgsParticipant.signInLanding`, which
+   * documents the order). When nothing holds the account has been revoked everywhere, so the sign-in is rejected even
+   * though the credential was valid.
    */
-  private async signInAccess(user: { id: string; projectId: string; role: string; lastProjectId?: string | null }, db: Prisma.TransactionClient = this.prisma): Promise<{ projectId: string; role: Role }> {
-    const last = user.lastProjectId ? await this.landingAccess(user, user.lastProjectId, db) : null;
-    if (last) return last;
-    const home = await this.landingAccess(user, user.projectId, db);
-    if (home) return home;
-    const membership = await db.membership.findFirst({
-      where: { userId: user.id, status: 'active', project: { archivedAt: null } },
-      orderBy: { createdAt: 'asc' },
-    });
-    if (membership) return { projectId: membership.projectId, role: membership.role as Role };
-    const adminOrgs = await db.orgMembership.findMany({
-      where: { userId: user.id, role: { in: ['owner', 'admin'] } },
-      select: { orgId: true },
-    });
-    if (adminOrgs.length) {
-      const project = await db.project.findFirst({
-        where: { orgId: { in: adminOrgs.map((o) => o.orgId) }, archivedAt: null },
-      });
-      if (project) return { projectId: project.id, role: 'pmc' };
-    }
-    throw new UnauthorizedException('Your project access has been removed. Ask your PMC to re-add you.');
+  private async signInAccess(user: { id: string; projectId: string; lastProjectId?: string | null }): Promise<{ projectId: string; role: Role }> {
+    const landing = await this.orgs.signInLanding(this.prisma, user);
+    if (!landing) throw new UnauthorizedException(ACCESS_REMOVED);
+    return landing;
   }
 
   /**
@@ -250,13 +217,13 @@ export class AuthService {
     // now refuses the sign-in (409, try again); a change that comes second waits for it. The token is issued only
     // after the commit.
     const { user, access } = await this.prisma.$transaction(async (tx) => {
-      const userId = await this.orgs.lockQaAccountByEmail(tx, email);
-      if (!userId) throw new NotFoundException('no such QA account');
-      const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
-      if (!(await this.orgs.qaSignInAllowed(tx, user.id))) throw new ForbiddenException('this account is not in a QA-only company');
-      const landing = await this.signInAccess(user, tx);
-      // the landing was chosen from committed rows; an archive since then refuses the sign-in rather than land on it
-      if (!(await this.orgs.lockLiveProject(tx, landing.projectId))) throw new ConflictException(QA_SIGN_IN_BUSY);
+      // the account side (lookup, QA check, landing, live landing project) is the orgs module's, read through its
+      // participant with the rows it owns (Codex P1 on #1020, round 3); auth only decides what the caller may receive
+      const found = await this.orgs.qaSignInAccount(tx, email);
+      if (found.kind === 'unknown') throw new NotFoundException('no such QA account');
+      if (found.kind === 'not-qa') throw new ForbiddenException('this account is not in a QA-only company');
+      if (found.kind === 'no-access') throw new UnauthorizedException(ACCESS_REMOVED);
+      const { account: user, landing } = found;
       // the countersign boundary refuses a minted architect token to a lesser client AFTER this returns (Codex P2 on
       // #983); refuse it here first, so no audit row records a sign-in the caller never received
       if (landing.role === 'architect' && !understandsCountersign(input.contract)) {
@@ -455,14 +422,6 @@ export class AuthService {
     // the `ensure-accounts` membership backfill; anything else legitimately has no
     // projects to list.
     return rows;
-  }
-
-  /** Is this user an owner/admin of the org that owns this project? (org super-admin). */
-  private async isOrgAdminOfProject(userId: string, projectId: string, db: Prisma.TransactionClient = this.prisma): Promise<boolean> {
-    const project = await db.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
-    if (!project?.orgId) return false;
-    const om = await db.orgMembership.findUnique({ where: { orgId_userId: { orgId: project.orgId, userId } } });
-    return om?.role === 'owner' || om?.role === 'admin';
   }
 
   /** Issue a fresh token scoped to another project the user belongs to (project switch).

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { ConflictException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { OrgsParticipant } from '../../src/orgs/orgs.participant';
+import { orgsManifest } from '../../src/orgs/orgs.manifest';
 import { AuthService } from '../../src/auth/auth.service';
 import { recordAudit } from '../../src/platform/audit';
 import { systemActor } from '../../src/common/actor';
@@ -505,6 +506,40 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
       await arrival!.write;
       await leaving!.write;
     }
+  });
+
+  it('Codex P1 on #1020 (round 3): the sign-in reads the account, its companies and its landing only through the orgs participant, never from auth', async () => {
+    // every orgs-owned model (the manifest's own list, so a table added to orgs is watched too) and every
+    // public raw statement, on BOTH handles auth holds: its `prisma` (a992e62:246 read the account there) and
+    // the sign-in's transaction. Each access records the source line that asked. Prisma's own
+    // `$queryRawInternal`, which the public raw methods call back through the proxy, is not a caller.
+    const ORGS_ROWS = new Set<string>([...orgsManifest.ownsModels, '$queryRaw', '$queryRawUnsafe', '$executeRaw', '$executeRawUnsafe']);
+    const asked: string[] = [];
+    const caller = () => (new Error().stack ?? '').split('\n').find((line) => line.includes('/src/')) ?? '(no source frame)';
+    const watch = <T extends object>(db: T): T => new Proxy(db, {
+      get(target, prop, receiver) {
+        if (typeof prop === 'string' && ORGS_ROWS.has(prop)) asked.push(`${prop} <- ${caller().trim()}`);
+        if (prop === '$transaction') {
+          const begin = Reflect.get(target, prop, receiver) as (fn: (tx: Prisma.TransactionClient) => Promise<unknown>, opts?: unknown) => Promise<unknown>;
+          return (fn: (tx: Prisma.TransactionClient) => Promise<unknown>, opts?: unknown) => begin.call(target, (tx: Prisma.TransactionClient) => fn(watch(tx)), opts);
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const auth = t.app.get(AuthService, { strict: false }) as unknown as { prisma: object };
+    const own = auth.prisma;
+    auth.prisma = watch(own);
+    try {
+      const r = await signIn(qaClientEmail);
+      expect(r).toHaveProperty('ok');
+    } finally {
+      auth.prisma = own;
+    }
+    // the account, its QA check and its landing were all read (the proxy saw them) ...
+    expect(asked.some((a) => a.startsWith('user '))).toBe(true);
+    expect(asked.some((a) => a.startsWith('membership ') || a.startsWith('$queryRaw'))).toBe(true);
+    // ... and every one of them by the module that owns the rows
+    expect(asked.filter((a) => !a.includes('/src/orgs/'))).toEqual([]);
   });
 
   it('Codex P2 on #1020: thirty-odd calls without the token never lock the operator out of the QA mark', async () => {

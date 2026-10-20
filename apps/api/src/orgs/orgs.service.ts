@@ -286,7 +286,7 @@ export class OrgsService {
    * can't escalate itself or seed new admins.
    *
    * Access model (ORG escalation fix): an org `owner`/`admin` reaches every project in
-   * the org as PMC via the super-admin switch (`isOrgAdminOfProject`), so they need NO
+   * the org as PMC via the super-admin switch (`OrgsParticipant.projectRole`), so they need NO
    * project membership; a plain `member` gets NO project access here — they must be
    * added to a specific project's team to operate it. A brand-new identity is created
    * WITHOUT any project grant (no membership, and the required `User.projectId` FK is

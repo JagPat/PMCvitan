@@ -610,16 +610,13 @@ describe('AuthService.qaSignIn — the countersign boundary (#482, Codex P2 on #
   function architectLanding() {
     const prisma = fakePrisma([{ id: 'qa1', projectId: 'qa', role: 'architect', name: 'QA Architect', email: 'qa.architect@vitan.in' }], [], []);
     const { auth } = make(prisma);
-    vi.spyOn(OrgsParticipant.prototype, 'lockQaAccountByEmail').mockResolvedValue('qa1');
-    vi.spyOn(OrgsParticipant.prototype, 'qaSignInAllowed').mockResolvedValue(true);
-    vi.spyOn(OrgsParticipant.prototype, 'lockLiveProject').mockResolvedValue(true);
-    const landing = vi.spyOn(auth as unknown as { signInAccess: () => Promise<unknown> }, 'signInAccess').mockResolvedValue({ role: 'architect', projectId: 'qa' });
+    // the account side is the orgs participant's, asked once inside the transaction (Codex P1 on #1020, round 3)
+    const account = { id: 'qa1', name: 'QA Architect', projectId: 'qa', role: 'architect', credentialVersion: 0, lastProjectId: null };
+    const asked = vi.spyOn(OrgsParticipant.prototype, 'qaSignInAccount').mockResolvedValue({ kind: 'ok', account, landing: { role: 'architect', projectId: 'qa' } });
     const audit = vi.fn(async () => undefined);
-    // the account is read in the transaction, by the id its locked address names (Codex P1 on #1020)
-    const user = { id: 'qa1', projectId: 'qa', role: 'architect', name: 'QA Architect', email: 'qa.architect@vitan.in' };
-    const tx = { auditLog: { create: audit }, user: { findUniqueOrThrow: async () => user } };
+    const tx = { auditLog: { create: audit } };
     (prisma as unknown as { $transaction: unknown }).$transaction = (fn: (tx: unknown) => Promise<unknown>) => fn(tx);
-    return { auth, audit, landing, tx };
+    return { auth, audit, asked, tx };
   }
 
   it('refuses a minted architect token to a client without countersign-v1 BEFORE recording the sign-in', async () => {
@@ -629,11 +626,12 @@ describe('AuthService.qaSignIn — the countersign boundary (#482, Codex P2 on #
   });
 
   it('signs a countersign-v1 client in as the architect, recording it', async () => {
-    const { auth, audit, landing, tx } = architectLanding();
+    const { auth, audit, asked, tx } = architectLanding();
     const r = await auth.qaSignIn({ email: 'qa.architect@vitan.in', operator: 'claude', reason: 'qa', contract: 'countersign-v1' });
     expect(r.role).toBe('architect');
     expect(audit).toHaveBeenCalledTimes(1);
-    // the landing is read in the same transaction as the check and the audit row
-    expect(landing).toHaveBeenCalledWith(expect.objectContaining({ id: 'qa1' }), tx);
+    // the account and its landing are read once, in the same transaction as the audit row
+    expect(asked).toHaveBeenCalledTimes(1);
+    expect(asked).toHaveBeenCalledWith(tx, 'qa.architect@vitan.in');
   });
 });

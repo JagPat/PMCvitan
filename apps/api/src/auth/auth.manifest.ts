@@ -15,7 +15,8 @@ export const authManifest: ModuleManifest = {
   kind: 'domain',
   ownsModels: [],
   dependsOn: [],
-  // #482 — the operator-door QA sign-in asks the orgs-owned rule (`OrgsParticipant.qaSignInAllowed`)
+  // #482 — the sign-in access rule (`OrgsParticipant.signInLanding`/`projectRole`) and the operator-door QA sign-in's
+  // account side (`OrgsParticipant.qaSignInAccount`) are the orgs module's, asked through its participant
   workflowParticipants: ['orgs'],
   producesEvents: [],
   consumesEvents: [],

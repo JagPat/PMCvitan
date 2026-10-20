@@ -1,5 +1,6 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import type { Role } from '../common/auth';
 import { readinessLockKey } from '../common/readiness-lock';
 import { readPhase6_4dRollout } from '../platform/phase6-4d-rollout';
 import { RoleStandingQuery } from '../platform/role-standing.query';
@@ -9,6 +10,30 @@ export const QA_ACCOUNT_EMAIL = /^qa\.[a-z]+@vitan\.in$/;
 
 /** The 409 the QA sign-in gives when one of the rows its check locks is being changed at that moment. */
 export const QA_SIGN_IN_BUSY = 'This account is being changed right now, so it cannot be signed in; try again';
+
+/** Where a sign-in lands: a project the access rule grants, with the role it grants there. */
+export interface SignInLanding {
+  projectId: string;
+  role: Role;
+}
+
+/** The account fields a sign-in needs to issue its session. */
+export interface SignInAccount {
+  id: string;
+  name: string;
+  projectId: string;
+  role: string;
+  credentialVersion: number;
+  lastProjectId: string | null;
+}
+
+/** The QA sign-in's answer (`OrgsParticipant.qaSignInAccount`). `unknown`: no account holds the address. `not-qa`: the
+ *  account is not a QA account in QA-only companies only. `no-access`: the access rule grants it no live project. */
+export type QaSignInAccount =
+  | { kind: 'unknown' }
+  | { kind: 'not-qa' }
+  | { kind: 'no-access' }
+  | { kind: 'ok'; account: SignInAccount; landing: SignInLanding };
 
 /** The QA sign-in's row locks: a row being changed right now (55P03 lock_not_available) is the 409, never a wait. */
 async function lockedNow<T>(query: () => Promise<T>): Promise<T> {
@@ -190,6 +215,90 @@ export class OrgsParticipant {
     );
     const r = rows[0];
     return !!r && r.self === true && Number(r.reach) > 0 && Number(r.unmarked) === 0;
+  }
+
+  /**
+   * #482 QA sign-in (Codex P1 on #1020, round 3) — the whole account side of the operator door's sign-in, inside the
+   * sign-in's transaction, so the auth module reads none of the orgs-owned rows itself. In this order, every lock
+   * NOWAIT (a row being changed right now is the 409, `QA_SIGN_IN_BUSY`):
+   *   1. the account the address names, `FOR UPDATE` (`lockQaAccountByEmail`);
+   *   2. the QA check, which locks the account again first, then its company rows and every project membership
+   *      (removed ones too), then the companies they reach (`qaSignInAllowed`);
+   *   3. the landing, by the one sign-in access rule every credential sign-in uses (`signInLanding`), read only now, so
+   *      it sees only rows the locks above hold;
+   *   4. the landing project, `FOR SHARE`, live (`lockLiveProject`); an archive committed since step 3 is the 409.
+   */
+  async qaSignInAccount(tx: Prisma.TransactionClient, email: string): Promise<QaSignInAccount> {
+    const userId = await this.lockQaAccountByEmail(tx, email);
+    if (!userId) return { kind: 'unknown' };
+    const user = await tx.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: { id: true, name: true, projectId: true, role: true, credentialVersion: true, lastProjectId: true },
+    });
+    if (!(await this.qaSignInAllowed(tx, user.id))) return { kind: 'not-qa' };
+    const landing = await this.signInLanding(tx, user);
+    if (!landing) return { kind: 'no-access' };
+    if (!(await this.lockLiveProject(tx, landing.projectId))) throw new ConflictException(QA_SIGN_IN_BUSY);
+    return { kind: 'ok', account: user, landing };
+  }
+
+  /**
+   * The one sign-in access rule (SEC-01), owned here with the rows it reads; `AuthService` asks it for every credential
+   * sign-in (password, phone, email, Google, credential completion, the QA door), and the project switch asks
+   * `projectRole`, so none of them lands by another copy. The dev-only role pick (`AuthService.session`, allowed only
+   * with ALLOW_DEV_AUTH outside production) is the one exception: it lands where the picked account says.
+   * Where a sign-in lands: the project the user last switched into (#811) when still permitted, else their home
+   * project when still permitted, else their first active membership on a live project, else any live project in a
+   * company they own or administer. Null when none holds: the account has lost access everywhere. `lastProjectId` is
+   * a plain stamp; it only chooses among projects the rule already grants, and the role always comes from the rule.
+   */
+  async signInLanding(
+    db: Prisma.TransactionClient,
+    user: { id: string; projectId: string; lastProjectId?: string | null },
+  ): Promise<SignInLanding | null> {
+    const last = user.lastProjectId ? await this.landingOn(db, user.id, user.lastProjectId) : null;
+    if (last) return last;
+    const home = await this.landingOn(db, user.id, user.projectId);
+    if (home) return home;
+    const membership = await db.membership.findFirst({
+      where: { userId: user.id, status: 'active', project: { archivedAt: null } },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (membership) return { projectId: membership.projectId, role: membership.role as Role };
+    const adminOrgs = await db.orgMembership.findMany({
+      where: { userId: user.id, role: { in: ['owner', 'admin'] } },
+      select: { orgId: true },
+    });
+    if (adminOrgs.length) {
+      const project = await db.project.findFirst({
+        where: { orgId: { in: adminOrgs.map((o) => o.orgId) }, archivedAt: null },
+      });
+      if (project) return { projectId: project.id, role: 'pmc' };
+    }
+    return null;
+  }
+
+  /**
+   * The role a person holds on a project (SEC-01), from just two sources: an active project membership (`removed`
+   * and `invited` deny), else owner/admin of the company that owns the project (operates it as PMC). The legacy
+   * `User.projectId`/`User.role` fields are deliberately not consulted. Null when access is denied. An explicit
+   * active membership wins over the company reach, so an owner can operate one project in a narrower role.
+   */
+  async projectRole(db: Prisma.TransactionClient, userId: string, projectId: string): Promise<Role | null> {
+    const membership = await db.membership.findUnique({ where: { projectId_userId: { projectId, userId } } });
+    if (membership?.status === 'active') return membership.role as Role;
+    const project = await db.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
+    if (!project?.orgId) return null;
+    const om = await db.orgMembership.findUnique({ where: { orgId_userId: { orgId: project.orgId, userId } } });
+    return om?.role === 'owner' || om?.role === 'admin' ? 'pmc' : null;
+  }
+
+  /** The role a sign-in may land with on this project: none when it is missing or archived, else the rule's answer. */
+  private async landingOn(db: Prisma.TransactionClient, userId: string, projectId: string): Promise<SignInLanding | null> {
+    const project = await db.project.findUnique({ where: { id: projectId }, select: { archivedAt: true } });
+    if (!project || project.archivedAt) return null;
+    const role = await this.projectRole(db, userId, projectId);
+    return role ? { projectId, role } : null;
   }
 
   /**
