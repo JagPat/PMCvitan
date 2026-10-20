@@ -20,10 +20,13 @@
 --       "OrgMembership_qa_lock", "Membership_qa_lock");
 --     - changing a person's email to or from a QA address while they belong anywhere ("User_qa_lock");
 --     - marking or unmarking a company while its people do not already fit the new mark ("Org_qa_lock"). So the QA
---       company is marked only while it holds QA people alone, and can never be unmarked while it holds any.
+--       company is marked only while it holds QA people alone, and can never be unmarked while it holds any. Marking
+--       also checks Q2 for those people: rows written before this file never met it, so a QA account that still
+--       belongs to an unmarked company refuses the mark until that membership is removed.
 --   Removing a membership (deleting it, or setting it 'removed') is always allowed: it can only make the rule truer.
---   A project never moves company and a project membership never changes person or project: phase 6-4b's triggers
---   already refuse both ("Project"."orgId" and "Membership"'s identity are frozen), so neither needs a check here.
+--   A project never moves company: phase 6-4b's "Project"."orgId" freeze refuses it, and that file is on ALWAYS_EXECUTE,
+--   so a `db push` baseline has it too. A project membership's person and project are frozen by phase 6-4b as well,
+--   but that file is not replayed on a baseline, so "Membership_qa_lock" also checks a change of either itself.
 --
 -- RACES. Each trigger runs AFTER its row is written (so that row is locked) and locks FOR SHARE the other rows its
 -- answer depends on, always in one order: project, then company, then person. Two writes that could break the rule
@@ -136,6 +139,7 @@ CREATE OR REPLACE FUNCTION org_qa_lock() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   v_user TEXT;
   v_email TEXT;
+  v_other TEXT;
 BEGIN
   IF NEW."qaOnly" IS NOT DISTINCT FROM OLD."qaOnly" THEN
     RETURN NULL;
@@ -148,6 +152,23 @@ BEGIN
                        WHERE p."orgId" = NEW."id" AND m."status" <> 'removed')
   LOOP
     PERFORM qa_lock_fits(v_user, v_email, NEW."id", NEW."qaOnly");
+    -- marking: each of its people is a QA account by now, and must belong to no other unmarked company (Q2). Read
+    -- without a lock: no write can add such a membership meanwhile (a QA account joining an unmarked company is
+    -- refused), an unmark of that other company is refused while it holds this person, and a concurrent mark of it
+    -- is read as unmarked, which refuses this mark rather than letting Q2 slip.
+    IF NEW."qaOnly" THEN
+      SELECT o."id" INTO v_other FROM "Org" o
+       WHERE o."id" <> NEW."id" AND NOT o."qaOnly"
+         AND o."id" IN (SELECT om."orgId" FROM "OrgMembership" om WHERE om."userId" = v_user
+                        UNION
+                        SELECT p."orgId" FROM "Membership" m JOIN "Project" p ON p."id" = m."projectId"
+                         WHERE m."userId" = v_user AND m."status" <> 'removed')
+       ORDER BY o."id" LIMIT 1;
+      IF FOUND THEN
+        RAISE EXCEPTION 'qa lock: % is a QA account that still belongs to company %, which is not QA-only', v_user, v_other
+          USING ERRCODE = 'check_violation';
+      END IF;
+    END IF;
   END LOOP;
   RETURN NULL;
 END;
@@ -160,7 +181,7 @@ CREATE TRIGGER "OrgMembership_qa_lock"
 
 DROP TRIGGER IF EXISTS "Membership_qa_lock" ON "Membership";
 CREATE TRIGGER "Membership_qa_lock"
-  AFTER INSERT OR UPDATE OF "status" ON "Membership"
+  AFTER INSERT OR UPDATE OF "status", "userId", "projectId" ON "Membership"
   FOR EACH ROW EXECUTE FUNCTION membership_qa_lock();
 
 DROP TRIGGER IF EXISTS "User_qa_lock" ON "User";

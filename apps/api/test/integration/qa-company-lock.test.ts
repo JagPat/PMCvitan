@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
+import type { Prisma } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
 
 /**
@@ -111,6 +112,26 @@ describe('#482 QA company lock (live PG)', () => {
     await expect(mark(c.orgId, false)).rejects.toThrow(/is a QA account, and company .* is not QA-only/);
   });
 
+  it('a company is not marked while one of its QA accounts still belongs to an unmarked company, by either membership (Q2)', async () => {
+    const c = await company();
+    const other = await company();
+    const qa1 = await person(c.projectId, true);
+    const qa2 = await person(c.projectId, true);
+    // rows from before this file: each QA account here also reaches an ordinary company
+    await before(async () => {
+      await joinOrg(c.orgId, qa1);
+      await joinProject(c.projectId, qa2);
+      await joinOrg(other.orgId, qa1);
+      await joinProject(other.projectId, qa2, 'invited');
+    });
+    await expect(mark(c.orgId)).rejects.toThrow(new RegExp(`${qa1} is a QA account that still belongs to company ${other.orgId}, which is not QA-only`));
+    await t.prisma.orgMembership.deleteMany({ where: { userId: qa1, orgId: other.orgId } });
+    await expect(mark(c.orgId)).rejects.toThrow(new RegExp(`${qa2} is a QA account that still belongs to company ${other.orgId}`));
+    await raw(`UPDATE "Membership" SET "status" = 'removed' WHERE "userId" = $1 AND "projectId" = $2`, qa2, other.projectId);
+    await mark(c.orgId);
+    expect((await t.prisma.org.findUniqueOrThrow({ where: { id: c.orgId } })).qaOnly).toBe(true);
+  });
+
   it('a marked company takes no real person, as a company member or on any project, and a QA account joins it', async () => {
     const c = await company();
     await mark(c.orgId);
@@ -149,6 +170,28 @@ describe('#482 QA company lock (live PG)', () => {
     await expect(raw(`UPDATE "User" SET "email" = $1 WHERE "id" = $2`, `QA.${run}yy@vitan.in`, qa)).rejects.toThrow(/is QA-only/);
   });
 
+  it('a project membership cannot be moved across the line even where phase 6-4b\'s freeze is missing (a db push baseline)', async () => {
+    // a baseline replays this file but not 20270826's "Membership_t4b_identity_frozen", so the lock checks a re-key itself
+    const qaCo = await company();
+    await mark(qaCo.orgId);
+    const realCo = await company();
+    const qa = await person(qaCo.projectId, true);
+    const real = await person(realCo.projectId, false);
+    await joinProject(qaCo.projectId, qa);
+    await joinProject(realCo.projectId, real);
+    await raw(`ALTER TABLE "Membership" DISABLE TRIGGER "Membership_t4b_identity_frozen"`);
+    try {
+      await expect(raw(`UPDATE "Membership" SET "userId" = $1 WHERE "userId" = $2 AND "projectId" = $3`, real, qa, qaCo.projectId)).rejects.toThrow(/is QA-only, and .* is not a QA account/);
+      await expect(raw(`UPDATE "Membership" SET "projectId" = $1 WHERE "userId" = $2`, realCo.projectId, qa)).rejects.toThrow(/is a QA account, and company .* is not QA-only/);
+      await expect(raw(`UPDATE "Membership" SET "userId" = $1 WHERE "userId" = $2 AND "projectId" = $3`, qa, real, realCo.projectId)).rejects.toThrow(/is a QA account, and company/);
+      await expect(raw(`UPDATE "Membership" SET "projectId" = $1 WHERE "userId" = $2`, qaCo.projectId, real)).rejects.toThrow(/is QA-only/);
+    } finally {
+      await raw(`ALTER TABLE "Membership" ENABLE TRIGGER "Membership_t4b_identity_frozen"`);
+    }
+    expect(await t.prisma.membership.count({ where: { userId: qa, projectId: qaCo.projectId } })).toBe(1);
+    expect(await t.prisma.membership.count({ where: { userId: real, projectId: realCo.projectId } })).toBe(1);
+  });
+
   it('a project never moves company, so a QA project cannot carry its people out or a real one in', async () => {
     // phase 6-4b already freezes "Project"."orgId"; this file relies on that rather than checking a move itself
     const qaCo = await company();
@@ -158,58 +201,88 @@ describe('#482 QA company lock (live PG)', () => {
     await expect(raw(`UPDATE "Project" SET "orgId" = $1 WHERE "id" = $2`, realCo.orgId, qaCo.projectId)).rejects.toThrow(/re-homing/);
   });
 
-  const hold = () => new Promise((r) => setTimeout(r, 400));
+  /**
+   * A deterministic race: `first` writes inside a transaction and then holds it open; `second` starts only after that
+   * write, and the holder lets go only once `second` is seen waiting on a row lock in pg_stat_activity. Returns what
+   * `second` threw (or null).
+   */
+  const race = async (first: (tx: Prisma.TransactionClient) => Promise<unknown>, second: () => Promise<unknown>, waitingOn: string) => {
+    let written!: () => void;
+    let release!: () => void;
+    const wrote = new Promise<void>((r) => (written = r));
+    const released = new Promise<void>((r) => (release = r));
+    const holding = t.prisma.$transaction(async (tx) => {
+      await first(tx);
+      written();
+      await released;
+    }, { timeout: 30_000 });
+    try {
+      await Promise.race([wrote, holding]);
+      const competing = second().then(() => null, (e: unknown) => e);
+      for (let i = 0; ; i++) {
+        const [{ c }] = await t.prisma.$queryRawUnsafe<Array<{ c: number }>>(
+          `SELECT COUNT(*)::int AS c FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE $1`, `%${waitingOn}%`);
+        if (c > 0) break;
+        if (i >= 400) throw new Error(`the second write never waited on a lock (${waitingOn})`);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      release();
+      await holding;
+      return await competing;
+    } finally {
+      release();
+    }
+  };
 
   it('marking a company while a real person is being added to it: the second write waits, then is refused', async () => {
     const c = await company();
     const real = await person(c.projectId, false);
     // the mark goes first and holds the company's row; the add waits on it, then sees the mark
-    const marking = t.prisma.$transaction(async (tx) => {
-      await tx.org.update({ where: { id: c.orgId }, data: { qaOnly: true } });
-      await hold();
-    }, { timeout: 10_000 });
-    await new Promise((r) => setTimeout(r, 100));
-    const adding = t.prisma.membership.create({ data: { projectId: c.projectId, userId: real, role: 'engineer', status: 'active' } });
-    await marking;
-    await expect(adding).rejects.toThrow(/is QA-only/);
+    const refused = await race(
+      (tx) => tx.org.update({ where: { id: c.orgId }, data: { qaOnly: true } }),
+      () => t.prisma.membership.create({ data: { projectId: c.projectId, userId: real, role: 'engineer', status: 'active' } }),
+      '"Membership"');
+    expect(String(refused)).toMatch(/is QA-only/);
+    expect((await t.prisma.org.findUniqueOrThrow({ where: { id: c.orgId } })).qaOnly).toBe(true);
+    expect(await t.prisma.membership.count({ where: { userId: real } })).toBe(0);
 
     // the add goes first and holds the company FOR SHARE; the mark waits on it, then sees the person
     const d = await company();
     const real2 = await person(d.projectId, false);
-    const adding2 = t.prisma.$transaction(async (tx) => {
-      await tx.membership.create({ data: { projectId: d.projectId, userId: real2, role: 'engineer', status: 'active' } });
-      await hold();
-    }, { timeout: 10_000 });
-    await new Promise((r) => setTimeout(r, 100));
-    const marking2 = t.prisma.org.update({ where: { id: d.orgId }, data: { qaOnly: true } });
-    await adding2;
-    await expect(marking2).rejects.toThrow(/is QA-only/);
+    const refused2 = await race(
+      (tx) => tx.membership.create({ data: { projectId: d.projectId, userId: real2, role: 'engineer', status: 'active' } }),
+      () => t.prisma.org.update({ where: { id: d.orgId }, data: { qaOnly: true } }),
+      '"Org"');
+    expect(String(refused2)).toMatch(/is QA-only/);
+    expect((await t.prisma.org.findUniqueOrThrow({ where: { id: d.orgId } })).qaOnly).toBe(false);
+    expect(await t.prisma.membership.count({ where: { userId: real2, projectId: d.projectId, status: 'active' } })).toBe(1);
   });
 
   it('changing an address while that person is being added: the second write waits, then is refused', async () => {
     const c = await company();
     await mark(c.orgId);
     const qa = await person(c.projectId, true);
+    const email = async (id: string) => (await t.prisma.user.findUniqueOrThrow({ where: { id } })).email;
     // the add holds the person FOR SHARE; the address change waits, then sees the membership
-    const adding = t.prisma.$transaction(async (tx) => {
-      await tx.membership.create({ data: { projectId: c.projectId, userId: qa, role: 'engineer', status: 'active' } });
-      await hold();
-    }, { timeout: 10_000 });
-    await new Promise((r) => setTimeout(r, 100));
-    const renaming = raw(`UPDATE "User" SET "email" = $1 WHERE "id" = $2`, `${qa}@test.local`, qa);
-    await adding;
-    await expect(renaming).rejects.toThrow(/is QA-only/);
+    const qaEmail = await email(qa);
+    const refused = await race(
+      (tx) => tx.membership.create({ data: { projectId: c.projectId, userId: qa, role: 'engineer', status: 'active' } }),
+      () => raw(`UPDATE "User" SET "email" = $1 WHERE "id" = $2`, `${qa}@test.local`, qa),
+      '"User"');
+    expect(String(refused)).toMatch(/is QA-only/);
+    expect(await email(qa)).toBe(qaEmail);
+    expect(await t.prisma.membership.count({ where: { userId: qa, projectId: c.projectId } })).toBe(1);
 
     // the address change holds the person's row; the add waits, then reads the new address
     const qa2 = await person(c.projectId, true);
-    const renaming2 = t.prisma.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(`UPDATE "User" SET "email" = $1 WHERE "id" = $2`, `${qa2}@test.local`, qa2);
-      await hold();
-    }, { timeout: 10_000 });
-    await new Promise((r) => setTimeout(r, 100));
-    const adding2 = t.prisma.membership.create({ data: { projectId: c.projectId, userId: qa2, role: 'engineer', status: 'active' } });
-    await renaming2;
-    await expect(adding2).rejects.toThrow(/is QA-only/);
+    const refused2 = await race(
+      (tx) => tx.$executeRawUnsafe(`UPDATE "User" SET "email" = $1 WHERE "id" = $2`, `${qa2}@test.local`, qa2),
+      () => t.prisma.membership.create({ data: { projectId: c.projectId, userId: qa2, role: 'engineer', status: 'active' } }),
+      '"Membership"');
+    expect(String(refused2)).toMatch(/is QA-only/);
+    expect(await email(qa2)).toBe(`${qa2}@test.local`);
+    expect(await t.prisma.membership.count({ where: { userId: qa2 } })).toBe(0);
   });
 
   it('the file re-runs over itself and keeps every marked company and refusal', async () => {
