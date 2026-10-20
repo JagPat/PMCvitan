@@ -56,7 +56,23 @@ export const webmHeaderOnly = () => webmFile(undefined, 'webm', []);
 
 // ── Ogg ──────────────────────────────────────────────────────────────────────────────────────
 
-/** one Ogg page holding whole packets; the checksum is left zero, which the check does not read */
+/** the Ogg page checksum: CRC-32 with polynomial 0x04c11db7, no reflection, initial and final value 0 */
+const OGG_CRC_TABLE = Array.from({ length: 256 }, (_, i) => {
+  let r = i << 24;
+  for (let k = 0; k < 8; k++) r = r & 0x80000000 ? (r << 1) ^ 0x04c11db7 : r << 1;
+  return r >>> 0;
+});
+/** a page with its checksum written in, as a real recorder leaves it */
+export const oggSeal = (page: Buffer): Buffer => {
+  const out = Buffer.from(page);
+  out.writeUInt32LE(0, 22);
+  let crc = 0;
+  for (const byte of out) crc = ((crc << 8) ^ OGG_CRC_TABLE[((crc >>> 24) ^ byte) & 0xff]!) >>> 0;
+  out.writeUInt32LE(crc, 22);
+  return out;
+};
+
+/** one Ogg page holding whole packets, with its checksum */
 export const oggPage = (headerType: number, serial: number, sequence: number, payload: Buffer | Buffer[]): Buffer => {
   const packets = Array.isArray(payload) ? payload : [payload];
   const lacing: number[] = [];
@@ -75,9 +91,9 @@ export const oggPage = (headerType: number, serial: number, sequence: number, pa
   head.writeUInt32LE(serial, 14);
   head.writeUInt32LE(sequence, 18);
   head[26] = lacing.length;
-  return Buffer.concat([head, Buffer.from(lacing), ...packets]);
+  return oggSeal(Buffer.concat([head, Buffer.from(lacing), ...packets]));
 };
-/** one Ogg page with the lacing values given as they are, so a packet can be left open (a last value of 255) */
+/** one Ogg page with the lacing values given as they are, so a packet can be left open (a last value of 255); sealed */
 export const oggPageRaw = (headerType: number, serial: number, sequence: number, lacing: number[], data: Buffer): Buffer => {
   const head = Buffer.alloc(27);
   head.write('OggS', 0, 'latin1');
@@ -85,11 +101,12 @@ export const oggPageRaw = (headerType: number, serial: number, sequence: number,
   head.writeUInt32LE(serial, 14);
   head.writeUInt32LE(sequence, 18);
   head[26] = lacing.length;
-  return Buffer.concat([head, Buffer.from(lacing), data]);
+  return oggSeal(Buffer.concat([head, Buffer.from(lacing), data]));
 };
 export const OPUS_HEAD = Buffer.concat([Buffer.from('OpusHead', 'latin1'), Buffer.from([1, 1, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0])]);
 export const OPUS_TAGS = Buffer.concat([Buffer.from('OpusTags', 'latin1'), Buffer.from([7, 0, 0, 0]), Buffer.from('Mozilla', 'latin1'), Buffer.alloc(4)]);
-export const VORBIS_ID = Buffer.concat([Buffer.from([0x01]), Buffer.from('vorbis', 'latin1'), Buffer.alloc(23, 0)]);
+/** Vorbis I identification: version 0, one channel, 48 kHz, no bitrates, block sizes 256/2048, the framing bit */
+export const VORBIS_ID = Buffer.concat([Buffer.from([0x01]), Buffer.from('vorbis', 'latin1'), Buffer.from([0, 0, 0, 0, 1, 0x80, 0xbb, 0, 0]), Buffer.alloc(12, 0), Buffer.from([0xb8, 1])]);
 export const VORBIS_COMMENT = Buffer.concat([Buffer.from([0x03]), Buffer.from('vorbis', 'latin1'), Buffer.alloc(9, 0)]);
 export const VORBIS_SETUP = Buffer.concat([Buffer.from([0x05]), Buffer.from('vorbis', 'latin1'), Buffer.alloc(12, 1)]);
 export const THEORA_ID = Buffer.concat([Buffer.from([0x80]), Buffer.from('theora', 'latin1'), Buffer.alloc(35, 0)]);
@@ -135,11 +152,19 @@ export const stsz = (sizes: number[]) => fullBox('stsz', 0, 0, [u32(0, sizes.len
 export const stsc = (samples: number) => fullBox('stsc', 0, 0, samples ? u32(1, 1, samples, 1) : u32(0));
 /** stco: one chunk at `offset` (none when there are no samples) */
 export const stco = (samples: number, offset: number) => fullBox('stco', 0, 0, samples ? u32(1, offset) : u32(0));
-export const stbl = (sizes: number[], offset = 0) =>
-  box('stbl', [box('stsd', Buffer.alloc(8)), fullBox('stts', 0, 0, u32(0)), stsc(sizes.length), stsz(sizes), stco(sizes.length, offset)]);
+/** stsd with one sample entry of this type (mp4a is AAC; Opus; avc1 a picture) */
+export const stsd = (entry: string) => fullBox('stsd', 0, 0, [u32(1), box(entry, Buffer.alloc(28))]);
+/** the media header each handler's minf carries: smhd for sound, vmhd for video, nmhd for anything else */
+const mediaHeader = (handler: string) => (handler === 'soun' ? fullBox('smhd', 0, 0, u32(0)) : handler === 'vide' || handler === 'auxv' ? fullBox('vmhd', 0, 1, Buffer.alloc(8)) : fullBox('nmhd', 0, 0));
+const ENTRY: Record<string, string> = { soun: 'mp4a', vide: 'avc1', auxv: 'avc1' };
+export const stbl = (sizes: number[], offset = 0, entry = 'mp4a') =>
+  box('stbl', [stsd(entry), fullBox('stts', 0, 0, u32(0)), stsc(sizes.length), stsz(sizes), stco(sizes.length, offset)]);
+/** a track, as a recorder writes it, around `table` (the stbl's boxes) */
+export const trakAround = (handler: string, trackId: number, table: Buffer[]) =>
+  box('trak', [tkhd(trackId), box('mdia', [fullBox('mdhd', 0, 0, Buffer.alloc(20)), hdlr(handler), box('minf', [mediaHeader(handler), box('stbl', table)])])]);
 /** a track whose samples (if any) sit in one chunk at `offset` */
 export const trak = (handler: string, trackId = 1, sizes: number[] = [], offset = 0) =>
-  box('trak', [tkhd(trackId), box('mdia', [box('mdhd', Buffer.alloc(24)), hdlr(handler), box('minf', stbl(sizes, offset))])]);
+  box('trak', [tkhd(trackId), box('mdia', [fullBox('mdhd', 0, 0, Buffer.alloc(20)), hdlr(handler), box('minf', [mediaHeader(handler), stbl(sizes, offset, ENTRY[handler] ?? 'mett')])])]);
 export const mdat = (bytes: number) => box('mdat', Buffer.alloc(bytes, 7));
 /**
  * `head(offset)` laid out before an mdat whose header is `mdatHeader` bytes: `offset` is where that mdat's payload
