@@ -785,6 +785,41 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
           // one first page and one open read: the new project's own; the stopped read hands nothing back into it
           expect(gw.listSiteVisits!.mock.calls.slice(asked).map(([q]) => (q as Q)?.status ?? 'page')).toEqual(['page', 'open']);
         });
+
+        it('sends no read when the screen closes mid-open, and the stopped read sets nothing (#1029 round 2, Codex 4330814470)', async () => {
+          const { state, list } = server();
+          const gw = await openWith(list, async () => { await act(async () => {}); state.holding = true; });
+          // the open's own read is out, and the newest, when the person leaves the screen
+          await vi.waitFor(() => expect(state.gates).toHaveLength(2));
+          const asked = gw.listSiteVisits!.mock.calls.length;
+          const errors = vi.spyOn(console, 'error');
+          state.holding = false;
+          cleanup();
+          await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+          expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
+          // the held pages answer late: nothing is read on, and nothing is set on the closed screen
+          await act(async () => { for (const g of state.gates) g(); });
+          await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+          expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
+          expect(errors).not.toHaveBeenCalled();
+          errors.mockRestore();
+        });
+
+        it('a read handed back on Cancel stops when the screen then closes: its signal is aborted, and it reads no further page', async () => {
+          const { state, list } = server();
+          const gw = await openWith(list, async () => { await act(async () => {}); state.holding = true; });
+          await vi.waitFor(() => expect(state.gates).toHaveLength(2));
+          // Cancel while the open's read is the newest: the screen's turn is handed back as one read, held here
+          await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
+          await vi.waitFor(() => expect(state.gates).toHaveLength(4));
+          const handed = gw.listSiteVisits!.mock.calls.slice(-2).map(([, signal]) => signal as AbortSignal | undefined);
+          expect(handed.every((sig) => sig !== undefined && !sig.aborted)).toBe(true);
+          const asked = gw.listSiteVisits!.mock.calls.length;
+          cleanup();
+          expect(handed.every((sig) => sig!.aborted)).toBe(true);
+          await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+          expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
+        });
       });
     });
 

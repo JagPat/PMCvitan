@@ -397,6 +397,10 @@ export function useSiteVisits() {
   markupRef.current = markup;
   const markupSeq = useRef(0);
   const markupRun = useRef<{ seq: number; stop: () => void } | null>(null);
+  /** whether the screen is still shown, and the signal its leaving aborts: a markup open stopped by the screen closing
+   *  hands nothing back, and a read handed back stops when the screen closes (Codex 4330814470) */
+  const mounted = useRef(true);
+  const life = useRef(new AbortController());
   // what the editor says about its last save (why the copy was not kept): the editor's own, never another act's refusal
   const [markupNotice, setMarkupNotice] = useState<string | null>(null);
 
@@ -448,7 +452,7 @@ export function useSiteVisits() {
     // overtaken by it. Stopped before it settles while still the newest, it hands the turn back as one plain read, so
     // what the read it overtook would have shown is still shown (m3-r2 check gap 1)
     let settled = false;
-    signal?.addEventListener('abort', () => { if (!settled && live(scope) && lastRead.current === mine) void readHead(fresh); }, { once: true });
+    signal?.addEventListener('abort', () => { if (!settled && mounted.current && live(scope) && lastRead.current === mine) void readHead(fresh, life.current.signal); }, { once: true });
     if (fresh) { answered.current = false; setLoad('loading'); }
     // the first page alone when starting over; otherwise down to the page holding the last visit shown
     const upTo = fresh ? undefined : cursor.current;
@@ -485,7 +489,7 @@ export function useSiteVisits() {
       // stopped while it was the newest gave its turn back to the screen then, so it is overtaken here and says nothing
       .catch(() => {
         settled = true;
-        if (live(scope) && mine === lastRead.current && !answered.current) setLoad('error');
+        if (mounted.current && live(scope) && mine === lastRead.current && !answered.current) setLoad('error');
         return false;
       });
     latestRead.current = sent;
@@ -531,8 +535,16 @@ export function useSiteVisits() {
     readKept();
     sendQueued();
   }, [projectId, generation, readHead, readKept, stopMarkup]);
-  // leaving the screen stops an open in flight
-  useEffect(() => () => { markupRun.current?.stop(); }, []);
+  // leaving the screen stops an open in flight, and a read handed back from one; neither reads on nor hands back
+  useEffect(() => {
+    mounted.current = true;
+    if (life.current.signal.aborted) life.current = new AbortController();
+    return () => {
+      mounted.current = false;
+      life.current.abort();
+      markupRun.current?.stop();
+    };
+  }, []);
 
   // another device started, changed, ended or closed a visit; and what the outbox says about the acts it sent
   useEffect(() => {
