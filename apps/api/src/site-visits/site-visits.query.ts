@@ -46,6 +46,8 @@ export interface SiteVisitFileDto {
   mediaId: string;
   url: string;
   mime: string;
+  /** The uploading device's key for the file, if it sent one: the phone that queued it knows its copy by it. */
+  clientKey: string | null;
   /** When the device took it, if it said. */
   takenAt: string | null;
   note: string | null;
@@ -95,7 +97,7 @@ type Row = Prisma.SiteVisitGetPayload<{ include: typeof withChildren }>;
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 
 /** What the media module says about a visit's file (`MediaQueryService.fileFacts`). */
-type FileFacts = Map<string, { mime: string; takenAt: string | null }>;
+type FileFacts = Map<string, { mime: string; takenAt: string | null; clientKey: string | null }>;
 
 export function toSiteVisitDto(v: Row, fileUrl: (mediaId: string) => string, facts: FileFacts): SiteVisitDto {
   const device = v.locationKind === 'device' && v.locLat !== null && v.locLng !== null && v.locAccuracyM !== null && v.locAt !== null;
@@ -128,7 +130,8 @@ export function toSiteVisitDto(v: Row, fileUrl: (mediaId: string) => string, fac
     })),
     // a linked file always exists (the link is frozen and the file's delete is refused); the fallback is only types
     files: v.media.map((f) => ({
-      mediaId: f.mediaId, url: fileUrl(f.mediaId), mime: facts.get(f.mediaId)?.mime ?? '', takenAt: facts.get(f.mediaId)?.takenAt ?? null,
+      mediaId: f.mediaId, url: fileUrl(f.mediaId), mime: facts.get(f.mediaId)?.mime ?? '', clientKey: facts.get(f.mediaId)?.clientKey ?? null,
+      takenAt: facts.get(f.mediaId)?.takenAt ?? null,
       note: f.note, rating: f.rating, place: f.placeName !== '' ? { nodeId: f.nodeId, name: f.placeName } : null,
       addedById: f.addedById, addedByName: f.addedByName, addedByRole: f.addedByRole, addedAt: f.addedAt.toISOString(),
     })),
