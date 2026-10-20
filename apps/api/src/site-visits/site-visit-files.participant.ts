@@ -100,6 +100,14 @@ export class SiteVisitFilesParticipant {
     if (link) throw new ConflictException('This photo is part of a site visit\'s record and cannot be deleted');
   }
 
+  /** #482 site photos — the batched form of {@link assertMediaDisposable}: which of these photos a site visit holds, in one read
+   *  of this module's own rows, so the snapshot asks once for its whole photo window (Codex 4320515415). */
+  async pinnedMedia(db: Prisma.TransactionClient | PrismaService, projectId: string, mediaIds: string[]): Promise<Set<string>> {
+    if (mediaIds.length === 0) return new Set();
+    const rows = await db.siteVisitMedia.findMany({ where: { projectId, mediaId: { in: mediaIds } }, select: { mediaId: true } });
+    return new Set(rows.map((r) => r.mediaId));
+  }
+
   private async judge(
     db: Prisma.TransactionClient | PrismaService, projectId: string, visitId: string, userId: string, visit: VisitForFile | null,
   ): Promise<void> {

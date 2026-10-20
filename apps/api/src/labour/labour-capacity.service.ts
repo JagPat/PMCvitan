@@ -12,6 +12,7 @@ import { CapabilitiesService, LABOUR_CAPABILITY } from '../platform/capabilities
 import { ActivityParticipant } from '../activities/activity.participant';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { lockProjectReadiness } from '../common/readiness-lock';
+import { rethrowMediaRefViolation } from '../common/project-ref';
 import { fromIsoCivilDate, toIsoCivilDate } from '../common/civil-date';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
@@ -557,7 +558,8 @@ export class LabourCapacityService {
           if (isUniqueViolation(e)) {
             throw new ConflictException(`Attendance for this worker on ${input.civilDate} (${input.shift}) is already recorded — revoke it to correct it`);
           }
-          throw e;
+          // #482 site photos — a capture that is not this project's photo, or was deleted a moment before: a 400
+          rethrowMediaRefViolation(e);
         }
         await recordAudit(tx, { projectId, actor, action: 'labour.attendance.record', entity: 'LabourAttendance', entityId: row.id });
         const ev = await emitEvent(tx, {

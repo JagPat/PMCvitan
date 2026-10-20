@@ -650,9 +650,10 @@ export class ActivitiesService {
       run: async (tx) => {
         // an override moves a gate the moment it exists (finding 1)
         await lockProjectReadiness(tx, projectId);
+        // #482 site photos — a photo deleted after the check above is caught by its key: a 400, never a 500
         const created = await tx.gateOverride.create({
           data: { projectId, activityId, gate: input.gate, state: input.state, reason: input.reason, actorId: actor.actorId, actorName: actor.actorName, evidenceMediaId, expiresAt },
-        });
+        }).catch((e) => rethrowMediaRefViolation(e));
         await recordAudit(tx, { projectId, actor, action: 'activity.override', entity: 'Activity', entityId: activityId, payload: { gate: input.gate, state: input.state, reason: input.reason, expiresAt: expiresAt.toISOString(), evidenceMediaId } });
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'activity.override_granted', entityType: 'Activity', entityId: activityId, payload: { gate: input.gate, state: input.state }, effectKey: 'activity.override_granted', dispatch: { push: { body: `Gate override on ${a.name}: ${input.gate} → ${input.state} (expires ${ddMmmYyyy(expiresAt)})` } } });
         return { resultRef: created.id, events: [ev] };

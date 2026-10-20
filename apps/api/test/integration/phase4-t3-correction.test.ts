@@ -248,7 +248,8 @@ describe('Phase 4 Task 3 correction — the four review findings (live PG)', () 
     // RED at cb589dd: a NONEXISTENT media id was accepted — there was no FK at all
     await expect(
       capacity.recordAttendance(projectId, { workerId, civilDate: '2026-08-10', shift: 'day', deviceId, evidenceMediaId: 'does-not-exist' }, pmc(projectId)),
-    ).rejects.toThrow();
+      // #482 — a photo gone by the time the muster is written (deleted a moment before) is a 400, never a 500
+    ).rejects.toMatchObject({ status: 400 });
     expect(await t.prisma.labourAttendance.count({ where: { projectId } })).toBe(0);
 
     // a CROSS-PROJECT media id is likewise unrepresentable
