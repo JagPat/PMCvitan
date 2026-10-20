@@ -560,8 +560,10 @@ export interface Photo {
   at?: string;
   /** #482 site photos — the upload key, on the viewer's own photos only */
   clientKey?: string;
-  /** #482 site photos — until when (ISO) the viewer may delete this photo: their own site photo, within the hour, not
-   *  on a daily log already sent. Absent otherwise. */
+  /** #482 site photos — the viewer may delete this photo now: the PMC and the engineer any photo, another member their own
+   *  site photo within the hour and not on a sent log; never one a record keeps as evidence. Absent otherwise. */
+  deletable?: boolean;
+  /** #482 site photos — until when (ISO) a member's own-photo delete lasts; absent where `deletable` has no deadline. */
   deletableUntil?: string;
 }
 

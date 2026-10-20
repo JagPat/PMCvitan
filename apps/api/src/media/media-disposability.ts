@@ -16,6 +16,9 @@ import { SiteVisitFilesParticipant } from '../site-visits/site-visit-files.parti
  * GateOverride, Measurement, SiteVisitMedia and InspectionEvidence. (Media.sourceMediaId needs no check of its own: a
  * marked-up copy's original is always a site-visit file, which the site-visits answer already keeps.)
  */
+/** The roles that keep the site record: they delete any photo, at any age, and add every kind of media. */
+export const SITE_RECORD_ROLES: ReadonlySet<string> = new Set(['pmc', 'engineer']);
+
 @Injectable()
 export class MediaDisposability {
   constructor(

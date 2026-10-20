@@ -12,6 +12,7 @@ import { ProcurementParticipant } from '../procurement/procurement.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { lockProjectReadiness } from '../common/readiness-lock';
+import { rethrowMediaRefViolation } from '../common/project-ref';
 import { CommercialParticipant } from '../commercial/commercial.participant';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
@@ -421,7 +422,9 @@ export class InventoryService {
         reason: data.reason ?? null,
         sourceCommandId: ctx.commandId, recordedById: actor.actorId,
       },
-    });
+      // #482 site photos — an evidence photo deleted after `assertEvidenceMedia` saw it is caught by the ledger's key:
+      // the same 400 as a photo that was never there, not a 500
+    }).catch((e) => rethrowMediaRefViolation(e));
     await recordAudit(tx, { projectId, actor, action: auditAction, entity: 'StockTransaction', entityId: row.id });
     const payload: StockTransactedPayload = {
       txId: row.id, type: row.type,

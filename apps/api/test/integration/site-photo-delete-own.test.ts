@@ -7,6 +7,9 @@ import { vi } from 'vitest';
 import { SnapshotService } from '../../src/snapshot/snapshot.service';
 import { InventoryParticipant } from '../../src/inventory/inventory.participant';
 import { InspectionParticipant } from '../../src/inspections/inspection.participant';
+import { MediaService } from '../../src/media/media.service';
+import { StorageService } from '../../src/media/storage.service';
+import { ActivitiesService } from '../../src/activities/activities.service';
 
 /**
  * #482 site photos (Board, 14 Oct 2026) — every member deletes a site photo they added, within an hour of adding it;
@@ -231,6 +234,79 @@ describe('a member deletes their own site photo within the hour (live PG)', () =
       expect(await calls(8)).toBe(1);
     } finally {
       spies.forEach((s) => s.mockRestore());
+    }
+  });
+
+  it('the PMC is offered every photo with no deadline, never one a record keeps (Codex 4320912804)', async () => {
+    const othersRecent = await photo(contractorId(), minutesAgo(2));
+    const ownOld = await photo(f.memberUser.id, minutesAgo(70));
+    const pinned = await photo(contractorId(), minutesAgo(2));
+    const activityId = `${f.projectA.id}-del-act-staff`;
+    await t.prisma.activity.create({ data: { id: activityId, projectId: f.projectA.id, name: 'Slab', zone: 'GF', plannedStart: 0, plannedEnd: 1 } });
+    const override = await t.prisma.gateOverride.create({
+      data: { projectId: f.projectA.id, activityId, gate: 'material', state: 'ok', reason: 'delivery photo', actorId: f.memberUser.id, actorName: 'PMC', expiresAt: new Date(Date.now() + 7 * 864e5), evidenceMediaId: pinned },
+    });
+    try {
+      const snap = await t.app.get(SnapshotService).build(f.projectA.id, 'pmc', f.memberUser.id);
+      const byId = (id: string) => snap.photos.find((p) => p.id === id);
+      for (const id of [othersRecent, ownOld]) {
+        expect(byId(id)?.deletable).toBe(true);
+        expect(byId(id)).not.toHaveProperty('deletableUntil');
+      }
+      expect(byId(pinned)).toBeDefined();
+      expect(byId(pinned)).not.toHaveProperty('deletable');
+      // what the snapshot offered, the delete takes
+      expect((await del(othersRecent, pmc)).status).toBe(200);
+      expect((await del(ownOld, pmc)).status).toBe(200);
+      expect((await del(pinned, pmc)).status).toBe(409);
+    } finally {
+      await t.prisma.gateOverride.deleteMany({ where: { id: override.id } });
+      await t.prisma.activity.deleteMany({ where: { id: activityId } });
+    }
+  });
+
+  it('a citation that lands after the guards asked refuses the delete with a 409 and keeps the file (Codex 4320912811)', async () => {
+    const id = await photo(contractorId(), minutesAgo(2));
+    await t.prisma.media.update({ where: { id }, data: { storageKey: `site/${id}.png` } });
+    const activityId = `${f.projectA.id}-del-act-race`;
+    await t.prisma.activity.create({ data: { id: activityId, projectId: f.projectA.id, name: 'Slab', zone: 'GF', plannedStart: 0, plannedEnd: 1 } });
+    // the guards answer "free", then a PMC's override cites the photo and commits before the row is deleted
+    const disposability = (t.app.get(MediaService) as unknown as { disposability: { assertDisposable: (...a: unknown[]) => Promise<unknown> } }).disposability;
+    const real = disposability.assertDisposable.bind(disposability);
+    const guard = vi.spyOn(disposability, 'assertDisposable').mockImplementationOnce(async (...a: unknown[]) => {
+      const observed = await real(...a);
+      await t.prisma.gateOverride.create({
+        data: { projectId: f.projectA.id, activityId, gate: 'material', state: 'ok', reason: 'late citation', actorId: f.memberUser.id, actorName: 'PMC', expiresAt: new Date(Date.now() + 864e5), evidenceMediaId: id },
+      });
+      return observed;
+    });
+    const removeObject = vi.spyOn(t.app.get(StorageService), 'remove');
+    try {
+      const res = await del(id, contractor);
+      expect(res.status).toBe(409);
+      expect(await exists(id)).toBe(true);
+      expect(removeObject).not.toHaveBeenCalled();
+    } finally {
+      guard.mockRestore();
+      removeObject.mockRestore();
+      await t.prisma.gateOverride.deleteMany({ where: { activityId } });
+      await t.prisma.activity.deleteMany({ where: { id: activityId } });
+    }
+  });
+
+  it('an override citing a photo deleted a moment before is a 400, never a 500 (the delete-first order)', async () => {
+    const activityId = `${f.projectA.id}-del-act-mirror`;
+    await t.prisma.activity.create({ data: { id: activityId, projectId: f.projectA.id, name: 'Slab', zone: 'GF', plannedStart: 0, plannedEnd: 1 } });
+    // the photo check saw it; its delete committed before the override row was written
+    const check = vi.spyOn(t.prisma.media, 'findFirst').mockResolvedValueOnce({ id: 'just-deleted' } as never);
+    try {
+      await expect(t.app.get(ActivitiesService).override(f.projectA.id, activityId, {
+        gate: 'material', state: 'ok', reason: 'delivery photo', expiresAt: new Date(Date.now() + 864e5).toISOString(), evidenceMediaId: 'just-deleted',
+      } as never, { sub: f.memberUser.id, role: 'pmc', projectId: f.projectA.id } as never)).rejects.toMatchObject({ status: 400 });
+      expect(await t.prisma.gateOverride.count({ where: { activityId } })).toBe(0);
+    } finally {
+      check.mockRestore();
+      await t.prisma.activity.deleteMany({ where: { id: activityId } });
     }
   });
 

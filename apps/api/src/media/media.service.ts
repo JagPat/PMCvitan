@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from './storage.service';
@@ -14,7 +14,7 @@ import { LabourRequirementParticipant } from '../labour/labour.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { CommercialParticipant } from '../commercial/commercial.participant';
 import { SiteVisitFilesParticipant } from '../site-visits/site-visit-files.participant';
-import { MediaDisposability } from './media-disposability';
+import { MediaDisposability, SITE_RECORD_ROLES } from './media-disposability';
 import { isPlaceHiddenFrom, previewPublishedProjectNode, resolvePublishedProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
@@ -33,7 +33,6 @@ export interface UploadedMedia {
 }
 
 /** The roles that keep the record-linked uploads: evidence for a decision or an inspection item, or a non-progress kind. */
-const SITE_RECORD_ROLES: ReadonlySet<string> = new Set(['pmc', 'engineer']);
 
 /** A plain site photo: a progress photo, optionally placed on the location tree and filed on the day's log it was
  *  taken for (#482, Board 14 Oct 2026: every member adds photos to that day's record), linked to no other record. */
@@ -380,7 +379,17 @@ export class MediaService {
       // `inspection.evidence_removed` when a link existed), THEN delete the media row, so the projection
       // observes the removal. `null` when this media was not item-level evidence.
       const evidenceEv = await this.inspectionParticipant.removeEvidence(tx, { projectId, actor, mediaId: id, observed: observedEvidence });
-      await tx.media.delete({ where: { id } });
+      try {
+        await tx.media.delete({ where: { id } });
+      } catch (e) {
+        // #482 site photos — a record that cited this photo after the guards above asked (a gate override, a stock
+        // row) is held by its key, which is the last word: the delete is refused like any other cited photo, nothing
+        // is touched, and the stored file stays (Codex 4320912811)
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2003') {
+          throw new ConflictException('This photo was just cited as evidence on another record, so it cannot be deleted');
+        }
+        throw e;
+      }
       const removedEv = await emitEvent(tx, { projectId, actor, eventType: 'media.removed', entityType: 'Media', entityId: id, effectKey: 'media.removed', dispatch: {} });
       return evidenceEv ? [evidenceEv, removedEv] : [removedEv];
     });
