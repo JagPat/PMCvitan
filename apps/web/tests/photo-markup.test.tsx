@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { PhotoMarkup } from '@/components/PhotoMarkup';
 import { photoDecodes } from '@/lib/photoDecodes';
 import { MK, drawShape, fitLabel, fitWithin, isMeaningful, labelWidth, penWidth, type MarkupPen, type MarkupShape } from '@/lib/photoMarkup';
@@ -92,7 +92,8 @@ describe('photo markup: the editor', () => {
     const canvas = await screen.findByTestId('photo-markup-canvas');
     expect(canvas).toHaveAttribute('width', '1600');
     expect(canvas).toHaveAttribute('height', '1200');
-    expect(drawn).toBeGreaterThan(0);
+    // the photo is painted by an effect after the canvas is in the page: under load that can trail the find above
+    await waitFor(() => expect(drawn).toBeGreaterThan(0));
     // nothing drawn: Save asks for a mark first and sends nothing
     fireEvent.click(screen.getByRole('button', { name: MK.save.en }));
     expect(screen.getByRole('status')).toHaveTextContent(MK.nothing.en);
