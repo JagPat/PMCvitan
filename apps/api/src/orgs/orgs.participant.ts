@@ -1,8 +1,67 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import type { Role } from '../common/auth';
 import { readinessLockKey } from '../common/readiness-lock';
 import { readPhase6_4dRollout } from '../platform/phase6-4d-rollout';
 import { RoleStandingQuery } from '../platform/role-standing.query';
+
+/** #482 — the address pattern the Board fixed for the QA accounts (`qa.<lowercase letters>@vitan.in`), matched as stored. */
+export const QA_ACCOUNT_EMAIL = /^qa\.[a-z]+@vitan\.in$/;
+
+/** The 409 the QA sign-in gives when one of the rows its check locks is being changed at that moment. */
+export const QA_SIGN_IN_BUSY = 'This account is being changed right now, so it cannot be signed in; try again';
+
+/** Where a sign-in lands: a project the access rule grants, with the role it grants there. */
+export interface SignInLanding {
+  projectId: string;
+  role: Role;
+}
+
+/** The account fields a sign-in needs to issue its session. */
+export interface SignInAccount {
+  id: string;
+  name: string;
+  projectId: string;
+  role: string;
+  credentialVersion: number;
+  lastProjectId: string | null;
+}
+
+/** The QA sign-in's answer (`OrgsParticipant.qaSignInAccount`). `unknown`: no account holds the address. `not-qa`: the
+ *  account is not a QA account in QA-only companies only. `no-access`: the access rule grants it no live project. */
+export type QaSignInAccount =
+  | { kind: 'unknown' }
+  | { kind: 'not-qa' }
+  | { kind: 'no-access' }
+  | { kind: 'ok'; account: SignInAccount; landing: SignInLanding };
+
+/** The QA sign-in's row locks: a row being changed right now (55P03 lock_not_available) is the 409, never a wait. */
+async function lockedNow<T>(query: () => Promise<T>): Promise<T> {
+  try {
+    return await query();
+  } catch (e: unknown) {
+    if (e instanceof Error && /55P03|could not obtain lock/.test(e.message)) throw new ConflictException(QA_SIGN_IN_BUSY);
+    throw e;
+  }
+}
+
+/** The 409 a command gives when the QA company lock (migration 20280116) refuses its membership or address write. */
+export const QA_LOCK_REFUSAL = 'QA accounts and real people are kept in separate companies, so this account cannot be added here';
+
+/**
+ * #482 QA company lock — the database refuses a real person in a QA-only company and a QA account anywhere else
+ * (`check_violation`, "qa lock: ..."). Behind the command doors that refusal is the caller's 409, not a 500; any other
+ * error is left as it was. Hostile direct SQL still gets the raw raise.
+ */
+export function refuseQaLock(e: unknown): void {
+  if (e instanceof Error && /qa lock:/.test(e.message)) throw new ConflictException(QA_LOCK_REFUSAL);
+}
+
+/** {@link refuseQaLock} as a `.catch` handler: the lock's refusal becomes the 409, anything else is rethrown. */
+export function rethrowQaLock(e: unknown): never {
+  refuseQaLock(e);
+  throw e;
+}
 
 /** The narrow client surface the standing check needs — satisfied by both a `$transaction` client
  *  and a top-level Prisma client, so non-DI callers (operator CLIs) can construct this directly. */
@@ -76,6 +135,197 @@ export class OrgsParticipant {
   }
 
   /**
+   * #482 QA sign-in (Codex P1 on #1020) — the account that owns this address now, found and locked inside the
+   * sign-in's own transaction, before anything else is read: `FOR UPDATE NOWAIT` on the User row the address names
+   * (the strength `qaSignInAllowed` needs, taken at once, so two sign-ins of one account never both hold a share and
+   * refuse each other's upgrade: the second gets the 409). A rename in flight refuses the sign-in (409, try again)
+   * instead of waiting; one committed before the lock leaves the address with its new owner or with none, and
+   * PostgreSQL re-reads a row changed after the statement began, so a row that no longer holds the address is not
+   * returned. The lock then holds the address on that account until the sign-in commits. Null when no account holds it.
+   */
+  async lockQaAccountByEmail(tx: Prisma.TransactionClient, email: string): Promise<string | null> {
+    const client = tx as OrgsParticipantClient;
+    const rows = await lockedNow(() => client.$queryRawUnsafe<Array<{ id: string; email: string }>>(
+      `SELECT "id", "email" FROM "User" WHERE "email" = $1 FOR UPDATE NOWAIT`, email));
+    const row = rows[0];
+    // the locked row still owns the address it was found by (it cannot change under the lock; checked, not assumed)
+    return row && row.email === email ? row.id : null;
+  }
+
+  /**
+   * #482 QA sign-in (Codex P2 on #1020) — is the project a sign-in chose to land on still live, held so until the
+   * sign-in commits? `FOR SHARE NOWAIT` on the Project row, read again under the lock: an archive in flight refuses
+   * the sign-in (409, try again), and one committed since the landing was chosen answers false.
+   */
+  async lockLiveProject(tx: Prisma.TransactionClient, projectId: string): Promise<boolean> {
+    const client = tx as OrgsParticipantClient;
+    const rows = await lockedNow(() => client.$queryRawUnsafe<Array<{ archivedAt: Date | null }>>(
+      `SELECT "archivedAt" FROM "Project" WHERE "id" = $1 FOR SHARE NOWAIT`, projectId));
+    return rows.length === 1 && rows[0]!.archivedAt === null;
+  }
+
+  /**
+   * #482 QA sign-in (Jagrut, 20 Oct 2026: "Rebuild it") — may the operator door sign in as this account? Only when its
+   * email is a QA address, it reaches at least one company (a company row, or a membership that is not removed on one
+   * of that company's projects), and every company it reaches is marked QA-only. The database's QA company lock keeps
+   * that true afterwards: a QA account joins only QA-only companies, a QA-only company takes no real person and is never
+   * unmarked while it holds a QA account, and the address cannot leave the QA pattern while the account belongs
+   * anywhere. So the answer is asked once, at sign-in (inside its audit transaction, under the locks below), and needs
+   * no re-check per request. A QA account still sitting in an unmarked company (a row from before the lock) is
+   * refused until that company is marked.
+   */
+  async qaSignInAllowed(tx: Prisma.TransactionClient, userId: string): Promise<boolean> {
+    const client = tx as OrgsParticipantClient;
+    // Asked inside the sign-in's own transaction, under locks that conflict with every way the answer can flip before
+    // the token is issued. First the person, FOR UPDATE (Codex P2 on #1020, "membership phantoms"): every new company
+    // row or project membership, and every membership brought back from removed, takes a lock on its User row (the
+    // foreign key's FOR KEY SHARE, and the QA company lock's FOR SHARE), and both conflict with FOR UPDATE. So one in
+    // flight refuses the sign-in, and one that starts later waits until it commits: the rows read below are all the
+    // rows there will be. The lock also blocks an email change. Then the company rows and every project membership,
+    // removed ones too (FOR SHARE blocks their removal or return), and the companies they reach (blocks unmarking).
+    // Project rows need no lock: a project never moves company (`Project.orgId` is frozen). Every lock is NOWAIT, so
+    // the sign-in never waits on a writer and can never sit in a lock cycle with one, whatever order that writer takes
+    // its rows in: a row being changed at this moment refuses the sign-in (409, try again), and a writer that comes
+    // second waits for it.
+    await lockedNow(async () => {
+      await client.$queryRawUnsafe(`SELECT 1 FROM "User" WHERE "id" = $1 FOR UPDATE NOWAIT`, userId);
+      await client.$queryRawUnsafe(`SELECT 1 FROM "OrgMembership" WHERE "userId" = $1 ORDER BY "id" FOR SHARE NOWAIT`, userId);
+      await client.$queryRawUnsafe(`SELECT 1 FROM "Membership" WHERE "userId" = $1 ORDER BY "id" FOR SHARE NOWAIT`, userId);
+      await client.$queryRawUnsafe(
+        `SELECT 1 FROM "Org" o WHERE o."id" IN (
+           SELECT om."orgId" FROM "OrgMembership" om WHERE om."userId" = $1
+           UNION
+           SELECT p."orgId" FROM "Membership" m JOIN "Project" p ON p."id" = m."projectId" WHERE m."userId" = $1 AND m."status" <> 'removed'
+         ) ORDER BY o."id" FOR SHARE OF o NOWAIT`,
+        userId,
+      );
+    });
+    const rows = await client.$queryRawUnsafe<Array<{ self: boolean; reach: number; unmarked: number }>>(
+      `WITH reach AS (
+         SELECT om."orgId" FROM "OrgMembership" om WHERE om."userId" = $1
+         UNION
+         SELECT p."orgId" FROM "Membership" m JOIN "Project" p ON p."id" = m."projectId"
+          WHERE m."userId" = $1 AND m."status" <> 'removed'
+       )
+       SELECT COALESCE((SELECT u."email" ~ $2 FROM "User" u WHERE u."id" = $1), false) AS "self",
+              (SELECT COUNT(*) FROM reach)::int AS "reach",
+              (SELECT COUNT(*) FROM reach r JOIN "Org" o ON o."id" = r."orgId" WHERE NOT o."qaOnly")::int AS "unmarked"`,
+      userId,
+      QA_ACCOUNT_EMAIL.source,
+    );
+    const r = rows[0];
+    return !!r && r.self === true && Number(r.reach) > 0 && Number(r.unmarked) === 0;
+  }
+
+  /**
+   * #482 QA sign-in (Codex P1 on #1020, round 3) — the whole account side of the operator door's sign-in, inside the
+   * sign-in's transaction, so the auth module reads none of the orgs-owned rows itself. In this order, every lock
+   * NOWAIT (a row being changed right now is the 409, `QA_SIGN_IN_BUSY`):
+   *   1. the account the address names, `FOR UPDATE` (`lockQaAccountByEmail`);
+   *   2. the QA check, which locks the account again first, then its company rows and every project membership
+   *      (removed ones too), then the companies they reach (`qaSignInAllowed`);
+   *   3. the landing, by the one sign-in access rule every credential sign-in uses (`signInLanding`), read only now, so
+   *      it sees only rows the locks above hold;
+   *   4. the landing project, `FOR SHARE`, live (`lockLiveProject`); an archive committed since step 3 is the 409.
+   */
+  async qaSignInAccount(tx: Prisma.TransactionClient, email: string): Promise<QaSignInAccount> {
+    const userId = await this.lockQaAccountByEmail(tx, email);
+    if (!userId) return { kind: 'unknown' };
+    const user = await tx.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: { id: true, name: true, projectId: true, role: true, credentialVersion: true, lastProjectId: true },
+    });
+    if (!(await this.qaSignInAllowed(tx, user.id))) return { kind: 'not-qa' };
+    const landing = await this.signInLanding(tx, user);
+    if (!landing) return { kind: 'no-access' };
+    if (!(await this.lockLiveProject(tx, landing.projectId))) throw new ConflictException(QA_SIGN_IN_BUSY);
+    return { kind: 'ok', account: user, landing };
+  }
+
+  /**
+   * The one sign-in access rule (SEC-01), owned here with the rows it reads; `AuthService` asks it for every credential
+   * sign-in (password, phone, email, Google, credential completion, the QA door), and the project switch asks
+   * `projectRole`, so none of them lands by another copy. The dev-only role pick (`AuthService.session`, allowed only
+   * with ALLOW_DEV_AUTH outside production) is the one exception: it lands where the picked account says.
+   * Where a sign-in lands: the project the user last switched into (#811) when still permitted, else their home
+   * project when still permitted, else their first active membership on a live project, else any live project in a
+   * company they own or administer. Null when none holds: the account has lost access everywhere. `lastProjectId` is
+   * a plain stamp; it only chooses among projects the rule already grants, and the role always comes from the rule.
+   */
+  async signInLanding(
+    db: Prisma.TransactionClient,
+    user: { id: string; projectId: string; lastProjectId?: string | null },
+  ): Promise<SignInLanding | null> {
+    const last = user.lastProjectId ? await this.landingOn(db, user.id, user.lastProjectId) : null;
+    if (last) return last;
+    const home = await this.landingOn(db, user.id, user.projectId);
+    if (home) return home;
+    const membership = await db.membership.findFirst({
+      where: { userId: user.id, status: 'active', project: { archivedAt: null } },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (membership) return { projectId: membership.projectId, role: membership.role as Role };
+    const adminOrgs = await db.orgMembership.findMany({
+      where: { userId: user.id, role: { in: ['owner', 'admin'] } },
+      select: { orgId: true },
+    });
+    if (adminOrgs.length) {
+      const project = await db.project.findFirst({
+        where: { orgId: { in: adminOrgs.map((o) => o.orgId) }, archivedAt: null },
+      });
+      if (project) return { projectId: project.id, role: 'pmc' };
+    }
+    return null;
+  }
+
+  /**
+   * The role a person holds on a project (SEC-01), from just two sources: an active project membership (`removed`
+   * and `invited` deny), else owner/admin of the company that owns the project (operates it as PMC). The legacy
+   * `User.projectId`/`User.role` fields are deliberately not consulted. Null when access is denied. An explicit
+   * active membership wins over the company reach, so an owner can operate one project in a narrower role.
+   */
+  async projectRole(db: Prisma.TransactionClient, userId: string, projectId: string): Promise<Role | null> {
+    const membership = await db.membership.findUnique({ where: { projectId_userId: { projectId, userId } } });
+    if (membership?.status === 'active') return membership.role as Role;
+    const project = await db.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
+    if (!project?.orgId) return null;
+    const om = await db.orgMembership.findUnique({ where: { orgId_userId: { orgId: project.orgId, userId } } });
+    return om?.role === 'owner' || om?.role === 'admin' ? 'pmc' : null;
+  }
+
+  /** The role a sign-in may land with on this project: none when it is missing or archived, else the rule's answer. */
+  private async landingOn(db: Prisma.TransactionClient, userId: string, projectId: string): Promise<SignInLanding | null> {
+    const project = await db.project.findUnique({ where: { id: projectId }, select: { archivedAt: true } });
+    if (!project || project.archivedAt) return null;
+    const role = await this.projectRole(db, userId, projectId);
+    return role ? { projectId, role } : null;
+  }
+
+  /**
+   * #482 operator door — mark a company QA-only, so its QA accounts can be signed in through the door. The database
+   * refuses the mark while any person in the company is not a QA account (409 here, naming no one); marking a marked
+   * company changes nothing. Returns the company's live projects so the caller can record the mark on each trail.
+   */
+  async markQaOnly(tx: Prisma.TransactionClient, orgId: string): Promise<{ found: boolean; changed: boolean; projectIds: string[] }> {
+    const org = await tx.org.findUnique({ where: { id: orgId }, select: { id: true } });
+    if (!org) return { found: false, changed: false, projectIds: [] };
+    // one conditional write: of two marks racing on an unmarked company, the second waits on the row and then finds
+    // it already marked (count 0), so exactly one of them reports the change and writes the audit rows
+    const { count } = await tx.org.updateMany({ where: { id: orgId, qaOnly: false }, data: { qaOnly: true } }).catch((e: unknown) => {
+      if (e instanceof Error && /qa lock:.*still belongs to company/.test(e.message)) {
+        // a QA account here is still in a company that is not QA-only (a row from before the lock)
+        throw new ConflictException('A QA account in this company still belongs to a company that is not QA-only, so it cannot be marked QA-only yet');
+      }
+      if (e instanceof Error && /qa lock:/.test(e.message)) {
+        throw new ConflictException('This company still has people who are not QA accounts, so it cannot be marked QA-only');
+      }
+      throw e;
+    });
+    const projects = await tx.project.findMany({ where: { orgId, archivedAt: null }, select: { id: true }, orderBy: { id: 'asc' } });
+    return { found: true, changed: count === 1, projectIds: projects.map((p) => p.id) };
+  }
+
+  /**
    * #482 operator door (Jagrut's "yes door", 19 Oct 2026) — who can manage each live project: the owners and
    * admins of every company, and the active members of every live project with their role. The operator
    * otherwise answers "who is on Samumil, and is Chitrang an owner?" by pasting a Prisma block into the
@@ -83,12 +333,12 @@ export class OrgsParticipant {
    * authorises nothing, and it returns names and one contact each, never a credential.
    */
   async operatorRoster(tx: OrgsParticipantClient | Prisma.TransactionClient): Promise<{
-    companies: Array<{ id: string; name: string; managers: Array<{ name: string; contact: string | null; role: string }> }>;
+    companies: Array<{ id: string; name: string; qaOnly: boolean; managers: Array<{ name: string; contact: string | null; role: string }> }>;
     projects: Array<{ id: string; name: string; companyId: string; company: string; members: Array<{ name: string; contact: string | null; role: string; discipline: string | null }> }>;
   }> {
     const client = tx as OrgsParticipantClient;
-    const managers = await client.$queryRawUnsafe<Array<{ orgId: string; orgName: string; name: string; contact: string | null; role: string }>>(
-      `SELECT o."id" AS "orgId", o."name" AS "orgName", u."name", COALESCE(u."email", u."phone") AS "contact", om."role"
+    const managers = await client.$queryRawUnsafe<Array<{ orgId: string; orgName: string; qaOnly: boolean; name: string; contact: string | null; role: string }>>(
+      `SELECT o."id" AS "orgId", o."name" AS "orgName", o."qaOnly", u."name", COALESCE(u."email", u."phone") AS "contact", om."role"
          FROM "Org" o
          LEFT JOIN "OrgMembership" om ON om."orgId" = o."id" AND om."role" IN ('owner', 'admin')
          LEFT JOIN "User" u ON u."id" = om."userId"
@@ -104,9 +354,9 @@ export class OrgsParticipant {
         WHERE p."archivedAt" IS NULL
         ORDER BY p."id" ASC, m."role" ASC, u."name" ASC`,
     );
-    const companies = new Map<string, { id: string; name: string; managers: Array<{ name: string; contact: string | null; role: string }> }>();
+    const companies = new Map<string, { id: string; name: string; qaOnly: boolean; managers: Array<{ name: string; contact: string | null; role: string }> }>();
     for (const r of managers) {
-      const c = companies.get(r.orgId) ?? { id: r.orgId, name: r.orgName, managers: [] };
+      const c = companies.get(r.orgId) ?? { id: r.orgId, name: r.orgName, qaOnly: r.qaOnly === true, managers: [] };
       if (r.role) c.managers.push({ name: r.name, contact: r.contact, role: r.role });
       companies.set(r.orgId, c);
     }
