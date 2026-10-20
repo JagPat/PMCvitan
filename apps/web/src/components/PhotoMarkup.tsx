@@ -3,7 +3,7 @@ import type { Lang } from '@vitan/shared';
 import { Button } from './Button';
 import { Modal } from './Modal';
 import {
-  MK, MARKUP_COLOURS, drawShape, fitWithin, isMeaningful, labelAt, penWidth,
+  MK, MARKUP_COLOURS, drawShape, fitLabel, fitWithin, isMeaningful, penWidth,
   type MarkupColour, type MarkupShape, type MarkupTool, type Point,
 } from '@/lib/photoMarkup';
 
@@ -116,6 +116,8 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx || !photo || !size) return false;
+    // cleared first: a see-through photo would otherwise keep a mark that was undone
+    ctx.clearRect(0, 0, size.width, size.height);
     ctx.drawImage(photo, 0, 0, size.width, size.height);
     const w = penWidth(size.width, size.height);
     for (const s of xs) drawShape(ctx, s, w);
@@ -138,9 +140,9 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
     if (tool === 'text') {
       if (label.trim() === '') { setHint(MK.labelHint[lang]); return false; }
       const text = label.trim();
-      // a label starts where it is placed, pulled back from the right edge so all of it stays on the photo
-      const spot = size ? labelAt(p, text, penWidth(size.width, size.height), size.width) : p;
-      setShapes((xs) => [...xs, { tool: 'text', colour, at: spot, text }]);
+      // a label goes where it is placed, moved in from the edges (and drawn smaller if long) so all of it stays on the photo
+      const fit = size ? fitLabel(p, text, penWidth(size.width, size.height), size.width, size.height) : null;
+      setShapes((xs) => [...xs, fit ? { tool: 'text', colour, at: fit.at, text, px: fit.px } : { tool: 'text', colour, at: p, text }]);
       setLabel('');
       return false;
     }
@@ -199,9 +201,9 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
   const save = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    if (shapes.length === 0) { setHint(MK.nothing[lang]); return; }
     // a mark still being drawn is not part of the copy: drop it and paint only the finished marks before taking it
     if (gesture.current) setGesture(null);
+    if (shapes.length === 0) { setHint(MK.nothing[lang]); return; }
     if (!paint(shapes)) return;
     for (const quality of [0.85, 0.7, 0.5]) {
       const data = canvas.toDataURL('image/jpeg', quality).replace(/^data:[^,]*,/, '');

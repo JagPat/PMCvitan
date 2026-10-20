@@ -49,6 +49,8 @@ self.addEventListener('fetch', (event) => {
               return res;
             })
             .catch(() => hit);
+          // an opaque copy (kept from an <img>) has no bytes a CORS read can use: that read goes to the network
+          if (hit && hit.type === 'opaque' && request.mode === 'cors') return network;
           return hit || network;
         }),
       ),

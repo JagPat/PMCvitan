@@ -14,7 +14,8 @@ export type MarkupShape =
   | { tool: 'arrow'; colour: MarkupColour; from: Point; to: Point }
   | { tool: 'circle'; colour: MarkupColour; from: Point; to: Point }
   | { tool: 'line'; colour: MarkupColour; points: Point[] }
-  | { tool: 'text'; colour: MarkupColour; at: Point; text: string };
+  /** `px`: the label's font size, when it had to be drawn smaller than usual to fit the photo. */
+  | { tool: 'text'; colour: MarkupColour; at: Point; text: string; px?: number };
 
 /** The pen colours: a strong red and a yellow that both read on concrete, brick and sky. */
 export const MARKUP_COLOURS: Record<MarkupColour, string> = { red: '#e0262b', yellow: '#ffd200' };
@@ -43,14 +44,22 @@ export function isMeaningful(shape: MarkupShape): boolean {
   return Math.hypot(shape.to.x - shape.from.x, shape.to.y - shape.from.y) >= 4;
 }
 
-/** A label's width when drawn with a pen of width `w` (bold, `w * 6` px), estimated wide so it is never under. */
-export function labelWidth(text: string, w: number): number {
-  return Math.ceil([...text].length * w * 6 * 0.7);
+/** A label's width at a bold font of `px`, estimated wide so it is never under. */
+export function labelWidth(text: string, px: number): number {
+  return Math.ceil([...text].length * px * 0.7);
 }
 
-/** Where a label starting at `p` goes so all of it stays on a photo `width` wide. */
-export function labelAt(p: Point, text: string, w: number, width: number): Point {
-  return { x: Math.max(0, Math.min(p.x, width - labelWidth(text, w))), y: p.y };
+/**
+ * Where and how large a label placed at `p` is drawn so all of it stays on a `width` x `height` photo: its usual size
+ * (six pens tall) unless that is wider than the photo, then pulled back from the right edge and in from the top and
+ * bottom (it is drawn on its middle line).
+ */
+export function fitLabel(p: Point, text: string, w: number, width: number, height: number): { at: Point; px: number } {
+  const chars = Math.max(1, [...text].length);
+  const px = Math.max(1, Math.min(w * 6, Math.floor(width / (chars * 0.7)), height));
+  const x = Math.max(0, Math.min(p.x, width - labelWidth(text, px)));
+  const y = Math.max(Math.ceil(px / 2), Math.min(p.y, height - Math.ceil(px / 2)));
+  return { at: { x, y }, px };
 }
 
 /** The drawing calls a shape needs, so the shapes can be drawn on a canvas and checked without one. */
@@ -112,7 +121,7 @@ export function drawShape(pen: MarkupPen, shape: MarkupShape, w: number): void {
     return;
   }
   // a label: the text as typed, with a dark outline so it reads on any background
-  pen.font = `bold ${w * 6}px system-ui, sans-serif`;
+  pen.font = `bold ${shape.px ?? w * 6}px system-ui, sans-serif`;
   pen.textBaseline = 'middle';
   pen.strokeStyle = 'rgba(0,0,0,.75)';
   pen.lineWidth = w;

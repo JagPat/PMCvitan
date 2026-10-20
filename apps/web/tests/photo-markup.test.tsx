@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { PhotoMarkup } from '@/components/PhotoMarkup';
-import { MK, drawShape, fitWithin, isMeaningful, labelWidth, penWidth, type MarkupPen, type MarkupShape } from '@/lib/photoMarkup';
+import { MK, drawShape, fitLabel, fitWithin, isMeaningful, labelWidth, penWidth, type MarkupPen, type MarkupShape } from '@/lib/photoMarkup';
 
 /** A pen that records what it was asked to draw. */
 function recordingPen() {
   const calls: string[] = [];
   const pen = {
     strokeStyle: '', fillStyle: '', lineWidth: 0, lineCap: 'butt', lineJoin: 'miter', font: '', textBaseline: 'alphabetic',
+    clearRect: () => {},
     beginPath: () => calls.push('begin'),
     moveTo: (x: number, y: number) => calls.push(`move ${x},${y}`),
     lineTo: (x: number, y: number) => calls.push(`line ${x},${y}`),
@@ -16,7 +17,7 @@ function recordingPen() {
     fill: () => calls.push('fill'),
     strokeText: (t: string) => calls.push(`outline ${t}`),
     fillText: (t: string, x: number, y: number) => calls.push(`text ${t} ${x},${y}`),
-  } as MarkupPen & { drawImage?: () => void };
+  } as MarkupPen & { drawImage?: () => void; clearRect: () => void };
   return { pen, calls };
 }
 
@@ -261,7 +262,7 @@ describe('photo markup: the editor', () => {
     const placed = texts.filter((t) => t.text === 'Crack here').at(-1);
     expect(placed).toBeDefined();
     // the label's estimated width (bold, 6 pens tall) still fits inside the 1600 px photo
-    expect(placed!.x + labelWidth('Crack here', penWidth(1600, 1200))).toBeLessThanOrEqual(1600);
+    expect(placed!.x + labelWidth('Crack here', penWidth(1600, 1200) * 6)).toBeLessThanOrEqual(1600);
   });
 
   it('while a saved copy is being sent, the photo and tools take no new marks', async () => {
@@ -274,6 +275,49 @@ describe('photo markup: the editor', () => {
     fireEvent.keyDown(canvas, { key: 'Enter' });
     expect(screen.getByRole('button', { name: MK.undo.en })).toBeDisabled();
     expect(screen.getByRole('button', { name: MK.circle.en })).toBeDisabled();
+  });
+
+  // round 1 on #1003 (89c3e4a): each of these failed there
+
+  it('each repaint clears the canvas first, so an undone mark on a see-through photo is gone', async () => {
+    const order: string[] = [];
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function () {
+      const { pen } = recordingPen();
+      return Object.assign(pen, { clearRect: () => order.push('clear'), drawImage: () => order.push('photo') }) as unknown as CanvasRenderingContext2D;
+    } as never);
+    render(<PhotoMarkup source={PHOTO} lang="en" onSave={() => {}} onCancel={() => {}} />);
+    const canvas = await screen.findByTestId('photo-markup-canvas');
+    drag(canvas, [10, 10], [300, 200]);
+    fireEvent.click(screen.getByRole('button', { name: MK.undo.en }));
+    expect(order.length).toBeGreaterThan(2);
+    order.forEach((c, i) => { if (c === 'photo') expect(order[i - 1]).toBe('clear'); });
+  });
+
+  it('Save with only an unfinished keyboard mark drops it, and touch drawing still works', async () => {
+    render(<PhotoMarkup source={PHOTO} lang="en" onSave={() => {}} onCancel={() => {}} />);
+    const canvas = await screen.findByTestId('photo-markup-canvas');
+    fireEvent.focus(canvas);
+    fireEvent.keyDown(canvas, { key: 'Enter' });
+    fireEvent.keyDown(canvas, { key: 'ArrowRight', shiftKey: true });
+    fireEvent.click(screen.getByRole('button', { name: MK.save.en }));
+    expect(screen.getByRole('status')).toHaveTextContent(MK.nothing.en);
+    drag(canvas, [10, 10], [300, 200]);
+    expect(screen.getByRole('button', { name: MK.undo.en })).toBeEnabled();
+  });
+
+  it('a label stays whole on the photo: a long one is drawn smaller, and one at the top or bottom edge is moved in', () => {
+    const w = penWidth(1600, 1200);
+    const long = fitLabel({ x: 0, y: 600 }, 'A'.repeat(60), w, 1600, 1200);
+    expect(long.px).toBeLessThan(w * 6);
+    expect(long.at.x + labelWidth('A'.repeat(60), long.px)).toBeLessThanOrEqual(1600);
+    const top = fitLabel({ x: 100, y: 0 }, 'Crack', w, 1600, 1200);
+    expect(top.at.y - top.px / 2).toBeGreaterThanOrEqual(0);
+    const bottom = fitLabel({ x: 100, y: 1199 }, 'Crack', w, 1600, 1200);
+    expect(bottom.at.y + bottom.px / 2).toBeLessThanOrEqual(1200);
+    const { pen, calls } = recordingPen();
+    drawShape(pen, { tool: 'text', colour: 'red', at: long.at, text: 'A'.repeat(60), px: long.px }, w);
+    expect(pen.font).toContain(`${long.px}px`);
+    expect(calls).toContain(`text ${'A'.repeat(60)} ${long.at.x},${long.at.y}`);
   });
 
   it('Cancel closes without saving', async () => {
