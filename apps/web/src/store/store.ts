@@ -71,6 +71,7 @@ import {
   ROLE_POLICY,
 } from '@vitan/shared';
 import { routableScreensFor, screensFor } from '@/lib/screens';
+import { deleteWaitsForUpload } from '@/lib/queuedSitePhotos';
 import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
 import { type DailyLogDraft, adoptLegacyDraft, dailyLogKey, draftAppliesTo, draftHoldsWork, legacyDraftExtras, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
@@ -257,6 +258,9 @@ export interface AppState {
   // a committed daily-log start/submit still awaiting its module read (see ModuleReadState)
   dailyLogReconcileAfter: number | null;
   dailyLogReconcileKind: 'start' | 'send' | null;
+  /** #482 site photos — a photo filed on the log on screen was deleted: its photo count is not shown until a pull that
+   *  BEGAN after the delete's answer brings the server's own count (the snapshot sequence then; null = the count holds) */
+  dailyLogPhotoCountAfter: number | null;
   // Phase 2 Task 10 (Module 2 — Drawings) — the drawings XOR read-ownership state, mirroring decisions.
   // When drawingsReadMode() === 'moduleQuery', `drawings` is owned by the module-owned read (baked
   // per-viewer); these track its explicit load state for the drawing surfaces ('idle' in snapshot mode).
@@ -421,6 +425,9 @@ export interface AppState {
   failedEvidence: { clientKey: string; reason: string; mime: string; inspectionId: string; inspectionItemId: string }[];
   /** evidence photos durably saved offline, awaiting upload (Task 4) */
   pendingEvidenceCount: number;
+  /** #482 site photos — the upload keys of those pending evidence rows, as last read from IndexedDB; null until they have
+   *  been read for this scope (a reload, a sign-in or a project switch empties it), so a delete can wait for them */
+  pendingEvidenceKeys: string[] | null;
   access: AccessState;
   activities: Activity[];
   dailyLog: DailyLog | null; // null = no daily log started for this project
@@ -1342,6 +1349,7 @@ export function getInitialState(): AppState {
     dailyLogLoad: 'idle',
     dailyLogSource: null,
     dailyLogReconcileAfter: null,
+    dailyLogPhotoCountAfter: null,
     dailyLogReconcileKind: null,
     drawingsLoad: 'idle',
     drawingsSource: null,
@@ -1413,6 +1421,7 @@ export function getInitialState(): AppState {
     photoUploadsInFlight: [],
     failedEvidence: [],
     pendingEvidenceCount: 0,
+    pendingEvidenceKeys: null,
     access: freshAccess(),
     activities: structuredClone(SEED_ACTIVITIES),
     dailyLog: structuredClone(SEED_DAILY_LOG),
@@ -1449,6 +1458,25 @@ export function getInitialState(): AppState {
     companies: [],
     archivedProjects: [],
   };
+}
+
+/** #482 site photos — a deleted photo leaves every slice that still holds its signed path: an item's evidence on a
+ *  checklist or a review, and a decision option's sample photo. The paths name the photo (`/media/<id>?t=…`). */
+function forgetMedia(s: AppState, mediaId: string): void {
+  const path = `/media/${mediaId}`;
+  const names = (url: string | undefined): boolean => {
+    const at = url?.indexOf(path) ?? -1;
+    if (at < 0) return false;
+    const next = url![at + path.length];
+    return next === undefined || next === '?' || next === '#';
+  };
+  const items = (list: { evidence?: string[] }[]): void => {
+    for (const it of list) if (it.evidence?.some(names)) it.evidence = it.evidence.filter((u) => !names(u));
+  };
+  if (s.checklist) items(s.checklist.items);
+  for (const c of s.openChecklists) items(c.items);
+  for (const r of s.reviews) items(r.items);
+  for (const d of s.decisions) for (const o of d.options) if (names(o.photoUrl)) delete o.photoUrl;
 }
 
 export const useStore = create<Store>()(
@@ -2039,6 +2067,12 @@ export const useStore = create<Store>()(
       if (after !== null && dailyLogResult !== undefined && lease.sequence > after) {
         set((s) => { s.dailyLogReconcileAfter = null; s.dailyLogReconcileKind = null; });
       }
+      // #482 site photos — the day's photo count after a delete is the server's, read by a pull that began after the
+      // delete was answered; a pull begun earlier may have counted the photo still there (Codex 4322142057)
+      const countAfter = get().dailyLogPhotoCountAfter;
+      if (countAfter !== null && lease.sequence > countAfter && (dailyLogReadMode() === 'snapshot' || dailyLogResult != null)) {
+        set((s) => { s.dailyLogPhotoCountAfter = null; });
+      }
       // Phase 4 Task 6 (Codex round 2) — on a cold labour-pilot boot the shell can trigger the
       // FIRST labour load before any snapshot has delivered the project timezone, so that load's
       // presence read fell back to the BROWSER's civil day. When an applied snapshot CHANGES the
@@ -2420,6 +2454,7 @@ export const useStore = create<Store>()(
         set((s) => {
           s.failedEvidence = failed;
           s.pendingEvidenceCount = pending.length;
+          s.pendingEvidenceKeys = pending.map((e) => e.clientKey);
           const queued = new Set(s.outbox.filter((o) => o.t === 'uploadEvidence').map((o) => o.clientKey));
           for (const e of pending) {
             if (queued.has(e.clientKey)) continue;
@@ -2430,6 +2465,11 @@ export const useStore = create<Store>()(
         if (reconstructed) persistOutbox();
       } catch {
         /* evidence store unavailable — the mirrors stay empty */
+        // with no IndexedDB at all nothing can be pending on this device; a read that failed otherwise leaves the keys
+        // unknown, and an own evidence photo's Delete keeps waiting (#482 site photos)
+        if (!evidenceAvailable() && epoch === evidenceEpoch && scopeStillCurrent(projScope) && evidenceScope() === scope && get().activeProjectId === projectId) {
+          set((s) => { s.pendingEvidenceKeys = []; });
+        }
       }
     };
     /** Gate round-3: an evidence COMMAND (offline capture / Retry / Delete)
@@ -2930,6 +2970,7 @@ export const useStore = create<Store>()(
         // scope key and resumes on their next sign-in; the next user never replays it.
         s.outbox = [];
         s.syncQueue = [];
+        s.pendingEvidenceKeys = null;
         // Ending the session ends the scope (Codex gate finding 6): the signed-out
         // user's records leave memory, and the generation bump refuses any of their
         // replies still in flight — nothing survives for the next identity to see.
@@ -4033,6 +4074,15 @@ export const useStore = create<Store>()(
           get().flash(SPL.deleteOffline[lang()]);
           return Promise.resolve();
         }
+        // its upload is still queued on this device (its reply was lost, or it has not gone yet): a send of that upload
+        // after the delete would add the photo again, and one may already be on its way, so the photo is deleted only
+        // once the upload has landed and left the queue (Codex 4322142028, 4318519735)
+        // An evidence photo's bytes may also still be pending in IndexedDB, back in the outbox only once they are read
+        const photo = get().photos.find((p) => p.id === photoId);
+        if (photo && deleteWaitsForUpload(photo, get().outbox, get().pendingEvidenceKeys)) {
+          get().flash(SPL.stillUploading[lang()]);
+          return Promise.resolve();
+        }
         const scope = currentScope();
         // a snapshot asked for before the delete is superseded by it, as for every command, so one still on its way
         // can never bring the photo back; only a pull that began after the delete is applied (Codex 4318519722)
@@ -4041,31 +4091,17 @@ export const useStore = create<Store>()(
           .deleteMedia(photoId)
           .then((res) => {
             if (!scopeStillCurrent(scope)) return;
-            let retiredUpload = false;
             // the server's yes is the delete: the photo leaves at once, and a fresh snapshot then settles the counts.
             // A failed refresh never turns a done delete into a "try again" (Codex 4316959524).
             set((s) => {
-              // still listed: no refresh has landed without it yet, so the day's count still holds it
-              const photo = s.photos.find((p) => p.id === photoId);
-              const held = photo !== undefined;
-              // its upload still queued on this device (the reply was lost, the photo landed): the queued copy goes too,
-              // or the next send would add it again under a fresh id (Codex 4318519735). Plain site photos only.
-              const key = photo?.clientKey;
-              if (key) {
-                const before = s.outbox.length;
-                s.outbox = s.outbox.filter((o) => !(o.t === 'uploadMedia' && o.input.kind === 'progress' && o.input.clientKey === key));
-                if (s.outbox.length !== before) retiredUpload = true;
-              }
               s.photos = s.photos.filter((p) => p.id !== photoId);
               if (s.dailyLog) s.dailyLog.photos = s.dailyLog.photos.filter((p) => p.id !== photoId);
-              // filed on the log on screen (the server says which): the day's count shown drops with it (Codex 4317884791)
-              const log = s.dailyLog;
-              if (held && res.dailyLogId && log?.id === res.dailyLogId && log.photoCount !== undefined) {
-                log.photoCount = Math.max(0, log.photoCount - 1);
-              }
-              recountDailyLogPhotos(s);
+              // nor is it kept as evidence on a checklist or review still held here (Codex 4322142035)
+              forgetMedia(s, photoId);
+              // filed on the log on screen (the server says which): its count is the server's to say again, read after
+              // this answer; until then none is shown rather than one that may still hold the photo (Codex 4322142057)
+              if (res.dailyLogId && s.dailyLog?.id === res.dailyLogId) s.dailyLogPhotoCountAfter = snapshotSeq;
             });
-            if (retiredUpload) persistOutbox();
             get().flash(SPL.deleted[lang()]);
             void requestFreshSnapshot(scope);
           })
@@ -6224,6 +6260,8 @@ export const useStore = create<Store>()(
       }
     },
     hydrateOutbox: () => {
+      // this scope's evidence rows are read again below: until then an own evidence photo's Delete waits (#482)
+      set((s) => { s.pendingEvidenceKeys = null; });
       try {
         const storage = globalThis.localStorage;
         if (storage) {

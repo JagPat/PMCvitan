@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '@/store/store';
+import { deleteWaitsForUpload } from '@/lib/queuedSitePhotos';
 import { sitePhotoDeletable, sitePhotoLabels as L, type Photo } from '@vitan/shared';
 
 const small = { border: 'none', borderRadius: 6, padding: '6px 12px', minHeight: 44, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 11, cursor: 'pointer' } as const;
@@ -16,7 +17,9 @@ export function SitePhotoDelete({ photo }: { photo: Photo }) {
   const [asking, setAsking] = useState(false);
   // on its way to the server: nothing to tap until it answers (Codex 4317884827)
   const [deleting, setDeleting] = useState(false);
-  const deletable = sitePhotoDeletable(photo, now);
+  // its upload still queued here: no Delete until it has landed and left the queue (Codex 4322142028)
+  const uploading = useStore((s) => deleteWaitsForUpload(photo, s.outbox, s.pendingEvidenceKeys));
+  const deletable = sitePhotoDeletable(photo, now) && !uploading;
 
   // the button leaves on its own when the hour is up
   useEffect(() => {

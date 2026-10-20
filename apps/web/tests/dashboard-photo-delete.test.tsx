@@ -141,30 +141,70 @@ describe('deleting your own site photo within the hour (#482)', () => {
     await waitFor(() => expect(r.getAllByTestId('site-photo-delete')).toHaveLength(1));
   });
 
-  it('a confirmed delete takes the photo off the day\'s count Send stores, even when the refresh fails (Codex 4317884791)', async () => {
+  it('a confirmed delete shows no day\'s count until a pull begun after it brings the server\'s (Codex 4317884791, 4322142057)', async () => {
     const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), deletable: true, deletableUntil: until(5) };
     const dailyLog = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 3, photoCount: 3, myPhotoKeys: [], crew: [], materials: [], photos: [{ id: 'own', url: '/media/own' }] };
-    const { r, useStore } = await load('en', [own], { dailyLog });
-    const deleteMedia = vi.fn().mockResolvedValue({ ok: true, dailyLogId: 'log-1' });
-    useStore.getState()._setGateway({ deleteMedia, snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) } as never);
-    fireEvent.click(r.getByTestId('site-photo-delete'));
-    fireEvent.click(r.getByTestId('site-photo-delete-yes'));
-    await waitFor(() => expect(useStore.getState().dailyLog?.photoCount).toBe(2));
+    const { useStore } = await load('en', [own], { dailyLog });
+    // a pull already on its way when the delete is answered: it may have counted the photo while listing it gone
+    let racing!: (snap: unknown) => void;
+    const snapshot = vi.fn()
+      .mockReturnValueOnce(new Promise((res) => { racing = res; }))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValue(snapOf([]));
+    let answer!: (v: unknown) => void;
+    useStore.getState()._setGateway({ deleteMedia: vi.fn().mockReturnValue(new Promise((res) => { answer = res; })), snapshot } as never);
+    const deleting = useStore.getState().deleteSitePhoto('own');
+    useStore.getState().requestFreshSnapshot();
+    await waitFor(() => expect(snapshot).toHaveBeenCalledTimes(1));
+    await act(async () => { answer({ ok: true, dailyLogId: 'log-1' }); await deleting; });
+    // no count is shown that may still hold the photo
+    expect(useStore.getState().dailyLogPhotoCountAfter).not.toBeNull();
+    const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
+    const screen = render(<DailyLogScreen />);
+    expect(screen.getByTestId('progress-photo-count').textContent).toBe('Progress photos: updating the count…');
+    // the racing pull lands with the list after the delete and the count before it: it is not the count
+    await act(async () => { racing({ ...snapOf([]), dailyLog: { ...dailyLog, photos: [] } }); });
+    expect(useStore.getState().dailyLogPhotoCountAfter).not.toBeNull();
+    // the refresh after the delete failed: still none shown. The next pull says the server's count.
+    await waitFor(() => expect(snapshot).toHaveBeenCalledTimes(2));
+    await act(async () => { await new Promise((res) => setTimeout(res, 0)); });
+    expect(screen.getByTestId('progress-photo-count').textContent).toBe('Progress photos: updating the count…');
+    snapshot.mockResolvedValue({ ...snapOf([]), dailyLog: { ...dailyLog, photoCount: 2, progress: 2, photos: [] } });
+    await act(async () => { await useStore.getState().requestFreshSnapshot(); });
+    expect(useStore.getState().dailyLogPhotoCountAfter).toBeNull();
     expect(useStore.getState().dailyLog?.progress).toBe(2);
+    expect(screen.getByTestId('progress-photo-count').textContent).not.toContain('updating');
   });
 
-  it('a photo on another log, or one a refresh already took off, leaves the day\'s count alone', async () => {
+  it('a photo on another log leaves the day\'s count shown', async () => {
     const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), deletable: true, deletableUntil: until(5) };
     const dailyLog = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 3, photoCount: 3, myPhotoKeys: [], crew: [], materials: [], photos: [] };
     const { useStore } = await load('en', [own], { dailyLog });
     useStore.getState()._setGateway({ deleteMedia: vi.fn().mockResolvedValue({ ok: true, dailyLogId: 'log-0' }), snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) } as never);
     await useStore.getState().deleteSitePhoto('own');
+    expect(useStore.getState().dailyLogPhotoCountAfter).toBeNull();
     expect(useStore.getState().dailyLog?.photoCount).toBe(3);
-    // already gone from the list: the refresh that took it off counted it out
-    useStore.setState({ photos: [] });
-    useStore.getState()._setGateway({ deleteMedia: vi.fn().mockResolvedValue({ ok: true, dailyLogId: 'log-1' }), snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) } as never);
-    await useStore.getState().deleteSitePhoto('own');
-    expect(useStore.getState().dailyLog?.photoCount).toBe(3);
+  });
+
+  it('a deleted photo leaves the evidence of every checklist and review held here, and a decision option\'s sample, when the refresh fails (Codex 4322142035)', async () => {
+    const photo: Photo = { id: 'ev1', url: 'http://api.test/media/ev1?t=a', kind: 'inspection', at: minutesAgo(5), deletable: true };
+    const item = (id: string) => ({ id, name: id, state: 'fail', photos: 1, note: '', evidence: ['http://api.test/media/ev1?t=b', 'http://api.test/media/ev10?t=c'] });
+    const checklist = { id: 'c1', title: 'Slab', items: [item('i1')] };
+    const { useStore } = await load('en', [photo], {
+      role: 'pmc',
+      checklist,
+      openChecklists: [checklist, { id: 'c2', title: 'Wall', items: [item('i2')] }],
+      reviews: [{ id: 'r1', title: 'Slab', items: [{ ...item('i3'), result: 'FAIL' }] }],
+      decisions: [{ id: 'd1', options: [{ label: 'A', key: 'a', photoUrl: 'http://api.test/media/ev1?t=d' }, { label: 'B', key: 'b', photoUrl: 'http://api.test/media/ev10?t=e' }] }],
+    });
+    useStore.getState()._setGateway({ deleteMedia: vi.fn().mockResolvedValue({ ok: true, dailyLogId: null }), snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) } as never);
+    await useStore.getState().deleteSitePhoto('ev1');
+    const st = useStore.getState() as unknown as { checklist: typeof checklist; openChecklists: typeof checklist[]; reviews: typeof checklist[]; decisions: { options: { photoUrl?: string }[] }[] };
+    const left = ['http://api.test/media/ev10?t=c'];
+    expect(st.checklist.items[0]!.evidence).toEqual(left);
+    expect(st.openChecklists.map((c) => c.items[0]!.evidence)).toEqual([left, left]);
+    expect(st.reviews[0]!.items[0]!.evidence).toEqual(left);
+    expect(st.decisions[0]!.options.map((o) => o.photoUrl)).toEqual([undefined, 'http://api.test/media/ev10?t=e']);
   });
 
   it('while a delete is on its way, there is nothing to tap twice, and a second ask joins the first (Codex 4317884827)', async () => {
@@ -206,13 +246,28 @@ describe('a confirmed delete stays done (#482 redesign after #987)', () => {
     expect(useStore.getState().photos).toEqual([]);
   });
 
-  it('a deleted photo whose upload is still queued here takes the queued copy with it (Codex 4318519735)', async () => {
+  it('no Delete while the photo\'s upload is still queued here, and the store refuses one; it comes once the upload has gone (Codex 4322142028, 4318519735)', async () => {
     const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), deletable: true, deletableUntil: until(5), clientKey: 'k-own' };
     const queued = { t: 'uploadMedia', input: { kind: 'progress', mime: 'image/jpeg', data: 'AAAA', clientKey: 'k-own' } };
     const other = { t: 'uploadMedia', input: { kind: 'progress', mime: 'image/jpeg', data: 'BBBB', clientKey: 'k-other' } };
-    const { useStore } = await load('en', [own], { outbox: [queued, other] });
-    useStore.getState()._setGateway({ deleteMedia: vi.fn().mockResolvedValue({ ok: true, dailyLogId: null }), snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) } as never);
+    const { r, useStore } = await load('en', [own], { outbox: [queued, other] });
+    const deleteMedia = vi.fn().mockResolvedValue({ ok: true, dailyLogId: null });
+    useStore.getState()._setGateway({ deleteMedia, snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) } as never);
+    // a send of that upload may already be on its way: after a delete it would add the photo again
+    expect(r.queryByTestId('site-photo-delete')).toBeNull();
     await useStore.getState().deleteSitePhoto('own');
+    expect(deleteMedia).not.toHaveBeenCalled();
+    expect(useStore.getState().outbox).toEqual([queued, other]);
+    expect(useStore.getState().photos).toEqual([own]);
+    expect(JSON.stringify(useStore.getState())).toContain('This photo is still uploading.');
+    // an evidence upload holding the key is the same
+    await act(async () => { useStore.setState({ outbox: [{ t: 'uploadEvidence', scope: 's', clientKey: 'k-own' }] } as never); });
+    expect(r.queryByTestId('site-photo-delete')).toBeNull();
+    // the upload landed and left the queue: Delete is offered, and deletes
+    await act(async () => { useStore.setState({ outbox: [other] } as never); });
+    expect(r.getByTestId('site-photo-delete')).toBeTruthy();
+    await useStore.getState().deleteSitePhoto('own');
+    expect(deleteMedia).toHaveBeenCalledWith('own');
     expect(useStore.getState().outbox).toEqual([other]);
   });
 });
