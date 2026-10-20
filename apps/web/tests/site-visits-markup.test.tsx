@@ -5,11 +5,11 @@ import type { ProjectMember, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { PhotoMarkup } from '@/components/PhotoMarkup';
-import { tellSiteVisits, type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitFile } from '@/data/apiGateway';
+import { ApiGateway, tellSiteVisits, type OutboxOp, type SiteVisit, type SiteVisitFile } from '@/data/apiGateway';
 import { listVisitPhotos, visitPhotoScope } from '@/data/visitPhotoStore';
 import { photoDecodes } from '@/lib/photoDecodes';
 import { MAX_PHOTO_BASE64 } from '@/lib/shrinkPhoto';
-import { MARKUP_OPEN_WAIT_MS, refreshSiteVisits, useSiteVisits } from '@/lib/useSiteVisits';
+import { MARKUP_OPEN_WAIT_MS, MARKUP_RELINK_PAGES, refreshSiteVisits, useSiteVisits } from '@/lib/useSiteVisits';
 import { MK } from '@/lib/photoMarkup';
 
 /**
@@ -436,6 +436,140 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     expect(sv!.error).toBeNull();
     expect(sv!.markup?.phase).toBe('open');
     expect(await rows()).toEqual([]);
+  });
+
+  it('names the photo each copy was drawn on, with its thumbnail opening it, and never guesses a gone original (Codex 4327055852)', async () => {
+    const files = [
+      stored({ mediaId: 'm-c2', url: '/media/m-c2?t=1.sig', sourceMediaId: 'm-2', note: null }),
+      stored({ mediaId: 'm-c1', url: '/media/m-c1?t=1.sig', sourceMediaId: 'm-1', note: null }),
+      stored({ mediaId: 'm-2', url: '/media/m-2?t=1.sig', note: 'Beam' }),
+      stored({ mediaId: 'm-1', url: '/media/m-1?t=1.sig' }),
+      stored({ mediaId: 'm-c9', url: '/media/m-c9?t=1.sig', sourceMediaId: 'm-9', note: null }),
+    ];
+    await mount(fakeGateway([visit({ files })]));
+    const of = (id: string) => screen.getByTestId(`sv-copy-of-${id}`);
+    // each copy names its own original by its place in the visit's photos, and its thumbnail opens that photo
+    expect(of('m-c2').textContent).toBe('Marked-up copy of photo 3');
+    expect(of('m-c2').getAttribute('href')).toContain('/media/m-2?t=1.sig');
+    expect(of('m-c2').querySelector('img')!.getAttribute('src')).toContain('/media/m-2?t=1.sig');
+    expect(of('m-c1').textContent).toBe('Marked-up copy of photo 4');
+    expect(of('m-c1').getAttribute('href')).toContain('/media/m-1?t=1.sig');
+    // an original the visit no longer lists is said to be gone, with no link and no number
+    expect(of('m-c9').textContent).toBe('Marked-up copy · original no longer available');
+    expect(of('m-c9').getAttribute('href')).toBeNull();
+    expect(of('m-c9').querySelector('img')).toBeNull();
+    // the originals carry no copy label
+    expect(screen.queryByTestId('sv-copy-of-m-1')).toBeNull();
+    cleanup();
+    for (const lang of ['hi', 'gu'] as const) {
+      setUp('consultant', CONSULTANT, fakeGateway([visit({ files })]));
+      useStore.setState({ lang });
+      render(<SiteVisitsScreen />);
+      await act(async () => {});
+      expect(screen.getByTestId('sv-copy-of-m-c2').textContent).not.toMatch(/[A-Za-z]/);
+      expect(screen.getByTestId('sv-copy-of-m-c9').textContent).not.toMatch(/[A-Za-z]/);
+      cleanup();
+    }
+  });
+
+  describe('a visit shown from beyond the pages read (Codex 4327055870)', () => {
+    // a full first page of newer visits, ended (not in the open read), so the old visit is beyond the page cursor
+    const newer = Array.from({ length: 20 }, (_, i) => visit({ id: `v-n${i}`, status: 'ended', startedAt: `2026-10-15T0${Math.floor(i / 10)}:${String(i % 10).padStart(2, '0')}:00.000Z`, files: [] }));
+    const old = visit({ id: 'v-old', status: 'ended', startedAt: '2026-10-01T04:30:00.000Z', files: [stored({ url: '/media/m-1?t=1.old' })] });
+    const older = (url: string | null) => [visit({ id: 'v-x', status: 'ended', startedAt: '2026-10-05T04:30:00.000Z', files: [] }), ...(url ? [{ ...old, files: [stored({ url })] }] : [])];
+    type Q = { status?: string; before?: string } | undefined;
+    const beforeReads = (gw: Fake) => gw.listSiteVisits!.mock.calls.filter(([q]) => (q as Q)?.before).map(([q]) => (q as Q)!.before);
+    /** the old visit on screen (an act on it, queued without signal, was answered with it), its link expired */
+    async function openOld(list: (q: Q, signal?: AbortSignal) => Promise<SiteVisit[]>) {
+      const gw = fakeGateway([], { listSiteVisits: vi.fn(list) });
+      const fetchMock = vi.fn(async (url: string) => (url.includes('fresh') ? new Response('jpeg') : new Response('', { status: 403 })));
+      vi.stubGlobal('fetch', fetchMock);
+      const end: OutboxOp = { t: 'siteVisitEnd', visitId: 'v-old', claimedAt: '2026-10-01T05:30:00.000Z', idempotencyKey: 'k-end' };
+      setUp('consultant', CONSULTANT, gw, [end]);
+      useStore.setState({ online: false });
+      render(<SiteVisitsScreen />);
+      await act(async () => {});
+      await act(async () => { tellSiteVisits({ kind: 'answer', project: gw.project as unknown as string, generation: useStore.getState().projectScopeGeneration, visit: old }); });
+      await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-1')).toBeTruthy());
+      thumb('m-1');
+      await act(async () => { fireEvent.click(markUp('m-1')!); });
+      return { gw, fetchMock };
+    }
+    const failed = () => screen.queryByRole('alert')?.textContent?.includes('The photo could not be opened') ?? false;
+
+    it('renews its link by reading the older pages on from the page cursor, and opens it', async () => {
+      const { gw, fetchMock } = await openOld(async (q) => (q?.status === 'open' ? [] : q?.before ? older('/media/m-1?t=9.fresh') : newer));
+      await screen.findByTestId('photo-markup-canvas');
+      expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('1.old'), expect.stringContaining('9.fresh')]);
+      expect(beforeReads(gw)).toEqual(['v-n19']);
+    });
+
+    it('says it could not be opened only once that read has answered without it', async () => {
+      let answer!: () => void;
+      const { gw, fetchMock } = await openOld((q) => (q?.status === 'open' ? Promise.resolve([]) : q?.before
+        ? new Promise<SiteVisit[]>((done) => { answer = () => done(older(null)); })
+        : Promise.resolve(newer)));
+      await vi.waitFor(() => expect(beforeReads(gw)).toEqual(['v-n19']));
+      // held: nothing said yet
+      await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+      expect(failed()).toBe(false);
+      await act(async () => { answer(); });
+      await vi.waitFor(() => expect(failed()).toBe(true));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('reads on at most MARKUP_RELINK_PAGES pages when every page is full', async () => {
+      let n = 0;
+      const { gw } = await openOld(async (q) => (q?.status === 'open' ? [] : q?.before
+        ? Array.from({ length: 20 }, () => visit({ id: `v-p${(n += 1)}`, status: 'ended', files: [] }))
+        : newer));
+      await vi.waitFor(() => expect(failed()).toBe(true));
+      expect(beforeReads(gw)).toHaveLength(MARKUP_RELINK_PAGES);
+      expect(MARKUP_RELINK_PAGES).toBe(10);
+    });
+
+    it('cancels the older-page read itself when the open is stopped', async () => {
+      const signals: AbortSignal[] = [];
+      await openOld((q, signal) => {
+        if (q?.status === 'open') return Promise.resolve([]);
+        if (!q?.before) return Promise.resolve(newer);
+        signals.push(signal!);
+        return new Promise<SiteVisit[]>(() => {});
+      });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      expect(signals[0].aborted).toBe(false);
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
+      expect(signals[0].aborted).toBe(true);
+    });
+
+    it('takes a newer read’s answer when its own fresh read is overtaken, instead of saying it failed', async () => {
+      // the open's own read is held; a newer read (another act's answer, a refresh) answers with the visit's fresh link
+      let held: (() => void) | null = null;
+      let reads = 0;
+      const { fetchMock } = await openOld((q) => {
+        if (q?.status === 'open') return Promise.resolve([]);
+        if (q?.before) return Promise.resolve(older(null));
+        reads += 1;
+        // the first page reads: mount's (1), the open's own (2, held), the newer one (3) with the old visit on it
+        if (reads === 2) return new Promise<SiteVisit[]>((done) => { held = () => done(newer); });
+        if (reads >= 3) return Promise.resolve([{ ...old, files: [stored({ url: '/media/m-1?t=9.fresh' })] }]);
+        return Promise.resolve(newer);
+      });
+      await vi.waitFor(() => expect(held).not.toBeNull());
+      await act(async () => { refreshSiteVisits(); });
+      await act(async () => { held!(); });
+      await screen.findByTestId('photo-markup-canvas');
+      expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('1.old'), expect.stringContaining('9.fresh')]);
+      expect(failed()).toBe(false);
+    });
+  });
+
+  it('hands the page read’s signal to the request, so a stopped read is cancelled', async () => {
+    const seen: (AbortSignal | null | undefined)[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => { seen.push(init?.signal); return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }); }));
+    const ctrl = new AbortController();
+    await new ApiGateway('http://api.test', 'ambli').listSiteVisits({ before: 'v-1', limit: 20 }, ctrl.signal);
+    expect(seen[0]).toBe(ctrl.signal);
   });
 
   it('labels a stored copy by its original, and reads a list from an API before M3 (no field) as no copy', async () => {

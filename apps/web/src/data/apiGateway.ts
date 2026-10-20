@@ -1483,13 +1483,14 @@ export class ApiGateway {
   //    and carries its own key, so a retry after a lost response runs once. ──
   /** A page of the project's visits, newest start first; `before` is the previous page's last visit; `status: 'open'`
    *  reads every visit still open, however old. */
-  listSiteVisits(page: { before?: string; limit?: number; status?: 'open' } = {}): Promise<SiteVisit[]> {
+  listSiteVisits(page: { before?: string; limit?: number; status?: 'open' } = {}, signal?: AbortSignal): Promise<SiteVisit[]> {
     const q = new URLSearchParams();
     if (page.before) q.set('before', page.before);
     if (page.status) q.set('status', page.status);
     if (page.limit) q.set('limit', String(page.limit));
     const qs = q.toString();
-    return this.req<SiteVisit[]>(`/projects/${this.projectId}/site-visits${qs ? `?${qs}` : ''}`);
+    // M3: a read the person no longer waits for (a markup open stopped or past its bound) is cancelled with it
+    return this.req<SiteVisit[]>(`/projects/${this.projectId}/site-visits${qs ? `?${qs}` : ''}`, signal ? { signal } : undefined);
   }
   startSiteVisit(input: StartSiteVisitBody, idempotencyKey: string): Promise<SiteVisit> {
     return this.visitAct('', input, idempotencyKey);

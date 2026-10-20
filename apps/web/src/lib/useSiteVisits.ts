@@ -201,9 +201,13 @@ export function mayAddPhoto(v: SiteVisit | undefined, role: Role, me: string | n
 }
 
 /** M3: the longest that opening a photo for marking may take, all of it: the download (and one more with a fresh link
- *  when the first is refused), the read that fetches that link, and the check that this phone can decode it. Past it
+ *  when the first is refused), the read that fetches that link and any older pages read on for it, and the check that
+ *  this phone can decode it. Past it
  *  the open is stopped and said to have failed; nothing was written. */
 export const MARKUP_OPEN_WAIT_MS = 30_000;
+/** M3: a visit kept on screen from beyond the pages read (an act answered with it) is looked for in the older pages
+ *  when its link must be renewed, this many pages at most (the API has no read of one visit). */
+export const MARKUP_RELINK_PAGES = 10;
 
 /** How an open for marking ended: the photo, ready to draw on; why it did not open; or `moved`, when the person went on
  *  (Cancel, another photo, a sign-out or another project), which says nothing. */
@@ -377,6 +381,10 @@ export function useSiteVisits() {
   const relinkFailed = useRef(0);
   // the visits the last read that answered brought, for an open that needs a fresh link at once (M3)
   const headRead = useRef<SiteVisit[]>([]);
+  // how many reads have answered (each sets `headRead`), and the last read sent: an open whose own read was overtaken
+  // takes the newer read's answer instead
+  const headReads = useRef(0);
+  const latestRead = useRef<Promise<boolean> | null>(null);
   // M3: the photo being marked up, the one open in flight (the newest wins) and how to stop it
   const [markup, setMarkup] = useState<MarkupSession | null>(null);
   const markupRef = useRef<MarkupSession | null>(null);
@@ -431,7 +439,7 @@ export function useSiteVisits() {
     if (fresh) { answered.current = false; setLoad('loading'); }
     // the first page alone when starting over; otherwise down to the page holding the last visit shown
     const upTo = fresh ? undefined : cursor.current;
-    return Promise.all([
+    const sent = Promise.all([
       readPages(gw, { limit: VISIT_PAGE }, (page) => upTo === undefined || page.some((v) => v.id === upTo)),
       readPages(gw, { status: 'open', limit: OPEN_LIMIT }, () => false),
     ])
@@ -444,6 +452,7 @@ export function useSiteVisits() {
         }
         const read = [...open.rows, ...shown.rows.filter((v) => !open.rows.some((o) => o.id === v.id))];
         headRead.current = read;
+        headReads.current += 1;
         const last = shown.rows[shown.rows.length - 1];
         setRows((old) => merged(fresh || !last ? [] : old.filter((v) => v.status !== 'open' && v.startedAt < last.startedAt), read));
         if (fresh || cursor.current === undefined) {
@@ -463,6 +472,8 @@ export function useSiteVisits() {
         if (live(scope) && mine === lastRead.current && !answered.current) setLoad('error');
         return false;
       });
+    latestRead.current = sent;
+    return sent;
   }, [readKept]);
 
   const readOlder = useCallback((before: string) => {
@@ -739,7 +750,8 @@ export function useSiteVisits() {
     /** M3: open a photo on the visit for marking. One open at a time: a second tap supersedes the first. All of it runs
      *  under one bound (`MARKUP_OPEN_WAIT_MS`), and Cancel, leaving the screen, a sign-out or another project aborts it
      *  with its timer. The download is the visit's own signed link; one the server refuses is asked for again once, from
-     *  a fresh read of the visits, and an open whose photo that read no longer lists stops there. A photo this phone
+     *  a fresh read of the visits (read on into the older pages, up to `MARKUP_RELINK_PAGES`, when the visit is shown
+     *  from beyond the pages read), and an open whose photo none of that lists stops there. A photo this phone
      *  cannot decode is not opened (the thumbnail's decode decides whether Mark up is offered; this is the backstop). */
     openMarkup: async (visitId: string, mediaId: string): Promise<MarkupOpen> => {
       const s = useStore.getState();
@@ -762,11 +774,28 @@ export function useSiteVisits() {
           if (!first) return { fail: 'open' };
           let blob = await fetchFile(first, ctrl.signal);
           if (!blob) {
-            // the link was refused (it may have expired): one fresh read, and one more try with the link it brings; none
-            // once the open is stopped
+            // the link was refused (it may have expired): a fresh read (the older pages read on when the visit is shown
+            // from beyond it), and one more try with the link it brings; none once the open is stopped
             if (ctrl.signal.aborted) return { fail: 'open' };
-            const answered = await untilAborted(readHead(false), ctrl.signal);
-            const again = answered ? urlIn(headRead.current) : undefined;
+            const before = headReads.current;
+            let answered = await untilAborted(readHead(false), ctrl.signal);
+            // overtaken by a newer read (one sent after it): that read's answer serves, so "could not be opened" comes
+            // only after a read that failed
+            for (let n = 0; !answered && headReads.current === before && latestRead.current && n < 3; n += 1) {
+              answered = await untilAborted(latestRead.current, ctrl.signal);
+            }
+            answered ||= headReads.current !== before;
+            let again = answered ? urlIn(headRead.current) : undefined;
+            // not in the pages that read brought: the visit is shown from beyond them (an act answered with it), so the
+            // older pages are read on from there until it is found, up to a bound (Codex 4327055870)
+            const gw = useStore.getState().serverGateway();
+            for (let at = cursor.current, n = 0; answered && !again && gw && at && n < MARKUP_RELINK_PAGES; n += 1) {
+              if (ctrl.signal.aborted) return { fail: 'open' };
+              const page = await untilAborted(gw.listSiteVisits({ before: at, limit: VISIT_PAGE }, ctrl.signal), ctrl.signal);
+              again = urlIn(page);
+              if (page.length < VISIT_PAGE) break;
+              at = page[page.length - 1].id;
+            }
             if (!again) return { fail: 'open' };
             blob = await fetchFile(again, ctrl.signal);
             if (!blob) return { fail: 'open' };

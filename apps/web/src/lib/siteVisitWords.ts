@@ -124,6 +124,13 @@ export const SV = {
   // M3: marking up a photo on the visit; the copy is a new photo, the original stays as it was
   markUp: { en: 'Mark up', hi: 'निशान लगाएँ', gu: 'નિશાન કરો' },
   markupCopy: { en: 'Marked-up copy', hi: 'निशान लगी कॉपी', gu: 'નિશાનવાળી નકલ' },
+  // a copy on a visit card names its original by its place in that visit's photos ({n})
+  markupCopyOf: { en: 'Marked-up copy of photo {n}', hi: 'फ़ोटो {n} की निशान लगी कॉपी', gu: 'ફોટો {n} ની નિશાનવાળી નકલ' },
+  markupSourceGone: {
+    en: 'Marked-up copy · original no longer available',
+    hi: 'निशान लगी कॉपी · मूल फ़ोटो अब उपलब्ध नहीं है',
+    gu: 'નિશાનવાળી નકલ · મૂળ ફોટો હવે ઉપલબ્ધ નથી',
+  },
   markupOpening: { en: 'Opening the photo…', hi: 'फ़ोटो खुल रही है…', gu: 'ફોટો ખૂલી રહ્યો છે…' },
   markupCannotOpen: {
     en: 'This phone cannot open this photo for marking.',

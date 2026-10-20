@@ -154,6 +154,22 @@ function Header({ lang }: { lang: Lang }) {
   );
 }
 
+/** M3: a marked-up copy names its original by its place in the visit's photos, with the original's thumbnail, which
+ *  opens it (Codex 4327055852). An original the visit does not list now (removed, or not read) is said to be gone,
+ *  never guessed. */
+function CopyOf({ files, at, copyId, lang }: { files: NonNullable<SiteVisit['files']>; at: number; copyId: string; lang: Lang }) {
+  const source = at >= 0 ? files[at] : undefined;
+  if (!source) return <div className={styles.meta} data-testid={`sv-copy-of-${copyId}`}>{SV.markupSourceGone[lang]}</div>;
+  const label = SV.markupCopyOf[lang].replace('{n}', String(at + 1));
+  if (!source.url) return <div className={styles.meta} data-testid={`sv-copy-of-${copyId}`}>{label}</div>;
+  return (
+    <a className={styles.copyOf} href={resolveMediaUrl(source.url)} target="_blank" rel="noreferrer" data-testid={`sv-copy-of-${copyId}`}>
+      <img className={styles.copyThumb} src={resolveMediaUrl(source.url)} alt="" loading="lazy" />
+      <span>{label}</span>
+    </a>
+  );
+}
+
 /** Whether the viewer may add or remove places and people on this visit: the server narrows every edit to the
  *  visitor, in the role they started in (SV1-b). */
 function editable(v: SiteVisit, role: Role, me: string | null): boolean {
@@ -335,7 +351,7 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
             ) : <div className={styles.thumb} aria-hidden="true" />}
             <div className={styles.fileText}>
               {f.rating && <span className={styles.rating} data-rating={f.rating}>{ratingName(f.rating, lang)}</span>}
-              {f.sourceMediaId && <div className={styles.meta}>{SV.markupCopy[lang]}</div>}
+              {f.sourceMediaId && <CopyOf files={files} at={files.findIndex((x) => x.mediaId === f.sourceMediaId)} copyId={f.mediaId} lang={lang} />}
               {f.note && <div>{f.note}</div>}
               {f.place && <div className={styles.meta}>{f.place.name}</div>}
               <div className={styles.meta}>
