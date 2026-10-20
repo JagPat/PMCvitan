@@ -787,6 +787,165 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
         });
       });
     });
+
+    describe('#1029 round 1: an answer that overtakes the open’s read, and the open’s reads stopped when it settles (Codex 4329937243, 4329937249)', () => {
+      const fresh = { ...old, files: [stored({ url: '/media/m-1?t=9.fresh' })] };
+      const told = (v: SiteVisit) => tellSiteVisits({ kind: 'answer', project: useStore.getState().activeProjectId, generation: useStore.getState().projectScopeGeneration, visit: v });
+
+      it.each([
+        ['comes back overtaken, and the read sent again after it fails', 'overtaken'],
+        ['itself fails', 'fails'],
+      ] as const)('opens with the link an act’s answer brought when the open’s read %s', async (_label, how) => {
+        // mount's read answers; the open's own read (2) is held. An act's answer brings the old visit with a fresh link
+        // while it is out; then no read answers: it comes back overtaken and the one sent after it fails, or it fails
+        const held: { done: (rows: SiteVisit[]) => void; fail: (e: Error) => void }[] = [];
+        let reads = 0;
+        const { fetchMock } = await openOld((q) => {
+          if (q?.status === 'open') return Promise.resolve([]);
+          if (q?.before) return Promise.resolve(older(null));
+          reads += 1;
+          if (reads === 1) return Promise.resolve(newer);
+          if (reads === 3) return Promise.reject(network());
+          return new Promise<SiteVisit[]>((done, fail) => { held.push({ done, fail }); });
+        });
+        await vi.waitFor(() => expect(held).toHaveLength(1));
+        await act(async () => { told(fresh); });
+        await act(async () => { if (how === 'overtaken') held[0].done(newer); else held[0].fail(network()); });
+        await screen.findByTestId('photo-markup-canvas');
+        expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('1.old'), expect.stringContaining('9.fresh')]);
+        expect(failed()).toBe(false);
+        expect(reads).toBe(how === 'overtaken' ? 3 : 2);
+      });
+
+      it('still fails when the answer came before the open took its first link: that link is the one refused', async () => {
+        // the answer that put the old visit on screen (its expired link) is the last one; the open's read then fails
+        let reads = 0;
+        const { fetchMock } = await openOld((q) => {
+          if (q?.status === 'open') return Promise.resolve([]);
+          reads += 1;
+          return reads === 1 ? Promise.resolve(newer) : Promise.reject(network());
+        });
+        await vi.waitFor(() => expect(failed()).toBe(true));
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      });
+
+      /** the old visit on screen as `openOld` puts it, with downloads answered by `download`; Mark up not yet tapped */
+      async function shownOld(list: (q: Q, signal?: AbortSignal) => Promise<SiteVisit[]>, download: (url: string) => Promise<Response>) {
+        const gw = fakeGateway([], { listSiteVisits: vi.fn(list) });
+        const fetchMock = vi.fn(download);
+        vi.stubGlobal('fetch', fetchMock);
+        const end: OutboxOp = { t: 'siteVisitEnd', visitId: 'v-old', claimedAt: '2026-10-01T05:30:00.000Z', idempotencyKey: 'k-end' };
+        setUp('consultant', CONSULTANT, gw, [end]);
+        useStore.setState({ online: false });
+        render(<SiteVisitsScreen />);
+        await act(async () => {});
+        await act(async () => { told(old); });
+        await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-1')).toBeTruthy());
+        thumb('m-1');
+        return { gw, fetchMock };
+      }
+
+      it('opens with the link an act’s answer brought while the first download was out, when the read after it fails (r1 check gap 1)', async () => {
+        let firstDone!: (r: Response) => void;
+        const held: { fail: (e: Error) => void }[] = [];
+        let reads = 0;
+        const { fetchMock } = await shownOld((q) => {
+          if (q?.status === 'open') return Promise.resolve([]);
+          if (q?.before) return Promise.resolve(older(null));
+          reads += 1;
+          if (reads === 1) return Promise.resolve(newer);
+          return new Promise<SiteVisit[]>((_done, fail) => { held.push({ fail }); });
+        }, (url) => (url.includes('fresh') ? Promise.resolve(new Response('jpeg')) : new Promise<Response>((done) => { firstDone = done; })));
+        await act(async () => { fireEvent.click(markUp('m-1')!); });
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+        // the answer lands while the first download is out, before the open's read is sent: its link was never tried
+        await act(async () => { told(fresh); });
+        await act(async () => { firstDone(new Response('', { status: 403 })); });
+        await vi.waitFor(() => expect(held).toHaveLength(1));
+        await act(async () => { held[0].fail(network()); });
+        await screen.findByTestId('photo-markup-canvas');
+        expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('1.old'), expect.stringContaining('9.fresh')]);
+        expect(failed()).toBe(false);
+      });
+
+      it('does not try the refused link again when an answer during the first download brings that same link', async () => {
+        let firstDone!: (r: Response) => void;
+        const held: { fail: (e: Error) => void }[] = [];
+        let reads = 0;
+        const { fetchMock } = await shownOld((q) => {
+          if (q?.status === 'open') return Promise.resolve([]);
+          if (q?.before) return Promise.resolve(older(null));
+          reads += 1;
+          if (reads === 1) return Promise.resolve(newer);
+          return new Promise<SiteVisit[]>((_done, fail) => { held.push({ fail }); });
+        }, () => new Promise<Response>((done) => { firstDone = done; }));
+        await act(async () => { fireEvent.click(markUp('m-1')!); });
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+        await act(async () => { told({ ...old }); });
+        await act(async () => { firstDone(new Response('', { status: 403 })); });
+        await vi.waitFor(() => expect(held).toHaveLength(1));
+        await act(async () => { held[0].fail(network()); });
+        await vi.waitFor(() => expect(failed()).toBe(true));
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('stops the failed read’s sibling before the download from an answer’s link, so it asks for no further page (r1 check gap 2)', async () => {
+        // the open's page read fails while its open-visits read is held; the download from the answer's link is held too
+        let pageFail!: (e: Error) => void;
+        const openSignals: AbortSignal[] = [];
+        const openGates: ((rows: SiteVisit[]) => void)[] = [];
+        let freshDone: ((r: Response) => void) | null = null;
+        let reads = 0;
+        const { gw } = await shownOld((q, signal) => {
+          if (q?.before && !q?.status) return Promise.resolve(older(null));
+          if (q?.status === 'open') {
+            if (!signal) return Promise.resolve([]);
+            openSignals.push(signal);
+            return new Promise<SiteVisit[]>((done) => { openGates.push(done); });
+          }
+          reads += 1;
+          if (reads === 1) return Promise.resolve(newer);
+          return new Promise<SiteVisit[]>((_done, fail) => { pageFail = fail; });
+        }, (url) => (url.includes('fresh') ? new Promise<Response>((done) => { freshDone = done; }) : Promise.resolve(new Response('', { status: 403 }))));
+        await act(async () => { fireEvent.click(markUp('m-1')!); });
+        await vi.waitFor(() => expect(openSignals).toHaveLength(1));
+        await act(async () => { told(fresh); });
+        await act(async () => { pageFail(network()); });
+        await vi.waitFor(() => expect(freshDone).not.toBeNull());
+        // the download is out: the sibling is already stopped, and a full page it gets back asks for no next page
+        expect(openSignals[0].aborted).toBe(true);
+        const asked = gw.listSiteVisits!.mock.calls.length;
+        await act(async () => { openGates[0](Array.from({ length: 200 }, (_, i) => visit({ id: `v-o${i}`, files: [] }))); });
+        await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+        expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
+        await act(async () => { freshDone!(new Response('jpeg')); });
+        await screen.findByTestId('photo-markup-canvas');
+      });
+
+      it.each([
+        ['the open visits fails, and the page read', 'open'],
+        ['the page fails, and the open visits read', 'page'],
+      ] as const)('stops the sibling request when one of its read’s two requests %s is still out', async (_label, failing) => {
+        // the open's own read: one request fails at once and the other is held. The open ends as could not be opened,
+        // and the held request is stopped with it, not left running until the server answers
+        const signals: (AbortSignal | undefined)[] = [];
+        let reads = 0;
+        await openOld((q, signal) => {
+          if (q?.before) return Promise.resolve(older(null));
+          const kind = q?.status === 'open' ? 'open' : 'page';
+          if (kind === 'page') reads += 1;
+          // mount's two requests answer; the open's are the second page read and the second open read
+          const mine = kind === 'page' ? reads === 2 : signal !== undefined;
+          if (!mine) return Promise.resolve(kind === 'open' ? [] : newer);
+          if (kind === failing) return Promise.reject(network());
+          signals.push(signal);
+          return new Promise<SiteVisit[]>(() => {});
+        });
+        await vi.waitFor(() => expect(failed()).toBe(true));
+        expect(signals).toHaveLength(1);
+        expect(signals[0]?.aborted).toBe(true);
+      });
+    });
   });
 
   it('hands the page read’s signal to the request, so a stopped read is cancelled', async () => {

@@ -388,6 +388,9 @@ export function useSiteVisits() {
   // takes the newer read's answer instead
   const headReads = useRef(0);
   const latestRead = useRef<Promise<boolean> | null>(null);
+  // the last visit each act's answer brought, with the turn it took: an answer that overtakes an open's read without
+  // a read after it is the newest the screen holds of that visit, so its link serves the open (Codex 4329937243)
+  const toldVisits = useRef(new Map<string, { turn: number; visit: SiteVisit }>());
   // M3: the photo being marked up, the one open in flight (the newest wins) and how to stop it
   const [markup, setMarkup] = useState<MarkupSession | null>(null);
   const markupRef = useRef<MarkupSession | null>(null);
@@ -523,6 +526,7 @@ export function useSiteVisits() {
     // a photo opened for marking in the last project or sign-in is not this one's, nor the visits last read for it
     stopMarkup();
     headRead.current = [];
+    toldVisits.current = new Map();
     readHead(true);
     readKept();
     sendQueued();
@@ -541,7 +545,7 @@ export function useSiteVisits() {
       const lang = useStore.getState().lang;
       if (e.kind === 'answer') {
         if (!known.current.has(e.visit.id) && !movedTo.current.has(e.visit.id)) return;
-        turn.current += 1;
+        toldVisits.current.set(e.visit.id, { turn: (turn.current += 1), visit: e.visit });
         setRows((old) => merged(old, [e.visit]));
       } else if (e.kind === 'photo') {
         // the photo's row as committed, mirrored exactly: never a state the screen works out for itself (r4323657302).
@@ -785,6 +789,8 @@ export function useSiteVisits() {
         try {
           const first = urlIn(shownRef.current);
           if (!first) return { fail: 'open' };
+          // an act's answer after this turn brings a link this open has not tried (#1029 r1 check gap 1)
+          const firstTurn = turn.current;
           let blob = await fetchFile(first, ctrl.signal);
           if (!blob) {
             // the link was refused (it may have expired): a fresh read (the older pages read on when the visit is shown
@@ -792,7 +798,11 @@ export function useSiteVisits() {
             if (ctrl.signal.aborted) return { fail: 'open' };
             const before = headReads.current;
             // this open's read carries its signal: Cancel, the bound or leaving stops its page requests (Codex 4328350114)
-            let awaited = readHead(false, ctrl.signal);
+            // and its own controller, stopped once the open stops waiting on reads, so a request of it still out (the
+            // sibling of one that failed) does not run on through the downloads after it (#1029 r1 check gap 2)
+            const reading = new AbortController();
+            ctrl.signal.addEventListener('abort', () => reading.abort(), { once: true });
+            let awaited = readHead(false, reading.signal);
             let answered = await untilAborted(awaited, ctrl.signal);
             // overtaken by a newer read (one sent after it): that read's answer serves, and so on to the newest, however
             // many came after, until one answers or the open is stopped (Codex 4328350105). The read waited on that is
@@ -803,8 +813,13 @@ export function useSiteVisits() {
               awaited = newest;
               answered = await untilAborted(newest, ctrl.signal);
             }
+            reading.abort();
             answered ||= headReads.current !== before;
             let again = answered ? urlIn(headRead.current) : undefined;
+            // no read answered, but an act's answer brought the visit since the first link was taken: a link it carries
+            // that was not the one refused serves instead of the open failing (Codex 4329937243; r1 check gap 1)
+            const told = toldVisits.current.get(visitId);
+            if (!answered && told && told.turn > firstTurn && urlIn([told.visit]) !== first) again = urlIn([told.visit]);
             // not in the pages that read brought: the visit is shown from beyond them (an act answered with it), so the
             // older pages are read on from there until it is found, up to a bound (Codex 4327055870)
             const gw = useStore.getState().serverGateway();
@@ -826,6 +841,9 @@ export function useSiteVisits() {
           return { fail: 'open' };
         }
       })(), ctrl.signal).catch((): MarkupOpen => ({ fail: 'open' }));
+      // settled, whatever the outcome: whatever it still has out (a sibling page read whose partner failed, a step that
+      // did not stop when told) is stopped with it, and only then its timer (Codex 4329937249)
+      ctrl.abort();
       timer.clear();
       if (stopped || seq !== markupSeq.current || !live(scope)) return { moved: true };
       markupRun.current = null;
