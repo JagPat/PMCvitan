@@ -32,13 +32,29 @@ CREATE TABLE IF NOT EXISTS "MediaTombstone" (
 );
 
 DO $media_tombstone$
+DECLARE
+  tomb oid := '"MediaTombstone"'::regclass;
+  project oid := '"Project"'::regclass;
+  key_col smallint := (SELECT attnum FROM pg_attribute WHERE attrelid = '"MediaTombstone"'::regclass AND attname = 'projectId');
+  id_col smallint := (SELECT attnum FROM pg_attribute WHERE attrelid = '"Project"'::regclass AND attname = 'id');
+  stray record;
 BEGIN
-  -- T1/T3: a `db push` baseline creates this key as RESTRICT when the schema says otherwise; it is judged by its delete
-  -- action and replaced when that is not CASCADE
-  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MediaTombstone_projectId_fkey' AND confdeltype <> 'c') THEN
-    ALTER TABLE "MediaTombstone" DROP CONSTRAINT "MediaTombstone_projectId_fkey";
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MediaTombstone_projectId_fkey') THEN
+  -- T1/T3: the table keeps exactly one foreign key, "MediaTombstone_projectId_fkey": ("projectId") references
+  -- "Project"("id"), ON DELETE CASCADE, ON UPDATE CASCADE. A `db push` baseline creates it as RESTRICT when the schema
+  -- says otherwise. Every check reads this table's own constraints (conrelid), never a name alone: a constraint of the
+  -- same name on a table in another schema is not this one. A key on this table whose whole identity (name, column,
+  -- referenced table and column, both actions) is not that one is dropped; the right one is then added if absent. A
+  -- second run finds the right key and changes nothing.
+  FOR stray IN
+    SELECT conname FROM pg_constraint
+    WHERE conrelid = tomb AND contype = 'f'
+      AND NOT (conname = 'MediaTombstone_projectId_fkey' AND confrelid = project
+               AND conkey = ARRAY[key_col] AND confkey = ARRAY[id_col]
+               AND confdeltype = 'c' AND confupdtype = 'c')
+  LOOP
+    EXECUTE format('ALTER TABLE "MediaTombstone" DROP CONSTRAINT %I', stray.conname);
+  END LOOP;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = tomb AND contype = 'f') THEN
     ALTER TABLE "MediaTombstone" ADD CONSTRAINT "MediaTombstone_projectId_fkey"
       FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE CASCADE;
   END IF;

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { createTestApp, type TestApp } from './test-app';
@@ -69,7 +69,7 @@ describe('#482 the deleted-photo record (live PG)', () => {
     const triggers = async () => t.prisma.$queryRawUnsafe<Array<{ name: string }>>(
       `SELECT tgname::text AS name FROM pg_trigger WHERE tgrelid = '"MediaTombstone"'::regclass AND NOT tgisinternal ORDER BY 1`);
     const fk = async () => t.prisma.$queryRawUnsafe<Array<{ d: string }>>(
-      `SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conname = 'MediaTombstone_projectId_fkey'`);
+      `SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conrelid = '"MediaTombstone"'::regclass AND conname = 'MediaTombstone_projectId_fkey'`);
     const before = { triggers: await triggers(), fk: await fk(), rows: await count(f.projectA.id) };
     expect(before.triggers.map((r) => r.name)).toEqual(['MediaTombstone_immutable', 'MediaTombstone_no_truncate']);
     expect(before.fk[0]?.d).toMatch(/ON DELETE CASCADE/);
@@ -82,7 +82,65 @@ describe('#482 the deleted-photo record (live PG)', () => {
     await raw(`ALTER TABLE "MediaTombstone" ADD CONSTRAINT "MediaTombstone_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE RESTRICT`);
     replay();
     const [fk] = await t.prisma.$queryRawUnsafe<Array<{ d: string }>>(
-      `SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conname = 'MediaTombstone_projectId_fkey'`);
+      `SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conrelid = '"MediaTombstone"'::regclass AND conname = 'MediaTombstone_projectId_fkey'`);
     expect(fk?.d).toMatch(/ON DELETE CASCADE/);
+  });
+
+  describe('the key repair reads this table\'s own keys only (#1018 r4324508652)', () => {
+    const RIGHT = 'FOREIGN KEY ("projectId") REFERENCES "Project"(id) ON UPDATE CASCADE ON DELETE CASCADE';
+    /** Every foreign key on "MediaTombstone" itself, by name and definition. */
+    const keys = async () => t.prisma.$queryRawUnsafe<Array<{ name: string; d: string }>>(
+      `SELECT conname::text AS name, pg_get_constraintdef(oid) AS d FROM pg_constraint
+       WHERE conrelid = '"MediaTombstone"'::regclass AND contype = 'f' ORDER BY 1`);
+    const exactlyTheRightKey = async () => expect(await keys()).toEqual([{ name: 'MediaTombstone_projectId_fkey', d: RIGHT }]);
+    /** A second schema holding a table with a key of the same name, with the given delete action. */
+    const otherSchema = async (action: 'CASCADE' | 'RESTRICT') => {
+      await raw(`CREATE SCHEMA tomb_other`);
+      await raw(`CREATE TABLE tomb_other."Project" (id TEXT PRIMARY KEY)`);
+      await raw(`CREATE TABLE tomb_other."MediaTombstone" ("projectId" TEXT NOT NULL,
+        CONSTRAINT "MediaTombstone_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES tomb_other."Project"(id) ON DELETE ${action})`);
+    };
+    const otherKey = async () => (await t.prisma.$queryRawUnsafe<Array<{ d: string }>>(
+      `SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conrelid = 'tomb_other."MediaTombstone"'::regclass`))[0]?.d;
+    const restrictKey = async () => {
+      await raw(`ALTER TABLE "MediaTombstone" DROP CONSTRAINT "MediaTombstone_projectId_fkey"`);
+      await raw(`ALTER TABLE "MediaTombstone" ADD CONSTRAINT "MediaTombstone_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE RESTRICT`);
+    };
+
+    afterEach(async () => {
+      await raw(`DROP SCHEMA IF EXISTS tomb_other CASCADE`);
+      // leave the table with its one right key, whatever a failed assertion (or the file under test) left behind
+      for (const { name } of await keys()) await raw(`ALTER TABLE "MediaTombstone" DROP CONSTRAINT "${name}"`);
+      await raw(`ALTER TABLE "MediaTombstone" ADD CONSTRAINT "MediaTombstone_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE CASCADE`);
+    });
+
+    it('a same-named CASCADE key in another schema does not stop the RESTRICT key here being replaced', async () => {
+      await otherSchema('CASCADE');
+      await restrictKey();
+      replay();
+      await exactlyTheRightKey();
+      expect(await otherKey()).toMatch(/ON DELETE CASCADE/);
+    });
+
+    it('a same-named RESTRICT key in another schema leaves the right key here in place', async () => {
+      await otherSchema('RESTRICT');
+      replay();
+      await exactlyTheRightKey();
+      expect(await otherKey()).toMatch(/ON DELETE RESTRICT/);
+    });
+
+    it('a key here of another name, or with another update action, is replaced, and a second run changes nothing', async () => {
+      await raw(`ALTER TABLE "MediaTombstone" DROP CONSTRAINT "MediaTombstone_projectId_fkey"`);
+      await raw(`ALTER TABLE "MediaTombstone" ADD CONSTRAINT "MediaTombstone_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE RESTRICT`);
+      await raw(`ALTER TABLE "MediaTombstone" ADD CONSTRAINT "tomb_extra_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE RESTRICT`);
+      replay();
+      await exactlyTheRightKey();
+      const oid = async () => (await t.prisma.$queryRawUnsafe<Array<{ oid: number }>>(
+        `SELECT oid::int AS oid FROM pg_constraint WHERE conrelid = '"MediaTombstone"'::regclass AND contype = 'f'`))[0]?.oid;
+      const first = await oid();
+      replay();
+      expect(await oid()).toBe(first);
+      await exactlyTheRightKey();
+    });
   });
 });
