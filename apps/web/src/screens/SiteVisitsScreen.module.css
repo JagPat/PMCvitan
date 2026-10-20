@@ -125,3 +125,53 @@
   gap: 8px;
   margin-top: 6px;
 }
+/* SV2 (#792): photos on a visit — a thumbnail beside who added it, when, and what they said. */
+.files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.file {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 13px;
+}
+.thumb {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 10px;
+  display: block;
+  background: rgba(35, 33, 28, 0.06);
+}
+.fileText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.rating {
+  align-self: flex-start;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 20px;
+  padding: 2px 8px;
+  background: rgba(35, 33, 28, 0.08);
+}
+.rating[data-rating='concern'] {
+  background: #fdf0d5;
+  color: #7a4b00;
+}
+.rating[data-rating='action_needed'] {
+  background: #fbe3e1;
+  color: #8c1d18;
+}
+.rating[data-rating='fine'] {
+  background: #e3f1e5;
+  color: #1e5b2a;
+}

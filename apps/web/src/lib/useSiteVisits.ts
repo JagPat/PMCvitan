@@ -6,7 +6,11 @@ import { isCurrentProjectScope, projectScopeOf, type ProjectScope } from '@/stor
 import {
   isSiteVisitOp, newIdempotencyKey, siteVisitListeners, siteVisitOf,
   type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitOp,
+  type SiteVisitRating,
 } from '@/data/apiGateway';
+import { deleteVisitPhoto, listVisitPhotos, putVisitPhoto, storageAvailable, visitPhotoScope, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { captureStamp } from './captureStamp';
+import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto';
 import { SV } from './siteVisitWords';
 
 /**
@@ -42,19 +46,22 @@ export function uuidV4(): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
-/** Send the queued site-visit acts, if there are any. */
+/** Send the queued site-visit acts. Sent with nothing queued too: every send first puts back the act of any photo kept
+ *  on the phone that the queue lost, so it goes on the next ping, reconnect or Send now (Codex 4321084743). */
 function sendQueued(): void {
-  const s = useStore.getState();
-  if (s.outbox.some(isSiteVisitOp)) void s.flushOutbox();
+  void useStore.getState().flushOutbox();
 }
 
 /** The screens on show, told when the server says the project changed (the realtime ping `useApiSync` hears, which
- *  also comes on every reconnect): each reads again, and any acts still queued are sent. */
+ *  also comes on every reconnect): each reads again. Any acts still queued are sent then, and whenever the browser says
+ *  the network is back, whether or not a Site Visits screen is open: a photo taken without signal goes as soon as it
+ *  can (Codex review 5579878680). */
 const listeners = new Set<() => void>();
 export function refreshSiteVisits(): void {
   for (const l of listeners) l();
-  if (listeners.size > 0) sendQueued();
+  sendQueued();
 }
+globalThis.addEventListener?.('online', sendQueued);
 
 /** How long a start waits for the phone's position before it goes without one. */
 export const LOCATION_WAIT_MS = 5000;
@@ -83,6 +90,44 @@ function deviceLocation(): Promise<{ lat: number; lng: number; accuracyM: number
 /** What a refusal tells the viewer: the server's own reason in English (its gist in Hindi and Gujarati). */
 function refusedText(message: string | null, lang: Lang): string {
   return lang === 'en' && message ? `${SV.refused.en} ${message}` : SV.refused[lang];
+}
+
+/** A chosen file's bytes as a data URL; null when the browser could not read it. */
+function readFile(file: File): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
+}
+
+/** When the soonest photo link shown expires (ms since the epoch); null when no link is shown. */
+export function soonestLinkExpiry(visits: SiteVisit[]): number | null {
+  let soonest = Infinity;
+  for (const v of visits) {
+    for (const f of v.files ?? []) {
+      // a signed path carries its own expiry: `?t=<expEpochSec>.<signature>` (SignedUrlService.mediaPath)
+      const exp = /[?&]t=(\d+)\./.exec(f.url)?.[1];
+      if (exp) soonest = Math.min(soonest, Number(exp) * 1000);
+    }
+  }
+  return soonest === Infinity ? null : soonest;
+}
+
+/** How long before the soonest photo link shown expires the screen reads the visits again for fresh ones: half the time
+ *  left, so whatever lifetime the server gives its links (`FILE_URL_TTL_SEC`, an hour by default, any positive number
+ *  of seconds allowed), a link is renewed inside it (Codex 4319347052, 4319699370). A read that brought the same expiry
+ *  (`triedFor`: the expiry the last read was made for) waits that link out instead of halving again: the server signs
+ *  to the whole second, so a short link re-read early comes back unchanged (Codex 4320122174). Once a link has expired
+ *  (every read since failed), the next read is `LINK_REFRESH_RETRY_MS` away; null when no link is shown. */
+export const LINK_REFRESH_RETRY_MS = 15_000;
+export function linkRefreshDelay(visits: SiteVisit[], nowMs: number, triedFor: number | null = null): number | null {
+  const soonest = soonestLinkExpiry(visits);
+  if (soonest === null) return null;
+  const left = soonest - nowMs;
+  if (left <= 0) return LINK_REFRESH_RETRY_MS;
+  return soonest === triedFor ? left : left / 2;
 }
 
 /** The visits as shown: those still open first, then newest start first. */
@@ -120,7 +165,9 @@ function merged(old: SiteVisit[], fresh: SiteVisit[]): SiteVisit[] {
 /** The visits as they will be once the queued acts are sent: each act, in the order made, applied on top of the
  *  rows the server last read (an act already applied there changes nothing), and the ids of what is still waiting
  *  (a visit for a start, end or close; a place or person for an add or remove). */
-export function withQueued(rows: SiteVisit[], ops: SiteVisitOp[], me: string | null): { visits: SiteVisit[]; waiting: Set<string> } {
+export function withQueued(
+  rows: SiteVisit[], ops: SiteVisitOp[], me: string | null, previews: ReadonlyMap<string, string> = new Map(),
+): { visits: SiteVisit[]; waiting: Set<string> } {
   const byId = new Map(rows.map((v) => [v.id, v]));
   const waiting = new Set<string>();
   const at = new Date().toISOString();
@@ -136,7 +183,7 @@ export function withQueued(rows: SiteVisit[], ops: SiteVisitOp[], me: string | n
         startPlace: body.nodeId ? { nodeId: body.nodeId, name: visitor.placeName ?? '' } : null,
         location: body.location ? { kind: 'device', ...body.location, approximate: body.location.accuracyM > APPROXIMATE_ACCURACY_M } : { kind: 'none' },
         endedAt: null, endTimeAdjusted: null, closedAt: null, closedById: null, closeReason: null,
-        lateEndedAt: null, lateEndTimeAdjusted: null, places: [], attendees: [],
+        lateEndedAt: null, lateEndTimeAdjusted: null, places: [], attendees: [], files: [],
       });
       continue;
     }
@@ -179,6 +226,22 @@ export function withQueued(rows: SiteVisit[], ops: SiteVisitOp[], me: string | n
         waiting.add(op.attendeeId);
         byId.set(id, { ...v, attendees: v.attendees.map((a) => (a.id === op.attendeeId && !a.retiredAt ? { ...a, retiredAt: at } : a)) });
         break;
+      case 'siteVisitAddFile': {
+        // shown from the phone's own copy until the server's list holds it: a read that already has it (its answer was
+        // lost, or another read came first) names it by the same key, and the stored one is shown alone. Its place is
+        // the one picked, by name, even if the visit has since let that place go (the server keeps it the same way)
+        const f = op.file;
+        waiting.add(f.id);
+        if ((v.files ?? []).some((x) => x.clientKey === f.id)) break;
+        byId.set(id, { ...v, files: [...(v.files ?? []), {
+          mediaId: f.id, url: previews.get(f.id) ?? '', mime: f.mime, clientKey: f.id, takenAt: f.takenAt ?? null,
+          note: f.note ?? null, rating: f.rating ?? null,
+          place: f.nodeId ? { nodeId: f.nodeId, name: op.placeName ?? '' } : null,
+          // when the photo was added, not when this list was last drawn (Codex 4320404453)
+          addedById: me ?? '', addedByName: op.by.name, addedByRole: op.by.role, addedAt: op.queuedAt ?? at,
+        }] });
+        break;
+      }
     }
   }
   return { visits: ordered([...byId.values()]), waiting };
@@ -210,26 +273,44 @@ export function useSiteVisits() {
   const known = useRef(new Set<string>());
   // visits a refused start's acts were moved onto: their answers belong here even before a read shows the visit
   const movedTo = useRef(new Set<string>());
+  // SV2: this user's visit photos kept on the phone (`visitPhotoStore`), read again whenever one may have settled. The
+  // screen's own copy of each: when a row goes, its picture goes with it
+  const [kept, setKept] = useState<VisitPhotoRow[]>([]);
+  // the visits as last shown, for a check made after a photo is read and shrunk (the screen may have moved on meanwhile)
+  const shownRef = useRef<SiteVisit[]>([]);
+  // bumped each time the link refresh fires, so a refresh that fails (rows unchanged) is tried again
+  const [relinks, setRelinks] = useState(0);
+  // the link expiry the last refresh was made for: a read that brings it back unchanged is not halved again
+  const relinkedFor = useRef<number | null>(null);
 
   const live = (scope: ProjectScope): boolean => {
     const s = useStore.getState();
     return isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope);
   };
 
+  /** The photos this user keeps on the phone for this project, as the store now holds them. */
+  const readKept = useCallback(() => {
+    const s = useStore.getState();
+    const scope = projectScopeOf(s);
+    listVisitPhotos(visitPhotoScope(s.sessionToken, s.sessionUserId), s.activeProjectId)
+      .then((list) => { if (live(scope)) setKept(list); })
+      .catch(() => { if (live(scope)) setKept([]); });
+  }, []);
+
   /** Every page shown and every open visit, together. `fresh` starts over from the first page (a new project or
    *  sign-in); otherwise it is a refresh that reads again every page already shown. Every open visit is in the open
    *  read and every shown page in the page read, so the two replace the rows shown; only a row an act answered with
    *  from beyond the pages read is kept. */
-  const readHead = useCallback(function readHead(fresh: boolean) {
+  const readHead = useCallback(function readHead(fresh: boolean): Promise<void> {
     const gw = useStore.getState().serverGateway();
-    if (!gw) return;
+    if (!gw) return Promise.resolve();
     const scope = projectScopeOf(useStore.getState());
     const mine = (turn.current += 1);
     lastRead.current = mine;
     if (fresh) { answered.current = false; setLoad('loading'); }
     // the first page alone when starting over; otherwise down to the page holding the last visit shown
     const upTo = fresh ? undefined : cursor.current;
-    Promise.all([
+    return Promise.all([
       readPages(gw, { limit: VISIT_PAGE }, (page) => upTo === undefined || page.some((v) => v.id === upTo)),
       readPages(gw, { status: 'open', limit: OPEN_LIMIT }, () => false),
     ])
@@ -237,7 +318,7 @@ export function useSiteVisits() {
         if (!live(scope)) return;
         if (mine !== turn.current) {
           // overtaken by an answer alone: what else changed is still unread, so read again after it
-          if (lastRead.current === mine) readHead(fresh);
+          if (lastRead.current === mine) return readHead(fresh);
           return;
         }
         const read = [...open.rows, ...shown.rows.filter((v) => !open.rows.some((o) => o.id === v.id))];
@@ -276,9 +357,11 @@ export function useSiteVisits() {
     setError(null);
     setNotice(null);
     movedTo.current = new Set();
+    setKept([]);
     readHead(true);
+    readKept();
     sendQueued();
-  }, [projectId, generation, readHead]);
+  }, [projectId, generation, readHead, readKept]);
 
   // another device started, changed, ended or closed a visit; and what the outbox says about the acts it sent
   useEffect(() => {
@@ -293,25 +376,26 @@ export function useSiteVisits() {
         if (!known.current.has(e.visit.id) && !movedTo.current.has(e.visit.id)) return;
         turn.current += 1;
         setRows((old) => merged(old, [e.visit]));
+      } else if (e.kind === 'filed') {
+        readKept();
+        if (known.current.has(e.visitId) || movedTo.current.has(e.visitId)) readHead(false);
       } else if (e.kind === 'refused') {
         setError(refusedText(e.message, lang));
+        readKept();
         readHead(false);
       } else {
         movedTo.current.add(e.to); // the moved acts' answers carry the open visit's id
         setNotice(SV.moved[lang]);
+        readKept();
         readHead(false);
       }
     };
     siteVisitListeners.add(told);
-    // the browser says the network is back
-    const online = () => sendQueued();
-    globalThis.addEventListener?.('online', online);
     return () => {
       listeners.delete(ping);
       siteVisitListeners.delete(told);
-      globalThis.removeEventListener?.('online', online);
     };
-  }, [readHead]);
+  }, [readHead, readKept]);
 
   /** Queue one act. `make` builds it once, under a fresh key; it is queued only if the viewer is still on the
    *  project and sign-in it was pressed in (a start waits for the phone's location first). */
@@ -332,13 +416,38 @@ export function useSiteVisits() {
   }, []);
 
   const now = () => new Date().toISOString();
-  const shown = useMemo(() => withQueued(rows, queued, me), [rows, queued, me]);
+  // a queued photo shows its own picture; a refused one is listed apart, with why, until dismissed
+  const previews = useMemo(() => new Map(kept.filter((r) => r.state === 'queued').map((r) => [r.clientKey, `data:${r.op.file.mime};base64,${r.data}`])), [kept]);
+  const notSent = useMemo(() => kept.filter((r) => r.state === 'failed').map((r) => ({
+    key: r.clientKey, url: `data:${r.op.file.mime};base64,${r.data}`, note: r.op.file.note ?? null, placeName: r.op.placeName, reason: r.reason,
+  })), [kept]);
+  const shown = useMemo(() => withQueued(rows, queued, me, previews), [rows, queued, me, previews]);
+  // the photos' signed links expire: read again before the soonest one shown does, so a thumbnail or full photo never
+  // opens dead; each read brings fresh links and sets the next read. The next is set only once a read settles, so reads
+  // never overlap, and a read that fails (no signal) leaves the rows as they were, so the timer is set again from the
+  // same links: it waits for them to expire, then tries on a steady beat (Codex 4319531884, 4320122174)
+  useEffect(() => {
+    const delay = linkRefreshDelay(rows, Date.now(), relinkedFor.current);
+    if (delay === null) return;
+    let gone = false;
+    const relink = setTimeout(() => {
+      relinkedFor.current = soonestLinkExpiry(rows);
+      void readHead(false).finally(() => { if (!gone) setRelinks((n) => n + 1); });
+    }, delay);
+    return () => { gone = true; clearTimeout(relink); };
+  }, [rows, relinks, readHead]);
   // and every visit an act is queued on: after a reload its answer may land before the first read shows the visit
   // (Codex 4278754321)
   known.current = new Set([...shown.visits.map((v) => v.id), ...queued.map(siteVisitOf)]);
+  shownRef.current = shown.visits;
 
   return {
-    visits: shown.visits, waiting: shown.waiting, queued: queued.length, load, hasMore, busy, error, notice, pings,
+    visits: shown.visits, waiting: shown.waiting, queued: queued.length, load, hasMore, busy, error, notice, pings, notSent,
+    /** The person has read why a photo was not sent: the phone lets go of it. */
+    dismiss: (key: string) => {
+      const s = useStore.getState();
+      void deleteVisitPhoto(visitPhotoScope(s.sessionToken, s.sessionUserId), s.activeProjectId, key).catch(() => {}).then(readKept);
+    },
     retry: () => readHead(true),
     sendNow: sendQueued,
     more: () => { if (cursor.current) readOlder(cursor.current); },
@@ -365,5 +474,66 @@ export function useSiteVisits() {
     })),
     retireAttendee: (visitId: string, attendeeId: string) =>
       act((idempotencyKey) => ({ t: 'siteVisitRetireAttendee', visitId, attendeeId, idempotencyKey })),
+    /** SV2: a photo on the visit, with an optional note, rating and place (one the visit walked). The visitor and anyone
+     *  recorded as present may add one while the visit is not closed; the server asks again. Every photo, with signal
+     *  or without, is first kept on the phone with the one act that sends it (`visitPhotoStore`) and then queued like
+     *  every visit act: the outbox sends it, and sends it again after no answer, a server error, a sign-in or a busy
+     *  server, always the same bytes and fields under the same key, so the server adds it once. It waits through a
+     *  reload, a sign-in and leaving the screen, and one taken on a visit started without signal goes after that start.
+     *  A phone that cannot keep it is told so and nothing is sent. */
+    addPhoto: async (visitId: string, file: File, extra: { note?: string; rating?: SiteVisitRating; nodeId?: string; placeName?: string | null }): Promise<boolean> => {
+      const state = useStore.getState();
+      if (!state.serverGateway()) { setError(SV.needsServer[state.lang]); return false; }
+      const scope = projectScopeOf(state);
+      const say = (text: (typeof SV)[keyof typeof SV]) => { if (live(scope)) setError(text[useStore.getState().lang]); };
+      setBusy(true);
+      setError(null);
+      setNotice(null);
+      try {
+        const read = await readFile(file);
+        // the stamp is the original's: a redrawn photo carries no EXIF
+        const stamp = read ? captureStamp(read) : {};
+        const shrunk = read ? await shrinkPhoto(read) : null;
+        const m = shrunk ? /^data:([^;]+);base64,(.*)$/.exec(shrunk) : null;
+        // only a type and size the upload takes: anything else is refused here, before it is kept or sent
+        if (!m || !UPLOAD_IMAGE_MIMES.includes(m[1])) { say(SV.photoUnreadable); return false; }
+        if (m[2].length > MAX_PHOTO_BASE64) { say(SV.photoTooBig); return false; }
+        if (!live(scope)) return false;
+        // the place is checked as the visit is now shown: one removed while the photo was being read is not kept
+        // (Codex 4319531896). A removal this phone has not heard of yet does not stop it: the place was walked when the
+        // photo was taken, and the photo keeps it (Codex 4319699338)
+        const v = shownRef.current.find((x) => x.id === visitId);
+        if (extra.nodeId && !v?.places.some((p) => p.nodeId === extra.nodeId && !p.retiredAt)) { say(SV.photoPlaceGone); return false; }
+        if (!storageAvailable()) { say(SV.photoNoStorage); return false; }
+        const s = useStore.getState();
+        const owner = visitPhotoScope(s.sessionToken, s.sessionUserId);
+        const note = extra.note?.trim();
+        // a fresh key for every photo picked: nothing about one pick is ever reused for another (Codex 4319699330,
+        // 4319699341)
+        const op: SiteVisitAddFileOp = {
+          t: 'siteVisitAddFile', visitId, idempotencyKey: newIdempotencyKey(), scope: owner,
+          file: {
+            id: newIdempotencyKey(), mime: m[1], ...stamp,
+            ...(extra.nodeId ? { nodeId: extra.nodeId } : {}), ...(note ? { note } : {}), ...(extra.rating ? { rating: extra.rating } : {}),
+          },
+          by: { name: s.userName ?? '', role: s.role }, placeName: extra.placeName ?? null, queuedAt: now(),
+        };
+        // a visit whose start is still waiting to send: that start is kept with the photo too, so the photo never
+        // outlives the act it needs (Codex 4320122186)
+        const start = s.outbox.find((o): o is SiteVisitStartOp => o.t === 'siteVisitStart' && o.body.id === visitId) ?? null;
+        // kept before it is queued: "waiting to send" means written
+        try { await putVisitPhoto(owner, s.activeProjectId, op, m[2], start); } catch { say(SV.photoNotKept); return false; }
+        // the person signed out or moved to another project while it was written: the row stays, kept for the user and
+        // project it was taken in, and that scope's next load queues it (Codex 4320122181)
+        if (!live(scope)) return false;
+        const queuedHere = useStore.getState().queueSiteVisitAct(op, SV.queued[useStore.getState().lang]);
+        // not queued (the server went away meanwhile): the row is let go too, or the next load would send it
+        if (!queuedHere) await deleteVisitPhoto(owner, s.activeProjectId, op.file.id).catch(() => {});
+        readKept();
+        return queuedHere;
+      } finally {
+        if (live(scope)) setBusy(false);
+      }
+    },
   };
 }
