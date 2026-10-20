@@ -16,6 +16,7 @@
 import type { OutboxOp } from './apiGateway';
 
 export type SiteVisitAddFileOp = Extract<OutboxOp, { t: 'siteVisitAddFile' }>;
+export type SiteVisitStartOp = Extract<OutboxOp, { t: 'siteVisitStart' }>;
 
 export interface VisitPhotoRow {
   /** `${userScope}::${projectId}::${clientKey}` */
@@ -25,6 +26,11 @@ export interface VisitPhotoRow {
   clientKey: string;
   /** the act that sends it, exactly as queued */
   op: SiteVisitAddFileOp;
+  /** the start of its visit, when that start was itself still waiting to send as the photo was added: the photo needs
+   *  it, so it is kept here too and sent again ahead of the photo if the outbox lost it (a start the server already
+   *  has answers its replay with the same visit). Null on a row a release before it wrote, or once the photo moved to
+   *  another visit. */
+  start?: SiteVisitStartOp | null;
   /** base64 bytes, no data: prefix */
   data: string;
   state: 'queued' | 'failed';
@@ -103,9 +109,11 @@ export function visitPhotoScope(sessionToken: string | null, sessionUserId: stri
 }
 
 /** Keep a queued photo with the act that sends it. Resolves only once committed. */
-export function putVisitPhoto(userScope: string, projectId: string, op: SiteVisitAddFileOp, data: string): Promise<void> {
+export function putVisitPhoto(
+  userScope: string, projectId: string, op: SiteVisitAddFileOp, data: string, start: SiteVisitStartOp | null = null,
+): Promise<void> {
   const row: VisitPhotoRow = {
-    key: keyOf(userScope, projectId, op.file.id), userScope, projectId, clientKey: op.file.id, op, data,
+    key: keyOf(userScope, projectId, op.file.id), userScope, projectId, clientKey: op.file.id, op, start, data,
     state: 'queued', reason: null, createdAt: Date.now(),
   };
   return tx<void>('readwrite', (s) => { s.put(row); });
@@ -145,7 +153,8 @@ export function failVisitPhoto(userScope: string, projectId: string, clientKey: 
 export function moveVisitPhotos(userScope: string, projectId: string, from: string, to: string): Promise<void> {
   return tx<void>('readwrite', (s, done) => {
     eachRow(s, userScope, projectId, (row, cursor) => {
-      if (row.state === 'queued' && row.op.visitId === from) cursor.update({ ...row, op: { ...row.op, visitId: to } });
+      // the open visit is on the server already: the refused start is no longer this photo's
+      if (row.state === 'queued' && row.op.visitId === from) cursor.update({ ...row, op: { ...row.op, visitId: to }, start: null });
     }, () => done(undefined));
   });
 }

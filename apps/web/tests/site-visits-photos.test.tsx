@@ -190,7 +190,7 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
   });
 
   it('tries a failed link refresh again, so links do not stay expired after a read with no signal (Codex 4319531884)', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     const exp = () => Math.floor(Date.now() / 1000) + 60;
     const gw = fakeGateway([visit({ files: [file({ url: `/media/m-1?t=${exp()}.sig` })] })]);
     await mount('client', 'u-client', gw);
@@ -287,6 +287,31 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     expect(uploadMedia).not.toHaveBeenCalled();
   });
 
+  it('reads one-second links again about twice a second, one read at a time, never in a storm (Codex 4320122174)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(1_000_000_000_300);
+    // a server whose links last a second, signed to the whole second (SignedUrlService rounds the expiry)
+    const link = () => `/media/m-1?t=${Math.floor(Date.now() / 1000) + 1}.sig`;
+    let inFlight = 0;
+    let most = 0;
+    const gw = fakeGateway([]);
+    gw.listSiteVisits!.mockImplementation(async (q?: { status?: string }) => {
+      inFlight += 1;
+      most = Math.max(most, inFlight);
+      await new Promise((r) => setTimeout(r, 30));
+      inFlight -= 1;
+      return q?.status === 'open' ? [] : [visit({ status: 'ended', files: [file({ url: link() })] })];
+    });
+    await mount('client', 'u-client', gw);
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    const before = gw.listSiteVisits!.mock.calls.length;
+    for (let i = 0; i < 60; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    vi.useRealTimers();
+    // three seconds: a read (two requests) about every half second, never two reads at once
+    expect((gw.listSiteVisits!.mock.calls.length - before) / 2).toBeLessThanOrEqual(8);
+    expect(most).toBeLessThanOrEqual(2);
+  });
+
   it('times the link refresh from the soonest expiry shown, always inside the link’s life however short (Codex 4319699370)', () => {
     const at = (url: string) => visit({ files: [file({ url })] });
     const now = 1_000_000_000_000;
@@ -298,6 +323,8 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     // already dead (every read since failed): tried again on a steady beat
     expect(linkRefreshDelay([at(`/media/a?t=${sec - 600}.s`)], now)).toBe(LINK_REFRESH_RETRY_MS);
     expect(linkRefreshDelay([visit()], now)).toBeNull();
+    // a read made for this expiry brought it back unchanged: the link is waited out, not halved again (Codex 4320122174)
+    expect(linkRefreshDelay([at(`/media/a?t=${sec + 1}.s`)], now, (sec + 1) * 1000)).toBe(1000);
   });
 
   it('says so when a closed visit refuses the photo, and takes it off the screen', async () => {

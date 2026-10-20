@@ -8,7 +8,7 @@ import {
   type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitOp,
   type SiteVisitRating,
 } from '@/data/apiGateway';
-import { deleteVisitPhoto, listVisitPhotos, putVisitPhoto, visitPhotoScope, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { deleteVisitPhoto, listVisitPhotos, putVisitPhoto, visitPhotoScope, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { captureStamp } from './captureStamp';
 import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto';
 import { SV } from './siteVisitWords';
@@ -99,12 +99,8 @@ function readFile(file: File): Promise<string | null> {
   });
 }
 
-/** How long before the soonest photo link shown expires the screen reads the visits again for fresh ones: half the time
- *  left, so whatever lifetime the server gives its links (`FILE_URL_TTL_SEC`, an hour by default, any positive number
- *  of seconds allowed), a link is renewed inside it (Codex 4319347052, 4319699370). Once a link has expired (every read
- *  since failed), the next read is `LINK_REFRESH_RETRY_MS` away; null when no link is shown. */
-export const LINK_REFRESH_RETRY_MS = 15_000;
-export function linkRefreshDelay(visits: SiteVisit[], nowMs: number): number | null {
+/** When the soonest photo link shown expires (ms since the epoch); null when no link is shown. */
+export function soonestLinkExpiry(visits: SiteVisit[]): number | null {
   let soonest = Infinity;
   for (const v of visits) {
     for (const f of v.files ?? []) {
@@ -113,9 +109,22 @@ export function linkRefreshDelay(visits: SiteVisit[], nowMs: number): number | n
       if (exp) soonest = Math.min(soonest, Number(exp) * 1000);
     }
   }
-  if (soonest === Infinity) return null;
+  return soonest === Infinity ? null : soonest;
+}
+
+/** How long before the soonest photo link shown expires the screen reads the visits again for fresh ones: half the time
+ *  left, so whatever lifetime the server gives its links (`FILE_URL_TTL_SEC`, an hour by default, any positive number
+ *  of seconds allowed), a link is renewed inside it (Codex 4319347052, 4319699370). A read that brought the same expiry
+ *  (`triedFor`: the expiry the last read was made for) waits that link out instead of halving again: the server signs
+ *  to the whole second, so a short link re-read early comes back unchanged (Codex 4320122174). Once a link has expired
+ *  (every read since failed), the next read is `LINK_REFRESH_RETRY_MS` away; null when no link is shown. */
+export const LINK_REFRESH_RETRY_MS = 15_000;
+export function linkRefreshDelay(visits: SiteVisit[], nowMs: number, triedFor: number | null = null): number | null {
+  const soonest = soonestLinkExpiry(visits);
+  if (soonest === null) return null;
   const left = soonest - nowMs;
-  return left > 0 ? left / 2 : LINK_REFRESH_RETRY_MS;
+  if (left <= 0) return LINK_REFRESH_RETRY_MS;
+  return soonest === triedFor ? left : left / 2;
 }
 
 /** The visits as shown: those still open first, then newest start first. */
@@ -267,6 +276,8 @@ export function useSiteVisits() {
   const shownRef = useRef<SiteVisit[]>([]);
   // bumped each time the link refresh fires, so a refresh that fails (rows unchanged) is tried again
   const [relinks, setRelinks] = useState(0);
+  // the link expiry the last refresh was made for: a read that brings it back unchanged is not halved again
+  const relinkedFor = useRef<number | null>(null);
 
   const live = (scope: ProjectScope): boolean => {
     const s = useStore.getState();
@@ -286,16 +297,16 @@ export function useSiteVisits() {
    *  sign-in); otherwise it is a refresh that reads again every page already shown. Every open visit is in the open
    *  read and every shown page in the page read, so the two replace the rows shown; only a row an act answered with
    *  from beyond the pages read is kept. */
-  const readHead = useCallback(function readHead(fresh: boolean) {
+  const readHead = useCallback(function readHead(fresh: boolean): Promise<void> {
     const gw = useStore.getState().serverGateway();
-    if (!gw) return;
+    if (!gw) return Promise.resolve();
     const scope = projectScopeOf(useStore.getState());
     const mine = (turn.current += 1);
     lastRead.current = mine;
     if (fresh) { answered.current = false; setLoad('loading'); }
     // the first page alone when starting over; otherwise down to the page holding the last visit shown
     const upTo = fresh ? undefined : cursor.current;
-    Promise.all([
+    return Promise.all([
       readPages(gw, { limit: VISIT_PAGE }, (page) => upTo === undefined || page.some((v) => v.id === upTo)),
       readPages(gw, { status: 'open', limit: OPEN_LIMIT }, () => false),
     ])
@@ -303,7 +314,7 @@ export function useSiteVisits() {
         if (!live(scope)) return;
         if (mine !== turn.current) {
           // overtaken by an answer alone: what else changed is still unread, so read again after it
-          if (lastRead.current === mine) readHead(fresh);
+          if (lastRead.current === mine) return readHead(fresh);
           return;
         }
         const read = [...open.rows, ...shown.rows.filter((v) => !open.rows.some((o) => o.id === v.id))];
@@ -412,13 +423,18 @@ export function useSiteVisits() {
   })), [kept]);
   const shown = useMemo(() => withQueued(rows, queued, me, previews), [rows, queued, me, previews]);
   // the photos' signed links expire: read again before the soonest one shown does, so a thumbnail or full photo never
-  // opens dead; each read brings fresh links and sets the next read, and a read that fails (no signal) leaves the rows as
-  // they were, so the timer is set again from the same links, sooner each time, down to the floor (Codex 4319531884)
+  // opens dead; each read brings fresh links and sets the next read. The next is set only once a read settles, so reads
+  // never overlap, and a read that fails (no signal) leaves the rows as they were, so the timer is set again from the
+  // same links: it waits for them to expire, then tries on a steady beat (Codex 4319531884, 4320122174)
   useEffect(() => {
-    const delay = linkRefreshDelay(rows, Date.now());
+    const delay = linkRefreshDelay(rows, Date.now(), relinkedFor.current);
     if (delay === null) return;
-    const relink = setTimeout(() => { readHead(false); setRelinks((n) => n + 1); }, delay);
-    return () => clearTimeout(relink);
+    let gone = false;
+    const relink = setTimeout(() => {
+      relinkedFor.current = soonestLinkExpiry(rows);
+      void readHead(false).finally(() => { if (!gone) setRelinks((n) => n + 1); });
+    }, delay);
+    return () => { gone = true; clearTimeout(relink); };
   }, [rows, relinks, readHead]);
   // and every visit an act is queued on: after a reload its answer may land before the first read shows the visit
   // (Codex 4278754321)
@@ -502,12 +518,14 @@ export function useSiteVisits() {
           },
           by: { name: s.userName ?? '', role: s.role }, placeName: extra.placeName ?? null,
         };
+        // a visit whose start is still waiting to send: that start is kept with the photo too, so the photo never
+        // outlives the act it needs (Codex 4320122186)
+        const start = s.outbox.find((o): o is SiteVisitStartOp => o.t === 'siteVisitStart' && o.body.id === visitId) ?? null;
         // kept before it is queued: "waiting to send" means written
-        try { await putVisitPhoto(owner, s.activeProjectId, op, m[2]); } catch { say(SV.photoNotKept); return false; }
-        if (!live(scope)) {
-          await deleteVisitPhoto(owner, s.activeProjectId, op.file.id).catch(() => {});
-          return false;
-        }
+        try { await putVisitPhoto(owner, s.activeProjectId, op, m[2], start); } catch { say(SV.photoNotKept); return false; }
+        // the person signed out or moved to another project while it was written: the row stays, kept for the user and
+        // project it was taken in, and that scope's next load queues it (Codex 4320122181)
+        if (!live(scope)) return false;
         const queuedHere = useStore.getState().queueSiteVisitAct(op, SV.queued[useStore.getState().lang]);
         // not queued (the server went away meanwhile): the row is let go too, or the next load would send it
         if (!queuedHere) await deleteVisitPhoto(owner, s.activeProjectId, op.file.id).catch(() => {});

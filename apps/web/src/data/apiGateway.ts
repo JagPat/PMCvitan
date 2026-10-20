@@ -2031,6 +2031,8 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1): P
       // the file's own key is the upload's `clientKey`: a replay after a lost answer is the same file, added once
       const { id, note, rating, ...file } = op.file;
       const filed = (): null => { tellSiteVisits({ kind: 'filed', project: gw.project, generation, visitId: op.visitId }); return null; };
+      // the phone's record could not be brought in line with the server's answer: no status, so the outbox keeps the act
+      const unsettled = (): never => { throw new Error('the visit photo kept on this phone could not be updated'); };
       return getVisitPhoto(op.scope, gw.project, id).then(async (row) => {
         // no row: an earlier send was confirmed (or the person dismissed it); a failed row was refused already
         if (!row || row.state !== 'queued') return filed();
@@ -2041,11 +2043,13 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1): P
           });
         } catch (err) {
           // refused for good: the flush drops the act, and the row stays with the server's words, so the screen can
-          // say which photo was not sent and why whenever it is next opened
-          if (isTerminalOutboxError(err)) await failVisitPhoto(op.scope, gw.project, id, refusalMessage(err)).catch(() => {});
+          // say which photo was not sent and why whenever it is next opened. The act goes only once the row says so:
+          // a row the phone could not mark keeps its act, to be sent and marked again (Codex 4320122168)
+          if (isTerminalOutboxError(err)) await failVisitPhoto(op.scope, gw.project, id, refusalMessage(err)).catch(unsettled);
           throw err;
         }
-        await deleteVisitPhoto(op.scope, gw.project, id).catch(() => {});
+        // and a sent photo's act goes only once its row has: a row left behind would be rebuilt and sent again
+        await deleteVisitPhoto(op.scope, gw.project, id).catch(unsettled);
         return filed();
       });
     }

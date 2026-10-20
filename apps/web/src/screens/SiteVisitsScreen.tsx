@@ -96,7 +96,7 @@ export function SiteVisitsScreen() {
                 <div className={styles.fileText}>
                   {p.note && <div>{p.note}</div>}
                   {p.placeName && <div className={styles.meta}>{p.placeName}</div>}
-                  <div className={styles.meta}>{lang === 'en' && p.reason ? `${SV.refused.en} ${p.reason}` : SV.refused[lang]}</div>
+                  <div className={styles.meta}>{/* the server's own words, in every language (Codex 4320122189) */}{p.reason ? `${SV.refused[lang]} ${p.reason}` : SV.refused[lang]}</div>
                   <Button variant="light" onClick={() => sv.dismiss(p.key)}>{SV.dismiss[lang]}</Button>
                 </div>
               </li>

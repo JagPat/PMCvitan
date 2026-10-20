@@ -2354,11 +2354,20 @@ export const useStore = create<Store>()(
     let photoPickSeq = 0;
     const photoPickedAt = new Map<string, number>();
     const siteVisitKeyOf = (key: string): string => key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
+    /** SV2 (#792): a lane holding a visit photo's act moves, whole and in order, to a second key the release before it
+     *  never reads: that release replays every `siteVisit…` act it finds and has no case for a photo, so it would drop
+     *  the act as sent (Codex 4320122193). A lane with no photo stays where every release reads it. */
+    const siteVisitFilesKeyOf = (key: string): string => key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.v2.');
     const persistOutbox = (): void => {
       try {
         const storage = globalThis.localStorage;
         storage?.setItem(outboxKey(), JSON.stringify(get().outbox.filter((o) => !isSiteVisitOp(o))));
-        storage?.setItem(siteVisitKeyOf(outboxKey()), JSON.stringify(get().outbox.filter(isSiteVisitOp)));
+        const lane = get().outbox.filter(isSiteVisitOp);
+        const [home, other] = lane.some((o) => o.t === 'siteVisitAddFile')
+          ? [siteVisitFilesKeyOf(outboxKey()), siteVisitKeyOf(outboxKey())]
+          : [siteVisitKeyOf(outboxKey()), siteVisitFilesKeyOf(outboxKey())];
+        storage?.setItem(home, JSON.stringify(lane));
+        storage?.removeItem(other);
       } catch {
         /* storage unavailable — the in-session outbox still works */
       }
@@ -2430,8 +2439,10 @@ export const useStore = create<Store>()(
     };
     /** Site Visits SV2 (#792): `visitPhotoStore` is the canonical queue of visit photos, as IndexedDB is for evidence.
      *  A queued row whose act is missing from the outbox (its localStorage write failed, or storage was wiped) gets
-     *  that act back, exactly as it was queued (same key: the server adds the file once). The read is checked against
-     *  everything it was taken under before it writes, and a flush or a newer reconciliation supersedes it. */
+     *  that act back, exactly as it was queued (same key: the server adds the file once), behind its visit's start when
+     *  the row kept one the outbox lost too (Codex 4320122186). The read is checked against everything it was taken
+     *  under before it writes, and a flush or a newer reconciliation supersedes it. What it rebuilds is sent at once
+     *  when online: no screen may be open to send it (Codex 4320122176). */
     let visitPhotoEpoch = 0;
     const reconcileVisitPhotos = async (): Promise<void> => {
       const epoch = ++visitPhotoEpoch;
@@ -2447,11 +2458,19 @@ export const useStore = create<Store>()(
           const queued = new Set(s.outbox.filter(isSiteVisitOp).map((o) => o.idempotencyKey));
           for (const row of rows) {
             if (row.state !== 'queued' || queued.has(row.op.idempotencyKey)) continue;
+            if (row.start && !queued.has(row.start.idempotencyKey)) {
+              s.outbox.push(row.start);
+              queued.add(row.start.idempotencyKey);
+            }
             s.outbox.push(row.op);
+            queued.add(row.op.idempotencyKey);
             rebuilt = true;
           }
         });
-        if (rebuilt) persistOutbox();
+        if (rebuilt) {
+          persistOutbox();
+          if (get().online) void get().flushOutbox();
+        }
       } catch {
         /* visit photo store unavailable: nothing was ever kept there */
       }
@@ -6229,14 +6248,19 @@ export const useStore = create<Store>()(
               /* storage full — the queue still replays from memory this session */
             }
           }
-          // the site visit acts, from their own key (malformed → none)
-          let visitOps: OutboxOp[] = [];
-          try {
-            const rawVisits: unknown = JSON.parse(storage.getItem(siteVisitKeyOf(outboxKey())) ?? '[]');
-            visitOps = Array.isArray(rawVisits) ? (rawVisits as OutboxOp[]).filter((o) => o && isSiteVisitOp(o)) : [];
-          } catch {
-            visitOps = [];
-          }
+          // the site visit acts, from their own key (malformed → none): the photo-bearing key first, then any act an
+          // earlier release's tab added to the other since (SV2)
+          const laneAt = (key: string): OutboxOp[] => {
+            try {
+              const rawVisits: unknown = JSON.parse(storage.getItem(key) ?? '[]');
+              return Array.isArray(rawVisits) ? (rawVisits as OutboxOp[]).filter((o) => o && isSiteVisitOp(o)) : [];
+            } catch {
+              return [];
+            }
+          };
+          const withFiles = laneAt(siteVisitFilesKeyOf(outboxKey()));
+          const keys = new Set(withFiles.map((o) => (o as { idempotencyKey?: string }).idempotencyKey));
+          const visitOps = [...withFiles, ...laneAt(siteVisitKeyOf(outboxKey())).filter((o) => !keys.has((o as { idempotencyKey?: string }).idempotencyKey))];
           const ops = [...photosNorm.ops.filter((o) => !isSiteVisitOp(o)), ...visitOps];
           // #669 — the engineer's unsent daily-log work for THIS scope comes back with its queue, so a
           // reload (or a return to this project) keeps the day where they left it; the next apply lays

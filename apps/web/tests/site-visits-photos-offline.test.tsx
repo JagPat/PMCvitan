@@ -5,7 +5,7 @@ import type { ProjectMember, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { moveSiteVisitOps, type ApiGateway, type OutboxOp, type SiteVisit } from '@/data/apiGateway';
-import { listVisitPhotos, visitPhotoScope } from '@/data/visitPhotoStore';
+import { failVisitPhoto, listVisitPhotos, putVisitPhoto, visitPhotoScope } from '@/data/visitPhotoStore';
 import { refreshSiteVisits } from '@/lib/useSiteVisits';
 
 /**
@@ -332,5 +332,146 @@ describe('Site Visits SV2: every photo is kept until the server answers it (#792
     uploadMedia.mockResolvedValue({ id: 'm-1', url: '/media/m-1' });
     await act(async () => { await useStore.getState().flushOutbox(); });
     expect(uploadMedia).toHaveBeenLastCalledWith(expect.objectContaining({ clientKey: key, nodeId: 'n-kit' }));
+  });
+});
+
+/**
+ * #999's round 1 (head 2cefcc7): each test fails there.
+ */
+describe('Site Visits SV2: a kept photo is never stranded (#792, #999 round 1)', () => {
+  const startOp = (): Extract<OutboxOp, { t: 'siteVisitStart' }> => ({
+    t: 'siteVisitStart', idempotencyKey: 'k-s', body: { id: 'v-tmp', claimedAt: '2026-10-14T04:30:00.000Z' },
+    visitor: { name: 'Kiran Rao', role: 'consultant', placeName: null },
+  });
+  const fileOp = (over: Partial<Extract<OutboxOp, { t: 'siteVisitAddFile' }>> = {}): Extract<OutboxOp, { t: 'siteVisitAddFile' }> => ({
+    t: 'siteVisitAddFile', visitId: 'v-1', scope: visitPhotoScope(null, CONSULTANT), idempotencyKey: 'k-f',
+    by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, file: { id: 'c-1', mime: 'image/png' }, ...over,
+  });
+
+  it('keeps a lane holding a photo where the release before it never reads, and reads both back (Codex 4320122193)', async () => {
+    const uploadMedia = vi.fn().mockRejectedValue(network());
+    await mount(fakeGateway([visit()], { uploadMedia }));
+    await pick('v-1');
+    await vi.waitFor(() => expect(queuedFile()).toBeTruthy());
+    // the earlier release reads `vitan.siteVisitQueue.<user>.<project>` and would drop a photo act it has no case for
+    const project = useStore.getState().activeProjectId;
+    const v1 = `vitan.siteVisitQueue.dev:${CONSULTANT}.${project}`;
+    const v2 = `vitan.siteVisitQueue.v2.dev:${CONSULTANT}.${project}`;
+    expect(localStorage.getItem(v1)).toBeNull();
+    expect(localStorage.getItem(v2)).toContain('siteVisitAddFile');
+    // an earlier release's tab adds an end meanwhile, where it reads and writes
+    const end: OutboxOp = { t: 'siteVisitEnd', visitId: 'v-1', claimedAt: '2026-10-14T05:30:00.000Z', idempotencyKey: 'k-e' };
+    localStorage.setItem(v1, JSON.stringify([end]));
+    // a reload has both, the photo's lane first
+    cleanup();
+    setUp('consultant', fakeGateway([visit()], { uploadMedia }));
+    useStore.getState().hydrateOutbox();
+    expect(useStore.getState().outbox.map((o) => o.t)).toEqual(['siteVisitAddFile', 'siteVisitEnd']);
+    // and a lane with no photo goes back where every release reads it
+    useStore.setState({ outbox: [end] });
+    useStore.getState().queueSiteVisitAct({ ...end, idempotencyKey: 'k-e2' }, 'queued');
+    expect(localStorage.getItem(v2)).toBeNull();
+    expect(JSON.parse(localStorage.getItem(v1)!).map((o: OutboxOp) => o.t)).toEqual(['siteVisitEnd', 'siteVisitEnd']);
+  });
+
+  it('sends the start a kept photo needs when the outbox lost both, ahead of the photo (Codex 4320122186)', async () => {
+    const startSiteVisit = vi.fn().mockRejectedValue(network());
+    const uploadMedia = vi.fn().mockRejectedValue(network());
+    const gw = fakeGateway([], { startSiteVisit, uploadMedia });
+    // localStorage keeps nothing: the start lives only in memory
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('QuotaExceededError'); });
+    await mount(gw, [startOp()]);
+    await vi.waitFor(() => expect(screen.getByTestId('sv-photo-file-v-tmp')).toBeTruthy());
+    await pick('v-tmp');
+    await vi.waitFor(() => expect(queuedFile()?.visitId).toBe('v-tmp'));
+    // a reload: the in-memory queue, start included, is gone
+    cleanup();
+    setUp('consultant', gw);
+    const order: string[] = [];
+    startSiteVisit.mockImplementation(async () => { order.push('start'); return visit({ id: 'v-tmp' }); });
+    uploadMedia.mockImplementation(async () => { order.push('photo'); return { id: 'm-1', url: '/media/m-1' }; });
+    useStore.getState().hydrateOutbox();
+    await vi.waitFor(() => expect(order).toEqual(['start', 'photo']));
+    expect(startSiteVisit.mock.calls[0]).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'v-tmp' })]));
+    await vi.waitFor(() => expect(useStore.getState().outbox).toHaveLength(0));
+  });
+
+  it('keeps a photo whose save lands after a sign-out or project switch, for the scope it was taken in (Codex 4320122181)', async () => {
+    const uploadMedia = vi.fn();
+    await mount(fakeGateway([visit()], { uploadMedia }));
+    const project = useStore.getState().activeProjectId;
+    // the person switches project while the photo is being written
+    const put = IDBObjectStore.prototype.put;
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args: Parameters<IDBObjectStore['put']>) {
+      useStore.setState({ activeProjectId: 'p-other', projectScopeGeneration: useStore.getState().projectScopeGeneration + 1 });
+      return put.apply(this, args);
+    });
+    await pick('v-1');
+    await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe('p-other'));
+    await act(async () => {});
+    vi.mocked(IDBObjectStore.prototype.put).mockRestore();
+    // nothing went to the other project, and the photo is still kept for its own
+    expect(useStore.getState().outbox).toHaveLength(0);
+    const kept = await listVisitPhotos(visitPhotoScope(null, CONSULTANT), project);
+    expect(kept.map((r) => r.state)).toEqual(['queued']);
+  });
+
+  it('keeps a refused photo’s act until its row says so, and a sent one’s until its row is gone (Codex 4320122168)', async () => {
+    const uploadMedia = vi.fn().mockRejectedValue(network());
+    await mount(fakeGateway([visit({ status: 'ended' })], { uploadMedia }));
+    await pick('v-1');
+    await vi.waitFor(() => expect(queuedFile()).toBeTruthy());
+    const key = queuedFile()!.file.id;
+    // refused for good, but the phone cannot mark the row: the act stays
+    uploadMedia.mockRejectedValue(refusal(409, 'This site visit was closed by the PMC and takes no more files'));
+    const put = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    expect(queuedFile()?.file.id).toBe(key);
+    expect((await rows()).map((r) => r.state)).toEqual(['queued']);
+    // it can now: sent again, refused again, marked, and only then let go
+    put.mockRestore();
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    expect(queuedFile()).toBeUndefined();
+    expect((await rows()).map((r) => r.state)).toEqual(['failed']);
+    // sent, but the phone cannot let go of the row: the act stays, and goes once the row has
+    await act(async () => { await failVisitPhoto(visitPhotoScope(null, CONSULTANT), useStore.getState().activeProjectId, key, null); });
+    cleanup();
+    const sent = vi.fn().mockRejectedValue(network());
+    await mount(fakeGateway([visit()], { uploadMedia: sent }));
+    await pick('v-1');
+    await vi.waitFor(() => expect(queuedFile()).toBeTruthy());
+    const second = queuedFile()!.file.id;
+    sent.mockResolvedValue({ id: 'm-2', url: '/media/m-2' });
+    const del = vi.spyOn(IDBObjectStore.prototype, 'delete').mockImplementation(() => { throw new DOMException('broken', 'UnknownError'); });
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    expect(queuedFile()?.file.id).toBe(second);
+    del.mockRestore();
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    expect(queuedFile()).toBeUndefined();
+    expect((await rows()).filter((r) => r.clientKey === second)).toEqual([]);
+  });
+
+  it('sends a photo it rebuilt while no visit screen is open (Codex 4320122176)', async () => {
+    const uploadMedia = vi.fn().mockResolvedValue({ id: 'm-1', url: '/media/m-1' });
+    setUp('consultant', fakeGateway([visit()], { uploadMedia }));
+    await putVisitPhoto(visitPhotoScope(null, CONSULTANT), useStore.getState().activeProjectId, fileOp(), 'AQID');
+    // a reload with no Site Visits screen on show
+    useStore.getState().hydrateOutbox();
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledWith(expect.objectContaining({ clientKey: 'c-1', data: 'AQID' })));
+    await vi.waitFor(() => expect(useStore.getState().outbox).toHaveLength(0));
+  });
+
+  it('says the server’s reason for a photo not sent in Hindi and Gujarati too (Codex 4320122189)', async () => {
+    const project = useStore.getState().activeProjectId;
+    await putVisitPhoto(visitPhotoScope(null, CONSULTANT), project, fileOp(), 'AQID');
+    await failVisitPhoto(visitPhotoScope(null, CONSULTANT), project, 'c-1', 'This site visit was closed by the PMC and takes no more files');
+    for (const lang of ['hi', 'gu'] as const) {
+      setUp('consultant', fakeGateway([visit()]));
+      useStore.setState({ lang });
+      render(<SiteVisitsScreen />);
+      const row = await screen.findByTestId('sv-not-sent-c-1');
+      expect(row.textContent).toContain('This site visit was closed by the PMC and takes no more files');
+      cleanup();
+    }
   });
 });
