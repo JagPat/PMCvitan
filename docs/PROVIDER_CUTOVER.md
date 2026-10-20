@@ -13,12 +13,12 @@ Every provider is **env-gated** — no code change or image rebuild is needed to
 
 ---
 
-## Current live state (2026-07-04)
+## Current live state (2026-07-04; the media row updated 20 Oct 2026)
 
 | Provider | Gate (both/all required) | State |
 |---|---|---|
 | **Web push (VAPID)** | `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` | ✅ **LIVE** — `/push/public-key` returns the key |
-| **Media (Cloudflare R2)** | `S3_ENDPOINT` + `S3_BUCKET` + `S3_ACCESS_KEY_ID` + `S3_SECRET_ACCESS_KEY` | ✅ **LIVE** — private bucket `vitanpmc`; files are served only through short-lived signed links (`/media/:id`, `/drawings/rev/:id`), and the bucket's public `r2.dev` URL should be **off** (it was still on at 20 Oct 2026; switching it off is tracked on #482) |
+| **Media (Cloudflare R2)** | `S3_ENDPOINT` + `S3_BUCKET` + `S3_ACCESS_KEY_ID` + `S3_SECRET_ACCESS_KEY` | ✅ **LIVE** — private bucket `vitanpmc`; files are served only through short-lived signed links (`/media/:id`, `/drawings/rev/:id`), and the bucket's public `r2.dev` URL should be **off** once the step-4 count prints `0 0 0` (it was still on at 20 Oct 2026; the count and the switch-off are tracked on #482) |
 | **SMS OTP (MSG91)** | `MSG91_AUTH_KEY` + `MSG91_TEMPLATE_ID` | 🟡 **dev-stub** — `AUTH_KEY` set, `TEMPLATE_ID` missing (blocked on DLT). See [`MSG91_CUTOVER_TASK.md`](./MSG91_CUTOVER_TASK.md) for the hands-off cutover task |
 
 `GET /projects/ambli/snapshot` is live (200) and includes `dailyLog.photos` — the 7c-media snapshot field is deployed.
@@ -30,7 +30,7 @@ Every provider is **env-gated** — no code change or image rebuild is needed to
 | Access the agent has | What it can do |
 |---|---|
 | **(a) No credentials** | Only READ prod: run the [validation script](#validation-script) to report each provider's stub/live state. Cannot flip anything. |
-| **(b) Coolify API token only** | Resolve the app uuid, set/replace env vars, and redeploy — but with no correct values it can only perform the **rollback** (blank the gating vars + redeploy) and re-run read-side validation. Cannot mark a var "secret" (UI-only) or read boot logs (no logs endpoint in the API). |
+| **(b) Coolify API token only** | Resolve the app uuid, set/replace env vars, and redeploy — but with no correct values it can only perform the **rollback** (blank the gating vars + redeploy; not for R2: see Provider 2's Rollback, which keeps the S3 vars) and re-run read-side validation. Cannot mark a var "secret" (UI-only) or read boot logs (no logs endpoint in the API). |
 | **(c) Coolify token + provider values** | Full env-set + redeploy + read-side validation, autonomously. **VAPID and R2 are fully agent-verifiable end-to-end.** MSG91's true end-to-end proof (an SMS arriving) and VAPID's (a notification arriving) are **human-only** — the agent can only confirm the server *accepted* the send / serves the key. |
 
 **Human-only prerequisites no agent can produce:** the DLT registration + MSG91 account/keys, the Cloudflare account + R2 bucket + API token, and a real browser granting notification permission.
@@ -128,7 +128,7 @@ Flips `StorageService` from keeping bytes in Postgres (served from `/media/:id`)
 | `S3_PUBLIC_BASE` | (optional; unused) | Not used for serving: no file is read through it, and upload results built from it are discarded (`url: null` is stored). |
 
 ### Agent cutover (access level c)
-Set the six vars via `POST …/envs` (each `is_literal:true`), then `deploy?force=false`, then run the validation below.
+Set the five S3 vars (`S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`; `S3_PUBLIC_BASE` is not needed, and never point it at `r2.dev`) via `POST …/envs` (each `is_literal:true`), then `deploy?force=false`, then run the validation below.
 
 ### Validation (agent-doable, but see safety note)
 ```bash
@@ -141,13 +141,13 @@ curl -sS -X POST $API/projects/ambli/media -H "Authorization: Bearer $TOK" \
   -H 'Content-Type: application/json' -d "{\"kind\":\"progress\",\"mime\":\"image/png\",\"data\":\"$PNG\"}"
 ```
 - **STUB:** `{"id":"…","url":"/media/…"}` — **relative** URL (DB).
-- **LIVE (R2):** the same relative signed path. `curl -sS -o /dev/null -D - "$API<that url>"` → HTTP 302 to a signed link on the `S3_ENDPOINT` host, and following it with a plain GET (`curl -sS -o /dev/null -D - -L "$API<that url>"`) → 200, `content-type: image/png`. Use GET, not `-I`: the signed link is signed for GET, and R2 refuses a HEAD on it. (For the stub, the first request → 200, `content-length: 70`.) `scripts/validate-live.sh --media` makes the same two requests and reports STUB, LIVE only when the signed GET answers 200 `image/png`, or FAIL (exit 1) otherwise, for example when the key cannot read.
+- **LIVE (R2):** the same relative signed path. `curl -sS -o /dev/null -w '%{http_code}\n' "$API<that url>"` → `302` (a redirect to a signed link on the `S3_ENDPOINT` host), and following it with a plain GET (`curl -sS -o /dev/null -L -w '%{http_code} %{content_type}\n' "$API<that url>"`) → `200 image/png`. Print only the status and type, never the headers: the `Location` header is the whole signed link, with the account host, the access key id and the signature. Use GET, not `-I`: the signed link is signed for GET, and R2 refuses a HEAD on it. (For the stub, the first request → `200`.) `scripts/validate-live.sh --media` makes the same two requests and reports STUB, LIVE only when the signed GET answers 200 `image/png`, or FAIL (exit 1) otherwise, for example when the key cannot read.
 
-**Failure modes:** wrong endpoint/region → send fails; token lacks write → 403; a key without Object Read → signed links 403 and images fail in the UI; wrong var names (`S3_ACCESS_KEY` vs `S3_ACCESS_KEY_ID`) → gate silently stays false, no error.
+**Failure modes:** wrong endpoint/region → send fails; token lacks write → 403; a key without Object Read → signed links 403 and images fail in the UI (fix the existing token's permission in place; never switch to an Admin token or a different key); wrong var names (`S3_ACCESS_KEY` vs `S3_ACCESS_KEY_ID`) → gate silently stays false, no error.
 
 **Rollback:** redeploy the previous release with the same S3 vars kept. Do **not** blank the S3 vars once any file is in the bucket: a bucket-backed row holds no bytes, and with the gate off the app cannot sign a read (`presignGet` returns null), so every such photo and drawing answers 404. An older row that still carries a public `url` would redirect to the `r2.dev` address, which step 4 keeps disabled. Going back to the DB stub therefore needs every object copied back into its row first; no tool for that exists today.
 
-⚠️ **Prod side effects:** every validation upload writes a durable `media` row under `projectId=ambli, kind=progress`, fires a realtime `changed` (connected clients refetch), and — in **live** mode — puts a real object in the R2 bucket. There is **no DELETE endpoint** (`MediaController` is POST + GET only), so test artifacts are removable **only** via the DB / bucket console. The earlier probe already left `media` id `cmr5rf3160001n33ty72mq2an` in prod. Use a maintenance window or accept the test pixel in the gallery.
+⚠️ **Prod side effects:** every validation upload writes a durable `media` row under `projectId=ambli, kind=progress`, fires a realtime `changed` (connected clients refetch), and — in **live** mode — puts a real object in the R2 bucket. A PMC can remove a test photo with `DELETE /media/:id` (`media.controller.ts:69`), which deletes the row and then its bucket object; the script prints the id. The earlier probe already left `media` id `cmr5rf3160001n33ty72mq2an` in prod. Use a maintenance window or accept the test pixel in the gallery.
 
 ---
 
@@ -194,13 +194,14 @@ curl -sS -X POST $API/auth/otp/request -H 'Content-Type: application/json' \
 - **`ALLOW_DEV_AUTH` sequencing.** Headless R2 validation needs a JWT, obtained via `POST /auth/session` (dev auth), which is currently **enabled** in prod (a standalone note: this permits passwordless persona switching). If you set `ALLOW_DEV_AUTH=false`, do it **after** R2 validation, or hand the agent a real JWT — otherwise `/auth/session` returns 403 and headless media validation is impossible.
 - **Rotate the Coolify API token** after the cutovers if it was shared in plaintext (Coolify → Keys & Tokens → revoke, create a fresh one scoped `write`+`deploy`).
 - **Secret flag** on env values is a **dashboard-only** toggle; the API sets values but can't mark them hidden.
-- **Test media rows** are irreversible via the API — clean up via the Postgres/R2 console if desired (e.g. the probe's `cmr5rf3160001n33ty72mq2an`).
+- **Test media rows** can be removed by a PMC with `DELETE /media/:id` (for example the probe's `cmr5rf3160001n33ty72mq2an`).
 - **Single-replica assumption:** stub OTP verify keys the code in a per-process `Map`; it only works with one API replica and if the process doesn't restart between request and verify.
 
 ## Validation script
 
-`scripts/validate-live.sh` runs all read-side checks and prints a stub/live verdict per provider (no credentials needed; creates one test media row — see the safety note). Run it any time to see current state:
+`scripts/validate-live.sh` prints a stub/live verdict per provider (no credentials needed). By default it only reads. `--otp` also asks for an OTP, which sends a real SMS once MSG91 is live; `--media` also uploads one test photo (see the safety note). It exits 1 when a check that was asked for fails or cannot run, and it never prints a file token or a signed link. Run it any time to see current state:
 
 ```bash
-bash scripts/validate-live.sh
+bash scripts/validate-live.sh            # push only, read-only
+bash scripts/validate-live.sh --otp --media
 ```

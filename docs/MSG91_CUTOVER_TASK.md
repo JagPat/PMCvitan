@@ -38,7 +38,7 @@ export COOLIFY_TOKEN='<paste>'                 # from the human
 
 ### 1. Preflight — confirm it's currently STUB
 ```bash
-bash scripts/validate-live.sh    # expect: OTP : STUB (live:false, devCode:…)
+bash scripts/validate-live.sh --otp    # expect: OTP : STUB (live:false, devCode:…)
 ```
 If it already says `OTP : LIVE`, stop — nothing to do.
 
@@ -99,7 +99,7 @@ curl -sS -X POST "$API/auth/otp/verify" -H 'Content-Type: application/json' \
 ---
 
 ## Success criteria
-- `bash scripts/validate-live.sh` (with a real number) shows `OTP : LIVE`, **and**
+- `bash scripts/validate-live.sh --otp` (with a real number) shows `OTP : LIVE`, **and**
 - an SMS arrives, **and** step 7 returns a 201 engineer token.
 
 ## Rollback (instant, safe)
