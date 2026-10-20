@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
@@ -376,6 +376,20 @@ describe('Phase 3 Task 4 — inventory: receipts, acceptance, the §C stock ledg
     expect(await receivedQty(projectId, poLineId)).toBe('100');
     expect(await versionStatus(projectId, poLineId)).toBe('completed');
     expect(await t.prisma.stockTransaction.count({ where: { projectId, type: 'receipt' } })).toBe(2);
+  });
+
+  it('#482 a photo deleted between the evidence check and the ledger write is a 400, never a 500 (#1005 mirror race)', async () => {
+    const projectId = await freshProject();
+    const { poLineId, commitmentId } = await receivablePoLine(projectId);
+    const lot = await inventory.recordReceipt(projectId, { poLineId, commitmentId, purchaseQty: '50' }, pmc(projectId));
+    // the check saw the photo; its delete committed before the ledger row was written
+    const check = vi.spyOn(inventory as unknown as { assertEvidenceMedia: () => Promise<void> }, 'assertEvidenceMedia').mockResolvedValue(undefined);
+    try {
+      await expect(inventory.accept(projectId, { lotId: lot.id, qty: '40', qualityResult: 'passed', evidenceMediaId: 'just-deleted' }, pmc(projectId)))
+        .rejects.toMatchObject({ status: 400 });
+    } finally {
+      check.mockRestore();
+    }
   });
 
   it('§C BOTH ORDERS (RACE): acceptance vs adjustment on one 50-bag quarantine — whichever runs second REFUSES', async () => {

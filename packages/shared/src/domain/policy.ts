@@ -228,7 +228,9 @@ export const ROLE_POLICY = {
   // member). Anonymous worker tokens stay out. The service narrows the newly admitted roles to a plain site
   // photo: linking one to a decision, a daily log or an inspection stays the PMC's and engineer's.
   'media.upload': ['pmc', 'engineer', 'contractor', 'consultant', 'client'],
-  'media.delete': ['pmc', 'engineer'],
+  // #482 (Board, 14 Oct 2026): every member deletes a site photo they added, within the hour. The service narrows
+  // the newly admitted roles to that; deleting any photo stays the PMC's and engineer's.
+  'media.delete': ['pmc', 'engineer', 'contractor', 'consultant', 'client'],
   // re-file a photo onto a location-tree node (or unfile) — same authority as upload
   'media.file': ['pmc', 'engineer'],
   'drawing.issue': ['pmc'],

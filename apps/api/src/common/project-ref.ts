@@ -74,7 +74,8 @@ export function rethrowMediaRefViolation(e: unknown, field = 'evidenceMediaId'):
   if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2003') {
     const meta = (e.meta ?? {}) as Record<string, unknown>;
     const constraint = String(meta.constraint ?? meta.field_name ?? '');
-    if (constraint.includes('MediaId') || constraint.includes('mediaId')) {
+    // every key onto a photo names it (`…evidenceMediaId_fkey`, `LabourAttendance_evidence_media_fkey`)
+    if (/media/i.test(constraint)) {
       throw new BadRequestException(`${field} does not name a photo in this project`);
     }
   }

@@ -390,6 +390,23 @@ export class ActivityParticipant {
     if (cited > 0) {
       throw new ConflictException('This photo is cited as measured-output evidence and cannot be deleted (§I)');
     }
+    // #482 site photos — nor while a gate override cites it as its supporting photo: the override is an attributable
+    // record, and its NO ACTION key would otherwise fail the delete as a raw constraint error (Codex 4320515416)
+    if ((await tx.gateOverride.count({ where: { projectId, evidenceMediaId: mediaId } })) > 0) {
+      throw new ConflictException('This photo supports a readiness override and cannot be deleted while the override stands');
+    }
+  }
+
+  /** #482 site photos — the batched form of {@link assertMediaDisposable}: which of these photos measured output or a gate override cites, in one read
+   *  of this module's own rows, so the snapshot asks once for its whole photo window (Codex 4320515415). */
+  async pinnedMedia(db: Prisma.TransactionClient, projectId: string, mediaIds: string[]): Promise<Set<string>> {
+    if (mediaIds.length === 0) return new Set();
+    const where = { projectId, evidenceMediaId: { in: mediaIds } };
+    const [outputs, overrides] = await Promise.all([
+      db.activityWorkOutput.findMany({ where, select: { evidenceMediaId: true }, distinct: ['evidenceMediaId'] }),
+      db.gateOverride.findMany({ where, select: { evidenceMediaId: true }, distinct: ['evidenceMediaId'] }),
+    ]);
+    return new Set([...outputs, ...overrides].flatMap((r) => (r.evidenceMediaId ? [r.evidenceMediaId] : [])));
   }
 
   /**
