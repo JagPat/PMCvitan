@@ -555,7 +555,9 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   // Top 10 #4b unit C (#778) — the bell's seen mark (the viewer's own receipts).
   'snapshot/notifications-seen.controller.ts': ["Post('seen')"],
   // #482 operator door — the presentation-only capability switch behind OPS_TOKEN
-  'platform/ops/ops.controller.ts': ["Post('projects/:projectId/capabilities/:capability/enable')", "Post('projects/:projectId/capabilities/:capability/disable')", "Post('orgs/:orgId/qa-only')"],
+  'platform/ops/ops.controller.ts': ["Post('projects/:projectId/capabilities/:capability/enable')", "Post('projects/:projectId/capabilities/:capability/disable')"],
+  // #482 operator door — the QA-only mark, door guard before the rate limit (Codex P2 on #1020)
+  'platform/ops/ops-qa.controller.ts': ["Post('orgs/:orgId/qa-only')"],
 };
 
 // Controllers with NO mutating route (read-only surfaces).

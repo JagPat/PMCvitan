@@ -10,6 +10,16 @@ export const QA_ACCOUNT_EMAIL = /^qa\.[a-z]+@vitan\.in$/;
 /** The 409 the QA sign-in gives when one of the rows its check locks is being changed at that moment. */
 export const QA_SIGN_IN_BUSY = 'This account is being changed right now, so it cannot be signed in; try again';
 
+/** The QA sign-in's row locks: a row being changed right now (55P03 lock_not_available) is the 409, never a wait. */
+async function lockedNow<T>(query: () => Promise<T>): Promise<T> {
+  try {
+    return await query();
+  } catch (e: unknown) {
+    if (e instanceof Error && /55P03|could not obtain lock/.test(e.message)) throw new ConflictException(QA_SIGN_IN_BUSY);
+    throw e;
+  }
+}
+
 /** The 409 a command gives when the QA company lock (migration 20280116) refuses its membership or address write. */
 export const QA_LOCK_REFUSAL = 'QA accounts and real people are kept in separate companies, so this account cannot be added here';
 
@@ -100,6 +110,35 @@ export class OrgsParticipant {
   }
 
   /**
+   * #482 QA sign-in (Codex P1 on #1020) — the account that owns this address now, found and locked inside the
+   * sign-in's own transaction, before anything else is read: `FOR SHARE NOWAIT` on the User row the address names. A
+   * rename in flight refuses the sign-in (409, try again) instead of waiting; one committed before the lock leaves
+   * the address with its new owner or with none, and PostgreSQL re-reads a row changed after the statement began, so
+   * a row that no longer holds the address is not returned. The lock then holds the address on that account until
+   * the sign-in commits. Null when no account holds it.
+   */
+  async lockQaAccountByEmail(tx: Prisma.TransactionClient, email: string): Promise<string | null> {
+    const client = tx as OrgsParticipantClient;
+    const rows = await lockedNow(() => client.$queryRawUnsafe<Array<{ id: string; email: string }>>(
+      `SELECT "id", "email" FROM "User" WHERE "email" = $1 FOR SHARE NOWAIT`, email));
+    const row = rows[0];
+    // the locked row still owns the address it was found by (it cannot change under the lock; checked, not assumed)
+    return row && row.email === email ? row.id : null;
+  }
+
+  /**
+   * #482 QA sign-in (Codex P2 on #1020) — is the project a sign-in chose to land on still live, held so until the
+   * sign-in commits? `FOR SHARE NOWAIT` on the Project row, read again under the lock: an archive in flight refuses
+   * the sign-in (409, try again), and one committed since the landing was chosen answers false.
+   */
+  async lockLiveProject(tx: Prisma.TransactionClient, projectId: string): Promise<boolean> {
+    const client = tx as OrgsParticipantClient;
+    const rows = await lockedNow(() => client.$queryRawUnsafe<Array<{ archivedAt: Date | null }>>(
+      `SELECT "archivedAt" FROM "Project" WHERE "id" = $1 FOR SHARE NOWAIT`, projectId));
+    return rows.length === 1 && rows[0]!.archivedAt === null;
+  }
+
+  /**
    * #482 QA sign-in (Jagrut, 20 Oct 2026: "Rebuild it") — may the operator door sign in as this account? Only when its
    * email is a QA address, it reaches at least one company (a company row, or a membership that is not removed on one
    * of that company's projects), and every company it reaches is marked QA-only. The database's QA company lock keeps
@@ -117,7 +156,7 @@ export class OrgsParticipant {
     // project never moves company (`Project.orgId` is frozen). Every lock is NOWAIT, so the sign-in never waits on a
     // writer and can never sit in a lock cycle with one, whatever order that writer takes its rows in: a row being
     // changed at this moment refuses the sign-in (409, try again), and a writer that comes second waits for it.
-    try {
+    await lockedNow(async () => {
       await client.$queryRawUnsafe(`SELECT 1 FROM "OrgMembership" WHERE "userId" = $1 ORDER BY "id" FOR SHARE NOWAIT`, userId);
       await client.$queryRawUnsafe(`SELECT 1 FROM "Membership" WHERE "userId" = $1 AND "status" <> 'removed' ORDER BY "id" FOR SHARE NOWAIT`, userId);
       await client.$queryRawUnsafe(
@@ -129,11 +168,7 @@ export class OrgsParticipant {
         userId,
       );
       await client.$queryRawUnsafe(`SELECT 1 FROM "User" WHERE "id" = $1 FOR SHARE NOWAIT`, userId);
-    } catch (e: unknown) {
-      // 55P03 lock_not_available: a membership, company or the person is being changed right now
-      if (e instanceof Error && /55P03|could not obtain lock/.test(e.message)) throw new ConflictException(QA_SIGN_IN_BUSY);
-      throw e;
-    }
+    });
     const rows = await client.$queryRawUnsafe<Array<{ self: boolean; reach: number; unmarked: number }>>(
       `WITH reach AS (
          SELECT om."orgId" FROM "OrgMembership" om WHERE om."userId" = $1

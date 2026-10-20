@@ -12,7 +12,7 @@ import { PhoneSignInService } from './phone-sign-in.service';
 import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
 import { recordAudit } from '../platform/audit';
 import { systemActor } from '../common/actor';
-import { OrgsParticipant, QA_ACCOUNT_EMAIL, rethrowQaLock } from '../orgs/orgs.participant';
+import { OrgsParticipant, QA_ACCOUNT_EMAIL, QA_SIGN_IN_BUSY, rethrowQaLock } from '../orgs/orgs.participant';
 import { countersignReloadMessage, understandsCountersign, type DecisionsContract } from '../common/decisions-contract';
 import type { Role } from '../common/auth';
 import type {
@@ -243,14 +243,20 @@ export class AuthService {
   async qaSignIn(input: { email: string; operator: string; reason: string; contract?: DecisionsContract }): Promise<TokenResult> {
     const email = input.email.trim().toLowerCase();
     if (!QA_ACCOUNT_EMAIL.test(email)) throw new ForbiddenException('only a QA account can be signed in here');
-    const user = await this.prisma.user.findUnique({ where: { email } });
-    if (!user) throw new NotFoundException('no such QA account');
-    // the check, the landing and the audit row share one transaction, and the check's locks hold the answer until it
-    // commits: a membership removal or an email change waits for the sign-in, or the sign-in waits for it and is
-    // refused (403, nothing written). The token is issued only after the commit.
-    const access = await this.prisma.$transaction(async (tx) => {
+    // the lookup, the check, the landing and the audit row share one transaction, under row locks taken NOWAIT (so
+    // the sign-in never waits on a writer, and no order of locks can deadlock with one) that hold every answer until
+    // it commits: the account found by the address (Codex P1 on #1020: never a lookup outside it, which a rename could
+    // overtake), its companies and memberships, and the landing project (Codex P2 on #1020). A row being changed right
+    // now refuses the sign-in (409, try again); a change that comes second waits for it. The token is issued only
+    // after the commit.
+    const { user, access } = await this.prisma.$transaction(async (tx) => {
+      const userId = await this.orgs.lockQaAccountByEmail(tx, email);
+      if (!userId) throw new NotFoundException('no such QA account');
+      const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
       if (!(await this.orgs.qaSignInAllowed(tx, user.id))) throw new ForbiddenException('this account is not in a QA-only company');
       const landing = await this.signInAccess(user, tx);
+      // the landing was chosen from committed rows; an archive since then refuses the sign-in rather than land on it
+      if (!(await this.orgs.lockLiveProject(tx, landing.projectId))) throw new ConflictException(QA_SIGN_IN_BUSY);
       // the countersign boundary refuses a minted architect token to a lesser client AFTER this returns (Codex P2 on
       // #983); refuse it here first, so no audit row records a sign-in the caller never received
       if (landing.role === 'architect' && !understandsCountersign(input.contract)) {
@@ -264,7 +270,7 @@ export class AuthService {
         entityId: user.id,
         payload: { reason: input.reason, via: 'ops-api' },
       });
-      return landing;
+      return { user, access: landing };
     });
     return {
       token: this.issueNamedUser(user, access.role, access.projectId),

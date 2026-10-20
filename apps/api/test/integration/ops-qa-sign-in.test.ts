@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
 import { ConflictException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { OrgsParticipant } from '../../src/orgs/orgs.participant';
+import { AuthService } from '../../src/auth/auth.service';
 import { recordAudit } from '../../src/platform/audit';
 import { systemActor } from '../../src/common/actor';
 import { createTestApp, type TestApp } from './test-app';
@@ -25,7 +26,7 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
   const run = `qa-${letters}`;
   const qaEmail = `qa.pmc${letters}@vitan.in`;
   const qaClientEmail = `qa.client${letters}@vitan.in`;
-  const ids = { org: `it-org-${run}`, project: `it-proj-${run}`, pmc: `it-pmc-${run}`, client: `it-client-${run}`, early: `it-early-${run}`, loner: `it-loner-${run}`, twinOrg: `it-org-twin-${run}`, twinProject: `it-proj-twin-${run}`, twin: `it-twin-${run}`, earlyOrg: `it-org-early-${run}`, earlyProject: `it-proj-early-${run}`, raceOrg: `it-org-race-${run}`, raceProject: `it-proj-race-${run}`, racer: `it-racer-${run}`, leaver: `it-leaver-${run}`, addOrg: `it-org-add-${run}`, addProject: `it-proj-add-${run}`, adder: `it-adder-${run}` };
+  const ids = { org: `it-org-${run}`, project: `it-proj-${run}`, pmc: `it-pmc-${run}`, client: `it-client-${run}`, early: `it-early-${run}`, loner: `it-loner-${run}`, twinOrg: `it-org-twin-${run}`, twinProject: `it-proj-twin-${run}`, twin: `it-twin-${run}`, earlyOrg: `it-org-early-${run}`, earlyProject: `it-proj-early-${run}`, raceOrg: `it-org-race-${run}`, raceProject: `it-proj-race-${run}`, racer: `it-racer-${run}`, leaver: `it-leaver-${run}`, addOrg: `it-org-add-${run}`, addProject: `it-proj-add-${run}`, adder: `it-adder-${run}`, gap: `it-gap-${run}`, taker: `it-taker-${run}`, lander: `it-lander-${run}`, landProject: `it-proj-land-${run}` };
   const projectData = (id: string, orgId: string) => ({
     id, orgId, name: `QA project ${id}`, short: 'QA', descriptor: '', stage: 'Planning',
     siteCode: 'QA', projStart: '01 Jan 2026', projEnd: '31 Dec 2026', elapsedPct: 0, todayDay: 0, milestonePct: 0,
@@ -54,13 +55,13 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
     process.env.OPS_TOKEN = TOKEN;
   });
   afterAll(async () => {
-    const projects = [ids.project, ids.earlyProject, ids.twinProject, ids.raceProject, ids.addProject];
+    const projects = [ids.project, ids.earlyProject, ids.twinProject, ids.raceProject, ids.addProject, ids.landProject];
     const orgs = [ids.org, ids.earlyOrg, ids.twinOrg, ids.raceOrg, ids.addOrg];
     await t?.prisma.$transaction([
       t.prisma.auditLog.deleteMany({ where: { projectId: { in: projects } } }),
       t.prisma.membership.deleteMany({ where: { projectId: { in: projects } } }),
       t.prisma.orgMembership.deleteMany({ where: { OR: [{ orgId: { in: orgs } }, { userId: ids.twin }] } }),
-      t.prisma.user.deleteMany({ where: { id: { in: [ids.pmc, ids.client, ids.early, ids.loner, ids.twin, ids.racer, ids.leaver, ids.adder] } } }),
+      t.prisma.user.deleteMany({ where: { id: { in: [ids.pmc, ids.client, ids.early, ids.loner, ids.twin, ids.racer, ids.leaver, ids.adder, ids.gap, ids.taker, ids.lander] } } }),
       t.prisma.project.deleteMany({ where: { id: { in: projects } } }),
       t.prisma.org.deleteMany({ where: { id: { in: orgs } } }),
     ]);
@@ -336,5 +337,112 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
     );
     expect(r.second.status, r.second.text).toBe(409);
     expect(await t.prisma.user.count({ where: { email: realEmail } })).toBe(0);
+  });
+  // ── Codex round 1 on #1020 ─────────────────────────────────────────────────────────────────────────────────────
+
+  /** the door's sign-in, asked of the service (the route's own rate limit is spent by the tests above) */
+  const signIn = (email: string) => t.app.get(AuthService, { strict: false }).qaSignIn({ email, operator: 'claude', reason: 'live QA run' })
+    .then((r) => ({ ok: r }), (e: unknown) => ({ error: e as { getStatus?: () => number } }));
+  /** run `before` just as the sign-in opens its transaction: after anything it read outside it */
+  const onTransaction = (before: () => Promise<unknown>) => {
+    const original = t.prisma.$transaction.bind(t.prisma);
+    return vi.spyOn(t.prisma, '$transaction').mockImplementationOnce((async (...args: Parameters<typeof original>) => {
+      await before();
+      return original(...args);
+    }) as never);
+  };
+
+  it('Codex P1 on #1020: a rename committed between the request and the lookup never gets a token, for the renamed account or another', async () => {
+    const address = `qa.gap${letters}@vitan.in`;
+    await t.prisma.user.create({ data: { id: ids.gap, projectId: ids.project, role: 'engineer', name: 'QA Gap', email: address } });
+    await t.prisma.membership.create({ data: { projectId: ids.project, userId: ids.gap, role: 'engineer', status: 'active' } });
+    expect((await signIn(address)).ok?.name).toBe('QA Gap');
+    // the address is renamed (to another QA address) as the sign-in begins: it now names no account
+    const renamed = `qa.gap${letters}z@vitan.in`;
+    let spy = onTransaction(() => t.prisma.user.update({ where: { id: ids.gap }, data: { email: renamed } }));
+    const gone = await signIn(address);
+    spy.mockRestore();
+    expect(gone.ok, 'a token for the renamed account').toBeUndefined();
+    expect(gone.error?.getStatus?.()).toBe(404);
+    // renamed back, then renamed away again, and another account (in no company) takes the old address
+    await t.prisma.user.update({ where: { id: ids.gap }, data: { email: address } });
+    spy = onTransaction(async () => {
+      await t.prisma.user.update({ where: { id: ids.gap }, data: { email: renamed } });
+      await t.prisma.user.create({ data: { id: ids.taker, projectId: ids.project, role: 'engineer', name: 'QA Taker', email: address } });
+    });
+    const taken = await signIn(address);
+    spy.mockRestore();
+    expect(taken.ok, 'a token for an account that no longer owns the address').toBeUndefined();
+    expect(taken.error?.getStatus?.()).toBe(403);
+    expect(await t.prisma.auditLog.count({ where: { action: 'auth.qaSignIn', entityId: { in: [ids.gap, ids.taker] } } })).toBe(1); // the first sign-in only
+    // a rename still uncommitted when the lookup by address runs: refused at once (NOWAIT), with no token and no audit row
+    const renamedAgain = `qa.gap${letters}y@vitan.in`;
+    const inFlight = await race(
+      (tx) => tx.$executeRawUnsafe(`UPDATE "User" SET "email" = $1 WHERE "id" = $2`, renamedAgain, ids.gap),
+      () => signIn(renamed),
+      null,
+    );
+    expect(inFlight.second.ok, 'a token while the address is being renamed').toBeUndefined();
+    expect(inFlight.second.error?.getStatus?.()).toBe(409);
+    expect(await t.prisma.auditLog.count({ where: { action: 'auth.qaSignIn', entityId: { in: [ids.gap, ids.taker] } } })).toBe(1);
+  });
+
+  it('Codex P2 on #1020: an archive of the landing project in flight gets the 409, and one committed after the landing is chosen never gets an audited token', async () => {
+    await t.prisma.project.create({ data: projectData(ids.landProject, ids.org) });
+    const address = `qa.lander${letters}@vitan.in`;
+    await t.prisma.user.create({ data: { id: ids.lander, projectId: ids.landProject, role: 'engineer', name: 'QA Lander', email: address } });
+    await t.prisma.membership.create({ data: { projectId: ids.landProject, userId: ids.lander, role: 'engineer', status: 'active' } });
+    await t.prisma.membership.create({ data: { projectId: ids.project, userId: ids.lander, role: 'engineer', status: 'active' } });
+    const audited = () => t.prisma.auditLog.count({ where: { action: 'auth.qaSignIn', entityId: ids.lander, projectId: ids.landProject } });
+    expect((await signIn(address)).ok?.projectId).toBe(ids.landProject); // its home project
+    expect(await audited()).toBe(1);
+    // an archive still uncommitted: the sign-in refuses at once (NOWAIT) instead of landing on it
+    const inFlight = await race(
+      (tx) => tx.$executeRawUnsafe(`UPDATE "Project" SET "archivedAt" = now() WHERE "id" = $1`, ids.landProject),
+      () => signIn(address),
+      null,
+    );
+    expect(inFlight.second.ok, 'a token for a project being archived').toBeUndefined();
+    expect(inFlight.second.error?.getStatus?.()).toBe(409);
+    expect(await audited()).toBe(1);
+    // that archive committed before the sign-in: it lands on the other project
+    const other = await signIn(address);
+    expect(other.ok?.projectId).toBe(ids.project);
+    await t.prisma.project.update({ where: { id: ids.landProject }, data: { archivedAt: null } });
+    // an archive committed after the sign-in read the project as live (its landing chosen), before the audit row
+    let archived = false;
+    const original = t.prisma.$transaction.bind(t.prisma);
+    const spy = vi.spyOn(t.prisma, '$transaction').mockImplementationOnce((async (fn: (tx: Prisma.TransactionClient) => Promise<unknown>, opts?: unknown) =>
+      original(async (tx) => fn(new Proxy(tx, {
+        get(target, prop, receiver) {
+          if (prop !== 'project') return Reflect.get(target, prop, receiver);
+          return new Proxy(target.project, {
+            get(model, key, r) {
+              if (key !== 'findUnique') return Reflect.get(model, key, r);
+              return async (args: { where: { id: string } }) => {
+                const out = await model.findUnique(args as never);
+                if (!archived && args.where.id === ids.landProject) {
+                  archived = true;
+                  await t.prisma.$executeRawUnsafe(`UPDATE "Project" SET "archivedAt" = now() WHERE "id" = $1`, ids.landProject);
+                }
+                return out;
+              };
+            },
+          });
+        },
+      })), opts as never)) as never);
+    const late = await signIn(address);
+    spy.mockRestore();
+    expect(archived).toBe(true);
+    expect(late.ok?.projectId, 'a token landing on an archived project').not.toBe(ids.landProject);
+    expect(late.error?.getStatus?.()).toBe(409);
+    expect(await audited()).toBe(1);
+  });
+
+  it('Codex P2 on #1020: thirty-odd calls without the token never lock the operator out of the QA mark', async () => {
+    for (let i = 0; i < 35; i++) expect((await http().post(`/ops/orgs/${ids.org}/qa-only`).send(why)).status).toBe(401);
+    const r = await door(`/ops/orgs/${ids.org}/qa-only`).send(why);
+    expect(r.status, r.text).toBe(200);
+    expect(r.body).toEqual({ ok: true, orgId: ids.org, changed: false });
   });
 });

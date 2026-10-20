@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, HttpCode, NotFoundException, Param, Post, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, HttpCode, Param, Post, UseGuards } from '@nestjs/common';
 import { z } from 'zod';
 import { PrismaService } from '../../prisma.service';
 import { Public } from '../../common/roles';
@@ -7,15 +7,13 @@ import { ZodPipe } from '../../common/zod.pipe';
 import { SWITCHABLE_CAPABILITIES } from '../capabilities.service';
 import { disableCapability, enableCapability, ProjectNotOperableError } from '../capability-switch';
 import { OrgsParticipant } from '../../orgs/orgs.participant';
-import { recordAudit } from '../audit';
-import { systemActor } from '../../common/actor';
 import { OpsTokenGuard } from './ops-token.guard';
 
-const switchSchema = z.object({
+export const switchSchema = z.object({
   operator: z.string().trim().min(3).max(200),
   reason: z.string().trim().min(3).max(500),
 });
-type SwitchInput = z.infer<typeof switchSchema>;
+export type SwitchInput = z.infer<typeof switchSchema>;
 
 export interface OpsProjectRow {
   id: string;
@@ -34,11 +32,8 @@ export const OPS_VIA = 'ops-api';
  *  - `GET  /ops/projects`: every live project with its switched-on capabilities and last activity (reads only).
  *  - `GET  /ops/people`: each company's owners and admins, and each live project's active members with their
  *    role (reads only), so "who can manage this project" is answered without a terminal paste.
- *  - `POST /ops/orgs/:orgId/qa-only`: mark a company QA-only (#482, "Rebuild it" on the QA door, 20 Oct 2026), so
- *    its QA accounts can be signed in at `POST /auth/ops/qa-sign-in`. The database refuses the mark (409) while the
- *    company holds anyone who is not a QA account, and never unmarks it; no route here unmarks. Each mark writes an
- *    `org.qaOnly` audit row on every live project of the company (one company-level row when it has none), with the
- *    operator, reason and `via: "ops-api"`.
+ *  - `POST /ops/orgs/:orgId/qa-only`: mark a company QA-only, in {@link OpsQaController} (its door guard runs before
+ *    its rate limit).
  *  - `POST /ops/projects/:projectId/capabilities/:capability/enable|disable`: the same `capability-switch`
  *    functions the `capability:enable` / `capability:disable` CLIs call, limited to `SWITCHABLE_CAPABILITIES`
  *    (presentation only, no data touched). Each change writes the usual audit row on the project's trail
@@ -109,34 +104,6 @@ export class OpsController {
     const { changed } = await this.withProject(() =>
       disableCapability(this.prisma, { projectId, capability, operator: body.operator, reason: body.reason, via: OPS_VIA }));
     return { ok: true, projectId, capability, changed };
-  }
-
-  @Public()
-  @Post('orgs/:orgId/qa-only')
-  @HttpCode(200)
-  async markQaOnly(
-    @Param('orgId') orgId: string,
-    @Body(new ZodPipe(switchSchema)) body: SwitchInput,
-  ): Promise<{ ok: true; orgId: string; changed: boolean }> {
-    const { changed } = await this.prisma.$transaction(async (tx) => {
-      const marked = await this.orgs.markQaOnly(tx, orgId);
-      if (!marked.found) throw new NotFoundException('no such company');
-      if (marked.changed) {
-        // one row on each live project's trail; a company with none still records its mark once, at company level
-        for (const projectId of marked.projectIds.length ? marked.projectIds : [null]) {
-          await recordAudit(tx, {
-            projectId,
-            actor: systemActor(body.operator, body.operator, 'operator'),
-            action: 'org.qaOnly',
-            entity: 'Org',
-            entityId: orgId,
-            payload: { reason: body.reason, via: OPS_VIA },
-          });
-        }
-      }
-      return marked;
-    });
-    return { ok: true, orgId, changed };
   }
 
   /** An unknown or archived project is the caller's mistake (400), not a server fault. */

@@ -610,10 +610,14 @@ describe('AuthService.qaSignIn — the countersign boundary (#482, Codex P2 on #
   function architectLanding() {
     const prisma = fakePrisma([{ id: 'qa1', projectId: 'qa', role: 'architect', name: 'QA Architect', email: 'qa.architect@vitan.in' }], [], []);
     const { auth } = make(prisma);
+    vi.spyOn(OrgsParticipant.prototype, 'lockQaAccountByEmail').mockResolvedValue('qa1');
     vi.spyOn(OrgsParticipant.prototype, 'qaSignInAllowed').mockResolvedValue(true);
+    vi.spyOn(OrgsParticipant.prototype, 'lockLiveProject').mockResolvedValue(true);
     const landing = vi.spyOn(auth as unknown as { signInAccess: () => Promise<unknown> }, 'signInAccess').mockResolvedValue({ role: 'architect', projectId: 'qa' });
     const audit = vi.fn(async () => undefined);
-    const tx = { auditLog: { create: audit } };
+    // the account is read in the transaction, by the id its locked address names (Codex P1 on #1020)
+    const user = { id: 'qa1', projectId: 'qa', role: 'architect', name: 'QA Architect', email: 'qa.architect@vitan.in' };
+    const tx = { auditLog: { create: audit }, user: { findUniqueOrThrow: async () => user } };
     (prisma as unknown as { $transaction: unknown }).$transaction = (fn: (tx: unknown) => Promise<unknown>) => fn(tx);
     return { auth, audit, landing, tx };
   }
