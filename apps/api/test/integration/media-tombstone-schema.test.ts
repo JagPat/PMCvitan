@@ -195,8 +195,14 @@ describe('#482 the deleted-photo record (live PG)', () => {
       const a = await photo(k);
       await raw(`DELETE FROM "Media" WHERE "id" = $1`, a.id);
       expect(await recorded(k)).toBe(1);
-      // the same key again (a row stored before the record could be read): no error, still one record
-      const b = await photo(k);
+      // the same key again: the guard (20280118) refuses it now, so this is a row stored before the guard existed;
+      // deleting it is no error, and the record stays one
+      const b = await t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`ALTER TABLE "Media" DISABLE TRIGGER "Media_tombstone_guard"`);
+        const row = await tx.media.create({ data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', data: Buffer.from('abc'), sizeBytes: 3, uploadedBy: 'pmc', clientKey: k } });
+        await tx.$executeRawUnsafe(`ALTER TABLE "Media" ENABLE TRIGGER "Media_tombstone_guard"`);
+        return row;
+      });
       await t.prisma.media.delete({ where: { id: b.id } });
       expect(await recorded(k)).toBe(1);
       const before = await t.prisma.mediaTombstone.count({ where: { projectId: f.projectA.id } });

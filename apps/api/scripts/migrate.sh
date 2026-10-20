@@ -527,7 +527,8 @@ if echo "$out" | grep -q "P3005"; then
   # db-push baseline does not have. It is guarded and re-runnable.
   #
   # The #482 deleted-photo record (20280117) is here for the same reason: its seals and its writer are triggers, which a db-push
-  # baseline does not have. It is guarded and re-runnable.
+  # baseline does not have. It is guarded and re-runnable. Its guard (20280118), which refuses a recorded key on
+  # insert, is a trigger too.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -567,7 +568,8 @@ if echo "$out" | grep -q "P3005"; then
 20280114000000_site_visits_sv2_visit_media
 20280115000000_media_markup_voice_video
 20280116000000_qa_company_lock
-20280117000000_media_tombstone"
+20280117000000_media_tombstone
+20280118000000_media_tombstone_guard"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
