@@ -2041,8 +2041,9 @@ export function moveSiteVisitOps(ops: OutboxOp[], from: string, to: string): Out
 }
 
 /** Replay one queued mutation; resolves to the fresh snapshot, or null for an act whose answer is not a snapshot
- *  and needs none (a site visit's answer goes to the Site Visits screen). */
-export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1): Promise<ApiSnapshot | null> {
+ *  and needs none (a site visit's answer goes to the Site Visits screen). `onPhotoGone` is told when a queued site photo
+ *  was settled by the server's 410 (#482), whatever the refresh after it answered. */
+export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, onPhotoGone?: () => void): Promise<ApiSnapshot | null> {
   const visit = (sent: Promise<SiteVisit>): Promise<null> =>
     sent.then((v) => { tellSiteVisits({ kind: 'answer', project: gw.project, generation, visit: v }); return null; });
   switch (op.t) {
@@ -2217,6 +2218,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1): P
         () => gw.snapshot(),
         (err: unknown) => {
           if (!isDeletedPhoto(err)) throw err;
+          onPhotoGone?.();
           return gw.snapshot().catch(() => null);
         },
       );

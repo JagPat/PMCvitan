@@ -6319,8 +6319,8 @@ export const useStore = create<Store>()(
       // it, so it would put the project back without what that write changed (its notice in the bell). It is not applied;
       // a snapshot asked for after the write is (Codex 4278908038, #908)
       let lastSnapStale = false;
-      // #482: a site photo settled by its 410 whose refresh failed: a pull is owed once the flush is done
-      let photoSettledUnread = false;
+      // #482: a site photo settled by its 410: a pull is owed once the flush is done
+      let photoSettledGone = false;
       // the LAST daily-log command this flush committed: the log will next read back as its result
       let dailyLogCommitted: 'start' | 'send' | null = null;
       let synced = 0;
@@ -6352,14 +6352,17 @@ export const useStore = create<Store>()(
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);
         try {
-          const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation);
+          let photoGone = false;
+          const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation, () => { photoGone = true; });
           if (snap) { lastSnap = snap; lastSnapStale = false; } else if (lastSnap && isSiteVisitOp(ops[i])) lastSnapStale = true;
-          // #482: a site photo settled by the server's 410 whose refresh failed: the day's count on screen may still hold
-          // it, so none is shown until a pull begun after this answer gives the server's (Codex 4339094809)
+          // #482: a site photo settled by the server's 410 is settled as a delete is (settleDeleted): the day's count on
+          // screen may still hold it, so none is shown until a pull begun after this answer gives the server's. The
+          // refresh after the 410 never counts, whether it failed (Codex 4339094809), or carried no daily-log slice because
+          // a module read owns it (Codex 4339777229), or is applied under the flush's older lease
           const settledUpload = ops[i];
-          if (!snap && settledUpload.t === 'uploadMedia' && settledUpload.input.kind === 'progress') {
-            photoSettledUnread = true;
-            if (get().dailyLog) set((s) => { s.dailyLogPhotoCountAfter = snapshotSeq; });
+          if (photoGone && settledUpload.t === 'uploadMedia' && settledUpload.input.kind === 'progress') {
+            photoSettledGone = true;
+            if (get().dailyLog && scopeStillCurrent(flushScope) && get().sessionToken === flushToken) set((s) => { s.dailyLogPhotoCountAfter = snapshotSeq; });
           }
           // a site visit's answer shows on its own screen, so it is not counted in the "synced" line; one that went
           // through starts the visit photo retry's wait over
@@ -6549,8 +6552,8 @@ export const useStore = create<Store>()(
         void requestFreshSnapshot(flushLease.scope);
       }
       // ...asked for here, as the 404 path's reconcile is (settleDeleted): it begins after the 410's answer, so it clears
-      // the count's "updating" and takes the photo's local copy out of the log, and one that fails shows the Retry
-      if (photoSettledUnread && flushLease) scheduleReconcile(flushLease.scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+      // the count's "updating" and takes the photo out of the log, and one that fails shows the Retry
+      if (photoSettledGone && flushLease) scheduleReconcile(flushLease.scope, { kind: 'command', createdAfterSequence: snapshotSeq });
 
       const parts: string[] = [];
       const lang = get().lang;
