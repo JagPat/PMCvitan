@@ -259,7 +259,9 @@ describe('#482 the deleted-photo guard\'s first install (live PG, its own databa
       // the next deploy stops at the recorded failure until it is resolved
       holder.send('ROLLBACK;');
       expect((await holder.end()).code).toBe(0);
-      expect(fails(() => deploy())).toMatch(/P3009/);
+      const stopped = fails(() => deploy());
+      expect(stopped).toMatch(/P3009/);
+      expect(recovery(stopped)).toContain(RESOLVE);
       execFileSync('npx', ['prisma', 'migrate', 'resolve', '--rolled-back', NAME],
         { cwd: API, stdio: 'pipe', env: { ...process.env, DATABASE_URL: prismaUrl } });
       deploy();

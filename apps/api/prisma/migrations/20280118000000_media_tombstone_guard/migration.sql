@@ -44,9 +44,10 @@
 -- every row already stored: a keyed row whose project has a record for its key raises (SQLSTATE MTSTO) and nothing is
 -- installed. So no row written before the guard, by any release, in any window, is trusted; it is found here, and the
 -- owner decides it (the read-only count in docs/RUNBOOK.md §MG finds the same rows beforehand). The block waits at most
--- 15 s for that lock (lock_timeout, local to the block). That is longer than any app write holds "Media" (Prisma's 5 s
--- transaction timeout); a longer holder, such as project:remove or a stray open session, makes the install fail with
--- nothing installed, instead of holding every photo write behind it. The check runs only at READ COMMITTED, where each
+-- 15 s for that lock (lock_timeout, local to its transaction). That is longer than any app write holds "Media" (Prisma's
+-- 5 s transaction timeout); a longer holder, such as project:remove or a stray open session, makes the install fail with
+-- nothing installed, after holding new photo writes behind it for at most 15 s (a send held past its own 5 s timeout
+-- is answered 500 and sent again). The check runs only at READ COMMITTED, where each
 -- statement sees every commit before it; at any other level the block refuses to run.
 --
 -- RECOVERY. Any failure of this file (MTSTO, MTISO, the lock timeout, a killed install, or the deploy client dying

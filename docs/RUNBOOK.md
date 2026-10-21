@@ -2745,7 +2745,8 @@ every operator CLI.
 The guard refuses to store a photo again under the key of a deleted one (SQLSTATE `MT410`). It installs only
 when no photo already stored carries a deleted photo's key: otherwise it raises `MTSTO`, nothing is installed,
 and `scripts/migrate.sh` refuses to start. It waits at most 15 s for its lock on `Media`; a longer holder (a
-running `project:remove`, a stray open session) makes it fail with nothing installed.
+running `project:remove`, a stray open session) makes it fail with nothing installed, after holding new photo
+writes behind it for at most 15 s (a send held past its own 5 s timeout is answered 500, and the phone sends it again).
 
 ### Before the deploy: the read-only count
 

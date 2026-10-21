@@ -289,9 +289,13 @@ report_4d_i_migration_failure() {
 # photo's key; MTISO; its 15 s lock timeout; a killed install; or this client dying mid-install), the next deploy
 # stops at P3009, and the recovery is the same. A re-run is safe even if the install had committed.
 report_media_guard_migration_failure() {
-  printf '%s\n' "$1" | grep -q 20280118000000_media_tombstone_guard || return 0
-  echo "[migrate] That failure is the deleted-photo guard (20280118000000_media_tombstone_guard). Nothing of it"
-  echo "[migrate] was kept. If it says MTSTO (\"stored photo(s) carry the key of a deleted photo\"):"
+  # only the lines that name this file AS the failure: P3018's "Migration name:" and P3009's "The `…` migration started
+  # at … failed". A deploy that applied this file and then failed on a later one names it only as "Applying migration".
+  printf '%s\n' "$1" | grep -qE '^Migration name: 20280118000000_media_tombstone_guard$|^The `20280118000000_media_tombstone_guard` migration started at .* failed$' || return 0
+  echo "[migrate] That failure is the deleted-photo guard (20280118000000_media_tombstone_guard). If Prisma"
+  echo "[migrate] reports it failing (P3018), nothing of it was kept. After a P3009 it may have committed, if the"
+  echo "[migrate] deploy client died. The steps below are safe either way."
+  echo "[migrate] If it says MTSTO (\"stored photo(s) carry the key of a deleted photo\"):"
   echo "[migrate]   0. list those photos with the read-only count in docs/RUNBOOK.md §MG; the owner decides"
   echo "[migrate]      each one before going on. Nothing removes them automatically."
   echo "[migrate] Then, for any failure of this file (MTSTO, MTISO, the lock timeout, a killed install):"
