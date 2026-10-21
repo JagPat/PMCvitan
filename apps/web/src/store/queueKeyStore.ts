@@ -115,9 +115,12 @@ export function createQueueKeyStore() {
       try {
         return writeMerged(storage, key, mine);
       } catch {
+        // not kept: every act memory holds that the key, unchanged by the failed write, does not hold now
+        let there = new Set<string>();
+        try { there = new Set((readKey(storage, key) ?? []).map(queueActIdent)); } catch { /* unreadable: none */ }
         const missing = setOf(unkept, key);
         missing.clear();
-        for (const o of mine) missing.add(queueActIdent(o));
+        for (const o of mine) { const i = queueActIdent(o); if (!there.has(i)) missing.add(i); }
         return false;
       }
     },

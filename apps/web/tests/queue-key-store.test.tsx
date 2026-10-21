@@ -148,7 +148,7 @@ describe('WEB-02 step 1: a stored queue key keeps every tab’s acts', () => {
     expect(keysOf(p2)).toEqual(['k-p2']);
   });
 
-  it('an act kept through sign-out is not deleted when the same person is back on the project before its load', () => {
+  it('guard: an act kept through sign-out is not deleted when the same person is back on the project before its load', () => {
     signedIn({ general: [approve('k-kept')] });
     act(() => { s().completeSignOut(); });
     useStore.setState({ sessionUserId: USER, activeProjectId: P1, role: 'consultant' }); // the load runs later

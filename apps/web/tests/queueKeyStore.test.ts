@@ -63,11 +63,39 @@ describe('queueKeyStore', () => {
     expect(q.notKept(K)).toEqual([]);
   });
 
-  it('a write that fails says so and lists its acts not kept', () => {
+  it('a write that fails says so and lists its acts not kept, but not one the key still holds', () => {
     const q = createQueueKeyStore();
     q.loaded(K, []);
     expect(q.write(full(), K, [a('mine')])).toBe(false);
     expect(q.notKept(K)).toEqual([queueActIdent(a('mine'))]);
+    const stillThere = { getItem: () => JSON.stringify([a('x')]), setItem: () => { throw new DOMException('full', 'QuotaExceededError'); } };
+    expect(q.write(stillThere, K, [a('x'), a('y')])).toBe(false);
+    expect(q.notKept(K)).toEqual([queueActIdent(a('y'))]);
+  });
+
+  it('notKept lists only acts memory holds and the key does not: a sent act, or one stored again, leaves it', () => {
+    const st = storage();
+    const q = createQueueKeyStore();
+    q.loaded(K, []);
+    q.write(full(), K, [a('m1'), a('m2')]);
+    expect(q.notKept(K).sort()).toEqual([queueActIdent(a('m1')), queueActIdent(a('m2'))]);
+    // another tab's write stores m1 again; m2 was sent meanwhile, so memory holds only m1
+    st.setItem(K, JSON.stringify([a('m1')]));
+    q.heard(st, K, [a('m1')]);
+    expect(q.notKept(K)).toEqual([]);
+    q.write(full(), K, [a('m3')]);
+    q.write(st, K, []); // m3 sent: memory holds nothing, and a write that leaves nothing out lists nothing
+    expect(q.notKept(K)).toEqual([]);
+  });
+
+  it('a heard list holding an entry that is not an act (a newer release’s shape) is not answered', () => {
+    const newer = JSON.stringify(['v3:queue-format', { t: 'aKindFromANewerRelease', idempotencyKey: 'k-new' }]);
+    const st = storage({ [K]: newer });
+    const q = createQueueKeyStore();
+    q.loaded(K, []);
+    q.heard(st, K, [a('mine')]);
+    expect(st.writes).toEqual([]);
+    expect(st.getItem(K)).toBe(newer);
   });
 
   it('bytes that are not a list are not answered by a heard write', () => {
