@@ -1791,9 +1791,11 @@ export const useStore = create<Store>()(
      *  not kept then (none when nothing was). A draft edit whose write leaves a draft not kept ends a draft's place in
      *  each (#1051 r1 re-check G1), as it ends a Reload's agreement */
     const leaveAgreements = new Set<{ ids: string[] }>();
-    /** a leave the person started (or that asked nothing, so agreed to lose nothing) is on its way: what it agreed to */
+    /** a leave the person started (or that asked nothing, so agreed to lose nothing) is on its way: what it agreed to.
+     *  One that went on unasked because a leave under way was Continued with every update not kept now carries that
+     *  agreement, so its own end never asks about them again (#1028 r2 check G3) */
     const agreeLeave = (): { ids: string[] } => {
-      const agreed = { ids: leaveConfirmed ? [...get().queueUnkept] : [] };
+      const agreed = { ids: leaveConfirmed || (unkeptCount(get()) > 0 && leaveAgreedNow(get())) ? [...get().queueUnkept] : [] };
       leaveAgreements.add(agreed);
       return agreed;
     };
@@ -2790,10 +2792,14 @@ export const useStore = create<Store>()(
       pushRelink = null;
       return relink ? relink.then(() => unlinkPushOnSignOut(gw)) : unlinkPushOnSignOut(gw);
     };
-    /** WEB-02: a leave is already under way (a project switch out, or a persona switch or sign-out in its push unlink):
-     *  acts not kept now go with it, so nothing asks again; a second question would outlive the leave (#1028 r2 check
-     *  G3) */
+    /** WEB-02: a leave is already under way (a project switch out, or a persona switch or sign-out in its push unlink) */
     const leaveUnderway = (): boolean => teardownPending || get().pendingProjectId !== null;
+    /** Whether a leave or reload the person starts now goes on unasked: nothing is not kept, or a leave under way was
+     *  Continued with every update not kept now, so they go with it and nothing asks again (#1028 r2 check G3). An
+     *  update not kept since that leave began (made during its wait, or left out by another tab's write) is not
+     *  covered by it: every way out asks about it first, whatever leave is under way (#1051 r3, Codex 4340114563) */
+    const leaveAgreedNow = (st: AppState): boolean => unkeptCount(st) === 0
+      || (leaveUnderway() && st.queueUnkept.every((id) => [...leaveAgreements].some((agreed) => agreed.ids.includes(id))));
     const leaveQueueScope = (): void => {
       if (get().queueScope === outboxKey()) return;
       const lost = unkeptCount(get());
@@ -3592,7 +3598,7 @@ export const useStore = create<Store>()(
     const adoptSignIn = (res: AuthAnswer, opts?: AuthAnswerOpts): void => {
       const st = get();
       const moves = outboxKeyFor(res.token, jwtSub(res.token), res.projectId ?? st.activeProjectId) !== outboxKey();
-      if (moves && (st.leaveConfirm !== null || (unkeptCount(st) > 0 && !leaveUnderway()))) {
+      if (moves && (st.leaveConfirm !== null || !leaveAgreedNow(st))) {
         set((s) => {
           s.access.sending = false;
           if (s.leaveConfirm === null) s.leaveConfirm = { action: 'signIn', res, opts };
@@ -3670,7 +3676,7 @@ export const useStore = create<Store>()(
       // the persona already active: nothing changes, and nothing is let go (#1028 r2 check G1)
       // nor the persona a switch under way is already switching to (#1028 r2 re-check G2)
       if (role === get().role || (teardownPending && role === teardownRole)) return;
-      if (!leaveConfirmed && (get().leaveConfirm !== null || (unkeptCount(get()) > 0 && !leaveUnderway()))) {
+      if (!leaveConfirmed && (get().leaveConfirm !== null || !leaveAgreedNow(get()))) {
         // an open question is never replaced by another (#1028 r2 check G4)
         if (get().leaveConfirm === null) set((s) => { s.leaveConfirm = { action: 'persona', role }; });
         return;
@@ -3756,7 +3762,7 @@ export const useStore = create<Store>()(
     requestSignOut: () => {
       // an open question is never replaced by another (#1028 r2 check G4); a leave under way asks nothing again (G3)
       if (get().leaveConfirm !== null) return;
-      if (unkeptCount(get()) > 0 && !leaveUnderway()) { set((s) => { s.leaveConfirm = { action: 'signOut' }; }); return; }
+      if (!leaveAgreedNow(get())) { set((s) => { s.leaveConfirm = { action: 'signOut' }; }); return; }
       get().signOut();
     },
     signOut: () => {
@@ -5726,7 +5732,7 @@ export const useStore = create<Store>()(
     switchProject: (projectId, targetScreen, targetItem) => {
       // WEB-02: acts no write stored are lost by a switch: the person is asked first (`confirmLeave` goes on)
       if (!leaveConfirmed && gateway && projectId !== get().activeProjectId
-        && (get().leaveConfirm !== null || (unkeptCount(get()) > 0 && !leaveUnderway()))) {
+        && (get().leaveConfirm !== null || !leaveAgreedNow(get()))) {
         // an open question is never replaced by another (#1028 r2 check G4): this switch waits on it as asked
         if (get().leaveConfirm === null) set((s) => { s.leaveConfirm = { action: 'switch', projectId, targetScreen, targetItem }; });
         return Promise.resolve('asked');
@@ -6901,7 +6907,7 @@ export const useStore = create<Store>()(
       // a reload is a way out the person starts: while updates are not kept it asks first, as every other one does, and
       // never in place of a question already open
       if (get().leaveConfirm !== null) return;
-      if (unkeptCount(get()) > 0 && !leaveUnderway()) {
+      if (!leaveAgreedNow(get())) {
         set((s) => { s.leaveConfirm = { action: 'reload' }; });
         return;
       }

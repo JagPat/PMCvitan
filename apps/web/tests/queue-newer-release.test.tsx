@@ -261,14 +261,25 @@ describe('a queue key a newer release wrote (#792)', () => {
       expect(sessionStorage.getItem(marker(key))).toBeNull();
     });
 
-    it('MR8 (re-check 2, G3): with a leave the person already agreed to under way, Reload reloads without asking again', () => {
+    it('MR8 (re-check 2, G3): with a leave the person already agreed to under way, Reload reloads without asking again', async () => {
       const reload = stubReload();
       onP2({ [key]: JSON.stringify([newerAct]) });
       useStore.getState().startActivity('B-1');
-      act(() => useStore.setState({ pendingProjectId: 'p-1' }));
+      let end!: (e: unknown) => void;
+      const switching = new Promise((_, fail) => { end = fail; });
+      // a project switch the person Continued with B-1 not kept, still waiting on the server (#1051 r3: only a leave the
+      // person agreed to covers what is not kept; a leave merely under way does not)
+      useStore.getState()._setGateway({ project: P2, listSiteVisits: vi.fn(async () => []), switchProject: vi.fn(() => switching) } as unknown as ApiGateway);
+      act(() => { void useStore.getState().switchProject('p-1'); });
+      expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch' }));
+      act(() => useStore.getState().confirmLeave());
+      expect(useStore.getState().pendingProjectId).toBe('p-1');
       act(() => useStore.getState().requestReload());
       expect(useStore.getState().leaveConfirm).toBeNull();
       expect(reload).toHaveBeenCalledTimes(1);
+      // the switch ends with the test: its agreement goes with it
+      end(new Error('ended with the test'));
+      await act(async () => { await switching.catch(() => {}); });
     });
 
     it('a key the newer tab has emptied since loads at the tap, keeping this tab’s update, with no reload and no question', () => {
