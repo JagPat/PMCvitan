@@ -19,11 +19,33 @@ export const QW = {
     hi: '{date} के लिए दूसरे टैब का ड्राफ़्ट इस फ़ोन पर अलग रखा गया।',
     gu: '{date} માટે બીજા ટેબનો ડ્રાફ્ટ આ ફોન પર અલગ રાખ્યો.',
   },
+  // the same, for this tab's own draft that no write stored, when the draft another tab stored is kept (#1037 r1 check
+  // gap 6)
+  ownDraftKeptAside: {
+    en: 'This tab’s draft for {date} was kept aside on this phone.',
+    hi: '{date} के लिए इस टैब का ड्राफ़्ट इस फ़ोन पर अलग रखा गया।',
+    gu: '{date} માટે આ ટેબનો ડ્રાફ્ટ આ ફોન પર અલગ રાખ્યો.',
+  },
   // a key listed again because a draft in it could not be copied aside: it reads, so it is not called unreadable
   notSetAside: {
     en: 'Updates saved on this phone for this project could not be set aside.',
     hi: 'इस प्रोजेक्ट के लिए इस फ़ोन पर सहेजे गए बदलाव अलग नहीं रखे जा सके।',
     gu: 'આ પ્રોજેક્ટ માટે આ ફોન પર સાચવેલા ફેરફારો અલગ રાખી શકાયા નહીં.',
+  },
+  // a key holding an act a newer release saved: the release that saved it can read and send it, so the page is reloaded
+  // on a tap (never on its own). Such a key is never set aside (#1037 r1 check gap 3)
+  newerRelease: {
+    en: 'Updates saved on this phone by a newer version of Vitan can’t be read here. Reload the page to send them.',
+    hi: 'Vitan के नए संस्करण ने इस फ़ोन पर जो बदलाव सहेजे हैं, वे यहाँ पढ़े नहीं जा सकते। उन्हें भेजने के लिए पेज फिर से लोड करें।',
+    gu: 'Vitanના નવા સંસ્કરણે આ ફોન પર સાચવેલા ફેરફારો અહીં વાંચી શકાતા નથી. તેમને મોકલવા માટે પેજ ફરીથી લોડ કરો.',
+  },
+  reload: { en: 'Reload', hi: 'फिर से लोड करें', gu: 'ફરીથી લોડ કરો' },
+  // the same key once a reload of this build has met it, holding the same bytes: the newer release cannot be had here (a
+  // rollback), or the kind is damaged, so it may be set aside (#1037 r1 re-check N2; copy re-check 2)
+  newerReloaded: {
+    en: 'These updates were saved by a newer version of Vitan. This version can’t send them. Set them aside to keep working. They stay on this phone.',
+    hi: 'ये बदलाव Vitan के नए संस्करण ने सहेजे थे। यह संस्करण उन्हें नहीं भेज सकता। काम जारी रखने के लिए इन्हें अलग रखें। ये इस फ़ोन पर रहेंगे।',
+    gu: 'આ ફેરફારો Vitanના નવા સંસ્કરણે સાચવ્યા હતા. આ સંસ્કરણ તેમને મોકલી શકતું નથી. કામ ચાલુ રાખવા માટે તેમને અલગ રાખો. તે આ ફોન પર રહેશે.',
   },
   setAside: { en: 'Set aside and continue', hi: 'अलग रखें और जारी रखें', gu: 'અલગ રાખો અને ચાલુ રાખો' },
   setAsideFailed: {

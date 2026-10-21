@@ -5,6 +5,7 @@ import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
 import { QW } from '@/lib/queueWords';
 import { QueueUnreadable } from '@/layout/QueueUnreadable';
 import { LeaveUnkept, UnkeptStay } from '@/layout/LeaveUnkept';
+import { dailyLogKey } from '@/store/dailyLogDraft';
 
 /**
  * WEB-02 (#792): the queue in memory belongs to one person on one project. A project switch loads the new project's
@@ -677,7 +678,7 @@ describe('the scope change itself, before the new scope loads (WEB-02)', () => {
 });
 
 describe('a flush, a second tab and the day-log draft around an unreadable key (WEB-02)', () => {
-  it('a flush that sees the scope move never writes a key listed when it began, nor one it cannot read now', async () => {
+  it('a flush that sees the scope move never writes a key it cannot read now, and a key listed when it began loses only what the flush settled (#1037 r1)', async () => {
     const notAList = '{"t":"startActivity"}';
     for (const other of ['untouched', 'rewritten', 'broken mid-flush'] as const) {
       localStorage.clear();
@@ -1008,9 +1009,9 @@ describe('#1028 round 1: Set aside, a stalled online send and drafts behind an u
       expect(merged.crewRows).toEqual({ 0: { trade, count: 4 } });
       // this tab could not read the key, so its count started at nothing: the two counts are of different photos
       expect(merged.photosAdded).toBe(3);
-      // the row that gave way is kept aside, never dropped, and the person is told
+      // the row that gave way is kept aside, never dropped, and the person is told it was this tab's (#1037 r1 check gap 6)
       expect(asideOf(draftKey)).toEqual([{ projectId: P2, logKey: held.logKey, logId: 'LOG-1', crewRows: { 0: { trade: 'Moved trade', count: 1 } } }]);
-      expect(useStore.getState().toast).toBe(QW.draftKeptAside.en.replace('{date}', held.logKey.slice(held.logKey.indexOf(':') + 1)));
+      expect(useStore.getState().toast).toBe(QW.ownDraftKeptAside.en.replace('{date}', held.logKey.slice(held.logKey.indexOf(':') + 1)));
     });
 
     it('G-c: two rows at a position the log on screen has no row for: this tab’s is kept, and the other kept aside', () => {
@@ -1075,7 +1076,8 @@ describe('#1028 round 1: Set aside, a stalled online send and drafts behind an u
       });
       useStore.getState().setAsideUnreadableQueue();
       expect(JSON.parse(localStorage.getItem(draftKey) ?? 'null')).toEqual(theirs);
-      expect(useStore.getState().queueUnreadable).toEqual({ keys: [draftKey], failed: true, readable: [draftKey] });
+      // still marked as a key this tab's draft started without reading (#1037 r1 check gap 4)
+      expect(useStore.getState().queueUnreadable).toEqual({ keys: [draftKey], failed: true, readable: [draftKey], draftsUnread: [draftKey] });
       expect(useStore.getState().dailyLogDraft).toEqual(held);
       expect(useStore.getState().queueUnkept).toContain('draft:current');
       // the key reads: the strip says it could not be set aside, never that it cannot be read (G-d)
@@ -1154,5 +1156,322 @@ describe('#1028 round 1: Set aside, a stalled online send and drafts behind an u
     await vi.waitFor(() => expect(gw.reserveStock).toHaveBeenCalled());
     await vi.waitFor(() => expect(useStore.getState().toast).toContain(QW.notKept.en));
     expect(useStore.getState().queueUnkept).toHaveLength(1);
+  });
+});
+
+describe('#1037 round 1: leftovers by identity, unknown acts and drafts that are not this scope’s (WEB-02)', () => {
+  const draftKey = `vitan.dailyLogDraft.anon.${P2}`;
+  const legacyKey = `vitan.dailyLogDraft.legacy.anon.${P2}`;
+  const ids = () => useStore.getState().outbox.map((o) => (o as { idempotencyKey: string }).idempotencyKey);
+  const storedIds = (k: string) => (JSON.parse(localStorage.getItem(k) ?? '[]') as { idempotencyKey: string }[]).map((o) => o.idempotencyKey);
+  const asideOf = (k: string) => Object.keys(localStorage).filter((x) => x.startsWith(`vitan.unreadable.${k}.`)).map((x) => JSON.parse(localStorage.getItem(x)!));
+  const snap = () => ({
+    project: { id: P2, name: P2, short: P2, descriptor: '', stage: '', siteCode: '', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+    decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+    drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+  });
+  /** on P2, offline, the keys as given */
+  function onP2(stored: Record<string, string> = {}, gw: object = gateway(P2)) {
+    for (const [k, v] of Object.entries(stored)) localStorage.setItem(k, v);
+    useStore.setState({ ...getInitialState(), outbox: [], role: 'engineer', lang: 'en', sessionUserId: USER, activeProjectId: P2, online: false });
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.getState().hydrateOutbox();
+  }
+  /** a send held open: `called` resolves when the gateway is called, and the test settles it with `done` or `fail` */
+  function heldSend() {
+    let called!: () => void;
+    const sent = new Promise<void>((r) => { called = r; });
+    const ends: { done: () => void; fail: () => void; refuse: () => void } = { done: () => {}, fail: () => {}, refuse: () => {} };
+    const send = vi.fn(() => {
+      called();
+      return new Promise((resolve, reject) => {
+        ends.done = () => resolve(snap());
+        ends.fail = () => reject(new Error('network'));
+        ends.refuse = () => reject(Object.assign(new Error('refused'), { status: 422 }));
+      });
+    });
+    return { send, sent, ends };
+  }
+  const quota = () => new DOMException('full', 'QuotaExceededError');
+
+  it('4331862679: a flush whose scope moves after a load put another tab’s act ahead of the one it sends stores what it did not send, never the sent act', async () => {
+    const { send, sent, ends } = heldSend();
+    onP2({}, { project: P2, startActivity: send, listSiteVisits: vi.fn(async () => []) });
+    useStore.getState().startActivity('X');
+    const x = ids()[0];
+    useStore.setState({ online: true });
+    const flushing = useStore.getState().flushOutbox();
+    await sent;
+    // a load while X is out: another tab stored B-0 ahead of X
+    localStorage.setItem(key(P2), JSON.stringify([start('B-0'), { t: 'startActivity', activityId: 'X', idempotencyKey: x }]));
+    useStore.setState({ queueScope: null });
+    useStore.getState().hydrateOutbox();
+    expect(ids()).toEqual(['k-B-0', x]);
+    // the person switches project before X is answered; X is then sent
+    switchTo(P1);
+    ends.done();
+    await flushing;
+    expect(storedIds(key(P2))).toEqual(['k-B-0']);
+  });
+
+  it.each([
+    ['another tab repairs the key, then Set aside (PF1)', true, 'sent', ['k-B']],
+    ['Set aside alone (PF1b)', false, 'sent', []],
+    ['another tab repairs the key, then Set aside, and the send fails', true, 'failed', ['k-B', 'A']],
+    ['Set aside alone, and the server refuses the send for good (PT1)', false, 'refused', []],
+  ] as const)('4331862679 (gap 1): a key listed when the flush began, then %s and a switch: only the acts the flush settled come off it', async (_label, repair, outcome, expected) => {
+    const { send, sent, ends } = heldSend();
+    onP2({ [key(P2)]: '{bad' }, { project: P2, startActivity: send, listSiteVisits: vi.fn(async () => []) });
+    useStore.getState().startActivity('A');
+    const a = ids()[0];
+    useStore.setState({ online: true });
+    const flushing = useStore.getState().flushOutbox();
+    await sent;
+    if (repair) localStorage.setItem(key(P2), JSON.stringify([start('B')]));
+    useStore.getState().setAsideUnreadableQueue();
+    expect(storedIds(key(P2))).toEqual(repair ? ['k-B', a] : [a]);
+    switchTo(P1);
+    if (outcome === 'sent') ends.done(); else if (outcome === 'refused') ends.refuse(); else ends.fail();
+    await flushing;
+    expect(storedIds(key(P2))).toEqual(expected.map((k) => (k === 'A' ? a : k)));
+  });
+
+  it('re-check hardening: a key listed when the flush began, from which the flush settled nothing, keeps the bytes another tab stored', async () => {
+    const { send, sent, ends } = heldSend();
+    onP2({ [key(P2)]: '{bad' }, { project: P2, startActivity: send, listSiteVisits: vi.fn(async () => []) });
+    useStore.getState().startActivity('A');
+    const a = ids()[0];
+    useStore.setState({ online: true });
+    const flushing = useStore.getState().flushOutbox();
+    await sent;
+    useStore.getState().setAsideUnreadableQueue();
+    switchTo(P1);
+    // another tab stores the key in its own layout while the send is out
+    const theirs = JSON.stringify([start('B'), { t: 'startActivity', activityId: 'A', idempotencyKey: a }], null, 2);
+    localStorage.setItem(key(P2), theirs);
+    ends.fail();
+    await flushing;
+    expect(localStorage.getItem(key(P2))).toBe(theirs);
+  });
+
+  it('4331862659: a load of the same scope keeps a day-log draft no write stored, merged with the one stored, and stores it', async () => {
+    onP2({});
+    // the draft write is refused: the check-in is held only here, and is not kept
+    const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string) {
+      if (k === draftKey) throw quota();
+    });
+    act(() => useStore.getState().checkIn());
+    write.mockRestore();
+    const held = useStore.getState().dailyLogDraft!;
+    expect(held.checkIn?.checkedIn).toBe(true);
+    expect(useStore.getState().queueUnkept).toContain('draft:current');
+    // another tab stores its own draft of the same log: a crew count, no check-in
+    const { checkIn: _c, ...rest } = held;
+    const theirs = { ...rest, crewRows: { 0: { trade: 'Mason', count: 4 } } };
+    localStorage.setItem(draftKey, JSON.stringify(theirs));
+    // a sign-in again on the same project loads the same scope
+    useStore.getState().hydrateOutbox();
+    const merged = useStore.getState().dailyLogDraft!;
+    expect(merged.checkIn).toEqual(held.checkIn);
+    expect(merged.crewRows).toEqual({ 0: { trade: 'Mason', count: 4 } });
+    expect(JSON.parse(localStorage.getItem(draftKey) ?? 'null')).toEqual(merged);
+    expect(useStore.getState().queueUnkept).not.toContain('draft:current');
+  });
+
+  it('4331862659: a draft typed while its key could not be read meets the one another tab then stored: on a load of the same scope the photos are added', () => {
+    onP2({ [draftKey]: '{"projectId":' });
+    const logKey = dailyLogKey(useStore.getState().dailyLog!);
+    useStore.setState((s) => { s.dailyLogDraft = { projectId: P2, logKey, photosAdded: 1 } as never; s.queueUnkept = ['draft:current']; });
+    localStorage.setItem(draftKey, JSON.stringify({ projectId: P2, logKey, photosAdded: 2 }));
+    useStore.getState().hydrateOutbox();
+    expect(useStore.getState().dailyLogDraft?.photosAdded).toBe(3);
+    expect(JSON.parse(localStorage.getItem(draftKey) ?? 'null')?.photosAdded).toBe(3);
+  });
+
+  it.each(['a load of the same scope', 'Set aside'] as const)('PG1 (gap 4): a key listed again only because a copy aside failed was read: after %s the photos are the larger count, never added', (_label) => {
+    onP2({});
+    const log = useStore.getState().dailyLog!;
+    const logKey = dailyLogKey(log);
+    // held here, not kept: a crew row another tab's row takes the place of, and three photos
+    useStore.setState((s) => { s.dailyLogDraft = { projectId: P2, logKey, crewRows: { 0: { trade: 'Moved trade', count: 1 } }, photosAdded: 3 } as never; s.queueUnkept = ['draft:current']; });
+    localStorage.setItem(draftKey, JSON.stringify({ projectId: P2, logKey, crewRows: { 0: { trade: log.crew[0].trade, count: 4 } }, photosAdded: 2 }));
+    // a load of the same scope whose copy aside of the row that gave way is refused: the key is listed again, and read
+    const write = Storage.prototype.setItem;
+    const refuse = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith(`vitan.unreadable.${draftKey}.`)) throw quota();
+      write.call(this, k, v);
+    });
+    useStore.getState().hydrateOutbox();
+    expect(useStore.getState().queueUnreadable).toEqual({ keys: [draftKey], failed: true, readable: [draftKey] });
+    refuse.mockRestore();
+    if (_label === 'Set aside') useStore.getState().setAsideUnreadableQueue();
+    else useStore.getState().hydrateOutbox();
+    expect(useStore.getState().dailyLogDraft?.photosAdded).toBe(3);
+    expect(useStore.getState().queueUnreadable).toBeNull();
+  });
+
+  it('PM18 (re-check N3): a Set aside that moves nothing keeps the mark of a draft key this tab could not read: the photos are added once it reads', () => {
+    onP2({ [draftKey]: '{"projectId":' });
+    const logKey = dailyLogKey(useStore.getState().dailyLog!);
+    useStore.setState((s) => { s.dailyLogDraft = { projectId: P2, logKey, photosAdded: 3 } as never; s.queueUnkept = ['draft:current']; });
+    const refuse = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw quota(); });
+    useStore.getState().setAsideUnreadableQueue();
+    refuse.mockRestore();
+    expect(useStore.getState().queueUnreadable).toEqual({ keys: [draftKey], failed: true, draftsUnread: [draftKey] });
+    localStorage.setItem(draftKey, JSON.stringify({ projectId: P2, logKey, photosAdded: 2 }));
+    useStore.getState().hydrateOutbox();
+    expect(useStore.getState().dailyLogDraft?.photosAdded).toBe(5);
+  });
+
+  it('re-check N3: a draft key listed again because a copy aside failed keeps its own mark and the other draft key’s', () => {
+    onP2({ [legacyKey]: '{"projectId":', [draftKey]: '{"projectId":' });
+    expect(useStore.getState().queueUnreadable?.draftsUnread).toEqual([draftKey, legacyKey]);
+    const log = useStore.getState().dailyLog!;
+    const logKey = dailyLogKey(log);
+    useStore.setState((s) => { s.dailyLogDraft = { projectId: P2, logKey, crewRows: { 0: { trade: 'Moved trade', count: 1 } } } as never; s.queueUnkept = ['draft:current']; });
+    // another tab repairs the day-log key only; this tab's copy aside of the row that gives way is refused
+    localStorage.setItem(draftKey, JSON.stringify({ projectId: P2, logKey, crewRows: { 0: { trade: log.crew[0].trade, count: 4 } } }));
+    const write = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith(`vitan.unreadable.${draftKey}.`)) throw quota();
+      write.call(this, k, v);
+    });
+    // a load of the same scope: the legacy key still cannot be read, and the day-log key is listed again
+    useStore.getState().hydrateOutbox();
+    expect(useStore.getState().queueUnreadable?.keys).toEqual([legacyKey, draftKey]);
+    expect(useStore.getState().queueUnreadable?.draftsUnread).toEqual([legacyKey, draftKey]);
+  });
+
+  it('PC1 (gap 6): at a load of the same scope, this tab’s own draft that gives way is said to be this tab’s, in en, hi and gu', () => {
+    for (const lang of ['en', 'hi', 'gu'] as const) {
+      localStorage.clear();
+      onP2({});
+      useStore.setState({ lang });
+      const logKey = dailyLogKey(useStore.getState().dailyLog!);
+      // held here, not kept: a check-in on a log the screen no longer shows
+      const mine = { projectId: P2, logKey: 'civil:2025-12-31', logId: 'OLD-LOG', checkIn: { checkedIn: true, checkinTime: '07:00' } };
+      useStore.setState((s) => { s.dailyLogDraft = mine as never; s.queueUnkept = ['draft:current']; });
+      const theirs = { projectId: P2, logKey, crewRows: { 0: { trade: 'Mason', count: 4 } } };
+      localStorage.setItem(draftKey, JSON.stringify(theirs));
+      useStore.getState().hydrateOutbox();
+      expect(useStore.getState().dailyLogDraft).toEqual(theirs);
+      expect(asideOf(draftKey)).toEqual([mine]);
+      expect(useStore.getState().toast).toBe(QW.ownDraftKeptAside[lang].replace('{date}', '2025-12-31'));
+    }
+  });
+
+  it.each([
+    ['no storage at all', () => vi.stubGlobal('localStorage', undefined)],
+    ['storage refusing every read', () => vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new DOMException('denied', 'SecurityError'); })],
+  ])('4331862659: a load of the same scope with %s keeps the drafts no write stored, still not kept', (_label, fault) => {
+    onP2({});
+    const logKey = dailyLogKey(useStore.getState().dailyLog!);
+    const held = { projectId: P2, logKey, photosAdded: 1 };
+    const legacy = { projectId: P2, logKey: 'civil:2026-01-01', photosAdded: 2 };
+    useStore.setState((s) => { s.dailyLogDraft = held as never; s.legacyDailyLogDraft = legacy as never; s.queueUnkept = ['draft:current', 'draft:legacy']; });
+    fault();
+    useStore.getState().hydrateOutbox();
+    expect(useStore.getState().dailyLogDraft).toEqual(held);
+    expect(useStore.getState().legacyDailyLogDraft).toEqual(legacy);
+    expect(useStore.getState().queueUnkept).toEqual(['draft:current', 'draft:legacy']);
+  });
+
+  it.each([
+    ['the general key', (p: string) => key(p), [start('A-1'), { t: 'futureOperation', idempotencyKey: 'k-f' }]],
+    ['the visit lane', (p: string) => lane(p), [end, { t: 'siteVisitFutureAct', visitId: 'v-1', idempotencyKey: 'k-fv' }]],
+    ['the general key (an entry with no kind)', (p: string) => key(p), [start('A-1'), { activityId: 'A-2', idempotencyKey: 'k-A-2' }]],
+  ])('4331862684: %s, holding an entry this release does not know as an act, is unreadable: listed, never loaded or written', async (_label, keyOf, stored) => {
+    const raw = JSON.stringify(stored);
+    onP2({ [keyOf(P2)]: raw });
+    expect(useStore.getState().queueUnreadable?.keys).toEqual([keyOf(P2)]);
+    expect(useStore.getState().outbox).toEqual([]);
+    useStore.getState().startActivity('B-1');
+    expect(localStorage.getItem(keyOf(P2))).toBe(raw);
+  });
+
+  it.each([
+    ['a labour act whose coalesceKey a newer release renamed (PS1)', (p: string) => key(p), [start('A-1'), { t: 'recordLabourWork', input: { allocationId: 'A', workedMinutes: 60 }, idempotencyKey: 'k-w', workKey: 'lab:work:A:60' }]],
+    ['a commercial act with no coalesceKey', (p: string) => key(p), [start('A-1'), { t: 'setCommercialBudget', input: {}, idempotencyKey: 'k-b' }]],
+    ['a materials act with neither key', (p: string) => key(p), [{ t: 'issueStock', input: { lotId: 'L', storeLocation: 'S', activityId: 'A', qty: '1' } }]],
+    ['a site visit act under the general key', (p: string) => key(p), [start('A-1'), end]],
+    ['an act that is not a site visit act under the visit lane', (p: string) => lane(p), [end, start('A-1')]],
+    ['a visit photo’s act under the visit lane', (p: string) => lane(p), [{ t: 'siteVisitAddFile', visitId: 'v-1', scope: 's', idempotencyKey: 'k-vf', by: { name: 'n', role: 'consultant' }, placeName: null, file: { id: 'c-1', mime: 'image/png' } }]],
+  ])('gap 2: a key holding %s is unreadable: no act read from storage is dropped on load, and its bytes are never written', (_label, keyOf, stored) => {
+    const raw = JSON.stringify(stored);
+    onP2({ [keyOf(P2)]: raw });
+    expect(useStore.getState().queueUnreadable).toEqual({ keys: [keyOf(P2)], failed: false });
+    expect(useStore.getState().outbox).toEqual([]);
+    useStore.getState().startActivity('B-1');
+    useStore.getState().hydrateOutbox();
+    expect(localStorage.getItem(keyOf(P2))).toBe(raw);
+  });
+
+  it('4331862684: an entry that is not an object holds no act: it is left out, and the acts beside it load, as on main', () => {
+    onP2({ [key(P2)]: JSON.stringify([start('A-1'), null, 42, start('A-2')]) });
+    expect(useStore.getState().queueUnreadable).toBeNull();
+    expect(ids()).toEqual(['k-A-1', 'k-A-2']);
+  });
+
+  it('4331862684: an act this release does not know is never taken as sent: it stays queued', async () => {
+    const gw = { project: P2, listSiteVisits: vi.fn(async () => []), snapshot: vi.fn(async () => snap()) };
+    onP2({}, gw);
+    const future = { t: 'futureOperation', idempotencyKey: 'k-f' } as unknown as OutboxOp;
+    useStore.setState((s) => { s.outbox = [future]; });
+    useStore.setState({ online: true });
+    await useStore.getState().flushOutbox();
+    expect(ids()).toEqual(['k-f']);
+  });
+
+  it('4331862679: an act made during a flush that is the same as one it took is kept: each taken act is removed once', async () => {
+    const { send, sent, ends } = heldSend();
+    onP2({}, { project: P2, submitInspection: send, listSiteVisits: vi.fn(async () => []) });
+    // an act with no key of its own: two of them are the same act by identity
+    const submit = { t: 'submitInspection', inspectionId: 'I-1', items: [] } as unknown as OutboxOp;
+    useStore.setState((s) => { s.outbox = [submit]; });
+    useStore.setState({ online: true });
+    const flushing = useStore.getState().flushOutbox();
+    await sent;
+    useStore.setState((s) => { s.outbox.push(submit); });
+    ends.done();
+    await flushing;
+    expect(useStore.getState().outbox).toEqual([submit]);
+  });
+
+  it('gap 2: Set aside on a key holding a known act in a shape this release does not load copies its bytes aside whole, and clears it', () => {
+    const raw = JSON.stringify([start('A-1'), { t: 'recordLabourWork', input: {}, idempotencyKey: 'k-w' }]);
+    onP2({ [key(P2)]: raw });
+    useStore.getState().setAsideUnreadableQueue();
+    const aside = Object.keys(localStorage).filter((x) => x.startsWith(`vitan.unreadable.${key(P2)}.`));
+    expect(aside.map((x) => localStorage.getItem(x))).toEqual([raw]);
+    expect(useStore.getState().queueUnreadable).toBeNull();
+  });
+
+  it.each([
+    ['a log with no id', false],
+    ['a log with an id (PF4c)', true],
+  ])('4331862674: Set aside keeps the legacy draft that fits the open log, and copies aside the held one of another day: %s', async (_label, withId) => {
+    onP2({ [legacyKey]: '{"projectId":' });
+    expect(useStore.getState().queueUnreadable?.keys).toEqual([legacyKey]);
+    // every server log has had an id since U1: then only `canAdoptLegacyDraft` tells which legacy draft fits
+    if (withId) useStore.setState((s) => { s.dailyLog = { ...s.dailyLog!, id: 'LOG-1' }; });
+    const today = useStore.getState().dailyLog!;
+    const todayKey = dailyLogKey(today);
+    // held here: an older release's draft of another day; another tab repairs the key with one of today's log
+    const other = { projectId: P2, logKey: 'civil:2026-01-01', checkIn: { checkedIn: true, checkinTime: '08:00' } };
+    useStore.setState((s) => { s.legacyDailyLogDraft = other as never; s.queueUnkept = ['draft:legacy']; });
+    const theirs = { projectId: P2, logKey: todayKey, crewRows: { 0: { trade: 'Mason', count: 4 } } };
+    localStorage.setItem(legacyKey, JSON.stringify(theirs));
+    useStore.getState().setAsideUnreadableQueue();
+    expect(useStore.getState().legacyDailyLogDraft).toEqual(theirs);
+    expect(asideOf(legacyKey)).toEqual([other]);
+  });
+
+  it.each([['the day-log draft', draftKey], ['the kept-aside draft', legacyKey]])('4331862690: %s key holding another project’s draft is unreadable: listed, never removed or written', async (_label, k) => {
+    const raw = JSON.stringify({ projectId: P1, logKey: 'civil:2026-01-01', crewRows: { 0: { trade: 'Mason', count: 4 } } });
+    onP2({ [k]: raw });
+    expect(useStore.getState().queueUnreadable?.keys).toEqual([k]);
+    act(() => useStore.getState().checkIn());
+    useStore.setState((s) => { s.legacyDailyLogDraft = null; });
+    expect(localStorage.getItem(k)).toBe(raw);
   });
 });

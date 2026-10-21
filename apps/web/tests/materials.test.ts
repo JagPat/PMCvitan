@@ -504,12 +504,27 @@ describe('Task 7 (correction 2) — Materials single-command actions through the
     expect(g.reserveStock.mock.calls[1]![1]).not.toBe(legacyKey); // the fresh action gets a NEW idempotency key
   });
 
-  it('correction 4: malformed stored materials ops are dropped and never introduce `undefined` pending entries', async () => {
+  it('correction 4 (#1037 r1 check gap 2): a malformed stored materials op is never dropped: its key is unreadable, kept as stored, and nothing is pending', async () => {
     globalThis.localStorage.clear();
     const goodKey = reserveCoalesceKey('ACT-1', 'LOT-1', 'main');
     seedLegacyQueue([
       { t: 'reserveStock', input: { lotId: 'LOT-1', storeLocation: 'main', activityId: 'ACT-1', qty: '10' }, idempotencyKey: goodKey }, // valid legacy op
       { t: 'issueStock', input: { lotId: 'LOT-2', storeLocation: 'main', activityId: 'ACT-1', qty: '5' } }, // materials op with NEITHER key — malformed
+    ]);
+    const raw = globalThis.localStorage.getItem(OUTBOX_KEY);
+    s()._setGateway(gw() as unknown as ApiGateway);
+    s().hydrateOutbox();
+    expect(s().materialsPending).toEqual([]);
+    expect(s().outbox).toEqual([]);
+    expect(s().queueUnreadable?.keys).toContain(OUTBOX_KEY);
+    expect(globalThis.localStorage.getItem(OUTBOX_KEY)).toBe(raw);
+  });
+
+  it('correction 4: a legacy materials op still migrates on load, and an entry that is not an object holds no act', async () => {
+    globalThis.localStorage.clear();
+    const goodKey = reserveCoalesceKey('ACT-1', 'LOT-1', 'main');
+    seedLegacyQueue([
+      { t: 'reserveStock', input: { lotId: 'LOT-1', storeLocation: 'main', activityId: 'ACT-1', qty: '10' }, idempotencyKey: goodKey }, // valid legacy op
       null,                                                                                                  // junk
       42,                                                                                                    // junk
     ]);
@@ -517,8 +532,9 @@ describe('Task 7 (correction 2) — Materials single-command actions through the
     s().hydrateOutbox();
     expect(s().materialsPending).toEqual([goodKey]);
     expect(s().materialsPending).not.toContain(undefined);
-    expect(s().outbox).toHaveLength(1); // the malformed op + junk were dropped
+    expect(s().outbox).toHaveLength(1);
     expect((s().outbox[0] as { t: string }).t).toBe('reserveStock');
+    expect(s().queueUnreadable).toBeNull();
   });
 
   // ── the pure normalizer (table-driven, no store) — the crisp unit proof of the derivation + filtering. ──

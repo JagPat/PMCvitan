@@ -4,8 +4,9 @@ import { unkeptCount } from '@/store/queueUnkept';
 import { ConfirmDialog } from '@/components';
 import { QW } from '@/lib/queueWords';
 
-/** WEB-02 (#792): a project switch, persona switch, sign-in, sign-out or archive of the open project the person asked
- *  for, held while acts this phone did not keep would be lost by it. Cancel stays; Continue goes on and the acts are
+/** WEB-02 (#792): a project switch, persona switch, sign-in, sign-out, archive of the open project, or the unreadable
+ *  strip's Reload (#1037 r1 re-check N1) the person asked for, held while acts this phone did not keep would be lost
+ *  by it. Cancel stays; Continue goes on and the acts are
  *  lost. A reload or closing the tab is asked by the browser where it asks (`UnkeptStay` says it on screen too). */
 export function LeaveUnkept() {
   const held = useStore((s) => s.leaveConfirm);
@@ -17,7 +18,11 @@ export function LeaveUnkept() {
   // r2 audit: every leave path asks)
   useEffect(() => {
     const ask = (e: BeforeUnloadEvent) => {
-      if (unkeptCount(useStore.getState()) === 0) return;
+      // a reload the person already agreed to in the app is not asked again, while what is not kept is only what they
+      // agreed to lose (#1037 r1 re-check 2 and 3, G1)
+      const st = useStore.getState();
+      const agreed = st.reloadAgreed;
+      if (unkeptCount(st) === 0 || (agreed !== null && st.queueUnkept.every((id) => agreed.includes(id)))) return;
       e.preventDefault();
       e.returnValue = '';
     };

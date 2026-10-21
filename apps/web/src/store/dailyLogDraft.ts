@@ -80,29 +80,34 @@ export function isLegacyDraftFor(draft: DailyLogDraft | null, serverLog: DailyLo
  *  it set them (its edits are this tab's latest) and the stored draft's kept where it set none. Crew rows merge by
  *  identity, a row being its position and its trade: the same row takes the held count; two rows at one position (their
  *  trades differ) keep the one whose trade the log on screen still holds there (the held one when the screen cannot
- *  say), and the other comes back in `rows`, for the caller to keep aside (G2 re-check G-c). The photos taken are added
+ *  say), and the other comes back for the caller to keep aside (G2 re-check G-c): in `rows` when it is the stored
+ *  draft's, in `heldRows` when it is the held one's, so the person is told whose was kept aside (#1037 r1 check gap 6). The photos taken are added
  *  when `disjoint` (this tab could not read the key, so its count started at nothing and the stored count never held
  *  its photos), else the larger count (each tab counted from the same start) (G-e). Drafts of different logs cannot
  *  both apply: the one that applies to the log on screen is kept (else the held one), and the other comes back as
- *  `loser`, for the caller to keep aside (r1 check G2). */
+ *  `loser`, for the caller to keep aside (r1 check G2). `applies` says which draft applies; by default a draft applies
+ *  when it may be laid over the log (`draftAppliesTo`). Legacy drafts are judged by `canAdoptLegacyDraft` instead, both
+ *  of them, so the one the open log may adopt is kept (#1037 r1, Codex 4331862674). */
 export function mergeHeldDraft(
   stored: DailyLogDraft | null,
   held: DailyLogDraft | null,
   serverLog: DailyLog | null,
   projectId: string,
   disjoint = false,
-): { draft: DailyLogDraft | null; loser: DailyLogDraft | null; rows: DailyLogDraft | null } {
-  if (!held) return { draft: stored, loser: null, rows: null };
-  if (!stored) return { draft: held, loser: null, rows: null };
+  applies: (draft: DailyLogDraft) => boolean = (draft) => draftAppliesTo(draft, serverLog, projectId),
+): { draft: DailyLogDraft | null; loser: DailyLogDraft | null; rows: DailyLogDraft | null; heldRows: DailyLogDraft | null } {
+  if (!held) return { draft: stored, loser: null, rows: null, heldRows: null };
+  if (!stored) return { draft: held, loser: null, rows: null, heldRows: null };
   const sameLog = stored.projectId === held.projectId && stored.logKey === held.logKey && (stored.logId ?? null) === (held.logId ?? null);
   if (!sameLog) {
-    const keepStored = !draftAppliesTo(held, serverLog, projectId) && draftAppliesTo(stored, serverLog, projectId);
-    return keepStored ? { draft: stored, loser: held, rows: null } : { draft: held, loser: stored, rows: null };
+    const keepStored = !applies(held) && applies(stored);
+    return keepStored ? { draft: stored, loser: held, rows: null, heldRows: null } : { draft: held, loser: stored, rows: null, heldRows: null };
   }
   const set = Object.fromEntries(Object.entries(held).filter(([, v]) => v !== undefined)) as Partial<DailyLogDraft>;
   const out: DailyLogDraft = { ...stored, ...set };
   if (stored.crew || held.crew) out.crew = { ...stored.crew, ...held.crew };
   const lost: Record<string, { trade: string; count: number }> = {};
+  const lostHeld: Record<string, { trade: string; count: number }> = {};
   if (stored.crewRows || held.crewRows) {
     const rows: Record<string, { trade: string; count: number }> = { ...stored.crewRows };
     for (const [at, mine] of Object.entries(held.crewRows ?? {})) {
@@ -111,15 +116,16 @@ export function mergeHeldDraft(
       const trade = serverLog?.crew[Number(at)]?.trade;
       const keepTheirs = trade !== undefined && theirs.trade === trade && mine.trade !== trade;
       rows[at] = keepTheirs ? theirs : mine;
-      lost[at] = keepTheirs ? mine : theirs;
+      if (keepTheirs) lostHeld[at] = mine;
+      else lost[at] = theirs;
     }
     out.crewRows = rows;
   }
   const photos = disjoint ? (stored.photosAdded ?? 0) + (held.photosAdded ?? 0) : Math.max(stored.photosAdded ?? 0, held.photosAdded ?? 0);
   if (photos) out.photosAdded = photos;
-  const rows = Object.keys(lost).length === 0 ? null
-    : { projectId: out.projectId, logKey: out.logKey, ...(out.logId ? { logId: out.logId } : {}), crewRows: lost };
-  return { draft: out, loser: null, rows };
+  const aside = (crewRows: Record<string, { trade: string; count: number }>): DailyLogDraft | null => (Object.keys(crewRows).length === 0 ? null
+    : { projectId: out.projectId, logKey: out.logKey, ...(out.logId ? { logId: out.logId } : {}), crewRows });
+  return { draft: out, loser: null, rows: aside(lost), heldRows: aside(lostHeld) };
 }
 
 /** Does a draft hold any of the engineer's work? (An empty one is not worth keeping aside.) */

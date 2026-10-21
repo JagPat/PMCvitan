@@ -906,7 +906,7 @@ describe('Task 7B-iii-a (§M) — the two-key write lifecycle', () => {
     }).startsWith('com:advance:v-1:')).toBe(true);
   });
 
-  it('hydration is a GUARD: a malformed op is dropped and never becomes `undefined` pending', () => {
+  it('the GUARD finds a malformed op (a load never drops it: its key is unreadable, #1037 r1 check gap 2) and it never becomes `undefined` pending', () => {
     const { ops, changed } = normalizeCommercialOutbox([
       { t: 'setCommercialBudget', idempotencyKey: 'i1', coalesceKey: 'com:budget:CIVIL:100.00' },
       { t: 'setCommercialBudget', idempotencyKey: 'i2' },              // no coalesceKey

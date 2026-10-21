@@ -1924,3 +1924,36 @@ describe('Site Visits SV2: each test starts with no send left running from the o
     expect(useStore.getState().outbox).toHaveLength(0);
   });
 });
+
+/**
+ * #1037 r1 check gap 5: a kept photo's row is read back on every load and flush. One a newer release wrote, with an
+ * act or a start this release does not send, is left as it is: put back, its act would wait at the head of the queue
+ * for good, and every act after it with it. Each test fails at #1037's round-1 head.
+ */
+describe('Site Visits SV2: a kept photo row this release cannot send is left as it is (#792, #1037 r1)', () => {
+  const fileOp = (): Extract<OutboxOp, { t: 'siteVisitAddFile' }> => ({
+    t: 'siteVisitAddFile', visitId: 'v-9', scope: visitPhotoScope(null, CONSULTANT), idempotencyKey: 'k-f',
+    by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, file: { id: 'c-1', mime: 'image/png' },
+  });
+  const startOp = (t: string): Extract<OutboxOp, { t: 'siteVisitStart' }> => ({
+    t, idempotencyKey: 'k-s', body: { id: 'v-9', claimedAt: '2026-10-14T04:30:00.000Z' },
+    visitor: { name: 'Kiran Rao', role: 'consultant', placeName: null },
+  } as unknown as Extract<OutboxOp, { t: 'siteVisitStart' }>);
+
+  it.each([
+    ['act', () => ({ op: { ...fileOp(), t: 'siteVisitAddFutureFile' } as unknown as Extract<OutboxOp, { t: 'siteVisitAddFile' }>, start: null })],
+    ['start', () => ({ op: fileOp(), start: startOp('siteVisitFutureStart') })],
+  ])('PX1b: a row whose %s is of a kind this release does not send is never put back, and the queue behind it is sent', async (_label, row) => {
+    const startActivity = vi.fn(async () => undefined);
+    setUp('consultant', fakeGateway([visit()], { startActivity }));
+    const project = useStore.getState().activeProjectId;
+    const { op, start } = row();
+    await putVisitPhoto(visitPhotoScope(null, CONSULTANT), project, op, 'AQID', start);
+    useStore.setState((s) => { s.outbox = [{ t: 'startActivity', activityId: 'A-1', idempotencyKey: 'k-a' }]; s.online = true; });
+    await flushOwn();
+    expect(startActivity).toHaveBeenCalledWith('A-1', 'k-a');
+    expect(useStore.getState().outbox).toEqual([]);
+    // the row is the newer release's to send: still there, as it was written
+    expect((await rows()).map((r) => [r.op.t, r.start?.t ?? null])).toEqual([[op.t, start?.t ?? null]]);
+  });
+});
