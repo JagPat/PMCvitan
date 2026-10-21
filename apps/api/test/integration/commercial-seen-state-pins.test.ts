@@ -783,5 +783,10 @@ describe('#482 seen-state pins (live PG)', () => {
       }
       expect((await pins(from, `${OPS}x`)).status).toBe(429);
     });
+
+    it('a closed door stays 404 past the limiter\'s 30: the door guard runs before the limit', async () => {
+      delete process.env.OPS_TOKEN;
+      for (let i = 0; i < 31; i++) expect((await pins('203.0.113.160')).status, `call ${i + 1}`).toBe(404);
+    });
   });
 });
