@@ -13,6 +13,7 @@ import { AuthOpsController } from './auth/auth-ops.controller';
 import { HealthController } from './health.controller';
 import { OpsController } from './platform/ops/ops.controller';
 import { OpsQaController } from './platform/ops/ops-qa.controller';
+import { OpsCompatController } from './platform/ops/ops-compat.controller';
 import { SmsService } from './auth/sms.service';
 import { EmailService } from './platform/email.service';
 import { InvitationsService } from './orgs/invitations.service';
@@ -141,6 +142,7 @@ import { MediaParticipant } from './media/media.participant';
     HealthController,
     OpsController,
     OpsQaController,
+    OpsCompatController,
     AuthController,
     AuthOpsController,
     ProjectController,
