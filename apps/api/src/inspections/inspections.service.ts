@@ -124,7 +124,8 @@ export class InspectionsService {
     if (await peekReplay(this.prisma, scope, actor.actorId, 'inspections.submit', idempotencyKey, requestHash)) {
       return this.snapshot.build(projectId, user.role, user.sub);
     }
-    const insp = await this.prisma.inspection.findUnique({ where: { id: inspectionId }, include: { items: true } });
+    // Items in checklist order (`order`, as every read that shows them): the missing-evidence sentence names them in this order.
+    const insp = await this.prisma.inspection.findUnique({ where: { id: inspectionId }, include: { items: { orderBy: { order: 'asc' } } } });
     if (!insp || insp.projectId !== projectId) throw new NotFoundException(`Inspection ${inspectionId} not found`);
 
     // P2-3: guard the state machine. A submitted inspection is in the PMC's review
@@ -271,7 +272,8 @@ export class InspectionsService {
     if (await peekReplay(this.prisma, scope, actor.actorId, 'inspections.decide', idempotencyKey, requestHash)) {
       return this.snapshot.build(projectId, user.role, user.sub);
     }
-    const insp = await this.prisma.inspection.findUnique({ where: { id: inspectionId }, include: { items: true } });
+    // Items in checklist order (`order`, as every read that shows them): the re-inspection's items are numbered in this order.
+    const insp = await this.prisma.inspection.findUnique({ where: { id: inspectionId }, include: { items: { orderBy: { order: 'asc' } } } });
     if (!insp || insp.projectId !== projectId) throw new NotFoundException(`Inspection ${inspectionId} not found`);
     // P2-3: a decision is terminal — don't let it be re-decided. Must be submitted first.
     if (!insp.submitted) throw new BadRequestException('This inspection has not been submitted yet.');
