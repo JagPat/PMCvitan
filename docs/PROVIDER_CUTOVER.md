@@ -127,6 +127,8 @@ Flips `StorageService` from keeping bytes in Postgres (served from `/media/:id`)
 | `S3_REGION` | `auto` | R2 uses `auto`. |
 | `S3_PUBLIC_BASE` | (optional; unused) | Not used for serving: no file is read through it, and upload results built from it are discarded (`url: null` is stored). |
 
+**Bucket CORS** (one rule; Board approved, #482 comment 6296754539): AllowedOrigins `*`, AllowedMethods `GET`, `HEAD`, no credentials. The service worker's offline read and the photo editor read files in CORS mode, and after the API's 302 the browser sends `Origin: null`. Without it, files still show online but are not kept offline, and photo markup cannot open.
+
 ### Agent cutover (access level c)
 Set the five S3 vars (`S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`; `S3_PUBLIC_BASE` is not needed, and never point it at `r2.dev`) via `POST …/envs` (each `is_literal:true`), then `deploy?force=false`, then run the validation below.
 
