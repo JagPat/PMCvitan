@@ -18,11 +18,22 @@ const ALL = '*';
 const refused = new Map<string, { count: number; resetAt: number }>();
 let nextPrune = 0;
 
-/** Count one refused token against `key`; true when that window is now over `limit`. A window left more than one
- *  window ahead (the clock stepped back) counts as expired. */
+/** A window that has ended, or sits more than one window ahead (the clock stepped back), counts as expired. */
+const expired = (entry: { resetAt: number }, now: number): boolean => now >= entry.resetAt || entry.resetAt - now > OPS_DOOR_WINDOW_MS;
+
+/** @internal test seam — how many refusal windows the guard holds. */
+export const opsDoorRefusalWindows = (): number => refused.size;
+
+/** @internal test seam — forget every refusal window, as a fresh process would. */
+export const resetOpsDoorRefusalWindows = (): void => {
+  refused.clear();
+  nextPrune = 0;
+};
+
+/** Count one refused token against `key`; true when that window is now over `limit`. */
 function overLimit(key: string, limit: number, now: number): boolean {
   const entry = refused.get(key);
-  if (!entry || now >= entry.resetAt || entry.resetAt - now > OPS_DOOR_WINDOW_MS) {
+  if (!entry || expired(entry, now)) {
     refused.set(key, { count: 1, resetAt: now + OPS_DOOR_WINDOW_MS });
     return false;
   }
@@ -56,14 +67,21 @@ export class OpsTokenGuard implements CanActivate {
 
     const now = Date.now();
     if (now >= nextPrune || nextPrune - now > OPS_DOOR_WINDOW_MS) {
-      for (const [key, entry] of refused) if (now >= entry.resetAt) refused.delete(key);
+      for (const [key, entry] of refused) if (expired(entry, now)) refused.delete(key);
       nextPrune = now + OPS_DOOR_WINDOW_MS;
     }
     const address: string = req.ip || req.socket?.remoteAddress || 'unknown';
-    // an address already over its own window is refused without spending the shared one
-    if (overLimit(address, OPS_DOOR_FAILURES_PER_ADDRESS, now) || overLimit(ALL, OPS_DOOR_FAILURES_GLOBAL, now)) {
-      const resetAt = Math.max(refused.get(address)!.resetAt, refused.get(ALL)?.resetAt ?? 0);
-      const retryAfter = Math.max(1, Math.ceil((resetAt - now) / 1000));
+    // The counter that refuses, and so the wait it reports. An address with no live window is refused by an
+    // already-blocking shared window before any state is made for it; otherwise the address's own window comes
+    // first, so an address over it is refused without spending the shared one and one address cannot fill it.
+    const own = refused.get(address);
+    const shared = refused.get(ALL);
+    let by: string | undefined;
+    if ((!own || expired(own, now)) && shared && !expired(shared, now) && shared.count > OPS_DOOR_FAILURES_GLOBAL) by = ALL;
+    else if (overLimit(address, OPS_DOOR_FAILURES_PER_ADDRESS, now)) by = address;
+    else if (overLimit(ALL, OPS_DOOR_FAILURES_GLOBAL, now)) by = ALL;
+    if (by) {
+      const retryAfter = Math.max(1, Math.ceil((refused.get(by)!.resetAt - now) / 1000));
       throw new HttpException({ message: 'Too many requests — please wait a moment and try again.', retryAfter }, HttpStatus.TOO_MANY_REQUESTS);
     }
     throw new UnauthorizedException();
