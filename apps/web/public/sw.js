@@ -8,7 +8,10 @@
  * - Other cross-origin (the API JSON): never intercepted — always hits the network.
  * skipWaiting + clientsClaim so a new deploy takes over immediately. */
 const VERSION = 'v2';
-const CACHE = `vitan-pmc-${VERSION}`;
+// The app cache has its own version: v3 drops any error page or asset v2 kept; the files cache (offline drawings
+// and media) keeps VERSION, so the field's offline set survives this bump.
+const APP_VERSION = 'v3';
+const CACHE = `vitan-pmc-${APP_VERSION}`;
 const FILES_CACHE = `vitan-pmc-files-${VERSION}`;
 const SHELL = ['/', '/manifest.webmanifest', '/favicon.svg', '/icon.jpg'];
 
@@ -21,11 +24,71 @@ self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
 });
 
+/**
+ * A name for a hashed file inside the shell or one of its files: '/assets/x', 'assets/x' (from the app root, as
+ * Vite's preload list writes it) or './x' (beside the file that names it).
+ */
+const NAMED = /(?:\/assets\/|\bassets\/|\.\/)[\w.-]+/g;
+
+/** The /assets/ paths that `text`, read at `base` on this origin, names. */
+function namedIn(text, base) {
+  const paths = [];
+  for (const ref of text.match(NAMED) || []) {
+    const { pathname } = new URL(ref.startsWith('assets/') ? `/${ref}` : ref, base);
+    if (pathname.startsWith('/assets/')) paths.push(pathname);
+  }
+  return paths;
+}
+
+/**
+ * The good hashed files of this build that the last app cache held stay readable offline: those the fresh shell
+ * names, and every file those name in turn. An error one, or an older build's, is dropped with the old cache.
+ */
+function keepGoodAssets(name) {
+  return Promise.all([caches.open(name), caches.open(CACHE)]).then(([old, cur]) => {
+    const seen = new Set();
+    const carry = (paths) =>
+      Promise.all(
+        paths
+          .filter((path) => !seen.has(path))
+          .map((path) => {
+            seen.add(path);
+            return old.match(path).then((res) => {
+              if (!(res && res.ok && res.type === 'basic')) return undefined;
+              const named = /\.(?:m?js|css)$/.test(path) ? res.clone().text() : Promise.resolve('');
+              return cur
+                .put(path, res)
+                .then(() => named)
+                .then((text) => carry(namedIn(text, new URL(path, self.location.origin))));
+            });
+          }),
+      );
+    return cur
+      .match('/')
+      .then((shell) => (shell ? shell.text() : ''))
+      .then((html) => carry(namedIn(html, new URL('/', self.location.origin))));
+  });
+}
+
+/** An earlier release's app cache (vitan-pmc-v1, -v2, …): the only kind the carry reads, never a files cache. */
+const APP_CACHE = /^vitan-pmc-v\d+$/;
+
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k.startsWith('vitan-pmc-') && k !== CACHE && k !== FILES_CACHE).map((k) => caches.delete(k))))
+      .then((keys) =>
+        Promise.all(
+          keys
+            .filter((k) => k.startsWith('vitan-pmc-') && k !== CACHE && k !== FILES_CACHE)
+            .map((k) =>
+              (APP_CACHE.test(k) ? keepGoodAssets(k) : Promise.resolve())
+                // a copy that cannot be made (storage full) must not keep the old cache: its kept errors would be served
+                .catch(() => undefined)
+                .then(() => caches.delete(k)),
+            ),
+        ),
+      )
       .then(() => self.clients.claim()),
   );
 });
@@ -68,8 +131,11 @@ self.addEventListener('fetch', (event) => {
         (hit) =>
           hit ||
           fetch(request).then((res) => {
-            const copy = res.clone();
-            caches.open(CACHE).then((c) => c.put(request, copy));
+            // only a good file from this site is kept: a hashed asset is read from here from then on, online too
+            if (res.ok && res.type === 'basic') {
+              const copy = res.clone();
+              caches.open(CACHE).then((c) => c.put(request, copy));
+            }
             return res;
           }),
       ),
@@ -82,8 +148,11 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put('/', copy));
+          // only a good page from this site becomes the offline copy: an error answered mid-deploy would otherwise be what an offline phone shows
+          if (res.ok && res.type === 'basic') {
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put('/', copy));
+          }
           return res;
         })
         .catch(() => caches.match('/').then((hit) => hit || caches.match(request))),
