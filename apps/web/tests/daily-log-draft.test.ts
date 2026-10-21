@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, ApiSnapshot, ModuleDailyLog } from '@/data/apiGateway';
 import type { DailyLog, DailyLogCoreView } from '@vitan/shared';
-import { adoptLegacyDraft, canAdoptLegacyDraft, overlayDailyLogDraft, parseDailyLogDraft, dailyLogKey, type DailyLogDraft } from '@/store/dailyLogDraft';
+import { adoptLegacyDraft, canAdoptLegacyDraft, mergeHeldDraft, overlayDailyLogDraft, parseDailyLogDraft, dailyLogKey, type DailyLogDraft } from '@/store/dailyLogDraft';
 import { todayPath } from '@/lib/engineerToday';
 
 /**
@@ -64,6 +64,54 @@ function expectTheMorningKept(): void {
 }
 
 describe('#669 — the pending daily-log draft (pure rules)', () => {
+
+  it('Codex 4336713260: a draft keeps the keys of the photos it counts, and reads them only beside a count that holds them all', () => {
+    const base = { projectId: 'ambli', logKey: 'civil:2026-07-03' };
+    expect(parseDailyLogDraft({ ...base, photosAdded: 2, photoKeys: ['k-a', 'k-b'] })).toEqual({ ...base, photosAdded: 2, photoKeys: ['k-a', 'k-b'] });
+    // an earlier release's count with fewer keys: the rest are photos it counted with none
+    expect(parseDailyLogDraft({ ...base, photosAdded: 3, photoKeys: ['k-a'] })).toEqual({ ...base, photosAdded: 3, photoKeys: ['k-a'] });
+    // keys the count does not hold, repeated keys or keys that are not text are never read: the count stands alone
+    expect(parseDailyLogDraft({ ...base, photosAdded: 1, photoKeys: ['k-a', 'k-b'] })).toEqual({ ...base, photosAdded: 1 });
+    expect(parseDailyLogDraft({ ...base, photosAdded: 2, photoKeys: ['k-a', 'k-a'] })).toEqual({ ...base, photosAdded: 2 });
+    expect(parseDailyLogDraft({ ...base, photosAdded: 2, photoKeys: [7] })).toEqual({ ...base, photosAdded: 2 });
+  });
+
+  it('re-check G4: two tabs that each add a photo to a draft holding one photo with no key count all three', () => {
+    const log = { id: 'LOG-1', date: 'Fri 3 Jul', logDate: '2026-07-03', submitted: false, checkedIn: false, checkinTime: null, crew: [], progress: 0, photos: [] } as unknown as Parameters<typeof mergeHeldDraft>[2];
+    const base = { projectId: 'ambli', logKey: 'civil:2026-07-03', logId: 'LOG-1' };
+    // a photo counted before the upgrade; each tab read it, and its first keyed photo recorded the base it read
+    const a = { ...base, photosAdded: 2, photoKeys: ['k-a'], unkeyedBase: 1 };
+    const b = { ...base, photosAdded: 2, photoKeys: ['k-b'], unkeyedBase: 1 };
+    expect(mergeHeldDraft(b, a, log, 'ambli', false).draft).toEqual(expect.objectContaining({ photosAdded: 3, photoKeys: ['k-b', 'k-a'], unkeyedBase: 1 }));
+    // a draft with every photo keyed shares no unkeyed base
+    expect(mergeHeldDraft({ ...base, photosAdded: 1, photoKeys: ['k-b'] }, a, log, 'ambli', false).draft).toEqual(expect.objectContaining({ photosAdded: 3, photoKeys: ['k-b', 'k-a'] }));
+    // an earlier release's write dropped the keys and the base: the larger count stands
+    expect(mergeHeldDraft({ ...base, photosAdded: 2 }, { ...base, photosAdded: 2, photoKeys: ['k-0', 'k-a'] }, log, 'ambli', false).draft)
+      .toEqual(expect.objectContaining({ photosAdded: 2, photoKeys: ['k-0', 'k-a'] }));
+    // re-check N2: an earlier release wrote {1,[k-0]} as {1}; a tab of this release read it and took k-c (base 1); the
+    // held draft still has k-0 and took k-b. Three photos are counted as four: one per such photo, until it is sent
+    expect(mergeHeldDraft({ ...base, photosAdded: 2, photoKeys: ['k-c'], unkeyedBase: 1 }, { ...base, photosAdded: 2, photoKeys: ['k-0', 'k-b'] }, log, 'ambli', false).draft)
+      .toEqual(expect.objectContaining({ photosAdded: 4, photoKeys: ['k-c', 'k-0', 'k-b'] }));
+    // the base is read only when it is exactly the photos the keys leave
+    expect(parseDailyLogDraft({ ...base, photosAdded: 2, photoKeys: ['k-a'], unkeyedBase: 1 })).toEqual({ ...base, photosAdded: 2, photoKeys: ['k-a'], unkeyedBase: 1 });
+    expect(parseDailyLogDraft({ ...base, photosAdded: 2, photoKeys: ['k-a'], unkeyedBase: 2 })).toEqual({ ...base, photosAdded: 2, photoKeys: ['k-a'] });
+  });
+
+  it('Codex 4336713260: two drafts of one log merge to every photo either took, each counted once', () => {
+    const log = { id: 'LOG-1', date: 'Fri 3 Jul', logDate: '2026-07-03', submitted: false, checkedIn: false, checkinTime: null, crew: [], progress: 0, photos: [] } as unknown as Parameters<typeof mergeHeldDraft>[2];
+    const base = { projectId: 'ambli', logKey: 'civil:2026-07-03', logId: 'LOG-1' };
+    const mine = { ...base, photosAdded: 1, photoKeys: ['k-a'] };
+    const theirs = { ...base, photosAdded: 1, photoKeys: ['k-b'] };
+    // counted from the same start (this tab read the key), and when it could not read it: two photos either way
+    expect(mergeHeldDraft(theirs, mine, log, 'ambli', false).draft).toEqual(expect.objectContaining({ photosAdded: 2, photoKeys: ['k-b', 'k-a'] }));
+    expect(mergeHeldDraft(theirs, mine, log, 'ambli', true).draft).toEqual(expect.objectContaining({ photosAdded: 2, photoKeys: ['k-b', 'k-a'] }));
+    // a photo both hold is one photo
+    expect(mergeHeldDraft({ ...base, photosAdded: 1, photoKeys: ['k-a'] }, { ...base, photosAdded: 2, photoKeys: ['k-a', 'k-c'] }, log, 'ambli', false).draft)
+      .toEqual(expect.objectContaining({ photosAdded: 2, photoKeys: ['k-a', 'k-c'] }));
+    // an earlier release's count with no keys: added when this tab could not read the key, else the larger stands
+    expect(mergeHeldDraft({ ...base, photosAdded: 2 }, mine, log, 'ambli', true).draft).toEqual(expect.objectContaining({ photosAdded: 3, photoKeys: ['k-a'] }));
+    expect(mergeHeldDraft({ ...base, photosAdded: 2 }, mine, log, 'ambli', false).draft).toEqual(expect.objectContaining({ photosAdded: 2, photoKeys: ['k-a'] }));
+  });
   const draft = (over: Partial<DailyLogDraft> = {}): DailyLogDraft => ({ projectId: 'ambli', logKey: 'civil:2026-07-03', ...over });
 
   it('keys a log by its civil date, falling back to the legacy display date', () => {
@@ -147,7 +195,19 @@ describe('#669 — the morning survives a reconcile (store)', () => {
     await settles(() => gw.addSiteMaterial.mock.calls.length === 1 && s().outbox.length === 0);
     await flush();
     expectTheMorningKept();
-    expect(s().dailyLogDraft).toEqual({ projectId: 'ambli', logKey: 'civil:2026-07-03', checkIn: { checkedIn: true, checkinTime: '8:12 AM' }, crewRows: { 0: { trade: 'Flooring mason', count: 3 } }, photosAdded: 1 });
+    expect(s().dailyLogDraft).toEqual({ projectId: 'ambli', logKey: 'civil:2026-07-03', checkIn: { checkedIn: true, checkinTime: '8:12 AM' }, crewRows: { 0: { trade: 'Flooring mason', count: 3 } }, photosAdded: 1, photoKeys: [expect.any(String)] });
+  });
+
+  it('re-check G4: the first keyed photo on a draft holding photos with no key records them as its base', async () => {
+    const gw = { snapshot: vi.fn().mockResolvedValue(makeSnapshot(serverLog())) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    useStore.setState({ dailyLogDraft: { projectId: 'ambli', logKey: 'civil:2026-07-03', photosAdded: 1 } });
+    s()._setGateway(null);
+    s().addProgress();
+    s().addProgress();
+    expect(s().dailyLogDraft).toEqual(expect.objectContaining({ photosAdded: 3, photoKeys: [expect.any(String), expect.any(String)], unkeyedBase: 1 }));
   });
 
   it('moduleQuery mode: the post-command module read keeps all three too (RED at c6cfec7)', async () => {
@@ -460,6 +520,12 @@ describe('#692 — a legacy draft (no log id) is kept aside and reused only on c
     expect(s().dailyLog?.crew.find((c) => c.trade === 'Plumber')?.count).toBe(4);
     expect(s().dailyLog).toMatchObject({ checkedIn: true, checkinTime: '9:05 AM', progress: 3 });
     expect(s().dailyLogDraft).toMatchObject({ logId: 'log-b', crew: { Plumber: 4 } });
+  });
+
+  it('Codex 4336713260: the adopted draft keeps the keys of the photos both drafts counted, so a later merge counts each once', () => {
+    const mine = { projectId: 'ambli', logKey: 'civil:2026-07-03', logId: 'log-b', photosAdded: 1, photoKeys: ['k-b'] };
+    expect(adoptLegacyDraft(legacyDraft({ photosAdded: 2, photoKeys: ['k-a'] }), mine, serverLog({ id: 'log-b' }), 'ambli'))
+      .toEqual(expect.objectContaining({ photosAdded: 3, photoKeys: ['k-a', 'k-b'], unkeyedBase: 1 }));
   });
 
   it('it is never added to another day\'s log, a sent log, or while a start or send is on its way', () => {

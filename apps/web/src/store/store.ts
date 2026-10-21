@@ -73,7 +73,7 @@ import {
 import { routableScreensFor, screensFor } from '@/lib/screens';
 import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
-import { type DailyLogDraft, adoptLegacyDraft, canAdoptLegacyDraft, dailyLogKey, draftAppliesTo, draftHoldsWork, legacyDraftExtras, mergeHeldDraft, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
+import { type DailyLogDraft, adoptLegacyDraft, canAdoptLegacyDraft, dailyLogKey, draftAppliesTo, draftHoldsWork, legacyDraftExtras, mergeHeldDraft, overlayDailyLogDraft, parseDailyLogDraft, unkeyedPhotos } from './dailyLogDraft';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type NodeCreatePending, type ProjectLoadState, type ProjectScope } from './projectScope';
 import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, planSeenChunks, reconcileSeen, type NotifSeenState } from '@/lib/notificationSeen';
 import type { MaterialsView } from './materials';
@@ -89,7 +89,7 @@ import {
   beginCreateSend, createHoldScope, currentCreateHoldView, releaseCreate, reserveCreateRetry, reserveNewCreate, serverKeepsCreateReceipts,
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
 } from './projectCreateHold';
-import { resolveMediaUrl, replayOutboxOp, isKnownOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isKnownOutboxOp, isKnownOutboxKind, isTerminalOutboxError, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { clearVisitPhotoStart, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { parseLocation } from '@/lib/screens';
@@ -1785,6 +1785,9 @@ export const useStore = create<Store>()(
     const dailyLogDraftKey = (): string => `vitan.dailyLogDraft.${sessionSub()}.${get().activeProjectId}`;
     // the kept-aside legacy draft (owner ruling, #692), under its own key in the same scope
     const legacyDailyLogDraftKey = (): string => `vitan.dailyLogDraft.legacy.${sessionSub()}.${get().activeProjectId}`;
+    /** what each archive on its way was Continued with: the updates not kept then. A draft edit whose write leaves a
+     *  draft not kept ends a draft's place in each (#1051 r1 re-check G1), as it ends a Reload's agreement */
+    const archiveAgreements = new Set<{ ids: string[] }>();
     const persistDailyLogDraft = (): void => {
       // WEB-02: a draft key this phone could not read is never written or removed, nor any while memory holds
       // another scope's queue
@@ -1814,6 +1817,7 @@ export const useStore = create<Store>()(
       // a draft edited after a Reload was agreed is not what was agreed to lose: a draft write that leaves one not kept
       // ends the agreement, so the browser asks again (fail closed, #1037 r1 re-check 4, G2)
       if (get().reloadAgreed !== null && marks.some(([, kept]) => !kept)) set((st) => { st.reloadAgreed = null; });
+      if (marks.some(([, kept]) => !kept)) for (const a of archiveAgreements) a.ids = a.ids.filter((i) => !i.startsWith('draft:'));
       // a draft no write stored counts as "not kept", so a switch or sign-out asks before it is lost (#1028 r1)
       const next = [...get().queueUnkept.filter((i) => !i.startsWith('draft:')), ...marks.filter(([, kept]) => !kept).map(([m]) => m)];
       if (next.length !== get().queueUnkept.length || next.some((i, n) => i !== get().queueUnkept[n])) set((st) => { st.queueUnkept = next; });
@@ -1895,9 +1899,15 @@ export const useStore = create<Store>()(
       if (!row) return;
       recordDailyLogDraft(s, (d) => { d.crewRows = { ...(d.crewRows ?? {}), [String(idx)]: { trade: row.trade, count } }; });
     };
-    /** …one more progress photo taken for this log on this device. */
-    const recordDraftPhoto = (s: AppState): void =>
-      recordDailyLogDraft(s, (d) => { d.photosAdded = (d.photosAdded ?? 0) + 1; });
+    /** …one more progress photo taken for this log on this device, under its pick's key: two tabs' drafts then merge
+     *  to every photo either took, each counted once (Codex 4336713260). Each pick has a key of its own */
+    const recordDraftPhoto = (s: AppState, key: string = newIdempotencyKey()): void =>
+      recordDailyLogDraft(s, (d) => {
+        // the photos with no key it holds before its first keyed one are the base its readers share (re-check G4)
+        if (d.unkeyedBase === undefined && !d.photoKeys?.length && unkeyedPhotos(d) > 0) d.unkeyedBase = unkeyedPhotos(d);
+        d.photosAdded = (d.photosAdded ?? 0) + 1;
+        d.photoKeys = [...(d.photoKeys ?? []), key];
+      });
 
     const applySnapshotCore = (snap: ApiSnapshot, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null, drawingsResult?: ModuleDrawings | null, inspectionsResult?: ModuleInspections | null, activitiesResult?: ModuleActivities | null): void => {
       set((s) => {
@@ -2733,7 +2743,8 @@ export const useStore = create<Store>()(
       acts.every((o) => (lane ? isStoredVisitOp(o) : !isSiteVisitOp(o)))
       && normalizeCommercialOutbox(normalizeLabourOutbox(normalizeMaterialsOutbox(acts).ops).ops).ops.length === acts.length;
     /** WEB-02: a queue key as stored: `[]` when absent, null when it cannot be read (the read throws, bad JSON, not a
-     *  list, an entry that names an act this release does not know: a newer release's act is never loaded and dropped,
+     *  list, an entry that names an act this release does not know or a known act missing a field its replay reads, #1051
+     *  r1, Codex 4336713248: a newer release's act is never loaded and dropped,
      *  nor written over, #1037 r1, Codex 4331862684; or an act that does not load whole, `storedActsFit`). An entry that
      *  is not an object (a `null` that `JSON.stringify` wrote for a missing entry, or a number) holds no act, so it is
      *  left out, as on main */
@@ -2751,15 +2762,17 @@ export const useStore = create<Store>()(
       }
     };
     /** #792: a queue key a newer release wrote: a list whose objects all name a kind of act, some kind this release does
-     *  not know, and whose known acts all load whole. Its release can read and send it, so the person is asked to
+     *  not know, and whose known acts all hold their whole shape and load whole (a known kind missing a field its replay
+     *  reads is damage, not a newer release: #1051 r1, Codex 4336713248). Its release can read and send it, so the person is asked to
      *  reload; it is never set aside, removed or written here (#1037 r1 check gap 3) */
     const queueKeyIsNewer = (storage: Storage, key: string): boolean => {
       try {
         const value: unknown = JSON.parse(storage.getItem(key) ?? '[]');
         if (!Array.isArray(value)) return false;
         const entries = value.filter((v) => typeof v === 'object' && v !== null && !Array.isArray(v)) as { t?: unknown }[];
-        const known = entries.filter(isKnownOutboxOp);
-        return entries.every((v) => typeof v.t === 'string') && known.length < entries.length && storedActsFit(known, key.startsWith('vitan.siteVisitQueue.'));
+        const known = entries.filter(isKnownOutboxKind);
+        return entries.every((v) => typeof v.t === 'string') && known.length < entries.length && known.every(isKnownOutboxOp)
+          && storedActsFit(known, key.startsWith('vitan.siteVisitQueue.'));
       } catch {
         return false;
       }
@@ -5593,23 +5606,30 @@ export const useStore = create<Store>()(
         if (get().leaveConfirm === null) set((s) => { s.leaveConfirm = { action: 'archive', orgId, projectId }; });
         return;
       }
+      // what the person agreed to lose by Continue: the updates not kept when they answered (none when nothing was); a
+      // draft edited since, whose write failed, is no longer that (`archiveAgreements`, #1051 r1 re-check G1)
+      const agreed = { ids: leaveConfirmed ? [...get().queueUnkept] : [] };
+      archiveAgreements.add(agreed);
       gateway
         .deleteProject(orgId, projectId)
         .then(() => {
+          archiveAgreements.delete(agreed);
           get().flash('Project archived — it’s hidden from everyone. Ask to restore it if needed.');
           // if we archived the project we're in, switch to another we can access. Acts for it can no longer be sent
-          // (the server refuses the project), and the person was asked before the archive: the switch goes on
+          // (the server refuses the project). The switch goes on unasked only when nothing is unkept beyond what the
+          // person agreed to lose: an update no write stored while the archive was on its way, or a question opened
+          // meanwhile, goes through the switch's own question, never past it (Codex 4336713264)
           if (projectId === get().activeProjectId) {
             const next = get().memberships.find((m) => m.projectId !== projectId);
             if (next) {
-              leaveConfirmed = true;
+              leaveConfirmed = get().leaveConfirm === null && get().queueUnkept.every((id) => agreed.ids.includes(id));
               try { void get().switchProject(next.projectId); } finally { leaveConfirmed = false; }
             }
           }
           get().loadOrgData();
           get().loadPortfolio();
         })
-        .catch(() => get().flash('Could not archive the project — check your access.'));
+        .catch(() => { archiveAgreements.delete(agreed); get().flash('Could not archive the project — check your access.'); });
     },
     restoreProject: (orgId, projectId) => {
       if (!gateway) {
@@ -6343,7 +6363,7 @@ export const useStore = create<Store>()(
               log.photos.unshift({ url: dataUrl });
               if (log.photoCount === undefined) log.progress += 1;
               else recountDailyLogPhotos(s);
-              recordDraftPhoto(s);
+              recordDraftPhoto(s, clientKey);
             }
           });
           const kept = persistOutbox({ t: 'uploadMedia', input });
@@ -6392,7 +6412,7 @@ export const useStore = create<Store>()(
               if (!log || log.photos.some((p) => p.id === res.id)) return;
               log.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
               if (log.photoCount === undefined) log.progress += 1;
-              recordDraftPhoto(s);
+              recordDraftPhoto(s, clientKey);
             });
             persistDailyLogDraft();
             // say what the photo actually carried, not what the feature is called

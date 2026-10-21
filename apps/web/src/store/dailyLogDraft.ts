@@ -39,8 +39,17 @@ export type DailyLogDraft = {
    *  each with the trade it was set on: a free-text trade can never collide with another row's key,
    *  and a count is applied only where that position still holds that trade */
   crewRows?: Record<string, { trade: string; count: number }>;
-  /** progress photos taken for this log on this device, beyond what the server holds */
+  /** progress photos taken for this log on this device, beyond what the server holds: the count every release reads
+   *  and writes */
   photosAdded?: number;
+  /** the identities of the photos counted in `photosAdded` (each pick's key), so two tabs' drafts merge to the photos
+   *  either took, counted once each (Codex 4336713260). Absent from a draft an earlier release wrote, and dropped by an
+   *  earlier release's write: a count with fewer keys holds that many photos with none (`unkeyedPhotos`) */
+  photoKeys?: string[];
+  /** how many of its photos had no key when this release first counted a photo on it (`unkeyedPhotos` then): the
+   *  base two tabs' drafts share, so their keyed photos are added to it, not compared (#1051 r1 re-check G4). Dropped
+   *  by an earlier release's write */
+  unkeyedBase?: number;
   /** the engineer answered every crew question for this log (a no-crew day is an answer, not a gap) */
   crewConfirmed?: boolean;
 };
@@ -81,9 +90,11 @@ export function isLegacyDraftFor(draft: DailyLogDraft | null, serverLog: DailyLo
  *  identity, a row being its position and its trade: the same row takes the held count; two rows at one position (their
  *  trades differ) keep the one whose trade the log on screen still holds there (the held one when the screen cannot
  *  say), and the other comes back for the caller to keep aside (G2 re-check G-c): in `rows` when it is the stored
- *  draft's, in `heldRows` when it is the held one's, so the person is told whose was kept aside (#1037 r1 check gap 6). The photos taken are added
- *  when `disjoint` (this tab could not read the key, so its count started at nothing and the stored count never held
- *  its photos), else the larger count (each tab counted from the same start) (G-e). Drafts of different logs cannot
+ *  draft's, in `heldRows` when it is the held one's, so the person is told whose was kept aside (#1037 r1 check gap 6). The photos taken are
+ *  counted by their keys, each once, whichever draft holds it (Codex 4336713260); photos an earlier release counted
+ *  with no key are added when `disjoint` (this tab could not read the key, so its count started at nothing and the
+ *  stored count never held its photos), else the larger count stands where it is above the keys (each tab counted from
+ *  the same start, and a count with no keys may hold a keyed photo it read) (G-e). Drafts of different logs cannot
  *  both apply: the one that applies to the log on screen is kept (else the held one), and the other comes back as
  *  `loser`, for the caller to keep aside (r1 check G2). `applies` says which draft applies; by default a draft applies
  *  when it may be laid over the log (`draftAppliesTo`). Legacy drafts are judged by `canAdoptLegacyDraft` instead, both
@@ -121,11 +132,41 @@ export function mergeHeldDraft(
     }
     out.crewRows = rows;
   }
-  const photos = disjoint ? (stored.photosAdded ?? 0) + (held.photosAdded ?? 0) : Math.max(stored.photosAdded ?? 0, held.photosAdded ?? 0);
+  // a photo is counted once by its key, whichever draft holds it (Codex 4336713260). Photos an earlier release counted
+  // with no key are added when `disjoint`. Otherwise both counts started from the same draft: its photos with no key
+  // are the larger of the two drafts' bases, and the keyed photos are added to it (re-check G4). Only when a draft an
+  // earlier release wrote holds photos with no base does the larger count stand above the keys, as before keys: one
+  // tab's photo can then go uncounted. Where an earlier release's write dropped a keyed draft's keys and a tab of this
+  // release then took a photo on it, that tab's base holds those photos, and a held draft that still has their keys
+  // counts them twice: at most one per such photo, until the draft is sent (re-cut check N2; the larger base is kept,
+  // since a photo shown as missing may be taken again)
+  const keys = [...new Set([...(stored.photoKeys ?? []), ...(held.photoKeys ?? [])])];
+  const bases = [baseOf(stored), baseOf(held)];
+  const known = bases.every((b) => b !== undefined);
+  const photos = disjoint
+    ? keys.length + unkeyedPhotos(stored) + unkeyedPhotos(held)
+    : known ? keys.length + Math.max(...(bases as number[]))
+    : Math.max(keys.length, stored.photosAdded ?? 0, held.photosAdded ?? 0);
+  delete out.photosAdded;
+  delete out.photoKeys;
+  delete out.unkeyedBase;
   if (photos) out.photosAdded = photos;
+  if (keys.length) out.photoKeys = keys;
+  if ((disjoint || known) && photos > keys.length) out.unkeyedBase = photos - keys.length;
   const aside = (crewRows: Record<string, { trade: string; count: number }>): DailyLogDraft | null => (Object.keys(crewRows).length === 0 ? null
     : { projectId: out.projectId, logKey: out.logKey, ...(out.logId ? { logId: out.logId } : {}), crewRows });
   return { draft: out, loser: null, rows: aside(lost), heldRows: aside(lostHeld) };
+}
+
+/** the photos a draft counts that no key names: those an earlier release counted */
+export function unkeyedPhotos(draft: DailyLogDraft): number {
+  return Math.max(0, (draft.photosAdded ?? 0) - (draft.photoKeys?.length ?? 0));
+}
+
+/** the photos with no key a draft shares with any draft read from it: its recorded base, none when every photo has a
+ *  key, and unknown for a draft an earlier release wrote over photos with none */
+function baseOf(draft: DailyLogDraft): number | undefined {
+  return draft.unkeyedBase ?? (unkeyedPhotos(draft) === 0 ? 0 : undefined);
 }
 
 /** Does a draft hold any of the engineer's work? (An empty one is not worth keeping aside.) */
@@ -176,6 +217,9 @@ export function adoptLegacyDraft(
   if (Object.keys(crewRows).length) out.crewRows = crewRows;
   const photos = (legacy!.photosAdded ?? 0) + (mine?.photosAdded ?? 0);
   if (photos) out.photosAdded = photos;
+  const keys = [...new Set([...(legacy!.photoKeys ?? []), ...(mine?.photoKeys ?? [])])];
+  if (keys.length) out.photoKeys = keys;
+  if (photos > keys.length) out.unkeyedBase = photos - keys.length;
   if (mine?.crewConfirmed ?? legacy!.crewConfirmed) out.crewConfirmed = true;
   return out;
 }
@@ -267,6 +311,11 @@ export function parseDailyLogDraft(raw: unknown): DailyLogDraft | null {
     draft.crew = crew;
   }
   if (typeof d.photosAdded === 'number' && Number.isInteger(d.photosAdded) && d.photosAdded >= 0) draft.photosAdded = d.photosAdded;
+  // the keys are read only beside a count that holds them all, so the count stays what every release reads
+  if (Array.isArray(d.photoKeys) && d.photoKeys.every((k) => typeof k === 'string') && new Set(d.photoKeys).size === d.photoKeys.length
+    && d.photoKeys.length > 0 && d.photoKeys.length <= (draft.photosAdded ?? 0)) draft.photoKeys = [...d.photoKeys];
+  // and the base only when it is exactly the photos the keys leave
+  if (typeof d.unkeyedBase === 'number' && Number.isInteger(d.unkeyedBase) && d.unkeyedBase > 0 && d.unkeyedBase === unkeyedPhotos(draft)) draft.unkeyedBase = d.unkeyedBase;
   if (d.crewRows && typeof d.crewRows === 'object') {
     const rows: Record<string, { trade: string; count: number }> = {};
     for (const [at, v] of Object.entries(d.crewRows as Record<string, unknown>)) {

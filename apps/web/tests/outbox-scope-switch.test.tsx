@@ -347,6 +347,11 @@ describe('the scope change itself, before the new scope loads (WEB-02)', () => {
     expect(useStore.getState().toast).toBe(QW.notKept.en);
   }
   const keptA2 = () => expect(useStore.getState().outbox).toEqual([expect.objectContaining({ activityId: 'A-2' })]);
+  /** the archive's answer has been handled: its success line is said just before its switch, in the same task, so an
+   *  await of this resumes after the switch has run */
+  const archiveAnswered = () => new Promise<void>((done) => {
+    const stop = useStore.subscribe((st) => { if (st.toast?.startsWith('Project archived')) { stop(); done(); } });
+  });
 
   it('a tap on the persona already active changes nothing and lets nothing go (#1028 r2 check G1)', () => {
     signedInOnP1([]);
@@ -481,20 +486,102 @@ describe('the scope change itself, before the new scope loads (WEB-02)', () => {
     expect(useStore.getState().leaveConfirm).toBeNull();
   });
 
-  it('a question is closed when the scope it asked about is let go: the archive’s own switch lands under it (#1028 r2 check G3)', async () => {
+  it('a question opened while an archive is on its way stays open when the archive answers: its switch never goes past it (Codex 4336713264)', async () => {
     const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { deleteProject: ReturnType<typeof vi.fn> };
     let archived!: () => void;
-    gw.deleteProject = vi.fn(() => new Promise<void>((done) => { archived = done; }));
+    gw.deleteProject = vi.fn(() => new Promise<void>((land) => { archived = land; }));
     useStore.setState({ memberships: [{ projectId: P1, short: 'P1' }, { projectId: P2, short: 'P2' }] as never });
     // the archive is sent with nothing unkept; an act is then not kept, and a switch asks
     act(() => useStore.getState().deleteProject('o', P1));
     expect(gw.deleteProject).toHaveBeenCalled();
     oneUnkept();
     expect(await useStore.getState().switchProject('p-3')).toBe('asked');
-    // the archive answers: its switch goes on (the project is gone), and lets the acts go with the question
-    await act(async () => { archived(); });
-    await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe(P2));
+    // the archive answers: the person has not answered the question, so nothing is let go
+    await act(async () => { const said = archiveAnswered(); archived(); await said; });
+    expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch', projectId: 'p-3' }));
+    expect(useStore.getState().activeProjectId).toBe(P1);
+    keptA2();
+  });
+
+  it('an update not kept while an archive is on its way is asked about when the archive answers, never let go unasked (Codex 4336713264)', async () => {
+    const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { deleteProject: ReturnType<typeof vi.fn> };
+    let archived!: () => void;
+    gw.deleteProject = vi.fn(() => new Promise<void>((land) => { archived = land; }));
+    useStore.setState({ memberships: [{ projectId: P1, short: 'P1' }, { projectId: P2, short: 'P2' }] as never });
+    // the archive is sent with nothing unkept, so nothing is asked; then a storage write fails
+    act(() => useStore.getState().deleteProject('o', P1));
     expect(useStore.getState().leaveConfirm).toBeNull();
+    oneUnkept();
+    await act(async () => { const said = archiveAnswered(); archived(); await said; });
+    // the archive's switch asks, as any switch does, and keeps the update until the person answers
+    expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch', projectId: P2 }));
+    expect(useStore.getState().activeProjectId).toBe(P1);
+    keptA2();
+    act(() => useStore.getState().confirmLeave());
+    expect(gw.switchProject).toHaveBeenCalledWith(P2);
+  });
+
+  it('an archive the person continued with nothing more unkept since switches on its answer, asking nothing again (Codex 4336713264)', async () => {
+    const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { deleteProject: ReturnType<typeof vi.fn> };
+    let archived!: () => void;
+    gw.deleteProject = vi.fn(() => new Promise<void>((land) => { archived = land; }));
+    useStore.setState({ memberships: [{ projectId: P1, short: 'P1' }, { projectId: P2, short: 'P2' }] as never });
+    oneUnkept();
+    act(() => useStore.getState().deleteProject('o', P1));
+    act(() => useStore.getState().confirmLeave());
+    await act(async () => { const said = archiveAnswered(); archived(); await said; });
+    expect(useStore.getState().leaveConfirm).toBeNull();
+    expect(gw.switchProject).toHaveBeenCalledWith(P2);
+  });
+
+  it('a question opened while a continued archive is on its way, about the same updates, stays open when the archive answers (Codex 4336713264)', async () => {
+    const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { deleteProject: ReturnType<typeof vi.fn> };
+    let archived!: () => void;
+    gw.deleteProject = vi.fn(() => new Promise<void>((land) => { archived = land; }));
+    useStore.setState({ memberships: [{ projectId: P1, short: 'P1' }, { projectId: P2, short: 'P2' }] as never });
+    oneUnkept();
+    act(() => useStore.getState().deleteProject('o', P1));
+    act(() => useStore.getState().confirmLeave());
+    // nothing more is unkept, but the person is now asked about a switch elsewhere: that answer is theirs to give
+    expect(await useStore.getState().switchProject('p-3')).toBe('asked');
+    await act(async () => { const said = archiveAnswered(); archived(); await said; });
+    expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch', projectId: 'p-3' }));
+    expect(useStore.getState().activeProjectId).toBe(P1);
+    expect(gw.switchProject).not.toHaveBeenCalled();
+  });
+
+  /** on P1 with the archive held open: the check-in's draft write failed (not kept), and the person Continued */
+  async function archiveContinuedOverUnkeptDraft() {
+    const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { deleteProject: ReturnType<typeof vi.fn> };
+    let archived!: () => void;
+    gw.deleteProject = vi.fn(() => new Promise<void>((land) => { archived = land; }));
+    useStore.setState({ memberships: [{ projectId: P1, short: 'P1' }, { projectId: P2, short: 'P2' }] as never });
+    const refuse = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
+    useStore.getState().checkIn();
+    expect(useStore.getState().queueUnkept).toEqual(['draft:current']);
+    act(() => useStore.getState().deleteProject('o', P1));
+    expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'archive' }));
+    act(() => useStore.getState().confirmLeave());
+    expect(gw.deleteProject).toHaveBeenCalled();
+    return { gw, refuse, answer: () => act(async () => { const said = archiveAnswered(); archived(); await said; }) };
+  }
+
+  it('a draft edited after Continue on an archive, whose write fails, is asked about when the archive answers (#1051 r1 re-check G1)', async () => {
+    const { gw, refuse, answer } = await archiveContinuedOverUnkeptDraft();
+    // while the archive is on its way, the person checks out; that write fails too
+    act(() => { useStore.getState().checkOut(); });
+    refuse.mockRestore();
+    await answer();
+    expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch', projectId: P2 }));
+    expect(gw.switchProject).not.toHaveBeenCalled();
+  });
+
+  it('a draft left as it was when the person Continued an archive is let go unasked when the archive answers (#1051 r1 re-check G1)', async () => {
+    const { gw, refuse, answer } = await archiveContinuedOverUnkeptDraft();
+    refuse.mockRestore();
+    await answer();
+    expect(useStore.getState().leaveConfirm).toBeNull();
+    expect(gw.switchProject).toHaveBeenCalledWith(P2);
   });
 
   it('a later leave never replaces an open question: a sign-out stays the question asked (#1028 r2 check G4)', async () => {
@@ -1252,6 +1339,24 @@ describe('#1028 round 1: Set aside, a stalled online send and drafts behind an u
       localStorage.setItem(draftKey, JSON.stringify({ ...held, photosAdded: 2 }));
       useStore.getState().setAsideUnreadableQueue();
       expect(useStore.getState().dailyLogDraft!.photosAdded).toBe(3);
+    });
+
+    it('Codex 4336713260: when this tab could read the draft key, a photo each tab took is counted once each, and one both hold once', () => {
+      onP2With(key(P2));
+      useStore.setState((s) => { s.dailyLog = { ...s.dailyLog!, id: 'LOG-1', submitted: false }; });
+      useStore.getState().checkIn();
+      const held = useStore.getState().dailyLogDraft!;
+      // this tab took k-a (its write failed); the other tab took k-b and stored it: one photo each, two in all
+      useStore.setState({ dailyLogDraft: { ...held, photosAdded: 1, photoKeys: ['k-a'] } });
+      localStorage.setItem(draftKey, JSON.stringify({ ...held, photosAdded: 1, photoKeys: ['k-b'] }));
+      useStore.getState().setAsideUnreadableQueue();
+      expect(useStore.getState().dailyLogDraft).toEqual(expect.objectContaining({ photosAdded: 2, photoKeys: ['k-b', 'k-a'] }));
+      // the same photo in both drafts is one photo
+      useStore.setState({ dailyLogDraft: { ...held, photosAdded: 2, photoKeys: ['k-b', 'k-a'] } });
+      localStorage.setItem(draftKey, JSON.stringify({ ...held, photosAdded: 1, photoKeys: ['k-b'] }));
+      useStore.setState((s) => { s.queueUnreadable = { keys: [draftKey], failed: false }; });
+      useStore.getState().setAsideUnreadableQueue();
+      expect(useStore.getState().dailyLogDraft).toEqual(expect.objectContaining({ photosAdded: 2, photoKeys: ['k-b', 'k-a'] }));
     });
 
     it('G-a: an older release’s draft whose write to the empty legacy slot is refused is copied aside instead, never held in memory alone', () => {
