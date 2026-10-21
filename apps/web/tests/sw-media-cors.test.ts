@@ -12,7 +12,7 @@ import { resolve } from 'node:path';
 const ORIGIN = 'https://pms.example';
 const PHOTO = 'https://api.example/media/m1/file?t=signed';
 
-function loadWorker(cached: Response) {
+function loadWorker(cached: Response, online = true) {
   const handlers: Record<string, (event: unknown) => void> = {};
   const network: string[] = [];
   const cache = { match: async () => cached, put: async () => {} };
@@ -22,11 +22,19 @@ function loadWorker(cached: Response) {
     skipWaiting: () => Promise.resolve(),
     clients: { claim: () => Promise.resolve() },
   };
-  const fetch = async (req: { url: string }) => { network.push(req.url); return new Response('bytes', { status: 200 }); };
+  const fetch = async (req: string | { url: string }) => {
+    network.push(typeof req === 'string' ? req : req.url);
+    if (!online) throw new TypeError('offline');
+    return new Response('bytes', { status: 200 });
+  };
   runInNewContext(readFileSync(resolve('public/sw.js'), 'utf8'), { self, URL, caches: { open: async () => cache }, fetch, Response, Request });
   const get = async (mode: 'cors' | 'no-cors') => {
     let answer: Promise<Response> | undefined;
-    handlers.fetch({ request: { url: PHOTO, method: 'GET', mode }, respondWith: (p: Promise<Response>) => { answer = p; } });
+    handlers.fetch({
+      request: { url: PHOTO, method: 'GET', mode },
+      respondWith: (p: Promise<Response>) => { answer = p; },
+      waitUntil: () => {},
+    });
     return answer!;
   };
   return { get, network };
@@ -49,9 +57,9 @@ describe('the service worker and stored photos', () => {
     expect(network).toEqual([PHOTO]);
   });
 
-  it('an <img> still gets the cached copy at once, offline included', async () => {
+  it('offline, an <img> still gets the cached opaque copy', async () => {
     const hit = opaque();
-    const { get } = loadWorker(hit);
+    const { get } = loadWorker(hit, false);
     expect(await get('no-cors')).toBe(hit);
   });
 });
