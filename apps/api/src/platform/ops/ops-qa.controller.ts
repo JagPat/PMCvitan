@@ -19,7 +19,8 @@ import { OPS_VIA, switchSchema, type SwitchInput } from './ops.controller';
  * Its own controller so the door guard runs BEFORE the rate limiter (Codex P2 on #1020), as `AuthOpsController` does
  * for the QA sign-in: Nest runs a class's guards in the order given, and `OpsController` throttles first, so there
  * thirty unauthenticated calls from one address would spend the limit and lock out the operator behind it. Here a
- * caller without the token is refused (404 closed, 401 wrong token) and never counted.
+ * caller without the token is refused (404 closed, 401 wrong token) and never spends the operator's limit; wrong
+ * tokens are counted in the guard's own window (429 over it).
  */
 @Controller('ops')
 @UseGuards(OpsTokenGuard, ThrottleGuard)
