@@ -15,8 +15,10 @@ export const authManifest: ModuleManifest = {
   kind: 'domain',
   ownsModels: [],
   dependsOn: [],
-  // #482 — the sign-in access rule (`OrgsParticipant.signInLanding`/`projectRole`) and the operator-door QA sign-in's
-  // account side (`OrgsParticipant.qaSignInAccount`) are the orgs module's, asked through its participant
+  // #482 — the sign-in access rule (`OrgsParticipant.signInLanding`/`projectRole`), the operator-door QA sign-in's
+  // account side (`OrgsParticipant.qaSignInAccount`) and every account, project and credential-eligibility read the
+  // sign-in channels make (`accountByAddress`, `accountById`, `devAccount`, `projectLive`, `reachableProjects`,
+  // `credentialAccount`, `accountByPhone`, `rememberLastProject`) are the orgs module's, asked through its participant
   workflowParticipants: ['orgs'],
   producesEvents: [],
   consumesEvents: [],
