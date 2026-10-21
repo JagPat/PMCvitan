@@ -7,7 +7,17 @@ import { Throttle, ThrottleGuard } from '../../common/throttle';
 import { ZodPipe } from '../../common/zod.pipe';
 import { OpsTokenGuard } from './ops-token.guard';
 
-const sinceSchema = z.object({ since: z.string().datetime({ offset: true }) }).strict();
+// Zod's offset check admits hours and minutes Date cannot read (`+24:00`, `+02:60`, `+2400`), and an offset can carry year
+// 0000 or 9999 past the 4-digit range; such a `since` is refused with the same message as any other malformed one, and
+// only after the shape check, so a bad value gets one issue.
+// Prisma sends a Date as ISO text, which has no form for a year outside 0000-9999
+const ISO_MIN = Date.parse('0000-01-01T00:00:00.000Z');
+const ISO_MAX = Date.parse('9999-12-31T23:59:59.999Z');
+const finiteInstant = z.string().refine((v) => {
+  const t = Date.parse(v);
+  return Number.isFinite(t) && t >= ISO_MIN && t <= ISO_MAX;
+}, { message: 'Invalid datetime' });
+const sinceSchema = z.object({ since: z.string().datetime({ offset: true }).pipe(finiteInstant) }).strict();
 type SinceInput = z.infer<typeof sinceSchema>;
 
 /** The eight acts that carry a seen-state pin, by their audit action (#482 seen-state pins). */

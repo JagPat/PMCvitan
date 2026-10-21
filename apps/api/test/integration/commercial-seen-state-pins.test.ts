@@ -741,6 +741,30 @@ describe('#482 seen-state pins (live PG)', () => {
     expect((await ops(`?since=${encodeURIComponent(now.toISOString())}&extra=1`)).status).toBe(400);
   });
 
+  it('GET /ops/compat/state-pins refuses a `since` that Zod admits but Date cannot read or that has no 4-digit year, and reads an offset as its instant', async () => {
+    // a window of its own, so these calls share no throttle count with the read above
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 500 * OPS_DOOR_WINDOW_MS });
+    try {
+      process.env.OPS_TOKEN = OPS;
+      const ops = (since: string) => request(t.app.getHttpServer()).get(`/ops/compat/state-pins?since=${encodeURIComponent(since)}`).set('Authorization', `Bearer ${OPS}`);
+      const refused = { statusCode: 400, error: 'Bad Request', message: ['since: Invalid datetime'] };
+      for (const since of ['2020-01-01T00:00:00+02', '2020-01-01T00:00:00+24:00', '2020-01-01T00:00:00+99:00', '2020-01-01T00:00:00-24:00', '2020-01-01T00:00:00+02:60', '2020-01-01T00:00:00+2400', '0000-01-01T00:00:00+01:00', '9999-12-31T23:59:59-23:59', 'yesterday']) {
+        const r = await ops(since);
+        expect({ since, status: r.status, body: r.body }).toEqual({ since, status: 400, body: refused });
+      }
+      const zulu = await ops('2019-12-31T22:00:00Z');
+      expect(zulu.status, zulu.text).toBe(200);
+      expect(zulu.body.since).toBe('2019-12-31T22:00:00.000Z');
+      for (const since of ['2020-01-01T00:00:00+02:00', '2020-01-01T00:00:00+0200']) {
+        const r = await ops(since);
+        expect(r.status, r.text).toBe(200);
+        expect(r.body, since).toEqual(zulu.body);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('GET /ops/compat/state-pins is closed without the token', async () => {
     const since = encodeURIComponent(new Date().toISOString());
     delete process.env.OPS_TOKEN;
