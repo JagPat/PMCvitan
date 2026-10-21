@@ -1387,8 +1387,10 @@ describe('Codex round 1 on #1025', () => {
       for (let i = 0; i < n; i++) out.push(oggPage(i === n - 1 ? 0x04 : 0x00, 1, 3 + i, []));
       return Buffer.concat(out);
     };
-    expect(ogg(pages(99_990))).toBe(true);
-    expect(ogg(pages(100_000))).toBe(false);
+    // with the three pages before them, 99,996 empty pages make 99,999, the most a walk reads to its end; 99,997 make
+    // 100,000, and the walk stops at its cap before the end
+    expect(ogg(pages(99_996))).toBe(true);
+    expect(ogg(pages(99_997))).toBe(false);
   });
 
   it('pre-existing, same class as tfdt: a trun sample\'s composition offset counts in the length, at version 0 and 1', () => {
@@ -1399,13 +1401,20 @@ describe('Codex round 1 on #1025', () => {
     for (const version of [0, 1] as const) {
       const late = offsets(version, [0, 48_000 * 600]);
       expect(mp4(late)).toBe(true);
-      expect(recordingSeconds('audio/mp4', late)).toBeGreaterThanOrEqual(601);
+      expect(recordingSeconds('audio/mp4', late)).toBeCloseTo(602, 6); // the shifted sample's own second counts
       expect(readVoiceRecording('audio/mp4', late)!.durationSec).toBeGreaterThan(120);
       // offsets of 0 read the durations, as before
       expect(recordingSeconds('audio/mp4', offsets(version, [0, 0]))).toBeCloseTo(2, 6);
     }
     // a negative offset (version 1) presents a sample earlier; it cannot shorten the file below its durations
     expect(recordingSeconds('audio/mp4', offsets(1, [0, -24_000]))).toBeCloseTo(2, 6);
+    // at version 0 the offset is unsigned: 2^31 ticks is over 44,000 s, never a negative shift
+    expect(recordingSeconds('audio/mp4', offsets(0, [0, 2 ** 31]))).toBeGreaterThan(44_000);
+    // a run tfdt places 600 s in, with a negative offset on its last sample: the length is still where the timeline
+    // reaches, 602 s, not where the shifted sample is presented
+    const placed = fragmentedMp4({ traf: (off) => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000 * 600)),
+      fullBox('trun', 1, 0x000b01, [be(2, off), be(48_000, 4, 0, 48_000, 4, -24_000 >>> 0)])] });
+    expect(recordingSeconds('audio/mp4', placed)).toBeCloseTo(602, 6);
   });
 
   it('audit: a trun past the samples left is refused before any of its sample fields is read', () => {
