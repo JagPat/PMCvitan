@@ -196,6 +196,29 @@ describe('Site Visits SV2 — adding files to a visit (live PG)', () => {
     expect(keyOf(placed.body)).toBeNull();
   });
 
+  it('a marked-up copy reads back naming its original to every member, its key to its uploader alone, and stays a visit file (M3)', async () => {
+    const original = await visitFile(pmcToken, visitId, { nodeId: place.id });
+    expect(original.status).toBe(201);
+    const key = `sv2f-copy-${run}`;
+    const copy = await visitFile(consultantToken, visitId, { sourceMediaId: original.body.id, mime: 'image/jpeg', clientKey: key, nodeId: place.id });
+    expect(copy.status).toBe(201);
+    type Listed = { files: Array<{ mediaId: string; clientKey: string | null; sourceMediaId: string | null }> };
+    const of = (v: Listed, id: string) => v.files.find((x) => x.mediaId === id)!;
+    const own = await readVisit(visitId, consultantToken);
+    expect(of(own, copy.body.id)).toMatchObject({ sourceMediaId: original.body.id, clientKey: key });
+    // the original is kept as it was, and names no source
+    expect(of(own, original.body.id).sourceMediaId).toBeNull();
+    // every other member reads which photo it was drawn on, never the copy's key
+    for (const token of [clientToken, pmcToken, engineerToken]) {
+      expect(of(await readVisit(visitId, token), copy.body.id)).toMatchObject({ sourceMediaId: original.body.id, clientKey: null });
+    }
+    // a copy is a visit file: not among the snapshot's photos (Site Map, Dashboard) nor the daily log's
+    const snap = await http().get(`/projects/${f.projectA.id}/snapshot`).set('Authorization', `Bearer ${clientToken}`);
+    expect(snap.status).toBe(200);
+    expect((snap.body.photos as Array<{ id: string }>).map((p) => p.id)).not.toContain(copy.body.id);
+    expect(((snap.body.dailyLog?.photos ?? []) as Array<{ id: string }>).map((p) => p.id)).not.toContain(copy.body.id);
+  });
+
   it('visit files stay inside their visit: not on the Site Map, the Dashboard photos or the daily log', async () => {
     const onPlace = await visitFile(pmcToken, visitId, { nodeId: place.id });
     expect(onPlace.status).toBe(201);
