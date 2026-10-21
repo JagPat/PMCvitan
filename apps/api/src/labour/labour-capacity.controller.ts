@@ -6,11 +6,12 @@ import { RolesFor, RolesGuard } from '../common/roles';
 import {
   allocateLabourSchema, releaseLabourAllocationSchema, recordAttendanceSchema, revokeAttendanceSchema,
   recordLabourWorkSchema, approveSkillSubstitutionSchema, revokeSkillSubstitutionSchema,
-  recordLabourMismatchSchema, resolveLabourMismatchSchema,
+  recordLabourMismatchSchema, resolveLabourMismatchSchema, labourCapacityQuerySchema, labourPresenceQuerySchema,
   type AllocateLabourInput, type ReleaseLabourAllocationInput, type RecordAttendanceInput,
   type RevokeAttendanceInput, type RecordLabourWorkInput, type ApproveSkillSubstitutionInput,
   type RevokeSkillSubstitutionInput,
-  type RecordLabourMismatchInput, type ResolveLabourMismatchInput,
+  type RecordLabourMismatchInput, type ResolveLabourMismatchInput, type LabourCapacityQueryInput,
+  type LabourPresenceQueryInput,
 } from '../contracts';
 
 /**
@@ -111,10 +112,9 @@ export class LabourCapacityController {
   capacityRegister(
     @Param('projectId') projectId: string,
     @CurrentUser() user: AuthUser,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
+    @Query(new ZodPipe(labourCapacityQuerySchema)) query: LabourCapacityQueryInput,
   ) {
-    return this.capacity.capacity(projectId, user, from, to);
+    return this.capacity.capacity(projectId, user, query.from, query.to);
   }
 
   @Get('labour/readiness')
@@ -155,9 +155,10 @@ export class LabourCapacityController {
   @RolesFor('labour.read')
   presence(
     @Param('projectId') projectId: string,
-    @Query('civilDate') civilDate: string,
+    @Query(new ZodPipe(labourPresenceQuerySchema)) query: LabourPresenceQueryInput,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.capacity.presence(projectId, civilDate, user);
+    // absent or empty reaches the service as '', which keeps its own 400 (`civilDate must be an ISO civil date`)
+    return this.capacity.presence(projectId, query.civilDate ?? '', user);
   }
 }
