@@ -100,6 +100,10 @@ describe('the Drawings register in Hindi and Gujarati', () => {
       const r = render(<DrawingsScreen />);
       fireEvent.click(r.getByTestId('rev-DWG-1-a')); // the DWG revision: download only
       expect(leftoverEnglish(document.body, DATA)).toEqual([]);
+      // tapping Download reads the file, which is held here, so "Getting the file…" stays on screen for the check
+      fireEvent.click(r.container.querySelector('a[download]')!);
+      await appears(document.body, () => r.container.querySelector('a[download] ~ [role="status"]'));
+      expect(leftoverEnglish(document.body, DATA)).toEqual([]);
       fireEvent.click(r.getByTestId('drawing-refile'));
       expect(r.getByTestId('drawing-unfile')).toBeInTheDocument();
       expect(leftoverEnglish(document.body, DATA)).toEqual([]);
