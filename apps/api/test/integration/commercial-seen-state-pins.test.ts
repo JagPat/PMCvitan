@@ -31,7 +31,7 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
  * #482 seen-state pins — the eight money and measure acts compared, under the lock that serializes
  * them, against the state the screen showed (`X-Vitan-Seen-State`), through HTTP.
  *
- * Reproduce-first: every refusal here fails on a933e09, where the header is ignored and the stale
+ * Reproduce-first: every refusal here fails on 00141ab, where the header is ignored and the stale
  * act commits. The acceptances fail there only on the audit row's `seenPin`, which is new; the rest
  * of each acceptance is the compatibility claim (the body and its request hash are today's, and a
  * committed act's keyed retry still replays).
@@ -752,6 +752,7 @@ describe('#482 seen-state pins (live PG)', () => {
 
   it('GET /ops/compat/state-pins checks the token before the limit: calls without it never spend the operator\'s', async () => {
     const since = encodeURIComponent(new Date().toISOString());
+    process.env.OPS_TOKEN = OPS;
     // one more than the route's limit of 30 a minute; behind the limiter the last would be 429
     for (let i = 0; i < 31; i++) {
       expect((await request(t.app.getHttpServer()).get(`/ops/compat/state-pins?since=${since}`)).status, `call ${i + 1}`).toBe(401);
