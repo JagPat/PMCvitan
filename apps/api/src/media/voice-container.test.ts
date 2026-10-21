@@ -582,10 +582,11 @@ describe('readVoiceRecording — the length is the file\'s own', () => {
   const seconds = (mime: string, b: Buffer) => recordingSeconds(mime, b);
   const many = <T,>(n: number, f: (i: number) => T) => Array.from({ length: n }, (_, i) => f(i));
 
-  it('WebM: the longest of Info Duration, the last block timestamp and the Opus frames', () => {
+  it('WebM: the longest of Info Duration, where the last block ends and the Opus frames', () => {
     expect(seconds('audio/webm', webmTimed(42))).toBe(42);
-    expect(seconds('audio/webm', webmFile(undefined, 'webm', [webmCluster(), webmClusterAt(42_000)]))).toBe(42); // Chrome writes no Duration
-    expect(seconds('audio/webm', webmFile(undefined, 'webm', [webmClusterAt(200_000)], webmInfo(1000)))).toBe(200); // a short Duration
+    // Chrome writes no Duration: a 20 ms block at 42 s ends at 42.02 s (Codex P2 on #1025 round 2: where it ends, not starts)
+    expect(seconds('audio/webm', webmFile(undefined, 'webm', [webmCluster(), webmClusterAt(42_000)]))).toBeCloseTo(42.02, 6);
+    expect(seconds('audio/webm', webmFile(undefined, 'webm', [webmClusterAt(200_000)], webmInfo(1000)))).toBeCloseTo(200.02, 6); // a short Duration
     // 7,000 20 ms frames, all stamped 0, with Info saying one second: the frames make 140 s
     expect(seconds('audio/webm', webmFile(undefined, 'webm', [webmCluster(many(7000, () => simpleBlock()))], webmInfo(1000)))).toBe(140);
     // a block in a Cluster with no Timestamp, a block before it, and a second Timestamp, are refused
@@ -1442,5 +1443,122 @@ describe('Codex round 1 on #1025', () => {
     const over = reads(() => mp4(twoRuns(25_001)));
     expect(over.result).toBe(false);
     expect(over.n).toBeLessThan(1_000);
+  });
+});
+
+describe('Codex round 2 on #1025: the length is where the last decodable sample ends, and nothing is left unfinished', () => {
+  const ogg = (b: Buffer) => isAudioOnlyRecording('audio/ogg', b);
+  const seconds = (mime: string, b: Buffer) => recordingSeconds(mime, b);
+  const recording = (name: string) => readFileSync(join(__dirname, '..', '..', 'test', 'unit-support', 'recordings', name));
+  /** a big-endian 32-bit word */
+  const be4 = (n: number) => {
+    const out = Buffer.alloc(4);
+    out.writeUInt32BE(n);
+    return out;
+  };
+  /** Opus packets by their TOC byte: 20 ms (CELT, code 0), 60 ms (SILK, code 0) and 120 ms (SILK 60 ms, code 3 of 2) */
+  const P20 = AUDIO_PACKET;
+  const P60 = Buffer.from([0x18, 0x00]);
+  const P120 = Buffer.from([0x1b, 0x02, 0x00]);
+  /** a WebM with no Duration, its one unknown-size Cluster at `at` ticks of `scale` ns holding `blocks`, and any `entry` fields on the track */
+  const webmAt = (at: number, blocks: Buffer[], o: { scale?: number; entry?: Buffer[] } = {}) => {
+    const info = ebml(WEBM.info, ebml(0x2ad7b1, be4(o.scale ?? 1_000_000)));
+    const entry = ebml(WEBM.trackEntry, Buffer.concat([ebml(WEBM.trackNumber, Buffer.from([1])), ebml(WEBM.trackType, Buffer.from([2])),
+      ebml(WEBM.codecId, 'A_OPUS'), ebml(WEBM.codecPrivate, OPUS_HEAD), ...(o.entry ?? [])]));
+    const cluster = ebml(WEBM.cluster, Buffer.concat([ebml(WEBM.timestamp, be4(at)), ...blocks]), true);
+    return Buffer.concat([webmHeader(), ebml(WEBM.segment, Buffer.concat([info, ebml(WEBM.tracks, entry), cluster]), true)]);
+  };
+
+  it('P2-a: a WebM block ends where its frames end, not where it starts', () => {
+    // one unlaced 120 ms packet at 120.4 s ends at 120.52 s, stored as 121 s, which the upload refuses; 89ae0ae read
+    // 120.4 s (the block's start) and stored 120
+    const late = webmAt(120_400, [simpleBlock(1, P120)]);
+    expect(seconds('audio/webm', late)).toBeCloseTo(120.52, 6);
+    expect(readVoiceRecording('audio/webm', late)?.durationSec).toBe(121);
+    // the timestamp is in ticks of the TimestampScale, the frames in Opus samples: the same block in ticks of 100 µs
+    expect(seconds('audio/webm', webmAt(1_204_000, [simpleBlock(1, P120)], { scale: 100_000 }))).toBeCloseTo(120.52, 6);
+    // a 60 ms packet at 0.47 s ends at 0.53 s and is stored as 1 s (89ae0ae read 0.47 s and refused it as under half a second)
+    expect(seconds('audio/webm', webmAt(470, [simpleBlock(1, P60)]))).toBeCloseTo(0.53, 6);
+    expect(readVoiceRecording('audio/webm', webmAt(470, [simpleBlock(1, P60)]))?.durationSec).toBe(1);
+    // a block at 0 reads its frames, as before
+    expect(seconds('audio/webm', webmAt(0, [simpleBlock(1, P60)]))).toBeCloseTo(0.06, 6);
+  });
+
+  it('P2-a: a laced block ends where its last laced frame ends, in every lacing', () => {
+    // Codex's example: 256 fixed-size laced 120 ms packets at 120 s, no Duration, play to 150.72 s (89ae0ae read 120 s)
+    const fixed = lacedBlock(1, 2, 256, Buffer.alloc(0), Buffer.concat(Array.from({ length: 256 }, () => P120)));
+    const codex = webmAt(120_000, [fixed]);
+    expect(seconds('audio/webm', codex)).toBeCloseTo(150.72, 6);
+    expect(readVoiceRecording('audio/webm', codex)?.durationSec).toBe(151);
+    // three 120 ms packets at 120 s end at 120.36 s in Xiph lacing (3, 3, then the 3 left) and EBML lacing (3, +0)
+    const three = Buffer.concat([P120, P120, P120]);
+    expect(seconds('audio/webm', webmAt(120_000, [lacedBlock(1, 1, 3, Buffer.from([3, 3]), three)]))).toBeCloseTo(120.36, 6);
+    expect(seconds('audio/webm', webmAt(120_000, [lacedBlock(1, 3, 3, Buffer.from([0x83, 0xbf]), three)]))).toBeCloseTo(120.36, 6);
+  });
+
+  it('pre-existing, same class as P2-a: a BlockGroup\'s BlockDuration counts in where its block ends', () => {
+    const group = (ticks: number) => ebml(WEBM.blockGroup, Buffer.concat([ebml(WEBM.block, blockBody(1, P20)), ebml(0x9b, be4(ticks))]));
+    // a 20 ms frame at 100 s that its BlockDuration says lasts 30 s ends at 130 s (89ae0ae read 100 s)
+    expect(seconds('audio/webm', webmAt(100_000, [group(30_000)]))).toBeCloseTo(130, 6);
+    // BlockDuration is in ticks of the TimestampScale
+    expect(seconds('audio/webm', webmAt(1_000_000, [group(300_000)], { scale: 100_000 }))).toBeCloseTo(130, 6);
+    // a BlockDuration shorter than the frame never shortens it: the frame's 20 ms
+    expect(seconds('audio/webm', webmAt(100_000, [group(0)]))).toBeCloseTo(100.02, 6);
+  });
+
+  it('pre-existing, same class as P2-a: the track\'s DefaultDuration counts for every frame of a block', () => {
+    const thirty = lacedBlock(1, 2, 30, Buffer.alloc(0), Buffer.concat(Array.from({ length: 30 }, () => P20)));
+    const each = (ns: number) => [ebml(0x23e383, be4(ns))];
+    // 30 laced 20 ms packets at 100 s that the track says last 1 s a frame end at 130 s (89ae0ae read 100 s)
+    expect(seconds('audio/webm', webmAt(100_000, [thirty], { entry: each(1_000_000_000) }))).toBeCloseTo(130, 6);
+    // at 20 ms a frame, or with no DefaultDuration, they end where their frames do: 100.6 s
+    expect(seconds('audio/webm', webmAt(100_000, [thirty], { entry: each(20_000_000) }))).toBeCloseTo(100.6, 6);
+    expect(seconds('audio/webm', webmAt(100_000, [thirty]))).toBeCloseTo(100.6, 6);
+  });
+
+  it('P2-b: an Ogg packet left open at the end of the file refuses it, with or without the end-of-stream flag', () => {
+    const heads = Buffer.concat([oggPage(0x02, 1, 0, OPUS_HEAD), oggPage(0, 1, 1, OPUS_TAGS)]);
+    const granule = (n: number) => BigInt(OPUS_PRE_SKIP + 960 * n);
+    // Codex's example: 25 finished 20 ms packets, then 255 bytes of a 26th the file never finishes. 89ae0ae stored it
+    // as 1 s (0.5 s rounded)
+    const lacing = [...Array.from({ length: 25 }, () => P20.length), 255];
+    const data = Buffer.concat([...Array.from({ length: 25 }, () => P20), Buffer.alloc(255, 0xfc)]);
+    for (const type of [0x00, 0x04]) expect(ogg(Buffer.concat([heads, withGranule(oggPageRaw(type, 1, 2, lacing, data), granule(25))]))).toBe(false);
+    // the 25 packets alone, finished, pass: 0.5 s, stored as 1 s
+    const finished = Buffer.concat([heads, withGranule(oggPage(0x04, 1, 2, Array.from({ length: 25 }, () => P20)), granule(25))]);
+    expect(seconds('audio/ogg', finished)).toBeCloseTo(0.5, 6);
+    // an empty page after the open one continues it but finishes nothing: still open at the end
+    const open = withGranule(oggPageRaw(0, 1, 2, [P20.length, 255], Buffer.concat([P20, Buffer.alloc(255, 0xfc)])), granule(1));
+    expect(ogg(Buffer.concat([heads, open, withGranule(oggPageRaw(0x05, 1, 3, [], Buffer.alloc(0)), granule(1))]))).toBe(false);
+    // the same packet finished on the next page passes
+    expect(ogg(Buffer.concat([heads, open, withGranule(oggPageRaw(0x05, 1, 3, [10], Buffer.alloc(10, 1)), granule(2))]))).toBe(true);
+  });
+
+  it('audit: a recording cut short inside an element, page or box is refused; cut at a boundary it is a whole, shorter one', () => {
+    const cuts = (mime: string, file: Buffer, from: number) => {
+      const accepted: Array<{ at: number; seconds: number }> = [];
+      for (let at = from; at < file.length; at++) {
+        const s = seconds(mime, file.subarray(0, at));
+        if (s !== null) accepted.push({ at, seconds: s });
+      }
+      return accepted;
+    };
+    // Chromium's WebM (unknown-size Segment and Clusters, 60 ms SimpleBlocks): over its last 4,000 bytes, a cut is read
+    // only where a SimpleBlock begins, as the blocks before it, 60 ms apart; anywhere inside an element it is refused
+    const chromeWebm = recording('chromium-141-opus.webm');
+    const w = cuts('audio/webm', chromeWebm, chromeWebm.length - 4_000);
+    expect(w.length).toBeGreaterThan(2);
+    for (const c of w) expect(chromeWebm[c.at]).toBe(WEBM.simpleBlock);
+    for (let i = 1; i < w.length; i++) expect(w[i]!.seconds - w[i - 1]!.seconds).toBeCloseTo(0.06, 6);
+    // Chromium's fragmented MP4: a cut anywhere in its last 4,000 bytes (inside its last fragment) is refused
+    const chromeMp4 = recording('chromium-141-opus.mp4');
+    expect(cuts('audio/mp4', chromeMp4, chromeMp4.length - 4_000)).toEqual([]);
+    // an Ogg of three audio pages: read only where a page ends, as the pages before it
+    const pages = [oggPage(0x02, 1, 0, OPUS_HEAD), oggPage(0, 1, 1, OPUS_TAGS), ...[1, 2, 3].map((k) =>
+      withGranule(oggPage(k === 3 ? 0x04 : 0, 1, 1 + k, [P20, P20]), BigInt(OPUS_PRE_SKIP + 1920 * k)))];
+    const o = Buffer.concat(pages);
+    const ends = pages.map((_, i) => Buffer.concat(pages.slice(0, i + 1)).length);
+    expect(cuts('audio/ogg', o, 1)).toEqual([{ at: ends[2], seconds: 0.04 }, { at: ends[3], seconds: 0.08 }]);
+    expect(seconds('audio/ogg', o)).toBeCloseTo(0.12, 6);
   });
 });
