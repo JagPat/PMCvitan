@@ -285,6 +285,26 @@ report_4d_i_migration_failure() {
   echo "[migrate] Full detail: docs/RUNBOOK.md §P6T4D."
 }
 
+# #482 site photos: the deleted-photo guard (20280118). Whatever stopped it (MTSTO: a stored photo carries a deleted
+# photo's key; MTISO; its 15 s lock timeout; a killed install; or this client dying mid-install), the next deploy
+# stops at P3009, and the recovery is the same. A re-run is safe even if the install had committed.
+report_media_guard_migration_failure() {
+  # only the lines that name this file AS the failure: P3018's "Migration name:" and P3009's "The `…` migration started
+  # at … failed". A deploy that applied this file and then failed on a later one names it only as "Applying migration".
+  printf '%s\n' "$1" | grep -qE '^Migration name: 20280118000000_media_tombstone_guard$|^The `20280118000000_media_tombstone_guard` migration started at .* failed$' || return 0
+  echo "[migrate] That failure is the deleted-photo guard (20280118000000_media_tombstone_guard). If Prisma"
+  echo "[migrate] reports it failing (P3018), nothing of it was kept. After a P3009 it may have committed, if the"
+  echo "[migrate] deploy client died. The steps below are safe either way."
+  echo "[migrate] If it says MTSTO (\"stored photo(s) carry the key of a deleted photo\"):"
+  echo "[migrate]   0. list those photos with the read-only count in docs/RUNBOOK.md §MG; the owner decides"
+  echo "[migrate]      each one before going on. Nothing removes them automatically."
+  echo "[migrate] Then, for any failure of this file (MTSTO, MTISO, the lock timeout, a killed install):"
+  echo "[migrate]   1. npx prisma migrate resolve --rolled-back 20280118000000_media_tombstone_guard"
+  echo "[migrate]      (without this the next deploy stops at P3009)"
+  echo "[migrate]   2. redeploy"
+  echo "[migrate] Full detail: docs/RUNBOOK.md §MG."
+}
+
 out=$(npx prisma migrate deploy 2>&1)
 code=$?
 echo "$out"
@@ -527,7 +547,8 @@ if echo "$out" | grep -q "P3005"; then
   # db-push baseline does not have. It is guarded and re-runnable.
   #
   # The #482 deleted-photo record (20280117) is here for the same reason: its seals and its writer are triggers, which a db-push
-  # baseline does not have. It is guarded and re-runnable.
+  # baseline does not have. It is guarded and re-runnable. Its guard (20280118), which refuses a recorded key on
+  # insert, is a trigger too.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -567,7 +588,8 @@ if echo "$out" | grep -q "P3005"; then
 20280114000000_site_visits_sv2_visit_media
 20280115000000_media_markup_voice_video
 20280116000000_qa_company_lock
-20280117000000_media_tombstone"
+20280117000000_media_tombstone
+20280118000000_media_tombstone_guard"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
@@ -758,6 +780,7 @@ if echo "$out" | grep -q "P3005"; then
     echo "[migrate] migrate deploy failed on the P3005 baseline path — refusing to start."
     report_4c_iiir_migration_failure "$baseline_out"
     report_4d_i_migration_failure "$baseline_out" baseline
+    report_media_guard_migration_failure "$baseline_out"
     exit 1
   fi
   printf '%s\n' "$baseline_out"
@@ -828,4 +851,5 @@ echo "[migrate] migrate deploy failed — refusing to start (no db push fallback
 
 report_4c_iiir_migration_failure "$out"
 report_4d_i_migration_failure "$out"
+report_media_guard_migration_failure "$out"
 exit $code
