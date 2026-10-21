@@ -4,7 +4,8 @@
  * - Drawing / media files (any origin, /drawings/rev/* or /media/*):
  *   stale-while-revalidate, so the current For-Construction set stays viewable
  *   in the field when the signal drops (Drawings Slice 3). Content is effectively
- *   immutable — a new revision gets a new id/URL — so a cached hit is safe.
+ *   immutable — a new revision gets a new id/URL — so a good cached copy is safe.
+ *   Only a good copy is kept: the file is read in CORS mode so its status is known.
  * - Other cross-origin (the API JSON): never intercepted — always hits the network.
  * skipWaiting + clientsClaim so a new deploy takes over immediately. */
 const VERSION = 'v2';
@@ -99,28 +100,36 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+/** A copy in this release's app cache only: never the files cache, an earlier release's cache or another app's. */
+function appCached(request) {
+  return caches.open(CACHE).then((c) => c.match(request));
+}
+
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
   if (request.method !== 'GET') return;
 
-  // Drawing / media files (any origin) → stale-while-revalidate so the current
-  // set opens offline in the field. Opaque (no-cors) responses are cacheable and
-  // render fine in <iframe>/<img>/<a download>; a failed revalidate keeps the hit.
+  // Drawing / media files (any origin) → stale-while-revalidate so the current set opens offline in the field.
   if (isFileAsset(url)) {
     event.respondWith(
       caches.open(FILES_CACHE).then((cache) =>
-        cache.match(request).then((hit) => {
-          const network = fetch(request)
-            .then((res) => {
-              if (res && (res.ok || res.type === 'opaque')) cache.put(request, res.clone());
-              return res;
-            })
-            .catch(() => hit);
-          // an opaque copy (kept from an <img>) has no bytes a CORS read can use: that read goes to the network
-          if (hit && hit.type === 'opaque' && request.mode === 'cors') return network;
-          return hit || network;
+        // defensive: the worker's requests carry no Origin, so the server's `Vary: Origin` already matches; ignoring Vary
+        // keeps one copy per URL if a browser ever adds it (one file's bytes do not depend on who asks)
+        cache.match(request, { ignoreVary: true }).then((hit) => {
+          // read in CORS mode (the API and the bucket both allow it), so a 403 for an expired link, a 404 or a 5xx is
+          // seen for what it is and never replaces a good copy; an opaque answer, whose status cannot be read, is never kept
+          const fresh = fetch(url.href, { mode: 'cors', credentials: 'omit' });
+          event.waitUntil(fresh.then((res) => (res.ok ? cache.put(request, res.clone()) : undefined)).catch(() => undefined));
+          // an opaque copy an earlier release kept may be an error: it is read again first, and given to an <img> only
+          // when the network gives no good answer (never to a CORS read, which cannot use its bytes)
+          if (hit && hit.type !== 'opaque') return hit;
+          const opaqueForImg = hit && request.mode === 'no-cors' ? hit : undefined;
+          return fresh
+            // CORS refused or the network down: the page's own request, which is never kept
+            .then((res) => (res.ok || !opaqueForImg ? res : opaqueForImg), () => fetch(request))
+            .catch(() => opaqueForImg || Response.error());
         }),
       ),
     );
@@ -133,7 +142,7 @@ self.addEventListener('fetch', (event) => {
   // immutable hashed assets → cache-first
   if (url.pathname.startsWith('/assets/')) {
     event.respondWith(
-      caches.match(request).then(
+      appCached(request).then(
         (hit) =>
           hit ||
           fetch(request).then((res) => {
@@ -162,13 +171,13 @@ self.addEventListener('fetch', (event) => {
           }
           return res;
         })
-        .catch(() => caches.match('/').then((hit) => hit || caches.match(request))),
+        .catch(() => appCached('/').then((hit) => hit || appCached(request))),
     );
     return;
   }
 
   // other same-origin statics (favicon, manifest, icon) → cache-first
-  event.respondWith(caches.match(request).then((hit) => hit || fetch(request)));
+  event.respondWith(appCached(request).then((hit) => hit || fetch(request)));
 });
 
 /* Web Push (Phase 8): show the notification, and focus/open the app on click. */

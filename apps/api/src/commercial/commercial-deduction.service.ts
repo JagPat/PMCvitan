@@ -24,6 +24,8 @@ import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialBillService } from './commercial-bill.service';
 import { ProcurementParticipant } from '../procurement/procurement.participant';
 import type { PayAdvanceInput, RecordDeductionInput, ReleaseDeductionInput } from '../contracts';
+import { assertReviewedRevision } from './commercial-sod';
+import { ADVANCE_MOVED, assertSeen, claimRevision, seenPinPayload } from './seen-state';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -108,7 +110,7 @@ export class CommercialDeductionService {
    * see room for themselves.
    */
   async record(
-    projectId: string, input: RecordDeductionInput, user: AuthUser, idempotencyKey?: string,
+    projectId: string, input: RecordDeductionInput, user: AuthUser, idempotencyKey?: string, seen?: number,
   ): Promise<BillDeductionDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertDeduct(user);
@@ -130,6 +132,10 @@ export class CommercialDeductionService {
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const bill = await this.lockBill(tx, projectId, input.billId);
+        // seen-state pin — the claim revision the screen showed, read in its own statement after
+        // the lock (see `claimRevision`): a withholding chosen against totals that have since moved
+        // is refused rather than recorded against a claim nobody read
+        assertReviewedRevision(seen, await claimRevision(tx, projectId, input.billId));
 
         const position = await this.deductions.positionFor(tx, projectId, input.billId);
         if (!position) {
@@ -176,6 +182,7 @@ export class CommercialDeductionService {
         await this.status.reDerive(tx, projectId, input.billId, bill.status as VendorBillStatus);
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.deduction.record', entity: 'BillDeduction', entityId: deduction.id,
+          payload: seenPinPayload(seen),
         });
         return { resultRef: deduction.id, events: [] };
       },
@@ -205,7 +212,7 @@ export class CommercialDeductionService {
    * the recovery, and it is bounded by this row.
    */
   async payAdvance(
-    projectId: string, input: PayAdvanceInput, user: AuthUser, idempotencyKey?: string,
+    projectId: string, input: PayAdvanceInput, user: AuthUser, idempotencyKey?: string, seen?: number,
   ): Promise<VendorAdvanceDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertPayAdvance(user);
@@ -223,7 +230,14 @@ export class CommercialDeductionService {
         // OWNS the binding. `ProjectVendor` is procurement's and read-encapsulated, so a direct
         // read here would be a boundary violation — the analyzer says so, and this is the routed
         // form. The composite FK is the database backstop.
-        await this.procurement.assertVendorBound(tx, projectId, input.vendorId);
+        //
+        // LOCKED, not just asserted (seen-state pins): the advance count below is compared against
+        // what the payer's screen listed, and the binding row is the one row two advances to this
+        // vendor both touch. Taken after readiness and with no bill held, so the order stays total.
+        await this.procurement.lockVendorBinding(tx, projectId, input.vendorId);
+        // its own statement after the lock, so it counts every advance committed before it
+        const advanced = await tx.vendorAdvance.count({ where: { projectId, vendorId: input.vendorId } });
+        assertSeen(seen, advanced, ADVANCE_MOVED);
 
         const advance = await tx.vendorAdvance.create({
           data: {
@@ -254,7 +268,7 @@ export class CommercialDeductionService {
         await announceMoneyMoved(tx, projectId, actor, { costHeadCodes: [], reason: 'advance' });
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.advance.pay',
-          entity: 'VendorAdvance', entityId: advance.id,
+          entity: 'VendorAdvance', entityId: advance.id, payload: seenPinPayload(seen),
         });
         return { resultRef: advance.id, events: [] };
       },
@@ -272,7 +286,7 @@ export class CommercialDeductionService {
    * because a withholding that can be retracted in place is one nobody can audit.
    */
   async release(
-    projectId: string, input: ReleaseDeductionInput, user: AuthUser, idempotencyKey?: string,
+    projectId: string, input: ReleaseDeductionInput, user: AuthUser, idempotencyKey?: string, seen?: number,
   ): Promise<BillDeductionDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertRelease(user);
@@ -300,6 +314,7 @@ export class CommercialDeductionService {
         });
         if (!located) throw new NotFoundException('Deduction not found in this project');
         const bill = await this.lockBill(tx, projectId, located.billId);
+        assertReviewedRevision(seen, await claimRevision(tx, projectId, located.billId));
 
         // Codex round 2 — re-read the deduction INSIDE the lock: every fact this act decides on is
         // read under the lock that protects it, never located outside and trusted within.
@@ -333,6 +348,7 @@ export class CommercialDeductionService {
         await this.status.reDerive(tx, projectId, deduction.billId, bill.status as VendorBillStatus);
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.deduction.release', entity: 'BillDeductionRelease', entityId: row.id,
+          payload: seenPinPayload(seen),
         });
         // R5-F3 — the RELEASE row, not its deduction. A command's `resultRef` is what
         // `phase5_t5c_ledger_command_succeeded` binds a ledger row to, so it has to name the row

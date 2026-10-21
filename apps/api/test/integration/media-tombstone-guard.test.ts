@@ -8,6 +8,7 @@ import { Prisma } from '@prisma/client';
 import { MediaService } from '../../src/media/media.service';
 import { StorageService } from '../../src/media/storage.service';
 import type { AuthUser } from '../../src/common/auth';
+import { GoneException } from '@nestjs/common';
 
 /**
  * #482 site photos — a deleted photo's key is never stored again (`20280118000000_media_tombstone_guard`). The record of
@@ -67,6 +68,11 @@ describe('#482 a deleted photo\'s key is refused on every write (live PG)', () =
        VALUES ($1, $2, 'progress', 'image/png', '\\x61'::bytea, 1, 'pmc', $3)`, `guard-code-${seq}`, f.projectA.id, k,
     ).then(() => null, (e: unknown) => e as { meta?: { code?: string } });
     expect(err?.meta?.code).toBe('MT410');
+    // through the ORM, which every service write uses, the code is only in the message of an unknown request error:
+    // the shape the service's 410 mapping reads (`isDeletedKeyRefusal`)
+    const orm = await photo(k).then(() => null, (e: unknown) => e);
+    expect(orm).toBeInstanceOf(Prisma.PrismaClientUnknownRequestError);
+    expect((orm as Error).message).toMatch(/\bcode: "MT410"/);
   });
 
   it('refuses an update that gives a row a recorded key', async () => {
@@ -92,8 +98,9 @@ describe('#482 a deleted photo\'s key is refused on every write (live PG)', () =
     expect(await rowsFor(k, f.projectB.id)).toBe(1);
   });
 
-  it('the serving release\'s own send of a deleted key is refused: no row, no event, and its stored object removed', async () => {
-    // this branch's `create()` is the serving release's: it reads no record, so only the guard stands in its way
+  it('a send of a deleted key through the service is refused before its bytes are stored: no row, no event', async () => {
+    // since the 410 unit the service reads the record first; the guard behind it is covered by the race in
+    // media-tombstone.test.ts, and the previous release's own path was shown on the guard's unit
     const media = t.app.get(MediaService);
     const storage = t.app.get(StorageService);
     const pmc = { sub: f.memberUser.id, role: 'pmc', projectId: f.projectA.id } as AuthUser;
@@ -105,11 +112,11 @@ describe('#482 a deleted photo\'s key is refused on every write (live PG)', () =
     const before = await events();
     const put = vi.spyOn(storage, 'put');
     const remove = vi.spyOn(storage, 'remove');
-    await expect(media.create(f.projectA.id, pmc, { kind: 'progress', mime: 'image/png', data: px, clientKey: k } as never)).rejects.toThrow(REFUSED);
+    await expect(media.create(f.projectA.id, pmc, { kind: 'progress', mime: 'image/png', data: px, clientKey: k } as never)).rejects.toThrow(GoneException);
     expect(await rowsFor(k)).toBe(0);
     expect(await events()).toBe(before);
-    expect(put).toHaveBeenCalledTimes(1);
-    expect(remove).toHaveBeenCalledWith(put.mock.calls[0]![0]);
+    expect(put).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
   });
 
   it('a send waiting behind a delete of the same key\'s row is refused once that delete commits (AFTER, not BEFORE)', async () => {

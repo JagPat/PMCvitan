@@ -68,12 +68,13 @@ discipline/rev). The local demo seeds three drawings (mock SVG sheets) and issue
 
 ## Slice 3 — offline cache + presigned uploads
 
-- **Offline drawing cache (PWA)**: the service worker (`v2`) now runtime-caches drawing /
-  media files (`/drawings/rev/*`, `/media/*`) on **any origin** — the API is a subdomain —
-  with **stale-while-revalidate** into a dedicated `vitan-pmc-files-*` cache. Opaque
-  (no-cors) responses are cacheable and render in `<iframe>`/`<img>`/`<a download>`, so a
-  drawing the field has opened (its thumbnail loads it too) **stays viewable when the
-  signal drops**. A failed revalidate keeps serving the cached copy. API JSON is still
+- **Offline drawing cache (PWA)**: the service worker runtime-caches drawing / media files
+  (`/drawings/rev/*`, `/media/*`) on **any origin** — the API is a subdomain — with
+  **stale-while-revalidate** into `vitan-pmc-files-v2`. Each file is read in CORS mode
+  without credentials and only an ok answer is kept, so an expired link's 403, a 404 or a
+  5xx never replaces a good copy. Photos, image drawings and the register's thumbnails
+  **open offline**. The PDF viewer (`<iframe>`) and the CAD download still navigate to the
+  API and do not open offline yet (drawings-offline-viewer, helper 5). API JSON is still
   never intercepted.
 - **Presigned direct-to-bucket uploads**: `POST /projects/:id/drawings/presign { mime }`
   (PMC only) returns `{ uploadUrl, storageKey }` in S3/R2 mode, or `{ presign: null }` on
