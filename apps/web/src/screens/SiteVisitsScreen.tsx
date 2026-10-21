@@ -2,9 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { can, forYouRole, type Lang, type ProjectMember, type Role } from '@vitan/shared';
 import { useStore } from '@/store/store';
-import { Button } from '@/components';
+import { Button, Modal } from '@/components';
+import { PhotoMarkup } from '@/components/PhotoMarkup';
 import { trailOf } from '@/lib/locationTree';
-import { useSiteVisits } from '@/lib/useSiteVisits';
+import { mayAddPhoto, useSiteVisits } from '@/lib/useSiteVisits';
+import { UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
 import { SV, visitTime } from '@/lib/siteVisitWords';
 import { stampText } from '@/lib/captureStamp';
 import { resolveMediaUrl, type SiteVisit, type SiteVisitRating } from '@/data/apiGateway';
@@ -47,6 +49,13 @@ export function SiteVisitsScreen() {
     return () => { on = false; };
   }, [namesPeople, sv.pings, teamAsk, loadTeam]);
   const teamFailed = team === 'failed';
+  // M3: the photo being marked up stays open only while the viewer may still add to its visit and the visit still
+  // lists it; a visit closed meanwhile, the viewer no longer present, or a visit no longer shown closes it
+  const markup = sv.markup;
+  const markupVisit = markup ? sv.visits.find((v) => v.id === markup.visitId) : undefined;
+  const markupAllowed = !!markup && mayAddPhoto(markupVisit, role, me) && !!markupVisit?.files?.some((f) => f.mediaId === markup.mediaId);
+  const stopMarkup = sv.stopMarkup;
+  useEffect(() => { if (markup && !markupAllowed) stopMarkup(); }, [markup, markupAllowed, stopMarkup]);
 
   if (!hasServer) {
     return (
@@ -94,6 +103,7 @@ export function SiteVisitsScreen() {
               <li key={p.key} className={styles.file} data-testid={`sv-not-sent-${p.key}`}>
                 <img className={styles.thumb} src={p.url} alt={p.note ?? SV.photos[lang]} />
                 <div className={styles.fileText}>
+                  {p.copy && <div className={styles.meta}>{SV.markupCopy[lang]}</div>}
                   {p.note && <div>{p.note}</div>}
                   {p.placeName && <div className={styles.meta}>{p.placeName}</div>}
                   <div className={styles.meta}>{/* the server's own words, in every language (Codex 4320122189) */}{p.reason ? `${SV.refused[lang]} ${p.reason}` : SV.refused[lang]}</div>
@@ -118,6 +128,19 @@ export function SiteVisitsScreen() {
         ))}
       </div>
       {sv.hasMore && <Button variant="light" fullWidth onClick={sv.more}>{SV.older[lang]}</Button>}
+      {markup?.phase === 'loading' && markupAllowed && (
+        <Modal onClose={stopMarkup} labelledBy="sv-markup-opening">
+          <div style={{ padding: 16, display: 'grid', gap: 10 }}>
+            <p id="sv-markup-opening" role="status" style={{ margin: 0 }}>{SV.markupOpening[lang]}</p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Button variant="light" onClick={stopMarkup}>{SV.cancel[lang]}</Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {markup?.phase === 'open' && markupAllowed && (
+        <PhotoMarkup source={markup.blob} lang={lang} busy={sv.busy} notice={sv.markupNotice} onSave={(copy) => { void sv.saveMarkup(copy); }} onCancel={stopMarkup} />
+      )}
     </div>
   );
 }
@@ -131,18 +154,26 @@ function Header({ lang }: { lang: Lang }) {
   );
 }
 
+/** M3: a marked-up copy names its original by its place in the visit's photos, with the original's thumbnail, which
+ *  opens it (Codex 4327055852). An original the visit does not list now (removed, or not read) is said to be gone,
+ *  never guessed. */
+function CopyOf({ files, at, copyId, lang }: { files: NonNullable<SiteVisit['files']>; at: number; copyId: string; lang: Lang }) {
+  const source = at >= 0 ? files[at] : undefined;
+  if (!source) return <div className={styles.meta} data-testid={`sv-copy-of-${copyId}`}>{SV.markupSourceGone[lang]}</div>;
+  const label = SV.markupCopyOf[lang].replace('{n}', String(at + 1));
+  if (!source.url) return <div className={styles.meta} data-testid={`sv-copy-of-${copyId}`}>{label}</div>;
+  return (
+    <a className={styles.copyOf} href={resolveMediaUrl(source.url)} target="_blank" rel="noreferrer" data-testid={`sv-copy-of-${copyId}`}>
+      <img className={styles.copyThumb} src={resolveMediaUrl(source.url)} alt="" loading="lazy" />
+      <span>{label}</span>
+    </a>
+  );
+}
+
 /** Whether the viewer may add or remove places and people on this visit: the server narrows every edit to the
  *  visitor, in the role they started in (SV1-b). */
 function editable(v: SiteVisit, role: Role, me: string | null): boolean {
   return v.visitorId === me && v.visitorRole === role && can('siteVisit.edit', role) && v.status !== 'closed';
-}
-
-/** Whether the viewer may add a photo to this visit: the visitor, or anyone recorded as present on it (Jagrut, 19 Oct
- *  2026), while it is not closed. A photo on a visit started without signal waits behind its start. The server asks
- *  again before it stores a byte. */
-function mayAddPhoto(v: SiteVisit, role: Role, me: string | null): boolean {
-  if (!me || v.status === 'closed' || !can('media.upload', role)) return false;
-  return v.visitorId === me || v.attendees.some((a) => a.userId === me && !a.retiredAt);
 }
 
 const RATINGS: { value: SiteVisitRating; word: keyof typeof SV }[] = [
@@ -176,6 +207,10 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
   const [photoRating, setPhotoRating] = useState<SiteVisitRating | ''>('');
   const [photoPlace, setPhotoPlace] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+  // M3: the thumbnails this browser decoded, by file, with the link each decoded from: Mark up is offered on a photo
+  // only once its own thumbnail has drawn (a HEIC photo where the browser decodes HEIC, never where it does not), and
+  // a fresh link waits for its own decode
+  const [decoded, setDecoded] = useState<Record<string, string>>({});
 
   const mine = v.visitorId === me && v.visitorRole === role;
   const canEdit = editable(v, role, me);
@@ -185,7 +220,11 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
   // a person stands on the visit once, whatever their role (the server refuses the same person again, re-roled or not)
   const standingPeople = new Set(v.attendees.filter((a) => !a.retiredAt && a.userId).map((a) => a.userId));
   const freePlaces = placeOptions.filter((p) => !standingPlaces.has(p.id));
+  // a photo on a visit started without signal waits behind its start
   const canAddPhoto = mayAddPhoto(v, role, me);
+  // a stored photo of a type the upload takes (not the phone's own copy, still on its way), whose thumbnail decoded
+  const markable = (f: NonNullable<SiteVisit['files']>[number]) =>
+    canAddPhoto && !!f.url && f.mediaId !== f.clientKey && UPLOAD_IMAGE_MIMES.includes(f.mime) && decoded[f.mediaId] === f.url;
   // the fields stay as picked while the photo is read and saved on the phone, so what is kept is what was chosen
   const photoBusy = sv.busy;
   // a photo is placed at one of the places this visit walked
@@ -300,17 +339,30 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
             {/* a queued photo the phone no longer has a picture of (its row is gone) shows without one until read again */}
             {f.url ? (
               <a href={resolveMediaUrl(f.url)} target="_blank" rel="noreferrer" aria-label={SV.photoOpen[lang]}>
-                <img className={styles.thumb} src={resolveMediaUrl(f.url)} alt={f.note ?? SV.photos[lang]} loading="lazy" />
+                <img
+                  className={styles.thumb} src={resolveMediaUrl(f.url)} alt={f.note ?? SV.photos[lang]} loading="lazy"
+                  onLoad={(e) => {
+                    const ok = e.currentTarget.naturalWidth > 0;
+                    setDecoded((d) => (ok ? { ...d, [f.mediaId]: f.url } : Object.fromEntries(Object.entries(d).filter(([k]) => k !== f.mediaId))));
+                  }}
+                  onError={() => setDecoded((d) => Object.fromEntries(Object.entries(d).filter(([k]) => k !== f.mediaId)))}
+                />
               </a>
             ) : <div className={styles.thumb} aria-hidden="true" />}
             <div className={styles.fileText}>
               {f.rating && <span className={styles.rating} data-rating={f.rating}>{ratingName(f.rating, lang)}</span>}
+              {f.sourceMediaId && <CopyOf files={files} at={files.findIndex((x) => x.mediaId === f.sourceMediaId)} copyId={f.mediaId} lang={lang} />}
               {f.note && <div>{f.note}</div>}
               {f.place && <div className={styles.meta}>{f.place.name}</div>}
               <div className={styles.meta}>
                 {SV.photoBy[lang]} {f.addedByName}{f.addedByRole ? ` · ${roleName(f.addedByRole, lang)}` : ''} · {visitTime(f.addedAt, lang)}
                 {stampText(f.takenAt) && <> · {SV.photoTaken[lang]} {stampText(f.takenAt)}</>}{wait(f.mediaId)}
               </div>
+              {markable(f) && (
+                <Button variant="light" disabled={sv.busy} data-testid={`sv-markup-${f.mediaId}`} onClick={() => { void sv.openMarkup(v.id, f.mediaId); }}>
+                  {SV.markUp[lang]}
+                </Button>
+              )}
             </div>
           </li>
         ))}

@@ -223,6 +223,19 @@ describe('inspection evidence + linked reinspections (integration)', () => {
       return { restore: () => { delegate.findUnique = original; }, reads: () => reads };
     }
 
+    // a second direct re-inspection child, written past the API, is refused by the one-child unique index: PostgreSQL's
+    // 23505, which Prisma passes on in the error's meta with PostgreSQL's DETAIL naming the index's key column. Checked
+    // by those fields, not by the message's wording (Prisma 6.19.3 says neither "duplicate key" nor "unique")
+    const forgeSecondChild = (id: string, parentId: string) => t.prisma.$executeRawUnsafe(
+      `INSERT INTO "Inspection" ("id","projectId","kind","title","zone","date","reinspectionOfId") VALUES ($1, $2, 'checklist', 'x', 'x', 'today', $3)`,
+      id, f.projectA.id, parentId,
+    );
+    const refusedAsSecondChild = async (id: string, parentId: string) => {
+      const refused = await forgeSecondChild(id, parentId).then(() => null, (e: unknown) => e as { meta?: { code?: string; message?: string } });
+      expect(refused?.meta?.code, 'a second child was written').toBe('23505');
+      expect(refused?.meta?.message).toContain('("reinspectionOfId")');
+    };
+
     // race 1: reject vs reject
     const a = await makeInspection('Race reject');
     expect((await linkEvidence(a.id, a.itemIds['Slope check'], 'ev-race-1')).status).toBe(201);
@@ -239,12 +252,15 @@ describe('inspection evidence + linked reinspections (integration)', () => {
       b.restore();
     }
     expect(await t.prisma.inspection.count({ where: { reinspectionOfId: a.id } })).toBe(1); // exactly one child
+    // the DB backstop, here where a reject always won: a second direct child is impossible
+    await refusedAsSecondChild('forge-i2', a.id);
 
     // race 2: reject vs approve
     const c = await makeInspection('Race mixed');
     expect((await linkEvidence(c.id, c.itemIds['Slope check'], 'ev-race-2')).status).toBe(201);
     expect((await as(engToken)(`/projects/${f.projectA.id}/inspections/${c.id}/submit`, await submitBody(c.id, ['Slope check'], ['Seal check']))).status).toBe(201);
     b = barrierOn(c.id);
+    let rejectWon = false;
     try {
       const [r1, r2] = await Promise.all([
         as(pmcToken)(`/projects/${f.projectA.id}/inspections/${c.id}/decide`, { approve: false, rejectedItemIds: [c.itemIds['Slope check']] }),
@@ -252,18 +268,13 @@ describe('inspection evidence + linked reinspections (integration)', () => {
       ]);
       expect(b.reads()).toBe(2);
       expect([r1.status, r2.status].sort()).toEqual([201, 409]); // one winner, either way
+      rejectWon = r1.status === 201;
     } finally {
       b.restore();
     }
-    // whatever won, the child count matches the outcome (0 for approve, 1 for reject)
-    const children = await t.prisma.inspection.count({ where: { reinspectionOfId: c.id } });
-    expect([0, 1]).toContain(children);
+    // whatever won, the child count matches the winner: one child when the reject won, none when the approve did
+    expect(await t.prisma.inspection.count({ where: { reinspectionOfId: c.id } })).toBe(rejectWon ? 1 : 0);
     // and the DB backstop: a second direct child is impossible
-    if (children === 1) {
-      await expect(t.prisma.$executeRawUnsafe(
-        `INSERT INTO "Inspection" ("id","projectId","kind","title","zone","date","reinspectionOfId") VALUES ('forge-i3', $1, 'checklist', 'x', 'x', 'today', $2)`,
-        f.projectA.id, c.id,
-      )).rejects.toThrow(/duplicate key|unique/);
-    }
+    if (rejectWon) await refusedAsSecondChild('forge-i3', c.id);
   });
 });
