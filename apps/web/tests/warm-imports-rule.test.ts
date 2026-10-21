@@ -10,13 +10,13 @@ const RESET = 'vi.resetModules' + '(';
 /** Every `@/` module a dynamic `import(...)` in `src` names, whichever quote it is written with (', " or `). A template
  *  that substitutes (`${`) cannot be warmed by name, so it is kept as written, quotes and all: it is a gap unless
  *  `UNWARMED` allows it with a reason. */
-const imported = (src: string) => new Set([...src.matchAll(/(typeof\s+)?import\(\s*(['"`])(@\/(?:(?!\2)[^\\])*)\2\s*\)/g)]
+const imported = (src: string) => new Set([...src.matchAll(/(typeof\s+)?\bimport\s*\(\s*(['"`])(@\/(?:(?!\2)[^\\])*)\2\s*\)/g)]
   .filter((m) => !m[1])
   .map((m) => (m[2] === '`' && m[3]!.includes('${') ? `\`${m[3]}\`` : m[3]!)));
 const warmed = (src: string) => imported(/^await warmImports\(([^\n]*)\);$/m.exec(src)?.[1] ?? '');
 /** Every other `import(` (not `typeof`) whose argument is not one lone string literal, as written: a concatenation, a
  *  variable, a comment or a second argument. None can be warmed by name, so each is a gap unless `UNWARMED` allows it. */
-const unread = (src: string) => [...src.matchAll(/(typeof\s+)?\bimport\((?!\s*(['"`])(?:(?!\2)[^\\])*\2\s*\))[^)\n]*\)?/g)]
+const unread = (src: string) => [...src.matchAll(/(typeof\s+)?\bimport\s*\((?!\s*(['"`])(?:(?!\2)[^\\])*\2\s*\))[^)\n]*\)?/g)]
   .filter((m) => !m[1]).map((m) => m[0]);
 /** A file's gaps: what it imports and does not warm, and every import the rule cannot read. */
 const gapsOf = (src: string) => [...[...imported(src)].filter((m) => !warmed(src).has(m)), ...unread(src)];
@@ -32,6 +32,14 @@ describe('the rule reads a dynamic import whichever way it is written (#792, Cod
   ])('finds an import in %s, and a warm-up written the same way covers it', (_form, line) => {
     expect([...imported(line)]).toEqual(['@/store/store']);
     expect([...warmed(`await warmImports(() => ${line.slice('await '.length, -1)});`)]).toEqual(['@/store/store']);
+  });
+
+  it.each([
+    ['a space', "await import ('@/store/store');"],
+    ['a line break', "await import\n('@/store/store');"],
+  ])('finds an import with %s before its parenthesis (Codex 4331621460)', (_form, line) => {
+    expect([...imported(line)]).toEqual(['@/store/store']);
+    expect(gapsOf(line)).toEqual(['@/store/store']);
   });
 
   it('keeps a template that substitutes as written, so it is a gap no warm-up can name', () => {
