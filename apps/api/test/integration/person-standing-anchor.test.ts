@@ -29,7 +29,7 @@ import { standingAnchorKey } from '../../src/common/standing-anchor';
  * 9, 9b, 9c. a daily-log material add, an activity create and a photo upload (no project key; each locks
  *    or references the linked decision before its emit), against a forward of that decision to the actor;
  * 10-13b. the placements no forced deadlock reaches today (a restore, a member add, a visit attendee add,
- *    the two countersign forward-ons): stopped at their first row after the anchors, they already hold them.
+ *    the two countersign forward-ons): stopped at a row lock after their anchors, they already hold them.
  *
  * Isolated automated-test fixtures only.
  */
@@ -386,12 +386,15 @@ describe('#1061 — the person standing anchor (live PG)', () => {
     const admin = await user(label, f.projectA.id, 'pmc');
     await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: admin, role: 'admin' } });
     await membership(f.projectA.id, admin, 'client');
+    // H holds the project row the reset below writes: release it, and let both commands finish, before the reset
+    const inFlight: Array<{ release: () => void; settled: Promise<unknown> }> = [];
     try {
       const h = await hold((tx) => tx.$queryRawUnsafe('SELECT 1 FROM "Project" WHERE "id" = $1 FOR NO KEY UPDATE', f.projectA.id));
-      onTestFinished(() => h.release());
       const act = settle(send(t.issueOrgOwnerToken(admin, f.projectA.id, f.orgA.id)));
+      inFlight.push({ release: h.release, settled: Promise.all([h.done, act]) });
       const actPid = await waiterOn(h.pid, 'the lifecycle write waits on H at the project row');
       const r = settle(reRole(admin, 'contractor'));
+      inFlight.push({ release: () => {}, settled: r });
       const reRolePid = await waiterOn(actPid, 'the re-role waits on the lifecycle write, not on H');
       expect(await waitsOnAnchor(reRolePid, admin), 'the re-role waits on the admin\'s anchor').toBe(true);
       h.release();
@@ -401,6 +404,8 @@ describe('#1061 — the person standing anchor (live PG)', () => {
       expect(reRoleMay, text(rr)).toContain(status(rr));
       return status(rr);
     } finally {
+      for (const x of inFlight) x.release();
+      await Promise.all(inFlight.map((x) => x.settled));
       await t.prisma.project.update({ where: { id: f.projectA.id }, data: { archivedAt: null } });
     }
   };
@@ -564,8 +569,9 @@ describe('#1061 — the person standing anchor (live PG)', () => {
   // 10-13: the placements no forced deadlock reaches today (a restore's project is archived, so no member command
   // contends there; the visit attendee and the forward-ons run under the readiness key every standing writer takes,
   // and the forward-ons are reserved until 4d-iii). Each still must take its anchors before its first row: H holds
-  // the first row the command locks after them, and while the command waits there its anchors must already be
-  // held, in its own mode. Without the placement nobody holds them at that point.
+  // a row the command locks after them (for 13b not the first: the stranded resolution locks the PMC's standing
+  // rows first, decisions.service.ts:1656), and while the command waits there its anchors must already be held,
+  // in its own mode. Without the placement nobody holds them at that point.
   /** Someone holds `userId`'s anchor in a mode that conflicts with `mode` (asked without waiting, so it never queues). */
   const anchorHeld = async (userId: string, mode: 'shared' | 'exclusive') => {
     const fn = mode === 'shared' ? 'pg_try_advisory_xact_lock_shared' : 'pg_try_advisory_xact_lock';
@@ -619,11 +625,13 @@ describe('#1061 — the person standing anchor (live PG)', () => {
     const admin = await user('restorer', f.projectA.id, 'pmc');
     await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: admin, role: 'admin' } });
     await t.prisma.project.update({ where: { id: f.projectA.id }, data: { archivedAt: new Date() } });
+    // H holds the project row the reset below writes: release it, and let the restore finish, before the reset
+    const inFlight: Array<{ release: () => void; settled: Promise<unknown> }> = [];
     try {
       const h = await hold((tx) => tx.$queryRawUnsafe('SELECT 1 FROM "Project" WHERE "id" = $1 FOR NO KEY UPDATE', f.projectA.id));
-      onTestFinished(() => h.release());
       const r = settle(http().post(`/orgs/${f.orgA.id}/projects/${f.projectA.id}/restore`)
         .set('Authorization', `Bearer ${t.issueOrgOwnerToken(admin, f.projectA.id, f.orgA.id)}`));
+      inFlight.push({ release: h.release, settled: Promise.all([h.done, r]) });
       await waiterOn(h.pid, 'the restore waits on H at the project row');
       expect(await anchorHeld(admin, 'exclusive'), 'the restore holds the restorer\'s anchor before the project row').toBe(true);
       h.release();
@@ -631,6 +639,8 @@ describe('#1061 — the person standing anchor (live PG)', () => {
       await h.done;
       expect([200, 201], text(rr)).toContain(status(rr));
     } finally {
+      for (const x of inFlight) x.release();
+      await Promise.all(inFlight.map((x) => x.settled));
       await t.prisma.project.update({ where: { id: f.projectA.id }, data: { archivedAt: null } });
     }
   }, 60_000);
