@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  registerConsumer, syncConsumerCatalog, unregisterConsumer, persistedRule, type OutboxConsumer, type DispatchRule,
+  getConsumer, registerConsumer, syncConsumerCatalog, unregisterConsumer, persistedRule, type OutboxConsumer, type DispatchRule,
 } from '../../src/platform/outbox/registry';
 import { makeSocketConsumer, makePushConsumer } from '../../src/platform/outbox/consumers';
 import { makeDecisionsProjectionConsumer } from '../../src/decisions/decisions.projection';
@@ -93,15 +93,26 @@ describe('4d-ii-a / A6c — the persisted rules and the registration barrier (li
     return Number(rows[0].n);
   };
 
+  // the compiled consumers this process registers for the boot sync, so the suite holds as the first
+  // file on a freshly migrated database: there the migrations leave only the rows they own, and the
+  // projection consumers' rows are born at the first app boot's `syncConsumerCatalog`, as here
+  const booted: string[] = [];
+
   beforeAll(async () => {
     prisma = new PrismaClient();
     await prisma.$connect();
     await sanctionedConsumerRemoval(prisma, [C]);
+    for (const c of compiled()) {
+      if (getConsumer(c.name)) continue;
+      registerConsumer(c);
+      booted.push(c.name);
+    }
     registerConsumer(consumer(C));
     await syncConsumerCatalog(prisma);
   });
 
   afterAll(async () => {
+    for (const name of booted) unregisterConsumer(name);
     unregisterConsumer(C);
     await sanctionedConsumerRemoval(prisma, [C]);
     await prisma.$disconnect();
@@ -109,6 +120,8 @@ describe('4d-ii-a / A6c — the persisted rules and the registration barrier (li
 
   // ── the rules the rows carry ──────────────────────────────────────────────────────────────
   it('every compiled consumer\'s row carries the rule the code declares (the migration\'s backfill), and a row born under A6c carries its declaration', async () => {
+    // a row that existed at the migration carries its backfilled rule; a row born at a later boot's sync
+    // (on a fresh database, every projection consumer's) carries its declaration from birth
     for (const c of compiled()) {
       expect(await ruleOf(prisma, c.name), c.name).toEqual(persistedRule(c.dispatchRule));
     }
