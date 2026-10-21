@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, act } from '@testing-library/react';
+import { render, act, fireEvent, screen } from '@testing-library/react';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { useStore, getInitialState } from '@/store/store';
 import { RouteBridge } from '@/layout/RouteBridge';
+import { LeaveUnkept } from '@/layout/LeaveUnkept';
+import { QW } from '@/lib/queueWords';
 import type { ApiGateway } from '@/data/apiGateway';
 
 let currentPath = '';
@@ -369,5 +371,271 @@ describe('RouteBridge — Codex 4213640388: a legacy cold record gets the CANONI
     expect(visited[visited.length - 1]).toBe(`/projects/${active}/review`);
     // no two-entry loop: once on the list, further Backs stay there
     expect(visited.filter((p) => p === `/projects/${active}/review`)).toHaveLength(1);
+  });
+});
+
+describe('RouteBridge — a routed switch the person cancels at the "not kept" question (#1028 r1, 4329769588)', () => {
+  let go!: (to: string | number) => void;
+  function NavProbe() {
+    const navigate = useNavigate();
+    go = (to) => (typeof to === 'number' ? navigate(to) : navigate(to));
+    return null;
+  }
+  it('puts the URL back on the open project, in place, and never opens the item it named later', async () => {
+    const gw = { switchProject: vi.fn() };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.memberships = [
+        { projectId: 'ambli', name: 'Residence at Ambli', short: 'Residence at Ambli', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' },
+      ];
+      // an act this phone did not keep
+      st.outbox = [{ t: 'startActivity', activityId: 'A-1', idempotencyKey: 'k-1' }];
+      st.queueUnkept = ['k:k-1'];
+    });
+    render(
+      <MemoryRouter initialEntries={['/projects/ambli/dashboard']}>
+        <RouteBridge />
+        <PathProbe />
+        <NavProbe />
+      </MemoryRouter>,
+    );
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    // Back/Forward (here a link) to the other project asks first
+    act(() => go('/projects/project-b/decisions'));
+    await flush();
+    expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch', projectId: 'project-b' }));
+    expect(gw.switchProject).not.toHaveBeenCalled();
+    expect(currentPath).toBe('/projects/project-b/decisions');
+    act(() => useStore.getState().cancelLeave());
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    expect(useStore.getState().activeProjectId).toBe('ambli');
+    // in place: Back goes where it went before the link, not to the rejected project
+    act(() => go(-1));
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    expect(gw.switchProject).not.toHaveBeenCalled();
+  });
+  it('a switch from the project switcher the person continues at the question pushes its entry, so Back returns to the first project (#1028 r2, 4330762359)', async () => {
+    const gw = { switchProject: vi.fn().mockResolvedValue({ token: 'JWT-b', role: 'pmc', projectId: 'project-b' }) };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.memberships = [
+        { projectId: 'ambli', name: 'Residence at Ambli', short: 'Residence at Ambli', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' },
+      ];
+      st.outbox = [{ t: 'startActivity', activityId: 'A-1', idempotencyKey: 'k-1' }];
+      st.queueUnkept = ['k:k-1'];
+    });
+    render(
+      <MemoryRouter initialEntries={['/projects/ambli/dashboard']}>
+        <RouteBridge />
+        <PathProbe />
+        <NavProbe />
+        <LeaveUnkept />
+      </MemoryRouter>,
+    );
+    await flush();
+    // the project switcher (store-initiated): the question is asked, and the person continues
+    await act(async () => { expect(await useStore.getState().switchProject('project-b')).toBe('asked'); });
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    // Continue on the real dialog, which also calls its Cancel handler after: that is never counted as a Cancel
+    // (#1028 r2 check G7)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: QW.leaveContinue.en })); });
+    expect(useStore.getState().leaveCancels).toBe(0);
+    await flush();
+    useStore.setState((st) => { st.projectLoadState = 'ready'; });
+    await flush();
+    expect(useStore.getState().activeProjectId).toBe('project-b');
+    expect(currentPath).toMatch(/^\/projects\/project-b\//);
+    // a normal entry: Back goes to the first project's, as a switch that was never asked about does
+    act(() => go(-1));
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+  });
+
+  it('a Cancel answered while a load runs is put back in place once the load is done (#1028 r2 check G3)', async () => {
+    const gw = { switchProject: vi.fn() };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.memberships = [
+        { projectId: 'ambli', name: 'Residence at Ambli', short: 'Residence at Ambli', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' },
+      ];
+      st.outbox = [{ t: 'startActivity', activityId: 'A-1', idempotencyKey: 'k-1' }];
+      st.queueUnkept = ['k:k-1'];
+    });
+    render(
+      <MemoryRouter initialEntries={['/projects/ambli/schedule', '/projects/ambli/dashboard']} initialIndex={1}>
+        <RouteBridge />
+        <PathProbe />
+        <NavProbe />
+      </MemoryRouter>,
+    );
+    await flush();
+    act(() => go('/projects/project-b/decisions'));
+    await flush();
+    expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch', projectId: 'project-b' }));
+    // the open project reloads (a reconnect) while the question is answered
+    act(() => { useStore.setState((st) => { st.projectLoadState = 'loading'; }); useStore.getState().cancelLeave(); });
+    await flush();
+    act(() => { useStore.setState((st) => { st.projectLoadState = 'ready'; }); });
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    // in place: Back goes where it went before the link, never to the rejected project
+    act(() => go(-1));
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    expect(useStore.getState().leaveConfirm).toBeNull();
+    expect(gw.switchProject).not.toHaveBeenCalled();
+  });
+
+  it('a switcher Cancel answered during a load is never applied to a later switch the person continued: Back still reaches the first project (#1028 r2 re-check G1)', async () => {
+    const gw = { switchProject: vi.fn().mockResolvedValue({ token: 'JWT-c', role: 'pmc', projectId: 'project-c' }) };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.memberships = [
+        { projectId: 'ambli', name: 'Residence at Ambli', short: 'Residence at Ambli', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-c', name: 'C', short: 'C', role: 'pmc', orgId: 'o', orgName: 'V' },
+      ];
+      st.outbox = [{ t: 'startActivity', activityId: 'A-1', idempotencyKey: 'k-1' }];
+      st.queueUnkept = ['k:k-1'];
+    });
+    render(
+      <MemoryRouter initialEntries={['/projects/ambli/schedule', '/projects/ambli/dashboard']} initialIndex={1}>
+        <RouteBridge />
+        <PathProbe />
+        <NavProbe />
+      </MemoryRouter>,
+    );
+    await flush();
+    // the open project is loading; the switcher asks for project-b, and the person cancels
+    act(() => { useStore.setState((st) => { st.projectLoadState = 'loading'; }); });
+    await act(async () => { expect(await useStore.getState().switchProject('project-b')).toBe('asked'); });
+    act(() => useStore.getState().cancelLeave());
+    await flush();
+    // still in that load, the switcher asks for project-c, and the person continues
+    await act(async () => { expect(await useStore.getState().switchProject('project-c')).toBe('asked'); });
+    await act(async () => { useStore.getState().confirmLeave(); });
+    await flush();
+    useStore.setState((st) => { st.projectLoadState = 'ready'; });
+    await flush();
+    expect(useStore.getState().activeProjectId).toBe('project-c');
+    expect(currentPath).toMatch(/^\/projects\/project-c\//);
+    act(() => go(-1));
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+  });
+
+  it('a link Cancel answered during a load, then Back off the link, then a switch the person continued: the entry gone back to is never rewritten (#1028 r2 G1/G2 check G1)', async () => {
+    const gw = { switchProject: vi.fn().mockResolvedValue({ token: 'JWT-c', role: 'pmc', projectId: 'project-c' }) };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.memberships = [
+        { projectId: 'ambli', name: 'Residence at Ambli', short: 'Residence at Ambli', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-c', name: 'C', short: 'C', role: 'pmc', orgId: 'o', orgName: 'V' },
+      ];
+      st.outbox = [{ t: 'startActivity', activityId: 'A-1', idempotencyKey: 'k-1' }];
+      st.queueUnkept = ['k:k-1'];
+    });
+    render(
+      <MemoryRouter initialEntries={['/projects/ambli/schedule', '/projects/ambli/dashboard']} initialIndex={1}>
+        <RouteBridge />
+        <PathProbe />
+        <NavProbe />
+      </MemoryRouter>,
+    );
+    await flush();
+    // a link to project-b while the open project loads; the person cancels
+    act(() => { useStore.setState((st) => { st.projectLoadState = 'loading'; }); });
+    act(() => go('/projects/project-b/decisions'));
+    await flush();
+    expect(useStore.getState().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch', projectId: 'project-b' }));
+    act(() => useStore.getState().cancelLeave());
+    await flush();
+    // still in that load, Back off the link to the open project's page
+    act(() => go(-1));
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    // then the switcher asks for project-c, and the person continues
+    await act(async () => { expect(await useStore.getState().switchProject('project-c')).toBe('asked'); });
+    await act(async () => { useStore.getState().confirmLeave(); });
+    await flush();
+    useStore.setState((st) => { st.projectLoadState = 'ready'; });
+    await flush();
+    expect(useStore.getState().activeProjectId).toBe('project-c');
+    expect(currentPath).toMatch(/^\/projects\/project-c\//);
+    act(() => go(-1));
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+  });
+
+  it('after a link Cancel is put back, later screen changes push their entries as usual (#1028 r2 G1/G2 check G3)', async () => {
+    const gw = { switchProject: vi.fn().mockResolvedValue({ token: 'JWT-c', role: 'pmc', projectId: 'project-c' }) };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.memberships = [
+        { projectId: 'ambli', name: 'Residence at Ambli', short: 'Residence at Ambli', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-c', name: 'C', short: 'C', role: 'pmc', orgId: 'o', orgName: 'V' },
+      ];
+      st.outbox = [{ t: 'startActivity', activityId: 'A-1', idempotencyKey: 'k-1' }];
+      st.queueUnkept = ['k:k-1'];
+    });
+    render(
+      <MemoryRouter initialEntries={['/projects/ambli/schedule', '/projects/ambli/dashboard']} initialIndex={1}>
+        <RouteBridge />
+        <PathProbe />
+        <NavProbe />
+      </MemoryRouter>,
+    );
+    await flush();
+    act(() => go('/projects/project-b/decisions'));
+    await flush();
+    act(() => useStore.getState().cancelLeave());
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    act(() => useStore.getState().setScreen('decision-log'));
+    await flush();
+    act(() => useStore.getState().setScreen('drawings'));
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/drawings');
+    act(() => go(-1));
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/decisions');
+  });
+
+  it('a switch from the project switcher the person cancels leaves the URL and history as they were', async () => {
+    const gw = { switchProject: vi.fn() };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.memberships = [
+        { projectId: 'ambli', name: 'Residence at Ambli', short: 'Residence at Ambli', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' },
+      ];
+      st.outbox = [{ t: 'startActivity', activityId: 'A-1', idempotencyKey: 'k-1' }];
+      st.queueUnkept = ['k:k-1'];
+    });
+    render(
+      <MemoryRouter initialEntries={['/projects/ambli/schedule', '/projects/ambli/dashboard']} initialIndex={1}>
+        <RouteBridge />
+        <PathProbe />
+        <NavProbe />
+      </MemoryRouter>,
+    );
+    await flush();
+    await act(async () => { await useStore.getState().switchProject('project-b'); });
+    act(() => useStore.getState().cancelLeave());
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/dashboard');
+    expect(gw.switchProject).not.toHaveBeenCalled();
+    act(() => go(-1));
+    await flush();
+    expect(currentPath).toBe('/projects/ambli/schedule');
   });
 });

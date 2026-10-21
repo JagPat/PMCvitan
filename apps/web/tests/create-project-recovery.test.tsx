@@ -5,6 +5,7 @@ import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway } from '@/data/apiGateway';
 import { CreateProjectModal } from '@/layout/ProjectSwitcher';
 import { resetLiveCreateSendsForTests } from '@/store/projectCreateHold';
+import { QW } from '@/lib/queueWords';
 import { warmImports } from './warm-imports';
 
 /**
@@ -163,6 +164,83 @@ describe('create project from a source the server refuses to copy', () => {
     expect(r.getByTestId('host-closed')).toBeTruthy();
     expect(calls.switchProject).toHaveBeenCalledWith('p-new');
     expect(calls.createProject).toHaveBeenCalledWith('org-1', expect.objectContaining({ structureFrom: 'legacy' }), expect.any(String)); // the attempt's idempotency key
+  });
+
+  describe('a create while updates are not kept on this phone (#1028 r2, 4330762375)', () => {
+    const unkept = () => useStore.setState((st) => {
+      st.outbox = [{ t: 'startActivity', activityId: 'A-1', idempotencyKey: 'k-1' }];
+      st.queueUnkept = ['k:k-1'];
+    });
+
+    it('closes with no failure line, and the question stays; Cancel keeps the person here and says where to open it', async () => {
+      const { gw, create, calls } = fakeGateway();
+      s()._setGateway(gw);
+      unkept();
+      const r = mount();
+      fireEvent.click(createButton(r));
+      create.resolve({ id: 'p-new', name: 'Residence at Thaltej', short: 'Thaltej' });
+      await settle();
+      expect(r.getByTestId('host-closed')).toBeTruthy();
+      expect(s().toast ?? '').not.toMatch(/could not be opened/);
+      expect(s().leaveConfirm).toEqual(expect.objectContaining({ action: 'switch', projectId: 'p-new', created: true }));
+      expect(calls.switchProject).not.toHaveBeenCalled();
+      act(() => s().cancelLeave());
+      expect(s().toast).toBe(QW.createdOpenLater.en);
+      expect(calls.switchProject).not.toHaveBeenCalled();
+      expect(s().outbox).toHaveLength(1);
+    });
+
+    it('a create answered while the person is asked about a sign-out keeps that question, and says where to open the project (#1028 r2 check G4)', async () => {
+      const { gw, create, calls } = fakeGateway();
+      s()._setGateway(gw);
+      unkept();
+      const r = mount();
+      fireEvent.click(createButton(r));
+      await settle();
+      // the create is out when the person signs out, and is asked
+      act(() => s().requestSignOut());
+      expect(s().leaveConfirm).toEqual({ action: 'signOut' });
+      create.resolve({ id: 'p-new', name: 'Residence at Thaltej', short: 'Thaltej' });
+      await settle();
+      expect(s().leaveConfirm).toEqual({ action: 'signOut' });
+      expect(s().toast).toBe(QW.createdOpenLater.en);
+      expect(calls.switchProject).not.toHaveBeenCalled();
+      // Continue does what was asked: a sign-out, not a switch into the new project
+      act(() => s().confirmLeave());
+      await settle();
+      expect(s().sessionToken).toBeNull();
+      expect(calls.switchProject).not.toHaveBeenCalled();
+    });
+
+    it('a create answered while a switch to another project is asked about leaves that question as it is (#1028 r2 re-check G3)', async () => {
+      const { gw, create, calls } = fakeGateway();
+      s()._setGateway(gw);
+      unkept();
+      const r = mount();
+      fireEvent.click(createButton(r));
+      await settle();
+      await act(async () => { expect(await s().switchProject('p-other')).toBe('asked'); });
+      create.resolve({ id: 'p-new', name: 'Residence at Thaltej', short: 'Thaltej' });
+      await settle();
+      expect(s().leaveConfirm).toEqual({ action: 'switch', projectId: 'p-other', targetScreen: undefined, targetItem: undefined });
+      expect(s().toast).toBe(QW.createdOpenLater.en);
+      expect(calls.switchProject).not.toHaveBeenCalled();
+    });
+
+    it('Continue opens the new project', async () => {
+      const { gw, create, calls } = fakeGateway();
+      s()._setGateway(gw);
+      unkept();
+      const r = mount();
+      fireEvent.click(createButton(r));
+      create.resolve({ id: 'p-new', name: 'Residence at Thaltej', short: 'Thaltej' });
+      await settle();
+      act(() => s().confirmLeave());
+      await settle();
+      expect(calls.switchProject).toHaveBeenCalledWith('p-new');
+      expect(s().activeProjectId).toBe('p-new');
+      expect(s().toast ?? '').not.toMatch(/could not be opened/);
+    });
   });
 
   it('created but not opened still closes — the project exists, so a retry would duplicate it', async () => {

@@ -1,0 +1,90 @@
+import type { Lang } from '@vitan/shared';
+
+/**
+ * WEB-02 (#792): what the person is told when this phone's saved updates for a project cannot be read, or a new update
+ * could not be kept on this phone. "Not kept" is said only when nothing was written.
+ */
+type Words = Record<Lang, string>;
+
+export const QW = {
+  unreadable: {
+    en: 'Updates saved on this phone for this project can’t be read.',
+    hi: 'इस प्रोजेक्ट के लिए इस फ़ोन पर सहेजे गए बदलाव पढ़े नहीं जा सकते।',
+    gu: 'આ પ્રોજેક્ટ માટે આ ફોન પર સાચવેલા ફેરફારો વાંચી શકાતા નથી.',
+  },
+  // a draft another tab saved that could not be merged with this tab's (another log's, or a crew row another took the
+  // place of) is copied aside on this phone, never dropped (#1028 r1, G2 re-check G-d)
+  draftKeptAside: {
+    en: 'Another tab’s draft for {date} was kept aside on this phone.',
+    hi: '{date} के लिए दूसरे टैब का ड्राफ़्ट इस फ़ोन पर अलग रखा गया।',
+    gu: '{date} માટે બીજા ટેબનો ડ્રાફ્ટ આ ફોન પર અલગ રાખ્યો.',
+  },
+  // the same, for this tab's own draft that no write stored, when the draft another tab stored is kept (#1037 r1 check
+  // gap 6)
+  ownDraftKeptAside: {
+    en: 'This tab’s draft for {date} was kept aside on this phone.',
+    hi: '{date} के लिए इस टैब का ड्राफ़्ट इस फ़ोन पर अलग रखा गया।',
+    gu: '{date} માટે આ ટેબનો ડ્રાફ્ટ આ ફોન પર અલગ રાખ્યો.',
+  },
+  // a key listed again because a draft in it could not be copied aside: it reads, so it is not called unreadable
+  notSetAside: {
+    en: 'Updates saved on this phone for this project could not be set aside.',
+    hi: 'इस प्रोजेक्ट के लिए इस फ़ोन पर सहेजे गए बदलाव अलग नहीं रखे जा सके।',
+    gu: 'આ પ્રોજેક્ટ માટે આ ફોન પર સાચવેલા ફેરફારો અલગ રાખી શકાયા નહીં.',
+  },
+  // a key holding an act a newer release saved: the release that saved it can read and send it, so the page is reloaded
+  // on a tap (never on its own). Such a key is never set aside (#1037 r1 check gap 3)
+  newerRelease: {
+    en: 'Updates saved on this phone by a newer version of Vitan can’t be read here. Reload the page to send them.',
+    hi: 'Vitan के नए संस्करण ने इस फ़ोन पर जो बदलाव सहेजे हैं, वे यहाँ पढ़े नहीं जा सकते। उन्हें भेजने के लिए पेज फिर से लोड करें।',
+    gu: 'Vitanના નવા સંસ્કરણે આ ફોન પર સાચવેલા ફેરફારો અહીં વાંચી શકાતા નથી. તેમને મોકલવા માટે પેજ ફરીથી લોડ કરો.',
+  },
+  reload: { en: 'Reload', hi: 'फिर से लोड करें', gu: 'ફરીથી લોડ કરો' },
+  // the same key once a reload of this build has met it, holding the same bytes: the newer release cannot be had here (a
+  // rollback), or the kind is damaged, so it may be set aside (#1037 r1 re-check N2; copy re-check 2)
+  newerReloaded: {
+    en: 'These updates were saved by a newer version of Vitan. This version can’t send them. Set them aside to keep working. They stay on this phone.',
+    hi: 'ये बदलाव Vitan के नए संस्करण ने सहेजे थे। यह संस्करण उन्हें नहीं भेज सकता। काम जारी रखने के लिए इन्हें अलग रखें। ये इस फ़ोन पर रहेंगे।',
+    gu: 'આ ફેરફારો Vitanના નવા સંસ્કરણે સાચવ્યા હતા. આ સંસ્કરણ તેમને મોકલી શકતું નથી. કામ ચાલુ રાખવા માટે તેમને અલગ રાખો. તે આ ફોન પર રહેશે.',
+  },
+  setAside: { en: 'Set aside and continue', hi: 'अलग रखें और जारी रखें', gu: 'અલગ રાખો અને ચાલુ રાખો' },
+  setAsideFailed: {
+    en: 'They could not be set aside on this phone, so nothing was changed.',
+    hi: 'उन्हें इस फ़ोन पर अलग नहीं रखा जा सका, इसलिए कुछ नहीं बदला गया।',
+    gu: 'તેમને આ ફોન પર અલગ રાખી શકાયા નહીં, તેથી કંઈ બદલાયું નથી.',
+  },
+  notKept: {
+    en: 'Not kept on this phone: this update is sent only if you stay on this project with this page open.',
+    hi: 'इस फ़ोन पर नहीं रखा गया: यह बदलाव तभी भेजा जाएगा जब आप इसी प्रोजेक्ट पर रहें और यह पेज खुला रहे।',
+    gu: 'આ ફોન પર રાખ્યું નથી: આ ફેરફાર ત્યારે જ મોકલાશે જો તમે આ જ પ્રોજેક્ટ પર રહો અને આ પેજ ખુલ્લું રહે.',
+  },
+  leaveTitle: {
+    en: '{n} updates aren’t saved on this phone and will be lost. Continue?',
+    hi: '{n} बदलाव इस फ़ोन पर सहेजे नहीं गए हैं और खो जाएँगे। जारी रखें?',
+    gu: '{n} ફેરફારો આ ફોન પર સચવાયા નથી અને ખોવાઈ જશે. ચાલુ રાખવું છે?',
+  },
+  leaveContinue: { en: 'Continue', hi: 'जारी रखें', gu: 'ચાલુ રાખો' },
+  // a project created while acts were not kept, its opening cancelled at the question (#1028 r2, 4330762375)
+  createdOpenLater: {
+    en: 'The new project was created. Open it from the project list when you’re ready.',
+    hi: 'नया प्रोजेक्ट बन गया है। जब आप तैयार हों, इसे प्रोजेक्ट सूची से खोलें।',
+    gu: 'નવો પ્રોજેક્ટ બની ગયો છે. તમે તૈયાર હો ત્યારે તેને પ્રોજેક્ટ યાદીમાંથી ખોલો.',
+  },
+  // shown while any act is not kept: a browser may close or reload the page without asking (iPhone never asks, Chrome
+  // only after a tap, and no browser when the phone closes a tab in the background) (#1028 r2 check G6)
+  unkeptStayOne: {
+    en: '1 update isn’t saved on this phone. Keep this page open until it’s sent.',
+    hi: '1 बदलाव इस फ़ोन पर सहेजा नहीं गया है। इसके भेजे जाने तक यह पेज खुला रखें।',
+    gu: '1 ફેરફાર આ ફોન પર સચવાયો નથી. તે મોકલાય ત્યાં સુધી આ પેજ ખુલ્લું રાખો.',
+  },
+  unkeptStay: {
+    en: '{n} updates aren’t saved on this phone. Keep this page open until they’re sent.',
+    hi: '{n} बदलाव इस फ़ोन पर सहेजे नहीं गए हैं। इनके भेजे जाने तक यह पेज खुला रखें।',
+    gu: '{n} ફેરફારો આ ફોન પર સચવાયા નથી. તે મોકલાય ત્યાં સુધી આ પેજ ખુલ્લું રાખો.',
+  },
+  unkeptLost: {
+    en: '{n} updates that were not kept on this phone were lost.',
+    hi: '{n} बदलाव जो इस फ़ोन पर नहीं रखे गए थे, खो गए।',
+    gu: '{n} ફેરફારો જે આ ફોન પર રાખ્યા ન હતા, ખોવાઈ ગયા.',
+  },
+} satisfies Record<string, Words>;

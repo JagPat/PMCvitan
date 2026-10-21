@@ -2230,5 +2230,97 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1): P
         return gw.snapshot();
       });
     }
+    default: {
+      // WEB-02 (#1037 r1, Codex 4331862684): an act this release does not know (a newer release's, in memory) is never
+      // taken as sent: its replay fails as a send that did not go, so it stays queued; a stored one never loads
+      const unknown: never = op;
+      return Promise.reject(new UnknownOutboxOpError((unknown as { t?: unknown }).t));
+    }
   }
+}
+
+/** an act this release cannot send: never terminal, so the flush keeps it (WEB-02, #1037 r1) */
+export class UnknownOutboxOpError extends Error {
+  constructor(t: unknown) {
+    super(`unknown queued act: ${String(t)}`);
+    this.name = 'UnknownOutboxOpError';
+  }
+}
+
+/** Every kind of act this release queues and sends (WEB-02, #1037 r1). Typed against `OutboxOp['t']`, so a new kind
+ *  that is not listed here fails the build.
+ *  Release rule (#792): a new kind may ship only after the chain-version unit has merged, so newer tabs can tell an
+ *  older tab (one before #1037 takes an unknown act as sent and writes over its key). Never reshape an existing kind
+ *  (a release that cannot load its shape makes the whole key unreadable), and never store an existing kind under
+ *  another key (each lane's key holds only its own acts): add a new kind instead. */
+const OUTBOX_OP_KINDS: Record<OutboxOp['t'], true> = {
+  siteVisitStart: true,
+  siteVisitEnd: true,
+  siteVisitClose: true,
+  siteVisitAddPlace: true,
+  siteVisitRetirePlace: true,
+  siteVisitAddAttendee: true,
+  siteVisitRetireAttendee: true,
+  siteVisitAddFile: true,
+  approve: true,
+  forwardDecision: true,
+  countersignDecision: true,
+  disagreeDecision: true,
+  resolveStrandedCountersign: true,
+  change: true,
+  changeWithdraw: true,
+  withdraw: true,
+  consultationRequest: true,
+  consultationRespond: true,
+  ackDrawing: true,
+  publishDrawing: true,
+  setDrawingNode: true,
+  submitInspection: true,
+  decideReview: true,
+  startActivity: true,
+  completeActivity: true,
+  startDailyLog: true,
+  addSiteMaterial: true,
+  flagMismatch: true,
+  submitDailyLog: true,
+  reserveStock: true,
+  issueStock: true,
+  consumeStock: true,
+  createRequisition: true,
+  allocateLabour: true,
+  recordAttendance: true,
+  recordLabourWork: true,
+  createLabourRequisition: true,
+  setCommercialBudget: true,
+  defineCostHead: true,
+  reattributeCommitment: true,
+  takeMeasurement: true,
+  correctMeasurement: true,
+  recordVendorBill: true,
+  beginVerification: true,
+  verifyVendorBill: true,
+  certifyBill: true,
+  supersedeCertificate: true,
+  grantSodException: true,
+  recordDeduction: true,
+  releaseDeduction: true,
+  approvePayment: true,
+  payAdvance: true,
+  recordPayment: true,
+  reversePayment: true,
+  submitVendorBill: true,
+  amendVendorBill: true,
+  rejectVendorBill: true,
+  releaseLabourAllocation: true,
+  uploadMedia: true,
+  uploadEvidence: true,
+};
+
+/** A stored entry this release can load: an object naming a kind of act it knows. A key holding any other entry (a
+ *  newer release's act, or damaged bytes) is unreadable as a whole, so it is never loaded, written or sent
+ *  (WEB-02, #1037 r1, Codex 4331862684) */
+export function isKnownOutboxOp(v: unknown): v is OutboxOp {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  const t = (v as { t?: unknown }).t;
+  return typeof t === 'string' && Object.prototype.hasOwnProperty.call(OUTBOX_OP_KINDS, t);
 }

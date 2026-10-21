@@ -240,7 +240,7 @@ describe('§M — the verification chain on the two-key outbox lifecycle', () =>
     expect((s().outbox[0] as { idempotencyKey: string }).idempotencyKey).not.toBe(firstKey);
   });
 
-  it('the two op types are commercial ops, so hydration and the reconcile cover them', () => {
+  it('the two op types are commercial ops, so the load guard and the reconcile cover them (a malformed one makes its key unreadable on a load, #1037 r1 check gap 2)', () => {
     expect(COMMERCIAL_OUTBOX_OP_TYPES).toContain('beginVerification');
     expect(COMMERCIAL_OUTBOX_OP_TYPES).toContain('verifyVendorBill');
     const ops = [

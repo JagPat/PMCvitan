@@ -12,7 +12,7 @@ const TODAY = todayCivil(null);
  * path, read from the daily log the Site screen already records (presentation only).
  */
 
-await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/InboxScreen'), () => import('@/screens/DailyLogScreen'));
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/InboxScreen'), () => import('@/screens/DailyLogScreen'), () => import('@/lib/queueWords'));
 
 afterEach(() => {
   cleanup();
@@ -231,6 +231,17 @@ describe('Engineer Today — the screen', () => {
     expect(r.getByText(L.pendingSend.en)).toBeTruthy();
     expect(r.getByText(L.savedOffline.en)).toBeTruthy();
     expect(r.queryByTestId('today-action')).toBeNull();
+  });
+
+  it('a send queued while this phone could not store it says it was not kept, never "saved offline" (WEB-02)', async () => {
+    const ready = log({ checkedIn: true, progress: 2 });
+    ready.crew[0].count = 3;
+    const queued = { t: 'submitDailyLog' as const, log: { checkedIn: true, checkinTime: null, progress: 2, crew: ready.crew }, idempotencyKey: 'k1' };
+    const { QW } = await import('@/lib/queueWords');
+    const { r } = await loadToday({ dailyLog: ready, outbox: [queued], queueUnkept: ['k:k1'], online: false });
+    expect(r.getByTestId('today-now').dataset.action).toBe('pending-send');
+    expect(r.getByText(QW.notKept.en)).toBeTruthy();
+    expect(r.queryByText(L.savedOffline.en)).toBeNull();
   });
 
   it('a start already queued is shown as starting — no second start', async () => {

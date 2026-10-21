@@ -159,6 +159,118 @@ describe('Phase 8 offline outbox', () => {
     expect(globalThis.localStorage?.getItem('vitan.outbox')).toBeNull(); // legacy key consumed
   });
 
+  it('#1037 r2 audit (row D): a legacy queue moves into a key whose bytes were set aside, which reads as empty', () => {
+    const scopedKey = `vitan.outbox.anon.${s().activeProjectId}`;
+    globalThis.localStorage?.setItem(scopedKey, '{not json');
+    s().hydrateOutbox();
+    s().setAsideUnreadableQueue();
+    expect(s().queueUnreadable).toBeNull();
+    // an older tab writes back the bytes it read, and an unscoped queue is found
+    globalThis.localStorage?.setItem(scopedKey, '{not json');
+    globalThis.localStorage?.setItem('vitan.outbox', JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]));
+    useStore.setState(getInitialState());
+    s().hydrateOutbox();
+    expect(s().outbox).toEqual([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    expect(globalThis.localStorage?.getItem('vitan.outbox')).toBeNull();
+  });
+
+  const legacyCopies = () => Object.keys(globalThis.localStorage ?? {}).filter((k) => k.startsWith('vitan.unreadable.vitan.outbox.'));
+
+  it('#1037 r2 audit (row D, check G5): a legacy queue meeting a key that holds acts is copied aside, never dropped, and never left for another project', () => {
+    const scopedKey = `vitan.outbox.anon.${s().activeProjectId}`;
+    const held = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-7' }]);
+    const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    globalThis.localStorage?.setItem(scopedKey, held);
+    globalThis.localStorage?.setItem('vitan.outbox', legacy);
+    s().hydrateOutbox();
+    expect(s().outbox).toEqual([{ t: 'startActivity', activityId: 'ACT-7' }]);
+    expect(globalThis.localStorage?.getItem(scopedKey)).toBe(held);
+    expect(globalThis.localStorage?.getItem('vitan.outbox')).toBeNull();
+    expect(legacyCopies().map((k) => globalThis.localStorage?.getItem(k))).toEqual([legacy]);
+    // the person opens another project, whose key is empty: it does not take the old queue
+    useStore.setState({ activeProjectId: 'p-other' });
+    s().hydrateOutbox();
+    expect(s().outbox).toEqual([]);
+    expect(globalThis.localStorage?.getItem('vitan.outbox.anon.p-other')).toBeNull();
+  });
+
+  it('#1037 r2 audit (row D): a legacy queue whose move does not read back is copied aside; with neither, it stays where it is', () => {
+    const scopedKey = `vitan.outbox.anon.${s().activeProjectId}`;
+    const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    globalThis.localStorage?.setItem('vitan.outbox', legacy);
+    const realSet = Storage.prototype.setItem;
+    let refuseCopy = false;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      // the move is lost without an error, and so is the copy when refused
+      if (k !== scopedKey && !(refuseCopy && k.startsWith('vitan.unreadable.'))) realSet.call(this, k, v);
+    });
+    try {
+      s().hydrateOutbox();
+      expect(globalThis.localStorage?.getItem('vitan.outbox')).toBeNull();
+      expect(legacyCopies().map((k) => globalThis.localStorage?.getItem(k))).toEqual([legacy]);
+      for (const k of legacyCopies()) globalThis.localStorage?.removeItem(k);
+      globalThis.localStorage?.setItem('vitan.outbox', legacy);
+      refuseCopy = true;
+      useStore.setState(getInitialState());
+      s().hydrateOutbox();
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(globalThis.localStorage?.getItem('vitan.outbox')).toBe(legacy);
+    expect(legacyCopies()).toEqual([]);
+  });
+
+  it('#1037 r2 audit (row D): a legacy queue never moves over a scoped key that cannot be read: it is copied aside, and the key keeps its bytes', () => {
+    const scopedKey = `vitan.outbox.anon.${s().activeProjectId}`;
+    const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    globalThis.localStorage?.setItem(scopedKey, '{not json');
+    globalThis.localStorage?.setItem('vitan.outbox', legacy);
+    s().hydrateOutbox();
+    expect(globalThis.localStorage?.getItem(scopedKey)).toBe('{not json');
+    expect(s().queueUnreadable?.keys).toContain(scopedKey);
+    expect(legacyCopies().map((k) => globalThis.localStorage?.getItem(k))).toEqual([legacy]);
+  });
+
+  it('#1037 r2 audit (row D): storage throwing on the copy leaves the old key as it is', () => {
+    const scopedKey = `vitan.outbox.anon.${s().activeProjectId}`;
+    const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    globalThis.localStorage?.setItem(scopedKey, JSON.stringify([{ t: 'startActivity', activityId: 'ACT-7' }]));
+    globalThis.localStorage?.setItem('vitan.outbox', legacy);
+    const realSet = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith('vitan.unreadable.')) throw new DOMException('full', 'QuotaExceededError');
+      realSet.call(this, k, v);
+    });
+    try { s().hydrateOutbox(); } finally { vi.restoreAllMocks(); }
+    expect(globalThis.localStorage?.getItem('vitan.outbox')).toBe(legacy);
+    expect(legacyCopies()).toEqual([]);
+  });
+
+  it('#1037 r2 audit (row D): a copy name already taken is never written over', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-10-21T10:00:00.000Z'));
+      const scopedKey = `vitan.outbox.anon.${s().activeProjectId}`;
+      // this page's tag, read from a Set aside copy's name
+      globalThis.localStorage?.setItem(scopedKey, '{not json');
+      s().hydrateOutbox();
+      s().setAsideUnreadableQueue();
+      const copy = Object.keys(globalThis.localStorage ?? {}).find((k) => k.startsWith(`vitan.unreadable.${scopedKey}.`)) ?? '';
+      const taken = `vitan.unreadable.vitan.outbox.2026-10-21T10:00:00.000Z.${copy.slice(copy.lastIndexOf('.') + 1)}`;
+      globalThis.localStorage?.clear();
+      const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
+      globalThis.localStorage?.setItem(taken, 'other bytes');
+      globalThis.localStorage?.setItem(scopedKey, JSON.stringify([{ t: 'startActivity', activityId: 'ACT-7' }]));
+      globalThis.localStorage?.setItem('vitan.outbox', legacy);
+      useStore.setState(getInitialState());
+      s().hydrateOutbox();
+      expect(globalThis.localStorage?.getItem(taken)).toBe('other bytes');
+      expect(globalThis.localStorage?.getItem('vitan.outbox')).toBe(legacy);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('queues a progress photo while offline and shows it optimistically', () => {
     const gw = { uploadMedia: vi.fn(), snapshot: vi.fn() };
     s()._setGateway(gw as unknown as ApiGateway);
