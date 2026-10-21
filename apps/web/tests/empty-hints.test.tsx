@@ -1,10 +1,13 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 — an empty screen shows one line pointing at the button that starts the work, in the person's
  * language, and only for a role that has that button.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/screens/InspectionReviewScreen'), () => import('@/guide/EmptyHint'), () => import('@/store/projectScope'), () => import('@/screens/DecisionLogScreen'));
 
 afterEach(() => {
   cleanup();

@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import type { Lang, Photo } from '@vitan/shared';
 import { sitePhotoAddedAt, sitePhotoWho } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 site photos — each Dashboard photo says who added it, their role on the project and when, in the
@@ -26,6 +27,8 @@ async function load(lang: Lang, photos: Photo[], extra: Record<string, unknown> 
   const { DashboardScreen } = await import('@/screens/DashboardScreen');
   return { r: render(<DashboardScreen />), useStore };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DashboardScreen'));
 
 afterEach(() => {
   cleanup();

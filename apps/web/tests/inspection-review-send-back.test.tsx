@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, within } from '@testing-library/react';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 QA item 2 — on Inspection Review, when any item FAILED the expected decision is to send it back:
@@ -7,6 +8,8 @@ import { render, cleanup, fireEvent, within } from '@testing-library/react';
  * secondary button that asks for confirmation before signing the inspection off. With nothing failed
  * Approve stays first and decides at once.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/screens/InspectionReviewScreen'));
 
 afterEach(() => {
   cleanup();

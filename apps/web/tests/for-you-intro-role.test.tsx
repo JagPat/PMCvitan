@@ -1,12 +1,15 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import { forYouIntro, forYouNothingDetail, type Lang, type Role } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 live QA item 6 — the For You subtitle depends on the role. A contractor's and a consultant's For You holds
  * only decisions and drawings, and an architect's only decisions, so neither the intro nor the empty-list line
  * mentions inspections or the site log, in any language. The PMC (when the list shows) keeps the full wording.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/screens/InboxScreen'));
 
 afterEach(() => {
   cleanup();

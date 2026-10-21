@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import { SEED_DAILY_LOG, engineerCrewLabels as C, engineerTodayLabels as L, type DailyLog } from '@vitan/shared';
 import { todayCivil } from '@/lib/civilDate';
+import { warmImports } from './warm-imports';
 
 const TODAY = todayCivil(null);
 
@@ -10,6 +11,8 @@ const TODAY = todayCivil(null);
  * count with one-less / one-more, "Nobody today" and Next. Presentation only: every tap is the Site
  * screen's own `crewStep` on the open log, so both views hold the same counts.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/InboxScreen'), () => import('@/screens/DailyLogScreen'));
 
 afterEach(() => {
   cleanup();

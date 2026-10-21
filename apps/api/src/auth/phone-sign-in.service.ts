@@ -5,6 +5,7 @@ import { resolveJwtSecret } from '../config';
 import { PrismaService } from '../prisma.service';
 import { lockUserCredential } from '../common/credential-lock';
 import { EmailService } from '../platform/email.service';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 
 /**
  * #827 one-screen sign-in, server unit (replaces #856's in-memory codes). Until SMS is live, a phone sign-in's
@@ -68,6 +69,7 @@ export class PhoneSignInService {
   private readonly log = new Logger(PhoneSignInService.name);
   private readonly hmacSecret = resolveJwtSecret();
   readonly resendWait = new ResendWait();
+  private readonly orgs = new OrgsParticipant();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -89,10 +91,7 @@ export class PhoneSignInService {
   /** The account that owns `phone` when its email is established: stored number exactly `phone`, and a password
    *  set or the address verified. Whether it may sign in is the caller's `eligible` rule. */
   private async owner(db: Db, phone: string) {
-    const user = await db.user.findUnique({
-      where: { phone },
-      select: { id: true, email: true, passwordHash: true, emailVerifiedAt: true },
-    });
+    const user = await this.orgs.accountByPhone(db, phone);
     if (!user?.email) return null;
     if (!user.passwordHash && !user.emailVerifiedAt) return null;
     return { id: user.id, email: user.email };

@@ -8,6 +8,9 @@ import { todayCivil } from '@/lib/civilDate';
 import { computeLabourSpecFingerprint } from '@vitan/shared';
 import type { WorkerDto, WorkerAllocationDto, CapacityCommitmentDto, RequirementListItem, LabourSpecRef, LabourWorkFactDto, LabourRequisitionDto } from '@vitan/shared';
 import type { LabourView } from '@/store/labour';
+import { warmImports } from './warm-imports';
+
+await warmImports(() => import('@/lib/labourKeys'));
 
 /**
  * Phase 4 Task 6 — Codex correction round 1, the RENDERED Labour hub:

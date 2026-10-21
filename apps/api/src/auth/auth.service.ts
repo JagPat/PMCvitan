@@ -128,10 +128,8 @@ export class AuthService {
     projectId: string;
     allowProvision: boolean;
   }): Promise<TokenResult> {
-    const user =
-      (input.email && (await this.prisma.user.findUnique({ where: { email: input.email } }))) ||
-      (input.phone && (await this.prisma.user.findUnique({ where: { phone: input.phone } }))) ||
-      null;
+    // the account is the orgs module's, read through its participant (email first, then phone)
+    const user = await this.orgs.accountByAddress(this.prisma, { email: input.email, phone: input.phone });
     if (!user) {
       if (!input.allowProvision) {
         throw new UnauthorizedException('No account for this sign-in. Ask your PMC to add you.');
@@ -181,7 +179,7 @@ export class AuthService {
     // Phase 6 task 4d (§A.1) — no token carries the architect role until 4d-iii: the dev session is a
     // token producer too, so it refuses the role 409 with the drain directive BEFORE EITHER BRANCH
     if (input.role === 'architect') await assertPhase6_4dOpen(this.prisma, 'A session in the architect role');
-    const real = await this.prisma.user.findFirst({ where: { role: input.role, projectId: input.projectId } });
+    const real = await this.orgs.devAccount(this.prisma, input.role, input.projectId);
     if (real) {
       return { token: this.issueNamedUser(real, real.role as Role, real.projectId), role: real.role as Role, projectId: real.projectId, name: real.name };
     }
@@ -250,7 +248,7 @@ export class AuthService {
   /** Email + password sign-in for PMC / client / contractor accounts. */
   async login(input: LoginInput): Promise<TokenResult> {
     const email = input.email.toLowerCase();
-    const user = await this.prisma.user.findUnique({ where: { email } });
+    const user = await this.orgs.accountByAddress(this.prisma, { email });
     if (!user?.passwordHash || !(await bcrypt.compare(input.password, user.passwordHash))) {
       throw new UnauthorizedException('Invalid email or password');
     }
@@ -286,7 +284,7 @@ export class AuthService {
 
   /** The sign-in access rule a token is issued under (`signInAccess`), as a yes/no for an account id. */
   private readonly canSignIn = async (userId: string): Promise<boolean> => {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const user = await this.orgs.accountById(this.prisma, userId);
     if (!user) return false;
     try {
       await this.signInAccess(user);
@@ -316,7 +314,7 @@ export class AuthService {
     const emailed = await this.phoneSignIn.verify(input.phone, input.code, this.canSignIn);
     if (emailed.kind === 'ok') {
       // an emailed code signs in exactly the account it was redeemed for, and never provisions one
-      const user = await this.prisma.user.findUnique({ where: { id: emailed.userId } });
+      const user = await this.orgs.accountById(this.prisma, emailed.userId);
       if (!user) throw new UnauthorizedException('Invalid or expired code');
       const access = await this.signInAccess(user);
       return { token: this.issueNamedUser(user, access.role, access.projectId), role: access.role, projectId: access.projectId, name: user.name };
@@ -367,9 +365,9 @@ export class AuthService {
     }
     // Only mint a device token for a real, active project — otherwise anyone could seed
     // WorkerDevice rows (and read snapshots) for arbitrary/unknown project ids.
-    const project = await this.prisma.project.findUnique({ where: { id: input.projectId }, select: { archivedAt: true } });
-    if (!project) throw new NotFoundException('Unknown project');
-    if (project.archivedAt) throw new ForbiddenException('This project has been archived');
+    const project = await this.orgs.projectLive(this.prisma, input.projectId);
+    if (project === 'missing') throw new NotFoundException('Unknown project');
+    if (project === 'archived') throw new ForbiddenException('This project has been archived');
     const device = await this.prisma.workerDevice.create({
       data: { projectId: input.projectId, name: input.name, trade: input.trade, token: randomUUID() },
     });
@@ -385,36 +383,9 @@ export class AuthService {
   async listMemberships(userId: string): Promise<
     Array<{ projectId: string; name: string; short: string; role: Role; discipline?: string; orgId: string | null; orgName: string | null }>
   > {
-    const memberships = await this.prisma.membership.findMany({
-      where: { userId, status: 'active' },
-      include: { project: { include: { org: true } } },
-    });
-    const rows = memberships
-      .filter((m) => !m.project.archivedAt) // hide archived projects
-      .map((m) => ({
-        projectId: m.projectId,
-        name: m.project.name,
-        short: m.project.short,
-        role: m.role as Role,
-        // a consultant's discipline scopes what they see by default (e.g. their drawings)
-        discipline: m.discipline ?? undefined,
-        orgId: m.project.orgId,
-        orgName: m.project.org?.name ?? null,
-      }));
-
-    // Org super-admin reach: an owner/admin can access every (non-archived) project in
-    // their org (as PMC), even ones they didn't create and aren't an explicit member of.
-    const adminOrgs = await this.prisma.orgMembership.findMany({ where: { userId, role: { in: ['owner', 'admin'] } }, select: { orgId: true } });
-    if (adminOrgs.length) {
-      const have = new Set(rows.map((r) => r.projectId));
-      const projects = await this.prisma.project.findMany({ where: { orgId: { in: adminOrgs.map((o) => o.orgId) }, archivedAt: null }, include: { org: true } });
-      for (const p of projects) {
-        if (!have.has(p.id)) {
-          rows.push({ projectId: p.id, name: p.name, short: p.short, role: 'pmc' as Role, discipline: undefined, orgId: p.orgId, orgName: p.org?.name ?? null });
-          have.add(p.id);
-        }
-      }
-    }
+    // the list form of the access rule (`OrgsParticipant.projectRole`), owned beside it: active memberships on live
+    // projects, then company owner/admin reach as PMC
+    const rows = await this.orgs.reachableProjects(this.prisma, userId);
 
     // No legacy `User.projectId`/`User.role` fallback here (ORG escalation): listing a
     // home project from those fields is the same phantom grant that let a roster
@@ -428,9 +399,8 @@ export class AuthService {
    *  Org owners/admins can switch into ANY project in their org — they operate it as PMC
    *  even without an explicit membership (the org super-admin reach). */
   async switchProject(userId: string, projectId: string): Promise<TokenResult> {
-    const target = await this.prisma.project.findUnique({ where: { id: projectId }, select: { archivedAt: true } });
-    if (target?.archivedAt) throw new ForbiddenException('This project has been archived');
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if ((await this.orgs.projectLive(this.prisma, projectId)) === 'archived') throw new ForbiddenException('This project has been archived');
+    const user = await this.orgs.accountById(this.prisma, userId);
     if (!user) throw new UnauthorizedException('Unknown user');
 
     // Role precedence (intentional): an explicit active membership wins over the
@@ -450,7 +420,7 @@ export class AuthService {
    *  failed write is logged and does not fail the switch; concurrent switches leave the later write. */
   private async rememberLastProject(userId: string, projectId: string): Promise<void> {
     try {
-      await this.prisma.user.update({ where: { id: userId }, data: { lastProjectId: projectId } });
+      await this.orgs.rememberLastProject(this.prisma, userId, projectId);
     } catch (err) {
       this.log.warn(`Last project not recorded for a switch: ${(err as Error)?.constructor?.name ?? 'unknown error'}`);
     }

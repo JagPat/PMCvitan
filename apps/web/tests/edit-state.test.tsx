@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { Decision, Drawing, DrawingRevision, ProjectNode } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * Editing states — "can I edit this? if not, why? what may I do instead?"
@@ -53,6 +54,8 @@ async function loadStore(overrides: Record<string, unknown> = {}, env: Record<st
   });
   return useStore;
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/components'), () => import('@/screens/DecisionLogScreen'), () => import('@/screens/DrawingsScreen'));
 
 afterEach(() => {
   cleanup();

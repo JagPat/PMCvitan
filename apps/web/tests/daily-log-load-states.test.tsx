@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { DailyLog } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * Phase 2 Task 10 (correction, finding 4) — honest daily-log load states.
@@ -49,6 +50,8 @@ async function loadScreen(mode: 'snapshot' | 'moduleQuery', overrides: StoreStat
   const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
   return { useStore, DailyLogScreen };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DailyLogScreen'));
 
 afterEach(() => {
   cleanup();

@@ -117,7 +117,7 @@ export interface CrossModuleWriteWaiver {
  * Task 7, and it is BOUNDED — Task 10's identity-command work removes it.
  */
 export const CROSS_MODULE_WRITE_WAIVERS: ReadonlyArray<CrossModuleWriteWaiver> = [
-  { module: 'auth', model: 'user', owner: 'orgs', reason: 'first sign-in provisions the account before any orgs command actor exists', removalTask: 'Task 10 — identity command work' },
+  { module: 'auth', model: 'user', owner: 'orgs', reason: 'first sign-in provisions the account before any orgs command actor exists, and a password setup or reset writes the credential it establishes (the last-project stamp is the orgs participant\'s since #482)', removalTask: 'Task 10 — identity command work' },
   { module: 'auth', model: 'membership', owner: 'orgs', reason: 'first sign-in grants the initial project membership alongside the account', removalTask: 'Task 10 — identity command work' },
   { module: 'auth', model: 'workerDevice', owner: 'orgs', reason: 'anonymous worker-token onboarding provisions the device row before any actor exists', removalTask: 'Task 10 — identity command work' },
 ];

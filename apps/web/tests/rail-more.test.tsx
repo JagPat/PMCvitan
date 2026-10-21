@@ -3,12 +3,15 @@ import { render, cleanup, fireEvent, within, act } from '@testing-library/react'
 import type { Role } from '@vitan/shared';
 import { splitMobileNav } from '@/lib/mobileNav';
 import { enabledScreensFor } from '@/lib/screens';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 QA item 2 (Jagrut, 14 Oct 2026): "At most 5 main menu items per role, the rest under More." The desktop
  * rail shows the same main items as the phone bar, then a folded "More" that opens in place. While folded it
  * carries the badges of the screens inside it, and a screen inside it that is on stage opens it.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/layout/LeftRail'));
 
 afterEach(() => {
   cleanup();

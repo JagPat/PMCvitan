@@ -4,6 +4,7 @@ import scheduleSource from '@/screens/ScheduleScreen.tsx?raw';
 import locationContextSource from '@/components/LocationContext.tsx?raw';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { Activity, Checklist, Decision, ProjectNode, Review } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * Completion audit for the location-context / editing-state pass.
@@ -39,6 +40,8 @@ async function load(overrides: Record<string, unknown> = {}) {
   } as never);
   return useStore;
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/InspectionReviewScreen'), () => import('@/screens/EngineerChecklistScreen'), () => import('@/screens/ClientDecisionsScreen'), () => import('@/screens/ScheduleScreen'), () => import('@/components/Button'));
 
 afterEach(() => {
   cleanup();

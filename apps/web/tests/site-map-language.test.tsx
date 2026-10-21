@@ -8,6 +8,7 @@ import { leftoverEnglish } from './leftover-english';
 import { placeCountWords } from '@/lib/placeCountWords';
 import { describeLocationDelete, locationDeleteBlocked } from '@/lib/locationDelete';
 import { materialBlockedReason } from '@/lib/createOptions';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 QA item 3 — the Site Map in Hindi and Gujarati: the whole project and an opened place (the tree, the
@@ -84,6 +85,8 @@ async function load(lang: Lang, over: Record<string, unknown> = {}, { demo = fal
   const { PlacesScreen } = await import('@/screens/PlacesScreen');
   return { useStore, r: render(<PlacesScreen />) };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/PlacesScreen'), () => import('@/layout/CreateControl'), () => import('@/screens/modals/IssueChecklistModal'), () => import('@/screens/modals/IssueDecisionModal'));
 
 afterEach(() => {
   cleanup();

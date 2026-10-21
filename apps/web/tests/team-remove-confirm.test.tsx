@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
+import { warmImports } from './warm-imports';
 
 /** Audit B4 — removing a project member or a company is confirmed first; Cancel changes nothing. */
 
@@ -24,6 +25,8 @@ async function load(overrides: Record<string, unknown> = {}) {
   const { TeamScreen } = await import('@/screens/TeamScreen');
   return { TeamScreen };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/TeamScreen'));
 
 afterEach(() => {
   cleanup();

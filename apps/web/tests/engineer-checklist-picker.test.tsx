@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act, waitFor } from '@testing-library/react';
 import type { Checklist } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * A PMC can have more than one checklist out on site at once. The engineer's field view opens ONE of
@@ -32,6 +33,8 @@ async function mount(open: Checklist[], current: Checklist | null, opts: { demo?
   const view = render(<EngineerChecklistScreen />);
   return { view, useStore };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/screens/EngineerChecklistScreen'));
 
 afterEach(() => {
   cleanup();

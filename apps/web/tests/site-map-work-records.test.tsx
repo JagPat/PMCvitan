@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, within } from '@testing-library/react';
 import type { Decision, Drawing, PlacedInspection, ProjectNode } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * #633 unit A (mockup 7) — the opened place lists "Places inside" and then "Work and records here": one
@@ -34,6 +35,8 @@ async function load(role: 'pmc' | 'client', routeItem: string | null) {
   const { PlacesScreen } = await import('@/screens/PlacesScreen');
   return render(<PlacesScreen />);
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/PlacesScreen'));
 
 afterEach(() => {
   cleanup();

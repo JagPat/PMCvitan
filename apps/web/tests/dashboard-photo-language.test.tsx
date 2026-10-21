@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import type { Lang, Photo } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #954 (#482 6229527017, observation 2) — in Hindi and Gujarati the Dashboard's photo section stayed in English:
@@ -31,6 +32,8 @@ async function load(screen: 'dashboard' | 'client-health', lang: Lang, photos: P
   const { ClientHealthScreen } = await import('@/screens/ClientHealthScreen');
   return render(<ClientHealthScreen />);
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DashboardScreen'), () => import('@/screens/ClientHealthScreen'));
 
 afterEach(() => {
   cleanup();

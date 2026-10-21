@@ -6,6 +6,7 @@ import type { ApiGateway } from '@/data/apiGateway';
 import { CreateProjectModal } from '@/layout/ProjectSwitcher';
 import { resetLiveCreateSendsForTests } from '@/store/projectCreateHold';
 import { QW } from '@/lib/queueWords';
+import { warmImports } from './warm-imports';
 
 /**
  * Legacy-copy recovery — creating a project from a source whose structure the server refuses to
@@ -96,6 +97,8 @@ function freshPage() {
     st.sessionUserId = 'u-me';
   });
 }
+
+await warmImports(() => import('@/store/store'));
 
 beforeEach(() => {
   resetLiveCreateSendsForTests();
