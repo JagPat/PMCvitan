@@ -647,9 +647,10 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
   describe('finding 1 — auth provisioning writes are real, project/org-scoped identity rows', () => {
     it('auth.service.ts writes User + Membership + WorkerDevice (NOT an empty-write, no-subject command)', () => {
       // the fact §4 documents as the provisioning-command mechanism: these are not
-      // "auth mints a token and writes nothing". The second `user` write is #811's landing preference: a successful
-      // switch stamps the user's own `lastProjectId`, which grants nothing (sign-in re-resolves access before using it).
-      expect(writesByModel(read('auth/auth.service.ts'))).toEqual({ user: 2, membership: 1, workerDevice: 1 });
+      // "auth mints a token and writes nothing". #811's landing preference (a switch stamping the user's own
+      // `lastProjectId`) is the orgs participant's write since #482 (`OrgsParticipant.rememberLastProject`), so the one
+      // `user` write left here is the provisioning create.
+      expect(writesByModel(read('auth/auth.service.ts'))).toEqual({ user: 1, membership: 1, workerDevice: 1 });
     });
   });
 

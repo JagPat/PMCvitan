@@ -11,6 +11,7 @@ import type {
 import { PrismaService } from '../prisma.service';
 import { lockUserCredential } from '../common/credential-lock';
 import { EmailService } from '../platform/email.service';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 
 const PURPOSE = 'password_setup_or_reset';
 const LIFETIME_MS = 10 * 60_000;
@@ -36,6 +37,7 @@ export interface CredentialUser {
 export class PasswordCredentialsService {
   private readonly log = new Logger(PasswordCredentialsService.name);
   private readonly hmacSecret = resolveJwtSecret();
+  private readonly orgs = new OrgsParticipant();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -60,44 +62,28 @@ export class PasswordCredentialsService {
     return a.length === b.length && timingSafeEqual(a, b);
   }
 
-  private eligible(user: { memberships: Array<{ status: string }>; orgMemberships: Array<{ role: string }> } | null): boolean {
-    if (!user) return false;
-    return user.memberships.some((membership) => membership.status === 'active')
-      || user.orgMemberships.some((membership) => membership.role === 'owner' || membership.role === 'admin');
-  }
-
+  /** The account a credential is for, with whether it may hold one: the orgs module's rule, read through its
+   *  participant with the rows it owns (an active project membership, or owner/admin of a company). */
   private async userByEmail(db: Db, email: string) {
-    return db.user.findUnique({
-      where: { email },
-      include: {
-        memberships: { select: { status: true } },
-        orgMemberships: { select: { role: true } },
-      },
-    });
+    return this.orgs.credentialAccount(db, { email });
   }
 
   private async userById(db: Db, userId: string) {
-    return db.user.findUnique({
-      where: { id: userId },
-      include: {
-        memberships: { select: { status: true } },
-        orgMemberships: { select: { role: true } },
-      },
-    });
+    return this.orgs.credentialAccount(db, { id: userId });
   }
 
   async request(input: PasswordCredentialRequestInput): Promise<{ accepted: true; requestId: string }> {
     const email = input.email.trim().toLowerCase();
     const publicRequestId = randomUUID();
     const user = await this.userByEmail(this.prisma, email);
-    if (!this.eligible(user)) return this.notSent(publicRequestId);
+    if (!user?.eligible) return this.notSent(publicRequestId);
 
     const now = new Date();
     const code = String(randomInt(100000, 1000000));
     const created = await this.prisma.$transaction(async (tx) => {
       await lockUserCredential(tx, user!.id);
       const eligible = await this.userById(tx, user!.id);
-      if (!this.eligible(eligible) || eligible?.email !== email) return false;
+      if (!eligible?.eligible || eligible.email !== email) return false;
       await tx.passwordCredentialChallenge.updateMany({
         where: { userId: user!.id, purpose: PURPOSE, consumedAt: null },
         data: { consumedAt: now },
@@ -195,7 +181,6 @@ export class PasswordCredentialsService {
     const setupTokenHash = this.tokenHash(input.setupToken);
     const challenge = await this.prisma.passwordCredentialChallenge.findUnique({
       where: { setupTokenHash },
-      include: { user: true },
     });
     const now = new Date();
     if (!challenge || challenge.purpose !== PURPOSE || challenge.consumedAt || !challenge.verifiedAt || !challenge.setupTokenExpiresAt || challenge.setupTokenExpiresAt <= now) {
@@ -218,7 +203,7 @@ export class PasswordCredentialsService {
       if (claimed.count !== 1) throw this.genericError();
 
       const eligible = await this.userById(tx, challenge.userId);
-      if (!this.eligible(eligible)) throw this.genericError();
+      if (!eligible?.eligible) throw this.genericError();
 
       const user = await tx.user.update({
         where: { id: challenge.userId },
@@ -230,7 +215,7 @@ export class PasswordCredentialsService {
       });
       await tx.securityAuditEvent.create({
         data: {
-          action: challenge.user.passwordHash ? 'auth.password_reset' : 'auth.password_enrolled',
+          action: eligible.passwordHash ? 'auth.password_reset' : 'auth.password_enrolled',
           targetUserId: user.id,
           actorUserId: user.id,
           actorKind: 'self',

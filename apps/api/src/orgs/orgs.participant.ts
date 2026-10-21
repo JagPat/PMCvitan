@@ -1,5 +1,5 @@
 import { ConflictException, Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, type User } from '@prisma/client';
 import type { Role } from '../common/auth';
 import { readinessLockKey } from '../common/readiness-lock';
 import { readPhase6_4dRollout } from '../platform/phase6-4d-rollout';
@@ -299,6 +299,115 @@ export class OrgsParticipant {
     if (!project || project.archivedAt) return null;
     const role = await this.projectRole(db, userId, projectId);
     return role ? { projectId, role } : null;
+  }
+
+  /**
+   * #482 auth → orgs boundary. The account reads the sign-in channels need, owned here with the `User` rows they read,
+   * so the auth module asks for an account and never reads the table itself. Each one is the query auth ran before,
+   * unchanged. An address lookup tries the email first, then the phone, as the passwordless sign-ins always have.
+   */
+  async accountByAddress(db: Prisma.TransactionClient, address: { email?: string; phone?: string }): Promise<User | null> {
+    if (address.email) {
+      const byEmail = await db.user.findUnique({ where: { email: address.email } });
+      if (byEmail) return byEmail;
+    }
+    if (address.phone) return db.user.findUnique({ where: { phone: address.phone } });
+    return null;
+  }
+
+  /** The account a sign-in or a redeemed code names, by id; null when it no longer exists. */
+  async accountById(db: Prisma.TransactionClient, userId: string): Promise<User | null> {
+    return db.user.findUnique({ where: { id: userId } });
+  }
+
+  /**
+   * The dev-only role pick's account (`AuthService.session`, allowed only with ALLOW_DEV_AUTH outside production): the
+   * first seeded account homed on the project in that role, or null for the synthetic persona. It lands where that
+   * account says, the one path that does not use the sign-in access rule.
+   */
+  async devAccount(db: Prisma.TransactionClient, role: string, projectId: string): Promise<User | null> {
+    return db.user.findFirst({ where: { role, projectId } });
+  }
+
+  /** Whether a project exists and is live: `missing`, `archived` or `live`. */
+  async projectLive(db: Prisma.TransactionClient, projectId: string): Promise<'missing' | 'archived' | 'live'> {
+    const project = await db.project.findUnique({ where: { id: projectId }, select: { archivedAt: true } });
+    if (!project) return 'missing';
+    return project.archivedAt ? 'archived' : 'live';
+  }
+
+  /**
+   * The projects a person may switch into, with the role the access rule grants on each: every active membership on a
+   * live project, then every live project of a company they own or administer, as PMC, where they hold no membership.
+   * This is the list form of `projectRole` (an explicit active membership wins over the company reach; `removed` and
+   * `invited` grant nothing; the legacy `User.projectId`/`User.role` fields are not consulted), kept beside it so the
+   * two read one precedence.
+   */
+  async reachableProjects(db: Prisma.TransactionClient, userId: string): Promise<
+    Array<{ projectId: string; name: string; short: string; role: Role; discipline?: string; orgId: string | null; orgName: string | null }>
+  > {
+    const memberships = await db.membership.findMany({
+      where: { userId, status: 'active' },
+      include: { project: { include: { org: true } } },
+    });
+    const rows = memberships
+      .filter((m) => !m.project.archivedAt) // hide archived projects
+      .map((m) => ({
+        projectId: m.projectId,
+        name: m.project.name,
+        short: m.project.short,
+        role: m.role as Role,
+        // a consultant's discipline scopes what they see by default (e.g. their drawings)
+        discipline: m.discipline ?? undefined,
+        orgId: m.project.orgId,
+        orgName: m.project.org?.name ?? null,
+      }));
+    // company super-admin reach: an owner/admin can access every live project in their company (as PMC), even ones
+    // they didn't create and aren't an explicit member of
+    const adminOrgs = await db.orgMembership.findMany({ where: { userId, role: { in: ['owner', 'admin'] } }, select: { orgId: true } });
+    if (adminOrgs.length) {
+      const have = new Set(rows.map((r) => r.projectId));
+      const projects = await db.project.findMany({ where: { orgId: { in: adminOrgs.map((o) => o.orgId) }, archivedAt: null }, include: { org: true } });
+      for (const p of projects) {
+        if (!have.has(p.id)) {
+          rows.push({ projectId: p.id, name: p.name, short: p.short, role: 'pmc' as Role, discipline: undefined, orgId: p.orgId, orgName: p.org?.name ?? null });
+          have.add(p.id);
+        }
+      }
+    }
+    return rows;
+  }
+
+  /** #811 — stamp the project a switch entered, so the next sign-in opens it (`signInLanding` reads it). */
+  async rememberLastProject(db: Prisma.TransactionClient, userId: string, projectId: string): Promise<void> {
+    await db.user.update({ where: { id: userId }, data: { lastProjectId: projectId } });
+  }
+
+  /**
+   * The account a password setup or reset is for, by email or id, with whether it may hold a credential at all
+   * (`eligible`: an active project membership, or owner/admin of a company). Null when no account matches.
+   */
+  async credentialAccount(db: Prisma.TransactionClient, by: { email: string } | { id: string }): Promise<(User & { eligible: boolean }) | null> {
+    const found = await db.user.findUnique({
+      where: 'email' in by ? { email: by.email } : { id: by.id },
+      include: {
+        memberships: { select: { status: true } },
+        orgMemberships: { select: { role: true } },
+      },
+    });
+    if (!found) return null;
+    const { memberships, orgMemberships, ...account } = found;
+    const eligible = memberships.some((membership) => membership.status === 'active')
+      || orgMemberships.some((membership) => membership.role === 'owner' || membership.role === 'admin');
+    return { ...account, eligible };
+  }
+
+  /** The account whose stored number is exactly `phone`, with the fields the emailed phone code needs. */
+  async accountByPhone(db: Prisma.TransactionClient, phone: string): Promise<{ id: string; email: string | null; passwordHash: string | null; emailVerifiedAt: Date | null } | null> {
+    return db.user.findUnique({
+      where: { phone },
+      select: { id: true, email: true, passwordHash: true, emailVerifiedAt: true },
+    });
   }
 
   /**
