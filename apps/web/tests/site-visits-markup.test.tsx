@@ -1,22 +1,30 @@
 import 'fake-indexeddb/auto';
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, onTestFinished, vi } from 'vitest';
 import { render, cleanup, fireEvent, act, screen, within } from '@testing-library/react';
 import type { ProjectMember, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { PhotoMarkup } from '@/components/PhotoMarkup';
 import { ApiGateway, tellSiteVisits, type OutboxOp, type SiteVisit, type SiteVisitFile } from '@/data/apiGateway';
-import { listVisitPhotos, visitPhotoScope } from '@/data/visitPhotoStore';
+import { listVisitPhotos, visitPhotoScope, VISIT_PHOTO_ABORT_WAIT_MS, VISIT_PHOTO_READ_WAIT_MS } from '@/data/visitPhotoStore';
 import { photoDecodes } from '@/lib/photoDecodes';
 import { MAX_PHOTO_BASE64 } from '@/lib/shrinkPhoto';
 import { MARKUP_OPEN_WAIT_MS, MARKUP_RELINK_PAGES, refreshSiteVisits, useSiteVisits } from '@/lib/useSiteVisits';
 import { MK } from '@/lib/photoMarkup';
+import { calledTimes, flushesEnded, heldOnPurpose, settled, startWork, tracked } from './site-visit-work';
 
 /**
  * Site Visits M3: Mark up on a visit's photos (Stage 1's editor, site visits first: Jagrut, 19 Oct 2026). The marked-up
  * copy is a NEW visit file naming the photo it was drawn on, kept on the phone and sent exactly as a photo is (#1017);
  * the original stays as it was. The same people may mark up as may add a photo, never after the visit is closed, and
  * only a photo this browser decodes is offered. Opening a photo is bounded and stops when the person goes on.
+ *
+ * The tests wait on the work's own end, never a clock (as #1041 did for SV2's photo tests): `settled()` returns once
+ * every followed phone-storage call, file read, flush and gateway call has ended and a turn has passed with none
+ * started. It does not follow downloads, decodes, or calls a test holds on purpose: the stubs here answer those on
+ * microtasks, before that turn. A test that holds a read open on purpose says so (`heldOnPurpose`), waits for it to be
+ * sent by its own call (`calledTimes`), and lets it go itself. The app's own real-time bounds move only when a test
+ * moves them.
  */
 
 const CONSULTANT = 'u-cons';
@@ -54,12 +62,12 @@ function fakeGateway(list: SiteVisit[], over: Fake = {}): Fake {
 function setUp(role: Role, me: string, gw: Fake, outbox: OutboxOp[] = []) {
   useStore.setState({ ...getInitialState(), outbox, role, lang: 'en', sessionUserId: me, nodes: [], members: MEMBERS, loadTeam: async () => true });
   (gw as { project?: string }).project = useStore.getState().activeProjectId;
-  useStore.getState()._setGateway(gw as unknown as ApiGateway);
+  useStore.getState()._setGateway(tracked(gw) as unknown as ApiGateway);
 }
 async function mount(gw: Fake, role: Role = 'consultant', me = CONSULTANT) {
   setUp(role, me, gw);
   const view = render(<SiteVisitsScreen />);
-  await act(async () => {});
+  await settled();
   return view;
 }
 
@@ -73,7 +81,8 @@ const markUp = (mediaId: string) => screen.queryByTestId(`sv-markup-${mediaId}`)
 async function openEditor(mediaId = 'm-1') {
   thumb(mediaId);
   await act(async () => { fireEvent.click(markUp(mediaId)!); });
-  return screen.findByTestId('photo-markup-canvas');
+  await settled();
+  return screen.getByTestId('photo-markup-canvas');
 }
 function drag(canvas: HTMLElement) {
   fireEvent.pointerDown(canvas, { clientX: 10, clientY: 10, pointerId: 1 });
@@ -97,13 +106,20 @@ function heldFetch() {
 
 let decodes = true;
 beforeEach(() => {
+  // the app's own real-time bounds move only when a test moves them; the test library's `findBy`/`waitFor` wait on
+  // `setTimeout` and never settle under it: wait with `settled()`
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  // every test begins with no flush running: one left from the test before would take this test's sends into its rerun
+  expect(useStore.getState()._outboxFlushing()).toBe(false);
+  onTestFinished(startWork(useStore));
   decodes = true;
   vi.stubGlobal('Image', class {
     onload: (() => void) | null = null;
     onerror: (() => void) | null = null;
     naturalWidth = 1600;
     naturalHeight = 1200;
-    set src(v: string) { if (v) setTimeout(() => (decodes ? this.onload?.() : this.onerror?.()), 0); }
+    // answers on the next microtask, as part of the work that set it: no timer for a test to race
+    set src(v: string) { if (v) void Promise.resolve().then(() => (decodes ? this.onload?.() : this.onerror?.())); }
   });
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:photo');
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
@@ -121,6 +137,10 @@ beforeEach(() => {
 
 afterEach(async () => {
   vi.useRealTimers();
+  // every followed piece of work ends before teardown, so none of it runs on into the next test
+  await settled();
+  // a flush still running is let end against this test's own gateway, on its own end, not a clock
+  await flushesEnded();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   cleanup();
@@ -129,7 +149,10 @@ afterEach(async () => {
   await new Promise((done) => { const q = indexedDB.deleteDatabase('vitan-visit-photos'); q.onsuccess = q.onerror = q.onblocked = () => done(null); });
 });
 
-describe('Site Visits M3: Mark up on a visit’s photos', () => {
+/** A backstop for a hang; nothing waits on it. A test that ends ends on its work's own end, however long that takes. */
+const HANG = { timeout: 60_000 };
+
+describe('Site Visits M3: Mark up on a visit’s photos', HANG, () => {
   it('offers Mark up to the visitor and anyone present, while the visit is not closed, on a stored photo once it decodes here', async () => {
     const offered = async (role: Role, me: string, v: SiteVisit, ok = true) => {
       await mount(fakeGateway([v]), role, me);
@@ -175,7 +198,8 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     expect(markUp('m-1')).not.toBeNull();
     gw.listSiteVisits!.mockImplementation(async () => [visit({ files: [stored({ url: '/media/m-1?t=9999999999.fresh' })] })]);
     await act(async () => { refreshSiteVisits(); });
-    await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-1').querySelector('img')!.getAttribute('src')).toContain('fresh'));
+    await settled();
+    expect(screen.getByTestId('sv-file-m-1').querySelector('img')!.getAttribute('src')).toContain('fresh');
     expect(markUp('m-1')).toBeNull();
     thumb('m-1');
     expect(markUp('m-1')).not.toBeNull();
@@ -186,10 +210,11 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     // beside a stored photo, which is offered
     await mount(fakeGateway([visit()], { uploadMedia }));
     await act(async () => { fireEvent.change(screen.getByTestId('sv-photo-file-v-1'), { target: { files: [new File([new Uint8Array([1, 2, 3])], 's.png', { type: 'image/png' })] } }); });
-    await vi.waitFor(() => expect(queuedFile()).toBeTruthy());
+    await settled();
+    expect(queuedFile()).toBeTruthy();
     const key = queuedFile()!.file.id;
     // its picture is the phone's own copy, shown once the kept row is read
-    await vi.waitFor(() => expect(screen.getByTestId(`sv-file-${key}`).querySelector('img')).not.toBeNull());
+    expect(screen.getByTestId(`sv-file-${key}`).querySelector('img')).not.toBeNull();
     thumb(key);
     thumb('m-1');
     expect(markUp('m-1')).not.toBeNull();
@@ -206,14 +231,15 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     expect(vi.mocked(fetch).mock.calls[0][1]).toMatchObject({ credentials: 'omit' });
     drag(canvas);
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: MK.save.en })); });
-    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1));
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
     const [input] = uploadMedia.mock.calls[0] as unknown as [Record<string, unknown>];
     expect(input).toMatchObject({ kind: 'visit', mime: 'image/jpeg', data: 'QUJD', sourceMediaId: 'm-1', nodeId: 'n-kit', siteVisit: { visitId: 'v-1' } });
     // the server gives it the original's camera time and location: the phone sends none, nor a note or rating
     for (const k of ['takenAt', 'geoLat', 'geoLng']) expect(input).not.toHaveProperty(k);
     expect(input.siteVisit).toEqual({ visitId: 'v-1' });
     // the editor closed once the copy was kept
-    await vi.waitFor(() => expect(screen.queryByTestId('photo-markup-canvas')).toBeNull());
+    expect(screen.queryByTestId('photo-markup-canvas')).toBeNull();
   });
 
   it('keeps the copy on the phone with sourceMediaId when there is no signal, labelled as a marked-up copy', async () => {
@@ -221,11 +247,13 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     await mount(fakeGateway([visit()], { uploadMedia }));
     drag(await openEditor());
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: MK.save.en })); });
-    await vi.waitFor(() => expect(queuedFile()).toBeTruthy());
+    await settled();
+    expect(queuedFile()).toBeTruthy();
     const op = queuedFile()!;
     expect(op.file).toEqual({ id: op.file.id, mime: 'image/jpeg', sourceMediaId: 'm-1', nodeId: 'n-kit' });
     expect((await rows()).map((r) => [r.clientKey, r.state, r.data, r.op.file.sourceMediaId])).toEqual([[op.file.id, 'queued', 'QUJD', 'm-1']]);
-    await vi.waitFor(() => expect(screen.getByTestId(`sv-file-${op.file.id}`).textContent).toContain('Marked-up copy'));
+    await settled();
+    expect(screen.getByTestId(`sv-file-${op.file.id}`).textContent).toContain('Marked-up copy');
     expect(screen.getByTestId(`sv-file-${op.file.id}`).textContent).toContain('waiting to send');
     // the original is untouched
     expect(screen.getByTestId('sv-file-m-1').textContent).not.toContain('Marked-up copy');
@@ -239,19 +267,20 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     await mount(fakeGateway([visit()], { uploadMedia }));
     drag(await openEditor());
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: MK.save.en })); });
-    await vi.waitFor(() => expect(queuedFile()).toBeTruthy());
+    await settled();
+    expect(queuedFile()).toBeTruthy();
     const key = queuedFile()!.file.id;
-    // the save's own send has met no signal (and may still be settling: the next send is coalesced into it)
-    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1));
+    // the save's own send has met no signal, and has ended: the next send is not coalesced into it
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
     uploadMedia.mockClear();
     uploadMedia.mockRejectedValue(refusal(status, words));
     await act(async () => { await useStore.getState().flushOutbox(); });
-    await vi.waitFor(async () => {
-      expect(uploadMedia).toHaveBeenCalledTimes(1);
-      expect(useStore.getState().outbox).toHaveLength(0);
-      expect((await rows()).map((r) => [r.clientKey, r.state, r.reason])).toEqual([[key, 'failed', words]]);
-    });
-    const row = await screen.findByTestId(`sv-not-sent-${key}`);
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().outbox).toHaveLength(0);
+    expect((await rows()).map((r) => [r.clientKey, r.state, r.reason])).toEqual([[key, 'failed', words]]);
+    await settled();
+    const row = screen.getByTestId(`sv-not-sent-${key}`);
     expect(row.textContent).toContain('Marked-up copy');
     expect(row.textContent).toContain(words);
     await act(async () => { await useStore.getState().flushOutbox(); });
@@ -263,7 +292,8 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     thumb('m-1');
     decodes = false;
     await act(async () => { fireEvent.click(markUp('m-1')!); });
-    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This phone cannot open this photo for marking.'));
+    await settled();
+    expect(screen.getByRole('alert').textContent).toBe('This phone cannot open this photo for marking.');
     expect(screen.queryByTestId('photo-markup-canvas')).toBeNull();
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -276,7 +306,8 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     gw.listSiteVisits!.mockImplementation(async () => [visit({ files: [stored({ url: '/media/m-1?t=9999999999.fresh' })] })]);
     thumb('m-1');
     await act(async () => { fireEvent.click(markUp('m-1')!); });
-    await screen.findByTestId('photo-markup-canvas');
+    await settled();
+    expect(screen.getByTestId('photo-markup-canvas')).toBeTruthy();
     expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('9999999999.sig'), expect.stringContaining('fresh')]);
     cleanup();
     // the fresh read no longer lists the photo: no second download
@@ -286,7 +317,8 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     gone.listSiteVisits!.mockImplementation(async () => [visit({ files: [] })]);
     thumb('m-1');
     await act(async () => { fireEvent.click(markUp('m-1')!); });
-    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toContain('The photo could not be opened'));
+    await settled();
+    expect(screen.getByRole('alert').textContent).toContain('The photo could not be opened');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -302,8 +334,9 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     expect(held.calls[0].signal.aborted).toBe(false);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(held.calls[0].signal.aborted).toBe(true);
-    vi.useRealTimers();
-    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toContain('The photo could not be opened'));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }); // back to the file's clock
+    await settled();
+    expect(screen.getByRole('alert').textContent).toContain('The photo could not be opened');
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
@@ -314,25 +347,28 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     await act(async () => { fireEvent.click(markUp('m-1')!); });
     await act(async () => { await vi.advanceTimersByTimeAsync(MARKUP_OPEN_WAIT_MS); });
-    vi.useRealTimers();
-    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toContain('The photo could not be opened'));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }); // back to the file's clock
+    await settled();
+    expect(screen.getByRole('alert').textContent).toContain('The photo could not be opened');
   });
 
   it.each([
-    ['Cancel', () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); }],
-    ['signing out', () => { useStore.getState().completeSignOut(); }],
-    ['switching project', () => { void useStore.getState().switchProject('other'); }],
-    ['leaving the screen', () => { cleanup(); }],
-  ])('stops an open on %s: the download is aborted, and a late answer never opens the editor or says anything', async (_label, leave) => {
+    ['Cancel', () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); }, false],
+    ['signing out', () => { useStore.getState().completeSignOut(); }, false],
+    ['switching project', () => { void useStore.getState().switchProject('other'); }, true],
+    ['leaving the screen', () => { cleanup(); }, false],
+  ] as const)('stops an open on %s: the download is aborted, and a late answer never opens the editor or says anything', async (_label, leave, switches) => {
     const held = heldFetch();
     vi.stubGlobal('fetch', held.fetch);
+    // the switch never ends, on purpose: the test is about what stops the open
+    if (switches) heldOnPurpose('switchProject');
     await mount(fakeGateway([visit()], { switchProject: vi.fn(() => new Promise(() => {})) }));
     thumb('m-1');
     await act(async () => { fireEvent.click(markUp('m-1')!); });
     await act(async () => { leave(); });
     expect(held.calls[0].signal.aborted).toBe(true);
     await act(async () => { held.calls[0].answer(new Response('late')); });
-    await act(async () => {});
+    await settled();
     expect(screen.queryByTestId('photo-markup-canvas')).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
   });
@@ -348,7 +384,8 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     expect(held.calls[0].signal.aborted).toBe(true);
     expect(held.calls[1].signal.aborted).toBe(false);
     await act(async () => { held.calls[1].answer(new Response('m3')); });
-    await screen.findByTestId('photo-markup-canvas');
+    await settled();
+    expect(screen.getByTestId('photo-markup-canvas')).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
@@ -362,11 +399,13 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     // taken off the visit on another device: the editor goes
     gw.listSiteVisits!.mockImplementation(async () => [visit({ attendees: [present({ retiredAt: '2026-10-14T05:00:00.000Z' })] })]);
     await act(async () => { refreshSiteVisits(); });
-    await vi.waitFor(() => expect(screen.queryByTestId('photo-markup-canvas')).toBeNull());
+    await settled();
+    expect(screen.queryByTestId('photo-markup-canvas')).toBeNull();
     // and recorded as present again: the photo stays closed (its state was ended, not just hidden from the screen)
     gw.listSiteVisits!.mockImplementation(async () => [visit({ attendees: [present({ retiredAt: '2026-10-14T05:00:00.000Z' }), present({ id: 'a-2' })] })]);
     await act(async () => { refreshSiteVisits(); });
-    await vi.waitFor(() => expect(markUp('m-1')).not.toBeNull());
+    await settled();
+    expect(markUp('m-1')).not.toBeNull();
     expect(screen.queryByTestId('photo-markup-canvas')).toBeNull();
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -377,7 +416,8 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     await openEditor();
     gw.listSiteVisits!.mockImplementation(async () => [visit({ status: 'closed', closeReason: 'Left open' })]);
     await act(async () => { refreshSiteVisits(); });
-    await vi.waitFor(() => expect(screen.queryByTestId('photo-markup-canvas')).toBeNull());
+    await settled();
+    expect(screen.queryByTestId('photo-markup-canvas')).toBeNull();
   });
 
   it('says a copy may not have been saved when the phone never confirms, and keeps the drawing to save again', async () => {
@@ -400,7 +440,12 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
       });
     });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: MK.save.en })); });
-    await vi.waitFor(() => expect(screen.getByTestId('photo-markup-notice').textContent).toContain('This photo may not have been saved'), { timeout: 9000 });
+    // the notice comes once the save's bound and its stop's bound pass: the clock moves only when nothing else is running
+    await settled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(VISIT_PHOTO_READ_WAIT_MS + VISIT_PHOTO_ABORT_WAIT_MS); });
+    await settled();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }); // back to the file's clock
+    expect(screen.getByTestId('photo-markup-notice').textContent).toContain('This photo may not have been saved');
     // still open, with the mark, and Save offered again
     expect(screen.getByTestId('photo-markup-canvas')).toBeTruthy();
     expect(screen.getByRole('button', { name: MK.undo.en }).hasAttribute('disabled')).toBe(false);
@@ -409,14 +454,16 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     // the phone reports the save after all: the copy is kept and queued, as a photo's late save is (#1017)
     vi.mocked(IDBDatabase.prototype.transaction).mockRestore();
     await act(async () => { for (const end of held.splice(0)) end(); });
-    await vi.waitFor(() => expect(queuedFile()?.file.sourceMediaId).toBe('m-1'));
-  }, 20_000);
+    await settled();
+    expect(queuedFile()?.file.sourceMediaId).toBe('m-1');
+  });
 
   it('says in the editor only what is about the copy: another act’s refusal stays on the page', async () => {
     await mount(fakeGateway([visit()]));
     await openEditor();
     const st = useStore.getState();
     await act(async () => { tellSiteVisits({ kind: 'refused', project: st.activeProjectId, generation: st.projectScopeGeneration, message: 'Project is archived' }); });
+    await settled();
     expect(screen.queryByTestId('photo-markup-notice')).toBeNull();
     expect(screen.getAllByRole('alert').some((a) => a.textContent?.includes('Project is archived'))).toBe(true);
   });
@@ -426,7 +473,7 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
     function Probe() { sv = useSiteVisits(); return null; }
     setUp('consultant', CONSULTANT, fakeGateway([visit()]));
     render(<Probe />);
-    await act(async () => {});
+    await settled();
     await act(async () => { await sv!.openMarkup('v-1', 'm-1'); });
     expect(sv!.markup?.phase).toBe('open');
     let kept = true;
@@ -465,7 +512,7 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
       setUp('consultant', CONSULTANT, fakeGateway([visit({ files })]));
       useStore.setState({ lang });
       render(<SiteVisitsScreen />);
-      await act(async () => {});
+      await settled();
       expect(screen.getByTestId('sv-copy-of-m-c2').textContent).not.toMatch(/[A-Za-z]/);
       expect(screen.getByTestId('sv-copy-of-m-c9').textContent).not.toMatch(/[A-Za-z]/);
       cleanup();
@@ -473,6 +520,17 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
   });
 
   describe('a visit shown from beyond the pages read (Codex 4327055870)', () => {
+    /** This test holds some of the screen's reads open on purpose, and lets them go itself. */
+    const holdsReads = () => heldOnPurpose('listSiteVisits');
+    /** The screen's `k`th read has been sent (a held read is waited on by its own call), and the rest has settled. With
+     *  nothing followed running and the app's clock faked, a read not sent by then never will be: that fails here, at
+     *  once, not at the hang backstop. */
+    const sent = async (k: number) => {
+      let reached = false;
+      await Promise.race([calledTimes('listSiteVisits', k).then(() => { reached = true; }), settled()]);
+      await settled();
+      expect(reached, `the screen's read ${k} was sent`).toBe(true);
+    };
     // a full first page of newer visits, ended (not in the open read), so the old visit is beyond the page cursor
     const newer = Array.from({ length: 20 }, (_, i) => visit({ id: `v-n${i}`, status: 'ended', startedAt: `2026-10-15T0${Math.floor(i / 10)}:${String(i % 10).padStart(2, '0')}:00.000Z`, files: [] }));
     const old = visit({ id: 'v-old', status: 'ended', startedAt: '2026-10-01T04:30:00.000Z', files: [stored({ url: '/media/m-1?t=1.old' })] });
@@ -488,9 +546,10 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
       setUp('consultant', CONSULTANT, gw, [end]);
       useStore.setState({ online: false });
       render(<SiteVisitsScreen />);
-      await act(async () => {});
+      await settled();
       await act(async () => { tellSiteVisits({ kind: 'answer', project: gw.project as unknown as string, generation: useStore.getState().projectScopeGeneration, visit: old }); });
-      await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-1')).toBeTruthy());
+      await settled();
+      expect(screen.getByTestId('sv-file-m-1')).toBeTruthy();
       thumb('m-1');
       await act(async () => { fireEvent.click(markUp('m-1')!); });
       return { gw, fetchMock };
@@ -499,22 +558,25 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
 
     it('renews its link by reading the older pages on from the page cursor, and opens it', async () => {
       const { gw, fetchMock } = await openOld(async (q) => (q?.status === 'open' ? [] : q?.before ? older('/media/m-1?t=9.fresh') : newer));
-      await screen.findByTestId('photo-markup-canvas');
+      await settled();
+      expect(screen.getByTestId('photo-markup-canvas')).toBeTruthy();
       expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('1.old'), expect.stringContaining('9.fresh')]);
       expect(beforeReads(gw)).toEqual(['v-n19']);
     });
 
     it('says it could not be opened only once that read has answered without it', async () => {
       let answer!: () => void;
+      holdsReads();
       const { gw, fetchMock } = await openOld((q) => (q?.status === 'open' ? Promise.resolve([]) : q?.before
         ? new Promise<SiteVisit[]>((done) => { answer = () => done(older(null)); })
         : Promise.resolve(newer)));
-      await vi.waitFor(() => expect(beforeReads(gw)).toEqual(['v-n19']));
+      await sent(5);
+      expect(beforeReads(gw)).toEqual(['v-n19']);
       // held: nothing said yet
-      await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
       expect(failed()).toBe(false);
       await act(async () => { answer(); });
-      await vi.waitFor(() => expect(failed()).toBe(true));
+      await settled();
+      expect(failed()).toBe(true);
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
@@ -523,20 +585,23 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
       const { gw } = await openOld(async (q) => (q?.status === 'open' ? [] : q?.before
         ? Array.from({ length: 20 }, () => visit({ id: `v-p${(n += 1)}`, status: 'ended', files: [] }))
         : newer));
-      await vi.waitFor(() => expect(failed()).toBe(true));
+      await settled();
+      expect(failed()).toBe(true);
       expect(beforeReads(gw)).toHaveLength(MARKUP_RELINK_PAGES);
       expect(MARKUP_RELINK_PAGES).toBe(10);
     });
 
     it('cancels the older-page read itself when the open is stopped', async () => {
       const signals: AbortSignal[] = [];
+      holdsReads();
       await openOld((q, signal) => {
         if (q?.status === 'open') return Promise.resolve([]);
         if (!q?.before) return Promise.resolve(newer);
         signals.push(signal!);
         return new Promise<SiteVisit[]>(() => {});
       });
-      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      await sent(5);
+      expect(signals).toHaveLength(1);
       expect(signals[0].aborted).toBe(false);
       await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
       expect(signals[0].aborted).toBe(true);
@@ -546,6 +611,7 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
       // the open's own read is held; a newer read (another act's answer, a refresh) answers with the visit's fresh link
       let held: (() => void) | null = null;
       let reads = 0;
+      holdsReads();
       const { fetchMock } = await openOld((q) => {
         if (q?.status === 'open') return Promise.resolve([]);
         if (q?.before) return Promise.resolve(older(null));
@@ -555,10 +621,12 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
         if (reads >= 3) return Promise.resolve([{ ...old, files: [stored({ url: '/media/m-1?t=9.fresh' })] }]);
         return Promise.resolve(newer);
       });
-      await vi.waitFor(() => expect(held).not.toBeNull());
+      await sent(4);
+      expect(held).not.toBeNull();
       await act(async () => { refreshSiteVisits(); });
       await act(async () => { held!(); });
-      await screen.findByTestId('photo-markup-canvas');
+      await settled();
+      expect(screen.getByTestId('photo-markup-canvas')).toBeTruthy();
       expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('1.old'), expect.stringContaining('9.fresh')]);
       expect(failed()).toBe(false);
     });
@@ -569,6 +637,7 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
         // and only the last answers. The open must follow all of them, with no cap on how many
         const held: (() => void)[] = [];
         let reads = 0;
+        holdsReads();
         const { fetchMock } = await openOld((q) => {
           if (q?.status === 'open') return Promise.resolve([]);
           if (q?.before) return Promise.resolve(older(null));
@@ -577,21 +646,25 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
           const rows = reads === 6 ? [{ ...old, files: [stored({ url: '/media/m-1?t=9.fresh' })] }] : newer;
           return new Promise<SiteVisit[]>((done) => { held[reads] = () => done(rows); });
         });
-        await vi.waitFor(() => expect(held[2]).toBeDefined());
+        await sent(4);
+        expect(held[2]).toBeDefined();
         for (let n = 3; n <= 5; n += 1) {
           // a newer read is sent, then the one the open is waiting on comes back overtaken
           await act(async () => { refreshSiteVisits(); });
-          await vi.waitFor(() => expect(held[n]).toBeDefined());
+          await sent(2 * n);
+          expect(held[n]).toBeDefined();
           await act(async () => { held[n - 1](); });
           expect(failed()).toBe(false);
         }
         await act(async () => { refreshSiteVisits(); });
-        await vi.waitFor(() => expect(held[6]).toBeDefined());
+        await sent(12);
+        expect(held[6]).toBeDefined();
         await act(async () => { held[5](); });
         expect(failed()).toBe(false);
         // the newest answers last, after four overtaken reads
         await act(async () => { held[6](); });
-        await screen.findByTestId('photo-markup-canvas');
+        await settled();
+        expect(screen.getByTestId('photo-markup-canvas')).toBeTruthy();
         expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('1.old'), expect.stringContaining('9.fresh')]);
         expect(failed()).toBe(false);
         expect(reads).toBe(6);
@@ -613,7 +686,8 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
           // mount's read answers; the open's own fails, and it is still the newest read
           return reads === 1 ? Promise.resolve(newer) : Promise.reject(network());
         });
-        await vi.waitFor(() => expect(failed()).toBe(true));
+        await settled();
+        expect(failed()).toBe(true);
         expect(added).toBeLessThanOrEqual(50);
         expect(fetchMock).toHaveBeenCalledTimes(1);
         expect(screen.queryByRole('dialog')).toBeNull();
@@ -628,6 +702,7 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
         let openReads = 0;
         let answer: (() => void) | null = null;
         const signals: (AbortSignal | undefined)[] = [];
+        holdsReads();
         const { gw } = await openOld((q, signal) => {
           if (q?.status !== 'open') return Promise.resolve(q?.before ? older(null) : newer);
           if (q.before) return Promise.resolve([]);
@@ -636,13 +711,14 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
           signals.push(signal);
           return new Promise<SiteVisit[]>((done) => { answer = () => done(late); });
         });
-        await vi.waitFor(() => expect(answer).not.toBeNull());
+        await sent(4);
+        expect(answer).not.toBeNull();
         expect(signals[0]?.aborted).toBe(false);
         await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
         expect(signals[0]?.aborted).toBe(true);
         const asked = gw.listSiteVisits!.mock.calls.length;
         await act(async () => { answer!(); });
-        await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+        await settled();
         expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
         expect(screen.queryByTestId('sv-visit-v-late0')).toBeNull();
         expect(screen.queryByRole('alert')).toBeNull();
@@ -652,6 +728,7 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
         const signals: (AbortSignal | undefined)[] = [];
         const held: (() => void)[] = [];
         let reads = 0;
+        holdsReads();
         await openOld((q, signal) => {
           if (q?.status === 'open') return Promise.resolve([]);
           if (q?.before) return Promise.resolve(older(null));
@@ -660,11 +737,13 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
           signals.push(signal);
           return new Promise<SiteVisit[]>((done) => { held.push(() => done(newer)); });
         });
-        await vi.waitFor(() => expect(held).toHaveLength(1));
+        await sent(4);
+        expect(held).toHaveLength(1);
         // an act's answer lands while the open's read is out: the read comes back overtaken and is sent again
         await act(async () => { tellSiteVisits({ kind: 'answer', project: useStore.getState().activeProjectId, generation: useStore.getState().projectScopeGeneration, visit: newer[0] }); });
         await act(async () => { held[0](); });
-        await vi.waitFor(() => expect(held).toHaveLength(2));
+        await sent(6);
+        expect(held).toHaveLength(2);
         expect(signals[1]).toBe(signals[0]);
         expect(signals[1]?.aborted).toBe(false);
         await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
@@ -676,6 +755,7 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
         /** the server: `others` holds a visit started on another device once it is set; page reads are held while
          *  `holding`, each answered by its gate, and a held request whose signal aborts fails, as the browser's does */
         function server() {
+          holdsReads();
           const state = { others: false, holding: false, gates: [] as (() => void)[] };
           const list = (q: Q, signal?: AbortSignal) => {
             if (q?.before) return Promise.resolve(older(null));
@@ -697,7 +777,8 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
           render(<SiteVisitsScreen />);
           await beforeOpen();
           await act(async () => { tellSiteVisits({ kind: 'answer', project: gw.project as unknown as string, generation: useStore.getState().projectScopeGeneration, visit: old }); });
-          await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-1')).toBeTruthy());
+          await settled();
+          expect(screen.getByTestId('sv-file-m-1')).toBeTruthy();
           thumb('m-1');
           await act(async () => { fireEvent.click(markUp('m-1')!); });
           return gw;
@@ -706,46 +787,53 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
         it('a refresh the open’s read overtook is still shown after Cancel: a visit started on another device appears', async () => {
           const { state, list } = server();
           await openWith(list, async () => {
-            await act(async () => {});
+            await settled();
             // a refresh is out (a ping, a reconnect) when the open sends its read
             state.others = true;
             state.holding = true;
             await act(async () => { refreshSiteVisits(); });
           });
           // both reads are out: the refresh's two requests, then the open's two
-          await vi.waitFor(() => expect(state.gates).toHaveLength(4));
+          await sent(6);
+          expect(state.gates).toHaveLength(4);
           state.holding = false;
           await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
           await act(async () => { for (const g of state.gates) g(); });
-          expect(await screen.findByTestId('sv-visit-v-other')).toBeTruthy();
+          await settled();
+          expect(screen.getByTestId('sv-visit-v-other')).toBeTruthy();
         });
 
         it('a first read still out when the open is cancelled leaves the screen ready, with Start visit shown', async () => {
           const { state, list } = server();
           state.holding = true;
           await openWith(list, async () => {});
-          await vi.waitFor(() => expect(state.gates).toHaveLength(4));
+          await sent(4);
+          expect(state.gates).toHaveLength(4);
           state.holding = false;
           await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
           await act(async () => { for (const g of state.gates) g(); });
           // the read it handed back answered: no Try again, as the stopped read did not fail
-          expect(await screen.findByTestId('sv-start')).toBeTruthy();
+          await settled();
+          expect(screen.getByTestId('sv-start')).toBeTruthy();
           expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
           expect(screen.queryByRole('alert')).toBeNull();
         });
 
         it('sends no read of its own on Cancel when a newer screen read is already out: that one serves', async () => {
           const { state, list } = server();
-          const gw = await openWith(list, async () => { await act(async () => {}); state.holding = true; });
-          await vi.waitFor(() => expect(state.gates).toHaveLength(2));
+          const gw = await openWith(list, async () => { await settled(); state.holding = true; });
+          await sent(4);
+          expect(state.gates).toHaveLength(2);
           state.others = true;
           await act(async () => { refreshSiteVisits(); });
-          await vi.waitFor(() => expect(state.gates).toHaveLength(4));
+          await sent(6);
+          expect(state.gates).toHaveLength(4);
           const asked = gw.listSiteVisits!.mock.calls.length;
           await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
           expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
           await act(async () => { for (const g of state.gates) g(); });
-          expect(await screen.findByTestId('sv-visit-v-other')).toBeTruthy();
+          await settled();
+          expect(screen.getByTestId('sv-visit-v-other')).toBeTruthy();
         });
 
         it('sends no read on Cancel once the open’s own read has answered: it has nothing to hand back (pins `!settled`)', async () => {
@@ -757,30 +845,33 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
             reads += 1;
             return Promise.resolve(reads === 1 ? newer : [{ ...old, files: [stored({ url: '/media/m-1?t=9.fresh' })] }]);
           }, async () => {
-            await act(async () => {});
+            await settled();
             // the expired link fails; the fresh one is held, so Cancel lands during the second download
             const held = heldFetch();
             vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit) => (url.includes('fresh') ? held.fetch(url, init) : Promise.resolve(new Response('', { status: 403 })))));
           });
-          await vi.waitFor(() => expect(vi.mocked(fetch).mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('1.old'), expect.stringContaining('9.fresh')]));
+          await settled();
+          expect(vi.mocked(fetch).mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('1.old'), expect.stringContaining('9.fresh')]);
           expect(reads).toBe(2);
           const asked = gw.listSiteVisits!.mock.calls.length;
           await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
-          await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+          await settled();
           expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
           expect(screen.queryByRole('alert')).toBeNull();
         });
 
         it('sends no read into the new project when a project switch stops the open: only that project’s own fresh read (pins `live(scope)`)', async () => {
           const { state, list } = server();
-          const gw = await openWith(list, async () => { await act(async () => {}); state.holding = true; });
+          const gw = await openWith(list, async () => { await settled(); state.holding = true; });
           gw.switchProject = vi.fn(() => new Promise(() => {}));
+          heldOnPurpose('switchProject');
           // the open's own read is out, and the newest, when the project changes: the switch stops the open
-          await vi.waitFor(() => expect(state.gates).toHaveLength(2));
+          await sent(4);
+          expect(state.gates).toHaveLength(2);
           const asked = gw.listSiteVisits!.mock.calls.length;
           state.holding = false;
           await act(async () => { void useStore.getState().switchProject('other'); });
-          await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+          await settled();
           expect(screen.queryByRole('dialog')).toBeNull();
           // one first page and one open read: the new project's own; the stopped read hands nothing back into it
           expect(gw.listSiteVisits!.mock.calls.slice(asked).map(([q]) => (q as Q)?.status ?? 'page')).toEqual(['page', 'open']);
@@ -788,18 +879,19 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
 
         it('sends no read when the screen closes mid-open, and the stopped read sets nothing (#1029 round 2, Codex 4330814470)', async () => {
           const { state, list } = server();
-          const gw = await openWith(list, async () => { await act(async () => {}); state.holding = true; });
+          const gw = await openWith(list, async () => { await settled(); state.holding = true; });
           // the open's own read is out, and the newest, when the person leaves the screen
-          await vi.waitFor(() => expect(state.gates).toHaveLength(2));
+          await sent(4);
+          expect(state.gates).toHaveLength(2);
           const asked = gw.listSiteVisits!.mock.calls.length;
           const errors = vi.spyOn(console, 'error');
           state.holding = false;
           cleanup();
-          await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+          await settled();
           expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
           // the held pages answer late: nothing is read on, and nothing is set on the closed screen
           await act(async () => { for (const g of state.gates) g(); });
-          await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+          await settled();
           expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
           expect(errors).not.toHaveBeenCalled();
           errors.mockRestore();
@@ -807,23 +899,26 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
 
         it('a read handed back on Cancel stops when the screen then closes: its signal is aborted, and it reads no further page', async () => {
           const { state, list } = server();
-          const gw = await openWith(list, async () => { await act(async () => {}); state.holding = true; });
-          await vi.waitFor(() => expect(state.gates).toHaveLength(2));
+          const gw = await openWith(list, async () => { await settled(); state.holding = true; });
+          await sent(4);
+          expect(state.gates).toHaveLength(2);
           // Cancel while the open's read is the newest: the screen's turn is handed back as one read, held here
           await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); });
-          await vi.waitFor(() => expect(state.gates).toHaveLength(4));
+          await sent(6);
+          expect(state.gates).toHaveLength(4);
           const handed = gw.listSiteVisits!.mock.calls.slice(-2).map(([, signal]) => signal as AbortSignal | undefined);
           expect(handed.every((sig) => sig !== undefined && !sig.aborted)).toBe(true);
           const asked = gw.listSiteVisits!.mock.calls.length;
           cleanup();
           expect(handed.every((sig) => sig!.aborted)).toBe(true);
-          await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+          await settled();
           expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
         });
 
         describe('a failed newest read keeps what a read it overtook would have shown (#1029 round 3, Codex 4331011118)', () => {
           /** the server: while `holding`, each page request waits on its gate, which answers or fails it */
           function gated() {
+            holdsReads();
             const state = { others: false, holding: false, gates: [] as { done: () => void; fail: () => void }[] };
             const list = (q: Q) => {
               if (q?.before) return Promise.resolve(older(null));
@@ -837,12 +932,13 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
           async function refreshThenOpen() {
             const { state, list } = gated();
             const gw = await openWith(list, async () => {
-              await act(async () => {});
+              await settled();
               state.others = true;
               state.holding = true;
               await act(async () => { refreshSiteVisits(); });
             });
-            await vi.waitFor(() => expect(state.gates).toHaveLength(4));
+            await sent(6);
+            expect(state.gates).toHaveLength(4);
             state.holding = false;
             return { state, gw };
           }
@@ -851,7 +947,8 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
             const { state } = await refreshThenOpen();
             await act(async () => { state.gates[2].fail(); state.gates[3].fail(); });
             await act(async () => { state.gates[0].done(); state.gates[1].done(); });
-            expect(await screen.findByTestId('sv-visit-v-other')).toBeTruthy();
+            await settled();
+            expect(screen.getByTestId('sv-visit-v-other')).toBeTruthy();
           });
 
           it('the refresh answers first, then the open’s read fails: the screen reads again, and the visit appears', async () => {
@@ -859,7 +956,8 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
             await act(async () => { state.gates[0].done(); state.gates[1].done(); });
             const asked = gw.listSiteVisits!.mock.calls.length;
             await act(async () => { state.gates[2].fail(); state.gates[3].fail(); });
-            expect(await screen.findByTestId('sv-visit-v-other')).toBeTruthy();
+            await settled();
+            expect(screen.getByTestId('sv-visit-v-other')).toBeTruthy();
             // one plain read handed back: its first page and its open visits, on the screen's own signal (the open,
             // following the newest read, then reads on its older pages for the old visit's link)
             expect(gw.listSiteVisits!.mock.calls.slice(asked).filter(([q]) => !(q as Q)?.before).map(([q, signal]) => [(q as Q)?.status ?? 'page', (signal as AbortSignal | undefined)?.aborted])).toEqual([['page', false], ['open', false]]);
@@ -873,17 +971,19 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
             const gw = fakeGateway([], { listSiteVisits: vi.fn(list) });
             setUp('consultant', CONSULTANT, gw, []);
             render(<SiteVisitsScreen />);
-            await act(async () => {});
+            await settled();
             state.others = true;
             state.holding = true;
             await act(async () => { refreshSiteVisits(); });
             await act(async () => { refreshSiteVisits(); });
-            await vi.waitFor(() => expect(state.gates).toHaveLength(4));
+            await sent(6);
+            expect(state.gates).toHaveLength(4);
             state.holding = false;
             const settle = (n: number) => (n >= 2 ? state.gates[n].fail() : state.gates[n].done());
             await act(async () => { for (const n of first) settle(n); });
             await act(async () => { for (const n of second) settle(n); });
-            expect(await screen.findByTestId('sv-visit-v-other')).toBeTruthy();
+            await settled();
+            expect(screen.getByTestId('sv-visit-v-other')).toBeTruthy();
             expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
           });
 
@@ -892,16 +992,20 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
             const gw = fakeGateway([], { listSiteVisits: vi.fn(list) });
             setUp('consultant', CONSULTANT, gw, []);
             render(<SiteVisitsScreen />);
-            await act(async () => {});
+            await settled();
             state.holding = true;
             await act(async () => { refreshSiteVisits(); });
-            await vi.waitFor(() => expect(state.gates).toHaveLength(2));
+            await sent(4);
+            expect(state.gates).toHaveLength(2);
             gw.switchProject = vi.fn(() => new Promise(() => {}));
+            heldOnPurpose('switchProject');
             await act(async () => { void useStore.getState().switchProject('other'); });
             // the new project's own first read, held, then failed: the left project's read must not stand in for it
-            await vi.waitFor(() => expect(state.gates).toHaveLength(4));
+            await sent(6);
+            expect(state.gates).toHaveLength(4);
             await act(async () => { state.gates[2].fail(); state.gates[3].fail(); });
-            expect(await screen.findByRole('button', { name: 'Try again' })).toBeTruthy();
+            await settled();
+            expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
           });
 
           it('a failed refresh that overtook nothing reads nothing again (no read loops while the server fails)', async () => {
@@ -909,24 +1013,25 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
             const gw = fakeGateway([], { listSiteVisits: vi.fn(list) });
             setUp('consultant', CONSULTANT, gw, []);
             render(<SiteVisitsScreen />);
-            await act(async () => {});
+            await settled();
             state.holding = true;
             await act(async () => { refreshSiteVisits(); });
-            await vi.waitFor(() => expect(state.gates).toHaveLength(2));
+            await sent(4);
+            expect(state.gates).toHaveLength(2);
             const asked = gw.listSiteVisits!.mock.calls.length;
             await act(async () => { state.gates[0].fail(); state.gates[1].fail(); });
-            await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+            await settled();
             expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
           });
 
           it('the open’s read fails and the screen closes: the refresh standing in reads nothing when it answers (m1029 r3 check G1)', async () => {
             const { state, gw } = await refreshThenOpen();
             await act(async () => { state.gates[2].fail(); state.gates[3].fail(); });
-            await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+            await settled();
             const asked = gw.listSiteVisits!.mock.calls.length;
             cleanup();
             await act(async () => { state.gates[0].done(); state.gates[1].done(); });
-            await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+            await settled();
             expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
           });
 
@@ -935,11 +1040,13 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
             state.holding = true;
             await act(async () => { state.gates[0].done(); state.gates[1].done(); });
             await act(async () => { refreshSiteVisits(); });
-            await vi.waitFor(() => expect(state.gates).toHaveLength(6));
+            await sent(8);
+            expect(state.gates).toHaveLength(6);
             state.holding = false;
             await act(async () => { state.gates[2].fail(); state.gates[3].fail(); });
             await act(async () => { state.gates[4].fail(); state.gates[5].fail(); });
-            expect(await screen.findByTestId('sv-visit-v-other')).toBeTruthy();
+            await settled();
+            expect(screen.getByTestId('sv-visit-v-other')).toBeTruthy();
           });
 
           it.each([
@@ -950,22 +1057,25 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
             const gw = fakeGateway([], { listSiteVisits: vi.fn(list) });
             setUp('consultant', CONSULTANT, gw, []);
             render(<SiteVisitsScreen />);
-            await act(async () => {});
+            await settled();
             state.others = true;
             state.holding = true;
             await act(async () => { refreshSiteVisits(); });
             await act(async () => { refreshSiteVisits(); });
             if (!thirdAfter) await act(async () => { refreshSiteVisits(); });
-            await vi.waitFor(() => expect(state.gates).toHaveLength(thirdAfter ? 4 : 6));
+            await sent(thirdAfter ? 6 : 8);
+            expect(state.gates).toHaveLength(thirdAfter ? 4 : 6);
             await act(async () => { state.gates[0].done(); state.gates[1].done(); });
             if (thirdAfter) {
               await act(async () => { refreshSiteVisits(); });
-              await vi.waitFor(() => expect(state.gates).toHaveLength(6));
+              await sent(8);
+              expect(state.gates).toHaveLength(6);
             }
             state.holding = false;
             const fail = (a: number) => act(async () => { state.gates[a].fail(); state.gates[a + 1].fail(); });
             if (thirdAfter) { await fail(2); await fail(4); } else { await fail(4); await fail(2); }
-            expect(await screen.findByTestId('sv-visit-v-other')).toBeTruthy();
+            await settled();
+            expect(screen.getByTestId('sv-visit-v-other')).toBeTruthy();
           });
         });
       });
@@ -983,6 +1093,7 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
         // while it is out; then no read answers: it comes back overtaken and the one sent after it fails, or it fails
         const held: { done: (rows: SiteVisit[]) => void; fail: (e: Error) => void }[] = [];
         let reads = 0;
+        holdsReads();
         const { fetchMock } = await openOld((q) => {
           if (q?.status === 'open') return Promise.resolve([]);
           if (q?.before) return Promise.resolve(older(null));
@@ -991,10 +1102,12 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
           if (reads === 3) return Promise.reject(network());
           return new Promise<SiteVisit[]>((done, fail) => { held.push({ done, fail }); });
         });
-        await vi.waitFor(() => expect(held).toHaveLength(1));
+        await sent(4);
+        expect(held).toHaveLength(1);
         await act(async () => { told(fresh); });
         await act(async () => { if (how === 'overtaken') held[0].done(newer); else held[0].fail(network()); });
-        await screen.findByTestId('photo-markup-canvas');
+        await settled();
+        expect(screen.getByTestId('photo-markup-canvas')).toBeTruthy();
         expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('1.old'), expect.stringContaining('9.fresh')]);
         expect(failed()).toBe(false);
         expect(reads).toBe(how === 'overtaken' ? 3 : 2);
@@ -1008,7 +1121,8 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
           reads += 1;
           return reads === 1 ? Promise.resolve(newer) : Promise.reject(network());
         });
-        await vi.waitFor(() => expect(failed()).toBe(true));
+        await settled();
+        expect(failed()).toBe(true);
         expect(fetchMock).toHaveBeenCalledTimes(1);
       });
 
@@ -1021,9 +1135,10 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
         setUp('consultant', CONSULTANT, gw, [end]);
         useStore.setState({ online: false });
         render(<SiteVisitsScreen />);
-        await act(async () => {});
+        await settled();
         await act(async () => { told(old); });
-        await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-1')).toBeTruthy());
+        await settled();
+        expect(screen.getByTestId('sv-file-m-1')).toBeTruthy();
         thumb('m-1');
         return { gw, fetchMock };
       }
@@ -1032,6 +1147,7 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
         let firstDone!: (r: Response) => void;
         const held: { fail: (e: Error) => void }[] = [];
         let reads = 0;
+        holdsReads();
         const { fetchMock } = await shownOld((q) => {
           if (q?.status === 'open') return Promise.resolve([]);
           if (q?.before) return Promise.resolve(older(null));
@@ -1040,13 +1156,16 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
           return new Promise<SiteVisit[]>((_done, fail) => { held.push({ fail }); });
         }, (url) => (url.includes('fresh') ? Promise.resolve(new Response('jpeg')) : new Promise<Response>((done) => { firstDone = done; })));
         await act(async () => { fireEvent.click(markUp('m-1')!); });
-        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+        await settled();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
         // the answer lands while the first download is out, before the open's read is sent: its link was never tried
         await act(async () => { told(fresh); });
         await act(async () => { firstDone(new Response('', { status: 403 })); });
-        await vi.waitFor(() => expect(held).toHaveLength(1));
+        await sent(4);
+        expect(held).toHaveLength(1);
         await act(async () => { held[0].fail(network()); });
-        await screen.findByTestId('photo-markup-canvas');
+        await settled();
+        expect(screen.getByTestId('photo-markup-canvas')).toBeTruthy();
         expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('1.old'), expect.stringContaining('9.fresh')]);
         expect(failed()).toBe(false);
       });
@@ -1055,6 +1174,7 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
         let firstDone!: (r: Response) => void;
         const held: { fail: (e: Error) => void }[] = [];
         let reads = 0;
+        holdsReads();
         const { fetchMock } = await shownOld((q) => {
           if (q?.status === 'open') return Promise.resolve([]);
           if (q?.before) return Promise.resolve(older(null));
@@ -1063,12 +1183,15 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
           return new Promise<SiteVisit[]>((_done, fail) => { held.push({ fail }); });
         }, () => new Promise<Response>((done) => { firstDone = done; }));
         await act(async () => { fireEvent.click(markUp('m-1')!); });
-        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+        await settled();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
         await act(async () => { told({ ...old }); });
         await act(async () => { firstDone(new Response('', { status: 403 })); });
-        await vi.waitFor(() => expect(held).toHaveLength(1));
+        await sent(4);
+        expect(held).toHaveLength(1);
         await act(async () => { held[0].fail(network()); });
-        await vi.waitFor(() => expect(failed()).toBe(true));
+        await settled();
+        expect(failed()).toBe(true);
         expect(fetchMock).toHaveBeenCalledTimes(1);
       });
 
@@ -1079,6 +1202,7 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
         const openGates: ((rows: SiteVisit[]) => void)[] = [];
         let freshDone: ((r: Response) => void) | null = null;
         let reads = 0;
+        holdsReads();
         const { gw } = await shownOld((q, signal) => {
           if (q?.before && !q?.status) return Promise.resolve(older(null));
           if (q?.status === 'open') {
@@ -1091,18 +1215,21 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
           return new Promise<SiteVisit[]>((_done, fail) => { pageFail = fail; });
         }, (url) => (url.includes('fresh') ? new Promise<Response>((done) => { freshDone = done; }) : Promise.resolve(new Response('', { status: 403 }))));
         await act(async () => { fireEvent.click(markUp('m-1')!); });
-        await vi.waitFor(() => expect(openSignals).toHaveLength(1));
+        await sent(4);
+        expect(openSignals).toHaveLength(1);
         await act(async () => { told(fresh); });
         await act(async () => { pageFail(network()); });
-        await vi.waitFor(() => expect(freshDone).not.toBeNull());
+        await settled();
+        expect(freshDone).not.toBeNull();
         // the download is out: the sibling is already stopped, and a full page it gets back asks for no next page
         expect(openSignals[0].aborted).toBe(true);
         const asked = gw.listSiteVisits!.mock.calls.length;
         await act(async () => { openGates[0](Array.from({ length: 200 }, (_, i) => visit({ id: `v-o${i}`, files: [] }))); });
-        await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+        await settled();
         expect(gw.listSiteVisits!.mock.calls.length).toBe(asked);
         await act(async () => { freshDone!(new Response('jpeg')); });
-        await screen.findByTestId('photo-markup-canvas');
+        await settled();
+        expect(screen.getByTestId('photo-markup-canvas')).toBeTruthy();
       });
 
       it.each([
@@ -1113,6 +1240,7 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
         // and the held request is stopped with it, not left running until the server answers
         const signals: (AbortSignal | undefined)[] = [];
         let reads = 0;
+        holdsReads();
         await openOld((q, signal) => {
           if (q?.before) return Promise.resolve(older(null));
           const kind = q?.status === 'open' ? 'open' : 'page';
@@ -1124,7 +1252,8 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
           signals.push(signal);
           return new Promise<SiteVisit[]>(() => {});
         });
-        await vi.waitFor(() => expect(failed()).toBe(true));
+        await settled();
+        expect(failed()).toBe(true);
         expect(signals).toHaveLength(1);
         expect(signals[0]?.aborted).toBe(true);
       });
@@ -1151,7 +1280,7 @@ describe('Site Visits M3: Mark up on a visit’s photos', () => {
   });
 });
 
-describe('Site Visits M3: the pieces the editor rests on', () => {
+describe('Site Visits M3: the pieces the editor rests on', HANG, () => {
   it('photoDecodes answers false at once when stopped, stops the image and lets its object URL go', async () => {
     let img: { src: string; onload: unknown } | null = null;
     vi.stubGlobal('Image', class {
@@ -1169,8 +1298,9 @@ describe('Site Visits M3: the pieces the editor rests on', () => {
     expect(img!.src).toBe('');
     expect(img!.onload).toBeNull();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:photo');
-    // and once only: the revoke its own end schedules finds it already let go
-    await new Promise((r) => setTimeout(r, 0));
+    // and once only: the revoke its own end schedules (its one timer, run here) finds it already let go
+    expect(vi.getTimerCount()).toBe(1);
+    vi.runOnlyPendingTimers();
     expect(vi.mocked(URL.revokeObjectURL).mock.calls).toHaveLength(1);
   });
 
@@ -1179,7 +1309,8 @@ describe('Site Visits M3: the pieces the editor rests on', () => {
     expect(MAX_PHOTO_BASE64 + 1).toBeLessThan(14_000_000);
     const onSave = vi.fn();
     render(<PhotoMarkup source={new Blob(['x'])} lang="en" onSave={onSave} onCancel={() => {}} />);
-    drag(await screen.findByTestId('photo-markup-canvas'));
+    await settled();
+    drag(screen.getByTestId('photo-markup-canvas'));
     fireEvent.click(screen.getByRole('button', { name: MK.save.en }));
     expect(onSave).not.toHaveBeenCalled();
     expect(screen.getByRole('status')).toHaveTextContent(MK.tooLarge.en);
