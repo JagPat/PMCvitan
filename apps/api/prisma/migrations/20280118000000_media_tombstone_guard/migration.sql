@@ -43,9 +43,15 @@
 -- record's writer) until the block commits. Under that lock it installs both functions and the trigger, then checks
 -- every row already stored: a keyed row whose project has a record for its key raises (SQLSTATE MTSTO) and nothing is
 -- installed. So no row written before the guard, by any release, in any window, is trusted; it is found here, and the
--- owner decides it (the read-only count on #482 finds the same rows beforehand). The holders it waits for are app
--- transactions, each bounded by Prisma's 5 s transaction timeout. The check runs only at READ COMMITTED, where each
+-- owner decides it (the read-only count in docs/RUNBOOK.md §MG finds the same rows beforehand). The block waits at most
+-- 15 s for that lock (lock_timeout, local to the block). That is longer than any app write holds "Media" (Prisma's 5 s
+-- transaction timeout); a longer holder, such as project:remove or a stray open session, makes the install fail with
+-- nothing installed, instead of holding every photo write behind it. The check runs only at READ COMMITTED, where each
 -- statement sees every commit before it; at any other level the block refuses to run.
+--
+-- RECOVERY. Any failure of this file (MTSTO, MTISO, the lock timeout, a killed install, or the deploy client dying
+-- mid-install) leaves Prisma's P3009 on the next deploy. The recovery is the same each time, and safe even when the
+-- install had committed: docs/RUNBOOK.md §MG, also printed by scripts/migrate.sh.
 --
 -- REPLACED IN PLACE. Each object is replaced, never dropped (CREATE OR REPLACE FUNCTION, CREATE OR REPLACE TRIGGER,
 -- PostgreSQL 14+; production relies on 15 already, for 20261025's column-list SET NULL). Re-runnable, and on
@@ -61,7 +67,8 @@ BEGIN
   END IF;
   PERFORM pg_catalog.set_config('search_path', 'pg_catalog, public, pg_temp', true);
 
-  -- every write in flight commits before this returns; every later one waits for this block
+  -- every write in flight commits before this returns, or the block fails after 15 s; every later write waits for it
+  PERFORM pg_catalog.set_config('lock_timeout', '15s', true);
   LOCK TABLE public."Media" IN SHARE ROW EXCLUSIVE MODE;
 
   EXECUTE $fn_delete$
@@ -111,6 +118,6 @@ $trigger$;
   IF v_stored > 0 THEN
     RAISE EXCEPTION 'media guard install: % stored photo(s) carry the key of a deleted photo; nothing was installed', v_stored
       USING ERRCODE = 'MTSTO',
-            HINT = 'Run the read-only count on #482 to list them; the owner decides each one before this runs again.';
+            HINT = 'Nothing was installed. List them with the read-only count in docs/RUNBOOK.md §MG; the owner decides each one; then run npx prisma migrate resolve --rolled-back 20280118000000_media_tombstone_guard and deploy again.';
   END IF;
 END $install$;

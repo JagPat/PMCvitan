@@ -285,6 +285,22 @@ report_4d_i_migration_failure() {
   echo "[migrate] Full detail: docs/RUNBOOK.md §P6T4D."
 }
 
+# #482 site photos: the deleted-photo guard (20280118). Whatever stopped it (MTSTO: a stored photo carries a deleted
+# photo's key; MTISO; its 15 s lock timeout; a killed install; or this client dying mid-install), the next deploy
+# stops at P3009, and the recovery is the same. A re-run is safe even if the install had committed.
+report_media_guard_migration_failure() {
+  printf '%s\n' "$1" | grep -q 20280118000000_media_tombstone_guard || return 0
+  echo "[migrate] That failure is the deleted-photo guard (20280118000000_media_tombstone_guard). Nothing of it"
+  echo "[migrate] was kept. If it says MTSTO (\"stored photo(s) carry the key of a deleted photo\"):"
+  echo "[migrate]   0. list those photos with the read-only count in docs/RUNBOOK.md §MG; the owner decides"
+  echo "[migrate]      each one before going on. Nothing removes them automatically."
+  echo "[migrate] Then, for any failure of this file (MTSTO, MTISO, the lock timeout, a killed install):"
+  echo "[migrate]   1. npx prisma migrate resolve --rolled-back 20280118000000_media_tombstone_guard"
+  echo "[migrate]      (without this the next deploy stops at P3009)"
+  echo "[migrate]   2. redeploy"
+  echo "[migrate] Full detail: docs/RUNBOOK.md §MG."
+}
+
 out=$(npx prisma migrate deploy 2>&1)
 code=$?
 echo "$out"
@@ -760,6 +776,7 @@ if echo "$out" | grep -q "P3005"; then
     echo "[migrate] migrate deploy failed on the P3005 baseline path — refusing to start."
     report_4c_iiir_migration_failure "$baseline_out"
     report_4d_i_migration_failure "$baseline_out" baseline
+    report_media_guard_migration_failure "$baseline_out"
     exit 1
   fi
   printf '%s\n' "$baseline_out"
@@ -830,4 +847,5 @@ echo "[migrate] migrate deploy failed — refusing to start (no db push fallback
 
 report_4c_iiir_migration_failure "$out"
 report_4d_i_migration_failure "$out"
+report_media_guard_migration_failure "$out"
 exit $code

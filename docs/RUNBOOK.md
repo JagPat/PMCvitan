@@ -2739,3 +2739,57 @@ record is printed, then saved. Exit 0 means a dry run whose every check held, or
 removal. Exit 1 means nothing was changed. Exit 3 means the removal COMMITTED but saving the
 record failed: the printed record is the deletion record. Run it from the deployed image, like
 every operator CLI.
+
+## §MG. The deleted-photo guard (`20280118000000_media_tombstone_guard`, #482)
+
+The guard refuses to store a photo again under the key of a deleted one (SQLSTATE `MT410`). It installs only
+when no photo already stored carries a deleted photo's key: otherwise it raises `MTSTO`, nothing is installed,
+and `scripts/migrate.sh` refuses to start. It waits at most 15 s for its lock on `Media`; a longer holder (a
+running `project:remove`, a stray open session) makes it fail with nothing installed.
+
+### Before the deploy: the read-only count
+
+Run from the deployed API image (the Coolify API terminal). It reads only, and works before and after the
+guard is installed:
+
+```
+cd /app/apps/api && node - <<'EOF'
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+(async () => {
+  try {
+    const out = await prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('SET TRANSACTION READ ONLY');
+      const [g] = await tx.$queryRawUnsafe(`SELECT finished_at FROM "_prisma_migrations" WHERE migration_name = '20280118000000_media_tombstone_guard' AND finished_at IS NOT NULL AND rolled_back_at IS NULL ORDER BY finished_at LIMIT 1`);
+      const rows = await tx.$queryRawUnsafe(`
+        SELECT m."id", m."projectId", m."kind", m."uploadedBy", m."createdAt", t."deletedAt"
+          FROM "Media" m JOIN "MediaTombstone" t ON t."projectId" = m."projectId" AND t."clientKey" = m."clientKey"
+         ORDER BY m."createdAt"`);
+      return { result: rows.length === 0 ? 'PASS' : 'ROWS TO DECIDE', applied: !!g, storedAgain: rows.length, rows };
+    });
+    console.log(JSON.stringify(out, null, 2));
+  } catch (e) {
+    console.error('FAILED (nothing was changed):', e.message);
+    process.exitCode = 1;
+  } finally {
+    await prisma.$disconnect();
+  }
+})();
+EOF
+```
+
+- `"storedAgain": 0` (`"result": "PASS"`) is a pass.
+- `"applied": false` is expected before the guard deploys, and is not a failure; it is `true` after.
+- Any rows go to the owner, who decides each one. Nothing removes them automatically. Each row is a photo
+  (its id, project, kind, uploader's user id, when it was stored) whose key was recorded by an earlier delete.
+
+### If the deploy failed at this file
+
+Any failure of this file leaves Prisma's P3009 on the next deploy: `MTSTO`, `MTISO` (the deploy ran at an
+isolation level other than READ COMMITTED), the 15 s lock timeout, a killed install, or the deploy client
+dying mid-install (the database may then have committed the install although the ledger says failed).
+`scripts/migrate.sh` prints the same steps:
+
+0. If it says `MTSTO`: run the count above, and have the owner decide each row before going on.
+1. `npx prisma migrate resolve --rolled-back 20280118000000_media_tombstone_guard`
+2. Redeploy. A re-run is safe whether or not the install had committed.

@@ -14,7 +14,8 @@ import { splitSql } from './phase6-t4c-migration-replay';
  * - no row stored before the guard is trusted: a keyed row whose key has a record, committed before the install or
  *   in flight while it starts, stops the install (MTSTO), and a write arriving during the install waits for it and
  *   then meets the guard.
- * Each runs on its own database built from zero, never the suite's: these drop the guard.
+ * They share one database of their own, built from zero for this file and put back to production's state before each
+ * test, never the suite's: these drop the guard. Every ordering below is read from pg_locks, never from a clock.
  */
 const API = join(__dirname, '../..');
 const MIGRATIONS = join(API, 'prisma/migrations');
@@ -22,6 +23,13 @@ const NAME = '20280118000000_media_tombstone_guard';
 const MIGRATION = join(MIGRATIONS, NAME, 'migration.sql');
 const RECORD = join(MIGRATIONS, '20280117000000_media_tombstone/migration.sql');
 const DB = 'media_guard_install_test';
+/** `scripts/migrate.sh`'s recovery for this file, run from the runner itself (as scripts/ci-migrate-media-guard-report.test.mjs). */
+const RUNNER = readFileSync(join(API, 'scripts/migrate.sh'), 'utf8');
+const REPORT = RUNNER.slice(RUNNER.indexOf('report_media_guard_migration_failure() {'), RUNNER.indexOf('\n}\n', RUNNER.indexOf('report_media_guard_migration_failure() {')) + 3);
+const recovery = (output: string) => execFileSync('sh', ['-c', `${REPORT}\nreport_media_guard_migration_failure "$1"`, 'report', output], { encoding: 'utf8' });
+const RESOLVE = `npx prisma migrate resolve --rolled-back ${NAME}`;
+/** project:remove's own lock on the tables whose triggers it switches off, "Media" among them. */
+const REMOVE_LOCK = /IN SHARE ROW EXCLUSIVE MODE NOWAIT/;
 
 const strip = (raw: string) => { const u = new URL(raw); u.search = ''; return u.toString(); };
 const at = (raw: string, db: string) => { const u = new URL(raw); u.pathname = `/${db}`; return u.toString(); };
@@ -37,7 +45,7 @@ describe('#482 the deleted-photo guard\'s first install (live PG, its own databa
     return '';
   };
   const deploy = (schema?: string) => execFileSync('npx', ['prisma', 'migrate', 'deploy', ...(schema ? ['--schema', schema] : [])],
-    { cwd: API, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DATABASE_URL: prismaUrl } });
+    { cwd: API, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DATABASE_URL: prismaUrl }, timeout: 90_000 });
   const file = () => readFileSync(MIGRATION, 'utf8');
 
   /** 20280117's own writer, as production has it today: unqualified, with no search_path of its own. */
@@ -86,6 +94,11 @@ describe('#482 the deleted-photo guard\'s first install (live PG, its own databa
       await new Promise((r) => setTimeout(r, 25));
     }
   };
+  /** The session holds this lock on "Media", granted. */
+  const holdsMedia = (name: string, mode: string) => () => count(
+    `SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+      WHERE a.application_name = '${name}' AND l.granted AND l.mode = '${mode}' AND l.relation = 'public."Media"'::regclass`) === 1;
+  /** The session's transaction is open and has finished every statement sent to it. */
   const idleInTransaction = (name: string) => () => count(
     `SELECT count(*) FROM pg_stat_activity WHERE application_name = '${name}' AND state = 'idle in transaction'`) === 1;
   const waitingOnMedia = (name: string) => () => count(
@@ -161,7 +174,9 @@ describe('#482 the deleted-photo guard\'s first install (live PG, its own databa
     psql(insert(k)); // stored again before any guard, as a late copy could have been since #1022
     expect(fails(() => psql(file()))).toMatch(/1 stored photo\(s\) carry the key of a deleted photo/);
     expect(state()).toBe(PRE);
-    expect(fails(() => deploy())).toMatch(/carry the key of a deleted photo/);
+    const failed = fails(() => deploy());
+    expect(failed).toMatch(/carry the key of a deleted photo/);
+    expect(recovery(failed)).toContain(RESOLVE);
     expect(state()).toBe(PRE);
     expect(rows(k)).toBe('1');
     // once the owner has decided the row, the recorded failure is rolled back and the deploy installs the guard
@@ -181,7 +196,7 @@ describe('#482 the deleted-photo guard\'s first install (live PG, its own databa
     try {
       writer.send('BEGIN;');
       writer.send(`${insert(k)};`); // the previous release's send, not yet committed
-      await until('the old release\'s write is in flight', idleInTransaction('guard-install-old-writer'));
+      await until('the old release\'s write is in flight', holdsMedia('guard-install-old-writer', 'RowExclusiveLock'));
       install.send(file());
       const done = install.end();
       await until('the install waits for the write in flight', waitingOnMedia('guard-install-run'));
@@ -196,7 +211,7 @@ describe('#482 the deleted-photo guard\'s first install (live PG, its own databa
       writer.kill();
       install.kill();
     }
-  });
+  }, 120_000);
 
   it('a write of a deleted photo\'s key that arrives during the install waits for it, then is refused', async () => {
     preInstall();
@@ -207,7 +222,12 @@ describe('#482 the deleted-photo guard\'s first install (live PG, its own databa
       // the install, held open after its last statement so the write arrives while it runs
       install.send('BEGIN;');
       install.send(file());
-      await until('the install has run, uncommitted', idleInTransaction('guard-install-held'));
+      await until('the install holds its lock on "Media"', holdsMedia('guard-install-held', 'ShareRowExclusiveLock'));
+      await until('the install has run every step, uncommitted', idleInTransaction('guard-install-held'));
+      // on the record it holds only ACCESS SHARE, which conflicts with nothing but ACCESS EXCLUSIVE: it can be read
+      expect(psql(`SELECT string_agg(l.mode, ',') FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+        WHERE a.application_name = 'guard-install-held' AND l.relation = 'public."MediaTombstone"'::regclass`)).toBe('AccessShareLock');
+      expect(psql(`SELECT count(*) FROM public."MediaTombstone" WHERE "projectId" = 'pg-install' AND "clientKey" = '${k}'`)).toBe('1');
       writer.send(`${insert(k)};`);
       const written = writer.end();
       await until('the write waits for the install', waitingOnMedia('guard-install-late-writer'));
@@ -222,5 +242,71 @@ describe('#482 the deleted-photo guard\'s first install (live PG, its own databa
       writer.kill();
       install.kill();
     }
-  });
+  }, 120_000);
+
+  it('a holder of "Media" past 15 s makes the install fail with nothing installed; once it lets go, resolve and redeploy install', async () => {
+    preInstall();
+    const holder = session('guard-install-long-holder');
+    try {
+      // a write lock held past any app write, as a stray open session holds it
+      holder.send('BEGIN;');
+      holder.send(`${insert(`hold${++seq}`)};`);
+      await until('the holder has its write lock', holdsMedia('guard-install-long-holder', 'RowExclusiveLock'));
+      const failed = fails(() => deploy());
+      expect(failed).toMatch(/lock timeout/);
+      expect(state()).toBe(PRE);
+      expect(recovery(failed)).toContain(RESOLVE);
+      // the next deploy stops at the recorded failure until it is resolved
+      holder.send('ROLLBACK;');
+      expect((await holder.end()).code).toBe(0);
+      expect(fails(() => deploy())).toMatch(/P3009/);
+      execFileSync('npx', ['prisma', 'migrate', 'resolve', '--rolled-back', NAME],
+        { cwd: API, stdio: 'pipe', env: { ...process.env, DATABASE_URL: prismaUrl } });
+      deploy();
+      expect(state()).toBe(FULL);
+    } finally {
+      holder.kill();
+    }
+  }, 120_000);
+
+  it('the install and project:remove\'s lock on "Media" never wait in a cycle: whichever holds it first, the other waits or refuses', async () => {
+    const removeLock = readFileSync(join(API, 'src/platform/project-remove.ts'), 'utf8');
+    expect(removeLock).toMatch(REMOVE_LOCK);
+    const lockAsRemove = 'LOCK TABLE public."Media" IN SHARE ROW EXCLUSIVE MODE NOWAIT';
+
+    // the install first: project:remove's NOWAIT refuses at once, and changes nothing
+    preInstall();
+    const install = session('guard-install-before-remove');
+    try {
+      install.send('BEGIN;');
+      install.send(file());
+      await until('the install holds its lock on "Media"', holdsMedia('guard-install-before-remove', 'ShareRowExclusiveLock'));
+      expect(fails(() => psql(`BEGIN; ${lockAsRemove}; COMMIT;`))).toMatch(/could not obtain lock on relation/);
+      install.send('COMMIT;');
+      expect((await install.end()).code).toBe(0);
+      expect(state()).toBe(FULL);
+    } finally {
+      install.kill();
+    }
+
+    // project:remove first: the install waits for its run to end, then installs
+    preInstall();
+    const remove = session('guard-install-remove');
+    const late = session('guard-install-after-remove');
+    try {
+      remove.send('BEGIN;');
+      remove.send(`${lockAsRemove};`);
+      await until('project:remove holds "Media"', holdsMedia('guard-install-remove', 'ShareRowExclusiveLock'));
+      late.send(file());
+      const done = late.end();
+      await until('the install waits for project:remove', waitingOnMedia('guard-install-after-remove'));
+      remove.send('COMMIT;');
+      expect((await remove.end()).code).toBe(0);
+      expect((await done).code).toBe(0);
+      expect(state()).toBe(FULL);
+    } finally {
+      remove.kill();
+      late.kill();
+    }
+  }, 120_000);
 });
