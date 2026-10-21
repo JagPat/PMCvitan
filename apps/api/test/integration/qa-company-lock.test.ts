@@ -124,10 +124,24 @@ describe('#482 QA company lock (live PG)', () => {
       await joinOrg(other.orgId, qa1);
       await joinProject(other.projectId, qa2, 'invited');
     });
-    await expect(mark(c.orgId)).rejects.toThrow(new RegExp(`${qa1} is a QA account that still belongs to company ${other.orgId}, which is not QA-only`));
-    await t.prisma.orgMembership.deleteMany({ where: { userId: qa1, orgId: other.orgId } });
-    await expect(mark(c.orgId)).rejects.toThrow(new RegExp(`${qa2} is a QA account that still belongs to company ${other.orgId}`));
-    await raw(`UPDATE "Membership" SET "status" = 'removed' WHERE "userId" = $1 AND "projectId" = $2`, qa2, other.projectId);
+    // the refusal names the first account the mark's read of the company's people reaches, and that read has no order
+    // (20280116000000_qa_company_lock, org_qa_lock): it names one of the two, either one, so each is let go in turn
+    const leave = {
+      [qa1]: () => t.prisma.orgMembership.deleteMany({ where: { userId: qa1, orgId: other.orgId } }),
+      [qa2]: () => raw(`UPDATE "Membership" SET "status" = 'removed' WHERE "userId" = $1 AND "projectId" = $2`, qa2, other.projectId),
+    };
+    const named = async () => {
+      const refused = await mark(c.orgId).then(() => null, (e: unknown) => String(e));
+      const who = [qa1, qa2].filter((u) => new RegExp(`${u} is a QA account that still belongs to company ${other.orgId}, which is not QA-only`).test(refused ?? ''));
+      expect(who, refused ?? 'the company was marked').toHaveLength(1);
+      return who[0]!;
+    };
+    const first = await named();
+    await leave[first]();
+    // the one still left is named now, whichever was first
+    const second = await named();
+    expect(second).toBe(first === qa1 ? qa2 : qa1);
+    await leave[second]();
     await mark(c.orgId);
     expect((await t.prisma.org.findUniqueOrThrow({ where: { id: c.orgId } })).qaOnly).toBe(true);
   });
