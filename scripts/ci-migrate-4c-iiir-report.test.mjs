@@ -65,3 +65,17 @@ test('both deploy paths call it', () => {
   assert.match(runner, /report_4c_iiir_migration_failure "\$baseline_out"/);
   assert.match(runner, /\nreport_4c_iiir_migration_failure "\$out"\n/);
 });
+
+// Prisma 6.19.3's real output when its own ledger INSERT for this migration timed out on a lock (measured): the trace
+// names the migration, but its SQL never ran, so its resolve is refused (P3011) and a plain redeploy succeeds
+test('a trace naming it under any error but the aborted transaction is not its failure', () => {
+  assert.equal(report([
+    'Error: ERROR: canceling statement due to lock timeout',
+    '   0: schema_commands::commands::apply_migrations::Applying migration',
+    `           with migration_name="${NAME}"`,
+    '             at schema-engine/commands/src/commands/apply_migrations.rs:95',
+    '   1: schema_core::state::ApplyMigrations',
+    '             at schema-engine/core/src/state.rs:260',
+    '',
+  ].join('\n')), '');
+});

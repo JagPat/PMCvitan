@@ -164,9 +164,13 @@ fi
 
 # Whether Prisma's output names this migration AS the failure, on a whole line. Prisma 6.19.3 names it in one of three
 # shapes, each measured on a real deploy:
-#   - P3018, for a migration Prisma runs in its own transaction (the deleted-photo guard): "Migration name: <name>";
-#   - the abort of a migration that runs its own BEGIN/COMMIT (4c-iii-r and both 4d-i halves): no P3018, only the
-#     database error and the engine's trace, whose 'with migration_name="<name>"' line names the migration that failed;
+#   - P3018, for a migration Prisma runs in its own transaction (the deleted-photo guard), and for one that runs its
+#     own BEGIN/COMMIT when its error comes at that COMMIT (both 4d-i halves defer triggers to it): "Migration name: <name>";
+#   - the abort of a migration that runs its own BEGIN/COMMIT (4c-iii-r and both 4d-i halves), when the error comes
+#     before its COMMIT: no P3018, only "Error: ERROR: current transaction is aborted, commands ignored until end of
+#     transaction block" and the engine's trace, whose 'with migration_name="<name>"' line names it. The trace alone
+#     is not enough: it names whichever migration Prisma was applying, so a lock timeout or lost connection on
+#     Prisma's own ledger write carries it for a migration whose SQL never ran (measured: its resolve is refused, P3011);
 #   - P3009, on the next deploy after either: "The `<name>` migration started at ... failed". The SQL connector never
 #     loads the stored logs (sql-schema-connector/src/flavour.rs:272), so the line ends at "failed"; the engine's other
 #     ending, " with the following logs:", is matched in case a later Prisma prints it.
@@ -174,7 +178,9 @@ fi
 # failure of it (#1032's check; a resolve of an applied migration is refused with P3012 and buries the real failure's
 # recovery).
 migration_failed_in_output() {
-  printf '%s\n' "$1" | grep -qE "^Migration name: $2\$|^[[:space:]]+with migration_name=\"$2\"\$|^The \`$2\` migration started at .* failed( with the following logs:)?\$"
+  printf '%s\n' "$1" | grep -qE "^Migration name: $2\$|^The \`$2\` migration started at .* failed( with the following logs:)?\$" && return 0
+  printf '%s\n' "$1" | grep -qx 'Error: ERROR: current transaction is aborted, commands ignored until end of transaction block' \
+    && printf '%s\n' "$1" | grep -qE "^[[:space:]]+with migration_name=\"$2\"\$"
 }
 
 # THE 4c-iii-r ADOPTION ABORT CANNOT SPEAK FOR ITSELF (found by the production-runner proof's state
