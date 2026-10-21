@@ -89,7 +89,7 @@ import {
   beginCreateSend, createHoldScope, currentCreateHoldView, releaseCreate, reserveCreateRetry, reserveNewCreate, serverKeepsCreateReceipts,
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
 } from './projectCreateHold';
-import { createQueueKeyStore } from '@/store/queueKeyStore';
+import { createQueueKeyStore, keepUnsent } from '@/store/queueKeyStore';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { clearVisitPhotoStart, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
@@ -3096,6 +3096,7 @@ export const useStore = create<Store>()(
      *  push-capable browser (round-1 Codex F1) while every other environment stays synchronous. */
     completeSignOut: () => {
       clearSession();
+      queueKeys.forget(); // WEB-02 step 1: memory leaves with the session, so no key is held until the next load
       restoreSwitchTarget = null;
       set((s) => {
         s.sessionToken = null;
@@ -6085,10 +6086,9 @@ export const useStore = create<Store>()(
       // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
       // take its own acts out of `ops` as it goes)
       const taken = ops.length;
-      const takenVisits = ops.filter(isStoredVisitOp).length;
-      // and of the generic stored lane: a visit photo's act is in neither stored lane, so it is counted in neither
-      // (Codex 4321998480)
-      const takenGeneric = ops.filter((o) => !isSiteVisitOp(o)).length;
+      // the acts this flush took, as taken: a scope move writes each stored lane without them, by identity (a visit
+      // photo's act is in neither stored lane, Codex 4321998480)
+      const flushed = ops.slice();
       // the visits whose photo's row this flush could not read or update while sending it: held from then on, like the
       // visits a failed read holds, and never a stall of the rest of the queue (coordinator, sv2-unit-h)
       const stuck = new Set<string>();
@@ -6337,15 +6337,10 @@ export const useStore = create<Store>()(
         try {
           const storage = globalThis.localStorage;
           if (storage) {
-            // each stored list holds its kind of the flushed ops as its prefix — drop the replayed part
-            const keep = (key: string, rest: OutboxOp[], took: number, after: (l: OutboxOp[]) => OutboxOp[]) => {
-              const stored: unknown = JSON.parse(storage.getItem(key) ?? '[]');
-              const leftover = Array.isArray(stored) && stored.length >= took ? [...rest, ...after(stored.slice(took) as OutboxOp[])] : rest;
-              storage.setItem(key, JSON.stringify(leftover));
-            };
-            keep(flushKey, remaining.filter((o) => !isSiteVisitOp(o)), takenGeneric, (l) => l);
+            // this flush's acts leave each stored list by identity, its unsent ones go first, and every other act stays
+            keepUnsent(storage, flushKey, remaining.filter((o) => !isSiteVisitOp(o)), flushed.filter((o) => !isSiteVisitOp(o)), (l) => l);
             // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
-            keep(siteVisitKeyOf(flushKey), remaining.filter(isStoredVisitOp), takenVisits, (l) => remapVisits(l).filter(isStoredVisitOp));
+            keepUnsent(storage, siteVisitKeyOf(flushKey), remaining.filter(isStoredVisitOp), flushed.filter(isStoredVisitOp), (l) => remapVisits(l).filter(isStoredVisitOp));
           }
         } catch {
           /* storage unavailable — the persisted queue simply keeps its pre-flush state */

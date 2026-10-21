@@ -86,4 +86,31 @@ describe('queueKeyStore', () => {
     q.forget();
     expect(q.holds(K)).toBe(false);
   });
+
+  it('no ping-pong: two tabs that each settled an act the other still holds stop after one answer each', () => {
+    const m = new Map<string, string>([[K, JSON.stringify([a('x'), a('y')])]]);
+    const tabs: { q: ReturnType<typeof createQueueKeyStore>; mine: OutboxOp[] }[] = [];
+    const heardBy: number[] = [];
+    const st = (me: number) => ({
+      getItem: (k: string) => m.get(k) ?? null,
+      setItem: (k: string, v: string) => { m.set(k, v); tabs.forEach((_, i) => { if (i !== me) heardBy.push(i); }); },
+    });
+    for (const mine of [[a('y')], [a('x')]]) { const q = createQueueKeyStore(); q.loaded(K, [a('x'), a('y')]); tabs.push({ q, mine }); }
+    tabs[0].q.write(st(0), K, tabs[0].mine); // tab 0 sent x; tab 1 sent y
+    let answers = 0;
+    while (heardBy.length && answers < 50) { const i = heardBy.shift()!; answers += 1; tabs[i].q.heard(st(i), K, tabs[i].mine); }
+    expect(answers).toBeLessThan(10);
+    expect(heardBy).toEqual([]);
+  });
+
+  it('an act the load read that another tab’s write leaves out (that tab most likely sent it) is not written back, and is listed not kept', () => {
+    const st = storage({ [K]: JSON.stringify([a('shared')]) });
+    const q = createQueueKeyStore();
+    q.loaded(K, [a('shared')]);
+    st.setItem(K, '[]');
+    st.writes.length = 0;
+    q.heard(st, K, [a('shared')]);
+    expect(st.writes).toEqual([]);
+    expect(q.notKept(K)).toEqual([queueActIdent(a('shared'))]);
+  });
 });

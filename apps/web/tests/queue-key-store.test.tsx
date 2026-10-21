@@ -138,4 +138,36 @@ describe('WEB-02 step 1: a stored queue key keeps every tab’s acts', () => {
     act(() => { s().queueSiteVisitAct(end('v-1', 'k-v'), 'saved offline'); });
     expect(keysOf(key)).toEqual(['k-stays']);
   });
+
+  it('guard: after the project moved and before its load, another tab’s write of the new project’s lane is not answered', () => {
+    signedIn();
+    act(() => { s().queueSiteVisitAct(end('v-1', 'k-p1'), 'saved offline'); });
+    useStore.setState({ activeProjectId: 'p-2' }); // the switch is adopted; the load runs later, from useApiSync's effect
+    const p2 = `vitan.siteVisitQueue.dev:${USER}.p-2`;
+    otherTab(p2, [end('v-9', 'k-p2')]);
+    expect(keysOf(p2)).toEqual(['k-p2']);
+  });
+
+  it('an act kept through sign-out is not deleted when the same person is back on the project before its load', () => {
+    signedIn({ general: [approve('k-kept')] });
+    act(() => { s().completeSignOut(); });
+    useStore.setState({ sessionUserId: USER, activeProjectId: P1, role: 'consultant' }); // the load runs later
+    otherTab(key, [approve('k-kept'), approve('k-other')]);
+    expect(keysOf(key)).toEqual(['k-kept', 'k-other']);
+  });
+
+  it('a scope move mid-flush keeps another tab’s act and stores this tab’s unsent act once, by identity', async () => {
+    signedIn();
+    const approveDecision = vi.fn(async () => {
+      // another tab, loaded before a1 and a2, writes its act merged with what it read; then the project moves
+      localStorage.setItem(key, JSON.stringify([approve('b1'), approve('a1'), approve('a2')]));
+      useStore.setState({ activeProjectId: 'p-2', projectScopeGeneration: s().projectScopeGeneration + 1 });
+      return null;
+    });
+    s()._setGateway({ project: P1, approveDecision, snapshot: vi.fn(async () => null), listSiteVisits: vi.fn(async () => []) } as unknown as ApiGateway);
+    useStore.setState((st) => { st.outbox = [approve('a1'), approve('a2')]; st.online = true; });
+    await act(async () => { await s().flushOutbox(); });
+    expect(approveDecision).toHaveBeenCalledTimes(1);
+    expect(keysOf(key)).toEqual(['a2', 'b1']);
+  });
 });
