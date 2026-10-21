@@ -238,9 +238,10 @@ describe('an opaque copy an earlier release kept is trusted only when the networ
   });
 
   it.each([403, 503])('online, an answer of %i gives an <img> the opaque copy, and leaves it', async (status) => {
-    const { get, kept } = loadWorker(held(), answers(() => cors('error', status)));
+    const h = held();
+    const { get, kept } = loadWorker(h, answers(() => cors('error', status)));
     expect((await get(DRAWING, 'no-cors')).type).toBe('opaque');
-    expect(kept(DRAWING)?.type).toBe('opaque');
+    expect(kept(DRAWING)).toBe(h[FILES][DRAWING]);
   });
 
   it('online, an error answer is shown to a CORS read, which cannot use the opaque copy', async () => {
@@ -251,10 +252,11 @@ describe('an opaque copy an earlier release kept is trusted only when the networ
 
   it('online with the network failing, an <img> gets the opaque copy, and it is not stored again', async () => {
     // the CORS read fails, and so does the page's own read
-    const { get, kept, network } = loadWorker(held(), offline);
+    const h = held();
+    const { get, kept, network } = loadWorker(h, offline);
     expect((await get(DRAWING, 'no-cors')).type).toBe('opaque');
     expect(network.map((n) => n.mode)).toEqual(['cors', 'no-cors']);
-    expect(kept(DRAWING)?.type).toBe('opaque');
+    expect(kept(DRAWING)).toBe(h[FILES][DRAWING]);
   });
 
   it('offline, an <img> gets the opaque copy', async () => {
