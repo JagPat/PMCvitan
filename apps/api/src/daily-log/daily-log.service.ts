@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { lockStandingAnchors } from '../common/standing-anchor';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
@@ -222,6 +223,10 @@ export class DailyLogService {
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'daily-log.addMaterial', idempotencyKey, requestHash,
       run: async (tx) => {
+        // #1061 — the actor's standing anchor before any row: this command takes no project key and locks the
+        // linked decision FOR SHARE below, and a forward that holds this person's anchor exclusive waits on
+        // that row; taking the anchor only at the emit would close the cycle
+        await lockStandingAnchors(tx, { read: [actor.actorId] });
         if (input.decisionId) {
           // Round 13 (Codex): the AUTHORITY — re-checked inside the command transaction under
           // the decisions-owned row share lock (the activities round-10 precedent), so a

@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { lockStandingAnchors } from '../common/standing-anchor';
 import { type DeciderKind, CONTRACTOR_CAPTURE_FAIL_CLOSED, contractorCaptureFailClosed } from '@vitan/shared';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
@@ -253,6 +254,10 @@ export class ActivitiesService {
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'activities.create', idempotencyKey, requestHash,
       run: async (tx) => {
+        // #1061 — the actor's standing anchor before any row: this command takes no project key and locks the
+        // linked decision FOR SHARE below, and a forward that holds this person's anchor exclusive waits on
+        // that row; taking the anchor only at the emit would close the cycle
+        await lockStandingAnchors(tx, { read: [actor.actorId] });
         await this.assertDecisionLinkableInTx(tx, projectId, input.decisionId);
         // Phase 4 Task 4 (§A): a labour-pilot project derives the Team gate from canonical
         // facts — an explicit non-default stored team flag at creation would seed a second
