@@ -202,9 +202,11 @@ describe('#482 a deleted photo\'s key is refused on every write (live PG)', () =
   it('a run interrupted before the trigger statement leaves the guard in place (psql, no transaction)', async () => {
     // the failure is injected right before the trigger statement, as an operator's psql would meet it
     const sql = readFileSync(MIGRATION, 'utf8');
-    const at = sql.search(/^CREATE (OR REPLACE )?TRIGGER "Media_tombstone_guard"/m);
+    // the statement is a step of the install block, so the failure is too (a first install is covered in
+    // media-tombstone-guard-install.test.ts)
+    const at = sql.search(/^ {2}EXECUTE \$trigger\$/m);
     expect(at).toBeGreaterThan(0);
-    const broken = `${sql.slice(0, at)}SELECT 1/0;\n${sql.slice(at)}`;
+    const broken = `${sql.slice(0, at)}  PERFORM 1/0;\n${sql.slice(at)}`;
     expect(() => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url], { input: broken, stdio: 'pipe' })).toThrow();
     try {
       const [trg] = await t.prisma.$queryRawUnsafe<Array<{ n: number }>>(

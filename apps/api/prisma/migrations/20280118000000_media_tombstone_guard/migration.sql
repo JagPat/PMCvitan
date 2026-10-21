@@ -33,14 +33,40 @@
 -- delete trigger function is replaced here, with the same body, qualified. Migrations apply in name order, on every
 -- path including `scripts/migrate.sh`'s ALWAYS_EXECUTE, so wherever 20280117 runs this file runs after it.
 --
--- ATOMIC. Each statement replaces its object in place (CREATE OR REPLACE FUNCTION, CREATE OR REPLACE TRIGGER, which
--- PostgreSQL 14 added; production relies on 15 already, for 20261025's column-list SET NULL). No statement drops the
--- guard, so no write lands without it and a run interrupted at any point leaves a working guard, under
--- `prisma migrate deploy` and under psql alike. Re-runnable, and on `scripts/migrate.sh`'s ALWAYS_EXECUTE: a
--- `db push` baseline has no triggers.
+-- ONE STATEMENT. The whole install is one DO block, so it is one transaction whatever runs it: `prisma migrate deploy`,
+-- psql with or without --single-transaction, or an operator. It either installs everything or nothing; no point in the
+-- run leaves a function without its trigger, or the old guard dropped. A failure keeps its own message in Prisma's log
+-- (an explicit BEGIN/COMMIT would replace it with "current transaction is aborted").
+--
+-- ROWS ALREADY STORED. A trigger judges only the writes after it. So the block first takes SHARE ROW EXCLUSIVE on
+-- "Media", which waits for every write in flight to commit and holds back every new one (a delete too, and with it the
+-- record's writer) until the block commits. Under that lock it installs both functions and the trigger, then checks
+-- every row already stored: a keyed row whose project has a record for its key raises (SQLSTATE MTSTO) and nothing is
+-- installed. So no row written before the guard, by any release, in any window, is trusted; it is found here, and the
+-- owner decides it (the read-only count on #482 finds the same rows beforehand). The holders it waits for are app
+-- transactions, each bounded by Prisma's 5 s transaction timeout. The check runs only at READ COMMITTED, where each
+-- statement sees every commit before it; at any other level the block refuses to run.
+--
+-- REPLACED IN PLACE. Each object is replaced, never dropped (CREATE OR REPLACE FUNCTION, CREATE OR REPLACE TRIGGER,
+-- PostgreSQL 14+; production relies on 15 already, for 20261025's column-list SET NULL). Re-runnable, and on
+-- `scripts/migrate.sh`'s ALWAYS_EXECUTE: a `db push` baseline has no triggers.
 
+DO $install$
+DECLARE
+  v_stored bigint;
+BEGIN
+  IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'media guard install: run at READ COMMITTED, not %; nothing was installed',
+      pg_catalog.current_setting('transaction_isolation') USING ERRCODE = 'MTISO';
+  END IF;
+  PERFORM pg_catalog.set_config('search_path', 'pg_catalog, public, pg_temp', true);
+
+  -- every write in flight commits before this returns; every later one waits for this block
+  LOCK TABLE public."Media" IN SHARE ROW EXCLUSIVE MODE;
+
+  EXECUTE $fn_delete$
 CREATE OR REPLACE FUNCTION public.media_tombstone_on_delete() RETURNS TRIGGER
-LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $body$
 BEGIN
   IF OLD."clientKey" IS NOT NULL THEN
     -- read through "Project", so a row whose project went in the same statement writes nothing
@@ -49,10 +75,12 @@ BEGIN
     ON CONFLICT ("projectId", "clientKey") DO NOTHING;
   END IF;
   RETURN NULL;
-END $$;
+END $body$
+$fn_delete$;
 
+  EXECUTE $fn_guard$
 CREATE OR REPLACE FUNCTION public.media_tombstone_guard() RETURNS TRIGGER
-LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $body$
 BEGIN
   IF NEW."clientKey" IS NULL THEN
     RETURN NULL;
@@ -67,8 +95,22 @@ BEGIN
     RAISE EXCEPTION 'media: this photo was deleted (%, %)', NEW."projectId", NEW."clientKey" USING ERRCODE = 'MT410';
   END IF;
   RETURN NULL;
-END $$;
+END $body$
+$fn_guard$;
 
+  EXECUTE $trigger$
 CREATE OR REPLACE TRIGGER "Media_tombstone_guard"
   AFTER INSERT OR UPDATE OF "projectId", "clientKey" ON public."Media"
-  FOR EACH ROW EXECUTE FUNCTION public.media_tombstone_guard();
+  FOR EACH ROW EXECUTE FUNCTION public.media_tombstone_guard()
+$trigger$;
+
+  -- under the lock, every row stored before this block: none may carry a deleted photo's key
+  SELECT count(*) INTO v_stored
+    FROM public."Media" m
+    JOIN public."MediaTombstone" t ON t."projectId" = m."projectId" AND t."clientKey" = m."clientKey";
+  IF v_stored > 0 THEN
+    RAISE EXCEPTION 'media guard install: % stored photo(s) carry the key of a deleted photo; nothing was installed', v_stored
+      USING ERRCODE = 'MTSTO',
+            HINT = 'Run the read-only count on #482 to list them; the owner decides each one before this runs again.';
+  END IF;
+END $install$;
