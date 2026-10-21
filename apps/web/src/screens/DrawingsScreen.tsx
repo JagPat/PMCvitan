@@ -36,11 +36,23 @@ async function looksLikePdf(file: Blob): Promise<boolean> {
   return (await file.slice(0, 1024).text()).includes('%PDF-');
 }
 
-/** The saved file's extension, from the revision's type, so a CAD app opens it: a blob's name has no other source. */
+/**
+ * Extensions for the other types a saved file may have: a PDF, and the images a legacy or demo revision may carry that
+ * the viewer no longer shows inline (Codex, #1063). Named one by one: a type off this list (`text/html`, say) gets none.
+ */
+const SAVED_EXTENSIONS: ReadonlyMap<string, string> = new Map([
+  ['application/pdf', '.pdf'],
+  ['image/png', '.png'], ['image/jpeg', '.jpg'], ['image/jpg', '.jpg'], ['image/webp', '.webp'], ['image/gif', '.gif'],
+  ['image/tiff', '.tif'], ['image/bmp', '.bmp'], ['image/heic', '.heic'], ['image/heif', '.heif'], ['image/avif', '.avif'],
+]);
+
+/** The saved file's extension, from the revision's type, so a CAD or image app opens it: a blob's name has no other source. */
 function fileExtension(mime: string): string {
-  if (/dxf/.test(mime)) return '.dxf';
-  if (/dwg|acad/.test(mime)) return '.dwg';
-  return mime === 'application/pdf' ? '.pdf' : '';
+  // a type's parameters (`; charset=…`) and case are not part of it
+  const type = mime.split(';')[0].trim().toLowerCase();
+  if (/dxf/.test(type)) return '.dxf';
+  if (/dwg|acad/.test(type)) return '.dwg';
+  return SAVED_EXTENSIONS.get(type) ?? '';
 }
 
 /**

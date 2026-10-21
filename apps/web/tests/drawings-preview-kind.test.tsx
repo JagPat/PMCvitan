@@ -81,10 +81,25 @@ describe('each drawing type the API accepts previews the way a browser can show 
     expect(r.container.textContent).toContain('CAD source');
   });
 
-  it.each(['', 'image/gif', 'image/tiff', 'image/heic', 'IMAGE/PNG', 'text/html'])('a type not on the list (%j) gets the Download link', async (mime) => {
+  it.each([
+    ['', 'A-101-RevA'], ['image/gif', 'A-101-RevA.gif'], ['image/tiff', 'A-101-RevA.tif'], ['image/heic', 'A-101-RevA.heic'],
+    ['image/bmp', 'A-101-RevA.bmp'], ['image/avif', 'A-101-RevA.avif'], ['IMAGE/PNG', 'A-101-RevA.png'], ['text/html', 'A-101-RevA'],
+    ['image/gif; charset=x', 'A-101-RevA.gif'], ['IMAGE/SVG+XML', 'A-101-RevA'], ['image/svg+xml; charset=utf-8', 'A-101-RevA'],
+    ['text/html; x=dwg', 'A-101-RevA'],
+  ])('a type not on the list (%j) gets the Download link, saved as %s', async (mime, name) => {
     const DrawingViewer = await loadViewer();
     const r = render(<DrawingViewer drawing={dwg(rev(mime))} onClose={() => {}} />);
     expect(shownAs(r.container)).toBe('download');
+    // an image app opens it by its extension (Codex, #1063); a type off the extension list (text/html) gets none
+    expect(r.container.querySelector('a[download]')!.getAttribute('download')).toBe(name);
+  });
+
+  it.each([
+    ['image/vnd.dwg', '.dwg'], ['application/acad', '.dwg'], ['application/dwg', '.dwg'], ['image/vnd.dxf', '.dxf'], ['application/dxf', '.dxf'],
+  ])('%s is saved with %s', async (mime, ext) => {
+    const DrawingViewer = await loadViewer();
+    const r = render(<DrawingViewer drawing={dwg(rev(mime))} onClose={() => {}} />);
+    expect(r.container.querySelector('a[download]')!.getAttribute('download')).toBe(`A-101-RevA${ext}`);
   });
 
   it("the demo's SVG sheets still show as images", async () => {
