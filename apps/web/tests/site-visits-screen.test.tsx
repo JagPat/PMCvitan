@@ -685,12 +685,57 @@ describe('queued acts drawn as the server will read them', () => {
     expect(loc(100)).toMatchObject({ kind: 'device', approximate: false });
   });
 
-  it('marks a place queued on an ended visit as added after the end (Codex 4278681369)', () => {
+  it('marks a place queued on an ended visit as added after the end, and on no other (Codex 4278681369, 4335791251)', () => {
     const add = (v: SiteVisit) => withQueued([v], [{
       t: 'siteVisitAddPlace', visitId: 'v-1', idempotencyKey: 'k', name: 'Kitchen', body: { id: 'p-new', nodeId: 'n-kit', claimedAt: '2026-10-14T05:00:00.000Z' },
     }], CONSULTANT).visits[0].places[0].addedAfterEnd;
     expect(add(visit({ status: 'ended', endedAt: '2026-10-14T04:50:00.000Z' }))).toBe(true);
     expect(add(visit())).toBe(false);
+    // a closed visit takes no place: the server refuses it, so nothing says it was added after the end
+    expect(add(visit({ status: 'closed', closeReason: 'Left open' }))).toBe(false);
+  });
+
+  it('marks the time of a place queued on an ended visit, or claimed before an open visit\'s start, as set by the server, as the server will (Codex 4278991742, #909)', () => {
+    // the server stamps a place added after the end with the time it receives it (`site_visits_place_insert`), so its
+    // time is the server's, never the one this phone claimed; on an open visit it keeps a claim from the start on, so
+    // only a claim before the start is known to be moved before it is sent
+    const add = (v: SiteVisit) => withQueued([v], [{
+      t: 'siteVisitAddPlace', visitId: 'v-1', idempotencyKey: 'k', name: 'Kitchen', body: { id: 'p-new', nodeId: 'n-kit', claimedAt: '2026-10-14T05:00:00.000Z' },
+    }], CONSULTANT).visits[0].places[0].addedTimeAdjusted;
+    expect(add(visit({ status: 'ended', endedAt: '2026-10-14T04:50:00.000Z' }))).toBe(true);
+    expect(add(visit())).toBe(false);
+    expect(add(visit({ startedAt: '2026-10-14T05:10:00.000Z' }))).toBe(true);
+  });
+
+  it('gives a place queued on a closed visit no server time, whenever it was claimed: the server refuses it (Codex 4335791251)', () => {
+    // every status a visit can hold (`SiteVisit['status']`): open and ended are above; closed takes no place at all
+    const statuses: Record<SiteVisit['status'], true> = { open: true, ended: true, closed: true };
+    expect(Object.keys(statuses)).toEqual(['open', 'ended', 'closed']);
+    const add = (v: SiteVisit) => withQueued([v], [{
+      t: 'siteVisitAddPlace', visitId: 'v-1', idempotencyKey: 'k', name: 'Kitchen', body: { id: 'p-new', nodeId: 'n-kit', claimedAt: '2026-10-14T05:00:00.000Z' },
+    }], CONSULTANT).visits[0].places[0].addedTimeAdjusted;
+    expect(add(visit({ status: 'closed', closeReason: 'Left open' }))).toBe(false);
+    expect(add(visit({ status: 'closed', closeReason: 'Left open', startedAt: '2026-10-14T05:10:00.000Z' }))).toBe(false);
+    expect(add(visit({ status: 'closed', closeReason: 'Left open', lateEndedAt: '2026-10-14T04:50:00.000Z' }))).toBe(false);
+  });
+
+  it('shows a place queued on a closed visit only as waiting to send, and once the server refuses it, says so and shows no place (Codex 4335791251)', async () => {
+    const refused = Object.assign(new Error('409'), { status: 409, serverMessage: 'This site visit was closed by the PMC and takes no more changes' });
+    const addSiteVisitPlace = vi.fn().mockRejectedValue(refused);
+    await mount('consultant', CONSULTANT, fakeGateway([visit({ status: 'closed', closeReason: 'Left open' })], { addSiteVisitPlace }));
+    // the place was queued on this phone while the visit was open, and the project manager closed it meanwhile
+    await act(async () => {
+      useStore.setState({ outbox: [{ t: 'siteVisitAddPlace', visitId: 'v-1', idempotencyKey: 'k-add', name: 'Kitchen', body: { id: 'p-new', nodeId: 'n-kit', claimedAt: '2026-10-14T05:00:00.000Z' } }] });
+    });
+    const card = screen.getByTestId('sv-visit-v-1');
+    expect(card.textContent).toContain('Kitchen · waiting to send');
+    expect(card.textContent).not.toContain('time set by the server');
+    expect(card.textContent).not.toContain('added after the visit ended');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send now' })); });
+    expect(addSiteVisitPlace).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('alert').textContent).toBe('This was not saved. This site visit was closed by the PMC and takes no more changes');
+    expect(card.textContent).not.toContain('Kitchen');
+    expect(useStore.getState().outbox).toEqual([]);
   });
 });
 
