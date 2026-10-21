@@ -213,6 +213,13 @@ describe('a CAD drawing is read only when Download is tapped, and an image is sh
   it('tapping Download reads the file without cookies and saves a blob of plain bytes as A-101-RevA.dwg', async () => {
     const DrawingViewer = await loadViewer();
     const r = render(<DrawingViewer drawing={dwg([rev('a', 'image/vnd.dwg')])} onClose={() => {}} />);
+    // the let-go is scheduled, not run: the test runs it itself, so no clock is waited on
+    const letGo: { run: () => void; ms: number | undefined }[] = [];
+    const schedule = window.setTimeout;
+    vi.spyOn(window, 'setTimeout').mockImplementation(((run: () => void, ms?: number) => {
+      if (ms === 60_000) { letGo.push({ run, ms }); return 0; }
+      return schedule(run, ms);
+    }) as typeof window.setTimeout);
     fireEvent.click(linkOf(r.container));
     expect(reads.map((x) => [x.url, x.init.credentials])).toEqual([[`${API}/drawings/rev/a?t=tok`, 'omit']]);
     await act(async () => reads[0].answer(new Response('AC1032', { status: 200, headers: { 'Content-Type': 'text/html' } })));
@@ -220,7 +227,10 @@ describe('a CAD drawing is read only when Download is tapped, and an image is sh
     expect(saved).toEqual([{ href: made[0].url, download: 'A-101-RevA.dwg' }]);
     expect(made[0].blob.type).toBe('application/octet-stream');
     expect(await made[0].blob.text()).toBe('AC1032');
-    // the click has read the blob's URL, so it is let go at once
+    // a browser that reads the blob after the click still finds it (Codex, #1057); it is let go a minute later
+    expect(revoked).toEqual([]);
+    expect(letGo.length).toBe(1);
+    letGo[0].run();
     expect(revoked).toEqual([made[0].url]);
   });
 

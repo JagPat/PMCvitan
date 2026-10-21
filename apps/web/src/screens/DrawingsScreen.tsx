@@ -80,6 +80,8 @@ function usePdfUrl(src: string, isPdf: boolean): string | null {
  * answers (from its kept copy when offline), and saved from a blob of plain bytes under `name`. A link pointing at the
  * API would be a navigation the worker never sees. A failed or refused read goes to the file's own URL, as before.
  */
+const SAVED_FILE_KEPT_MS = 60_000;
+
 function saveFile(src: string, name: string): Promise<void> {
   const open = (href: string) => {
     const link = document.createElement('a');
@@ -92,8 +94,9 @@ function saveFile(src: string, name: string): Promise<void> {
     .then((file) => {
       const url = URL.createObjectURL(file.slice(0, file.size, 'application/octet-stream'));
       open(url);
-      // the click resolved the blob when it read the URL, so letting it go does not cut the save off
-      URL.revokeObjectURL(url);
+      // Some browsers read the blob only once the download starts, after the click returns, so it is let go a minute
+      // later rather than at once (Codex, #1057). Until then it holds one file in memory.
+      window.setTimeout(() => URL.revokeObjectURL(url), SAVED_FILE_KEPT_MS);
     })
     .catch(() => open(src));
 }
