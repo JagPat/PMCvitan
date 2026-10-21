@@ -4,6 +4,7 @@ import type { ApiGateway, ApiSnapshot } from '@/data/apiGateway';
 import {
   SEEN_CHUNK_SIZE, applySeenConfirmed, applySeenFailure, beginSeenAttempt, claimSeenChunk, emptyNotifSeen, planSeenChunks, reconcileSeen, showsUnread, unreadCount,
 } from '@/lib/notificationSeen';
+import { warmImports } from './warm-imports';
 
 /**
  * Top 10 #4b unit D (#778) — the bell's per-notice read state against a STUBBED gateway (owner record #482
@@ -15,6 +16,8 @@ import {
 
 const notice = (id: string, unread = true): AppNotification =>
   ({ id, at: '2026-10-11T10:00:00.000Z', text: `Notice ${id}`, time: 'just now', color: '#000', unread });
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'));
 
 describe('notificationSeen — the per-id state machine', () => {
   it('counts server-unread notices and those with no read state; a server-read notice is not counted', () => {

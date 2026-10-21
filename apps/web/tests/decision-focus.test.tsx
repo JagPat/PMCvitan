@@ -1,11 +1,14 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import { clientDecisionLabels as L, type Decision } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * U2b (design review, Client · Decision board): one decision on its own screen — pick one option,
  * then approve it through the SAME confirmation as the list (`openApprove` → `ApproveModal`).
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/ClientDecisionsScreen'), () => import('@/screens/InboxScreen'), () => import('@/components'));
 
 afterEach(() => {
   cleanup();

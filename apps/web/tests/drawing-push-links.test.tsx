@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { resolve } from 'node:path';
 import type { Drawing, DrawingRevision } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * Live bug 1c, option A (owner, #482 6063443276) — a drawing push opens the exact drawing:
@@ -38,6 +39,8 @@ function loadWorker(clients: unknown[]) {
   };
   return { click, opened };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DrawingsScreen'));
 
 describe('the service worker opens the record a notification names', () => {
   it('an open window is focused AND taken to the drawing', async () => {

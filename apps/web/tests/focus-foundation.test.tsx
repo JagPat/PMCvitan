@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent, screen } from '@testing-library/react';
 import { readFileSync, readdirSync } from 'node:fs';
 import { Modal } from '@/components/Modal';
 import { PhotoViewer } from '@/components/PhotoViewer';
+import { warmImports } from './warm-imports';
 
 // Read as FILES, not vite `?raw`/`?inline` imports — vitest stubs .css modules
 // to empty strings regardless of the query, which would turn these seals into
@@ -43,6 +44,8 @@ function contrast(a: string, b: string): number {
   const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (hi + 0.05) / (lo + 0.05);
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/layout/ProjectSwitcher'));
 
 afterEach(() => {
   cleanup();

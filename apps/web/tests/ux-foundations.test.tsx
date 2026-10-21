@@ -5,12 +5,15 @@ import { Eyebrow, EYEBROW_MIN_SIZE } from '@/components/Eyebrow';
 import { splitMobileNav, navLabelFor, MOBILE_ROLE_PRIMARY } from '@/lib/mobileNav';
 import { enabledScreensFor, SCREEN_META } from '@/lib/screens';
 import { defaultLangFor, langPreferenceKey, readLangPreference, writeLangPreference } from '@/lib/langPreference';
+import { warmImports } from './warm-imports';
 
 /**
  * UX foundations (the owner's design brief, slice 1): the critical-label floor for eyebrows, a
  * visible language switch for every role that is remembered per person, and the site engineer's
  * shorter phone bar (Today · Site · More).
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/layout/BottomTabs'), () => import('@/layout/TopBar'), () => import('@/layout/LanguageSwitch'), () => import('@/layout/LangPreference'), () => import('@/lib/langPreference'), () => import('@/layout/LeftRail'), () => import('@/screens/TeamAccessScreen'));
 
 afterEach(() => {
   cleanup();
