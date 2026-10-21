@@ -1,8 +1,9 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/react';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { Drawing, DrawingRevision, Lang, ProjectNode } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
 import { warmImports } from './warm-imports';
+import { answerFileReads, appears } from './file-reads';
 
 /**
  * #482 QA item 3 — the Drawings register in Hindi and Gujarati: every state of the screen (loading,
@@ -53,9 +54,19 @@ await warmImports(() => import('@/store/store'), () => import('@/store/projectSc
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   vi.resetModules();
 });
+
+// The open drawing's PDF is read with fetch and shown from a blob (drawings-offline-viewer). It arrives here with no network,
+// so the frame, and the title a screen reader says, is on screen for the check, as it was before.
+let file: { arrive: () => void };
+beforeEach(() => { file = answerFileReads(); });
+async function pdfShown() {
+  await act(async () => file.arrive());
+  await appears(document.body, () => document.querySelector('iframe'));
+}
 
 const STATES: [string, Record<string, unknown>, { mode?: string }?][] = [
   ['loading', { drawings: [], drawingsLoad: 'loading' }, { mode: 'moduleQuery' }],
@@ -78,6 +89,7 @@ describe('the Drawings register in Hindi and Gujarati', () => {
       it(`${lang}, ${name}: no leftover English`, async () => {
         const { DrawingsScreen } = await load(lang, over, opts);
         render(<DrawingsScreen />);
+        if (over.routeItem === 'DWG-1') await pdfShown();
         expect(leftoverEnglish(document.body, DATA)).toEqual([]);
       });
     }
@@ -111,6 +123,7 @@ describe('the Drawings register in Hindi and Gujarati', () => {
       const demoRev = (id: string) => rev(id, { issuedBy: 'You (demo)' });
       const { DrawingsScreen } = await load(lang, { role: 'pmc', drawings: [dwg('DWG-1', 'A-101', { current: demoRev('DWG-1-b'), revisions: [demoRev('DWG-1-b')] })], routeItem: 'DWG-1' });
       render(<DrawingsScreen />);
+      await pdfShown();
       expect(leftoverEnglish(document.body, DATA)).toEqual([]);
     });
 
@@ -156,6 +169,7 @@ describe('the Drawings register in Hindi and Gujarati', () => {
   it('English reads as before', async () => {
     const { DrawingsScreen } = await load('en', { drawings: [dwg('DWG-1', 'A-101')], routeItem: 'DWG-1' });
     render(<DrawingsScreen />);
+    await pdfShown();
     const text = document.body.textContent ?? '';
     for (const line of ['DRAWINGS · REGISTER', 'Rev B · issued by Asha Mehta · 14 Oct 2026', 'BUILDING TO REV B', 'Issued to — not yet confirmed', 'I’m building to Rev B', 'REVISION HISTORY', 'Engineer', 'Contractor', '15 Oct 2026']) {
       expect(text).toContain(line);

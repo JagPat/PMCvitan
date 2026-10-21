@@ -25,25 +25,42 @@ function previewKind(mime: string): 'image' | 'pdf' | 'download' {
   return 'download';
 }
 
+/** A PDF reader finds the file's `%PDF-` header within its first 1,024 bytes; a file without one never gets this origin. */
+async function looksLikePdf(file: Blob): Promise<boolean> {
+  return (await file.slice(0, 1024).text()).includes('%PDF-');
+}
+
+/** The saved file's extension, from the revision's type, so a CAD app opens it: a blob's name has no other source. */
+function fileExtension(mime: string): string {
+  if (/dxf/.test(mime)) return '.dxf';
+  if (/dwg|acad/.test(mime)) return '.dwg';
+  return mime === 'application/pdf' ? '.pdf' : '';
+}
+
 /**
- * A PDF or CAD revision's file as a `blob:` URL, read with `fetch`. The viewer's <iframe> and download link would
- * navigate to the API, and a navigation there never reaches this site's service worker, so the file could not open
- * offline; a `fetch` from the page does, and the worker answers from its kept copy. The blob's type is fixed (a PDF,
- * or bytes to save), so a file on this site's origin is never rendered as a page. Null while it is read; the file's
- * own URL when the read fails or is refused, as before. The blob is let go when the revision changes or the viewer closes.
+ * A PDF revision's file as a `blob:` URL, read with `fetch`. The viewer's <iframe> would navigate to the API, and a
+ * navigation there never reaches this site's service worker, so the file could not open offline; a `fetch` from the
+ * page does, and the worker answers from its kept copy. The blob is typed as a PDF, and made only from bytes with a PDF
+ * header, so a file on this site's origin is never rendered as a page. Null while it is read; the file's own URL when
+ * the read fails, is refused or is not a PDF, as before. The read stops, and the blob is let go, when the revision
+ * changes or the viewer closes. Any other file is shown from its own URL.
  */
-function useFileUrl(src: string, kind: 'image' | 'pdf' | 'download'): string | null {
-  const direct = kind === 'image' || src.startsWith('data:');
+function usePdfUrl(src: string, isPdf: boolean): string | null {
+  const direct = !isPdf || src.startsWith('data:');
   const [read, setRead] = useState<{ src: string; url: string } | null>(null);
   useEffect(() => {
     if (direct) return undefined;
     const stop = new AbortController();
     let made: string | undefined;
     fetch(src, { signal: stop.signal, credentials: 'omit' })
-      .then((res) => (res.ok ? res.arrayBuffer() : Promise.reject(new Error(`file answered ${res.status}`))))
-      .then((bytes) => {
+      .then((res) => (res.ok ? res.blob() : Promise.reject(new Error(`file answered ${res.status}`))))
+      .then(async (file) => {
+        const pdf = await looksLikePdf(file);
+        // closed or moved on while the bytes arrived: no blob from them
         if (stop.signal.aborted) return;
-        made = URL.createObjectURL(new Blob([bytes], { type: kind === 'pdf' ? 'application/pdf' : 'application/octet-stream' }));
+        if (!pdf) throw new Error('not a PDF');
+        // re-typed without a copy: the server's type is never trusted
+        made = URL.createObjectURL(file.slice(0, file.size, 'application/pdf'));
         setRead({ src, url: made });
       })
       .catch(() => {
@@ -53,9 +70,32 @@ function useFileUrl(src: string, kind: 'image' | 'pdf' | 'download'): string | n
       stop.abort();
       if (made) URL.revokeObjectURL(made);
     };
-  }, [src, kind, direct]);
+  }, [src, direct]);
   if (direct) return src;
   return read && read.src === src ? read.url : null;
+}
+
+/**
+ * Saves a CAD revision's file when Download is tapped. The file is read with `fetch`, which this site's service worker
+ * answers (from its kept copy when offline), and saved from a blob of plain bytes under `name`. A link pointing at the
+ * API would be a navigation the worker never sees. A failed or refused read goes to the file's own URL, as before.
+ */
+function saveFile(src: string, name: string): void {
+  const open = (href: string) => {
+    const link = document.createElement('a');
+    link.href = href;
+    link.download = name;
+    link.click();
+  };
+  fetch(src, { credentials: 'omit' })
+    .then((res) => (res.ok ? res.blob() : Promise.reject(new Error(`file answered ${res.status}`))))
+    .then((file) => {
+      const url = URL.createObjectURL(file.slice(0, file.size, 'application/octet-stream'));
+      open(url);
+      // the click resolved the blob when it read the URL, so letting it go does not cut the save off
+      URL.revokeObjectURL(url);
+    })
+    .catch(() => open(src));
 }
 
 export function DrawingsScreen() {
@@ -359,7 +399,8 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
   const [rev, setRev] = useState<DrawingRevision>(drawing.current ?? drawing.revisions[0]);
   const src = resolveDrawingUrl(rev.url);
   const kind = previewKind(rev.mime);
-  const fileUrl = useFileUrl(src, kind);
+  const pdfUrl = usePdfUrl(src, kind === 'pdf');
+  const saveAs = `${drawing.number}-Rev${rev.rev}${fileExtension(rev.mime)}`;
   const sm = statusMeta(rev.status, lang);
   const isCurrent = drawing.current?.id === rev.id;
 
@@ -386,14 +427,25 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
 
       <div style={{ background: '#e9e4d8', maxHeight: '58vh', overflow: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 300 }}>
         {kind === 'image' && <img src={src} alt={`${drawing.number} ${T.rev(rev.rev, lang)}`} style={{ maxWidth: '100%', display: 'block' }} />}
-        {kind === 'pdf' && fileUrl && <iframe src={fileUrl} title={`${drawing.number} ${T.rev(rev.rev, lang)}`} style={{ width: '100%', height: '58vh', border: 'none', background: '#fff' }} />}
+        {kind === 'pdf' && !pdfUrl && <div role="status" style={{ fontSize: 13.5, color: 'var(--muted)', padding: 40 }}>{L.openingFile[lang]}</div>}
+        {kind === 'pdf' && pdfUrl && <iframe src={pdfUrl} title={`${drawing.number} ${T.rev(rev.rev, lang)}`} style={{ width: '100%', height: '58vh', border: 'none', background: '#fff' }} />}
         {kind === 'download' && (
           <div style={{ textAlign: 'center', padding: 40 }}>
             <FileText size={40} color="#b8b2a6" />
             <div style={{ fontSize: 13.5, color: 'var(--muted)', margin: '12px 0 16px', maxWidth: 320 }}>
               {rev.mime.includes('dwg') || rev.mime.includes('dxf') ? L.cadNote[lang] : L.noPreview[lang]}
             </div>
-            <a href={fileUrl ?? src} download={`${drawing.number}-Rev${rev.rev}`} style={{ ...dlBtn }}>
+            <a
+              href={src}
+              download={saveAs}
+              onClick={(e) => {
+                // a demo drawing's data: URL saves as it is
+                if (src.startsWith('data:')) return;
+                e.preventDefault();
+                saveFile(src, saveAs);
+              }}
+              style={{ ...dlBtn }}
+            >
               <Download size={16} /> {L.download[lang]}
             </a>
           </div>
