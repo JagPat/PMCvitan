@@ -125,11 +125,15 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
   });
 
   it('signs in a QA account of a marked company, with a working token, a project switch and an audit row', async () => {
+    // the round-3 test below signs this account in too, and a shuffled run (--sequence.shuffle) can put it first:
+    // the rows already there are set aside by id, so this counts the rows this sign-in wrote
+    const signIns = { projectId: ids.project, action: 'auth.qaSignIn', entityId: ids.client };
+    const before = (await t.prisma.auditLog.findMany({ where: signIns, select: { id: true } })).map((a) => a.id);
     const r = await door('/auth/ops/qa-sign-in').send(body(qaClientEmail.toUpperCase()));
     expect(r.status, r.text).toBe(201);
     expect(r.body).toMatchObject({ role: 'client', projectId: ids.project, name: 'QA Client' });
     expect((await http().get('/me/memberships').set('Authorization', `Bearer ${r.body.token}`)).status).toBe(200);
-    const audit = await t.prisma.auditLog.findMany({ where: { projectId: ids.project, action: 'auth.qaSignIn', entityId: ids.client } });
+    const audit = await t.prisma.auditLog.findMany({ where: { ...signIns, id: { notIn: before } } });
     expect(audit).toHaveLength(1);
     expect(audit[0]).toMatchObject({ actor: 'claude', entity: 'User', entityId: ids.client, payload: { reason: 'live QA run', via: 'ops-api' } });
     const pmc = await door('/auth/ops/qa-sign-in').send(body(qaEmail));
