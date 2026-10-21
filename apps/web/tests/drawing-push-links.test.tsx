@@ -1,9 +1,11 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { resolve } from 'node:path';
 import type { Drawing, DrawingRevision } from '@vitan/shared';
+import { warmImports } from './warm-imports';
+import { holdFileReads } from './file-reads';
 
 /**
  * Live bug 1c, option A (owner, #482 6063443276) — a drawing push opens the exact drawing:
@@ -38,6 +40,8 @@ function loadWorker(clients: unknown[]) {
   };
   return { click, opened };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DrawingsScreen'));
 
 describe('the service worker opens the record a notification names', () => {
   it('an open window is focused AND taken to the drawing', async () => {
@@ -91,9 +95,14 @@ async function loadScreen(mode: 'snapshot' | 'moduleQuery', overrides: Record<st
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   vi.resetModules();
 });
+// The viewer reads a PDF revision's file with fetch (drawings-offline-viewer); these tests are about where a link opens, not the file:
+// the read is held, never sent, and stops when the viewer closes.
+beforeEach(() => holdFileReads());
+
 
 describe('the drawing screen given a drawing it does not hold', () => {
   it('a drawing it holds opens', async () => {

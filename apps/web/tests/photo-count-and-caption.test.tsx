@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
+import { warmImports } from './warm-imports';
 
 async function loadApiMode(photos: { id: string; url: string; kind: string; takenAt?: string }[]) {
   vi.stubEnv('VITE_API_URL', 'http://api.test');
@@ -20,6 +21,8 @@ async function loadApiMode(photos: { id: string; url: string; kind: string; take
   });
   return { useStore };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DashboardScreen'), () => import('@/screens/ClientHealthScreen'), () => import('@/screens/PlacesScreen'));
 
 beforeEach(() => vi.unstubAllEnvs());
 afterEach(() => {

@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { Drawing, DrawingRevision } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * Phase 2 Task 10 (Module 2 — Drawings; finding-4 discipline) — honest drawings load states.
@@ -49,6 +50,8 @@ async function loadScreen(mode: 'snapshot' | 'moduleQuery', overrides: StoreStat
   const { DrawingsScreen } = await import('@/screens/DrawingsScreen');
   return { useStore, DrawingsScreen };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DrawingsScreen'));
 
 afterEach(() => {
   cleanup();

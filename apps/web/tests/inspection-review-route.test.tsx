@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { Checklist } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * Live bug 1b (Codex 4203960945, 4204448859, 4205610125) — `/review/<id>` and `/site/checklist/<id>`
@@ -8,6 +9,8 @@ import type { Checklist } from '@vitan/shared';
  * is owed) and that inspection is not among the retained ones, the screen shows the load boundary: never
  * a retained, unrelated review with live approve/reject, nor another checklist, standing in for it.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/screens/InspectionReviewScreen'), () => import('@/screens/EngineerChecklistScreen'));
 
 afterEach(() => {
   cleanup();

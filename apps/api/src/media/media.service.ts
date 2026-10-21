@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, GoneException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from './storage.service';
@@ -51,6 +51,32 @@ function isSiteVisitFile(input: CreateMediaInput): boolean {
 /** What a clientKey replay must read to decide whether the caller may have the stored row back. */
 const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true } as const;
 type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null };
+
+/** #482 site photos — one send key at a time: the upload that may store a photo under it, and the delete that retires
+ *  it. Always the FIRST statement of its transaction, so no transaction holds another lock while it waits for this one,
+ *  and no cycle can pass through it. */
+async function lockSendKey(tx: Prisma.TransactionClient, projectId: string, clientKey: string): Promise<void> {
+  await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${`media-send-key:${projectId}:${clientKey}`}, 0))`);
+}
+
+/** #482 site photos — a key whose photo was deleted is never used again: a late copy of its send stores nothing. */
+const DELETED_PHOTO = 'This photo was deleted';
+
+/** #482 site photos — the database's own refusal of a deleted photo's key (`Media_tombstone_guard`, 20280118, SQLSTATE
+ *  MT410). Prisma reports a trigger's error on a model write as an unknown request error carrying the code in its
+ *  text, and on a raw statement as P2010 with the code in `meta`. */
+function isDeletedKeyRefusal(e: unknown): boolean {
+  if (e instanceof Prisma.PrismaClientKnownRequestError) return (e.meta as { code?: unknown } | undefined)?.code === 'MT410';
+  if (e instanceof Prisma.PrismaClientUnknownRequestError) return /\bcode: "MT410"/.test(e.message);
+  return false;
+}
+
+/** The P2002 is the (projectId, clientKey) unique's, whichever way Prisma names it. */
+function isSendKeyConflict(e: Prisma.PrismaClientKnownRequestError): boolean {
+  const target = (e.meta as { target?: unknown } | undefined)?.target;
+  if (Array.isArray(target)) return target.length === 2 && target.includes('projectId') && target.includes('clientKey');
+  return target === 'Media_projectId_clientKey_key';
+}
 
 export type MediaBytes = { mime: string; bytes: Buffer };
 export type MediaRedirect = { redirect: string };
@@ -155,6 +181,9 @@ export class MediaService {
         select: REPLAY_SELECT,
       });
       if (existing) return this.replayed(projectId, user, existing);
+      // #482 — its photo was deleted: an early no, before any bytes are stored (asked again under the key's lock below)
+      const deleted = await this.prisma.mediaTombstone.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } } });
+      if (deleted) throw new GoneException(DELETED_PHOTO);
     }
     // Location spine: the place must be this project's and PUBLISHED (a team photo never goes on a draft).
     // Checked here BEFORE the bytes are stored, as an early no; the tree's state is decided again under its
@@ -214,6 +243,15 @@ export class MediaService {
       // the row and its `media.uploaded` event commit together (a replay of the same
       // clientKey lands on the unique below and records NO second event)
       row = await this.prisma.$transaction(async (tx) => {
+        // #482 — the send key's lock comes first, and a key whose photo was deleted meanwhile stores nothing. A refusal
+        // here rolls back and goes through the earned object cleanup below. No visit act takes this lock, so the visit
+        // order that follows is unchanged.
+        if (input.clientKey) {
+          await lockSendKey(tx, projectId, input.clientKey);
+          if (await tx.mediaTombstone.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } } })) {
+            throw new GoneException(DELETED_PHOTO);
+          }
+        }
         // a visit file's first statements are a visit act's: the readiness lock, the tree lock and the visit row, and
         // the adder is judged again under them (#792 SV2; the order that keeps a place's removal from interleaving)
         if (visit) await this.siteVisitFiles.lockForFile(tx, projectId, visit.visitId, user.sub);
@@ -269,14 +307,19 @@ export class MediaService {
       // (the unique is the DB proof the photo persisted exactly once). The winner's row points at
       // the WINNER's object: every request stores under its own random key, so this request's
       // object is unreferenced either way and goes through the earned cleanup below (#482).
-      if (input.clientKey && e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-        const winner = await this.prisma.media.findUniqueOrThrow({
+      if (input.clientKey && e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002' && isSendKeyConflict(e)) {
+        const winner = await this.prisma.media.findUnique({
           where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
           select: REPLAY_SELECT,
         });
         let replay: UploadedMedia | undefined;
         try {
-          replay = await this.replayed(projectId, user, winner);
+          if (winner) replay = await this.replayed(projectId, user, winner);
+          // #482 — no winner any more: "deleted" only on the database's word, its record of the key (written in the
+          // delete's own statement); without it the original error stands, unexplained
+          else if (await this.prisma.mediaTombstone.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } } })) {
+            throw new GoneException(DELETED_PHOTO);
+          }
         } catch (refused) {
           // the key is another member's, or its photo is hidden from the caller: refused, after the same cleanup
           e = refused;
@@ -303,6 +346,9 @@ export class MediaService {
       // sweep is a cost; a deleted photo behind a committed row is not recoverable, and where the two
       // are not distinguishable the harmless one is the only admissible guess.
       await this.removeIfUnreferenced(projectId, key);
+      // #482 — the database refused the key (its photo was deleted while this send waited, by a release that takes no
+      // key lock): the same answer as the record read above, after the same cleanup
+      if (isDeletedKeyRefusal(e)) throw new GoneException(DELETED_PHOTO);
       throw e;
     }
 
@@ -388,6 +434,9 @@ export class MediaService {
     const ownSitePhoto = !SITE_RECORD_ROLES.has(user.role);
     const actor = await resolveActor(this.prisma, user);
     const events = await this.prisma.$transaction(async (tx) => {
+      // #482 site photos — the photo's send key first, before any other lock: a send of the same key waits for this
+      // delete, and then finds the record the database writes in the delete's own statement (20280117)
+      if (row.clientKey) await lockSendKey(tx, projectId, row.clientKey);
       // #482 site photos — a photo filed on a day's log: that log row is held FOR SHARE until this delete commits, so a
       // send (which takes the row FOR UPDATE and then counts the photos filed on it) waits and never counts this one.
       // A member's own photo on a log already sent is part of that record now, so theirs no longer (Codex 4316959509).

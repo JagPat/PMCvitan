@@ -19,6 +19,7 @@ import { LabourProcurementController } from '../labour/labour-procurement.contro
 import { LabourCapacityController } from '../labour/labour-capacity.controller';
 import { WorkerDevicesController } from '../orgs/worker-devices.controller';
 import { AuthController } from '../auth/auth.controller';
+import { AuthOpsController } from '../auth/auth-ops.controller';
 import { DailyLogController } from '../daily-log/daily-log.controller';
 import { SiteVisitsController } from '../site-visits/site-visits.controller';
 import { DecisionsController } from '../decisions/decisions.controller';
@@ -34,6 +35,8 @@ import { NotificationsSeenController } from '../snapshot/notifications-seen.cont
 import { AppModule } from '../app.module';
 import { NodesController } from '../nodes/nodes.controller';
 import { OpsController } from '../platform/ops/ops.controller';
+import { OpsQaController } from '../platform/ops/ops-qa.controller';
+import { OpsCompatController } from '../platform/ops/ops-compat.controller';
 
 /**
  * Route-walk policy test — makes role-gating fail closed *by construction*.
@@ -62,6 +65,7 @@ const CONTROLLERS = [
   LabourCapacityController,
   WorkerDevicesController,
   AuthController,
+  AuthOpsController,
   DailyLogController,
   SiteVisitsController,
   DecisionsController,
@@ -78,6 +82,8 @@ const CONTROLLERS = [
   NodesController,
   // #482 operator door (OPS_TOKEN; @Public — no user JWT reaches it)
   OpsController,
+  OpsQaController,
+  OpsCompatController,
 ];
 
 const MUTATING = new Set([RequestMethod.POST, RequestMethod.PUT, RequestMethod.PATCH, RequestMethod.DELETE]);

@@ -5,6 +5,9 @@ import { CommercialScreen } from '@/screens/CommercialScreen';
 import { emptyProjectData, emptyModuleReadState } from '@/store/projectScope';
 import { SOD_GRANT_STATES } from '@vitan/shared';
 import type { CommercialClaimView, CommercialView } from '@/store/commercial';
+import { warmImports } from './warm-imports';
+
+await warmImports(() => import('@/lib/commercialKeys'));
 
 /**
  * Phase 5 Task 7B-ii (§M) — the RENDERED claim tabs.

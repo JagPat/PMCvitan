@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { Role, ScreenKey } from '@vitan/shared';
 import { navLabelFor, splitMobileNav, MOBILE_MAX_TABS } from '@/lib/mobileNav';
 import { enabledScreensFor, routableScreensFor, screensFor } from '@/lib/screens';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 QA (Jagrut, 14 Oct 2026, per-role check on the live QA project): "Team Access & Login" is a dead end in
@@ -10,6 +11,8 @@ import { enabledScreensFor, routableScreensFor, screensFor } from '@/lib/screens
  * menus call the decision register "Decisions" (the PMC and the client keep "Decision Log"). Every phone bar
  * stays at most five slots, the rest behind More.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/layout/LeftRail'));
 
 afterEach(() => {
   cleanup();

@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { ApiGateway } from '@/data/apiGateway';
 import type { AccessState, Lang } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 V-1018-6 — after sign-out the email sign-in page stayed English even with Hindi chosen, and the language
@@ -10,6 +11,8 @@ import { leftoverEnglish } from './leftover-english';
  * Board 6254076212). Every sign-in screen now reads in the gate's language, and the gate opens in the language
  * last chosen on this device, so a reload or a sign-out keeps it.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/screens/TeamAccessScreen'), () => import('@/layout/LangPreference'), () => import('@/lib/langPreference'));
 
 afterEach(() => {
   cleanup();

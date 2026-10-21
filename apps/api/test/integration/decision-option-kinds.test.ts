@@ -378,26 +378,31 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
       const held = new Promise<void>((r) => { release = r; });
       let settled: 'pending' | 'ok' | 'error' = 'pending';
       let error: unknown = null;
+      let pid = -1;
       const done = db.$transaction(async (tx) => {
-        try { await body(tx as unknown as typeof t.prisma); } catch (e) { failed(e); throw e; }
+        try {
+          pid = Number((await tx.$queryRawUnsafe<Array<{ pid: number }>>('SELECT pg_backend_pid() AS pid'))[0].pid);
+          await body(tx as unknown as typeof t.prisma);
+        } catch (e) { failed(e); throw e; }
         ready(); await held;
       }, { timeout: 30_000 }).then(
         () => { settled = 'ok'; }, (e) => { settled = 'error'; error = e; failed(e); });
-      return { onReady, release, done, state: () => settled, error: () => error };
+      return { onReady, release, done, state: () => settled, error: () => error, pid: () => pid };
     };
 
-    /** Wait until SOME other backend is blocked inside COMMIT — which is where a deferred
-     *  constraint trigger takes its lock. Observed, not assumed after a delay. */
-    const someoneBlockedInCommit = async (ms = 5000): Promise<boolean> => {
-      const deadline = Date.now() + ms;
-      while (Date.now() < deadline) {
+    /** Wait until the released transaction is blocked inside COMMIT — which is where a deferred
+     *  constraint trigger takes its lock. Observed, not assumed after a delay: the answer is false
+     *  only when the released transaction settles without ever being seen waiting there, so a
+     *  loaded runner that is slow to reach the COMMIT is waited for rather than cut off by a clock. */
+    const someoneBlockedInCommit = async (released: { state: () => 'pending' | 'ok' | 'error'; pid: () => number }): Promise<boolean> => {
+      for (;;) {
         const rows = await raceDb.$queryRawUnsafe<Array<{ n: bigint }>>(
           `SELECT COUNT(*)::bigint AS n FROM pg_stat_activity
-            WHERE query = 'COMMIT' AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`);
+            WHERE query = 'COMMIT' AND wait_event_type = 'Lock' AND pid = ${released.pid()}`);
         if (Number(rows[0]?.n ?? 0) > 0) return true;
+        if (released.state() !== 'pending') return false;
         await new Promise((r) => setTimeout(r, 50));
       }
-      return false;
     };
 
     const kind = async (code: string): Promise<void> => {
@@ -432,12 +437,17 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
     const h2 = hold(classify('a1-r2', `opt-a1-${run}-${seq++}`), t.prisma);
     await h2.onReady;
     h2.release();                       // the commit begins — and must WAIT for the retirement
-    const blocked = await someoneBlockedInCommit();
+    let blocked = false; let whileHeld: string = 'unobserved';
+    try {
+      blocked = await someoneBlockedInCommit(h2);
+      whileHeld = h2.state();
+    } finally {
+      retire.release();                 // a red run must not hold the kind row until the 30 s tx timeout
+      await retire.done;
+      await h2.done;
+    }
     expect(blocked, 'the commit must WAIT for the in-flight retirement').toBe(true);
-    expect(h2.state()).toBe('pending');
-    retire.release();
-    await retire.done;
-    await h2.done;
+    expect(whileHeld).toBe('pending');
     expect(h2.state()).toBe('error');
     expect(String(h2.error())).toMatch(/has been retired/u);
 
@@ -447,18 +457,34 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
     const kept = `opt-a1-${run}-${seq++}`;
     let abandon!: () => void;
     const abandoned = new Promise<void>((r) => { abandon = r; });
+    let retired!: () => void; let retireFailed!: (e: unknown) => void;
+    const retiring = new Promise<void>((res, rej) => { retired = res; retireFailed = rej; });
     const rolledBack = raceDb.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(`UPDATE "DecisionOptionKind" SET "active"=false WHERE "code"='a1-r3'`);
+      try {
+        await tx.$executeRawUnsafe(`UPDATE "DecisionOptionKind" SET "active"=false WHERE "code"='a1-r3'`);
+      } catch (e) { retireFailed(e); throw e; }
+      retired();
       await abandoned;
       throw new Error('deliberate rollback');       // the retirement never happened
-    }, { timeout: 30_000 }).catch(() => undefined);
-    const h3 = hold(classify('a1-r3', kept), t.prisma);
-    await h3.onReady;
-    h3.release();
-    expect(await someoneBlockedInCommit(), 'the commit must wait here too').toBe(true);
-    abandon();
-    await rolledBack;
-    await h3.done;
+    }, { timeout: 30_000 }).catch((e: unknown) => { retireFailed(e); });   // no-op once `retiring` resolved
+    // the retirement holds its row BEFORE the selection starts, as `retire.onReady` does in
+    // ordering 2; without this barrier a loaded runner can commit the selection first, and then
+    // nothing is in flight for it to wait on
+    let h3: ReturnType<typeof hold> | undefined;
+    let blocked3 = false;
+    try {
+      await retiring;
+      h3 = hold(classify('a1-r3', kept), t.prisma);
+      await h3.onReady;
+      h3.release();
+      blocked3 = await someoneBlockedInCommit(h3);
+    } finally {
+      abandon();                        // a red run must not hold the kind row until the 30 s tx timeout
+      await rolledBack;
+      await h3?.done;
+    }
+    expect(blocked3, 'the commit must wait here too').toBe(true);
+    if (!h3) throw new Error('unreachable');
     expect(h3.state(), 'an abandoned retirement must not refuse a legitimate selection').toBe('ok');
     const [row] = await t.prisma.$queryRawUnsafe<Array<{ kindCode: string }>>(
       `SELECT "kindCode" FROM "DecisionOption" WHERE "id"='${kept}'`);
@@ -497,15 +523,29 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
     }, { timeout: 30_000 });
     await onReady;
 
+    // Row 2 waits on an advisory lock this test holds, so the statement stays mid-flight until the
+    // kind has committed — however slow the runner — rather than for a 3 s window it may miss.
+    const gateKey = 0x0a1b0c + (run % 100_000);
+    let openGate!: () => void; let gateHeld!: () => void;
+    const gateOpen = new Promise<void>((r) => { openGate = r; });
+    const gateIsHeld = new Promise<void>((r) => { gateHeld = r; });
+    const gate = raceDb.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(${gateKey})`);
+      gateHeld();
+      await gateOpen;
+    }, { timeout: 30_000 });
+    await gateIsHeld;
+
     const captured = `opt-a1-${run}-${seq++}`;
     const filler = `opt-a1-${run}-${seq++}`;
+    let racingSettled = false;
     const racing = t.prisma.$executeRawUnsafe(
       `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","kindCode")
        SELECT CASE WHEN i = 1 THEN '${captured}' ELSE '${filler}' END, '${d}', 'O', 'kbc' || i, 'Teak', 0,
-              CASE WHEN i = 2 THEN (SELECT 'brown' FROM (SELECT pg_sleep(3)) z) ELSE 'brown' END,
+              CASE WHEN i = 2 THEN (SELECT 'brown' FROM (SELECT pg_advisory_xact_lock(${gateKey})) z) ELSE 'brown' END,
               CASE WHEN i = 1 THEN 'a1-born-closed' ELSE 'material' END
          FROM generate_series(1, 2) i`,
-    ).then(() => null, (e: unknown) => e);
+    ).then(() => null, (e: unknown) => e).finally(() => { racingSettled = true; });
 
     // The kind must commit while that statement is genuinely MID-FLIGHT, and a fixed delay does not
     // establish that: on a loaded runner the racing statement may not have started, the kind commits
@@ -514,20 +554,25 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
     // that cannot fail for the reason it names is not evidence. So wait for the DATABASE to show
     // the statement has reached its sleeping row, then release.
     const midFlight = await (async () => {
-      const deadline = Date.now() + 8000;
-      while (Date.now() < deadline) {
+      for (;;) {
         const rows = await raceDb.$queryRawUnsafe<Array<{ n: bigint }>>(
           `SELECT COUNT(*)::bigint AS n FROM pg_stat_activity
             WHERE query LIKE '%a1-born-closed%' AND query NOT LIKE '%pg_stat_activity%'
-              AND state = 'active' AND wait_event = 'PgSleep' AND pid <> pg_backend_pid()`);
+              AND state = 'active' AND wait_event_type = 'Lock' AND wait_event = 'advisory'
+              AND pid <> pg_backend_pid()`);
         if (Number(rows[0]?.n ?? 0) > 0) return true;
+        if (racingSettled) return false;
         await new Promise((r) => setTimeout(r, 25));
       }
-      return false;
     })();
-    expect(midFlight, 'the racing statement must be observed in flight before the kind commits').toBe(true);
-    release();
-    await inserter;
+    try {
+      expect(midFlight, 'the racing statement must be observed in flight before the kind commits').toBe(true);
+    } finally {
+      release();
+      await inserter;
+      openGate();                       // only now may row 2 finish and the FK checks fire
+      await gate;
+    }
 
     const err = await racing;
     expect(err, 'a kind that was never active must not capture an option').not.toBeNull();
@@ -787,17 +832,18 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
         .then(() => { outcome = 'ok'; }, (e) => { outcome = 'error'; err = e; });
 
       // it must BLOCK on the decision row rather than read a stale "nothing approved yet"
+      // false only when the racing statement SETTLES without ever being seen waiting — a slow
+      // runner is waited for, and a statement that sails through is caught at once
       const blocked = await (async () => {
-        const deadline = Date.now() + 5000;
-        while (Date.now() < deadline) {
+        for (;;) {
           const rows = await raceDb.$queryRawUnsafe<Array<{ n: bigint }>>(
             `SELECT COUNT(*)::bigint AS n FROM pg_stat_activity
               WHERE query LIKE '%${id}%' AND query NOT LIKE '%pg_stat_activity%'
                 AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`);
           if (Number(rows[0]?.n ?? 0) > 0) return true;
+          if (outcome !== 'pending') return false;
           await new Promise((r) => setTimeout(r, 25));
         }
-        return false;
       })();
       expect(blocked, 'the reclassification must wait for the in-flight approval').toBe(true);
 

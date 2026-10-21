@@ -503,7 +503,10 @@ describe('OrgsService.addOrgMember', () => {
   it('lets an org owner add a new roster member with NO phantom project grant', async () => {
     const { svc, prisma, created } = makeRoster('owner');
     const res = await svc.addOrgMember('org1', 'owner1', { name: 'JP', email: 'jp@vitan.in', phone: '8320303515', role: 'owner' });
-    expect(res).toMatchObject({ userId: 'newuser', name: 'JP', email: 'jp@vitan.in', phone: '8320303515', orgRole: 'owner' });
+    expect(res).toMatchObject({ name: 'JP', email: 'jp@vitan.in', phone: '8320303515', orgRole: 'owner' });
+    // #482: the new identity is written inside the roster transaction, under the id its roster row names
+    expect(res.userId).toBe((created[0] as { id: string }).id);
+    expect(prisma.orgMembership.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ userId: res.userId }) }));
     // New account is homed on the org's first project only to satisfy the FK, with a
     // least-privilege dormant role and NO project membership — access comes from the
     // org role (super-admin reach), never a phantom PMC grant (ORG escalation fix).
@@ -1283,12 +1286,12 @@ describe('OrgsService.addOrgMember — invite notice', () => {
   }
 
   it('tells a newly provisioned admin how to sign in, naming the org and their role', async () => {
-    const { svc, notify } = makeRoster();
+    const { svc, notify, orgMemberships } = makeRoster();
     await svc.addOrgMember('org1', 'owner1', { name: 'Vitan Growth OS', email: 'growthos@vitan.in', role: 'admin' });
 
     expect(notify).toHaveBeenCalledOnce();
     const [userId, context] = notify.mock.calls[0] as unknown as [string, { context: string; role: string; actorUserId: string | null }];
-    expect(userId).toBe('newuser');
+    expect(userId).toBe((orgMemberships[0] as { userId: string }).userId); // the identity provisioned with its roster row
     expect(context).toEqual({ context: 'Vitan Architects', role: 'admin', actorUserId: 'owner1' });
   });
 

@@ -402,6 +402,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('switch')", "Post('session')", "Post('login')", "Post('password/request')", "Post('password/verify')", "Post('password/complete')", "Post('otp/request')", "Post('otp/verify')",
     "Post('worker/token')", "Post('email/request')", "Post('email/verify')", "Post('google')",
   ],
+  'auth/auth-ops.controller.ts': ["Post('qa-sign-in')"],
   'activities/activities.controller.ts': [
     'Post()', "Patch(':activityId')", "Delete(':activityId')", "Post(':activityId/start')", "Post(':activityId/complete')",
     "Post(':activityId/override')", "Delete(':activityId/override/:overrideId')", "Post('outputs')",
@@ -555,12 +556,16 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   'snapshot/notifications-seen.controller.ts': ["Post('seen')"],
   // #482 operator door — the presentation-only capability switch behind OPS_TOKEN
   'platform/ops/ops.controller.ts': ["Post('projects/:projectId/capabilities/:capability/enable')", "Post('projects/:projectId/capabilities/:capability/disable')"],
+  // #482 operator door — the QA-only mark, door guard before the rate limit (Codex P2 on #1020)
+  'platform/ops/ops-qa.controller.ts': ["Post('orgs/:orgId/qa-only')"],
 };
 
 // Controllers with NO mutating route (read-only surfaces).
 const READ_ONLY_CONTROLLERS: Record<string, string> = {
   'health.controller.ts': 'liveness/readiness probes',
   'snapshot/project.controller.ts': 'GET the RBAC-filtered project snapshot',
+  // #482 seen-state pins — the pin counts behind OPS_TOKEN, door guard before the rate limit
+  'platform/ops/ops-compat.controller.ts': 'GET /ops/compat/state-pins: seen-state pin counts from AuditLog',
 };
 
 describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
@@ -632,21 +637,22 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable)', () => {
+    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(186);
+      expect(total).toBe(188);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(186);
+      expect(live).toBe(188);
     });
   });
 
   describe('finding 1 — auth provisioning writes are real, project/org-scoped identity rows', () => {
     it('auth.service.ts writes User + Membership + WorkerDevice (NOT an empty-write, no-subject command)', () => {
       // the fact §4 documents as the provisioning-command mechanism: these are not
-      // "auth mints a token and writes nothing". The second `user` write is #811's landing preference: a successful
-      // switch stamps the user's own `lastProjectId`, which grants nothing (sign-in re-resolves access before using it).
-      expect(writesByModel(read('auth/auth.service.ts'))).toEqual({ user: 2, membership: 1, workerDevice: 1 });
+      // "auth mints a token and writes nothing". #811's landing preference (a switch stamping the user's own
+      // `lastProjectId`) is the orgs participant's write since #482 (`OrgsParticipant.rememberLastProject`), so the one
+      // `user` write left here is the provisioning create.
+      expect(writesByModel(read('auth/auth.service.ts'))).toEqual({ user: 1, membership: 1, workerDevice: 1 });
     });
   });
 

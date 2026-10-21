@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { Role } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * Unit C1 — the universal create control.
@@ -35,6 +36,8 @@ async function mount(overrides: Record<string, unknown> = {}) {
   const { CreateControl, CreateRailButton } = await import('@/layout/CreateControl');
   return { useStore, CreateControl, CreateRailButton };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/layout/CreateControl'));
 
 afterEach(() => {
   cleanup();

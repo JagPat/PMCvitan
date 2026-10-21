@@ -2612,6 +2612,59 @@ the usual `capability.enable` / `capability.disable` audit row, with the operato
 `via: "ops-api"`. A wrong or missing token gets 401, and each route allows 30 calls a minute per address.
 No route takes SQL or touches project data. The T3C seal check stays a terminal command (`t3c:seals`).
 
+**QA companies and QA sign-in** (#482, Jagrut's "Rebuild it", 20 Oct 2026). A company marked QA-only holds only
+QA accounts (`qa.<word>@vitan.in`), and a QA account belongs only to QA-only companies. The database enforces both
+(migration `20280116000000_qa_company_lock`): adding a real person to a QA-only company or its projects, adding a
+QA account anywhere else, changing an email across that line, or starting a company as a QA account is refused
+with 409 and writes nothing. Mark a company QA-only once it holds only QA accounts (409 otherwise; there is no
+unmark route):
+
+    curl -X POST -H "Authorization: Bearer $OPS_TOKEN" -H 'Content-Type: application/json' \
+         -d '{"operator":"<you>","reason":"<text>"}' https://pms-api.vitan.in/ops/orgs/<orgId>/qa-only
+
+`GET /ops/people` shows each company's `qaOnly`. Each mark writes an `org.qaOnly` audit row on the company's live
+projects. Then `POST /auth/ops/qa-sign-in` (same `OPS_TOKEN`, 10 calls per 10 minutes) returns a normal sign-in
+(`token`, `role`, `projectId`) for a QA account, so live QA runs without a stored password:
+
+    curl -X POST -H "Authorization: Bearer $OPS_TOKEN" -H 'Content-Type: application/json' \
+         -d '{"email":"qa.pmc@vitan.in","operator":"<you>","reason":"<text>"}' \
+         https://pms-api.vitan.in/auth/ops/qa-sign-in
+
+It signs in only a QA account that reaches at least one company, all of them QA-only; any other account gets 403,
+a QA address with no account 404, and 409 while a sign-in or membership change for that account is in progress right
+now (nothing is written; try again).
+Because the database keeps real people out of those companies, the session needs no re-check while it lasts.
+Each sign-in writes an `auth.qaSignIn` audit row with the operator and reason.
+
+## §SSP. Seen-state pins — when the pins can be required, and rolling back (#482)
+
+Eight money and measure acts (payment record and reverse, deduction record and release, advance pay,
+measurement take and correct, reattribute) take an optional `X-Vitan-Seen-State` header: the state the
+screen showed. A stale value is refused with 409 before any write, and a malformed one with 400. A
+missing header runs the act as before. The header is read before the act's receipt, so a committed act
+retried with a malformed header gets that 400, not its replay; the web never sends a malformed header,
+and a retry with the value first sent, or with none, replays. Each act's audit row records
+`seenPin: "present"` or `"absent"`. The count of each, per act, is read through the operator door (§OPS):
+
+    curl -H "Authorization: Bearer $OPS_TOKEN" "https://pms-api.vitan.in/ops/compat/state-pins?since=<ISO time>"
+
+It answers, for each of the eight actions (zeros listed), `pinned` and `absent` with the newest time of
+each. `since` is required; a missing or malformed one gets 400.
+
+**When the pins can be required (Step 3).** When the web build that sends the header deploys, the
+coordinator files an issue "Seen-state pins: Step 3 check due <deploy date + 14 days>" with the deploy
+time, this condition and the read above. From the due date the check re-runs weekly until both hold:
+
+- the web build has been deployed for at least 14 days;
+- the read with `since=<now − 14 days>` shows `absent = 0` for all eight actions **and** `pinned ≥ 1`
+  summed over them.
+
+Then the coordinator opens the Step 3 PR, which refuses a missing header on the HTTP routes.
+
+**Rollback.** Roll the web back before the API. While the API is rolled back past the seen-state pins
+unit, pins are not enforced (today's behaviour) until it is redeployed; nothing queued is lost, because
+an older API ignores `X-Vitan-Seen-State`.
+
 ## §DS. Database snapshot (read-only)
 
 Records every table's rows by key, so a removal can be checked row by row (#482: the archived
@@ -2715,3 +2768,58 @@ record is printed, then saved. Exit 0 means a dry run whose every check held, or
 removal. Exit 1 means nothing was changed. Exit 3 means the removal COMMITTED but saving the
 record failed: the printed record is the deletion record. Run it from the deployed image, like
 every operator CLI.
+
+## §MG. The deleted-photo guard (`20280118000000_media_tombstone_guard`, #482)
+
+The guard refuses to store a photo again under the key of a deleted one (SQLSTATE `MT410`). It installs only
+when no photo already stored carries a deleted photo's key: otherwise it raises `MTSTO`, nothing is installed,
+and `scripts/migrate.sh` refuses to start. It waits at most 15 s for its lock on `Media`; a longer holder (a
+running `project:remove`, a stray open session) makes it fail with nothing installed, after holding new photo
+writes behind it for at most 15 s (a send held past its own 5 s timeout is answered 500, and the phone sends it again).
+
+### Before the deploy: the read-only count
+
+Run from the deployed API image (the Coolify API terminal). It reads only, and works before and after the
+guard is installed:
+
+```
+cd /app/apps/api && node - <<'EOF'
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+(async () => {
+  try {
+    const out = await prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('SET TRANSACTION READ ONLY');
+      const [g] = await tx.$queryRawUnsafe(`SELECT finished_at FROM "_prisma_migrations" WHERE migration_name = '20280118000000_media_tombstone_guard' AND finished_at IS NOT NULL AND rolled_back_at IS NULL ORDER BY finished_at LIMIT 1`);
+      const rows = await tx.$queryRawUnsafe(`
+        SELECT m."id", m."projectId", m."kind", m."uploadedBy", m."createdAt", t."deletedAt"
+          FROM "Media" m JOIN "MediaTombstone" t ON t."projectId" = m."projectId" AND t."clientKey" = m."clientKey"
+         ORDER BY m."createdAt"`);
+      return { result: rows.length === 0 ? 'PASS' : 'ROWS TO DECIDE', applied: !!g, storedAgain: rows.length, rows };
+    });
+    console.log(JSON.stringify(out, null, 2));
+  } catch (e) {
+    console.error('FAILED (nothing was changed):', e.message);
+    process.exitCode = 1;
+  } finally {
+    await prisma.$disconnect();
+  }
+})();
+EOF
+```
+
+- `"storedAgain": 0` (`"result": "PASS"`) is a pass.
+- `"applied": false` is expected before the guard deploys, and is not a failure; it is `true` after.
+- Any rows go to the owner, who decides each one. Nothing removes them automatically. Each row is a photo
+  (its id, project, kind, uploader's user id, when it was stored) whose key was recorded by an earlier delete.
+
+### If the deploy failed at this file
+
+Any failure of this file leaves Prisma's P3009 on the next deploy: `MTSTO`, `MTISO` (the deploy ran at an
+isolation level other than READ COMMITTED), the 15 s lock timeout, a killed install, or the deploy client
+dying mid-install (the database may then have committed the install although the ledger says failed).
+`scripts/migrate.sh` prints the same steps:
+
+0. If it says `MTSTO`: run the count above, and have the owner decide each row before going on.
+1. `npx prisma migrate resolve --rolled-back 20280118000000_media_tombstone_guard`
+2. Redeploy. A re-run is safe whether or not the install had committed.

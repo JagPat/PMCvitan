@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { Drawing, DrawingRevision, ProjectNode } from '@vitan/shared';
+import { warmImports } from './warm-imports';
+import { holdFileReads } from './file-reads';
 
 /**
  * Phase 2 Task 10 correction round 2 (C2b) — the drawing LOCATION editor is a set of drawing MUTATIONS
@@ -45,14 +47,21 @@ async function loadViewer(mode: 'snapshot' | 'moduleQuery', overrides: StoreStat
   return { useStore, DrawingViewer };
 }
 
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DrawingsScreen'));
+
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   vi.resetModules();
 });
 beforeEach(() => {
   vi.unstubAllEnvs();
 });
+// The viewer reads a PDF revision's file with fetch (drawings-offline-viewer); these tests are about the location controls, not the file:
+// the read is held, never sent, and stops when the viewer closes.
+beforeEach(() => holdFileReads());
+
 
 describe('C2b — DrawingLocationBlock honours drawingMutationsBlocked (moduleQuery)', () => {
   it('error WITH last-good: the Move/re-file control is DISABLED (cannot open the editor on stale data)', async () => {

@@ -14,6 +14,8 @@ import type { AuthUser } from '../../src/common/auth';
  * that the file re-runs.
  */
 const MIGRATION = join(__dirname, '../../prisma/migrations/20280117000000_media_tombstone/migration.sql');
+/** 20280118 replaces this file's record writer with a qualified one; a deployed database has both, in name order. */
+const GUARD = join(__dirname, '../../prisma/migrations/20280118000000_media_tombstone_guard/migration.sql');
 
 describe('#482 the deleted-photo record (live PG)', () => {
   let t: TestApp;
@@ -25,10 +27,17 @@ describe('#482 the deleted-photo record (live PG)', () => {
   });
 
   afterAll(async () => {
-    await t?.prisma.media.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
-    // the fixture's project delete takes every tombstone with it (T3)
-    await f?.cleanup();
-    await t?.close();
+    // a database the test app refused was never touched, so nothing here runs against it
+    if (!t) return;
+    try {
+      // the replays below re-ran 20280117 alone; leave the database as a deploy does, with 20280118 after it
+      execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', (process.env.DATABASE_URL ?? '').split('?')[0]!, '-f', GUARD], { stdio: 'pipe' });
+    } finally {
+      if (f) await t.prisma.media.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
+      // the fixture's project delete takes every tombstone with it (T3)
+      await f?.cleanup();
+      await t.close();
+    }
   });
 
   const raw = (sql: string, ...values: unknown[]) => t.prisma.$executeRawUnsafe(sql, ...values);
@@ -195,8 +204,14 @@ describe('#482 the deleted-photo record (live PG)', () => {
       const a = await photo(k);
       await raw(`DELETE FROM "Media" WHERE "id" = $1`, a.id);
       expect(await recorded(k)).toBe(1);
-      // the same key again (a row stored before the record could be read): no error, still one record
-      const b = await photo(k);
+      // the same key again: the guard (20280118) refuses it now, so this is a row stored before the guard existed;
+      // deleting it is no error, and the record stays one
+      const b = await t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`ALTER TABLE "Media" DISABLE TRIGGER "Media_tombstone_guard"`);
+        const row = await tx.media.create({ data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', data: Buffer.from('abc'), sizeBytes: 3, uploadedBy: 'pmc', clientKey: k } });
+        await tx.$executeRawUnsafe(`ALTER TABLE "Media" ENABLE TRIGGER "Media_tombstone_guard"`);
+        return row;
+      });
       await t.prisma.media.delete({ where: { id: b.id } });
       expect(await recorded(k)).toBe(1);
       const before = await t.prisma.mediaTombstone.count({ where: { projectId: f.projectA.id } });

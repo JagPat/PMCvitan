@@ -1,12 +1,15 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, renderHook, fireEvent } from '@testing-library/react';
 import type { Decision } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * QA check 14 Oct 2026 (#482, items 3): the client has ONE "Decisions" screen — what waits on them first, then
  * the history — in place of "Decisions Waiting" and "Decision Log". The old `/decisions` path and notices that
  * open it still land, on that screen. The PMC's register is unchanged.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/layout/ScreenView'), () => import('@/lib/screens'), () => import('@/layout/useNavItems'), () => import('@/lib/mobileNav'));
 
 afterEach(() => {
   cleanup();
