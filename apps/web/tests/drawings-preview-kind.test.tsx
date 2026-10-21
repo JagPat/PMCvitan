@@ -75,6 +75,18 @@ describe('each drawing type the API accepts previews the way a browser can show 
     expect(shownAs(r.container)).toBe(kind);
   });
 
+  it.each(['image/vnd.dwg', 'application/acad', 'application/dwg', 'image/vnd.dxf', 'application/dxf'])('%s says it is a CAD source', async (mime) => {
+    const DrawingViewer = await loadViewer();
+    const r = render(<DrawingViewer drawing={dwg(rev(mime))} onClose={() => {}} />);
+    expect(r.container.textContent).toContain('CAD source');
+  });
+
+  it.each(['', 'image/gif', 'image/tiff', 'image/heic', 'IMAGE/PNG', 'text/html'])('a type not on the list (%j) gets the Download link', async (mime) => {
+    const DrawingViewer = await loadViewer();
+    const r = render(<DrawingViewer drawing={dwg(rev(mime))} onClose={() => {}} />);
+    expect(shownAs(r.container)).toBe('download');
+  });
+
   it("the demo's SVG sheets still show as images", async () => {
     const DrawingViewer = await loadViewer();
     const r = render(<DrawingViewer drawing={dwg(rev('image/svg+xml'))} onClose={() => {}} />);

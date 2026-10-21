@@ -444,7 +444,7 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
           <div style={{ textAlign: 'center', padding: 40 }}>
             <FileText size={40} color="#b8b2a6" />
             <div style={{ fontSize: 13.5, color: 'var(--muted)', margin: '12px 0 16px', maxWidth: 320 }}>
-              {rev.mime.includes('dwg') || rev.mime.includes('dxf') ? L.cadNote[lang] : L.noPreview[lang]}
+              {/dwg|dxf|acad/.test(rev.mime) ? L.cadNote[lang] : L.noPreview[lang]}
             </div>
             <a
               href={src}
