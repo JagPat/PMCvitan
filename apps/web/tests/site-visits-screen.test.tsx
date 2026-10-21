@@ -692,6 +692,18 @@ describe('queued acts drawn as the server will read them', () => {
     expect(add(visit({ status: 'ended', endedAt: '2026-10-14T04:50:00.000Z' }))).toBe(true);
     expect(add(visit())).toBe(false);
   });
+
+  it('marks the time of a place queued on an ended visit, or claimed before an open visit\'s start, as set by the server, as the server will (Codex 4278991742, #909)', () => {
+    // the server stamps a place added after the end with the time it receives it (`site_visits_place_insert`), so its
+    // time is the server's, never the one this phone claimed; on an open visit it keeps a claim from the start on, so
+    // only a claim before the start is known to be moved before it is sent
+    const add = (v: SiteVisit) => withQueued([v], [{
+      t: 'siteVisitAddPlace', visitId: 'v-1', idempotencyKey: 'k', name: 'Kitchen', body: { id: 'p-new', nodeId: 'n-kit', claimedAt: '2026-10-14T05:00:00.000Z' },
+    }], CONSULTANT).visits[0].places[0].addedTimeAdjusted;
+    expect(add(visit({ status: 'ended', endedAt: '2026-10-14T04:50:00.000Z' }))).toBe(true);
+    expect(add(visit())).toBe(false);
+    expect(add(visit({ startedAt: '2026-10-14T05:10:00.000Z' }))).toBe(true);
+  });
 });
 
 describe('a flush of site visit acts alone', () => {
