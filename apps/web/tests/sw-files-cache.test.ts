@@ -46,8 +46,8 @@ type Server = (url: string, init: { mode: string; credentials?: string }) => Pro
 const later = () => new Promise((done) => setTimeout(done, 0));
 
 function request(url: string, mode: Mode): Req {
-  // a CORS read carries the page's Origin; an <img>'s no-cors read and a navigation do not
-  return { url, method: 'GET', mode, headers: new Map(mode === 'cors' ? [['origin', ORIGIN]] : []) };
+  // per Fetch, Origin is added after the worker's fetch event, so no request the worker sees carries it
+  return { url, method: 'GET', mode, headers: new Map() };
 }
 
 /**
@@ -137,8 +137,10 @@ function loadWorker(held: Record<string, Record<string, Stored | Response>>, ser
     return { answer: answer!, extended };
   };
   const get = async (url: string, mode: Mode) => {
-    const { answer } = dispatch(url, mode);
+    const { answer, extended } = dispatch(url, mode);
     const res = await answer;
+    // the refresh the worker extended the event with, which may land after the page's answer
+    await Promise.all(extended);
     await settled();
     return res;
   };
@@ -147,7 +149,11 @@ function loadWorker(held: Record<string, Record<string, Stored | Response>>, ser
 }
 
 const offline: Server = () => Promise.reject(new TypeError('offline'));
-const answers = (res: () => Response): Server => async () => res();
+/** The network answers a turn later, as a real one does: after the worker has handed back a kept copy. */
+const answers = (res: () => Response): Server => async () => {
+  await later();
+  return res();
+};
 
 describe('a drawing or photo is read in CORS mode, and only a good answer is kept', () => {
   it.each([
@@ -208,7 +214,7 @@ describe('a drawing or photo is read in CORS mode, and only a good answer is kep
     expect(worker.kept(DRAWING)?.type).toBe('cors');
   });
 
-  it('a copy kept for an <img> is found for a CORS read of the same file, though the answer varies on Origin', async () => {
+  it('a copy kept for an <img> is found for a CORS read of the same file (a guard: the answer varies on Origin, which no request the worker sees carries)', async () => {
     // the network answers the <img>, then drops
     let reads = 0;
     const worker = loadWorker({}, async () => {
@@ -231,9 +237,23 @@ describe('an opaque copy an earlier release kept is trusted only when the networ
     expect(kept(DRAWING)?.type).toBe('cors');
   });
 
-  it('online, an error is shown, and the opaque copy stays for offline', async () => {
+  it.each([403, 503])('online, an answer of %i gives an <img> the opaque copy, and leaves it', async (status) => {
+    const { get, kept } = loadWorker(held(), answers(() => cors('error', status)));
+    expect((await get(DRAWING, 'no-cors')).type).toBe('opaque');
+    expect(kept(DRAWING)?.type).toBe('opaque');
+  });
+
+  it('online, an error answer is shown to a CORS read, which cannot use the opaque copy', async () => {
     const { get, kept } = loadWorker(held(), answers(() => cors('expired', 403)));
-    expect((await get(DRAWING, 'no-cors')).status).toBe(403);
+    expect((await get(DRAWING, 'cors')).status).toBe(403);
+    expect(kept(DRAWING)?.type).toBe('opaque');
+  });
+
+  it('online with the network failing, an <img> gets the opaque copy, and it is not stored again', async () => {
+    // the CORS read fails, and so does the page's own read
+    const { get, kept, network } = loadWorker(held(), offline);
+    expect((await get(DRAWING, 'no-cors')).type).toBe('opaque');
+    expect(network.map((n) => n.mode)).toEqual(['cors', 'no-cors']);
     expect(kept(DRAWING)?.type).toBe('opaque');
   });
 

@@ -115,18 +115,21 @@ self.addEventListener('fetch', (event) => {
   if (isFileAsset(url)) {
     event.respondWith(
       caches.open(FILES_CACHE).then((cache) =>
-        // the server's answers vary on Origin; one file's bytes do not, so an <img> and a CORS read share one copy
+        // defensive: the worker's requests carry no Origin, so the server's `Vary: Origin` already matches; ignoring Vary
+        // keeps one copy per URL if a browser ever adds it (one file's bytes do not depend on who asks)
         cache.match(request, { ignoreVary: true }).then((hit) => {
           // read in CORS mode (the API and the bucket both allow it), so a 403 for an expired link, a 404 or a 5xx is
           // seen for what it is and never replaces a good copy; an opaque answer, whose status cannot be read, is never kept
           const fresh = fetch(url.href, { mode: 'cors', credentials: 'omit' });
           event.waitUntil(fresh.then((res) => (res.ok ? cache.put(request, res.clone()) : undefined)).catch(() => undefined));
-          // an opaque copy an earlier release kept may be an error: it is used only when the network gives nothing
+          // an opaque copy an earlier release kept may be an error: it is read again first, and given to an <img> only
+          // when the network gives no good answer (never to a CORS read, which cannot use its bytes)
           if (hit && hit.type !== 'opaque') return hit;
+          const opaqueForImg = hit && request.mode === 'no-cors' ? hit : undefined;
           return fresh
             // CORS refused or the network down: the page's own request, which is never kept
-            .then((res) => res, () => fetch(request))
-            .catch(() => (hit && request.mode === 'no-cors' ? hit : Response.error()));
+            .then((res) => (res.ok || !opaqueForImg ? res : opaqueForImg), () => fetch(request))
+            .catch(() => opaqueForImg || Response.error());
         }),
       ),
     );
