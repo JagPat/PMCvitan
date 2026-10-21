@@ -7,7 +7,7 @@ import { leftoverEnglish } from './leftover-english';
 import { warmImports } from './warm-imports';
 import { calledTimes, heldOnPurpose, settled, startWork, tracked } from './site-visit-work';
 
-await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DashboardScreen'), () => import('@/screens/DailyLogScreen'));
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DashboardScreen'), () => import('@/screens/DailyLogScreen'), () => import('@/screens/PlacesScreen'));
 
 /**
  * #482 site photos (Board, 14 Oct 2026) — a member deletes a site photo they added, within the hour, from the
@@ -230,17 +230,33 @@ describe('deleting your own site photo within the hour (#482)', () => {
     expect(useStore.getState().dailyLogPhotoCountAfter).not.toBeNull();
   });
 
-  it('a "not found" for a photo not on the log on screen leaves the day\'s count shown (#991)', async () => {
-    const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), deletable: true, deletableUntil: until(5) };
-    const dailyLog = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 3, photoCount: 3, myPhotoKeys: [], crew: [], materials: [], photos: [] };
+  it('a "not found" for a photo the log\'s gallery does not hold still has the day\'s count read again: the gallery is only the newest 12 (#991, Codex 4337661426)', async () => {
+    const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(30), deletable: true, deletableUntil: until(30) };
+    // the 13th in-hour photo: twelve newer ones fill the gallery, and the log counts all thirteen
+    const gallery = Array.from({ length: 12 }, (_, i) => ({ id: `g${i}`, url: `/media/g${i}` }));
+    const dailyLog = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 13, photoCount: 13, myPhotoKeys: [], crew: [], materials: [], photos: gallery };
     const { useStore } = await load('en', [own], { dailyLog });
     const notFound = Object.assign(new Error('/media/own 404'), { status: 404, serverMessage: 'Media not found' });
     useStore.getState()._setGateway(tracked({ deleteMedia: vi.fn().mockRejectedValue(notFound), snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) }) as never);
     await useStore.getState().deleteSitePhoto('own');
+    await settled();
     expect(useStore.getState().photos).toEqual([]);
     expect(useStore.getState().toast).toBe('Photo deleted.');
+    // the refresh failed: the count stays "updating", never the 13 that may still hold the photo
+    expect(useStore.getState().dailyLogPhotoCountAfter).not.toBeNull();
+    const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
+    const screen = render(<DailyLogScreen />);
+    expect(screen.getByTestId('progress-photo-count').textContent).toBe('Progress photos: updating the count…');
+  });
+
+  it('a "not found" with no log on screen marks no count', async () => {
+    const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(5), deletable: true, deletableUntil: until(5) };
+    const { useStore } = await load('en', [own], { dailyLog: null });
+    const notFound = Object.assign(new Error('/media/own 404'), { status: 404, serverMessage: 'Media not found' });
+    useStore.getState()._setGateway(tracked({ deleteMedia: vi.fn().mockRejectedValue(notFound), snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) }) as never);
+    await useStore.getState().deleteSitePhoto('own');
+    expect(useStore.getState().photos).toEqual([]);
     expect(useStore.getState().dailyLogPhotoCountAfter).toBeNull();
-    expect(useStore.getState().dailyLog?.photoCount).toBe(3);
   });
 
   it('a route\'s or a proxy\'s 404 is not the server saying the photo is gone: the photo stays, and nothing says it was deleted (#991)', async () => {
@@ -415,6 +431,54 @@ describe('the viewer\'s photo in their hour beyond the newest 300 (#482, Codex 4
   };
   const newer = (n: number) => Array.from({ length: n }, (_, i): Photo => ({ id: `n${i}`, url: `/media/n${i}`, kind: 'progress', at: minutesAgo(1), by: 'Ravi Patel' }));
 
+  it('a delete from the full window keeps the count a floor until a snapshot rebuilds the window, also when the refresh fails (Codex 4337661439)', async () => {
+    const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(30), deletable: true, deletableUntil: until(30) };
+    const { r, useStore } = await load('en', [...newer(299), own], { nodes: [{ id: 'kit', parentId: null, name: 'Kitchen', kind: 'room', order: 0 }] });
+    const { PlacesScreen } = await import('@/screens/PlacesScreen');
+    const CAPPED_PLACE = 'among the latest 300 photos on record';
+    const place = () => { useStore.setState({ routeItem: 'kit' } as never); const p = render(<PlacesScreen />); const text = p.container.textContent; p.unmount(); return text; };
+    expect(r.container.textContent).toContain('300+');
+    const snapshot = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    useStore.getState()._setGateway(tracked({ deleteMedia: vi.fn().mockResolvedValue({ ok: true, dailyLogId: null }), snapshot }) as never);
+    await act(async () => { await useStore.getState().deleteSitePhoto('own'); });
+    await settled();
+    expect(snapshot).toHaveBeenCalled();
+    // 299 left on screen, and an older photo may lie just past the window: "at least", never an exact 299, on the
+    // Dashboard and on the Site Map alike
+    expect(r.container.textContent).toContain('299+');
+    expect(place()).toContain(CAPPED_PLACE);
+    // a snapshot rebuilds the window: its own count is the server's again
+    snapshot.mockResolvedValue(snapOf(newer(299)));
+    await act(async () => { await useStore.getState().requestFreshSnapshot(); });
+    expect(r.container.textContent).not.toContain('299+');
+    expect(place()).not.toContain(CAPPED_PLACE);
+  });
+
+  it('a delete from a window that is not full leaves its count exact (Codex 4337661439)', async () => {
+    const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(30), deletable: true, deletableUntil: until(30) };
+    const { r, useStore } = await load('en', [...newer(4), own]);
+    useStore.getState()._setGateway(tracked({ deleteMedia: vi.fn().mockResolvedValue({ ok: true, dailyLogId: null }), snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) }) as never);
+    await act(async () => { await useStore.getState().deleteSitePhoto('own'); });
+    await settled();
+    expect(useStore.getState().photos.some((p) => p.id === 'own')).toBe(false);
+    expect(useStore.getState().photosWindowShort).toBe(false);
+    expect(r.container.textContent).not.toContain('4+');
+  });
+
+  it('a pull begun before the delete was answered cannot rebuild the window, so the count stays a floor (Codex 4337661439)', async () => {
+    const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(30), deletable: true, deletableUntil: until(30) };
+    const { r, useStore } = await load('en', [...newer(299), own]);
+    let answerStale!: (v: unknown) => void;
+    const snapshot = vi.fn().mockReturnValueOnce(new Promise((res) => { answerStale = res; })).mockRejectedValue(new TypeError('Failed to fetch'));
+    useStore.getState()._setGateway(tracked({ deleteMedia: vi.fn().mockResolvedValue({ ok: true, dailyLogId: null }), snapshot }) as never);
+    useStore.getState().requestFreshSnapshot();
+    await act(async () => { await useStore.getState().deleteSitePhoto('own'); });
+    await act(async () => { answerStale(snapOf([...newer(299), own])); });
+    await settled();
+    expect(useStore.getState().photos.some((p) => p.id === 'own')).toBe(false);
+    expect(r.container.textContent).toContain('299+');
+  });
+
   it('a new upload keeps the window at 300 and moves it to the viewer\'s own list, where its Delete stays reachable', async () => {
     const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(30), deletable: true, deletableUntil: until(30) };
     const { r, useStore } = await load('en', [...newer(299), own], { userName: 'Asha Shah' });
@@ -549,12 +613,15 @@ describe('the viewer\'s photo in their hour beyond the newest 300 (#482, Codex 4
 
   it('is emptied by a project switch and by signing out', async () => {
     const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(30), deletable: true, deletableUntil: until(30) };
-    const { useStore } = await load('en', [], { myDeletablePhotos: [own] });
+    const { useStore } = await load('en', [], { myDeletablePhotos: [own], photosWindowShort: true });
     useStore.getState()._setGateway(tracked({ switchProject: vi.fn().mockReturnValue(new Promise(() => {})) }) as never);
     act(() => { void useStore.getState().switchProject('villa-c'); });
     expect(useStore.getState().myDeletablePhotos).toEqual([]);
-    act(() => { useStore.setState({ myDeletablePhotos: [own] } as never); useStore.getState().signOut(); });
+    // the short-window floor is the old project's too (Codex 4337661439)
+    expect(useStore.getState().photosWindowShort).toBe(false);
+    act(() => { useStore.setState({ myDeletablePhotos: [own], photosWindowShort: true } as never); useStore.getState().signOut(); });
     expect(useStore.getState().myDeletablePhotos).toEqual([]);
+    expect(useStore.getState().photosWindowShort).toBe(false);
   });
 });
 

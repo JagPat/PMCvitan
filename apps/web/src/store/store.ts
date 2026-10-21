@@ -399,6 +399,9 @@ export interface AppState {
   /** #482 site photos — the viewer's own site photos still in their delete hour past the newest window `photos` holds
    *  (the snapshot's `myDeletablePhotos`), so that hour's Delete is never out of reach; never counted as photos */
   myDeletablePhotos: Photo[];
+  /** #482 site photos — a delete took a photo out of a full window: its count stays a floor until a snapshot rebuilds
+   *  the window (Codex 4337661439) */
+  photosWindowShort: boolean;
   materials: Material[]; // all deliveries across the project, with their place (Site Map)
   placedInspections: PlacedInspection[]; // inspections on the tree for the Site Map (pmc/engineer only)
   phases: Phase[]; // project phases with rollups (Orgs Slice 3)
@@ -1426,6 +1429,7 @@ export function getInitialState(): AppState {
     drawings: structuredClone(SEED_DRAWINGS),
     photos: structuredClone(SEED_PHOTOS), // placed site photos for the demo Site Map
     myDeletablePhotos: [],
+    photosWindowShort: false,
     materials: structuredClone(SEED_MATERIALS), // placed deliveries for the demo Site Map
     placedInspections: structuredClone(SEED_PLACED_INSPECTIONS), // placed inspections for the demo Site Map
     phases: structuredClone(SEED_PHASES),
@@ -1958,6 +1962,7 @@ export const useStore = create<Store>()(
         // Placed site photos come back as signed API-relative serve paths — resolve
         // them against the API base so the Place view's <img src> hits the API.
         s.photos = (snap.photos ?? []).map((p) => ({ ...p, url: resolveMediaUrl(p.url) }));
+        s.photosWindowShort = false; // the window is the server's again
         // #482 site photos — the viewer's own photos in their hour past that window: under the same lease, so a pull
         // superseded by a delete can no more refill this list than the window
         s.myDeletablePhotos = (snap.myDeletablePhotos ?? []).map((p) => ({ ...p, url: resolveMediaUrl(p.url) }));
@@ -4295,6 +4300,9 @@ export const useStore = create<Store>()(
             // filed on the log on screen: its count is the server's to say again, read after this answer; until then
             // none is shown rather than one that may still hold the photo (Codex 4322142057)
             if (onLog(s)) s.dailyLogPhotoCountAfter = snapshotSeq;
+            // taken out of a full window: an older photo may lie just past it, so the count stays a floor until a
+            // snapshot rebuilds the window, and one that fails leaves it a floor (Codex 4337661439)
+            if (s.photos.length >= SNAPSHOT_SITE_PHOTO_LIMIT && s.photos.some((p) => p.id === photoId)) s.photosWindowShort = true;
             s.photos = s.photos.filter((p) => p.id !== photoId);
             if (s.dailyLog) s.dailyLog.photos = s.dailyLog.photos.filter((p) => p.id !== photoId);
             // nor is it kept as evidence on a checklist or review still held here (Codex 4322142035)
@@ -4316,9 +4324,10 @@ export const useStore = create<Store>()(
             if (!scopeStillCurrent(scope)) return;
             // the server's own "not found" (by its text, never a route's or a proxy's 404): the photo is already gone. An earlier delete whose answer was lost (#991) took it, or someone
             // else did, and either way it is deleted, so a retry after an unknown answer settles here and never shows a
-            // refusal. Which log counted it is not said, so the on-screen log's count is read again if the photo was on it.
+            // refusal. Which log counted it is not said, and the log's gallery holds only the project's newest 12, so its
+            // absence there says nothing: the on-screen log's count is read again whenever a log is on screen (Codex 4337661426).
             if (isMediaNotFound(err)) {
-              settleDeleted((s) => !!s.dailyLog?.photos.some((p) => p.id === photoId));
+              settleDeleted((s) => s.dailyLog !== null);
               return;
             }
             get().flash(isTerminalOutboxError(err) ? SRV.refused(refusalMessage(err) ?? 'the server refused it', lang()) : DTX.unreachable[lang()]);

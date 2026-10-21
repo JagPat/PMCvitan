@@ -108,6 +108,9 @@ export interface ProjectDataState {
   reinspectionCreated: boolean;
   drawings: Drawing[];
   photos: Photo[];
+  /** #482 site photos — a delete took a photo out of a full window: `photos` is still a window of the newest, with an
+   *  older photo possibly just past it, so its count stays a floor until a snapshot rebuilds the window (Codex 4337661439) */
+  photosWindowShort: boolean;
   /** #482 site photos — the viewer's own photos still in their delete hour past the newest window (the snapshot's list) */
   myDeletablePhotos: Photo[];
   materials: Material[];
@@ -220,6 +223,7 @@ export function emptyProjectData(): ProjectDataState {
     reinspectionCreated: false,
     drawings: [],
     photos: [],
+    photosWindowShort: false,
     myDeletablePhotos: [],
     materials: [],
     placedInspections: [],

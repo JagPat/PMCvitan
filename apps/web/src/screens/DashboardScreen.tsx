@@ -88,6 +88,9 @@ export function DashboardScreen() {
   const phases = useStore(useShallow((s) => s.phases));
   const activities = useStore(useShallow((s) => s.activities));
   const photoStats = useStore(useShallow(selectPhotoStats));
+  // a delete took a photo out of a full window: still a window of the newest, so still "at least" until a snapshot
+  // rebuilds it (Codex 4337661439)
+  const photosCapped = useStore((s) => s.photosWindowShort) || photoStats.capped;
   const recordedPhotos = useStore(useShallow((s) => s.photos));
   // #482 site photos: a photo picked with no signal shows first at once, until its upload is sent
   const outbox = useStore((s) => s.outbox);
@@ -174,8 +177,8 @@ export function DashboardScreen() {
     // The snapshot carries the newest SNAPSHOT_SITE_PHOTO_LIMIT only: a full window is "at least", and its
     // places are the places among those (Codex 4194155412) — never presented as the total on record.
     {
-      key: 'photos', label: L.photosTile[photoLang], value: photoStats.capped ? `${sitePhotos.length}+` : sitePhotos.length, accent: 'var(--green-solid)',
-      sub: photoStats.capped
+      key: 'photos', label: L.photosTile[photoLang], value: photosCapped ? `${sitePhotos.length}+` : sitePhotos.length, accent: 'var(--green-solid)',
+      sub: photosCapped
         ? `${T.photosLatest(sitePhotos.length, photoLang)}${photoZones > 0 ? ` · ${T.photosAcross(photoZones, photoLang, true)}` : ''}`
         : photoZones > 0 ? T.photosAcross(photoZones, photoLang) : sitePhotos.length > 0 ? L.photosNotPlaced[photoLang] : L.photosNone[photoLang],
       onClick: canOpen('places') ? () => setScreen('places') : undefined,
