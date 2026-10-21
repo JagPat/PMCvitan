@@ -18,9 +18,15 @@ function statusMeta(status: string, lang: Lang): { label: string; bg: string; fg
   return { label: drawingStatusLabels.superseded[lang], bg: 'rgba(35,33,28,.06)', fg: 'var(--faint)', border: 'var(--hairline)' };
 }
 
-/** How a revision file previews: PDF inline, image inline, DWG/other download-only. */
+/**
+ * Image types a browser draws in an <img>: the raster drawings the API accepts, and the demo's SVG sheets. Named one by
+ * one, not by `image/*`, because CAD types are registered under `image/` too (`image/vnd.dwg`, `image/vnd.dxf`).
+ */
+const SHOWN_IMAGES: ReadonlySet<string> = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/svg+xml']);
+
+/** How a revision file previews: PDF inline, a shown image inline, anything else (DWG, DXF, …) download-only. */
 function previewKind(mime: string): 'image' | 'pdf' | 'download' {
-  if (mime.startsWith('image/') && mime !== 'image/vnd.dwg') return 'image';
+  if (SHOWN_IMAGES.has(mime)) return 'image';
   if (mime === 'application/pdf') return 'pdf';
   return 'download';
 }
