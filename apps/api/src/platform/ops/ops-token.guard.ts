@@ -18,10 +18,11 @@ const ALL = '*';
 const refused = new Map<string, { count: number; resetAt: number }>();
 let nextPrune = 0;
 
-/** Count one refused token against `key`; true when that window is now over `limit`. */
+/** Count one refused token against `key`; true when that window is now over `limit`. A window left more than one
+ *  window ahead (the clock stepped back) counts as expired. */
 function overLimit(key: string, limit: number, now: number): boolean {
   const entry = refused.get(key);
-  if (!entry || now >= entry.resetAt) {
+  if (!entry || now >= entry.resetAt || entry.resetAt - now > OPS_DOOR_WINDOW_MS) {
     refused.set(key, { count: 1, resetAt: now + OPS_DOOR_WINDOW_MS });
     return false;
   }
@@ -54,7 +55,7 @@ export class OpsTokenGuard implements CanActivate {
     if (presented && timingSafeEqual(digest(presented), digest(expected))) return true;
 
     const now = Date.now();
-    if (now >= nextPrune) {
+    if (now >= nextPrune || nextPrune - now > OPS_DOOR_WINDOW_MS) {
       for (const [key, entry] of refused) if (now >= entry.resetAt) refused.delete(key);
       nextPrune = now + OPS_DOOR_WINDOW_MS;
     }

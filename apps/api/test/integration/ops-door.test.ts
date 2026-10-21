@@ -205,6 +205,27 @@ describe('#482 operator door (live PG)', () => {
       expect((await call(ROUTES(f.projectA.id)[0], '203.0.113.11')).status).toBe(401);
     });
 
+    it('one address over its own window does not spend the shared one: the per-address check comes first', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      const [projects] = ROUTES(f.projectA.id);
+      const from = '203.0.113.20';
+      for (let i = 0; i < OPS_DOOR_FAILURES_GLOBAL + 10; i++) {
+        expect((await call(projects, from)).status).toBe(i < OPS_DOOR_FAILURES_PER_ADDRESS ? 401 : 429);
+      }
+      // only its first ten reached the shared window, so a fresh address is still refused with 401
+      expect((await call(projects, '203.0.113.21')).status).toBe(401);
+    });
+
+    it('a clock stepped back past a window resets the count', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      const [projects] = ROUTES(f.projectA.id);
+      const from = '203.0.113.30';
+      for (let i = 0; i < OPS_DOOR_FAILURES_PER_ADDRESS; i++) expect((await call(projects, from)).status).toBe(401);
+      expect((await call(projects, from)).status).toBe(429);
+      vi.setSystemTime(ahead - 2 * OPS_DOOR_WINDOW_MS);
+      expect((await call(projects, from)).status).toBe(401);
+    });
+
     it('across all addresses: rotating addresses meets the shared cap; the token still opens it, and a closed door is never 429', async () => {
       process.env.OPS_TOKEN = TOKEN;
       const [projects, people] = ROUTES(f.projectA.id);
@@ -218,5 +239,11 @@ describe('#482 operator door (live PG)', () => {
       delete process.env.OPS_TOKEN;
       for (const r of ROUTES(f.projectA.id)) expect((await call(r, '198.51.100.251')).status).toBe(404);
     });
+  });
+
+  it('after the faked clock is put back, no window it left ahead still counts: a wrong token is 401 again', async () => {
+    process.env.OPS_TOKEN = TOKEN;
+    // the global test, last in the block above, left the shared window over its cap, minutes ahead of the real clock
+    expect((await call(ROUTES(f.projectA.id)[0], '192.0.2.77')).status).toBe(401);
   });
 });
