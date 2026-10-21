@@ -13,7 +13,8 @@
 //   - the baseline allows more than the base branch's baseline does: in any file, an error code with more errors than
 //     the base's lists for it, or one the base's does not list (it only ever goes down). This is checked against the
 //     base's copy, read from git: `TYPECHECK_BASE` if set, else the pull request's base branch (`GITHUB_BASE_REF`,
-//     fetched at depth 1), else `origin/main` (in Actions, `main` fetched at depth 1). With no base, or a base copy that
+//     fetched at depth 1); in Actions otherwise, on a push the commit the branch held before it (the event's `before`,
+//     fetched at depth 1) and on a dispatch `main`; outside Actions `origin/main`. With no base, or a base copy that
 //     cannot be read, the step fails. It skips the comparison, and says so, only when the base's tree has no baseline
 //     file (the change that adds it).
 // A diagnostic's first line includes the types tsc prints into it (a union's member order, a src type's shape, a
@@ -107,6 +108,17 @@ function git(...args) {
   return spawnSync('git', args, { cwd: api, encoding: 'utf8' });
 }
 
+/** A push event's `before`: the commit the pushed branch held before the push. */
+function pushedOver() {
+  const path = process.env.GITHUB_EVENT_PATH;
+  if (!path) throw new Error('a push with no GITHUB_EVENT_PATH: no base to compare the baseline with');
+  const before = JSON.parse(readFileSync(path, 'utf8')).before;
+  if (typeof before !== 'string' || !/^[0-9a-f]{40}$/.test(before) || /^0+$/.test(before)) {
+    throw new Error(`a push whose event has no previous commit (before: ${JSON.stringify(before)}): no base to compare the baseline with`);
+  }
+  return before;
+}
+
 /** The base branch's baseline, or why there is none to compare with. */
 function baseBaseline() {
   let ref = process.env.TYPECHECK_BASE;
@@ -115,13 +127,15 @@ function baseBaseline() {
     if (fetched.status !== 0) throw new Error(`could not fetch the base branch ${process.env.GITHUB_BASE_REF}: ${fetched.stderr}`);
     ref = 'FETCH_HEAD';
   }
-  if (!ref && git('rev-parse', '--verify', '--quiet', 'origin/main').status === 0) ref = 'origin/main';
   if (!ref && process.env.GITHUB_ACTIONS === 'true') {
-    // a push or a dispatch: compare with main
-    const fetched = git('fetch', '--no-tags', '--depth=1', 'origin', 'main');
-    if (fetched.status !== 0) throw new Error(`could not fetch main to compare the baseline with: ${fetched.stderr}`);
+    // In Actions the checkout's own origin/main is the commit under check on a push to main, so it is never the base.
+    // A push compares with the commit the branch held before it (the event's `before`); a dispatch with main.
+    const want = process.env.GITHUB_EVENT_NAME === 'push' ? pushedOver() : 'main';
+    const fetched = git('fetch', '--no-tags', '--depth=1', 'origin', want);
+    if (fetched.status !== 0) throw new Error(`could not fetch ${want} to compare the baseline with: ${fetched.stderr}`);
     ref = 'FETCH_HEAD';
   }
+  if (!ref && git('rev-parse', '--verify', '--quiet', 'origin/main').status === 0) ref = 'origin/main';
   if (!ref) throw new Error('no base to compare the baseline with: fetch origin/main, or set TYPECHECK_BASE');
   if (git('rev-parse', '--verify', '--quiet', `${ref}^{commit}`).status !== 0) throw new Error(`no such base: ${ref}`);
   const listed = git('ls-tree', '--full-tree', '--name-only', ref, '--', REPO_PATH);
