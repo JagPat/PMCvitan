@@ -42,6 +42,28 @@ export interface MemberInviteEmailResult {
   live: boolean;
 }
 
+/** #871: the phone sign-in mail was certainly NOT taken by the provider (the transport was never built, or the
+ *  server answered with a refusal before accepting the message). The same 503 and message as any failed send;
+ *  only the caller's bookkeeping differs, because no inbox can hold this code. */
+export class PhoneSignInCodeNotSentException extends ServiceUnavailableException {
+  constructor() {
+    super('Could not send the sign-in code. Please try again.');
+  }
+}
+
+/** nodemailer codes that prove the message was never accepted: authentication, envelope (MAIL FROM, RCPT TO or
+ *  DATA refused), the message itself refused (a 4xx/5xx reply to it), TLS or DNS. */
+const MAIL_NOT_TAKEN_CODES = new Set(['EAUTH', 'ENOAUTH', 'EOAUTH2', 'EENVELOPE', 'EMESSAGE', 'ETLS', 'EREQUIRETLS', 'EDNS', 'ECONFIG']);
+
+/** A failure that proves the provider did not take the mail. Never connecting (the socket's own connect or
+ *  lookup failed) is certain too. A timeout, socket error or dropped connection after that is ambiguous: the
+ *  message may have gone, so it is not certain. */
+export function mailCertainlyNotTaken(error: unknown): boolean {
+  const e = (error ?? {}) as { code?: unknown; syscall?: unknown };
+  if (e.syscall === 'connect' || e.syscall === 'getaddrinfo') return true;
+  return typeof e.code === 'string' && MAIL_NOT_TAKEN_CODES.has(e.code);
+}
+
 /**
  * Email OTP delivery, dev-stub-first. When SMTP is configured
  * (SMTP_HOST + SMTP_USER + SMTP_PASS) it emails a code we generate; with no SMTP
@@ -126,8 +148,15 @@ export class EmailService {
    *  here). Throws 503 when the mail cannot be handed over, so the caller never claims a code is on its way. */
   async sendPhoneSignInCode(email: string, code: string): Promise<void> {
     const to = email.trim().toLowerCase();
+    let transport: Transporter;
     try {
-      await this.tx().sendMail({
+      transport = this.tx();
+    } catch (error) {
+      this.log.error(`Phone sign-in email failed before the provider: ${(error as Error).constructor.name}`);
+      throw new PhoneSignInCodeNotSentException();
+    }
+    try {
+      await transport.sendMail({
         from: this.from,
         to,
         subject: 'Your Vitan PMC sign-in code',
@@ -137,6 +166,7 @@ export class EmailService {
     } catch (error) {
       const smtpCode = (error as { code?: unknown }).code;
       this.log.error(`Phone sign-in email failed: ${(error as Error).constructor.name}${typeof smtpCode === 'string' ? ` (${smtpCode})` : ''}`);
+      if (mailCertainlyNotTaken(error)) throw new PhoneSignInCodeNotSentException();
       throw new ServiceUnavailableException('Could not send the sign-in code. Please try again.');
     }
   }
