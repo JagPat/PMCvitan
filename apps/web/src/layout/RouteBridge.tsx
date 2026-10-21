@@ -77,8 +77,9 @@ export function RouteBridge() {
   const seenCancels = useRef(leaveCancels);
   // a Cancel that left the URL naming a project that was not opened: that entry is put back in place once the pass can
   // navigate (a load may be running). A Cancel with nothing to put back is spent at once, so it never rewrites the
-  // entry of a later switch the person continued (#1028 r2 re-check G1)
-  const putBack = useRef(false);
+  // entry of a later switch the person continued (#1028 r2 re-check G1). It holds the key of the history entry it
+  // corrects, so a Back or Forward off that entry during the load spends it (#1028 r2 G1/G2 check G1)
+  const putBack = useRef<string | null>(null);
   // B6 — the item a URL CHANGE asked for, held until its project is active and loaded (a deep link
   // into another project, or a cold API load, empties the project scope that holds it), then
   // adopted once. Only a URL change sets it, so a stale URL never overwrites an in-app selection.
@@ -223,12 +224,12 @@ export function RouteBridge() {
     if (live.leaveCancels !== seenCancels.current) {
       seenCancels.current = live.leaveCancels;
       const named = parseLocation(location.pathname).projectId;
-      putBack.current = !!named && named !== live.activeProjectId;
+      putBack.current = named && named !== live.activeProjectId ? location.key : null;
     }
     if (live.pendingProjectId !== null || live.projectLoadState === 'switching' || live.projectLoadState === 'loading') return;
     // a Cancel answered while a load runs is still put back once the load is done (#1028 r2 check G3)
-    const wasCancelled = putBack.current;
-    putBack.current = false;
+    const wasCancelled = putBack.current === location.key;
+    putBack.current = null;
     // a routed item for a project that was not opened (the switch was cancelled) is never adopted later
     if (pendingItem.current && pendingItem.current.projectId !== live.activeProjectId) pendingItem.current = null;
     const target = pathForScreen(live.screen, live.activeProjectId, routeItemOf(live));

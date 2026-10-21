@@ -53,6 +53,7 @@ function switchTo(project: string): Gw {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   useStore.getState()._setGateway(null);
@@ -578,6 +579,71 @@ describe('the scope change itself, before the new scope loads (WEB-02)', () => {
     // one teardown: the scope moved once, and a load that lands now is not let go by a second
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     expect(useStore.getState().projectScopeGeneration).toBe(generation + 1);
+  });
+
+  /** a push-capable browser whose unlinks each wait until the test answers them; the 1.5 s cap never fires */
+  function heldUnlinks(gw: ReturnType<typeof signedInOnP1> & { pushUnlink?: ReturnType<typeof vi.fn> }) {
+    const unlinks: (() => void)[] = [];
+    gw.pushUnlink = vi.fn(() => new Promise<void>((done) => { unlinks.push(() => done()); }));
+    vi.stubGlobal('navigator', { ...globalThis.navigator, serviceWorker: { ready: Promise.resolve({ pushManager: { getSubscription: async () => ({ endpoint: 'https://push.example/e' }) } }) } });
+    vi.stubGlobal('PushManager', function PushManager() {} as unknown);
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    return unlinks;
+  }
+
+  it('two persona switches out at once: only the newest applies, so a tap on it after the older one ends is not applied twice (#1028 r2 G1/G2 check G2, Q1)', async () => {
+    const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { pushUnlink?: ReturnType<typeof vi.fn> };
+    const unlinks = heldUnlinks(gw);
+    const generation = useStore.getState().projectScopeGeneration;
+    act(() => useStore.getState().setRole('pmc'));
+    await vi.waitFor(() => expect(unlinks).toHaveLength(1));
+    act(() => useStore.getState().setRole('client'));
+    await vi.waitFor(() => expect(unlinks).toHaveLength(2));
+    // the pmc switch's unlink answers first: it was replaced by the client one, so it applies nothing
+    await act(async () => { unlinks[0](); });
+    await act(async () => { await Promise.resolve(); });
+    expect(useStore.getState().role).toBe('engineer');
+    // a tap on client while its switch is still out starts nothing
+    act(() => useStore.getState().setRole('client'));
+    await act(async () => { unlinks[1](); });
+    await vi.waitFor(() => expect(useStore.getState().role).toBe('client'));
+    await act(async () => { await Promise.resolve(); });
+    expect(useStore.getState().projectScopeGeneration).toBe(generation + 1);
+    expect(gw.pushUnlink).toHaveBeenCalledTimes(2);
+  });
+
+  it('a persona switch out when a sign-out ends is ended with it, so a tap on that persona after the sign-out applies once (#1028 r2 G1/G2 check G2, Q2)', async () => {
+    const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { pushUnlink?: ReturnType<typeof vi.fn> };
+    const unlinks = heldUnlinks(gw);
+    act(() => useStore.getState().requestSignOut());
+    await vi.waitFor(() => expect(unlinks).toHaveLength(1));
+    act(() => useStore.getState().setRole('pmc'));
+    await vi.waitFor(() => expect(unlinks).toHaveLength(2));
+    await act(async () => { unlinks[0](); });
+    await vi.waitFor(() => expect(useStore.getState().sessionToken).toBeNull());
+    // no session now: the tap applies at once
+    act(() => useStore.getState().setRole('pmc'));
+    expect(useStore.getState().role).toBe('pmc');
+    const generation = useStore.getState().projectScopeGeneration;
+    // the switch that was out during the sign-out answers late: it applies nothing
+    await act(async () => { unlinks[1](); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(useStore.getState().projectScopeGeneration).toBe(generation);
+  });
+
+  it('a persona switch out when a sign-out ends never applies after it: the signed-out app stays signed out (#1028 r2 G1/G2 check G2)', async () => {
+    const gw = signedInOnP1([]) as ReturnType<typeof signedInOnP1> & { pushUnlink?: ReturnType<typeof vi.fn> };
+    const unlinks = heldUnlinks(gw);
+    act(() => useStore.getState().requestSignOut());
+    await vi.waitFor(() => expect(unlinks).toHaveLength(1));
+    act(() => useStore.getState().setRole('pmc'));
+    await vi.waitFor(() => expect(unlinks).toHaveLength(2));
+    await act(async () => { unlinks[0](); });
+    await vi.waitFor(() => expect(useStore.getState().sessionToken).toBeNull());
+    const after = { role: useStore.getState().role, generation: useStore.getState().projectScopeGeneration };
+    await act(async () => { unlinks[1](); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect({ role: useStore.getState().role, generation: useStore.getState().projectScopeGeneration }).toEqual(after);
   });
 
   it('sign-out with acts this phone did not keep asks first; with none it signs out at once', () => {

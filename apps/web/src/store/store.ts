@@ -2550,6 +2550,9 @@ export const useStore = create<Store>()(
     let teardownPending = false;
     /** the persona a pending persona-switch teardown is switching to */
     let teardownRole: Role | null = null;
+    /** the newest persona switch: only it applies, so two teardowns out never both apply, and a sign-out ends any
+     *  persona switch still waiting (#1028 r2 G1/G2 check G2) */
+    let teardownSeq = 0;
     /** WEB-02: a leave is already under way (a project switch out, or a persona switch or sign-out in its push unlink):
      *  acts not kept now go with it, so nothing asks again; a second question would outlive the leave (#1028 r2 check
      *  G3) */
@@ -3220,7 +3223,8 @@ export const useStore = create<Store>()(
         return;
       }
       const first = screensFor(role)[0]?.key ?? 'inbox';
-      const applySwitch = () => { teardownPending = false; teardownRole = null; clearSession(); set((s) => {
+      const seq = ++teardownSeq;
+      const applySwitch = () => { if (seq !== teardownSeq) return; teardownPending = false; teardownRole = null; clearSession(); set((s) => {
         s.role = role;
         s.screen = first;
         s.notifOpen = false;
@@ -3322,6 +3326,7 @@ export const useStore = create<Store>()(
     completeSignOut: () => {
       teardownPending = false;
       teardownRole = null;
+      teardownSeq += 1;
       clearSession();
       restoreSwitchTarget = null;
       // WEB-02: acts no write stored leave with the session; a sign-out the person asked for was confirmed first
