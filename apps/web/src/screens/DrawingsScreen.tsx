@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, drawingMutationsBlocked } from '@/store/store';
 import { resolveDrawingUrl, drawingsReadMode, type IssueDrawingInput } from '@/data/apiGateway';
@@ -23,6 +23,39 @@ function previewKind(mime: string): 'image' | 'pdf' | 'download' {
   if (mime.startsWith('image/') && mime !== 'image/vnd.dwg') return 'image';
   if (mime === 'application/pdf') return 'pdf';
   return 'download';
+}
+
+/**
+ * A PDF or CAD revision's file as a `blob:` URL, read with `fetch`. The viewer's <iframe> and download link would
+ * navigate to the API, and a navigation there never reaches this site's service worker, so the file could not open
+ * offline; a `fetch` from the page does, and the worker answers from its kept copy. The blob's type is fixed (a PDF,
+ * or bytes to save), so a file on this site's origin is never rendered as a page. Null while it is read; the file's
+ * own URL when the read fails or is refused, as before. The blob is let go when the revision changes or the viewer closes.
+ */
+function useFileUrl(src: string, kind: 'image' | 'pdf' | 'download'): string | null {
+  const direct = kind === 'image' || src.startsWith('data:');
+  const [read, setRead] = useState<{ src: string; url: string } | null>(null);
+  useEffect(() => {
+    if (direct) return undefined;
+    const stop = new AbortController();
+    let made: string | undefined;
+    fetch(src, { signal: stop.signal, credentials: 'omit' })
+      .then((res) => (res.ok ? res.arrayBuffer() : Promise.reject(new Error(`file answered ${res.status}`))))
+      .then((bytes) => {
+        if (stop.signal.aborted) return;
+        made = URL.createObjectURL(new Blob([bytes], { type: kind === 'pdf' ? 'application/pdf' : 'application/octet-stream' }));
+        setRead({ src, url: made });
+      })
+      .catch(() => {
+        if (!stop.signal.aborted) setRead({ src, url: src });
+      });
+    return () => {
+      stop.abort();
+      if (made) URL.revokeObjectURL(made);
+    };
+  }, [src, kind, direct]);
+  if (direct) return src;
+  return read && read.src === src ? read.url : null;
 }
 
 export function DrawingsScreen() {
@@ -326,6 +359,7 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
   const [rev, setRev] = useState<DrawingRevision>(drawing.current ?? drawing.revisions[0]);
   const src = resolveDrawingUrl(rev.url);
   const kind = previewKind(rev.mime);
+  const fileUrl = useFileUrl(src, kind);
   const sm = statusMeta(rev.status, lang);
   const isCurrent = drawing.current?.id === rev.id;
 
@@ -352,14 +386,14 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
 
       <div style={{ background: '#e9e4d8', maxHeight: '58vh', overflow: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 300 }}>
         {kind === 'image' && <img src={src} alt={`${drawing.number} ${T.rev(rev.rev, lang)}`} style={{ maxWidth: '100%', display: 'block' }} />}
-        {kind === 'pdf' && <iframe src={src} title={`${drawing.number} ${T.rev(rev.rev, lang)}`} style={{ width: '100%', height: '58vh', border: 'none', background: '#fff' }} />}
+        {kind === 'pdf' && fileUrl && <iframe src={fileUrl} title={`${drawing.number} ${T.rev(rev.rev, lang)}`} style={{ width: '100%', height: '58vh', border: 'none', background: '#fff' }} />}
         {kind === 'download' && (
           <div style={{ textAlign: 'center', padding: 40 }}>
             <FileText size={40} color="#b8b2a6" />
             <div style={{ fontSize: 13.5, color: 'var(--muted)', margin: '12px 0 16px', maxWidth: 320 }}>
               {rev.mime.includes('dwg') || rev.mime.includes('dxf') ? L.cadNote[lang] : L.noPreview[lang]}
             </div>
-            <a href={src} download={`${drawing.number}-Rev${rev.rev}`} style={{ ...dlBtn }}>
+            <a href={fileUrl ?? src} download={`${drawing.number}-Rev${rev.rev}`} style={{ ...dlBtn }}>
               <Download size={16} /> {L.download[lang]}
             </a>
           </div>
