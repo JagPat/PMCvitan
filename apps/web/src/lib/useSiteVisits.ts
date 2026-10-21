@@ -291,7 +291,13 @@ export function withQueued(
         if (!v.places.some((p) => p.id === op.body.id)) {
           byId.set(id, { ...v, places: [...v.places, {
             id: op.body.id, nodeId: op.body.nodeId, name: op.name, addedAt: op.body.claimedAt,
-            addedTimeAdjusted: false, addedAfterEnd: v.status !== 'open', retiredAt: null,
+            // a place added after the end takes the time the server receives it (`site_visits_place_insert`), never the
+            // one claimed here; on an open visit the server keeps a claim only from the start up to when it receives it,
+            // so a claim before the start is known to be moved, and any later claim is not known until it is sent
+            // (Codex 4278991742). A closed visit takes no place at all: the server refuses it, so it is drawn only as
+            // waiting to send, with no word of how the server would keep it (Codex 4335791251)
+            addedTimeAdjusted: v.status === 'ended' || (v.status === 'open' && Date.parse(op.body.claimedAt) < Date.parse(v.startedAt)),
+            addedAfterEnd: v.status === 'ended', retiredAt: null,
           }] });
         }
         break;
