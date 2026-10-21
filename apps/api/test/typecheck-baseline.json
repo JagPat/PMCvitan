@@ -1,69 +1,278 @@
 {
-  "src/activities/activities.service.test.ts": 4,
-  "src/commercial/commercial.contract.test.ts": 1,
-  "src/common/route-policy.test.ts": 1,
-  "src/daily-log/daily-log.service.test.ts": 1,
-  "src/decisions/decision-notice.test.ts": 1,
-  "src/decisions/decisions.service.test.ts": 8,
-  "src/drawings/drawings.service.test.ts": 3,
-  "src/inspections/inspections.service.test.ts": 3,
-  "src/media/media.service.test.ts": 15,
-  "src/nodes/nodes.service.test.ts": 11,
-  "src/orgs/invitations.service.test.ts": 2,
-  "src/orgs/members.service.test.ts": 1,
-  "src/orgs/orgs.service.test.ts": 20,
-  "src/orgs/project-initialization.test.ts": 2,
-  "src/platform/outbox/registry.test.ts": 5,
-  "src/platform/release-lease.service.test.ts": 1,
-  "src/platform/rollout/drain-evidence.test.ts": 3,
-  "src/platform/server-generation.test.ts": 3,
-  "src/push/push.service.test.ts": 4,
-  "src/snapshot/snapshot.service.test.ts": 6,
-  "test/integration/commercial-catalog-closure.test.ts": 3,
-  "test/integration/commercial-deadlock-lockorder.test.ts": 1,
-  "test/integration/drawings-idempotency.test.ts": 15,
-  "test/integration/inspections-engineer-fail-sendback.test.ts": 5,
-  "test/integration/inspections-idempotency.test.ts": 25,
-  "test/integration/inspections-item-order.test.ts": 6,
-  "test/integration/inspections-owned-facts.test.ts": 4,
-  "test/integration/inspections-projection.test.ts": 1,
-  "test/integration/inspections-reinspection-metadata.test.ts": 3,
-  "test/integration/landing-last-project.test.ts": 1,
-  "test/integration/ops-qa-sign-in.test.ts": 18,
-  "test/integration/outbox.test.ts": 1,
-  "test/integration/password-credentials.test.ts": 5,
-  "test/integration/phase3-inventory.test.ts": 2,
-  "test/integration/phase3-procurement.test.ts": 1,
-  "test/integration/phase3-purchase-orders.test.ts": 1,
-  "test/integration/phase3-requirements.test.ts": 33,
-  "test/integration/phase3-t23-correction.test.ts": 1,
-  "test/integration/phase3-t45-integrity.test.ts": 1,
-  "test/integration/phase3-t5-stock-flows.test.ts": 1,
-  "test/integration/phase3-t6-correction.test.ts": 2,
-  "test/integration/phase3-t6-projection.test.ts": 1,
-  "test/integration/phase3-t6-readiness.test.ts": 1,
-  "test/integration/phase3-t6-start-races.test.ts": 2,
-  "test/integration/phase3-t7-readiness-read.test.ts": 1,
-  "test/integration/phase3-t7-reservation-plan.test.ts": 1,
-  "test/integration/phase4-unit0-contractor-fail-closed.test.ts": 4,
-  "test/integration/phase5-t1-commercial.test.ts": 1,
-  "test/integration/phase5-t2-budget.test.ts": 1,
-  "test/integration/phase5-t4-vendor-bill.test.ts": 4,
-  "test/integration/phase5-t5a-verification.test.ts": 4,
-  "test/integration/phase5-t5b-certification.test.ts": 2,
-  "test/integration/phase5-t5c-deductions.test.ts": 1,
-  "test/integration/phase5-t5c-payable.test.ts": 1,
-  "test/integration/phase5-t6a-payments.test.ts": 1,
-  "test/integration/phase5-t6b-status-derivation.test.ts": 1,
-  "test/integration/phase5-t7bia-money-invalidation.test.ts": 1,
-  "test/integration/phase5-t7bii-claim-read.test.ts": 1,
-  "test/integration/phase6-4c-iiir-inbox-repair.test.ts": 1,
-  "test/integration/phase6-t4a-withdraw.test.ts": 3,
-  "test/integration/phase6-t4c-ii-consultation.test.ts": 6,
-  "test/integration/phase6-t4d-ii-a2-commercial-seam.test.ts": 1,
-  "test/integration/phase6-t4d-ii-a6e-generation-fence.test.ts": 1,
-  "test/integration/phase6-t4d-ii-a8a-forward-approve.test.ts": 4,
-  "test/integration/phase6-t4d-ii-a8b-countersign.test.ts": 4,
-  "test/integration/project-remove.test.ts": 1,
-  "test/integration/projection-rebuild-upgrade.test.ts": 1
+  "src/activities/activities.service.test.ts": {
+    "TS2345: Argument of type '(q: { values?: unknown[]; } | readonly string[]) => Promise<{ status: string; role: string; }[]>' is not assignable to parameter of type '(q: RawQuery, ...rest: unknown[]) => Promise<{ status: string; role: string; }[]>'.": 1,
+    "TS2554: Expected 1 arguments, but got 0.": 1,
+    "TS2554: Expected 14 arguments, but got 12.": 1,
+    "TS2554: Expected 3 arguments, but got 2.": 1
+  },
+  "src/commercial/commercial.contract.test.ts": {
+    "TS2741: Property 'lifecycleVersion' is missing in type '{ id: string; vendorId: string; vendorBillNumber: string; documentDate: string; status: \"certified\"; statusChangedAt: string; statusReason: null; disputeReason: null; createdAt: string; createdById: string; versions: VendorBillVersionDto[]; }' but required in type 'VendorBillDto'.": 1
+  },
+  "src/common/route-policy.test.ts": {
+    "TS2352: Conversion of type 'AuthController | OrgsController | MembersController | ActivitiesController | PhasesController | ... 23 more ... | NodesController' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.": 1
+  },
+  "src/daily-log/daily-log.service.test.ts": {
+    "TS2554: Expected 8 arguments, but got 6.": 1
+  },
+  "src/decisions/decision-notice.test.ts": {
+    "TS2345: Argument of type '{ eventType: string; payload: {}; effectKey: string; }' is not assignable to parameter of type 'KindedNoticeEvent'.": 1
+  },
+  "src/decisions/decisions.service.test.ts": {
+    "TS2345: Argument of type '(q: { values?: unknown[]; }) => Promise<{ id: string; title: string; deciderKind: string; deciderMembershipId: null; publishedAt: Date | null; }[]>' is not assignable to parameter of type '(q: RawQuery, ...rest: unknown[]) => Promise<{ id: string; title: string; deciderKind: string; deciderMembershipId: null; publishedAt: Date | null; }[]>'.": 1,
+    "TS2345: Argument of type 'ExternalEffectDispatcher' is not assignable to parameter of type 'DispatcherMock'.": 5,
+    "TS2352: Conversion of type 'LifecycleRow' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.": 1,
+    "TS2783: 'id' is specified more than once, so this usage will be overwritten.": 1
+  },
+  "src/drawings/drawings.service.test.ts": {
+    "TS2345: Argument of type '(q: { values?: unknown[]; }) => Promise<{ id: string; publishedAt: Date | null; }[] | { id: string; }[]>' is not assignable to parameter of type '(q: RawQuery, ...rest: unknown[]) => Promise<{ id: string; publishedAt: Date | null; }[] | { id: string; }[]>'.": 1,
+    "TS2741: Property 'publish' is missing in type '{ number: string; title: string; discipline: \"architectural\"; rev: string; status: \"for_construction\"; mime: \"application/pdf\"; data: string; }' but required in type '{ number: string; status: \"for_review\" | \"for_construction\"; mime: \"image/png\" | \"image/jpeg\" | \"image/jpg\" | \"image/webp\" | \"application/pdf\" | \"image/vnd.dwg\" | \"application/acad\" | \"application/dwg\" | \"image/vnd.dxf\" | \"application/dxf\"; ... 12 more ...; activityId?: string | undefined; }'.": 1,
+    "TS2820: Type '\"Architecture\"' is not assignable to type '\"architectural\" | \"structural\" | \"mep\" | \"other\"'. Did you mean '\"architectural\"'?": 1
+  },
+  "src/inspections/inspections.service.test.ts": {
+    "TS2345: Argument of type '(q: { values?: unknown[]; } | readonly string[]) => Promise<{ status: string; role: string; }[]>' is not assignable to parameter of type '(q: RawQuery, ...rest: unknown[]) => Promise<{ status: string; role: string; }[]>'.": 1,
+    "TS2554: Expected 6 arguments, but got 5.": 2
+  },
+  "src/media/media.service.test.ts": {
+    "TS18046: 'row.data' is of type 'unknown'.": 1,
+    "TS2304: Cannot find name 'SiteVisitFilesParticipant'.": 1,
+    "TS2339: Property 'findFirst' does not exist on type '{ create: Mock<({ data }: { data: Record<string, unknown>; }) => Promise<{ id: string; createdAt: Date; }>>; findUnique: Mock<({ where }: { where: { id: string; }; }) => Promise<{ id: string; projectId: string; } | null>>; update: Mock<...>; delete: Mock<...>; }'.": 1,
+    "TS2345: Argument of type '{ projectId: string; clientKey: string; }' is not assignable to parameter of type 'null'.": 1,
+    "TS2353: Object literal may only specify known properties, and 'mime' does not exist in type '{ id: string; projectId: string; }'.": 3,
+    "TS2353: Object literal may only specify known properties, and 'nodeId' does not exist in type '{ id: string; projectId: string; }'.": 1,
+    "TS2353: Object literal may only specify known properties, and 'storageKey' does not exist in type '{ id: string; projectId: string; }'.": 7
+  },
+  "src/nodes/nodes.service.test.ts": {
+    "TS2345: Argument of type '{ name: string; kind: \"element\"; parentId: string; }' is not assignable to parameter of type '{ name: string; kind: \"zone\" | \"room\" | \"element\"; publish: boolean; parentId?: string | null | undefined; }'.": 3,
+    "TS2345: Argument of type '{ name: string; kind: \"room\"; parentId: null; }' is not assignable to parameter of type '{ name: string; kind: \"zone\" | \"room\" | \"element\"; publish: boolean; parentId?: string | null | undefined; }'.": 1,
+    "TS2345: Argument of type '{ name: string; kind: \"room\"; parentId: string; }' is not assignable to parameter of type '{ name: string; kind: \"zone\" | \"room\" | \"element\"; publish: boolean; parentId?: string | null | undefined; }'.": 5,
+    "TS2345: Argument of type '{ name: string; kind: \"zone\"; parentId: null; }' is not assignable to parameter of type '{ name: string; kind: \"zone\" | \"room\" | \"element\"; publish: boolean; parentId?: string | null | undefined; }'.": 1,
+    "TS2345: Argument of type '{ name: string; kind: \"zone\"; parentId: string; }' is not assignable to parameter of type '{ name: string; kind: \"zone\" | \"room\" | \"element\"; publish: boolean; parentId?: string | null | undefined; }'.": 1
+  },
+  "src/orgs/invitations.service.test.ts": {
+    "TS2493: Tuple type '[]' of length '0' has no element at index '0'.": 1,
+    "TS2493: Tuple type '[]' of length '0' has no element at index '1'.": 1
+  },
+  "src/orgs/members.service.test.ts": {
+    "TS2769: No overload matches this call.": 1
+  },
+  "src/orgs/orgs.service.test.ts": {
+    "TS2322: Type 'string' is not assignable to type '\"member\" | \"owner\" | \"admin\"'.": 1,
+    "TS2344: Type 'unknown' does not satisfy the constraint 'string | number | symbol'.": 1,
+    "TS2345: Argument of type '(q: { strings?: readonly string[]; } | readonly string[]) => Promise<{ consumer: string; consumerKind: string; active: boolean; dispatchRule: string; subscribedEventTypes: never[]; }[]>' is not assignable to parameter of type '(q: RawQuery, ...rest: unknown[]) => Promise<{ consumer: string; consumerKind: string; active: boolean; dispatchRule: string; subscribedEventTypes: never[]; }[]>'.": 1,
+    "TS2345: Argument of type '{ name: string; kind: \"unordered\"; effect: \"external\"; dispatchRule: { kind: \"all\"; }; handle: () => Promise<undefined>; }' is not assignable to parameter of type 'OutboxConsumer'.": 1,
+    "TS2345: Argument of type '{ name: string; short: string; descriptor: string; stage: string; siteCode: string; projStart: string; projEnd: string; structureFrom: string; }' is not assignable to parameter of type '{ short: string; name: string; descriptor: string; stage: string; siteCode: string; location: string; projStart: string; projEnd: string; timeZone?: string | undefined; scheduleStartDate?: string | undefined; structureFrom?: string | undefined; modules?: { ...; }[] | undefined; templateId?: string | undefined; }'.": 4,
+    "TS2345: Argument of type '{ name: string; short: string; descriptor: string; stage: string; siteCode: string; projStart: string; projEnd: string; }' is not assignable to parameter of type '{ short: string; name: string; descriptor: string; stage: string; siteCode: string; location: string; projStart: string; projEnd: string; timeZone?: string | undefined; scheduleStartDate?: string | undefined; structureFrom?: string | undefined; modules?: { ...; }[] | undefined; templateId?: string | undefined; }'.": 3,
+    "TS2345: Argument of type '{ structureFrom: undefined; name: string; short: string; descriptor: string; stage: string; siteCode: string; projStart: string; projEnd: string; }' is not assignable to parameter of type '{ short: string; name: string; descriptor: string; stage: string; siteCode: string; location: string; projStart: string; projEnd: string; timeZone?: string | undefined; scheduleStartDate?: string | undefined; structureFrom?: string | undefined; modules?: { ...; }[] | undefined; templateId?: string | undefined; }'.": 1,
+    "TS2352: Conversion of type '{ where: { id: string; }; data: Record<string, unknown>; }' to type '{ data: { archivedAt: Date; }; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.": 1,
+    "TS2554: Expected 1 arguments, but got 0.": 1,
+    "TS2554: Expected 10 arguments, but got 4.": 2,
+    "TS2554: Expected 10-11 arguments, but got 8.": 1,
+    "TS2554: Expected 3 arguments, but got 2.": 2,
+    "TS2571: Object is of type 'unknown'.": 1
+  },
+  "src/orgs/project-initialization.test.ts": {
+    "TS18048: 'query' is possibly 'undefined'.": 1,
+    "TS2493: Tuple type '[]' of length '0' has no element at index '0'.": 1
+  },
+  "src/platform/outbox/registry.test.ts": {
+    "TS2339: Property 'join' does not exist on type 'never'.": 1,
+    "TS2352: Conversion of type 'undefined' to type 'readonly string[]' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.": 1,
+    "TS2493: Tuple type '[]' of length '0' has no element at index '0'.": 3
+  },
+  "src/platform/release-lease.service.test.ts": {
+    "TS2493: Tuple type '[]' of length '0' has no element at index '0'.": 1
+  },
+  "src/platform/rollout/drain-evidence.test.ts": {
+    "TS2790: The operand of a 'delete' operator must be optional.": 2,
+    "TS7016: Could not find a declaration file for module '../../../../../scripts/autonomous-drain-clearance.mjs'. 'scripts/autonomous-drain-clearance.mjs' implicitly has an 'any' type.": 1
+  },
+  "src/platform/server-generation.test.ts": {
+    "TS2493: Tuple type '[]' of length '0' has no element at index '0'.": 2,
+    "TS2493: Tuple type '[fn: (tx: unknown) => Promise<unknown>]' of length '1' has no element at index '1'.": 1
+  },
+  "src/push/push.service.test.ts": {
+    "TS2554: Expected 2 arguments, but got 1.": 4
+  },
+  "src/snapshot/snapshot.service.test.ts": {
+    "TS2352: Conversion of type 'undefined' to type 'Map<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.": 2,
+    "TS2493: Tuple type '[]' of length '0' has no element at index '0'.": 1,
+    "TS2493: Tuple type '[]' of length '0' has no element at index '1'.": 1,
+    "TS2493: Tuple type '[]' of length '0' has no element at index '2'.": 1,
+    "TS2493: Tuple type '[]' of length '0' has no element at index '5'.": 1
+  },
+  "test/integration/commercial-catalog-closure.test.ts": {
+    "TS18046: 'rows' is of type 'unknown'.": 1,
+    "TS2558: Expected 0 type arguments, but got 1.": 1,
+    "TS7006: Parameter 'r' implicitly has an 'any' type.": 1
+  },
+  "test/integration/commercial-deadlock-lockorder.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/drawings-idempotency.test.ts": {
+    "TS2345: Argument of type '{ number: string; title: string; discipline: \"architectural\"; rev: string; status: \"for_construction\"; mime: string; data: string; publish: boolean; }' is not assignable to parameter of type '{ number: string; status: \"for_review\" | \"for_construction\"; mime: \"image/png\" | \"image/jpeg\" | \"image/jpg\" | \"image/webp\" | \"application/pdf\" | \"image/vnd.dwg\" | \"application/acad\" | \"application/dwg\" | \"image/vnd.dxf\" | \"application/dxf\"; ... 12 more ...; activityId?: string | undefined; }'.": 11,
+    "TS2345: Argument of type '{ number: string; title: string; discipline: \"architectural\"; rev: string; status: \"for_construction\"; mime: string; storageKey: string; sizeBytes: number; contentSha256: string; publish: boolean; }' is not assignable to parameter of type '{ number: string; status: \"for_review\" | \"for_construction\"; mime: \"image/png\" | \"image/jpeg\" | \"image/jpg\" | \"image/webp\" | \"application/pdf\" | \"image/vnd.dwg\" | \"application/acad\" | \"application/dwg\" | \"image/vnd.dxf\" | \"application/dxf\"; ... 12 more ...; activityId?: string | undefined; }'.": 3,
+    "TS2345: Argument of type '{ publish: false; number: string; title: string; discipline: \"architectural\"; rev: string; status: \"for_construction\"; mime: string; data: string; }' is not assignable to parameter of type '{ number: string; status: \"for_review\" | \"for_construction\"; mime: \"image/png\" | \"image/jpeg\" | \"image/jpg\" | \"image/webp\" | \"application/pdf\" | \"image/vnd.dwg\" | \"application/acad\" | \"application/dwg\" | \"image/vnd.dxf\" | \"application/dxf\"; ... 12 more ...; activityId?: string | undefined; }'.": 1
+  },
+  "test/integration/inspections-engineer-fail-sendback.test.ts": {
+    "TS2322: Type '{ id: string; state: \"pass\"; photos: number; note: string; }[]' is not assignable to type '{ name: string; id: string; state: \"pass\" | \"fail\" | \"na\" | null; photos: number; note: string; }[]'.": 2,
+    "TS2741: Property 'name' is missing in type '{ id: string; state: \"fail\"; photos: number; note: string; }' but required in type '{ name: string; id: string; state: \"pass\" | \"fail\" | \"na\" | null; photos: number; note: string; }'.": 1,
+    "TS2741: Property 'name' is missing in type '{ id: string; state: \"pass\"; photos: number; note: string; }' but required in type '{ name: string; id: string; state: \"pass\" | \"fail\" | \"na\" | null; photos: number; note: string; }'.": 2
+  },
+  "test/integration/inspections-idempotency.test.ts": {
+    "TS2322: Type '{ id: string; state: \"fail\"; photos: number; note: string; }[]' is not assignable to type '{ name: string; id: string; state: \"pass\" | \"fail\" | \"na\" | null; photos: number; note: string; }[]'.": 1,
+    "TS2322: Type '{ id: string; state: \"pass\"; photos: number; note: string; }[]' is not assignable to type '{ name: string; id: string; state: \"pass\" | \"fail\" | \"na\" | null; photos: number; note: string; }[]'.": 24
+  },
+  "test/integration/inspections-item-order.test.ts": {
+    "TS2741: Property 'name' is missing in type '{ id: string; state: \"fail\"; photos: number; note: string; }' but required in type '{ name: string; id: string; state: \"pass\" | \"fail\" | \"na\" | null; photos: number; note: string; }'.": 4,
+    "TS2741: Property 'name' is missing in type '{ id: string; state: \"pass\"; photos: number; note: string; }' but required in type '{ name: string; id: string; state: \"pass\" | \"fail\" | \"na\" | null; photos: number; note: string; }'.": 2
+  },
+  "test/integration/inspections-owned-facts.test.ts": {
+    "TS18048: 'clearedItem.evidence' is possibly 'undefined'.": 1,
+    "TS18048: 'item.evidence' is possibly 'undefined'.": 1,
+    "TS2532: Object is possibly 'undefined'.": 2
+  },
+  "test/integration/inspections-projection.test.ts": {
+    "TS2322: Type '{ id: string; state: \"pass\"; photos: number; note: string; }[]' is not assignable to type '{ name: string; id: string; state: \"pass\" | \"fail\" | \"na\" | null; photos: number; note: string; }[]'.": 1
+  },
+  "test/integration/inspections-reinspection-metadata.test.ts": {
+    "TS2322: Type '{ id: string; state: \"pass\"; photos: number; note: string; }[]' is not assignable to type '{ name: string; id: string; state: \"pass\" | \"fail\" | \"na\" | null; photos: number; note: string; }[]'.": 2,
+    "TS2345: Argument of type 'readonly Checklist[]' is not assignable to parameter of type 'Checklist[]'.": 1
+  },
+  "test/integration/landing-last-project.test.ts": {
+    "TS2339: Property 'orgId' does not exist on type '{ id: string; }'.": 1
+  },
+  "test/integration/ops-qa-sign-in.test.ts": {
+    "TS2339: Property 'error' does not exist on type '{ error: { getStatus?: (() => number) | undefined; }; } | { ok: TokenResult; }'.": 5,
+    "TS2339: Property 'ok' does not exist on type '{ error: { getStatus?: (() => number) | undefined; }; } | { ok: TokenResult; }'.": 9,
+    "TS2339: Property 'orgId' does not exist on type '{ id: string; }'.": 4
+  },
+  "test/integration/outbox.test.ts": {
+    "TS2345: Argument of type '{ deciderTarget: () => Promise<{ actionable: true; roles: string[]; }>; markCancelled: Mock<() => Promise<void>>; roleHolderUserIds: Mock<(_p: string, role: string) => Promise<...>>; cancelled: () => Promise<...>; userHoldsRole: () => Promise<...>; }' is not assignable to parameter of type 'PushClaimDeps'.": 1
+  },
+  "test/integration/password-credentials.test.ts": {
+    "TS2339: Property 'email' does not exist on type '{ id: string; }'.": 5
+  },
+  "test/integration/phase3-inventory.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1,
+    "TS7022: 'lineQty' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.": 1
+  },
+  "test/integration/phase3-procurement.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase3-purchase-orders.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase3-requirements.test.ts": {
+    "TS2345: Argument of type '{ activityId: string; baseUom: string; type: \"material\" | \"labour\"; decisionId?: string | null | undefined; responsibleId?: string | null | undefined; criticality: \"normal\" | \"critical\"; tolerance?: string | ... 1 more ... | undefined; }' is not assignable to parameter of type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1,
+    "TS2345: Argument of type '{ activityId: string; decisionId: string; type: \"material\" | \"labour\"; responsibleId?: string | null | undefined; criticality: \"normal\" | \"critical\"; tolerance?: string | null | undefined; }' is not assignable to parameter of type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 5,
+    "TS2345: Argument of type '{ activityId: string; expectedRevision: number; type: \"material\" | \"labour\"; decisionId?: string | null | undefined; responsibleId?: string | null | undefined; criticality: \"normal\" | \"critical\"; tolerance?: string | ... 1 more ... | undefined; }' is not assignable to parameter of type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; expectedRevision: number; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... ...'.": 1,
+    "TS2345: Argument of type '{ activityId: string; grade: string; type: \"material\" | \"labour\"; decisionId?: string | null | undefined; responsibleId?: string | null | undefined; criticality: \"normal\" | \"critical\"; tolerance?: string | ... 1 more ... | undefined; }' is not assignable to parameter of type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1,
+    "TS2345: Argument of type '{ activityId: string; make: string; decisionId: string; type: \"material\" | \"labour\"; responsibleId?: string | null | undefined; criticality: \"normal\" | \"critical\"; tolerance?: string | null | undefined; }' is not assignable to parameter of type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1,
+    "TS2345: Argument of type '{ activityId: string; qty: string; expectedRevision: number; type: \"material\" | \"labour\"; decisionId?: string | null | undefined; responsibleId?: string | null | undefined; criticality: \"normal\" | \"critical\"; tolerance?: string | ... 1 more ... | undefined; }' is not assignable to parameter of type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; expectedRevision: number; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... ...'.": 3,
+    "TS2345: Argument of type '{ activityId: string; qty: string; type: \"material\" | \"labour\"; decisionId?: string | null | undefined; responsibleId?: string | null | undefined; criticality: \"normal\" | \"critical\"; tolerance?: string | ... 1 more ... | undefined; }' is not assignable to parameter of type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 3,
+    "TS2345: Argument of type '{ activityId: string; requiredBy: string; type: \"material\" | \"labour\"; decisionId?: string | null | undefined; responsibleId?: string | null | undefined; criticality: \"normal\" | \"critical\"; tolerance?: string | ... 1 more ... | undefined; }' is not assignable to parameter of type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1,
+    "TS2345: Argument of type '{ activityId: string; responsibleId: string; type: \"material\" | \"labour\"; decisionId?: string | null | undefined; criticality: \"normal\" | \"critical\"; tolerance?: string | null | undefined; }' is not assignable to parameter of type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 5,
+    "TS2345: Argument of type '{ activityId: string; type: \"material\" | \"labour\"; decisionId?: string | null | undefined; responsibleId?: string | null | undefined; criticality: \"normal\" | \"critical\"; tolerance?: string | ... 1 more ... | undefined; }' is not assignable to parameter of type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 11,
+    "TS2353: Object literal may only specify known properties, and 'materialCategory' does not exist in type 'Omit<{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; toleranc...'.": 1
+  },
+  "test/integration/phase3-t23-correction.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase3-t45-integrity.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase3-t5-stock-flows.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase3-t6-correction.test.ts": {
+    "TS2322: Type '{ attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; materialCategory: string; make: string; grade: string; activityId: string; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1,
+    "TS2345: Argument of type '{ attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; expectedRevision: number; materialCategory: string; make: string; grade: string; activityId: string; }' is not assignable to parameter of type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; expectedRevision: number; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... ...'.": 1
+  },
+  "test/integration/phase3-t6-projection.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase3-t6-readiness.test.ts": {
+    "TS2322: Type '{ attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; materialCategory: string; make: string; grade: string; activityId: string; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase3-t6-start-races.test.ts": {
+    "TS2322: Type '{ attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; materialCategory: string; make: string; grade: string; activityId: string; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1,
+    "TS2345: Argument of type '{ attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; expectedRevision: number; materialCategory: string; make: string; grade: string; activityId: string; }' is not assignable to parameter of type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; expectedRevision: number; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... ...'.": 1
+  },
+  "test/integration/phase3-t7-readiness-read.test.ts": {
+    "TS2322: Type '{ attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; materialCategory: string; make: string; grade: string; activityId: string; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase3-t7-reservation-plan.test.ts": {
+    "TS2322: Type '{ attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; materialCategory: string; make: string; grade: string; activityId: string; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase4-unit0-contractor-fail-closed.test.ts": {
+    "TS2339: Property 'id' does not exist on type '{ allocations: WorkerAllocationDto[]; }'.": 1,
+    "TS2353: Object literal may only specify known properties, and 'civilDate' does not exist in type '{ allocationId: string; workedMinutes: number; note?: string | null | undefined; }'.": 3
+  },
+  "test/integration/phase5-t1-commercial.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase5-t2-budget.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase5-t4-vendor-bill.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1,
+    "TS2345: Argument of type '{ actorId: string; actorKind: \"human\"; }' is not assignable to parameter of type 'EventActor'.": 2,
+    "TS2353: Object literal may only specify known properties, and 'qualityResult' does not exist in type '{ evidenceMediaId: string; qty: string; lotId: string; reason?: string | undefined; note?: string | undefined; storeLocation?: string | undefined; }'.": 1
+  },
+  "test/integration/phase5-t5a-verification.test.ts": {
+    "TS2322: Type 'null' is not assignable to type 'string | undefined'.": 2,
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1,
+    "TS2353: Object literal may only specify known properties, and 'qualityResult' does not exist in type '{ evidenceMediaId: string; qty: string; lotId: string; reason?: string | undefined; note?: string | undefined; storeLocation?: string | undefined; }'.": 1
+  },
+  "test/integration/phase5-t5b-certification.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1,
+    "TS2345: Argument of type 'string' is not assignable to parameter of type '\"ProjectionCursor\" | \"OutboxDelivery\" | \"ProjectParty\" | \"ProjectPartyCompanySource\" | \"ProjectPartyVendorSource\" | \"DecisionApprovalRevision\" | \"Worker\" | \"DecisionProjection\" | ... 78 more ... | \"MaterialReadinessProjection\"'.": 1
+  },
+  "test/integration/phase5-t5c-deductions.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase5-t5c-payable.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase5-t6a-payments.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase5-t6b-status-derivation.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase5-t7bia-money-invalidation.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase5-t7bii-claim-read.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase6-4c-iiir-inbox-repair.test.ts": {
+    "TS2322: Type '(tx: never, consumer: string, projectId: string) => Promise<ConsumerDiagnosis | { state: \"corrupt\"; }>' is not assignable to type '(tx: TransactionClient, consumer: string, projectId: string) => Promise<ConsumerDiagnosis>'.": 1
+  },
+  "test/integration/phase6-t4a-withdraw.test.ts": {
+    "TS2341: Property 'claim' is private and only accessible within class 'OutboxRelay'.": 3
+  },
+  "test/integration/phase6-t4c-ii-consultation.test.ts": {
+    "TS2322: Type '{ [x: string]: unknown; }' is not assignable to type 'InputJsonValue | JsonNull | undefined'.": 1,
+    "TS2345: Argument of type 'string' is not assignable to parameter of type 'Role | undefined'.": 2,
+    "TS2532: Object is possibly 'undefined'.": 3
+  },
+  "test/integration/phase6-t4d-ii-a2-commercial-seam.test.ts": {
+    "TS2322: Type '{ activityId: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; qty: string; requiredBy: string; criticality: \"normal\"; decisionId: null; responsibleId: null; tolerance: null; }' is not assignable to type '{ type: \"material\"; activityId: string; qty: string; materialCategory: string; make: string; grade: string; attributes: string; baseUom: string; requiredBy: string; criticality: \"normal\" | \"critical\"; decisionId?: string | ... 1 more ... | undefined; responsibleId?: string | ... 1 more ... | undefined; tolerance?: s...'.": 1
+  },
+  "test/integration/phase6-t4d-ii-a6e-generation-fence.test.ts": {
+    "TS2353: Object literal may only specify known properties, and 'id' does not exist in type 'PlatformApplication'.": 1
+  },
+  "test/integration/phase6-t4d-ii-a8a-forward-approve.test.ts": {
+    "TS2339: Property 'name' does not exist on type '{ id: string; }'.": 4
+  },
+  "test/integration/phase6-t4d-ii-a8b-countersign.test.ts": {
+    "TS2339: Property 'name' does not exist on type '{ id: string; }'.": 4
+  },
+  "test/integration/project-remove.test.ts": {
+    "TS2339: Property 'email' does not exist on type '{ id: string; }'.": 1
+  },
+  "test/integration/projection-rebuild-upgrade.test.ts": {
+    "TS2345: Argument of type '{ options: { id: string; decisionId: string; material: string; order: number; description: string | null; label: string; delta: number; swatch: string; photoUrl: string | null; recommended: boolean; optionKey: string; kindCode: string; }[]; changeRequests: { ...; }[]; deciderMembership: { ...; } | null; consultation...' is not assignable to parameter of type '{ options: { id: string; decisionId: string; material: string; order: number; description: string | null; label: string; delta: number; swatch: string; photoUrl: string | null; recommended: boolean; optionKey: string; kindCode: string; }[]; changeRequests: { ...; }[]; deciderMembership: { ...; } | null; consultation...'.": 1
+  }
 }
