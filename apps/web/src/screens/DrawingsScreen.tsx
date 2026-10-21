@@ -18,9 +18,15 @@ function statusMeta(status: string, lang: Lang): { label: string; bg: string; fg
   return { label: drawingStatusLabels.superseded[lang], bg: 'rgba(35,33,28,.06)', fg: 'var(--faint)', border: 'var(--hairline)' };
 }
 
-/** How a revision file previews: PDF inline, image inline, DWG/other download-only. */
+/**
+ * Image types a browser draws in an <img>: the raster drawings the API accepts, and the demo's SVG sheets. Named one by
+ * one, not by `image/*`, because CAD types are registered under `image/` too (`image/vnd.dwg`, `image/vnd.dxf`).
+ */
+const SHOWN_IMAGES: ReadonlySet<string> = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/svg+xml']);
+
+/** How a revision file previews: PDF inline, a shown image inline, anything else (DWG, DXF, …) download-only. */
 function previewKind(mime: string): 'image' | 'pdf' | 'download' {
-  if (mime.startsWith('image/') && mime !== 'image/vnd.dwg') return 'image';
+  if (SHOWN_IMAGES.has(mime)) return 'image';
   if (mime === 'application/pdf') return 'pdf';
   return 'download';
 }
@@ -30,11 +36,23 @@ async function looksLikePdf(file: Blob): Promise<boolean> {
   return (await file.slice(0, 1024).text()).includes('%PDF-');
 }
 
-/** The saved file's extension, from the revision's type, so a CAD app opens it: a blob's name has no other source. */
+/**
+ * Extensions for the other types a saved file may have: a PDF, and the images a legacy or demo revision may carry that
+ * the viewer no longer shows inline (Codex, #1063). Named one by one: a type off this list (`text/html`, say) gets none.
+ */
+const SAVED_EXTENSIONS: ReadonlyMap<string, string> = new Map([
+  ['application/pdf', '.pdf'],
+  ['image/png', '.png'], ['image/jpeg', '.jpg'], ['image/jpg', '.jpg'], ['image/webp', '.webp'], ['image/gif', '.gif'],
+  ['image/tiff', '.tif'], ['image/bmp', '.bmp'], ['image/heic', '.heic'], ['image/heif', '.heif'], ['image/avif', '.avif'],
+]);
+
+/** The saved file's extension, from the revision's type, so a CAD or image app opens it: a blob's name has no other source. */
 function fileExtension(mime: string): string {
-  if (/dxf/.test(mime)) return '.dxf';
-  if (/dwg|acad/.test(mime)) return '.dwg';
-  return mime === 'application/pdf' ? '.pdf' : '';
+  // a type's parameters (`; charset=…`) and case are not part of it
+  const type = mime.split(';')[0].trim().toLowerCase();
+  if (/dxf/.test(type)) return '.dxf';
+  if (/dwg|acad/.test(type)) return '.dwg';
+  return SAVED_EXTENSIONS.get(type) ?? '';
 }
 
 /**
@@ -75,13 +93,14 @@ function usePdfUrl(src: string, isPdf: boolean): string | null {
   return read && read.src === src ? read.url : null;
 }
 
+// how long a saved file's blob is kept after its click, for a browser that reads it only once the download starts
+const SAVED_FILE_KEPT_MS = 60_000;
+
 /**
  * Saves a CAD revision's file when Download is tapped. The file is read with `fetch`, which this site's service worker
  * answers (from its kept copy when offline), and saved from a blob of plain bytes under `name`. A link pointing at the
  * API would be a navigation the worker never sees. A failed or refused read goes to the file's own URL, as before.
  */
-const SAVED_FILE_KEPT_MS = 60_000;
-
 function saveFile(src: string, name: string): Promise<void> {
   const open = (href: string) => {
     const link = document.createElement('a');
@@ -438,7 +457,7 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
           <div style={{ textAlign: 'center', padding: 40 }}>
             <FileText size={40} color="#b8b2a6" />
             <div style={{ fontSize: 13.5, color: 'var(--muted)', margin: '12px 0 16px', maxWidth: 320 }}>
-              {rev.mime.includes('dwg') || rev.mime.includes('dxf') ? L.cadNote[lang] : L.noPreview[lang]}
+              {/dwg|dxf|acad/.test(rev.mime) ? L.cadNote[lang] : L.noPreview[lang]}
             </div>
             <a
               href={src}
