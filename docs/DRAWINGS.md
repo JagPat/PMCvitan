@@ -72,10 +72,15 @@ discipline/rev). The local demo seeds three drawings (mock SVG sheets) and issue
   (`/drawings/rev/*`, `/media/*`) on **any origin** — the API is a subdomain — with
   **stale-while-revalidate** into `vitan-pmc-files-v2`. Each file is read in CORS mode
   without credentials and only an ok answer is kept, so an expired link's 403, a 404 or a
-  5xx never replaces a good copy. Photos, image drawings and the register's thumbnails
-  **open offline**. The PDF viewer (`<iframe>`) and the CAD download still navigate to the
-  API and do not open offline yet (drawings-offline-viewer, helper 5). API JSON is still
-  never intercepted.
+  5xx never replaces a good copy. API JSON is still never intercepted. Photos, image
+  drawings and the register's thumbnails show in an `<img>` or CSS, which the worker
+  answers, so they **open offline**. A PDF is read by the viewer with `fetch` and shown from
+  a `blob:` URL typed as a PDF (only bytes with a `%PDF-` header); a CAD file is read the
+  same way when Download is tapped and saved from a blob with its `.dwg` / `.dxf` name. An
+  `<iframe>` or link pointing at the API would be a navigation to the API's origin, which
+  this site's worker never sees. So a PDF or CAD file the register has shown (its thumbnail
+  reads it too) **opens offline**; with no kept copy, the viewer falls back to the file's
+  URL, which needs the signal.
 - **Presigned direct-to-bucket uploads**: `POST /projects/:id/drawings/presign { mime }`
   (PMC only) returns `{ uploadUrl, storageKey }` in S3/R2 mode, or `{ presign: null }` on
   the dev stub. The client PUTs the bytes **straight to the bucket** (bypassing the API
@@ -89,7 +94,8 @@ discipline/rev). The local demo seeds three drawings (mock SVG sheets) and issue
 - **Slice 1:** register + revisions + viewer + issue + per-role push. ✅
 - **Slice 2:** activity linkage on the schedule; **acknowledgement** ("building to Rev C")
   + audit; RBAC (PMC issues; engineer/contractor view+ack; client read-only). ✅
-- **Slice 3:** offline PDF caching (PWA, service worker `v2`) for the field; **presigned
+- **Slice 3:** offline drawings for the field (PWA: the service worker keeps the files, and
+  the viewer reads PDF and CAD files through it); **presigned
   direct-to-bucket uploads** for large drawings (auto-routed, base64 fallback). ✅
 - **Later (optional):** server-side DWG→PDF conversion so the CAD source auto-produces the
   field PDF; explicit "make available offline" prefetch of the full current set.
