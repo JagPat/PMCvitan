@@ -27,6 +27,7 @@ import {
   assertReviewedRevision, payableGrantOffer, resolveApprovalContext,
   resolveSodGrant as resolveGrantForRule, type SodGrantResolution,
 } from './commercial-sod';
+import { claimRevision, seenPinPayload } from './seen-state';
 import type { ApprovePaymentCommand, RecordPaymentInput, ReversePaymentInput } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
@@ -263,7 +264,7 @@ export class CommercialPaymentService {
 
   /** Record money leaving against an approval that covers it. */
   async record(
-    projectId: string, input: RecordPaymentInput, user: AuthUser, idempotencyKey?: string,
+    projectId: string, input: RecordPaymentInput, user: AuthUser, idempotencyKey?: string, seen?: number,
   ): Promise<PaymentDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertRecord(user);
@@ -287,6 +288,9 @@ export class CommercialPaymentService {
         // them is read. `PaymentApproval` is append-only and its `certificateId` is frozen, so
         // resolving WHICH bill to lock above is safe; nothing decided is read before the lock.
         const bill = await this.lockBill(tx, projectId, approval.billId);
+        // seen-state pin — the claim revision the payer's screen showed, read in its own statement
+        // under the lock, so a payment made on a screen that never saw a later money act is refused
+        assertReviewedRevision(seen, await claimRevision(tx, projectId, approval.billId));
 
         // The approval must still be LIVE authority. `APPROVED(bill)` counts only approvals on the
         // live certificate, so paying against one whose certificate has been superseded attaches
@@ -373,7 +377,7 @@ export class CommercialPaymentService {
 
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.payment.record',
-          entity: 'Payment', entityId: payment.id,
+          entity: 'Payment', entityId: payment.id, payload: seenPinPayload(seen),
         });
 
         return { resultRef: payment.id, events: [] };
@@ -406,7 +410,7 @@ export class CommercialPaymentService {
    * bill-level total can be conserved while the attribution is a lie.
    */
   async reverse(
-    projectId: string, input: ReversePaymentInput, user: AuthUser, idempotencyKey?: string,
+    projectId: string, input: ReversePaymentInput, user: AuthUser, idempotencyKey?: string, seen?: number,
   ): Promise<PaymentDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertReverse(user);
@@ -430,6 +434,7 @@ export class CommercialPaymentService {
         // and so does every other mover; taking it here keeps the order total (bill → payment) and
         // is what lets the derivation seal re-acquire it `NOWAIT` at commit without waiting.
         const bill = await this.lockBill(tx, projectId, payment.billId);
+        assertReviewedRevision(seen, await claimRevision(tx, projectId, payment.billId));
 
         // the bound, re-derived under the lock. A reversal returns money that actually left, so it
         // is capped by what its OWN payment carried — cumulatively, or two part-reversals would
@@ -485,7 +490,7 @@ export class CommercialPaymentService {
 
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.payment.reverse',
-          entity: 'PaymentReversal', entityId: reversal.id,
+          entity: 'PaymentReversal', entityId: reversal.id, payload: seenPinPayload(seen),
         });
 
         return { resultRef: reversal.id, events: [] };

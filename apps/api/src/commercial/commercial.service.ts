@@ -12,6 +12,7 @@ import { lockProjectReadiness } from '../common/readiness-lock';
 import { CommercialParticipant, type AttributionTarget } from './commercial.participant';
 import { serializeAttribution } from './commercial.serialize';
 import { announceMoneyMoved } from './cash-forecast.projection';
+import { assertSeen, ATTRIBUTION_MOVED, seenPinPayload } from './seen-state';
 
 /**
  * Phase 5 Task 1 — the COMMERCIAL service (plan §C/§L).
@@ -111,6 +112,7 @@ export class CommercialService {
     input: ReattributeInput,
     user: AuthUser,
     idempotencyKey?: string,
+    seen?: string,
   ): Promise<CommitmentAttributionDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     // AUTHORIZATION PRECEDES STATE INSPECTION. The participant enforces this too — the authority
@@ -152,6 +154,10 @@ export class CommercialService {
             'This purchase-order line carries no active attribution — only a LIVE attributed commitment can be reclassified',
           );
         }
+        // seen-state pin — the live row the screen drew this control on. Every replacement
+        // supersedes the active row and inserts a new one, so its id moves on each reclassification
+        // and an old id never becomes active again.
+        assertSeen(seen, active.id, ATTRIBUTION_MOVED);
         // The participant enforces `commercial.attribute` — the SAME check the `pos.issue` path
         // gets, because the authority follows the WRITE, not the route (§C, probe 5ar).
         await this.participant.replaceAttribution(tx, projectId, actor, [
@@ -166,7 +172,7 @@ export class CommercialService {
         });
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.attribution.reattribute',
-          entity: 'CommitmentAttribution', entityId: replacement.id,
+          entity: 'CommitmentAttribution', entityId: replacement.id, payload: seenPinPayload(seen),
         });
         return { resultRef: replacement.id, events: [] };
       },

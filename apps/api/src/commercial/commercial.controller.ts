@@ -49,6 +49,7 @@ import { CommercialCertificationService } from './commercial-certification.servi
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
+import { SEEN_STATE_HEADER, seenState } from './seen-state';
 
 /**
  * Phase 5 Task 1 — the COMMERCIAL module controller (plan §C/§I).
@@ -56,7 +57,8 @@ import { RolesFor, RolesGuard } from '../common/roles';
  * Every route is project-scoped and capability-gated (the service asserts the `commercial`
  * capability, 404 off-pilot — §D). Defining a cost head and re-attributing a commitment are pmc
  * authority; the register reads mirror `procurement.read`. Mutations carry an Idempotency-Key
- * through the command ledger.
+ * through the command ledger. Eight of them also carry `X-Vitan-Seen-State`, the state the screen
+ * showed (see `seen-state.ts`): a header beside the body, so the body and its hash never change.
  *
  * There is deliberately no "attribute" route: §C requires the INITIAL attribution to be written
  * inside the transaction that makes a PO version live, through `CommercialParticipant`. A
@@ -109,8 +111,9 @@ export class CommercialController {
     @Body(new ZodPipe(reattributeSchema)) body: ReattributeInput,
     @CurrentUser() user: AuthUser,
     @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers(SEEN_STATE_HEADER) seen?: string,
   ) {
-    return this.commercial.reattribute(projectId, body, user, idempotencyKey);
+    return this.commercial.reattribute(projectId, body, user, idempotencyKey, seenState(seen, 'id'));
   }
 
   /** §D — take a measurement against a signed-off activity's labour PO line. */
@@ -121,8 +124,9 @@ export class CommercialController {
     @Body(new ZodPipe(takeMeasurementSchema)) body: TakeMeasurementInput,
     @CurrentUser() user: AuthUser,
     @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers(SEEN_STATE_HEADER) seen?: string,
   ) {
-    return this.measurement.take(projectId, body, user, idempotencyKey);
+    return this.measurement.take(projectId, body, user, idempotencyKey, seenState(seen, 'count'));
   }
 
   /** §D — CORRECT one with a signed delta. There is deliberately no edit route: a measurement is
@@ -134,8 +138,9 @@ export class CommercialController {
     @Body(new ZodPipe(correctMeasurementSchema)) body: CorrectMeasurementInput,
     @CurrentUser() user: AuthUser,
     @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers(SEEN_STATE_HEADER) seen?: string,
   ) {
-    return this.measurement.correct(projectId, body, user, idempotencyKey);
+    return this.measurement.correct(projectId, body, user, idempotencyKey, seenState(seen, 'count'));
   }
 
   /** §D — the measurement register for one labour PO line, with MEASURED, EFFORT and the order. */
@@ -319,8 +324,9 @@ export class CommercialController {
     @Body(new ZodPipe(recordDeductionSchema)) body: RecordDeductionInput,
     @CurrentUser() user: AuthUser,
     @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers(SEEN_STATE_HEADER) seen?: string,
   ) {
-    return this.deductions.record(projectId, body, user, idempotencyKey);
+    return this.deductions.record(projectId, body, user, idempotencyKey, seenState(seen, 'count'));
   }
 
   /** §H — give back part of a withholding, as its own attributable row. Never an edit. */
@@ -331,8 +337,9 @@ export class CommercialController {
     @Body(new ZodPipe(releaseDeductionSchema)) body: ReleaseDeductionInput,
     @CurrentUser() user: AuthUser,
     @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers(SEEN_STATE_HEADER) seen?: string,
   ) {
-    return this.deductions.release(projectId, body, user, idempotencyKey);
+    return this.deductions.release(projectId, body, user, idempotencyKey, seenState(seen, 'count'));
   }
 
   /** §H — one claim's withholding ledger and the `NET_PAYABLE` it produces. Every figure a fold. */
@@ -373,8 +380,9 @@ export class CommercialController {
     @Body(new ZodPipe(recordPaymentSchema)) body: RecordPaymentInput,
     @CurrentUser() user: AuthUser,
     @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers(SEEN_STATE_HEADER) seen?: string,
   ) {
-    return this.payments.record(projectId, body, user, idempotencyKey);
+    return this.payments.record(projectId, body, user, idempotencyKey, seenState(seen, 'count'));
   }
 
   /**
@@ -391,8 +399,9 @@ export class CommercialController {
     @Body(new ZodPipe(reversePaymentSchema)) body: ReversePaymentInput,
     @CurrentUser() user: AuthUser,
     @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers(SEEN_STATE_HEADER) seen?: string,
   ) {
-    return this.payments.reverse(projectId, body, user, idempotencyKey);
+    return this.payments.reverse(projectId, body, user, idempotencyKey, seenState(seen, 'count'));
   }
 
   /**
@@ -427,8 +436,9 @@ export class CommercialController {
     @Body(new ZodPipe(payAdvanceSchema)) body: PayAdvanceInput,
     @CurrentUser() user: AuthUser,
     @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers(SEEN_STATE_HEADER) seen?: string,
   ) {
-    return this.deductions.payAdvance(projectId, body, user, idempotencyKey);
+    return this.deductions.payAdvance(projectId, body, user, idempotencyKey, seenState(seen, 'count'));
   }
 
   /** §G — one claim's approvals and payments, with the folds bounds 4–5 are measured against. */

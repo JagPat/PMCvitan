@@ -43,6 +43,26 @@ interface AcceptanceDraw {
   consumedQty: Prisma.Decimal;
 }
 
+/** `SodGrant_live_scope_key`, by name or by its columns — Prisma reports a partial index either way. */
+const LIVE_GRANT_SCOPE = ['projectId', 'billId', 'versionId', 'rule', 'actorId', 'approverId', 'reviewedStatus', 'reviewedLifecycleVersion'];
+
+/**
+ * A second identical grant hits the live-scope index. Unmapped, the command kernel answers it with
+ * "A concurrent command with this key is in progress — retry.", which tells the person to retry an
+ * act that can never succeed. Only THIS index is mapped (the `project-initialization.ts` precedent):
+ * any other unique violation is a different fact and keeps its own answer. A pure rethrow — the
+ * transaction is already aborted, so nothing may be read here.
+ */
+export function rethrowDuplicateGrant(e: unknown): never {
+  if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+    const target = (e.meta as { target?: unknown } | undefined)?.target;
+    const named = target === 'SodGrant_live_scope_key'
+      || (Array.isArray(target) && target.length === LIVE_GRANT_SCOPE.length && LIVE_GRANT_SCOPE.every((c) => target.includes(c)));
+    if (named) throw new ConflictException('An exception for this person on this claim already stands. Reload to see it.');
+  }
+  throw e;
+}
+
 /**
  * Phase 5 Task 5B (§E/§F/§G/§I) — CERTIFICATION.
  *
@@ -955,7 +975,7 @@ export class CommercialCertificationService {
             actorId: input.actorId, approverId: actor.actorId, reason: input.reason,
             sourceCommandId: ctx.commandId!,
           },
-        });
+        }).catch(rethrowDuplicateGrant);
         // 7B-v — and now ASK THE SPEND PATH. The row exists in this transaction, so the resolver
         // the consuming act uses can be run against it directly: if it does not come back `live`,
         // this authorisation could not be exercised and the transaction rolls back.

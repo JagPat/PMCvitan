@@ -18,6 +18,7 @@ import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import { CommercialBillQuery } from './commercial-bill.query';
 import { CommercialParticipant } from './commercial.participant';
 import type { CorrectMeasurementInput, TakeMeasurementInput } from '../contracts';
+import { assertSeen, MEASUREMENTS_MOVED, seenPinPayload } from './seen-state';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -127,8 +128,8 @@ export class CommercialMeasurementService {
    *    would carry 20 shifts of unauthorised work long before any bill refused them. Ordered
    *    authority bounds MEASUREMENT, not just billing.
    */
-  async take(projectId: string, input: TakeMeasurementInput, user: AuthUser, idempotencyKey?: string): Promise<MeasurementDto> {
-    return this.append(projectId, user, idempotencyKey, 'commercial.measurement.take', input, {
+  async take(projectId: string, input: TakeMeasurementInput, user: AuthUser, idempotencyKey?: string, seen?: number): Promise<MeasurementDto> {
+    return this.append(projectId, user, idempotencyKey, seen, 'commercial.measurement.take', input, {
       labourPoLineId: input.labourPoLineId,
       activityId: input.activityId,
       quantity: new Prisma.Decimal(input.quantity),
@@ -157,7 +158,7 @@ export class CommercialMeasurementService {
    *
    * A POSITIVE correction is still a measurement, so it re-checks the EFFORT and ordered caps.
    */
-  async correct(projectId: string, input: CorrectMeasurementInput, user: AuthUser, idempotencyKey?: string): Promise<MeasurementDto> {
+  async correct(projectId: string, input: CorrectMeasurementInput, user: AuthUser, idempotencyKey?: string, seen?: number): Promise<MeasurementDto> {
     const target = await this.prisma.measurement.findFirst({
       where: { projectId, id: input.measurementId },
       select: { id: true, labourPoLineId: true, activityId: true, citedOutputId: true, correctsId: true },
@@ -175,7 +176,7 @@ export class CommercialMeasurementService {
         'This row is itself a correction — address the correction to the original measurement it adjusts, so every delta names the work it walks back',
       );
     }
-    return this.append(projectId, user, idempotencyKey, 'commercial.measurement.correct', input, {
+    return this.append(projectId, user, idempotencyKey, seen, 'commercial.measurement.correct', input, {
       labourPoLineId: target.labourPoLineId,
       activityId: target.activityId,
       quantity: new Prisma.Decimal(input.quantity),
@@ -191,6 +192,7 @@ export class CommercialMeasurementService {
     projectId: string,
     user: AuthUser,
     idempotencyKey: string | undefined,
+    seen: number | undefined,
     commandType: 'commercial.measurement.take' | 'commercial.measurement.correct',
     input: TakeMeasurementInput | CorrectMeasurementInput,
     row: {
@@ -231,6 +233,13 @@ export class CommercialMeasurementService {
         // §A — serialize with the PO lifecycle before ANY of the reads below, so the ordered
         // authority and the effort this measurement is bounded by cannot move underneath it.
         await lockProjectReadiness(tx, projectId);
+
+        // seen-state pin — how many measurements the screen's register held for this line,
+        // counted in its own statement under readiness, which every Measurement writer takes. A
+        // row is immutable and a correction is a new row, so the count only ever grows and any
+        // entry made since the screen loaded moves it.
+        const onLine = await tx.measurement.count({ where: { projectId, labourPoLineId: row.labourPoLineId } });
+        assertSeen(seen, onLine, MEASUREMENTS_MOVED);
 
         // (1) the activity's sign-off, UNDER ITS ROW LOCK (§D — never a plain status query)
         const activity = await this.activities.measurableTarget(tx, { projectId, activityId: row.activityId });
@@ -358,6 +367,7 @@ export class CommercialMeasurementService {
         }).catch((e) => rethrowMediaRefViolation(e));
         await recordAudit(tx, {
           projectId, actor, action: commandType, entity: 'Measurement', entityId: created.id,
+          payload: seenPinPayload(seen),
         });
         // Phase 5 Task 4 (§D/§G) — a REDUCING correction withdraws billing evidence, so live
         // uncertified claims above the new total are disputed here, in the SAME transaction. The
