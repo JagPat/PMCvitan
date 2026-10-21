@@ -2042,8 +2042,8 @@ export function moveSiteVisitOps(ops: OutboxOp[], from: string, to: string): Out
 
 /** Replay one queued mutation; resolves to the fresh snapshot, or null for an act whose answer is not a snapshot
  *  and needs none (a site visit's answer goes to the Site Visits screen). `onPhotoGone` is told when a queued site photo
- *  was settled by the server's 410 (#482), whatever the refresh after it answered. */
-export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, onPhotoGone?: () => void): Promise<ApiSnapshot | null> {
+ *  or evidence photo was settled by the server's 410 (#482), whatever the refresh after it answered. */
+export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, onPhotoGone?: (localEvidence?: { url: string; inspectionId?: string; inspectionItemId?: string }) => void): Promise<ApiSnapshot | null> {
   const visit = (sent: Promise<SiteVisit>): Promise<null> =>
     sent.then((v) => { tellSiteVisits({ kind: 'answer', project: gw.project, generation, visit: v }); return null; });
   switch (op.t) {
@@ -2229,12 +2229,14 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
       // A terminal 4xx flags the entry FAILED (kept for the user's Retry/Delete)
       // and rethrows so the flush drops the op — the bytes never silently vanish.
       return getEvidence(op.scope, gw.project, op.clientKey).then(async (entry) => {
-        if (!entry) return gw.snapshot(); // user already deleted the bytes — nothing to upload
+        // no bytes left on this phone (sent and confirmed, or settled by another tab's 410, or deleted by the user): nothing
+        // can be sent, so the op is settled whatever the refresh answers; one that fails is owed by the flush (#482)
+        if (!entry) return gw.snapshot().catch(() => null);
         // gate round-2 finding 2: a row that is not PENDING must never replay — a
         // dead-lettered (failed) row is parked for the USER's explicit Retry/Delete,
         // and a stale op must not smuggle it past that pause. Retry flips the row
         // back to pending first, so the legitimate path is unaffected.
-        if (entry.status !== 'pending') return gw.snapshot();
+        if (entry.status !== 'pending') return gw.snapshot().catch(() => null);
         try {
           await gw.uploadMedia({
             kind: 'inspection',
@@ -2250,7 +2252,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
           if (isDeletedPhoto(err)) {
             // a row the phone could not remove keeps its op (no status: transient), to be answered and removed again
             await deleteEvidence(op.scope, gw.project, op.clientKey).catch(() => { throw new Error('the deleted photo kept on this phone could not be removed'); });
-            return gw.snapshot();
+            // settled by the 410 alone, as a site photo's is: its bytes are gone, so a refresh that fails answers no snapshot.
+            // The local thumbnail captured offline is these bytes' own data URL on the item they name
+            onPhotoGone?.({ url: `data:${entry.mime};base64,${entry.data}`, inspectionId: entry.inspectionId, inspectionItemId: entry.inspectionItemId });
+            return gw.snapshot().catch(() => null);
           }
           if (isTerminalOutboxError(err)) {
             try {
@@ -2266,7 +2271,8 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
           throw err;
         }
         await deleteEvidence(op.scope, gw.project, op.clientKey).catch(() => {}); // confirmed — exactly-once cleanup
-        return gw.snapshot();
+        // settled by the 2xx: a refresh that fails answers no snapshot, never a resend of bytes already gone (#482)
+        return gw.snapshot().catch(() => null);
       });
     }
   }

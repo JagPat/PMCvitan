@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { getEvidence, putEvidence } from '@/data/evidenceStore';
+import { deleteWaitsForUpload } from '@/lib/queuedSitePhotos';
 import { warmImports } from './warm-imports';
 
 await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'));
@@ -191,4 +192,194 @@ describe('a 410 settled after the project changed (#482)', () => {
       expect(useStore.getState().dailyLogPhotoCountAfter).toBeNull();
     });
   }
+});
+
+// Codex 4340333337: a photo the server answers 410 for leaves every local copy at once, matched by the send's own key,
+// whatever the refresh answers: a deleted photo never comes back, and no copy outlives the server's word
+describe('the local copies of a photo settled by its 410 (#482)', () => {
+  const recorded = { id: 'ph-x', url: '/media/ph-x', kind: 'progress', clientKey: 'k-gone' };
+  const failed = () => new TypeError('Failed to fetch');
+
+  it('a site photo an earlier pull recorded leaves the list, the own list and the log\'s gallery, and stays gone', async () => {
+    const useStore = await store();
+    useStore.getState()._setGateway({ uploadMedia: vi.fn().mockRejectedValue(gone()), snapshot: vi.fn().mockRejectedValue(failed()), project: 'villa-b' } as never);
+    const log = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 1, photoCount: 1, myPhotoKeys: ['k-gone'], crew: [], materials: [], photos: [{ id: 'ph-x', url: '/media/ph-x' }, { id: 'ph-other', url: '/media/ph-other' }] };
+    const other = { id: 'ph-other', url: '/media/ph-other', kind: 'progress', clientKey: 'k-other' };
+    useStore.setState({ dailyLog: log, photos: [recorded, other], myDeletablePhotos: [{ ...recorded, id: 'ph-x-own' }], outbox: [{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-gone', dailyLogId: 'log-1' } }] } as never);
+    await useStore.getState().flushOutbox();
+    expect(useStore.getState().photos.map((p) => p.id)).toEqual(['ph-other']);
+    expect(useStore.getState().myDeletablePhotos).toEqual([]);
+    expect(useStore.getState().dailyLog?.photos.map((p) => p.id)).toEqual(['ph-other']);
+    expect(useStore.getState().dailyLogPhotoCountAfter).not.toBeNull();
+    await useStore.getState().flushOutbox();
+    expect(useStore.getState().photos.map((p) => p.id)).toEqual(['ph-other']);
+  });
+
+  it('a pull begun while the send was on its way, which still holds the photo, is not applied after the 410', async () => {
+    const useStore = await store();
+    let refuse!: () => void;
+    const send = new Promise((_, reject) => { refuse = () => reject(gone()); });
+    let sending!: () => void;
+    const sent = new Promise<void>((resolve) => { sending = resolve; });
+    let land!: (v: unknown) => void;
+    const earlier = new Promise((resolve) => { land = resolve; });
+    // the pull the flush asks for after the 410 runs only once the earlier one is settled: its start is the signal
+    let rerunning!: () => void;
+    const rerun = new Promise<void>((resolve) => { rerunning = resolve; });
+    const snapshot = vi.fn().mockReturnValueOnce(earlier).mockRejectedValueOnce(failed()).mockImplementation(() => { rerunning(); return Promise.reject(failed()); });
+    useStore.getState()._setGateway({ uploadMedia: vi.fn(() => { sending(); return send; }), snapshot, project: 'villa-b' } as never);
+    useStore.setState({ photos: [recorded], outbox: [{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-gone' } }] } as never);
+    const flushed = useStore.getState().flushOutbox();
+    await sent;
+    useStore.getState().requestFreshSnapshot();
+    refuse();
+    await flushed;
+    expect(useStore.getState().photos).toEqual([]);
+    land({ ...snap, photos: [recorded] });
+    await rerun;
+    expect(useStore.getState().photos).toEqual([]);
+  });
+
+  it('an evidence photo answered 410 whose refresh fails leaves the queue, the photo list and the checklist item it was on', async () => {
+    const useStore = await store();
+    const scope = 'anon';
+    await putEvidence({ userScope: scope, projectId: 'villa-b', clientKey: 'k-ev-x', mime: 'image/png', data: 'AAAA', inspectionId: 'INSP-1', inspectionItemId: 'item-1' });
+    useStore.getState()._setGateway({ uploadMedia: vi.fn().mockRejectedValue(gone()), snapshot: vi.fn().mockRejectedValue(failed()), project: 'villa-b' } as never);
+    const checklist = { id: 'INSP-1', title: 'Slab', zone: 'A', date: '21 Oct 2026', submitted: false, items: [{ id: 'item-1', name: 'Cover', state: null, photos: 0, note: '', evidence: ['/media/ev-x?t=1', '/media/ev-y?t=1'] }] };
+    useStore.setState({ checklist, photos: [{ id: 'ev-x', url: '/media/ev-x', kind: 'inspection', clientKey: 'k-ev-x' }], outbox: [{ t: 'uploadEvidence', scope, clientKey: 'k-ev-x' }] } as never);
+    await useStore.getState().flushOutbox();
+    expect(useStore.getState().outbox).toEqual([]);
+    expect(await getEvidence(scope, 'villa-b', 'k-ev-x')).toBeNull();
+    expect(useStore.getState().photos).toEqual([]);
+    expect(useStore.getState().checklist?.items[0]?.evidence).toEqual(['/media/ev-y?t=1']);
+    expect(JSON.stringify(useStore.getState())).not.toContain('discarded');
+  });
+});
+
+// round-4 check: the copies this device shows while a send is queued (API mode) leave at its 410 too, whatever the
+// refresh answers: a site photo's data URL in the log's gallery, an evidence photo's on the item it was captured on
+describe('the queued local copies of a photo settled by its 410 (#482)', () => {
+  const failed = () => new TypeError('Failed to fetch');
+
+  it('a site photo picked offline leaves the log\'s gallery at its 410, the other queued photo stays', async () => {
+    const useStore = await store();
+    useStore.setState({ online: false } as never);
+    const uploadMedia = vi.fn().mockRejectedValueOnce(gone()).mockRejectedValue(failed());
+    useStore.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockRejectedValue(failed()), project: 'villa-b' } as never);
+    useStore.setState({ dailyLog: { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 0, photoCount: 0, myPhotoKeys: [], crew: [], materials: [], photos: [] } } as never);
+    useStore.getState().addProgressPhoto('data:image/png;base64,AAAA', null, undefined, undefined, 'log-1');
+    useStore.getState().addProgressPhoto('data:image/png;base64,BBBB', null, undefined, undefined, 'log-1');
+    expect(useStore.getState().dailyLog?.photos.map((p) => p.url)).toEqual(['data:image/png;base64,BBBB', 'data:image/png;base64,AAAA']);
+    useStore.setState({ online: true } as never);
+    await useStore.getState().flushOutbox();
+    // the first send was answered 410, the second could not reach the server and stays queued with its copy
+    expect(useStore.getState().outbox).toHaveLength(1);
+    expect(useStore.getState().dailyLog?.photos.map((p) => p.url)).toEqual(['data:image/png;base64,BBBB']);
+  });
+
+  it('an evidence photo captured offline leaves its checklist item at its 410', async () => {
+    const useStore = await store();
+    useStore.setState({ online: false } as never);
+    const uploadMedia = vi.fn().mockRejectedValue(gone());
+    useStore.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockRejectedValue(failed()), project: 'villa-b' } as never);
+    const checklist = { id: 'INSP-1', title: 'Slab', zone: 'A', date: '21 Oct 2026', submitted: false, items: [{ id: 'item-1', name: 'Cover', state: null, photos: 0, note: '', evidence: ['/media/ev-y?t=1'] }] };
+    useStore.setState({ checklist, openChecklists: [structuredClone(checklist)] } as never);
+    await useStore.getState().addChecklistEvidence(0, 'data:image/png;base64,AAAA', 'INSP-1');
+    expect(useStore.getState().checklist?.items[0]?.evidence).toEqual(['/media/ev-y?t=1', 'data:image/png;base64,AAAA']);
+    useStore.setState({ online: true } as never);
+    await useStore.getState().flushOutbox();
+    expect(useStore.getState().outbox).toEqual([]);
+    for (const c of [useStore.getState().checklist, useStore.getState().openChecklists[0]]) {
+      expect(c?.items[0]?.evidence).toEqual(['/media/ev-y?t=1']);
+      expect(c?.items[0]?.photos).toBe(0);
+    }
+  });
+});
+
+// Codex 4340876895: a delete's answer that does not say which log counted the photo (an earlier release's
+// `{ ok: true }`) is unknown, read as the 404's is; `null` says no log counted it
+describe('a delete answer that does not name its log (#482)', () => {
+  for (const [answer, marked] of [[{ ok: true }, true], [{ ok: true, dailyLogId: null }, false], [{ ok: true, dailyLogId: 'log-other' }, false], [{ ok: true, dailyLogId: 'log-1' }, true]] as const) {
+    it(`${JSON.stringify(answer)} ${marked ? 'marks' : 'leaves'} the on-screen log's count with the refresh failing`, async () => {
+      const useStore = await store();
+      useStore.getState()._setGateway({ deleteMedia: vi.fn().mockResolvedValue(answer), snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')), project: 'villa-b' } as never);
+      const log = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 1, photoCount: 1, myPhotoKeys: [], crew: [], materials: [], photos: [] };
+      useStore.setState({ dailyLog: log, photos: [{ id: 'ph-1', url: '/media/ph-1', kind: 'progress' }] } as never);
+      await useStore.getState().deleteSitePhoto('ph-1');
+      expect(useStore.getState().photos).toEqual([]);
+      expect(useStore.getState().dailyLogPhotoCountAfter !== null).toBe(marked);
+    });
+  }
+  it('{"ok":true} with no log on screen marks no count', async () => {
+    const useStore = await store();
+    useStore.getState()._setGateway({ deleteMedia: vi.fn().mockResolvedValue({ ok: true }), snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')), project: 'villa-b' } as never);
+    useStore.setState({ dailyLog: null, photos: [{ id: 'ph-1', url: '/media/ph-1', kind: 'progress' }] } as never);
+    await useStore.getState().deleteSitePhoto('ph-1');
+    expect(useStore.getState().photos).toEqual([]);
+    expect(useStore.getState().dailyLogPhotoCountAfter).toBe(null);
+  });
+});
+
+// Codex 4340876907: an evidence photo whose earlier send landed and was deleted elsewhere is settled by its 410 alone:
+// with every refresh failing its op leaves the queue, its recorded copy goes, and its Delete no longer waits on it
+describe('an evidence photo answered 410 while every refresh fails (#482)', () => {
+  it('leaves the queue and this phone, and nothing waits on its upload', async () => {
+    const useStore = await store();
+    const scope = 'anon';
+    await putEvidence({ userScope: scope, projectId: 'villa-b', clientKey: 'k-ev-z', mime: 'image/png', data: 'AAAA', inspectionId: 'INSP-1', inspectionItemId: 'item-1' });
+    useStore.getState()._setGateway({ uploadMedia: vi.fn().mockRejectedValue(gone()), snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')), project: 'villa-b' } as never);
+    const copy = { id: 'ev-z', url: '/media/ev-z', kind: 'inspection', clientKey: 'k-ev-z' };
+    useStore.setState({ photos: [copy], pendingEvidenceKeys: ['k-ev-z'], outbox: [{ t: 'uploadEvidence', scope, clientKey: 'k-ev-z' }] } as never);
+    await useStore.getState().flushOutbox();
+    expect(useStore.getState().outbox).toEqual([]);
+    expect(useStore.getState().photos).toEqual([]);
+    // the flush re-reads this phone's evidence rows: the deleted one is no longer pending
+    await new Promise<void>((resolve) => {
+      if (!useStore.getState().pendingEvidenceKeys?.includes('k-ev-z')) { resolve(); return; }
+      const off = useStore.subscribe((st) => { if (st.pendingEvidenceKeys && !st.pendingEvidenceKeys.includes('k-ev-z')) { off(); resolve(); } });
+    });
+    const st = useStore.getState();
+    expect(deleteWaitsForUpload(copy, st.outbox, st.pendingEvidenceKeys, st.photoUploadsSending)).toBe(false);
+  });
+});
+
+// round-4b check: an evidence op with no bytes left on this phone (sent and confirmed, or settled by another tab's 410)
+// is settled whatever the refresh answers, a pull is owed, and its photo's Delete does not wait on it (Codex 4340876907's
+// sentence on the lane's other byte-less paths)
+describe('an evidence op with no bytes left, every refresh failing (#482)', () => {
+  const failed = () => new TypeError('Failed to fetch');
+  it('sent and confirmed (2xx), its refresh failing: the op leaves, a pull is owed, Delete does not wait', async () => {
+    const useStore = await store();
+    const scope = 'anon';
+    await putEvidence({ userScope: scope, projectId: 'villa-b', clientKey: 'k-ev-a', mime: 'image/png', data: 'AAAA', inspectionId: 'INSP-1', inspectionItemId: 'item-1' });
+    const uploadMedia = vi.fn().mockResolvedValue({ id: 'ev-a', url: '/media/ev-a' });
+    useStore.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockRejectedValue(failed()), project: 'villa-b' } as never);
+    useStore.setState({ pendingEvidenceKeys: ['k-ev-a'], outbox: [{ t: 'uploadEvidence', scope, clientKey: 'k-ev-a' }] } as never);
+    await useStore.getState().flushOutbox();
+    expect(await getEvidence(scope, 'villa-b', 'k-ev-a')).toBeFalsy(); // the bytes are gone: nothing is left to send
+    // a pull lands meanwhile and lists the photo as the viewer's own
+    const copy = { id: 'ev-a', url: '/media/ev-a', kind: 'inspection', clientKey: 'k-ev-a' };
+    useStore.setState({ photos: [copy] } as never);
+    await vi.waitFor(() => expect(useStore.getState().pendingEvidenceKeys).toEqual([]));
+    const st = useStore.getState();
+    expect(st.outbox).toEqual([]);
+    expect(deleteWaitsForUpload(copy, st.outbox, st.pendingEvidenceKeys, st.photoUploadsSending)).toBe(false);
+    expect(st.commandReconcilePending).toBe(true);
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('bytes already gone (another tab took its 410): the op leaves with the refresh failing, nothing is sent', async () => {
+    const useStore = await store();
+    const scope = 'anon';
+    const uploadMedia = vi.fn();
+    useStore.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockRejectedValue(failed()), project: 'villa-b' } as never);
+    const copy = { id: 'ev-b', url: '/media/ev-b', kind: 'inspection', clientKey: 'k-ev-b' };
+    useStore.setState({ photos: [copy], pendingEvidenceKeys: [], outbox: [{ t: 'uploadEvidence', scope, clientKey: 'k-ev-b' }] } as never);
+    await useStore.getState().flushOutbox();
+    const st = useStore.getState();
+    expect(uploadMedia).not.toHaveBeenCalled();
+    expect(st.outbox).toEqual([]);
+    expect(deleteWaitsForUpload(copy, st.outbox, st.pendingEvidenceKeys, st.photoUploadsSending)).toBe(false);
+    expect(st.commandReconcilePending).toBe(true);
+  });
 });

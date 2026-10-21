@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { toIsoCivilDate } from '../common/civil-date';
 import { ActivitiesQueryService } from '../activities/activities.query';
@@ -141,7 +142,7 @@ export class SnapshotService {
       hiddenNodes.then(async (hidden) => {
         const visible = hidden.length > 0 ? { OR: [{ nodeId: null }, { nodeId: { notIn: hidden } }] } : {};
         const select = { id: true, kind: true, url: true, takenAt: true, nodeId: true, uploadedBy: true, clientKey: true, createdAt: true, dailyLogId: true, decisionId: true, inspectionId: true, inspectionItemId: true } as const;
-        const newest = await this.prisma.media.findMany({
+        const readNewest = (db: Prisma.TransactionClient) => db.media.findMany({
           where: { projectId, kind: { in: ['progress', 'inspection', 'material'] }, ...visible },
           orderBy: { createdAt: 'desc' },
           take: SNAPSHOT_SITE_PHOTO_LIMIT,
@@ -151,16 +152,23 @@ export class SnapshotService {
         // window, which a busy hour can fill (Codex 4322459282). They are their own list, so the window stays the newest
         // SNAPSHOT_SITE_PHOTO_LIMIT (Codex 4322976249), and it has no cap (Codex 4322976240): it holds only what this one
         // member sent in the last hour, and only in their own snapshot. The PMC and the engineer delete from the window.
-        if (!userId || SITE_RECORD_ROLES.has(role) || newest.length < SNAPSHOT_SITE_PHOTO_LIMIT) return { newest, own: [] };
-        const own = await this.prisma.media.findMany({
-          where: {
-            projectId, kind: 'progress', uploadedBy: userId, decisionId: null, inspectionId: null, inspectionItemId: null,
-            createdAt: { gt: new Date(Date.now() - SITE_PHOTO_DELETE_WINDOW_MS) }, id: { notIn: newest.map((m) => m.id) }, ...visible,
-          },
-          orderBy: { createdAt: 'desc' },
-          select,
-        });
-        return { newest, own };
+        if (!userId || SITE_RECORD_ROLES.has(role)) return { newest: await readNewest(this.prisma), own: [] };
+        // The window and the list are read in one REPEATABLE READ snapshot: a photo sent between two separate reads would
+        // be missing from the window yet found by the list, so the project's newest photo would show only as a card
+        // past the window (Codex 4340333355). Read-only, so it never fails with a serialization error.
+        return this.prisma.$transaction(async (tx) => {
+          const newest = await readNewest(tx);
+          if (newest.length < SNAPSHOT_SITE_PHOTO_LIMIT) return { newest, own: [] };
+          const own = await tx.media.findMany({
+            where: {
+              projectId, kind: 'progress', uploadedBy: userId, decisionId: null, inspectionId: null, inspectionItemId: null,
+              createdAt: { gt: new Date(Date.now() - SITE_PHOTO_DELETE_WINDOW_MS) }, id: { notIn: newest.map((m) => m.id) }, ...visible,
+            },
+            orderBy: { createdAt: 'desc' },
+            select,
+          });
+          return { newest, own };
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 10_000, timeout: 30_000 });
       }),
       // Task 10 — the drawings register comes from the module's query (the baked per-viewer register:
       // draft-author visibility + the viewer's ack/recipient state + fresh signed urls), never a direct

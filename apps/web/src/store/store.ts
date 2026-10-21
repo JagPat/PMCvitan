@@ -2430,6 +2430,18 @@ export const useStore = create<Store>()(
     const sitePhotoDeletes = new Map<string, Promise<void>>();
     // #482 site photos — the photos this tab has seen deleted: a late upload answer never lists one again (Codex 4322715807)
     const deletedPhotoIds = new Set<string>();
+    /** #482 site photos — a photo the server says is gone (a delete's yes or 404, a send's 410) leaves every local copy in
+     *  the same update: the photo list (Dashboard, Site Map), the viewer's own list past the window, the log's gallery, and
+     *  every evidence or sample path naming it; and no late upload answer lists it again */
+    const dropDeletedPhoto = (s: AppState, photoId: string): void => {
+      deletedPhotoIds.add(photoId);
+      // taken out of a full window: an older photo may lie just past it, so the count stays a floor until a
+      // snapshot rebuilds the window, and one that fails leaves it a floor (Codex 4337661439)
+      if (s.photos.length >= SNAPSHOT_SITE_PHOTO_LIMIT && s.photos.some((p) => p.id === photoId)) s.photosWindowShort = true;
+      s.photos = s.photos.filter((p) => p.id !== photoId);
+      if (s.dailyLog) s.dailyLog.photos = s.dailyLog.photos.filter((p) => p.id !== photoId);
+      forgetMedia(s, photoId);
+    };
     const siteVisitKeyOf = (key: string): string => key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
     /** SV2 (#792): a visit photo's act is never stored here. Its one record is its `visitPhotoStore` row (act, bytes,
      *  and the start it waits on), and the act is rebuilt from that row on every load (`reconcileVisitPhotos`). So a
@@ -4293,20 +4305,14 @@ export const useStore = create<Store>()(
           // a pull begun while the DELETE was on its way may have read the photo before it went: every pull begun
           // before this answer is superseded here, whether it is still waiting or already back (Codex 4322459274)
           beginSnapshotLease(scope);
-          deletedPhotoIds.add(photoId);
           // the server's yes is the delete: the photo leaves at once, and a fresh snapshot then settles the counts.
           // A failed refresh never turns a done delete into a "try again" (Codex 4316959524).
           set((s) => {
             // filed on the log on screen: its count is the server's to say again, read after this answer; until then
             // none is shown rather than one that may still hold the photo (Codex 4322142057)
             if (onLog(s)) s.dailyLogPhotoCountAfter = snapshotSeq;
-            // taken out of a full window: an older photo may lie just past it, so the count stays a floor until a
-            // snapshot rebuilds the window, and one that fails leaves it a floor (Codex 4337661439)
-            if (s.photos.length >= SNAPSHOT_SITE_PHOTO_LIMIT && s.photos.some((p) => p.id === photoId)) s.photosWindowShort = true;
-            s.photos = s.photos.filter((p) => p.id !== photoId);
-            if (s.dailyLog) s.dailyLog.photos = s.dailyLog.photos.filter((p) => p.id !== photoId);
             // nor is it kept as evidence on a checklist or review still held here (Codex 4322142035)
-            forgetMedia(s, photoId);
+            dropDeletedPhoto(s, photoId);
           });
           get().flash(SPL.deleted[lang()]);
           // the reconcile every command owes: only a pull begun after this answer settles it, and one that fails
@@ -4317,8 +4323,9 @@ export const useStore = create<Store>()(
           .deleteMedia(photoId)
           .then((res) => {
             if (!scopeStillCurrent(scope)) return;
-            // the server says which log counted it
-            settleDeleted((s) => !!res.dailyLogId && s.dailyLog?.id === res.dailyLogId);
+            // the server says which log counted it (`null`: none). An answer that does not say (an earlier release's
+            // `{ ok: true }`) is read as the 404's is: the on-screen log's count is read again (Codex 4340876895)
+            settleDeleted((s) => (res.dailyLogId === undefined ? s.dailyLog !== null : !!res.dailyLogId && s.dailyLog?.id === res.dailyLogId));
           })
           .catch((err: unknown) => {
             if (!scopeStillCurrent(scope)) return;
@@ -5977,7 +5984,7 @@ export const useStore = create<Store>()(
             s.syncQueue.push('Progress photo');
             const log = onPickedLog(s);
             if (log) {
-              log.photos.unshift({ url: dataUrl });
+              log.photos.unshift({ url: dataUrl, clientKey });
               if (log.photoCount === undefined) log.progress += 1;
               else recountDailyLogPhotos(s);
               recordDraftPhoto(s);
@@ -6353,16 +6360,44 @@ export const useStore = create<Store>()(
         const com = isCommercialOp(ops[i]);
         try {
           let photoGone = false;
-          const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation, () => { photoGone = true; });
+          let goneEvidence: { url: string; inspectionId?: string; inspectionItemId?: string } | undefined;
+          const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation, (local) => { photoGone = true; goneEvidence = local; });
           if (snap) { lastSnap = snap; lastSnapStale = false; } else if (lastSnap && isSiteVisitOp(ops[i])) lastSnapStale = true;
-          // #482: a site photo settled by the server's 410 is settled as a delete is (settleDeleted): the day's count on
+          // an evidence send settled with its refresh failed (its bytes are gone, so it is never sent again): the pull it
+          // owes is asked for once the flush is done, as a 410's is (#482)
+          if (!snap && ops[i].t === 'uploadEvidence') photoSettledGone = true;
+          // #482: a photo settled by the server's 410 is settled as a delete is (settleDeleted). Its local copies leave at
+          // once, matched by the send's own key: one an earlier pull recorded is never shown past the server's word (Codex
+          // 4340333337), and a pull begun before this answer, which may still hold it, is superseded. The day's count on
           // screen may still hold it, so none is shown until a pull begun after this answer gives the server's. The
           // refresh after the 410 never counts, whether it failed (Codex 4339094809), or carried no daily-log slice because
-          // a module read owns it (Codex 4339777229), or is applied under the flush's older lease
+          // a module read owns it (Codex 4339777229), or is applied under the flush's older lease. An answer that comes
+          // after the project or the person changed touches nothing on screen
           const settledUpload = ops[i];
-          if (photoGone && settledUpload.t === 'uploadMedia' && settledUpload.input.kind === 'progress') {
+          if (photoGone) {
             photoSettledGone = true;
-            if (get().dailyLog && scopeStillCurrent(flushScope) && get().sessionToken === flushToken) set((s) => { s.dailyLogPhotoCountAfter = snapshotSeq; });
+            const goneKey = settledUpload.t === 'uploadMedia' ? settledUpload.input.clientKey : settledUpload.t === 'uploadEvidence' ? settledUpload.clientKey : undefined;
+            if (scopeStillCurrent(flushScope) && get().sessionToken === flushToken) {
+              beginSnapshotLease(flushScope);
+              set((s) => {
+                if (settledUpload.t === 'uploadMedia' && settledUpload.input.kind === 'progress' && s.dailyLog) s.dailyLogPhotoCountAfter = snapshotSeq;
+                const ids = goneKey ? [...s.photos, ...s.myDeletablePhotos].filter((p) => p.clientKey === goneKey).map((p) => p.id) : [];
+                for (const id of ids) dropDeletedPhoto(s, id);
+                // and the copies this device showed while the send was queued: a site photo's data URL in the log's gallery
+                // (carrying the send's key), an evidence photo's on the item it was captured on (its own bytes)
+                if (goneKey && s.dailyLog) s.dailyLog.photos = s.dailyLog.photos.filter((p) => p.clientKey !== goneKey);
+                const ev = goneEvidence;
+                if (ev) {
+                  for (const c of [s.checklist, ...s.openChecklists]) {
+                    const it = c && c.id === ev.inspectionId ? c.items.find((x) => x.id === ev.inspectionItemId) : undefined;
+                    const at = it?.evidence?.indexOf(ev.url) ?? -1;
+                    if (!it || at < 0) continue;
+                    it.evidence = it.evidence!.filter((_, j) => j !== at);
+                    it.photos = Math.max(0, it.photos - 1);
+                  }
+                }
+              });
+            }
           }
           // a site visit's answer shows on its own screen, so it is not counted in the "synced" line; one that went
           // through starts the visit photo retry's wait over

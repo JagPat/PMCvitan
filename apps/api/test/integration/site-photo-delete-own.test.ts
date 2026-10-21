@@ -429,4 +429,33 @@ describe('a member deletes their own site photo within the hour (live PG)', () =
       await t.prisma.media.deleteMany({ where: { projectId: f.projectA.id } });
     }
   });
+
+  it('reads the window and the member\'s own list from one database state: a photo sent between the two reads is never only in the own list (Codex 4340333355)', async () => {
+    await t.prisma.media.deleteMany({ where: { projectId: f.projectA.id } });
+    await t.prisma.media.createMany({
+      data: Array.from({ length: SNAPSHOT_SITE_PHOTO_LIMIT }, () => ({ projectId: f.projectA.id, kind: 'progress', mime: 'image/png', uploadedBy: f.clientUser.id, data: px, createdAt: minutesAgo(1) })),
+    });
+    // the member sends a photo from another tab the moment the window has been read, before anything else is
+    const client = t.prisma as unknown as { _request: (params: { model?: string; action?: string; args?: { take?: number } }) => Promise<unknown> };
+    const request = client._request.bind(client);
+    let sent: string | null = null;
+    const spy = vi.spyOn(client, '_request').mockImplementation(async (params) => {
+      const result = await request(params);
+      if (sent === null && params.model === 'Media' && params.action === 'findMany' && params.args?.take === SNAPSHOT_SITE_PHOTO_LIMIT) {
+        sent = '';
+        sent = (await t.prisma.media.create({ data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', uploadedBy: contractorId(), data: px } })).id;
+      }
+      return result;
+    });
+    try {
+      const snap = await t.app.get(SnapshotService).build(f.projectA.id, 'contractor', contractorId());
+      expect(sent).toBeTruthy();
+      // the newest photo of the project is never the member's "past the window" card: it is in neither list, as the
+      // state the window was read in did not hold it, or in the window
+      expect(snap.myDeletablePhotos.map((p) => p.id)).not.toContain(sent);
+    } finally {
+      spy.mockRestore();
+      await t.prisma.media.deleteMany({ where: { projectId: f.projectA.id } });
+    }
+  });
 });
