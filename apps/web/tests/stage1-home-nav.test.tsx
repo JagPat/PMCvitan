@@ -4,6 +4,7 @@ import type { Lang, Role, ScreenKey } from '@vitan/shared';
 import { navLabelFor, splitMobileNav } from '@/lib/mobileNav';
 import { enabledScreensFor } from '@/lib/screens';
 import { HOME_NAV_CAPABILITY, readHomeNavMemory, resolveHomeNav, writeHomeNavMemory } from '@/lib/homeNav';
+import { warmImports } from './warm-imports';
 
 /**
  * Stage 1 redesign (#482, Rev 3.1 unit H1) — navigation behind the per-project `home-nav` server switch (H0).
@@ -11,6 +12,8 @@ import { HOME_NAV_CAPABILITY, readHomeNavMemory, resolveHomeNav, writeHomeNavMem
  * "Site Log", every other role's bar is unchanged, and the desktop rail shows the same main items. Switch
  * off (the default): today's bars exactly. Offline, the device's last known setting holds.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/layout/BottomTabs'), () => import('@/layout/LeftRail'));
 
 afterEach(() => {
   cleanup();

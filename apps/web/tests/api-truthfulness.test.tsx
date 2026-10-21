@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, type RenderResult } from '@testing-library/react';
+import { warmImports } from './warm-imports';
 
 /**
  * API-mode truthfulness (Phase 0 Task 7): a live user sees only facts recorded
@@ -36,6 +37,8 @@ async function loadApiMode() {
   });
   return { useStore };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DailyLogScreen'), () => import('@/screens/DashboardScreen'), () => import('@/screens/ClientHealthScreen'), () => import('@/screens/PortfolioScreen'));
 
 afterEach(() => {
   cleanup();

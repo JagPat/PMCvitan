@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import { SEED_DAILY_LOG, engineerTodayLabels as L, type DailyLog } from '@vitan/shared';
 import { todayPath } from '@/lib/engineerToday';
 import { todayCivil } from '@/lib/civilDate';
+import { warmImports } from './warm-imports';
 
 const TODAY = todayCivil(null);
 
@@ -10,6 +11,8 @@ const TODAY = todayCivil(null);
  * UX slice 2a — the site engineer's Today: one "do this now" action and the day's four-step
  * path, read from the daily log the Site screen already records (presentation only).
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/InboxScreen'), () => import('@/screens/DailyLogScreen'));
 
 afterEach(() => {
   cleanup();

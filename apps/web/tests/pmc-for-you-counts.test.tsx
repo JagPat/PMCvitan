@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import type { Checklist, ChecklistItem, Decision, Role } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * #771 PMC For You slice — live-bug 3 as the PMC saw it (Dashboard 0, bell 9, For You 1). The Dashboard tile, the
@@ -8,6 +9,8 @@ import type { Checklist, ChecklistItem, Decision, Role } from '@vitan/shared';
  * (the web mirror of the server's `countPending`); the re-inspections a rejection sent back reach For You as their
  * own per-record item and reconcile with the Dashboard's open re-inspections.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/selectors'), () => import('@/screens/DashboardScreen'), () => import('@/screens/PortfolioScreen'));
 
 afterEach(() => {
   cleanup();

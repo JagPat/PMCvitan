@@ -2,12 +2,15 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { Activity, Decision } from '@vitan/shared';
 import { clientPulse } from '@/lib/clientPulse';
+import { warmImports } from './warm-imports';
 
 /**
  * U2a (design review, Client · Pulse board): the client's home — progress, what is being built,
  * the one thing waiting on them, and what happens next. Derived from what the client already holds;
  * no schedule verdict, and no "oldest" claim (decisions carry no reliable waiting-since date).
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/InboxScreen'));
 
 afterEach(() => {
   cleanup();

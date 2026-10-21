@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import { projectLoadingTitle } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * #953 (#482 6229527017, observation 3) — on a signed-in reload of /projects/qa-test-d135/dashboard the loader
@@ -11,6 +12,8 @@ import { projectLoadingTitle } from '@vitan/shared';
 
 const b64url = (o: unknown) => btoa(JSON.stringify(o)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
 const jwt = (payload: Record<string, unknown>) => `${b64url({ alg: 'HS256' })}.${b64url(payload)}.sig`;
+
+await warmImports(() => import('@/store/store'), () => import('@/layout/ProjectLoadBoundary'));
 
 afterEach(() => {
   cleanup();

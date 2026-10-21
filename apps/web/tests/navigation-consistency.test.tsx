@@ -2,8 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { navLabelFor } from '@/lib/mobileNav';
 import { SCREEN_META } from '@/lib/screens';
+import { warmImports } from './warm-imports';
 
 /** B9 (F-11, F-16, F-21) — one name per screen, no dead switcher, and copy that counts right. */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/layout/ProjectSwitcher'), () => import('@/screens/DecisionLogScreen'), () => import('@/screens/TeamScreen'));
 
 afterEach(() => { cleanup(); vi.unstubAllEnvs(); });
 

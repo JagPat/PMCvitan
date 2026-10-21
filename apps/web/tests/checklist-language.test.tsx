@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, act } from '@testing-library/react';
 import type { Checklist, Lang } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #827 (Top 10 #5) — the engineer's inspection checklist, a path Board named: in Hindi and Gujarati every
@@ -47,6 +48,8 @@ async function mount(lang: Lang, over: Record<string, unknown>, { mode = 'snapsh
   const { EngineerChecklistScreen } = await import('@/screens/EngineerChecklistScreen');
   return { view: render(<EngineerChecklistScreen />), useStore };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/screens/EngineerChecklistScreen'));
 
 afterEach(() => {
   cleanup();

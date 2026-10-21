@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { ProjectNode } from '@vitan/shared';
 import { locationLabelFor, captureAtPlace, captureGlobal, inheritsLocation } from '@/lib/captureContext';
 import { createOptionsFor, materialBlockedReason } from '@/lib/createOptions';
+import { warmImports } from './warm-imports';
 
 /**
  * Unit A — capture context and context-inherited creation.
@@ -23,6 +24,8 @@ const NODES: ProjectNode[] = [
   { id: 'tap', parentId: 'gf', name: 'Tap', kind: 'element', order: 1 },
   { id: 'orphanRoom', parentId: null, name: 'Site Office', kind: 'room', order: 2 },
 ];
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/modals/IssueChecklistModal'), () => import('@/screens/PlacesScreen'), () => import('@/components/LocationPicker.tsx?raw'), () => import('@/screens/modals/AddMaterialModal'), () => import('@/screens/modals/IssueDecisionModal'));
 
 afterEach(() => {
   cleanup();

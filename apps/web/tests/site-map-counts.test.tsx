@@ -3,6 +3,7 @@ import { render, cleanup } from '@testing-library/react';
 import type { Decision, Drawing, PlacedInspection, ProjectNode } from '@vitan/shared';
 import { demoSiteMapInspections, openIssueCount, placeContents } from '@/lib/locationTree';
 import { placeCountWords, type PlaceCountOptions } from '@/lib/placeCountWords';
+import { warmImports } from './warm-imports';
 
 const KNOWN: PlaceCountOptions = { inspections: 'known', activitiesKnown: true, photosCapped: false };
 
@@ -43,6 +44,8 @@ async function load(overrides: Record<string, unknown> = {}) {
   const { PlacesScreen } = await import('@/screens/PlacesScreen');
   return { useStore, PlacesScreen };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/PlacesScreen'), () => import('@/store/selectors'));
 
 afterEach(() => {
   cleanup();
