@@ -479,6 +479,16 @@ describe('the viewer\'s photo in their hour beyond the newest 300 (#482, Codex 4
     expect(r.container.textContent).toContain('299+');
   });
 
+  it('a queued upload the server holds past the window shows once, as recorded, not again as queued (Codex 4339094796)', async () => {
+    const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(30), clientKey: 'k-own', deletable: true, deletableUntil: until(30) };
+    // its answer was lost, so its upload is still queued; the snapshot carries it past the newest 300, in the own list
+    const outbox = [{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/png', data: 'UVVFVUVE', clientKey: 'k-own' } }];
+    const { r } = await load('en', newer(300), { myDeletablePhotos: [own], outbox });
+    const srcs = [...r.container.querySelectorAll('[data-testid="dash-photo-block"] img')].map((img) => img.getAttribute('src') ?? '');
+    expect(srcs.filter((src) => src.includes('UVVFVUVE'))).toEqual([]);
+    expect(srcs.filter((src) => src.endsWith('/media/own'))).toHaveLength(1);
+  });
+
   it('a new upload keeps the window at 300 and moves it to the viewer\'s own list, where its Delete stays reachable', async () => {
     const own: Photo = { id: 'own', url: '/media/own', kind: 'progress', at: minutesAgo(30), deletable: true, deletableUntil: until(30) };
     const { r, useStore } = await load('en', [...newer(299), own], { userName: 'Asha Shah' });

@@ -2211,8 +2211,15 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1): P
       // reconciles dailyLog.photos (the real, server-stored photo replaces the
       // optimistic local data-URL one).
       // #482: a 410 says the photo was deleted after an earlier send of this key landed (on this device or another):
-      // the send is settled, not refused, so it leaves the queue quietly and the snapshot no longer lists it
-      return gw.uploadMedia(op.input).catch((err: unknown) => { if (!isDeletedPhoto(err)) throw err; }).then(() => gw.snapshot());
+      // the send is settled, not refused, so it leaves the queue quietly and the snapshot no longer lists it. Settled by
+      // the 410 alone: a refresh after it that fails answers no snapshot, never a resend (Codex 4339094809)
+      return gw.uploadMedia(op.input).then(
+        () => gw.snapshot(),
+        (err: unknown) => {
+          if (!isDeletedPhoto(err)) throw err;
+          return gw.snapshot().catch(() => null);
+        },
+      );
     case 'uploadEvidence': {
       // Task 4 durability lifecycle: bytes come from the IndexedDB evidenceStore;
       // they are deleted ONLY on confirmed server persistence (the 2xx — the server

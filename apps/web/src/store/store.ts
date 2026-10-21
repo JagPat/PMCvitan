@@ -6319,6 +6319,8 @@ export const useStore = create<Store>()(
       // it, so it would put the project back without what that write changed (its notice in the bell). It is not applied;
       // a snapshot asked for after the write is (Codex 4278908038, #908)
       let lastSnapStale = false;
+      // #482: a site photo settled by its 410 whose refresh failed: a pull is owed once the flush is done
+      let photoSettledUnread = false;
       // the LAST daily-log command this flush committed: the log will next read back as its result
       let dailyLogCommitted: 'start' | 'send' | null = null;
       let synced = 0;
@@ -6352,6 +6354,13 @@ export const useStore = create<Store>()(
         try {
           const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation);
           if (snap) { lastSnap = snap; lastSnapStale = false; } else if (lastSnap && isSiteVisitOp(ops[i])) lastSnapStale = true;
+          // #482: a site photo settled by the server's 410 whose refresh failed: the day's count on screen may still hold
+          // it, so none is shown until a pull begun after this answer gives the server's (Codex 4339094809)
+          const settledUpload = ops[i];
+          if (!snap && settledUpload.t === 'uploadMedia' && settledUpload.input.kind === 'progress') {
+            photoSettledUnread = true;
+            if (get().dailyLog) set((s) => { s.dailyLogPhotoCountAfter = snapshotSeq; });
+          }
           // a site visit's answer shows on its own screen, so it is not counted in the "synced" line; one that went
           // through starts the visit photo retry's wait over
           if (!isSiteVisitOp(ops[i])) synced += 1;
@@ -6539,6 +6548,9 @@ export const useStore = create<Store>()(
         // (a flush whose project changed has returned above: the scope here is still the flush's)
         void requestFreshSnapshot(flushLease.scope);
       }
+      // ...asked for here, as the 404 path's reconcile is (settleDeleted): it begins after the 410's answer, so it clears
+      // the count's "updating" and takes the photo's local copy out of the log, and one that fails shows the Retry
+      if (photoSettledUnread && flushLease) scheduleReconcile(flushLease.scope, { kind: 'command', createdAfterSequence: snapshotSeq });
 
       const parts: string[] = [];
       const lang = get().lang;

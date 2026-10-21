@@ -49,6 +49,39 @@ describe('a queued send of a deleted photo (#482)', () => {
     expect(JSON.stringify(useStore.getState())).not.toContain('discarded');
   });
 
+  it('a site photo answered 410 leaves the queue even when the refresh after it fails, and the day\'s count waits for the server (Codex 4339094809)', async () => {
+    const useStore = await store();
+    const uploadMedia = vi.fn().mockRejectedValue(gone());
+    useStore.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')), project: 'villa-b' } as never);
+    const dailyLog = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 1, photoCount: 1, myPhotoKeys: [], crew: [], materials: [], photos: [] };
+    useStore.setState({ dailyLog, outbox: [{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-gone', dailyLogId: 'log-1' } }] } as never);
+    await useStore.getState().flushOutbox();
+    // settled by the 410 alone: it leaves the queue, and the next flush sends nothing
+    expect(useStore.getState().outbox).toEqual([]);
+    await useStore.getState().flushOutbox();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(useStore.getState())).not.toContain('discarded');
+    // the refresh failed, so the day's count is not the server's yet: it says it is updating
+    expect(useStore.getState().dailyLogPhotoCountAfter).not.toBeNull();
+  });
+
+  it('a site photo answered 410 whose refresh failed asks for one at once: it clears the count and the photo\'s local copy', async () => {
+    const useStore = await store();
+    const uploadMedia = vi.fn().mockRejectedValue(gone());
+    const dailyLog = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 1, photoCount: 1, myPhotoKeys: [], crew: [], materials: [], photos: [{ url: 'data:image/png;base64,AAAA' }] };
+    const snapshot = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch')).mockResolvedValue({ ...snap, dailyLog: { ...dailyLog, progress: 0, photoCount: 0, photos: [] } });
+    useStore.getState()._setGateway({ uploadMedia, snapshot, project: 'villa-b' } as never);
+    useStore.setState({ dailyLog, outbox: [{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-gone', dailyLogId: 'log-1' } }] } as never);
+    await useStore.getState().flushOutbox();
+    // owed at once, not left for a socket ping or the next write
+    expect(useStore.getState().commandReconcilePending).toBe(true);
+    await new Promise<void>((resolve) => {
+      const off = useStore.subscribe((s) => { if (s.dailyLogPhotoCountAfter === null) { off(); resolve(); } });
+    });
+    expect(useStore.getState().dailyLog?.photos).toEqual([]);
+    expect(useStore.getState().dailyLog?.progress).toBe(0);
+  });
+
   it('an evidence photo answered 410 leaves the queue and this phone, and is not shown as failed', async () => {
     const useStore = await store();
     const scope = 'anon';
