@@ -2636,6 +2636,35 @@ now (nothing is written; try again).
 Because the database keeps real people out of those companies, the session needs no re-check while it lasts.
 Each sign-in writes an `auth.qaSignIn` audit row with the operator and reason.
 
+## §SSP. Seen-state pins — when the pins can be required, and rolling back (#482)
+
+Eight money and measure acts (payment record and reverse, deduction record and release, advance pay,
+measurement take and correct, reattribute) take an optional `X-Vitan-Seen-State` header: the state the
+screen showed. A stale value is refused with 409 before any write, and a malformed one with 400. A
+missing header runs the act as before. The header is read before the act's receipt, so a committed act
+retried with a malformed header gets that 400, not its replay; the web never sends a malformed header,
+and a retry with the value first sent, or with none, replays. Each act's audit row records
+`seenPin: "present"` or `"absent"`. The count of each, per act, is read through the operator door (§OPS):
+
+    curl -H "Authorization: Bearer $OPS_TOKEN" "https://pms-api.vitan.in/ops/compat/state-pins?since=<ISO time>"
+
+It answers, for each of the eight actions (zeros listed), `pinned` and `absent` with the newest time of
+each. `since` is required; a missing or malformed one gets 400.
+
+**When the pins can be required (Step 3).** When the web build that sends the header deploys, the
+coordinator files an issue "Seen-state pins: Step 3 check due <deploy date + 14 days>" with the deploy
+time, this condition and the read above. From the due date the check re-runs weekly until both hold:
+
+- the web build has been deployed for at least 14 days;
+- the read with `since=<now − 14 days>` shows `absent = 0` for all eight actions **and** `pinned ≥ 1`
+  summed over them.
+
+Then the coordinator opens the Step 3 PR, which refuses a missing header on the HTTP routes.
+
+**Rollback.** Roll the web back before the API. While the API is rolled back past the seen-state pins
+unit, pins are not enforced (today's behaviour) until it is redeployed; nothing queued is lost, because
+an older API ignores `X-Vitan-Seen-State`.
+
 ## §DS. Database snapshot (read-only)
 
 Records every table's rows by key, so a removal can be checked row by row (#482: the archived
