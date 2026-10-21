@@ -476,6 +476,9 @@ export interface SnapshotDto {
   nodes: NodeDto[];
   /** Site photos placed on the location tree — the reality layer for the Place view. */
   photos: PhotoDto[];
+  /** #482 site photos — the viewer's own plain site photos, still inside their delete hour, that `photos` (the newest
+   *  window) leaves out; each is `deletable` with its `deletableUntil`. Empty for the PMC and the engineer. */
+  myDeletablePhotos: PhotoDto[];
   /** All material deliveries across the project, with their place — the Site Map's "materials here". */
   materials: MaterialDto[];
 }

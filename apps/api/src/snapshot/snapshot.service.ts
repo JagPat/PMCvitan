@@ -118,7 +118,7 @@ export class SnapshotService {
       const myPhotoKeys = filed.flatMap((m) => (m.uploadedBy === userId && m.clientKey ? [m.clientKey] : []));
       return { photoCount: Math.max(log.progress, filed.length), myPhotoKeys };
     });
-    const [decisionSlice, activitySlices, inspectionSlices, dailyLogSlice, viewerFeed, siteMedia, drawingDtos, companies, nodes, logPhotos] = await Promise.all([
+    const [decisionSlice, activitySlices, inspectionSlices, dailyLogSlice, viewerFeed, { newest: siteMedia, own: ownOverflow }, drawingDtos, companies, nodes, logPhotos] = await Promise.all([
       decisionSlicePromise,
       // Task 10 (Module 4) — the activity spine (`activities` + `phases`) comes from the activities
       // module's query, never a direct `prisma.activity`/`gateOverride`/`prisma.phase` read. It bakes
@@ -138,14 +138,30 @@ export class SnapshotService {
       // capped, newest first; carries nodeId so a photo can be shown at its location. A photo filed
       // on someone else's private draft (before #881) is as private as the place: the nodes module
       // names the viewer's hidden drafts, and their photos are left out (unfiled photos stay).
-      hiddenNodes.then((hidden) =>
-        this.prisma.media.findMany({
-          where: { projectId, kind: { in: ['progress', 'inspection', 'material'] }, ...(hidden.length > 0 ? { OR: [{ nodeId: null }, { nodeId: { notIn: hidden } }] } : {}) },
+      hiddenNodes.then(async (hidden) => {
+        const visible = hidden.length > 0 ? { OR: [{ nodeId: null }, { nodeId: { notIn: hidden } }] } : {};
+        const select = { id: true, kind: true, url: true, takenAt: true, nodeId: true, uploadedBy: true, clientKey: true, createdAt: true, dailyLogId: true, decisionId: true, inspectionId: true, inspectionItemId: true } as const;
+        const newest = await this.prisma.media.findMany({
+          where: { projectId, kind: { in: ['progress', 'inspection', 'material'] }, ...visible },
           orderBy: { createdAt: 'desc' },
           take: SNAPSHOT_SITE_PHOTO_LIMIT,
-          select: { id: true, kind: true, url: true, takenAt: true, nodeId: true, uploadedBy: true, clientKey: true, createdAt: true, dailyLogId: true, decisionId: true, inspectionId: true, inspectionItemId: true },
-        }),
-      ),
+          select,
+        });
+        // #482 site photos — a member's own site photos still in their delete hour stay reachable past the newest
+        // window, which a busy hour can fill (Codex 4322459282). They are their own list, so the window stays the newest
+        // SNAPSHOT_SITE_PHOTO_LIMIT (Codex 4322976249), and it has no cap (Codex 4322976240): it holds only what this one
+        // member sent in the last hour, and only in their own snapshot. The PMC and the engineer delete from the window.
+        if (!userId || SITE_RECORD_ROLES.has(role) || newest.length < SNAPSHOT_SITE_PHOTO_LIMIT) return { newest, own: [] };
+        const own = await this.prisma.media.findMany({
+          where: {
+            projectId, kind: 'progress', uploadedBy: userId, decisionId: null, inspectionId: null, inspectionItemId: null,
+            createdAt: { gt: new Date(Date.now() - SITE_PHOTO_DELETE_WINDOW_MS) }, id: { notIn: newest.map((m) => m.id) }, ...visible,
+          },
+          orderBy: { createdAt: 'desc' },
+          select,
+        });
+        return { newest, own };
+      }),
       // Task 10 — the drawings register comes from the module's query (the baked per-viewer register:
       // draft-author visibility + the viewer's ack/recipient state + fresh signed urls), never a direct
       // `prisma.drawing` read. Byte-identical to the pre-extraction inline shaping.
@@ -167,7 +183,9 @@ export class SnapshotService {
     // #482 site photos — each photo says who added it, their role on this project and when. The name and role
     // are read now, for the photo window's uploaders only; a removed member keeps the role they had.
     // Orgs owns who is tied to this project, so it answers: anyone else's id names no one.
-    const uploader = await this.orgs.projectUploaders(this.prisma, projectId, [...new Set(siteMedia.map((m) => m.uploadedBy))]);
+    // the window and the viewer's own photos past it: one decision for both
+    const allSiteMedia = [...siteMedia, ...ownOverflow];
+    const uploader = await this.orgs.projectUploaders(this.prisma, projectId, [...new Set(allSiteMedia.map((m) => m.uploadedBy))]);
     // #482 site photos (Board, 14 Oct 2026) — the PMC and the engineer delete any photo, at any age; every other member
     // deletes their own plain site photo for an hour after it was recorded, unless the day's log it was filed on has
     // since been sent (the server decides again on delete)
@@ -178,15 +196,15 @@ export class SnapshotService {
     const ownRecent = (m: (typeof siteMedia)[number]): boolean =>
       mayDelete && Boolean(userId) && m.uploadedBy === userId && m.kind === 'progress' && !m.decisionId && !m.inspectionId && !m.inspectionItemId
       && m.createdAt.getTime() + SITE_PHOTO_DELETE_WINDOW_MS > nowMs;
-    const ownLogIds = [...new Set(siteMedia.flatMap((m) => (!staff && m.dailyLogId && ownRecent(m) ? [m.dailyLogId] : [])))];
+    const ownLogIds = [...new Set(allSiteMedia.flatMap((m) => (!staff && m.dailyLogId && ownRecent(m) ? [m.dailyLogId] : [])))];
     const sentLogs = ownLogIds.length > 0 ? await this.dailyLogQuery.sentLogs(projectId, ownLogIds) : new Set<string>();
     // nor while a record keeps it as evidence (a stock ledger row, a muster, measured output, a measurement, an
     // assigned inspection): the delete would refuse it, so it is not offered (Codex 4320129763)
     const ownWindow = (m: (typeof siteMedia)[number]): boolean => !staff && ownRecent(m) && !(m.dailyLogId && sentLogs.has(m.dailyLogId));
     // staff are offered every photo with no deadline, still never one a record keeps (Codex 4320912804)
-    const candidates = siteMedia.filter((m) => staff || ownWindow(m)).map((m) => m.id);
+    const candidates = allSiteMedia.filter((m) => staff || ownWindow(m)).map((m) => m.id);
     const disposable = userId ? await this.disposability.disposable(projectId, candidates, userId, !staff) : new Set<string>();
-    const photoDtos = siteMedia.map((m) => ({
+    const photoDto = (m: (typeof siteMedia)[number]) => ({
       id: m.id,
       url: this.signed.mediaPath(m.id),
       takenAt: m.takenAt ?? undefined,
@@ -200,7 +218,10 @@ export class SnapshotService {
       ...(userId && m.uploadedBy === userId && m.clientKey ? { clientKey: m.clientKey } : {}),
       // `deletable` says the viewer may delete it now; `deletableUntil` only where that ends (a member's own hour)
       ...(disposable.has(m.id) ? { deletable: true, ...(ownWindow(m) ? { deletableUntil: new Date(m.createdAt.getTime() + SITE_PHOTO_DELETE_WINDOW_MS).toISOString() } : {}) } : {}),
-    }));
+    });
+    const photoDtos = siteMedia.map(photoDto);
+    // only what the viewer may still delete: the list exists for that Delete alone
+    const myDeletablePhotos = ownOverflow.filter((m) => disposable.has(m.id)).map(photoDto);
 
     // Task 8 — the role-filtered decision DTOs come from the decisions query (the serialization moved
     // there verbatim, so this slice is byte-identical).
@@ -276,6 +297,8 @@ export class SnapshotService {
         .map((n) => ({ id: n.id, parentId: n.parentId ?? null, name: n.name, kind: n.kind as 'zone' | 'room' | 'element', order: n.order, draft: n.publishedAt === null })),
       // The location spine's reality layer: placed (and unplaced) site photos for the Place view.
       photos: photoDtos,
+      // #482 site photos — the viewer's own site photos still in their delete hour that the window above left out
+      myDeletablePhotos,
       // All materials delivered across the project, with their place — the Site Map's "materials
       // here" (Task 10 — served by the daily-log module query, not a direct `siteMaterial` read).
       materials: dailyLogSlice.materials,

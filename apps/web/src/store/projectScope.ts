@@ -108,6 +108,8 @@ export interface ProjectDataState {
   reinspectionCreated: boolean;
   drawings: Drawing[];
   photos: Photo[];
+  /** #482 site photos — the viewer's own photos still in their delete hour past the newest window (the snapshot's list) */
+  myDeletablePhotos: Photo[];
   materials: Material[];
   placedInspections: PlacedInspection[];
   phases: Phase[];
@@ -218,6 +220,7 @@ export function emptyProjectData(): ProjectDataState {
     reinspectionCreated: false,
     drawings: [],
     photos: [],
+    myDeletablePhotos: [],
     materials: [],
     placedInspections: [],
     phases: [],

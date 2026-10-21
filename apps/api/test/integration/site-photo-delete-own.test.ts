@@ -4,6 +4,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { vi } from 'vitest';
+import { MEDIA_NOT_FOUND_MESSAGE, SNAPSHOT_SITE_PHOTO_LIMIT } from '@vitan/shared';
 import { SnapshotService } from '../../src/snapshot/snapshot.service';
 import { InventoryParticipant } from '../../src/inventory/inventory.participant';
 import { InspectionParticipant } from '../../src/inspections/inspection.participant';
@@ -56,6 +57,13 @@ describe('a member deletes their own site photo within the hour (live PG)', () =
     expect((await del(id, contractor).expect(200)).body).toEqual({ ok: true, dailyLogId: null });
     expect(await exists(id)).toBe(false);
     expect(await t.prisma.domainEvent.count({ where: { projectId: f.projectA.id, eventType: 'media.removed', entityId: id } })).toBe(1);
+  });
+
+  it('answers a delete of a photo it no longer holds with the shared "not found" text the web reads (#991)', async () => {
+    const id = await photo(contractorId(), minutesAgo(10));
+    await del(id, contractor).expect(200);
+    const again = await del(id, contractor).expect(404);
+    expect(again.body.message).toBe(MEDIA_NOT_FOUND_MESSAGE);
   });
 
   it('keeps a photo the member added more than an hour ago', async () => {
@@ -338,5 +346,87 @@ describe('a member deletes their own site photo within the hour (live PG)', () =
     expect(asArchitect.photos.find((p) => p.id === own)).not.toHaveProperty('deletableUntil');
     const asContractor = await t.app.get(SnapshotService).build(f.projectA.id, 'contractor', contractorId());
     expect(asContractor.photos.find((p) => p.id === own)?.deletableUntil).toBeDefined();
+  });
+
+  it('keeps the member\'s own photo in their hour reachable past the newest window, in its own list (Codex 4322459282, 4322976249)', async () => {
+    await t.prisma.media.deleteMany({ where: { projectId: f.projectA.id } });
+    const own = await photo(contractorId(), minutesAgo(30));
+    const stale = await photo(contractorId(), minutesAgo(61));
+    await t.prisma.media.createMany({
+      data: Array.from({ length: SNAPSHOT_SITE_PHOTO_LIMIT }, () => ({ projectId: f.projectA.id, kind: 'progress', mime: 'image/png', uploadedBy: f.clientUser.id, data: px, createdAt: minutesAgo(1) })),
+    });
+    try {
+      const snap = await t.app.get(SnapshotService).build(f.projectA.id, 'contractor', contractorId());
+      // the window stays the newest 300, so every window count and "latest" line stays true
+      expect(snap.photos).toHaveLength(SNAPSHOT_SITE_PHOTO_LIMIT);
+      expect(snap.photos.some((p) => p.id === own)).toBe(false);
+      expect(snap.myDeletablePhotos.map((p) => p.id)).toEqual([own]);
+      expect(snap.myDeletablePhotos[0]).toMatchObject({ deletable: true });
+      expect(snap.myDeletablePhotos[0]?.deletableUntil).toBeDefined();
+      // past the hour it is not the member's to delete, so it is not carried
+      expect(snap.myDeletablePhotos.some((p) => p.id === stale)).toBe(false);
+      // the PMC's window is the newest only, and they have no such list
+      const staff = await t.app.get(SnapshotService).build(f.projectA.id, 'pmc', f.memberUser.id);
+      expect(staff.photos).toHaveLength(SNAPSHOT_SITE_PHOTO_LIMIT);
+      expect(staff.myDeletablePhotos).toEqual([]);
+    } finally {
+      await t.prisma.media.deleteMany({ where: { projectId: f.projectA.id } });
+    }
+  });
+
+  it('past the window, carries only the member\'s own photos the delete would take: never one on a sent log or one a record cites (#991 4318519742)', async () => {
+    await t.prisma.media.deleteMany({ where: { projectId: f.projectA.id } });
+    const free = await photo(contractorId(), minutesAgo(30));
+    const sent = await t.prisma.dailyLog.create({ data: { projectId: f.projectA.id, date: 'sent-past-window', submitted: true } });
+    const onSent = (await t.prisma.media.create({ data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', uploadedBy: contractorId(), data: px, createdAt: minutesAgo(30), dailyLogId: sent.id } })).id;
+    const cited = await photo(contractorId(), minutesAgo(30));
+    const engineerId = `${f.projectA.id}-del-engineer-past`;
+    await t.prisma.user.create({ data: { id: engineerId, projectId: f.projectA.id, role: 'engineer', name: 'Asha Shah', email: `${engineerId}@test.local` } });
+    await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: engineerId, role: 'engineer', status: 'active' } });
+    const inspectionId = `${f.projectA.id}-del-insp-past`;
+    await t.prisma.inspection.create({ data: { id: inspectionId, projectId: f.projectA.id, kind: 'review', title: 'Slab check', zone: 'Zone A', date: '20 Oct', submitted: true } });
+    const item = await t.prisma.inspectionItem.create({ data: { inspectionId, name: 'Cover', result: 'PASS' } });
+    await t.prisma.inspectionEvidence.create({ data: { projectId: f.projectA.id, inspectionId, inspectionItemId: item.id, mediaId: cited } });
+    // linked first, then assigned (the evidence trigger lets only an assignee link once one is set)
+    await t.prisma.inspection.update({ where: { id: inspectionId }, data: { assigneeId: engineerId } });
+    await t.prisma.media.createMany({
+      data: Array.from({ length: SNAPSHOT_SITE_PHOTO_LIMIT }, () => ({ projectId: f.projectA.id, kind: 'progress', mime: 'image/png', uploadedBy: f.clientUser.id, data: px, createdAt: minutesAgo(1) })),
+    });
+    try {
+      const snap = await t.app.get(SnapshotService).build(f.projectA.id, 'contractor', contractorId());
+      expect(snap.photos).toHaveLength(SNAPSHOT_SITE_PHOTO_LIMIT);
+      expect(snap.photos.some((p) => [free, onSent, cited].includes(p.id))).toBe(false);
+      expect(snap.myDeletablePhotos.map((p) => p.id)).toEqual([free]);
+      // what the list offered, the delete agrees with
+      expect((await del(onSent, contractor)).status).toBe(403);
+      expect((await del(cited, contractor)).status).toBe(409);
+    } finally {
+      await t.prisma.inspectionEvidence.deleteMany({ where: { inspectionId } });
+      await t.prisma.inspectionItem.deleteMany({ where: { inspectionId } });
+      await t.prisma.inspection.deleteMany({ where: { id: inspectionId } });
+      await t.prisma.membership.deleteMany({ where: { userId: engineerId } });
+      await t.prisma.user.deleteMany({ where: { id: engineerId } });
+      await t.prisma.media.deleteMany({ where: { projectId: f.projectA.id } });
+      await t.prisma.dailyLog.deleteMany({ where: { id: sent.id } });
+    }
+  });
+
+  it('carries every one of the member\'s own photos in their hour past the window, however many (Codex 4322976240)', async () => {
+    await t.prisma.media.deleteMany({ where: { projectId: f.projectA.id } });
+    const mine = SNAPSHOT_SITE_PHOTO_LIMIT + 1;
+    await t.prisma.media.createMany({
+      data: Array.from({ length: mine }, (_, i) => ({ projectId: f.projectA.id, kind: 'progress', mime: 'image/png', uploadedBy: contractorId(), data: px, createdAt: minutesAgo(40 - i / 100) })),
+    });
+    await t.prisma.media.createMany({
+      data: Array.from({ length: SNAPSHOT_SITE_PHOTO_LIMIT }, () => ({ projectId: f.projectA.id, kind: 'progress', mime: 'image/png', uploadedBy: f.clientUser.id, data: px, createdAt: minutesAgo(1) })),
+    });
+    try {
+      const snap = await t.app.get(SnapshotService).build(f.projectA.id, 'contractor', contractorId());
+      expect(snap.photos).toHaveLength(SNAPSHOT_SITE_PHOTO_LIMIT);
+      expect(snap.myDeletablePhotos).toHaveLength(mine);
+      expect(snap.myDeletablePhotos.every((p) => p.deletable && p.deletableUntil)).toBe(true);
+    } finally {
+      await t.prisma.media.deleteMany({ where: { projectId: f.projectA.id } });
+    }
   });
 });

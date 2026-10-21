@@ -13,6 +13,7 @@
  */
 import { failVisitPhoto, fileVisitPhoto, getVisitPhoto, withinWait, type CommittedPhoto } from './visitPhotoStore';
 import { deleteEvidence, getEvidence, markEvidenceFailed } from './evidenceStore';
+import { MEDIA_NOT_FOUND_MESSAGE, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
 import type {
   Activity,
   AppNotification,
@@ -107,6 +108,9 @@ export interface ApiSnapshot {
   nodes: ProjectNode[];
   /** site photos placed on the location tree — the reality layer for the Place view */
   photos: Photo[];
+  /** #482 site photos — the viewer's own site photos still in their delete hour that `photos` (the newest window) leaves
+   *  out. Absent from a server older than the #1011 replacement. */
+  myDeletablePhotos?: Photo[];
   /** all material deliveries across the project, with their place — the Site Map's "materials here" */
   materials: Material[];
 }
@@ -1367,6 +1371,11 @@ export class ApiGateway {
     });
   }
 
+  /** #482 site photos — delete a photo: the viewer's own site photo within the hour (the PMC and the engineer, any). */
+  deleteMedia(mediaId: string): Promise<{ ok: boolean; dailyLogId?: string | null }> {
+    return this.req<{ ok: boolean; dailyLogId?: string | null }>(`/media/${encodeURIComponent(mediaId)}`, { method: 'DELETE' });
+  }
+
   /** Re-file a photo onto a location-tree node (null = unfile). Returns the fresh snapshot. */
   setMediaNode(mediaId: string, nodeId: string | null): Promise<ApiSnapshot> {
     return this.req<ApiSnapshot>(`/projects/${this.projectId}/media/${mediaId}/node`, {
@@ -1952,6 +1961,18 @@ function keyHeader(idempotencyKey?: string): { headers?: Record<string, string> 
   return idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {};
 }
 
+/** #482 site photos — the server's 410 for a send whose photo was deleted: that key is never stored again. Only that
+ *  410, by its exact text: any other 410 is refused as before (fail closed), never settled as a deleted photo. */
+export function isDeletedPhoto(err: unknown): boolean {
+  return (err as { status?: number } | null)?.status === 410 && refusalMessage(err) === SITE_PHOTO_DELETED_MESSAGE;
+}
+
+/** #991 — the server's own "not found" for a delete of a photo it does not hold, by its exact text; a route's or a
+ *  proxy's 404 is not taken for a deleted photo. */
+export function isMediaNotFound(err: unknown): boolean {
+  return (err as { status?: number } | null)?.status === 404 && refusalMessage(err) === MEDIA_NOT_FOUND_MESSAGE;
+}
+
 export function isTerminalOutboxError(err: unknown): boolean {
   const status = (err as { status?: number } | null)?.status;
   if (typeof status !== 'number') return false; // network / unknown → transient, retry later
@@ -2189,7 +2210,9 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1): P
       // uploadMedia returns {id,url}, not a snapshot — refetch so the flush
       // reconciles dailyLog.photos (the real, server-stored photo replaces the
       // optimistic local data-URL one).
-      return gw.uploadMedia(op.input).then(() => gw.snapshot());
+      // #482: a 410 says the photo was deleted after an earlier send of this key landed (on this device or another):
+      // the send is settled, not refused, so it leaves the queue quietly and the snapshot no longer lists it
+      return gw.uploadMedia(op.input).catch((err: unknown) => { if (!isDeletedPhoto(err)) throw err; }).then(() => gw.snapshot());
     case 'uploadEvidence': {
       // Task 4 durability lifecycle: bytes come from the IndexedDB evidenceStore;
       // they are deleted ONLY on confirmed server persistence (the 2xx — the server
@@ -2213,6 +2236,13 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1): P
             clientKey: op.clientKey,
           });
         } catch (err) {
+          // #482: the photo was deleted after an earlier send of this key landed: its bytes go, and it is not a failure
+          // to retry (a Retry would be answered the same way for ever)
+          if (isDeletedPhoto(err)) {
+            // a row the phone could not remove keeps its op (no status: transient), to be answered and removed again
+            await deleteEvidence(op.scope, gw.project, op.clientKey).catch(() => { throw new Error('the deleted photo kept on this phone could not be removed'); });
+            return gw.snapshot();
+          }
           if (isTerminalOutboxError(err)) {
             try {
               await markEvidenceFailed(op.scope, gw.project, op.clientKey, `upload rejected (${(err as { status?: number }).status ?? 'error'})`);
