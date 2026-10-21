@@ -1,0 +1,18 @@
+{
+  // Type-checks the api's test files. tsconfig.json leaves out src/**/*.test.ts and test/, and tsconfig.contracts.json
+  // checks only five of the contract tests, so a test could stop compiling and no gate would say so. This config checks
+  // every test file, and the src it imports, with the module settings vitest runs them under. It is run by
+  // test/typecheck-ratchet.mjs, the third step of `pnpm --filter api typecheck`, which holds each file to the error count
+  // test/typecheck-baseline.json allows it: a file not listed there must have none, a listed file may not gain one, and
+  // a listed file that loses one fails until its count is lowered in the same change. Imported src is checked here
+  // under bundler resolution too, so a src construct only commonjs accepts fails this step.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "incremental": false,
+    "noEmit": true
+  },
+  "include": ["src/**/*.test.ts", "test/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}
