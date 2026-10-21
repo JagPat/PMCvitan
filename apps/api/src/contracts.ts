@@ -733,6 +733,17 @@ export const updateActivitySchema = z
   });
 export type UpdateActivityInput = z.infer<typeof updateActivitySchema>;
 
+// An instant with an offset that Date can read and Prisma can send, as #1045 checks the ops read's `since`: Zod's offset
+// check admits hours and minutes Date cannot read (`+24:00`, `+02:60`, `+2400`), and an offset can carry year 0000 or
+// 9999 past the 4-digit years ISO text has, so either reached Prisma and answered 500. Both are refused with Zod's own
+// message, and only after the shape check, so a bad value gets one issue.
+const ISO_MIN = Date.parse('0000-01-01T00:00:00.000Z');
+const ISO_MAX = Date.parse('9999-12-31T23:59:59.999Z');
+export const offsetInstant = z.string().datetime({ offset: true }).pipe(z.string().refine((v) => {
+  const t = Date.parse(v);
+  return Number.isFinite(t) && t >= ISO_MIN && t <= ISO_MAX;
+}, { message: 'Invalid datetime' }));
+
 // A manual readiness exception (Phase 1 Task 6): pmc-only, always with a reason
 // and an EXPIRY in the future; optionally backed by a same-project photo.
 export const overrideGateSchema = z.object({
@@ -740,7 +751,7 @@ export const overrideGateSchema = z.object({
   state: gateState,
   reason: z.string().trim().min(1).max(500),
   evidenceMediaId: z.string().trim().min(1).optional(),
-  expiresAt: z.string().datetime({ offset: true }),
+  expiresAt: offsetInstant,
 });
 export type OverrideGateInput = z.infer<typeof overrideGateSchema>;
 
@@ -1896,7 +1907,7 @@ export type PayAdvanceInput = z.infer<typeof payAdvanceSchema>;
 // The caller sends only CLAIMED times; the database stamps each receipt and decides the accepted time (SV1-a, V3).
 // `id` is minted by the device so an offline end can name a visit whose start has not reached the server yet. It is
 // stored lowercase, as SV1-a's shape check requires, whatever case the device writes it in.
-const siteVisitClaim = z.string().datetime({ offset: true });
+const siteVisitClaim = offsetInstant;
 export const siteVisitIdSchema = z.string().uuid().transform((value) => value.toLowerCase());
 export const startSiteVisitSchema = z.object({
   id: siteVisitIdSchema,
