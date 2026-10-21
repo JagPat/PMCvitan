@@ -763,6 +763,150 @@ describe('a flush of site visit acts alone', () => {
   });
 });
 
+describe('the snapshot a flush with site visit acts takes (#908)', () => {
+  const snapOf = (notices: string[]) => ({
+    project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: 'G+2', stage: 'Finishing', siteCode: 'AMB', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+    decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+    drawings: [], phases: [], dailyLog: null, notifications: notices.map((id) => ({ id, text: id, time: '', read: false })), companies: [], nodes: [], photos: [], materials: [],
+  }) as unknown as ApiSnapshot;
+  const endAct: OutboxOp = { t: 'siteVisitEnd', visitId: 'v-1', claimedAt: '2026-10-14T06:00:00.000Z', idempotencyKey: 'k-end' };
+  const approveAct: OutboxOp = { t: 'approve', decisionId: 'd-1', optionIndex: 0, idempotencyKey: 'k-app' };
+  /** resolves once the store meets `pred`: a signal (the store's own change), never a clock */
+  const until = (pred: (s: ReturnType<typeof useStore.getState>) => boolean) => new Promise<void>((resolve) => {
+    if (pred(useStore.getState())) { resolve(); return; }
+    const stop = useStore.subscribe((s) => { if (pred(s)) { stop(); resolve(); } });
+  });
+  const ids = (s: ReturnType<typeof useStore.getState>) => s.notifications.map((n) => n.id);
+
+  it('asks again for the snapshot its lease left superseded when it applies none of its own (Codex 4278908026)', async () => {
+    let release!: (s: ApiSnapshot) => void;
+    const gw = {
+      snapshot: vi.fn()
+        .mockImplementationOnce(() => new Promise<ApiSnapshot>((r) => { release = r; }))
+        .mockImplementation(async () => snapOf(['fresh'])),
+      // the visit act fails for now (a network error), so the flush stops before the approval: no snapshot of its own
+      endSiteVisit: vi.fn(async () => { throw new TypeError('Failed to fetch'); }),
+      approveDecision: vi.fn(async () => snapOf(['approved'])),
+    };
+    useStore.setState({ ...getInitialState(), role: 'consultant', sessionUserId: CONSULTANT });
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    // the project's first load is on its way
+    const read = Promise.resolve(useStore.getState().requestFreshSnapshot());
+    expect(useStore.getState().projectLoadState).toBe('loading');
+    useStore.setState({ outbox: [endAct, approveAct] });
+    await useStore.getState().flushOutbox();
+    expect(gw.approveDecision).not.toHaveBeenCalled();
+    // the first load lands superseded by the flush's lease; the flush asked again, so the project still loads
+    release(snapOf(['first']));
+    await read;
+    await until((st) => st.projectLoadState === 'ready');
+    expect(gw.snapshot).toHaveBeenCalledTimes(2);
+    expect(useStore.getState().notifications.map((n) => n.id)).toEqual(['fresh']);
+  });
+
+  it('never applies a snapshot taken before a later site visit write: it asks for one after it (Codex 4278908038)', async () => {
+    const gw = {
+      snapshot: vi.fn(async () => snapOf(['visit ended'])),
+      approveDecision: vi.fn(async () => snapOf(['approved'])),
+      endSiteVisit: vi.fn(async () => visit({ status: 'ended', endedAt: '2026-10-14T06:00:00.000Z' })),
+    };
+    useStore.setState({ ...getInitialState(), role: 'consultant', sessionUserId: CONSULTANT, projectLoadState: 'ready' });
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    const seen: (string | undefined)[][] = [];
+    const stop = useStore.subscribe((s, prev) => { if (s.notifications !== prev.notifications) seen.push(s.notifications.map((n) => n.id)); });
+    try {
+      useStore.setState({ outbox: [approveAct, endAct] });
+      await useStore.getState().flushOutbox({ okMsg: 'Approved.' });
+      expect(gw.endSiteVisit).toHaveBeenCalledTimes(1);
+      // the approval's own word is still said
+      expect(useStore.getState().toast).toBe('Approved.');
+      await until((st) => ids(st).length > 0);
+      expect(ids(useStore.getState())).toEqual(['visit ended']);
+      // the approval's snapshot, taken before the end, was never put on screen
+      expect(seen).toEqual([['visit ended']]);
+    } finally {
+      stop();
+    }
+  });
+
+  it('never applies a snapshot taken before a site visit write whose answer was lost: it may have been written (#908 check gap 1)', async () => {
+    const gw = {
+      snapshot: vi.fn(async () => snapOf(['visit ended'])),
+      approveDecision: vi.fn(async () => snapOf(['approved'])),
+      // the end reaches the server, and its answer is lost on the way back
+      endSiteVisit: vi.fn(async () => { throw new TypeError('Failed to fetch'); }),
+    };
+    useStore.setState({ ...getInitialState(), role: 'consultant', sessionUserId: CONSULTANT, projectLoadState: 'ready' });
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    const seen: (string | undefined)[][] = [];
+    const stop = useStore.subscribe((s, prev) => { if (s.notifications !== prev.notifications) seen.push(s.notifications.map((n) => n.id)); });
+    try {
+      useStore.setState({ outbox: [approveAct, endAct] });
+      await useStore.getState().flushOutbox({ okMsg: 'Approved.' });
+      expect(gw.endSiteVisit).toHaveBeenCalledTimes(1);
+      await until((st) => ids(st).length > 0);
+      expect(ids(useStore.getState())).toEqual(['visit ended']);
+      expect(seen).toEqual([['visit ended']]);
+    } finally {
+      stop();
+    }
+  });
+
+  it('asks for no snapshot when no pull was on its way and it applies none of its own', async () => {
+    const gw = {
+      snapshot: vi.fn(async () => snapOf(['pulled'])),
+      endSiteVisit: vi.fn(async () => { throw new TypeError('Failed to fetch'); }),
+      approveDecision: vi.fn(async () => snapOf(['approved'])),
+    };
+    useStore.setState({ ...getInitialState(), role: 'consultant', sessionUserId: CONSULTANT, projectLoadState: 'ready' });
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState({ outbox: [endAct, approveAct] });
+    await useStore.getState().flushOutbox();
+    expect(gw.snapshot).not.toHaveBeenCalled();
+  });
+
+  it('still applies the snapshot of a write made after the site visit write', async () => {
+    const gw = {
+      snapshot: vi.fn(async () => snapOf(['pulled'])),
+      approveDecision: vi.fn(async (id: string) => snapOf([`approved ${id}`])),
+      endSiteVisit: vi.fn(async () => visit({ status: 'ended', endedAt: '2026-10-14T06:00:00.000Z' })),
+    };
+    useStore.setState({ ...getInitialState(), role: 'consultant', sessionUserId: CONSULTANT, projectLoadState: 'ready' });
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState({ outbox: [approveAct, endAct, { ...approveAct, decisionId: 'd-2', idempotencyKey: 'k-app2' }] });
+    await useStore.getState().flushOutbox();
+    // the second approval's snapshot was taken after the end, so it is the one applied, and no pull is needed
+    expect(useStore.getState().notifications.map((n) => n.id)).toEqual(['approved d-2']);
+    expect(gw.snapshot).not.toHaveBeenCalled();
+  });
+
+  it('asks for nothing for a project left while it sent', async () => {
+    let release!: (s: ApiSnapshot) => void;
+    let read: Promise<void> = Promise.resolve();
+    const gw = {
+      snapshot: vi.fn()
+        .mockImplementationOnce(() => new Promise<ApiSnapshot>((r) => { release = r; }))
+        .mockImplementation(async () => snapOf(['fresh'])),
+      // the person opens another project while the visit act is on its way, the first load lands meanwhile, and the act
+      // fails for now
+      endSiteVisit: vi.fn(async () => {
+        useStore.setState((st) => ({ activeProjectId: 'p-other', projectScopeGeneration: st.projectScopeGeneration + 1 }));
+        release(snapOf(['first']));
+        await read;
+        throw new TypeError('Failed to fetch');
+      }),
+      approveDecision: vi.fn(async () => snapOf(['approved'])),
+    };
+    useStore.setState({ ...getInitialState(), role: 'consultant', sessionUserId: CONSULTANT });
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    read = Promise.resolve(useStore.getState().requestFreshSnapshot());
+    useStore.setState({ outbox: [endAct, approveAct] });
+    await useStore.getState().flushOutbox();
+    expect(gw.endSiteVisit).toHaveBeenCalledTimes(1);
+    expect(gw.snapshot).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('the queue of site visit acts', () => {
   const end = { t: 'siteVisitEnd' as const, visitId: 'v-1', claimedAt: '2026-10-14T06:00:00.000Z', idempotencyKey: 'k-end' };
 
