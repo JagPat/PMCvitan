@@ -9,11 +9,14 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
  * #482 — `InspectionItem.order` is the checklist's order: `create` writes it, and every read that shows the
  * checklist sorts by it. `submit` and `decide` loaded their items with no `orderBy`, so the re-inspection's
  * items (numbered from that load) and the missing-evidence sentence followed whatever order the plan returned
- * the rows in — the heap on a sequential scan, the id on an index scan. Both agree with `order` only while
- * nothing has moved, which is why `inspections-engineer-fail-sendback` passed alone and failed in a full run.
+ * the rows in — the heap on a sequential scan (set by each row's latest write), the id on an index scan. Both
+ * agree with `order` only while nothing has moved, which is why `inspections-engineer-fail-sendback` passed alone
+ * and failed in a full run.
  *
- * Each test here sets `order` to the REVERSE of id order. Rows are inserted in id order, so the heap and the
- * `(inspectionId, id)` index both return them opposite to the checklist, whichever plan Postgres picks.
+ * Each test here sets `order` to the REVERSE of id order. Rows are inserted and renumbered in id order (each UPDATE
+ * writes a new row version), so the `(inspectionId, id)` index, and on a fresh table the heap, return them in id
+ * order, opposite to the checklist. Test 1 rewrites them in id order again after `submit`, because submit itself
+ * rewrites them in checklist order.
  */
 describe('#482 — submit and decide read an inspection\'s items in checklist order (live PG)', () => {
   let t: TestApp;
@@ -65,7 +68,7 @@ describe('#482 — submit and decide read an inspection\'s items in checklist or
 
   /**
    * Issue ['Rebar', 'Cover', 'Drain slope'], then renumber `order` so the checklist reads
-   * Drain slope, Cover, Rebar — the reverse of id (and insertion, so heap) order.
+   * Drain slope, Cover, Rebar — the reverse of id order, in which the rows are inserted and renumbered.
    */
   const reversedChecklist = async (p: string, pmc: string) => {
     await svc.create(p, { title: 'Order QA', zone: 'GF', items: ['Rebar', 'Cover', 'Drain slope'] }, as(pmc, 'pmc', p));
@@ -94,6 +97,11 @@ describe('#482 — submit and decide read an inspection\'s items in checklist or
         { id: insp.drain.id, state: 'fail' as const, photos: 1, note: 'pooling' },
       ],
     }, as(eng, 'engineer', p));
+    // `submit` rewrites each row in checklist order, which leaves the heap in checklist order too. Rewrite them in id
+    // order again, with the values submit wrote, so the rows `decide` loads still come back opposite to the checklist.
+    for (const [it, note] of [[insp.rebar, 'cover short'], [insp.cover, ''], [insp.drain, 'pooling']] as const) {
+      await t.prisma.inspectionItem.update({ where: { id: it.id }, data: { note } });
+    }
 
     await svc.decide(p, insp.id, { approve: false, rejectedItemIds: [] }, as(pmc, 'pmc', p));
 
