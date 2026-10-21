@@ -32,8 +32,10 @@ export interface StatePinRow {
  * many committed with and without a seen-state pin since `since` (reads only `AuditLog`). Zero absent, with at least
  * one pinned, over 14 days is the condition for making the pin required (RUNBOOK §SSP).
  *
- * Its own controller so the door guard runs BEFORE the rate limiter, as on {@link OpsQaController} (Codex P2 on
- * #1020): a caller without the token is refused (404 closed, 401 wrong token) and never spends the operator's limit.
+ * The same door as every `/ops` route: {@link OpsTokenGuard} first, then the rate limiter, as on {@link OpsController}
+ * and {@link OpsQaController}. A caller without the token is refused (404 closed, 401 wrong token) before the limiter
+ * counts it, and its wrong tokens spend the guard's own per-address and global windows, the ones every ops route
+ * shares (429 over them).
  */
 @Controller('ops')
 @UseGuards(OpsTokenGuard, ThrottleGuard)

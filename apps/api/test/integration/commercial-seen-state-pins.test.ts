@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
@@ -23,6 +23,7 @@ import { CommercialService } from '../../src/commercial/commercial.service';
 import { CapabilitiesService, LABOUR_CAPABILITY, MATERIALS_CAPABILITY } from '../../src/platform/capabilities.service';
 import { hashRequest } from '../../src/platform/commands';
 import { lockProjectReadiness, readinessLockKey } from '../../src/common/readiness-lock';
+import { OPS_DOOR_FAILURES_PER_ADDRESS, OPS_DOOR_WINDOW_MS } from '../../src/platform/ops/ops-token.guard';
 import type { AuthUser } from '../../src/common/auth';
 import type { CreateRequirementInput } from '../../src/contracts';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -750,13 +751,37 @@ describe('#482 seen-state pins (live PG)', () => {
     expect((await request(t.app.getHttpServer()).get(`/ops/compat/state-pins?since=${since}`).set('Authorization', `Bearer ${jwt}`)).status).toBe(401);
   });
 
-  it('GET /ops/compat/state-pins checks the token before the limit: calls without it never spend the operator\'s', async () => {
-    const since = encodeURIComponent(new Date().toISOString());
-    process.env.OPS_TOKEN = OPS;
-    // one more than the route's limit of 30 a minute; behind the limiter the last would be 429
-    for (let i = 0; i < 31; i++) {
-      expect((await request(t.app.getHttpServer()).get(`/ops/compat/state-pins?since=${since}`)).status, `call ${i + 1}`).toBe(401);
-    }
-    expect((await request(t.app.getHttpServer()).get(`/ops/compat/state-pins?since=${since}`).set('Authorization', `Bearer ${OPS}`)).status).toBe(200);
+  describe('GET /ops/compat/state-pins is behind the door guard\'s own count of wrong tokens', () => {
+    // each test starts in a window no earlier call reached: only the clock is faked, the HTTP stack runs as usual
+    let ahead = Date.now() + 1000 * OPS_DOOR_WINDOW_MS;
+    beforeEach(() => {
+      ahead += 2 * OPS_DOOR_WINDOW_MS;
+      vi.useFakeTimers({ toFake: ['Date'], now: ahead });
+      process.env.OPS_TOKEN = OPS;
+    });
+    afterEach(() => vi.useRealTimers());
+    const pins = (from: string, token?: string) => {
+      const q = request(t.app.getHttpServer()).get(`/ops/compat/state-pins?since=${encodeURIComponent(new Date().toISOString())}`).set('X-Forwarded-For', from);
+      return token ? q.set('Authorization', `Bearer ${token}`) : q;
+    };
+
+    it('from one address: 401 up to the limit, then 429 from the guard; the token still opens it, and another address starts at 401', async () => {
+      const from = '203.0.113.140';
+      for (let i = 0; i < OPS_DOOR_FAILURES_PER_ADDRESS; i++) expect((await pins(from)).status, `call ${i + 1}`).toBe(401);
+      expect((await pins(from)).status).toBe(429);
+      const ok = await pins(from, OPS);
+      expect(ok.status, ok.text).toBe(200);
+      expect((await pins('203.0.113.141')).status).toBe(401);
+    });
+
+    it('shares the per-address count with the other ops routes: five wrong tokens here and five on /ops/projects, then 429', async () => {
+      const from = '203.0.113.150';
+      const projects = () => request(t.app.getHttpServer()).get('/ops/projects').set('X-Forwarded-For', from).set('Authorization', `Bearer ${OPS}x`);
+      for (let i = 0; i < OPS_DOOR_FAILURES_PER_ADDRESS / 2; i++) {
+        expect((await pins(from, `${OPS}x`)).status, `pins ${i + 1}`).toBe(401);
+        expect((await projects()).status, `projects ${i + 1}`).toBe(401);
+      }
+      expect((await pins(from, `${OPS}x`)).status).toBe(429);
+    });
   });
 });
