@@ -47,7 +47,7 @@ function stubFileReader(dataUrl: string) {
 const pick = (r: ReturnType<typeof render>, name = 'p.jpg') =>
   fireEvent.change(r.getByTestId('add-site-photo-file'), { target: { files: [new File(['x'], name, { type: 'image/jpeg' })] } });
 
-await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DashboardScreen'), () => import('@/lib/civilDate'));
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DashboardScreen'), () => import('@/lib/civilDate'), () => import('@vitan/shared'));
 
 beforeEach(() => vi.unstubAllEnvs());
 afterEach(() => {

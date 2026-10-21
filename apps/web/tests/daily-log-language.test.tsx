@@ -42,7 +42,7 @@ async function screen(lang: Lang, over: Record<string, unknown>, { demo = false,
   return render(<DailyLogScreen />);
 }
 
-await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DailyLogScreen'), () => import('@/components/RecordBoundary'));
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DailyLogScreen'), () => import('@/components/RecordBoundary'), () => import('@vitan/shared'));
 
 afterEach(() => {
   cleanup();

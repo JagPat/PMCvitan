@@ -49,7 +49,7 @@ async function load(lang: Lang, over: Record<string, unknown>, { mode = 'snapsho
   return { useStore, ...mod };
 }
 
-await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DrawingsScreen'));
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DrawingsScreen'), () => import('@vitan/shared'));
 
 afterEach(() => {
   cleanup();

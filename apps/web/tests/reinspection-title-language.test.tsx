@@ -10,7 +10,7 @@ import { warmImports } from './warm-imports';
  * language. A title is never read for its words: one that merely starts "Re-inspection: " is shown as recorded.
  */
 
-await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/EngineerChecklistScreen'), () => import('@/screens/InspectionReviewScreen'), () => import('@/screens/PlacesScreen'), () => import('@/store/selectors'));
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/EngineerChecklistScreen'), () => import('@/screens/InspectionReviewScreen'), () => import('@/screens/PlacesScreen'), () => import('@/store/selectors'), () => import('@vitan/shared'));
 
 afterEach(() => {
   cleanup();

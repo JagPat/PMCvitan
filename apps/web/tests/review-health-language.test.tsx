@@ -12,7 +12,7 @@ import { warmImports } from './warm-imports';
  * Review titles, item names, notes, people, places and ids are project data, shown as recorded.
  */
 
-await warmImports(() => import('@/store/store'), () => import('@/screens/InspectionReviewScreen'), () => import('@/store/projectScope'), () => import('@/screens/ClientHealthScreen'), () => import('@/store/selectors'));
+await warmImports(() => import('@/store/store'), () => import('@/screens/InspectionReviewScreen'), () => import('@/store/projectScope'), () => import('@/screens/ClientHealthScreen'), () => import('@/store/selectors'), () => import('@vitan/shared'));
 
 afterEach(() => {
   cleanup();

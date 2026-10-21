@@ -60,7 +60,7 @@ async function load(lang: Lang, over: Record<string, unknown> = {}, { mode = 'sn
   return { useStore, ScheduleScreen };
 }
 
-await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/ScheduleScreen'), () => import('@/components'));
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/ScheduleScreen'), () => import('@/components'), () => import('@vitan/shared'));
 
 afterEach(() => {
   cleanup();
