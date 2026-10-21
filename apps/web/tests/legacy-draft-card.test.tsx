@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent } from '@testing-library/react';
 import { SEED_DAILY_LOG, engineerLegacyDraftLabels as L, type DailyLog } from '@vitan/shared';
 import { todayCivil } from '@/lib/civilDate';
 import type { DailyLogDraft } from '@/store/dailyLogDraft';
+import { warmImports } from './warm-imports';
 
 /**
  * Owner ruling (#692): unsent work saved before the log carried its id is kept aside, never added to a
@@ -11,6 +12,8 @@ import type { DailyLogDraft } from '@/store/dailyLogDraft';
  */
 
 const TODAY = todayCivil(null);
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/InboxScreen'));
 
 afterEach(() => {
   cleanup();

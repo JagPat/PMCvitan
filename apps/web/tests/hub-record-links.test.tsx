@@ -5,12 +5,15 @@ import type { MaterialsView } from '@/store/materials';
 import type { LabourView } from '@/store/labour';
 import { routedRecordState } from '@/lib/useRoutedRecord';
 import { parseLocation, pathForScreen } from '@/lib/screens';
+import { warmImports } from './warm-imports';
 
 /**
  * Top 10 #3 gap 12 (#798), unit 12a — the pilot hubs' activity records. `/materials/<activityId>` and
  * `/labour/<activityId>` open ONE activity's readiness, reload-safe, from a settled bundle; a shortage card that
  * stands for one activity opens it rather than the hub.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/selectors'), () => import('@/screens/InboxScreen'), () => import('@/screens/MaterialsScreen'), () => import('@/screens/LabourScreen'), () => import('@/lib/screens'), () => import('@/layout/RouteBridge'), () => import('@/screens/DailyLogScreen'));
 
 afterEach(() => {
   cleanup();

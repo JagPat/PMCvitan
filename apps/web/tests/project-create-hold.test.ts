@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { NewProjectInput } from '@/data/apiGateway';
+import { warmImports } from './warm-imports';
 
 /**
  * The project-create hold engine (`store/projectCreateHold.ts`) on its own: one record per identity in
@@ -55,6 +56,8 @@ const reserved = <R extends { kind: string }>(r: R) => {
   if (r.kind !== 'reserved') throw new Error(`expected a reservation, got ${JSON.stringify(r)}`);
   return r as Extract<R, { kind: 'reserved' }>;
 };
+
+await warmImports(() => import('@/store/projectCreateHold'));
 
 beforeEach(() => {
   globalThis.localStorage.clear();

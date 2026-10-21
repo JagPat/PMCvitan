@@ -3,12 +3,15 @@ import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { Role, ScreenKey } from '@vitan/shared';
 import { splitMobileNav } from '@/lib/mobileNav';
 import { enabledScreensFor, routableScreensFor, screensFor } from '@/lib/screens';
+import { warmImports } from './warm-imports';
 
 /**
  * Board decision 14 Oct 2026 (#482): the PMC reaches the Daily Site Log from its menu, on the desktop
  * sidebar and on the phone bar, as the engineer does. Before, a PMC could open it only by a link or
  * by typing /site/log.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/layout/LeftRail'), () => import('@/layout/BottomTabs'));
 
 afterEach(() => {
   cleanup();

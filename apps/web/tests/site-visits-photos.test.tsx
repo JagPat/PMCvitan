@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { refreshSiteVisits, linkRefreshDelay, LINK_REFRESH_RETRY_MS } from '@/lib/useSiteVisits';
 import { leftoverEnglish } from './leftover-english';
+import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
 
 /**
  * Site Visits SV2 (#792): photos on a visit. Every member reads them; the visitor and anyone recorded as present add
@@ -53,7 +54,7 @@ function fakeGateway(list: SiteVisit[], over: Fake = {}): Fake {
 async function mount(role: Role, me: string, gw: Fake, lang: Lang = 'en', outbox: OutboxOp[] = []) {
   useStore.setState({ ...getInitialState(), outbox, role, lang, sessionUserId: me, nodes: NODES, members: MEMBERS, loadTeam: async () => true });
   (gw as { project?: string }).project = useStore.getState().activeProjectId;
-  useStore.getState()._setGateway(gw as unknown as ApiGateway);
+  useStore.getState()._setGateway(tracked(gw) as unknown as ApiGateway);
   const view = render(<SiteVisitsScreen />);
   await act(async () => {});
   return view;
@@ -71,70 +72,18 @@ const readEnded = () => new Promise<void>((done) => {
     real.call(this, blob);
   });
 });
-/** Every flush the store starts, by its own promise. The store calls every flush through `get().flushOutbox`, its own
- *  reruns included, so wrapping it at the start of each test sees them all. */
-const flushes = new Set<Promise<unknown>>();
-let flushStarted: ((p: Promise<unknown>) => void) | null = null;
-/** Every flush still running, and every phone-storage open, transaction and flush started after this call. The returned
- *  wait settles on the event that ends the last of them (a request's `success`/`error`, a transaction's
- *  `complete`/`abort`, a flush's own promise), once a turn has passed with none started after it, so a screen's read of
- *  its kept photos has been drawn. No clock: it waits as long as the work does. */
-const trackStorage = () => {
-  let running = 0;
-  let idle: (() => void) | null = null;
-  const settle = () => setTimeout(() => {
-    if (running === 0 && idle) { const done = idle; idle = null; done(); }
-  }, 0);
-  const ended = () => { running -= 1; if (running === 0) settle(); };
-  const watch = (target: EventTarget, events: string[]) => {
-    running += 1;
-    let over = false;
-    for (const e of events) target.addEventListener(e, () => { if (!over) { over = true; ended(); } }, { once: true });
-  };
-  const open = indexedDB.open.bind(indexedDB);
-  vi.spyOn(indexedDB, 'open').mockImplementation((name: string, version?: number) => {
-    const req = open(name, version);
-    watch(req, ['success', 'error']);
-    return req;
-  });
-  const transaction = IDBDatabase.prototype.transaction;
-  vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...args: Parameters<IDBDatabase['transaction']>) {
-    const t = transaction.apply(this, args);
-    watch(t, ['complete', 'abort']);
-    return t;
-  });
-  const follow = (p: Promise<unknown>) => { running += 1; p.then(ended, ended); };
-  for (const p of flushes) follow(p);
-  flushStarted = follow;
-  return async () => {
-    await act(() => new Promise<void>((done) => { idle = done; settle(); }));
-    await turn();
-    expect(useStore.getState()._outboxFlushing()).toBe(false);
-  };
-};
-
 // every test begins with no flush running: one left from the test before would take this test's sends into its rerun
 beforeEach(() => {
   expect(useStore.getState()._outboxFlushing()).toBe(false);
-  flushes.clear();
-  const flush = useStore.getState().flushOutbox;
-  useStore.setState({
-    flushOutbox: (opts) => {
-      const p = flush(opts);
-      flushes.add(p);
-      const out = () => { flushes.delete(p); };
-      p.then(out, out);
-      flushStarted?.(p);
-      return p;
-    },
-  });
-  onTestFinished(() => { flushStarted = null; useStore.setState({ flushOutbox: flush }); });
+  onTestFinished(startWork(useStore));
 });
 
 afterEach(async () => {
   // the store outlives a test, and so does a flush still running when it ends: it is let settle against this test's own
-  // gateway, or the next test's flushes are coalesced into it and its put-back reads the next test's rows
-  await vi.waitFor(() => expect(useStore.getState()._outboxFlushing()).toBe(false), { timeout: 10_000 });
+  // gateway, or the next test's flushes are coalesced into it and its put-back reads the next test's rows. It waits on
+  // the flushes' own ends, not a clock
+  await flushesEnded();
+  expect(useStore.getState()._outboxFlushing()).toBe(false);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   cleanup();
@@ -200,14 +149,15 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     fireEvent.change(within(card).getByLabelText('Place (optional)'), { target: { value: 'n-kit' } });
     gw.listSiteVisits!.mockImplementation(async () => [visit({ places: walked, attendees: [present()], files: [stored] })]);
     await pick('v-1');
-    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1));
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
     const [input] = uploadMedia.mock.calls[0] as unknown as [Record<string, unknown>];
     expect(input).toMatchObject({
       kind: 'visit', mime: 'image/png', data: 'AQID', nodeId: 'n-kit',
       siteVisit: { visitId: 'v-1', note: 'Wiring done', rating: 'fine' },
     });
     expect(typeof input.clientKey).toBe('string');
-    await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-9').textContent).toContain('Wiring done'));
+    expect(screen.getByTestId('sv-file-m-9').textContent).toContain('Wiring done');
     // sent, not queued: nothing waits on the phone
     expect(useStore.getState().outbox).toHaveLength(0);
     // the form is clear for the next photo
@@ -266,9 +216,11 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     fireEvent.change(within(card).getByLabelText('Place (optional)'), { target: { value: 'n-kit' } });
     gw.listSiteVisits!.mockImplementation(async () => [visit({ places: [{ ...walked[0], retiredAt: '2026-10-14T04:50:00.000Z' }] })]);
     await act(async () => { refreshSiteVisits(); });
-    await vi.waitFor(() => expect(within(card).queryByLabelText('Place (optional)')).toBeNull());
+    await settled();
+    expect(within(card).queryByLabelText('Place (optional)')).toBeNull();
     await pick('v-1');
-    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1));
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
     expect(uploadMedia.mock.calls[0]).not.toHaveProperty('0.nodeId');
   });
 
@@ -287,7 +239,8 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     gw.listSiteVisits!.mockImplementation(async () => [visit({ files: [file({ url: `/media/m-1?t=${exp()}.fresh` })] })]);
     await act(async () => { vi.advanceTimersByTime(31_000); });
     vi.useRealTimers();
-    await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-1').querySelector('img')!.getAttribute('src')).toContain('.fresh'));
+    await settled();
+    expect(screen.getByTestId('sv-file-m-1').querySelector('img')!.getAttribute('src')).toContain('.fresh');
     expect(gw.listSiteVisits!.mock.calls.length).toBeGreaterThan(before);
   });
 
@@ -307,7 +260,8 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     await act(async () => { vi.advanceTimersByTime(60_000); });
     vi.useRealTimers();
     expect(gw.listSiteVisits!.mock.calls.length).toBeGreaterThan(failed);
-    await vi.waitFor(() => expect(screen.getByTestId('sv-file-m-1').querySelector('img')!.getAttribute('src')).toContain('.fresh'));
+    await settled();
+    expect(screen.getByTestId('sv-file-m-1').querySelector('img')!.getAttribute('src')).toContain('.fresh');
   });
 
   it('keeps each visit’s unsent photo and its own reason, so a photo or act elsewhere never displaces it (Codex 4319531892, 4319699361)', async () => {
@@ -320,8 +274,7 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     await mount('consultant', CONSULTANT, fakeGateway(three, { uploadMedia }));
     // two visits' photos are refused, each for its own reason; a third visit's photo then has no answer. Each pick's
     // send, and the screen's read of its kept photos after it, end before the next
-    const stored = trackStorage();
-    const picked = async (visitId: string, f?: File) => { const read = readEnded(); await pick(visitId, f); await read; await stored(); };
+    const picked = async (visitId: string, f?: File) => { await pick(visitId, f); await settled(); };
     await picked('v-1');
     expect(screen.getAllByTestId(/^sv-not-sent-/)).toHaveLength(1);
     await picked('v-2', new File([new Uint8Array([7])], 'b.png', { type: 'image/png' }));
@@ -334,10 +287,12 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     expect(reasons().filter((t) => t.includes('closed by the PMC'))).toHaveLength(1);
     expect(reasons().filter((t) => t.includes('Site visit not found'))).toHaveLength(1);
     // the third photo waits on its own visit, and goes under its own key
-    await vi.waitFor(() => expect(within(screen.getByTestId('sv-visit-v-3')).getByTestId(`sv-file-${waitingKey}`).textContent).toContain('waiting to send'));
+    await settled();
+    expect(within(screen.getByTestId('sv-visit-v-3')).getByTestId(`sv-file-${waitingKey}`).textContent).toContain('waiting to send');
     uploadMedia.mockResolvedValue({ id: 'm-1', url: '/media/m-1' } as never);
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send now' })); });
-    await vi.waitFor(() => expect(useStore.getState().outbox).toHaveLength(0));
+    await settled();
+    expect(useStore.getState().outbox).toHaveLength(0);
     expect(uploadMedia).toHaveBeenLastCalledWith(expect.objectContaining({ clientKey: waitingKey, siteVisit: { visitId: 'v-3' } }));
     // and the two reasons stay, each beside its own photo, until dismissed
     expect(reasons()).toHaveLength(2);
@@ -350,12 +305,14 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     await mount('consultant', CONSULTANT, fakeGateway([visit({ places: walked })], { uploadMedia }));
     const card = screen.getByTestId('sv-visit-v-1');
     await pick('v-1');
-    await vi.waitFor(() => expect(redraw).toBeTypeOf('function'));
+    await settled();
+    expect(redraw).toBeTypeOf('function');
     for (const label of ['Note (optional)', 'How is it? (optional)', 'Place (optional)']) {
       expect((within(card).getByLabelText(label) as HTMLInputElement).disabled).toBe(true);
     }
     await act(async () => { redraw(new Error('cannot redraw')); });
-    await vi.waitFor(() => expect((within(card).getByLabelText('Note (optional)') as HTMLInputElement).disabled).toBe(false));
+    await settled();
+    expect((within(card).getByLabelText('Note (optional)') as HTMLInputElement).disabled).toBe(false);
   });
 
   it('offers Add photo on a visit whose end is waiting to send, and on one whose start is, where it waits behind the start (Codex 4319347058)', async () => {
@@ -367,11 +324,13 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     const offline = vi.fn().mockRejectedValue(new Error('network'));
     const uploadMedia = vi.fn();
     await mount('consultant', CONSULTANT, fakeGateway([visit()], { endSiteVisit: offline, startSiteVisit: offline, uploadMedia }), 'en', [end, start]);
-    await vi.waitFor(() => expect(screen.getByTestId('sv-visit-v-tmp')).toBeTruthy());
+    await settled();
+    expect(screen.getByTestId('sv-visit-v-tmp')).toBeTruthy();
     expect(within(screen.getByTestId('sv-visit-v-1')).getByRole('button', { name: 'Add photo' })).toBeTruthy();
     expect(within(screen.getByTestId('sv-visit-v-tmp')).getByRole('button', { name: 'Add photo' })).toBeTruthy();
     await pick('v-tmp');
-    await vi.waitFor(() => expect(useStore.getState().outbox.map((o) => o.t)).toEqual(['siteVisitEnd', 'siteVisitStart', 'siteVisitAddFile']));
+    await settled();
+    expect(useStore.getState().outbox.map((o) => o.t)).toEqual(['siteVisitEnd', 'siteVisitStart', 'siteVisitAddFile']);
     // the start has not gone, so neither has its photo
     expect(uploadMedia).not.toHaveBeenCalled();
   });
@@ -538,10 +497,11 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     const uploadMedia = vi.fn().mockRejectedValue(refused);
     await mount('consultant', CONSULTANT, fakeGateway([visit({ status: 'ended' })], { uploadMedia }));
     await pick('v-1');
-    // the refusal is waited for itself, not inside a 1 s window: the pick's keep, its send and its answer all come first
-    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledTimes(1), { timeout: 10_000 });
-    await vi.waitFor(() => expect(useStore.getState()._outboxFlushing()).toBe(false), { timeout: 10_000 });
-    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This was not saved. This site visit was closed by the PMC and takes no more files'), { timeout: 10_000 });
+    // the refusal is waited for by its own work ending: the pick's read, its keep, its send and its answer
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(useStore.getState()._outboxFlushing()).toBe(false);
+    expect(screen.getByRole('alert').textContent).toBe('This was not saved. This site visit was closed by the PMC and takes no more files');
     expect(useStore.getState().outbox).toHaveLength(0);
     expect(screen.queryAllByTestId(/^sv-file-/)).toHaveLength(0);
   });

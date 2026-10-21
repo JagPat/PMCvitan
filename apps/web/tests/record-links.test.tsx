@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
+import { warmImports } from './warm-imports';
 
 /**
  * Top 10 #3a (#774) — every card about ONE record opens that record at its own URL (`openItem` → screen +
@@ -7,6 +8,8 @@ import { render, cleanup, fireEvent, act } from '@testing-library/react';
  * decision and drawing rows, the Dashboard's single-review tile, the client's Health links and the Daily
  * Log's decision reference. Destinations follow the bell's rules (`decisionRecordLink`, `inspectionRecordLink`).
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/selectors'), () => import('@/screens/InboxScreen'), () => import('@/screens/PlacesScreen'), () => import('@/screens/DashboardScreen'), () => import('@/screens/ClientHealthScreen'), () => import('@/screens/DailyLogScreen'), () => import('@/lib/screens'), () => import('@/screens/ScheduleScreen'));
 
 afterEach(() => {
   cleanup();

@@ -4,6 +4,7 @@ import type { Decision, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { HOME_NAV_CAPABILITY } from '@/lib/homeNav';
 import { DashboardScreen } from '@/screens/DashboardScreen';
+import { warmImports } from './warm-imports';
 
 /**
  * Stage 1 redesign (#482, Rev 3.1 unit H3) — on a project whose `home-nav` switch is on, each Dashboard tile with
@@ -12,6 +13,8 @@ import { DashboardScreen } from '@/screens/DashboardScreen';
  */
 const s = () => useStore.getState();
 const TILES = ['pending', 'review', 'failed', 'photos'] as const;
+
+await warmImports(() => import('@/store/store'), () => import('@/screens/dashboardWaitingOn'));
 
 beforeEach(() => {
   globalThis.localStorage?.clear();

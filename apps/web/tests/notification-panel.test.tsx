@@ -2,11 +2,14 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { ApiGateway, ApiSnapshot, ModuleDecisions } from '@/data/apiGateway';
 import type { Decision } from '@vitan/shared';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
+import { warmImports } from './warm-imports';
 
 /**
  * Live bug 1 — the bell opens the record a notice is about; a notice whose record cannot be found
  * says so in place and offers the screen, instead of dropping the viewer on the parent list.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/layout/NotificationPanel'), () => import('@/lib/notifications'));
 
 afterEach(() => {
   cleanup();

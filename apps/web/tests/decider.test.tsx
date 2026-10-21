@@ -13,6 +13,9 @@ import { jwtSub } from '@/lib/jwt';
 import { deciderNoun, viewerIsDecider, type Decision, type Role } from '@vitan/shared';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { DraftsScreen } from '@/screens/DraftsScreen';
+import { warmImports } from './warm-imports';
+
+await warmImports(() => import('@/screens/DecisionLogScreen'), () => import('@/layout/useNavItems'), () => import('@/screens/modals/ChangeModal'));
 
 /**
  * Phase 6 task 4b — the WEB half of P16 (the record-only issue's UI arms) and P22 (the pending
