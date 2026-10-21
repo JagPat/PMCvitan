@@ -6115,6 +6115,10 @@ export const useStore = create<Store>()(
       // the newer checklist. This is the reviewer's manifestation #1 — the core bug.
       // A batch of site visit acts alone reads no snapshot (each answer goes to its own screen), so it takes no
       // lease: one taken and never used would discard a snapshot already in flight as superseded.
+      // A pull already on its way when the lease is taken lands superseded: if this flush then applies no snapshot of its
+      // own (its first act fails for now, before any snapshot came back), that pull is asked for again, or the project
+      // could stay loading with nothing coming (Codex 4278908026, #908)
+      const pullSuperseded = coordinatorFor(flushScope).refreshInFlight;
       const flushLease = ops.some((o) => !isSiteVisitOp(o)) ? beginSnapshotLease(flushScope) : null;
 
       // Replay in order, one at a time, committing progress as we go so a later failure
@@ -6146,6 +6150,10 @@ export const useStore = create<Store>()(
       // reconcile hook below for why), so there is nothing to collect.
       let commercialAttempted = false;
       let lastSnap: ApiSnapshot | null = null;
+      // a site visit write answers on its own screen, with no snapshot: a snapshot an earlier act returned was taken before
+      // it, so it would put the project back without what that write changed (its notice in the bell). It is not applied;
+      // a snapshot asked for after the write is (Codex 4278908038, #908)
+      let lastSnapStale = false;
       // the LAST daily-log command this flush committed: the log will next read back as its result
       let dailyLogCommitted: 'start' | 'send' | null = null;
       let synced = 0;
@@ -6178,7 +6186,7 @@ export const useStore = create<Store>()(
         const com = isCommercialOp(ops[i]);
         try {
           const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation);
-          if (snap) lastSnap = snap;
+          if (snap) { lastSnap = snap; lastSnapStale = false; } else if (lastSnap && isSiteVisitOp(ops[i])) lastSnapStale = true;
           // a site visit's answer shows on its own screen, so it is not counted in the "synced" line; one that went
           // through starts the visit photo retry's wait over
           if (!isSiteVisitOp(ops[i])) synced += 1;
@@ -6275,6 +6283,9 @@ export const useStore = create<Store>()(
             continue;
           }
           stoppedAt = i; // transient — retry this op and the rest on the next reconnect
+          // a visit act whose answer is lost may have been written: a snapshot taken before it is not put on screen
+          // (#908 check gap 1, the same as 4278908038)
+          if (lastSnap && isSiteVisitOp(ops[i])) lastSnapStale = true;
           // SV2: a visit act (a photo above all) is not left for a reconnect that may never come while the socket
           // stays up: no answer, a busy or failing server is tried again, after the server's own wait when it gives
           // one (Codex 4321558432)
@@ -6355,7 +6366,14 @@ export const useStore = create<Store>()(
       // finding 1 — a write-ahead command passes its own success toast (`okMsg`); the reconcile
       // announces it on `applied`. In that case suppress the batch "N synced" line below (the okMsg
       // already reported success), but still surface the error parts (dropped / still-pending).
-      if (lastSnap && flushLease) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease), typeof opts?.okMsg === 'function' ? opts.okMsg() : opts?.okMsg, flushLease.scope);
+      const flushOk = typeof opts?.okMsg === 'function' ? opts.okMsg() : opts?.okMsg;
+      if (lastSnap && flushLease) {
+        // a stale snapshot is handled as a superseded one is: the command's word is said, and a reconcile asked after it
+        consumeSnapshotResult(lastSnapStale ? 'superseded' : acceptSnapshot(lastSnap, flushLease), flushOk, flushLease.scope);
+      } else if (flushLease && pullSuperseded) {
+        // (a flush whose project changed has returned above: the scope here is still the flush's)
+        void requestFreshSnapshot(flushLease.scope);
+      }
 
       const parts: string[] = [];
       const lang = get().lang;
