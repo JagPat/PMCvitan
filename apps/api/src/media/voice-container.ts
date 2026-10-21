@@ -50,13 +50,16 @@
  *    timescale, an Ogg ending on a page with no granule) is refused, and so is one under half a second: the rules apply
  *    to the length as stored, rounded to the nearest second.
  * Every read is bounds-checked, walks are capped in steps (the structure's depth is fixed by the allow-lists; a laced
- * frame is a step, charged before it is listed), samples (a trun's count against what is left, before its samples are
+ * frame is a step, charged before it is listed, and so is every completed Ogg packet), Ogg pages, samples (a trun's count against what is left, before its samples are
  * read), mdat boxes and fragments are capped well past what two minutes can hold, and anything missing, malformed or
  * unexpected answers null: a parse problem is a refusal, never a pass. The input is already bounded by the base64
  * upload cap, and the caller runs this only after it has checked the uploader may add a file to the visit.
  */
 
-/** the most elements, pages or boxes one walk visits, so no crafted file can spin the check */
+/**
+ * the most steps one walk takes, so no crafted file can spin the check: a step is a WebM element, a laced WebM frame,
+ * an MP4 box or a completed Ogg packet (Ogg pages have their own cap)
+ */
 const MAX_STEPS = 100_000;
 /**
  * the most padding (WebM Void, MP4 free, skip and wide) one file may hold, in all: padding is the one content passed
@@ -532,8 +535,11 @@ function webmSeconds(b: Buffer): number | null {
 
 // ── Ogg ──────────────────────────────────────────────────────────────────────────────────────
 
-/** the most Ogg pages one walk visits: a page is at least 27 bytes, so this covers any upload the size cap allows */
-const MAX_OGG_PAGES = 500_000;
+/**
+ * the most Ogg pages one walk visits: a recorder writes a page or so a second, and an empty page completes no packet, so
+ * pages are capped on their own, well under the 388,000 empty pages the upload's size cap could hold
+ */
+const MAX_OGG_PAGES = 100_000;
 
 /** the Ogg page checksum: CRC-32, polynomial 0x04c11db7, no reflection, initial and final value 0 */
 const OGG_CRC = Array.from({ length: 256 }, (_, i) => {
@@ -1247,10 +1253,13 @@ function mp4Seconds(b: Buffer): number | null {
         }
         for (let i = 0, p = cursor; i < run.count; p += run.sizeOf(i), i++) sample(p, run.sizeOf(i));
         bytes += run.bytes;
+        const runStart = timeline;
         timeline += run.ticks;
         summed += run.ticks;
         if (!Number.isSafeInteger(timeline) || !Number.isSafeInteger(summed)) fail();
-        ticks = Math.max(ticks, timeline);
+        // a sample's composition offset places it later (or, at version 1, earlier) than its decode time: the length
+        // counts where the run's latest sample ends as presented (ISO 14496-12 §8.6.1.1)
+        ticks = Math.max(ticks, timeline, runStart + run.reach);
         cursor += run.bytes;
       }
       previousEnd = cursor;
@@ -1274,10 +1283,10 @@ function mp4Seconds(b: Buffer): number | null {
 
 /**
  * One trun: its sample count, its data_offset if it gives one (signed), its bytes and ticks with the defaults applied,
- * and each sample's size. A count above `left` (the samples the file may still list) is refused before any sample is
+ * where its latest sample ends as presented (after its composition offset), and each sample's size. A count above `left` (the samples the file may still list) is refused before any sample is
  * read: with default sizes and durations a run's samples take no bytes of their own.
  */
-function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: number }, left: number): { count: number; dataOffset: number | undefined; bytes: number; ticks: number; sizeOf: (i: number) => number } {
+function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: number }, left: number): { count: number; dataOffset: number | undefined; bytes: number; ticks: number; reach: number; sizeOf: (i: number) => number } {
   const { version, flags } = fullBoxHead(b, trun);
   if (version > 1 || flags & ~TRUN_FLAGS) fail(); // version 1 differs only in signed composition offsets
   let at = trun.dataStart + 4;
@@ -1299,11 +1308,16 @@ function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: numbe
   const column = (f: number, fallback: number) => (flags & f ? (i: number) => b.readUInt32BE(at + entry * i + 4 * fields.indexOf(f)) : () => fallback);
   const sizeOf = column(0x200, defaults.size);
   const durationOf = column(0x100, defaults.duration);
+  // sample_composition_time_offset: unsigned at version 0, signed at version 1
+  const shiftOf = flags & 0x800 ? (i: number) => (version === 1 ? b.readInt32BE : b.readUInt32BE).call(b, at + entry * i + 4 * fields.indexOf(0x800)) : () => 0;
   let bytes = 0;
   let ticks = 0;
+  let reach = 0; // where the run's latest sample ends as presented, from the run's start
   for (let i = 0; i < count; i++) {
     bytes += sizeOf(i);
-    ticks += durationOf(i);
+    const duration = durationOf(i);
+    reach = Math.max(reach, ticks + shiftOf(i) + duration);
+    ticks += duration;
   }
-  return { count, dataOffset, bytes, ticks, sizeOf };
+  return { count, dataOffset, bytes, ticks, reach, sizeOf };
 }

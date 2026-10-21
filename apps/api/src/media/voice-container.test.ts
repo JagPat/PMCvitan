@@ -1372,10 +1372,40 @@ describe('Codex round 1 on #1025', () => {
     };
     expect(ogg(empties(99_990))).toBe(true); // headers, one sounding packet and the empties: under the cap
     expect(ogg(empties(100_000))).toBe(false);
+    // the edge: the two header packets are steps too, so 99,998 audio packets (one sounding, 99,997 empty) are the most
+    expect(ogg(empties(99_997))).toBe(true);
+    expect(ogg(empties(99_998))).toBe(false);
     const file = empties(300_000);
     const many = allocations(() => ogg(file));
     expect(many.result).toBe(false);
     expect(many.n).toBeLessThan(110_000);
+  });
+
+  it('Ogg pages are capped at 100,000: a page completes no packet when it holds none, so pages are capped on their own', () => {
+    const pages = (n: number) => {
+      const out = [oggPage(0x02, 1, 0, OPUS_HEAD), oggPage(0x00, 1, 1, OPUS_TAGS), oggPage(0x00, 1, 2, AUDIO_PACKET)];
+      for (let i = 0; i < n; i++) out.push(oggPage(i === n - 1 ? 0x04 : 0x00, 1, 3 + i, []));
+      return Buffer.concat(out);
+    };
+    expect(ogg(pages(99_990))).toBe(true);
+    expect(ogg(pages(100_000))).toBe(false);
+  });
+
+  it('pre-existing, same class as tfdt: a trun sample\'s composition offset counts in the length, at version 0 and 1', () => {
+    // two 1 s samples, the second presented 600 s after its decode time (CT = DT + offset, ISO 14496-12 §8.6.1.1): a
+    // player shows it ten minutes in, so the file is 602 s and the upload refuses it; 442d7d1 read 2 s
+    const offsets = (version: 0 | 1, shifts: [number, number]) => fragmentedMp4({ traf: (off) => [tfhd(1),
+      fullBox('trun', version, 0x000b01, [be(2, off), be(48_000, 4, shifts[0] >>> 0, 48_000, 4, shifts[1] >>> 0)])] });
+    for (const version of [0, 1] as const) {
+      const late = offsets(version, [0, 48_000 * 600]);
+      expect(mp4(late)).toBe(true);
+      expect(recordingSeconds('audio/mp4', late)).toBeGreaterThanOrEqual(601);
+      expect(readVoiceRecording('audio/mp4', late)!.durationSec).toBeGreaterThan(120);
+      // offsets of 0 read the durations, as before
+      expect(recordingSeconds('audio/mp4', offsets(version, [0, 0]))).toBeCloseTo(2, 6);
+    }
+    // a negative offset (version 1) presents a sample earlier; it cannot shorten the file below its durations
+    expect(recordingSeconds('audio/mp4', offsets(1, [0, -24_000]))).toBeCloseTo(2, 6);
   });
 
   it('audit: a trun past the samples left is refused before any of its sample fields is read', () => {
