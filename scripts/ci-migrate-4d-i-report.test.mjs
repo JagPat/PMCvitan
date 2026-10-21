@@ -34,17 +34,31 @@ const report = (output, path) =>
     encoding: 'utf8',
   });
 
-// Prisma's P3018 shape (measured on a real deploy): the failed migration is named on its own "Migration name:" line
+// Prisma's P3018 shape (measured on a real deploy of a later migration): the failed migration is named on its own
+// "Migration name:" line
 const p3018 = (applying, failed, error) => [
   ...applying.map((m) => `Applying migration \`${m}\``),
   'Error: P3018', '',
   'A migration failed to apply. New migrations cannot be applied before the error is recovered from. Read more about how to resolve migration issues in a production database: https://pris.ly/d/migrate-resolve',
   '', `Migration name: ${failed}`, '', 'Database error:', error,
 ].join('\n');
+// The abort of a migration that runs its own BEGIN/COMMIT, as Prisma 6.19.3 printed it on a real deploy (measured): no
+// P3018, only the database error and the engine's trace, which names the migration that failed
+const aborted = (applying, failed) => [
+  ...applying.map((m) => `Applying migration \`${m}\``),
+  'Error: ERROR: current transaction is aborted, commands ignored until end of transaction block',
+  '   0: schema_commands::commands::apply_migrations::Applying migration',
+  `           with migration_name="${failed}"`,
+  '             at schema-engine/commands/src/commands/apply_migrations.rs:95',
+  '   1: schema_core::state::ApplyMigrations',
+  '             at schema-engine/core/src/state.rs:260',
+  '',
+].join('\n');
 const DARK = '20271220000000_phase6_t4d_i_dark_migration';
 const FACTS = '20271221000000_phase6_t4d_i_decision_facts';
-const REGISTERS = p3018([DARK], DARK, 'ERROR: current transaction is aborted');
-const DECISIONS = p3018([DARK, FACTS], FACTS, 'ERROR: phase6 4d-i ABORT: row(s) already carry this unit\'s 4d-only columns');
+// both halves run their own BEGIN/COMMIT, so an abort of either is the trace shape, never P3018
+const REGISTERS = aborted([DARK], DARK);
+const DECISIONS = aborted([DARK, FACTS], FACTS);
 const LEDGER_NOTE = /READ THIS FIRST[\s\S]*replace `_prisma_migrations`[\s\S]*Do NOT remove or reset those rows/;
 
 for (const [half, output, halfRepair] of [
@@ -86,6 +100,10 @@ test('a later migration failing after both halves applied prints nothing for eit
   for (const path of ['ordinary', 'baseline']) {
     assert.equal(report(p3018([DARK, FACTS, '20280119000000_probe_later'], '20280119000000_probe_later', 'ERROR: division by zero'), path), '');
   }
+});
+
+test('a later migration aborting in its own transaction after both halves applied prints nothing for either half', () => {
+  assert.equal(report(aborted([DARK, FACTS, '20271225000000_probe_later'], '20271225000000_probe_later'), 'ordinary'), '');
 });
 
 test('an unrelated failure prints nothing', () => {

@@ -162,14 +162,19 @@ if [ ! -f "$INBOX_REPAIR" ]; then
   exit 1
 fi
 
-# Whether Prisma's output names this migration AS the failure, on a whole line: P3018's "Migration name: <name>", or
-# P3009's "The `<name>` migration started at ... failed". Prisma 6.19.3's SQL connector never loads the stored logs
-# (sql-schema-connector/src/flavour.rs:272), so the line ends at "failed" (measured); the engine's other ending,
-# " with the following logs:", is matched in case a later Prisma prints it. A deploy that applied it and then
-# failed on a later migration names it only as "Applying migration", which is not a failure of it (#1032's check; a
-# resolve of an applied migration is refused with P3012 and buries the real failure's recovery).
+# Whether Prisma's output names this migration AS the failure, on a whole line. Prisma 6.19.3 names it in one of three
+# shapes, each measured on a real deploy:
+#   - P3018, for a migration Prisma runs in its own transaction (the deleted-photo guard): "Migration name: <name>";
+#   - the abort of a migration that runs its own BEGIN/COMMIT (4c-iii-r and both 4d-i halves): no P3018, only the
+#     database error and the engine's trace, whose 'with migration_name="<name>"' line names the migration that failed;
+#   - P3009, on the next deploy after either: "The `<name>` migration started at ... failed". The SQL connector never
+#     loads the stored logs (sql-schema-connector/src/flavour.rs:272), so the line ends at "failed"; the engine's other
+#     ending, " with the following logs:", is matched in case a later Prisma prints it.
+# A deploy that applied it and then failed on a later migration names it only as "Applying migration", which is not a
+# failure of it (#1032's check; a resolve of an applied migration is refused with P3012 and buries the real failure's
+# recovery).
 migration_failed_in_output() {
-  printf '%s\n' "$1" | grep -qE "^Migration name: $2\$|^The \`$2\` migration started at .* failed( with the following logs:)?\$"
+  printf '%s\n' "$1" | grep -qE "^Migration name: $2\$|^[[:space:]]+with migration_name=\"$2\"\$|^The \`$2\` migration started at .* failed( with the following logs:)?\$"
 }
 
 # THE 4c-iii-r ADOPTION ABORT CANNOT SPEAK FOR ITSELF (found by the production-runner proof's state

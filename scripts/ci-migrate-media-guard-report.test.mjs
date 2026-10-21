@@ -81,6 +81,8 @@ test('only a whole line naming the guard is its failure: a longer name, a line t
     `Error: P3009\n\nThe \`${NAME}_v2\` migration started at 2026-10-21 04:00:00.123 UTC failed with the following logs:\n`,
     'Error: P3009\n\nThe `20280119000000_probe_later` migration started at 2026-10-21 04:00:00.123 UTC failed\n',
     'Error: P3009\n\nThe `20280119000000_probe_later` migration started at 2026-10-21 04:00:00.123 UTC failed with the following logs:\n',
+    `Error: ERROR: boom\n           with migration_name="${NAME}_v2"\n`,
+    `Note: with migration_name="${NAME}"\n`,
     `Note: Migration name: ${NAME}\n`,
     `Note: The \`${NAME}\` migration started at 2026-10-21 04:00:00.123 UTC failed\n`,
   ]) assert.equal(report(out), '', JSON.stringify(out));

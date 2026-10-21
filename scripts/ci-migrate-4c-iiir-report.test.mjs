@@ -20,7 +20,19 @@ const report = (output) =>
     encoding: 'utf8',
   });
 
-// Prisma's P3018 shape (measured on a real deploy)
+// The abort of a migration that runs its own BEGIN/COMMIT, as Prisma 6.19.3 printed it on a real deploy (measured): no
+// P3018, only the database error and the engine's trace, which names the migration that failed
+const aborted = (applying, failed) => [
+  ...applying.map((m) => `Applying migration \`${m}\``),
+  'Error: ERROR: current transaction is aborted, commands ignored until end of transaction block',
+  '   0: schema_commands::commands::apply_migrations::Applying migration',
+  `           with migration_name="${failed}"`,
+  '             at schema-engine/commands/src/commands/apply_migrations.rs:95',
+  '   1: schema_core::state::ApplyMigrations',
+  '             at schema-engine/core/src/state.rs:260',
+  '',
+].join('\n');
+// Prisma's P3018 shape (measured on a real deploy of a later migration)
 const p3018 = (applying, failed, error) => [
   ...applying.map((m) => `Applying migration \`${m}\``),
   'Error: P3018', '',
@@ -28,8 +40,8 @@ const p3018 = (applying, failed, error) => [
   '', `Migration name: ${failed}`, '', 'Database error:', error,
 ].join('\n');
 
-test('a failure of the marker-seal migration prints its recovery', () => {
-  const out = report(p3018([NAME], NAME, 'ERROR: current transaction is aborted'));
+test('its abort prints its recovery: it runs its own BEGIN/COMMIT, so Prisma names it only in the trace (F9)', () => {
+  const out = report(aborted([NAME], NAME));
   assert.match(out, /That failure is the 4c-iii-r marker-seal migration/);
   assert.match(out, new RegExp(`resolve --rolled-back ${NAME}`));
 });
@@ -39,8 +51,14 @@ test('a P3009 naming it prints the same recovery', () => {
   assert.match(out, new RegExp(`resolve --rolled-back ${NAME}`));
 });
 
-test('a later migration failing after it applied prints nothing', () => {
+test('a later migration failing after it applied prints nothing, in either shape', () => {
   assert.equal(report(p3018([NAME, '20280119000000_probe_later'], '20280119000000_probe_later', 'ERROR: division by zero')), '');
+  assert.equal(report(aborted([NAME, '20271220000000_phase6_t4d_i_dark_migration'], '20271220000000_phase6_t4d_i_dark_migration')), '');
+});
+
+test('only a whole trace line naming it exactly is its abort', () => {
+  assert.equal(report(aborted([], `${NAME}_v2`)), '');
+  assert.equal(report(`Note: with migration_name="${NAME}"\n`), '');
 });
 
 test('both deploy paths call it', () => {
