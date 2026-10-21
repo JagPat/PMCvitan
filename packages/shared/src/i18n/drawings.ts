@@ -52,6 +52,7 @@ export const drawingsLabels = {
     gu: 'આ ફાઇલ અહીં દેખાતી નથી. ખોલવા માટે ડાઉનલોડ કરો.',
   },
   download: { en: 'Download', hi: 'डाउनलोड', gu: 'ડાઉનલોડ' },
+  savingFile: { en: 'Getting the file…', hi: 'फ़ाइल आ रही है…', gu: 'ફાઇલ આવી રહી છે…' },
   openingFile: { en: 'Opening the drawing…', hi: 'ड्रॉइंग खुल रही है…', gu: 'ડ્રોઇંગ ખુલી રહ્યું છે…' },
   history: { en: 'REVISION HISTORY', hi: 'संशोधनों का इतिहास', gu: 'સંસ્કરણોનો ઇતિહાસ' },
   location: { en: 'LOCATION', hi: 'जगह', gu: 'જગ્યા' },

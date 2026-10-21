@@ -89,7 +89,8 @@ describe('the Drawings register in Hindi and Gujarati', () => {
       it(`${lang}, ${name}: no leftover English`, async () => {
         const { DrawingsScreen } = await load(lang, over, opts);
         render(<DrawingsScreen />);
-        if (over.routeItem === 'DWG-1') await pdfShown();
+        // the opening line, while the file is read, then the frame
+        if (over.routeItem === 'DWG-1') { expect(leftoverEnglish(document.body, DATA)).toEqual([]); await pdfShown(); }
         expect(leftoverEnglish(document.body, DATA)).toEqual([]);
       });
     }

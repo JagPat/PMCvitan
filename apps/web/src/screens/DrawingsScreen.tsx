@@ -80,14 +80,14 @@ function usePdfUrl(src: string, isPdf: boolean): string | null {
  * answers (from its kept copy when offline), and saved from a blob of plain bytes under `name`. A link pointing at the
  * API would be a navigation the worker never sees. A failed or refused read goes to the file's own URL, as before.
  */
-function saveFile(src: string, name: string): void {
+function saveFile(src: string, name: string): Promise<void> {
   const open = (href: string) => {
     const link = document.createElement('a');
     link.href = href;
     link.download = name;
     link.click();
   };
-  fetch(src, { credentials: 'omit' })
+  return fetch(src, { credentials: 'omit' })
     .then((res) => (res.ok ? res.blob() : Promise.reject(new Error(`file answered ${res.status}`))))
     .then((file) => {
       const url = URL.createObjectURL(file.slice(0, file.size, 'application/octet-stream'));
@@ -401,6 +401,8 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
   const kind = previewKind(rev.mime);
   const pdfUrl = usePdfUrl(src, kind === 'pdf');
   const saveAs = `${drawing.number}-Rev${rev.rev}${fileExtension(rev.mime)}`;
+  // the file a Download tap is reading: a second tap waits for it, and the viewer says it is coming
+  const [saving, setSaving] = useState<string | null>(null);
   const sm = statusMeta(rev.status, lang);
   const isCurrent = drawing.current?.id === rev.id;
 
@@ -442,12 +444,15 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
                 // a demo drawing's data: URL saves as it is
                 if (src.startsWith('data:')) return;
                 e.preventDefault();
-                saveFile(src, saveAs);
+                if (saving === src) return;
+                setSaving(src);
+                void saveFile(src, saveAs).finally(() => setSaving((now) => (now === src ? null : now)));
               }}
               style={{ ...dlBtn }}
             >
               <Download size={16} /> {L.download[lang]}
             </a>
+            {saving === src && <div role="status" style={{ fontSize: 13.5, color: 'var(--muted)', marginTop: 12 }}>{L.savingFile[lang]}</div>}
           </div>
         )}
       </div>

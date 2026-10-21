@@ -162,6 +162,26 @@ describe('a PDF drawing is read through the service worker and shown from a blob
     expect(made).toEqual([]);
   });
 
+  it("closing the viewer while the file's header is still checked makes no blob", async () => {
+    const DrawingViewer = await loadViewer();
+    const r = render(<DrawingViewer drawing={dwg([rev('a', 'application/pdf')])} onClose={() => {}} />);
+    let header!: (text: string) => void;
+    const held = new Promise<string>((done) => { header = done; });
+    const file = new Blob([PDF]);
+    const slice = file.slice.bind(file);
+    let headerRead!: () => void;
+    const headerAsked = new Promise<void>((done) => { headerRead = done; });
+    file.slice = ((start?: number, end?: number, type?: string) => {
+      if (end === 1024) { headerRead(); return { text: () => held } as unknown as Blob; }
+      return slice(start, end, type);
+    }) as Blob['slice'];
+    await act(async () => reads[0].answer({ ok: true, status: 200, blob: async () => file } as unknown as Response));
+    await headerAsked;
+    r.unmount();
+    await act(async () => { header(PDF); await held; });
+    expect(made).toEqual([]);
+  });
+
   it('opening another revision lets the last blob go and shows only the new one', async () => {
     const DrawingViewer = await loadViewer();
     const r = render(<DrawingViewer drawing={dwg([rev('b', 'application/pdf'), rev('a', 'application/pdf')])} onClose={() => {}} />);
@@ -202,6 +222,19 @@ describe('a CAD drawing is read only when Download is tapped, and an image is sh
     expect(await made[0].blob.text()).toBe('AC1032');
     // the click has read the blob's URL, so it is let go at once
     expect(revoked).toEqual([made[0].url]);
+  });
+
+  it('a second tap while the file is read makes no second read, and the viewer says the file is coming', async () => {
+    const DrawingViewer = await loadViewer();
+    const r = render(<DrawingViewer drawing={dwg([rev('a', 'image/vnd.dwg')])} onClose={() => {}} />);
+    fireEvent.click(linkOf(r.container));
+    fireEvent.click(linkOf(r.container));
+    expect(reads.length).toBe(1);
+    expect(r.getByRole('status').textContent).toBe('Getting the file…');
+    await act(async () => reads[0].answer(new Response('AC1032', { status: 200 })));
+    await nextSave;
+    await appears(r.container, () => (r.queryByRole('status') ? null : true));
+    expect(saved.length).toBe(1);
   });
 
   it('a DXF file keeps its own extension', async () => {
