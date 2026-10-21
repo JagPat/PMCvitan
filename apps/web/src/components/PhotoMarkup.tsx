@@ -6,6 +6,7 @@ import {
   MK, MARKUP_COLOURS, drawShape, fitLabel, fitWithin, isMeaningful, labelFont, penWidth,
   type MarkupColour, type MeasureLabel, type MarkupShape, type MarkupTool, type Point,
 } from '@/lib/photoMarkup';
+import { MAX_PHOTO_BASE64 } from '@/lib/shrinkPhoto';
 
 /** What a save hands back: the marked copy as a JPEG, base64 without a `data:` prefix, ready for the upload. */
 export interface MarkedCopy {
@@ -13,8 +14,9 @@ export interface MarkedCopy {
   data: string;
 }
 
-/** The upload's own ceiling on base64 (`MAX_MEDIA_BASE64` in the API's contracts); a copy over it is saved smaller. */
-const MAX_BASE64 = 14_000_000;
+/** The largest copy the upload takes: the API's 12 MiB body limit refuses a larger body whole (413) before its own
+ *  ceiling (`MAX_MEDIA_BASE64`, 14,000,000) is reached (M3); a copy over it is saved smaller. */
+const MAX_BASE64 = MAX_PHOTO_BASE64;
 
 const TOOLS: MarkupTool[] = ['arrow', 'circle', 'line', 'text'];
 const COLOURS: MarkupColour[] = ['red', 'yellow'];
@@ -73,7 +75,7 @@ async function loadPhoto(source: Blob | string, refresh?: () => Promise<string>)
  * the result as a NEW copy. The photo passed in is never changed. The caller sends the copy (naming the original) and
  * closes the editor; a save that fails leaves the drawing in place to try again.
  */
-export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave, onCancel }: {
+export function PhotoMarkup({ source, refreshSource, lang, busy = false, notice, onSave, onCancel }: {
   /** A picked file, or a stored photo's resolved URL. */
   source: Blob | string;
   /** For a stored photo: a fresh signed URL, asked for once if `source` no longer opens (it expires). */
@@ -82,6 +84,9 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
   /** True while the caller is sending a saved copy: Save is held and the photo takes no new marks, so nothing drawn
    *  after the copy was taken can be lost when the caller closes the editor. */
   busy?: boolean;
+  /** What the caller says about the last save, such as why the copy was not kept (M3); shown in the editor, over the
+   *  page that would otherwise carry it. */
+  notice?: string | null;
   onSave: (copy: MarkedCopy) => void;
   onCancel: () => void;
 }) {
@@ -298,6 +303,7 @@ export function PhotoMarkup({ source, refreshSource, lang, busy = false, onSave,
           </div>
         )}
         {hint && <div role="status">{hint}</div>}
+        {notice && <div role="alert" data-testid="photo-markup-notice">{notice}</div>}
         <div style={{ fontSize: 13, opacity: 0.75 }}>{MK.original[lang]}</div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <Button variant="light" disabled={busy} onClick={onCancel}>{MK.cancel[lang]}</Button>
