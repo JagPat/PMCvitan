@@ -64,19 +64,25 @@ function loadWorker(
   const deleted: string[] = [];
   /** Each open, put and delete, in the order they happen. */
   const log: string[] = [];
-  /** Every write started, finished or not. */
-  const writes: Promise<unknown>[] = [];
+  /** Every cache operation the worker has started and not finished. */
+  const pending = new Set<Promise<unknown>>();
+  const track = <T,>(work: Promise<T>): Promise<T> => {
+    const done: Promise<unknown> = work.then(
+      () => { pending.delete(done); },
+      () => { pending.delete(done); },
+    );
+    pending.add(done);
+    return work;
+  };
   const cacheOf = (name: string) => {
     const store = make(name);
     return {
       put: (key: Key, res: Response) => {
-        const write = later().then(() => {
+        return track(later().then(() => {
           if (name === full) throw new DOMException('storage is full', 'QuotaExceededError');
           store.set(href(key), res);
           log.push(`put:${name}`);
-        });
-        writes.push(write.catch(() => undefined));
-        return write;
+        }));
       },
       match: async (key: Key) => (store.has(href(key)) ? copy(store.get(href(key))!) : undefined),
       keys: async () => [...store.keys()].map((url) => ({ url })),
@@ -89,10 +95,9 @@ function loadWorker(
     };
   };
   const caches = {
-    open: async (name: string) => {
+    open: (name: string) => {
       log.push(`open:${name}`);
-      await later();
-      return cacheOf(name);
+      return track(later().then(() => cacheOf(name)));
     },
     match: async (key: Key) => {
       for (const store of stores.values()) if (store.has(href(key))) return copy(store.get(href(key))!);
@@ -135,14 +140,9 @@ function loadWorker(
     });
     return { answer: answer!, extended };
   };
-  /** Every write the worker has started has landed, whether or not anything waits on it. */
+  /** Every cache operation the worker has started has finished, and so has every one those started. */
   const settled = async () => {
-    let started;
-    do {
-      started = writes.length;
-      await later();
-      await Promise.all(writes);
-    } while (writes.length !== started);
+    while (pending.size) await Promise.all([...pending]);
   };
   /** The answer, once every write the worker started has landed: a kept copy is checked where it ends up. */
   const get = async (url: string, mode: 'navigate' | 'no-cors', server: () => Promise<Response>) => {
@@ -181,8 +181,9 @@ function loadWorker(
 }
 
 /** A worker installed and running, its shell a good page saying `text`. */
+const APP = `${ORIGIN}/assets/app-Ab12Cd34.js`;
 async function running(text: string) {
-  const worker = loadWorker({}, async () => basic(text, 200));
+  const worker = loadWorker({}, async () => basic(`${text}<script type="module" src="/assets/app-Ab12Cd34.js"></script>`, 200), { [APP]: () => basic('app', 200) });
   await worker.lifecycle('install');
   await worker.lifecycle('activate');
   return worker;
@@ -204,8 +205,8 @@ describe('the service worker keeps only a good page as the offline copy of the a
     const { navigate, textOf } = await running('good app');
     const res = await navigate(async () => basic('deploying', status));
     expect(res.status).toBe(status);
-    expect(await textOf('/')).toBe('good app');
-    expect(await (await navigate(offline)).text()).toBe('good app');
+    expect(await textOf('/')).toContain('good app');
+    expect(await (await navigate(offline)).text()).toContain('good app');
   });
 
   it('a page from anywhere but this site (not a basic response) does not become the offline copy', async () => {
@@ -213,7 +214,7 @@ describe('the service worker keeps only a good page as the offline copy of the a
     const other = new Response('elsewhere', { status: 200 });
     Object.defineProperty(other, 'type', { value: 'cors' });
     await navigate(async () => other);
-    expect(await textOf('/')).toBe('good app');
+    expect(await textOf('/')).toContain('good app');
   });
 
   it('a good page from this site still becomes the offline copy, in the app cache', async () => {
@@ -234,7 +235,7 @@ describe('the service worker keeps only a good hashed asset', () => {
     expect(where(ASSET)).toEqual([]);
     const next = await asset(async () => basic('console.log(1)', 200));
     expect(await next.text()).toBe('console.log(1)');
-    expect(network).toEqual([ASSET, ASSET]);
+    expect(network.filter((u) => u !== APP)).toEqual([ASSET, ASSET]);
   });
 
   it('an asset that is not a basic response is not kept', async () => {
@@ -251,7 +252,7 @@ describe('the service worker keeps only a good hashed asset', () => {
     expect(await textOf(ASSET)).toBe('console.log(1)');
     inAppCache(where(ASSET));
     expect(await (await asset(offline)).text()).toBe('console.log(1)');
-    expect(network).toEqual([ASSET]);
+    expect(network.filter((u) => u !== APP)).toEqual([ASSET]);
   });
 });
 
@@ -351,6 +352,12 @@ describe('a new release brings its own build and clears what the last one kept, 
     expect(network).not.toContain(LAZY);
     expect(network).toContain(SHARED);
     for (const file of BUILD) expect(where(file)).toEqual(['vitan-pmc-v3']);
+  });
+
+  it('a shell that names no emitted script (the file names changed shape) fails the install', async () => {
+    const { lifecycle, skipped } = loadWorker(last(), async () => basic('<script type="module" src="/assets/index.js"></script>', 200), site());
+    await expect(lifecycle('install')).rejects.toThrow('names no emitted script');
+    expect(skipped()).toBe(false);
   });
 
   it('a shell the server will not give fails the install, so the last release keeps serving', async () => {

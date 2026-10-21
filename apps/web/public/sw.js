@@ -73,7 +73,12 @@ function keepBuild(cache) {
   return cache
     .match('/')
     .then((shell) => shell.text())
-    .then((html) => keep(namedIn(html, new URL('/', self.location.origin))));
+    .then((html) => {
+      const named = namedIn(html, new URL('/', self.location.origin));
+      // a shell naming no emitted script means the build's file names changed shape: keep the last release serving
+      if (!named.some((path) => /\.m?js$/.test(path))) throw new TypeError('the shell names no emitted script');
+      return keep(named);
+    });
 }
 
 self.addEventListener('install', (event) => {
