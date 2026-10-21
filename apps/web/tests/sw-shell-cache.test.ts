@@ -7,8 +7,9 @@ import { resolve } from 'node:path';
  * The app shell and the app's files never keep an error response. A navigation is network-first and its page is
  * kept as the shell ('/') an offline phone opens; a hashed asset is cache-first, read from the cache from then on,
  * online too. A server error answered during a deploy must become neither: an offline phone would show the error
- * page, and a kept asset error would stop the app loading at all. A new release's app cache drops what the last
- * one kept, carrying over only its good hashed files, and leaves the offline drawings and media alone.
+ * page, and a kept asset error would stop the app loading at all. A new release fills its own app cache with its
+ * build from the network at install, drops what the last one kept without reading it, and leaves the offline
+ * drawings and media alone.
  */
 
 const ORIGIN = 'https://pms.example';
@@ -32,15 +33,21 @@ function copy(res: Response): Response {
 type Key = string | { url: string };
 const href = (key: Key) => new URL(typeof key === 'string' ? key : key.url, ORIGIN).href;
 type Entries = Record<string, Response>;
+type Server = (url: string) => Promise<Response>;
+
+/** A turn of the event loop: the browser's cache writes land later than the call that starts them. */
+const later = () => new Promise((done) => setTimeout(done, 0));
 
 /**
  * The worker in a fake `self`, over a CacheStorage that keeps one store per cache name, in the order they were
- * made (as the browser's `caches.match` searches them). `caches.open` runs its callback at once, so a put the
- * worker makes on a fetch is in its store by the time the worker answers.
+ * made (as the browser's `caches.match` searches them). Opening a cache and writing to it are asynchronous, as in
+ * the browser: a write lands a turn after it starts, and a cache deleted meanwhile takes it detached, gone.
  */
 function loadWorker(
   held: Record<string, Entries> = {},
   shell: () => Promise<Response> = async () => basic('fresh app', 200),
+  /** What the site answers for a fetch no test route sets: each URL's own answer, else a 404. */
+  site: Record<string, () => Response> = {},
   /** A cache whose puts fail, as a full origin's do. */
   full?: string,
 ) {
@@ -55,28 +62,38 @@ function loadWorker(
     for (const [key, res] of Object.entries(entries)) store.set(href(key), res);
   }
   const deleted: string[] = [];
-  /** Each put and delete, in the order they land. */
+  /** Each open, put and delete, in the order they happen. */
   const log: string[] = [];
+  /** Every write started, finished or not. */
+  const writes: Promise<unknown>[] = [];
   const cacheOf = (name: string) => {
     const store = make(name);
     return {
       put: (key: Key, res: Response) => {
-        if (name === full) return Promise.reject(new DOMException('storage is full', 'QuotaExceededError'));
-        store.set(href(key), res);
-        log.push(`put:${name}`);
-        return Promise.resolve();
+        const write = later().then(() => {
+          if (name === full) throw new DOMException('storage is full', 'QuotaExceededError');
+          store.set(href(key), res);
+          log.push(`put:${name}`);
+        });
+        writes.push(write.catch(() => undefined));
+        return write;
       },
       match: async (key: Key) => (store.has(href(key)) ? copy(store.get(href(key))!) : undefined),
       keys: async () => [...store.keys()].map((url) => ({ url })),
       addAll: async (urls: string[]) => {
         const answers = await Promise.all(urls.map(() => shell()));
         if (answers.some((res) => !res.ok)) throw new TypeError('Cache.addAll: a response is not ok');
+        await later();
         urls.forEach((url, i) => store.set(href(url), answers[i]));
       },
     };
   };
   const caches = {
-    open: (name: string) => ({ then: (next: (c: ReturnType<typeof cacheOf>) => unknown) => Promise.resolve(next(cacheOf(name))) }),
+    open: async (name: string) => {
+      log.push(`open:${name}`);
+      await later();
+      return cacheOf(name);
+    },
     match: async (key: Key) => {
       for (const store of stores.values()) if (store.has(href(key))) return copy(store.get(href(key))!);
       return undefined;
@@ -93,8 +110,12 @@ function loadWorker(
     clients: { claim: () => { claimed = true; return Promise.resolve(); } },
   };
   const network: string[] = [];
-  let answerWith: () => Promise<Response> = () => Promise.reject(new TypeError('offline'));
-  const fetch = (req: { url: string }) => { network.push(req.url); return answerWith(); };
+  let answerWith: Server = async (url) => (site[url] ? site[url]() : basic('not found', 404));
+  const fetch = (req: string | { url: string }) => {
+    const url = href(req);
+    network.push(url);
+    return answerWith(url);
+  };
   runInNewContext(readFileSync(resolve('public/sw.js'), 'utf8'), { self, URL, caches, fetch, Response, Request });
 
   const lifecycle = async (type: 'install' | 'activate') => {
@@ -102,11 +123,32 @@ function loadWorker(
     handlers[type]({ waitUntil: (p: Promise<unknown>) => { work = p; } });
     await work;
   };
-  const get = async (url: string, mode: 'navigate' | 'no-cors', server: () => Promise<Response>) => {
+  /** A fetch event: the answer the page gets, and the work the worker extended the event with. */
+  const dispatch = (url: string, mode: 'navigate' | 'no-cors', server: () => Promise<Response>) => {
     answerWith = server;
     let answer: Promise<Response> | undefined;
-    handlers.fetch({ request: { url, method: 'GET', mode }, respondWith: (p: Promise<Response>) => { answer = p; } });
-    return answer!;
+    const extended: Promise<unknown>[] = [];
+    handlers.fetch({
+      request: { url, method: 'GET', mode },
+      respondWith: (p: Promise<Response>) => { answer = p; },
+      waitUntil: (p: Promise<unknown>) => { extended.push(p); },
+    });
+    return { answer: answer!, extended };
+  };
+  /** Every write the worker has started has landed, whether or not anything waits on it. */
+  const settled = async () => {
+    let started;
+    do {
+      started = writes.length;
+      await later();
+      await Promise.all(writes);
+    } while (writes.length !== started);
+  };
+  /** The answer, once every write the worker started has landed: a kept copy is checked where it ends up. */
+  const get = async (url: string, mode: 'navigate' | 'no-cors', server: () => Promise<Response>) => {
+    const res = await dispatch(url, mode, server).answer;
+    await settled();
+    return res;
   };
   /** The caches holding `url`, and the text of the first. */
   const where = (url: string) => [...stores].filter(([, store]) => store.has(href(url))).map(([name]) => name);
@@ -117,8 +159,16 @@ function loadWorker(
   return {
     lifecycle,
     get,
+    dispatch,
     navigate: (server: () => Promise<Response>) => get(PAGE, 'navigate', server),
     asset: (server: () => Promise<Response>) => get(ASSET, 'no-cors', server),
+    /** A write an earlier release's worker started into `name` and has not finished: it lands when `land` runs. */
+    pendingWrite: async (name: string, url: string, res: Response) => {
+      const store = make(name);
+      let land!: () => void;
+      const landed = new Promise<void>((done) => { land = done; }).then(() => { store.set(href(url), res); });
+      return { land: () => { land(); return landed; } };
+    },
     where,
     textOf,
     names: () => [...stores.keys()],
@@ -205,111 +255,168 @@ describe('the service worker keeps only a good hashed asset', () => {
   });
 });
 
-describe('a new release clears what the last one kept, and keeps the offline drawings', () => {
-  const GOOD = `${ORIGIN}/assets/vendor-abc.js`;
-  const LOGO = `${ORIGIN}/assets/logo-123.jpeg`;
-  const LAZY = `${ORIGIN}/assets/lazy-111.js`;
-  const SHARED = `${ORIGIN}/assets/shared-222.js`;
-  const BROKEN = `${ORIGIN}/assets/broken-def.js`;
-  const CDN = `${ORIGIN}/assets/cdn-ghi.js`;
-  const OLD_BUILD = `${ORIGIN}/assets/index-old.js`;
-  // named by the fresh shell, but held only in caches the carry must never read: an older files cache, and a
-  // vitan-pmc- cache of no known kind
-  const STRAY = `${ORIGIN}/assets/stray-333.js`;
-  const ODD = `${ORIGIN}/assets/odd-444.js`;
-  /**
-   * The new release's shell: it names its entry, a file the server lost, one served as cors, two files only other
-   * kinds of cache hold, and its icon beside it (not a hashed file, so never carried over the fresh one).
-   */
+
+describe('a kept copy is written within its fetch event', () => {
+  it.each([
+    ['a page', PAGE, 'navigate', '/'],
+    ['an asset', ASSET, 'no-cors', ASSET],
+  ] as const)('%s: the event lasts until the copy is in the app cache, so the worker is not stopped first', async (_, url, mode, key) => {
+    const worker = await running('old app');
+    const { answer, extended } = worker.dispatch(url, mode, async () => basic('new', 200));
+    await answer;
+    expect(extended).toHaveLength(1);
+    await Promise.all(extended);
+    expect(await worker.textOf(key)).toBe('new');
+    inAppCache(worker.where(key));
+  });
+});
+
+describe('a new release brings its own build and clears what the last one kept, keeping the offline drawings', () => {
+  // this build's files, named the way Vite emits them: a hashed name with a known extension
+  const ENTRY = `${ORIGIN}/assets/vendor-Ab12Cd34.js`;
+  const LOGO = `${ORIGIN}/assets/logo-Ef56Gh78.jpeg`;
+  const LAZY = `${ORIGIN}/assets/lazy-Ij90Kl_2.js`;
+  const SHARED = `${ORIGIN}/assets/shared-Mn34-p56.js`;
+  const STYLE = `${ORIGIN}/assets/index-Qr78St90.css`;
+  const FONT = `${ORIGIN}/assets/archivo-latin-wght-normal-E0tuGl4L.woff2`;
+  const BUILD = [ENTRY, LOGO, LAZY, SHARED, STYLE, FONT];
+  // only the last release's cache holds these
+  const BROKEN = `${ORIGIN}/assets/broken-Uv12Wx34.js`;
+  const OLD_BUILD = `${ORIGIN}/assets/index-Yz56Ab78.js`;
+  /** The new release's shell: it names its entry and stylesheet, and its icon beside it (not a hashed file). */
   const FRESH =
-    'fresh app <script type="module" src="/assets/vendor-abc.js"></script><script src="/assets/broken-def.js"></script>' +
-    '<script src="/assets/cdn-ghi.js"></script><script src="/assets/stray-333.js"></script>' +
-    '<script src="/assets/odd-444.js"></script><link rel="icon" href="./favicon.svg">';
-  const cors = (body: string) => {
-    const r = new Response(body, { status: 200 });
-    Object.defineProperty(r, 'type', { value: 'cors' });
-    return r;
-  };
+    'fresh app <script type="module" src="/assets/vendor-Ab12Cd34.js"></script>' +
+    '<link rel="stylesheet" href="/assets/index-Qr78St90.css"><link rel="icon" href="./favicon.svg">';
   /**
-   * A phone on the last release: its app cache holds an error page as the shell, a good icon, this build's files
-   * (the entry names a logo and a lazy chunk beside it; the chunk names a shared chunk the way Vite's preload list
-   * does; the shared chunk names the entry back), a kept 404, a cors copy, and an older build's entry. An older
-   * release's files cache and a vitan-pmc- cache of no known kind are still on it too.
+   * The build on the server. The entry names a logo and a lazy chunk beside it, and holds text that looks like a
+   * name but names no file, as the real bundle does ('./src', './u.test', './.exec', an unhashed 'assets/index').
+   * The chunk names a shared chunk the way Vite's preload list does; the shared chunk names the entry back.
+   */
+  const files: Record<string, string> = {
+    [ENTRY]:
+      'vendor; var logo = "/assets/logo-Ef56Gh78.jpeg"; import("./lazy-Ij90Kl_2.js"); ' +
+      'var a = "./src", b = "./u.test", c = "./.exec", d = "assets/index.js"',
+    [LOGO]: 'jpeg',
+    [LAZY]: 'lazy; __vite__mapDeps(["assets/shared-Mn34-p56.js"])',
+    [SHARED]: 'shared; import("./vendor-Ab12Cd34.js")',
+    [STYLE]: '@font-face { src: url(./archivo-latin-wght-normal-E0tuGl4L.woff2) }',
+    [FONT]: 'woff2',
+  };
+  const site = (): Record<string, () => Response> =>
+    Object.fromEntries(Object.entries(files).map(([url, body]) => [url, () => basic(body, 200)]));
+  /**
+   * A phone on the last release: its app cache holds an error page as the shell, a good icon, a kept 404 and an
+   * older build's entry. An older release's files cache and a vitan-pmc- cache of no known kind are on it too.
    */
   const last = (): Record<string, Entries> => ({
     'vitan-pmc-v2': {
       '/': basic('deploying', 503),
       '/favicon.svg': basic('old icon', 200),
-      [GOOD]: basic('vendor; var logo = "/assets/logo-123.jpeg"; import("./lazy-111.js")', 200),
-      [LOGO]: basic('jpeg', 200),
-      [LAZY]: basic('lazy; __vite__mapDeps(["assets/shared-222.js"])', 200),
-      [SHARED]: basic('shared; import("./vendor-abc.js")', 200),
       [BROKEN]: basic('not found', 404),
-      [CDN]: cors('cdn'),
       [OLD_BUILD]: basic('old build', 200),
     },
-    'vitan-pmc-files-v1': { [STRAY]: basic('stray', 200) },
-    'vitan-pmc-tmp': { [ODD]: basic('odd', 200) },
+    'vitan-pmc-files-v1': { [`${ORIGIN}/media/m0`]: basic('old photo', 200) },
+    'vitan-pmc-tmp': { '/x': basic('odd', 200) },
     'vitan-pmc-files-v2': { [`${ORIGIN}/media/m1`]: basic('photo', 200) },
     'other-app-cache': { '/x': basic('x', 200) },
   });
 
   const fresh = async () => basic(FRESH, 200);
+  const installed = async (worker: ReturnType<typeof loadWorker>) => {
+    await worker.lifecycle('install');
+    await worker.lifecycle('activate');
+    return worker;
+  };
 
-  it('install fills a new app cache with the shell from the network', async () => {
-    const { lifecycle, names, where, textOf, skipped } = loadWorker(last(), fresh);
+  it('install puts the shell and this whole build in a new app cache, from the network, reading no other cache', async () => {
+    const { lifecycle, names, where, textOf, skipped, network, log } = loadWorker(last(), fresh, site());
     await lifecycle('install');
     const made = names().filter((n) => !Object.keys(last()).includes(n));
     expect(made).toHaveLength(1);
     inAppCache(made);
     expect(where('/')).toContain(made[0]);
+    for (const file of BUILD) expect(where(file)).toEqual(made);
+    // each file once, and nothing that only looks like a name
+    expect([...network].sort()).toEqual([...BUILD].sort());
+    expect(log.filter((e) => e.startsWith('open:'))).toEqual([`open:${made[0]}`]);
     expect(skipped()).toBe(true);
     await lifecycle('activate');
     expect(await textOf('/')).toBe(FRESH);
     expect(await textOf('/favicon.svg')).toBe(FRESH);
   });
 
+  it('a file a build shares with the one already installed is not fetched again, and what it names still is', async () => {
+    const { lifecycle, network, where } = loadWorker({ 'vitan-pmc-v3': { [LAZY]: basic(files[LAZY], 200) } }, fresh, site());
+    await lifecycle('install');
+    expect(network).not.toContain(LAZY);
+    expect(network).toContain(SHARED);
+    for (const file of BUILD) expect(where(file)).toEqual(['vitan-pmc-v3']);
+  });
+
   it('a shell the server will not give fails the install, so the last release keeps serving', async () => {
-    const { lifecycle, skipped } = loadWorker(last(), async () => basic('deploying', 503));
+    const { lifecycle, skipped } = loadWorker(last(), async () => basic('deploying', 503), site());
     await expect(lifecycle('install')).rejects.toThrow();
     expect(skipped()).toBe(false);
   });
 
-  it('activate deletes the last release caches and nothing else, carrying over only this build good hashed files', async () => {
-    const { lifecycle, names, deleted, where, claimed, log } = loadWorker(last(), fresh);
-    await lifecycle('install');
-    const installed = log.length;
-    await lifecycle('activate');
-    expect(deleted.sort()).toEqual(['vitan-pmc-files-v1', 'vitan-pmc-tmp', 'vitan-pmc-v2']);
-    expect(names()).toContain('vitan-pmc-files-v2');
-    expect(names()).toContain('other-app-cache');
-    for (const file of [GOOD, LOGO, LAZY, SHARED]) inAppCache(where(file));
-    for (const file of [BROKEN, CDN, OLD_BUILD, STRAY, ODD]) expect(where(file)).toEqual([]);
-    expect(claimed()).toBe(true);
-    // every copy, down to the deepest chunk, lands before the cache it came from is deleted
-    const activated = log.slice(installed);
-    expect(activated.filter((e) => e === 'put:vitan-pmc-v3')).toHaveLength(4);
-    expect(activated.indexOf('delete:vitan-pmc-v2')).toBeGreaterThan(activated.lastIndexOf('put:vitan-pmc-v3'));
+  it.each([
+    ['answered 404', () => basic('not found', 404)],
+    ['answered 503', () => basic('deploying', 503)],
+    ['from elsewhere (not basic)', () => {
+      const r = new Response('cdn', { status: 200 });
+      Object.defineProperty(r, 'type', { value: 'cors' });
+      return r;
+    }],
+  ])('a file of the build %s fails the install, so the last release keeps serving', async (_, answer) => {
+    const { lifecycle, skipped } = loadWorker(last(), fresh, { ...site(), [SHARED]: answer });
+    await expect(lifecycle('install')).rejects.toThrow();
+    expect(skipped()).toBe(false);
   });
 
-  it('offline right after the new release takes over, the app still opens: the fresh shell and the good asset', async () => {
-    const worker = loadWorker(last(), fresh);
-    await worker.lifecycle('install');
-    await worker.lifecycle('activate');
-    expect(await (await worker.navigate(offline)).text()).toBe(FRESH);
-    expect(await (await worker.get(GOOD, 'no-cors', offline)).text()).toContain('vendor');
-    expect(await (await worker.get(SHARED, 'no-cors', offline)).text()).toContain('shared');
-    await expect(worker.get(BROKEN, 'no-cors', offline)).rejects.toThrow('offline');
+  it('a file of the build the network cannot fetch fails the install', async () => {
+    const { lifecycle, skipped } = loadWorker(last(), fresh, { ...site(), [FONT]: () => { throw new TypeError('offline'); } });
+    await expect(lifecycle('install')).rejects.toThrow('offline');
+    expect(skipped()).toBe(false);
   });
 
-  it('a carry that cannot write still deletes the last release caches, so a kept error is not served', async () => {
-    const worker = loadWorker(last(), fresh, 'vitan-pmc-v3');
+  it('a build that cannot be written (a full phone) fails the install', async () => {
+    const { lifecycle, skipped } = loadWorker(last(), fresh, site(), 'vitan-pmc-v3');
+    await expect(lifecycle('install')).rejects.toThrow('storage is full');
+    expect(skipped()).toBe(false);
+  });
+
+  it('activate deletes the last release caches without reading them, and nothing else', async () => {
+    const worker = loadWorker(last(), fresh, site());
     await worker.lifecycle('install');
+    const before = worker.log.length;
     await worker.lifecycle('activate');
     expect(worker.deleted.sort()).toEqual(['vitan-pmc-files-v1', 'vitan-pmc-tmp', 'vitan-pmc-v2']);
+    expect(worker.names()).toContain('vitan-pmc-files-v2');
+    expect(worker.names()).toContain('other-app-cache');
+    expect(worker.log.slice(before).filter((e) => !e.startsWith('delete:'))).toEqual([]);
+    for (const file of [BROKEN, OLD_BUILD]) expect(worker.where(file)).toEqual([]);
     expect(worker.claimed()).toBe(true);
+  });
+
+  it('offline right after the new release takes over, the app opens: the fresh shell and every file of its build', async () => {
+    const worker = await installed(loadWorker(last(), fresh, site()));
     expect(await (await worker.navigate(offline)).text()).toBe(FRESH);
+    for (const file of BUILD) expect(await (await worker.get(file, 'no-cors', offline)).text()).toBe(files[file]);
     await expect(worker.get(BROKEN, 'no-cors', offline)).rejects.toThrow('offline');
-    expect(worker.network).toEqual([PAGE, BROKEN]);
+  });
+
+  it('a write the last release worker has not finished when this one activates cannot cost the new build its entry', async () => {
+    // the old worker served this build's entry and is still writing it into its own cache
+    const worker = loadWorker(last(), fresh, site());
+    const late = await worker.pendingWrite('vitan-pmc-v2', ENTRY, basic(files[ENTRY], 200));
+    await worker.lifecycle('install');
+    await worker.lifecycle('activate');
+    expect(worker.deleted).toContain('vitan-pmc-v2');
+    await late.land();
+    // the late write landed in a cache that is gone, and the entry came from the network at install instead
+    expect(worker.names()).not.toContain('vitan-pmc-v2');
+    expect(worker.where(ENTRY)).toEqual(['vitan-pmc-v3']);
+    expect(await (await worker.navigate(offline)).text()).toBe(FRESH);
+    expect(await (await worker.get(ENTRY, 'no-cors', offline)).text()).toBe(files[ENTRY]);
   });
 });

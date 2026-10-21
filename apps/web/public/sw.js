@@ -20,75 +20,76 @@ function isFileAsset(url) {
   return url.pathname.includes('/drawings/rev/') || url.pathname.includes('/media/');
 }
 
-self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
-});
-
 /**
  * A name for a hashed file inside the shell or one of its files: '/assets/x', 'assets/x' (from the app root, as
  * Vite's preload list writes it) or './x' (beside the file that names it).
  */
 const NAMED = /(?:\/assets\/|\bassets\/|\.\/)[\w.-]+/g;
 
-/** The /assets/ paths that `text`, read at `base` on this origin, names. */
+/**
+ * A file Vite emits: a hashed name with a known extension. The bundle's text also holds look-alikes ('./src',
+ * './u.test', './.exec') that name no file; fetching one would 404 and fail every install.
+ */
+const EMITTED = /^\/assets\/[\w.-]+-[\w-]{8}\.(?:m?js|css|woff2?|ttf|otf|jpe?g|png|gif|svg|webp|avif|ico)$/;
+
+/** The emitted files that `text`, read at `base` on this origin, names. */
 function namedIn(text, base) {
   const paths = [];
   for (const ref of text.match(NAMED) || []) {
     const { pathname } = new URL(ref.startsWith('assets/') ? `/${ref}` : ref, base);
-    if (pathname.startsWith('/assets/')) paths.push(pathname);
+    if (EMITTED.test(pathname)) paths.push(pathname);
   }
   return paths;
 }
 
 /**
- * The good hashed files of this build that the last app cache held stay readable offline: those the fresh shell
- * names, and every file those name in turn. An error one, or an older build's, is dropped with the old cache.
+ * This build's files go into its own app cache at install: those the fresh shell names, and every file those name
+ * in turn. One already there (a build sharing it) is not fetched again. A file the server will not give, or gives
+ * from elsewhere, fails the install, so the last release keeps serving and the browser tries the update again later.
+ * Nothing is read from an earlier release's cache: its worker may still be writing to it.
  */
-function keepGoodAssets(name) {
-  return Promise.all([caches.open(name), caches.open(CACHE)]).then(([old, cur]) => {
-    const seen = new Set();
-    const carry = (paths) =>
-      Promise.all(
-        paths
-          .filter((path) => !seen.has(path))
-          .map((path) => {
-            seen.add(path);
-            return old.match(path).then((res) => {
-              if (!(res && res.ok && res.type === 'basic')) return undefined;
-              const named = /\.(?:m?js|css)$/.test(path) ? res.clone().text() : Promise.resolve('');
-              return cur
-                .put(path, res)
-                .then(() => named)
-                .then((text) => carry(namedIn(text, new URL(path, self.location.origin))));
-            });
-          }),
-      );
-    return cur
-      .match('/')
-      .then((shell) => (shell ? shell.text() : ''))
-      .then((html) => carry(namedIn(html, new URL('/', self.location.origin))));
-  });
+function keepBuild(cache) {
+  const seen = new Set();
+  const keep = (paths) =>
+    Promise.all(
+      paths
+        .filter((path) => !seen.has(path))
+        .map((path) => {
+          seen.add(path);
+          return cache
+            .match(path)
+            .then(
+              (hit) =>
+                hit ||
+                fetch(path).then((res) => {
+                  if (!(res.ok && res.type === 'basic')) throw new TypeError(`${path} answered ${res.status}`);
+                  return cache.put(path, res.clone()).then(() => res);
+                }),
+            )
+            .then((res) => (/\.(?:m?js|css)$/.test(path) ? res.text() : ''))
+            .then((text) => keep(namedIn(text, new URL(path, self.location.origin))));
+        }),
+    );
+  return cache
+    .match('/')
+    .then((shell) => shell.text())
+    .then((html) => keep(namedIn(html, new URL('/', self.location.origin))));
 }
 
-/** An earlier release's app cache (vitan-pmc-v1, -v2, …): the only kind the carry reads, never a files cache. */
-const APP_CACHE = /^vitan-pmc-v\d+$/;
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches
+      .open(CACHE)
+      .then((c) => c.addAll(SHELL).then(() => keepBuild(c)))
+      .then(() => self.skipWaiting()),
+  );
+});
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) =>
-        Promise.all(
-          keys
-            .filter((k) => k.startsWith('vitan-pmc-') && k !== CACHE && k !== FILES_CACHE)
-            .map((k) =>
-              (APP_CACHE.test(k) ? keepGoodAssets(k) : Promise.resolve())
-                // a copy that cannot be made (storage full) must not keep the old cache: its kept errors would be served
-                .catch(() => undefined)
-                .then(() => caches.delete(k)),
-            ),
-        ),
-      )
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith('vitan-pmc-') && k !== CACHE && k !== FILES_CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
 });
@@ -134,7 +135,7 @@ self.addEventListener('fetch', (event) => {
             // only a good file from this site is kept: a hashed asset is read from here from then on, online too
             if (res.ok && res.type === 'basic') {
               const copy = res.clone();
-              caches.open(CACHE).then((c) => c.put(request, copy));
+              event.waitUntil(caches.open(CACHE).then((c) => c.put(request, copy)));
             }
             return res;
           }),
@@ -151,7 +152,8 @@ self.addEventListener('fetch', (event) => {
           // only a good page from this site becomes the offline copy: an error answered mid-deploy would otherwise be what an offline phone shows
           if (res.ok && res.type === 'basic') {
             const copy = res.clone();
-            caches.open(CACHE).then((c) => c.put('/', copy));
+            // the copy is part of the event, so the worker is not stopped before it is written
+            event.waitUntil(caches.open(CACHE).then((c) => c.put('/', copy)));
           }
           return res;
         })
