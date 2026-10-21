@@ -47,6 +47,10 @@ async function lockedNow<T>(query: () => Promise<T>): Promise<T> {
 
 /** The 409 a command gives when the QA company lock (migration 20280116) refuses its membership or address write. */
 export const QA_LOCK_REFUSAL = 'QA accounts and real people are kept in separate companies, so this account cannot be added here';
+/** The operator's mark refused for a person here who is not a QA account; asked before the reason below. */
+const QA_MARK_REAL_PERSON = 'This company still has people who are not QA accounts, so it cannot be marked QA-only';
+/** The operator's mark refused for a QA account here still in a company that is not QA-only. */
+const QA_MARK_QA_ELSEWHERE = 'A QA account in this company still belongs to a company that is not QA-only, so it cannot be marked QA-only yet';
 
 /**
  * #482 QA company lock — the database refuses a real person in a QA-only company and a QA account anywhere else
@@ -411,22 +415,55 @@ export class OrgsParticipant {
   }
 
   /**
-   * #482 operator door — mark a company QA-only, so its QA accounts can be signed in through the door. The database
-   * refuses the mark while any person in the company is not a QA account (409 here, naming no one); marking a marked
-   * company changes nothing. Returns the company's live projects so the caller can record the mark on each trail.
+   * #482 operator door — mark a company QA-only, so its QA accounts can be signed in through the door. The mark is
+   * refused (409, naming no one) while the company holds a real person, or else a QA account still in an unmarked
+   * company; the database trigger refuses the same, as the backstop for every other writer. Marking a marked company
+   * changes nothing. Returns the company's live projects so the caller can record the mark on each trail.
    */
   async markQaOnly(tx: Prisma.TransactionClient, orgId: string): Promise<{ found: boolean; changed: boolean; projectIds: string[] }> {
-    const org = await tx.org.findUnique({ where: { id: orgId }, select: { id: true } });
-    if (!org) return { found: false, changed: false, projectIds: [] };
+    const client = tx as OrgsParticipantClient;
+    // a company already marked changes nothing and, as before, takes no lock: a repeated mark never holds up a QA
+    // sign-in (whose company locks are NOWAIT) or a QA account joining the QA company
+    const seen = await tx.org.findUnique({ where: { id: orgId }, select: { qaOnly: true } });
+    if (!seen) return { found: false, changed: false, projectIds: [] };
+    // an unmarked company's row, in the lock mode the mark's own update takes: a membership written meanwhile takes
+    // this row FOR SHARE first (the QA company lock), so it waits for the mark, or the mark waits for it and reads it
+    const org = seen.qaOnly ? [] : await client.$queryRawUnsafe<Array<{ qaOnly: boolean }>>(`SELECT "qaOnly" FROM "Org" WHERE "id" = $1 FOR NO KEY UPDATE`, orgId);
+    if (org.length && !org[0].qaOnly) {
+      // The database refuses the mark for either reason, in whatever order its loop meets the company's people, so
+      // ask first, in one order: a real person, who keeps the company from ever being marked, then a QA account
+      // still in another unmarked company (a row from before the lock). `qa_address` is the lock's own test.
+      const [why] = await client.$queryRawUnsafe<Array<{ notQa: boolean; elsewhere: boolean }>>(
+        `WITH people AS (
+           SELECT om."userId" FROM "OrgMembership" om WHERE om."orgId" = $1
+           UNION
+           SELECT m."userId" FROM "Membership" m JOIN "Project" p ON p."id" = m."projectId"
+            WHERE p."orgId" = $1 AND m."status" <> 'removed'
+         )
+         SELECT EXISTS (SELECT 1 FROM people x JOIN "User" u ON u."id" = x."userId" WHERE NOT qa_address(u."email")) AS "notQa",
+                EXISTS (SELECT 1 FROM people x JOIN "User" u ON u."id" = x."userId"
+                         WHERE qa_address(u."email") AND EXISTS (
+                           SELECT 1 FROM "Org" o
+                            WHERE o."id" <> $1 AND NOT o."qaOnly"
+                              AND o."id" IN (SELECT om."orgId" FROM "OrgMembership" om WHERE om."userId" = u."id"
+                                             UNION
+                                             SELECT p."orgId" FROM "Membership" m JOIN "Project" p ON p."id" = m."projectId"
+                                              WHERE m."userId" = u."id" AND m."status" <> 'removed'))) AS "elsewhere"`,
+        orgId,
+      );
+      if (why?.notQa) throw new ConflictException(QA_MARK_REAL_PERSON);
+      if (why?.elsewhere) throw new ConflictException(QA_MARK_QA_ELSEWHERE);
+    }
     // one conditional write: of two marks racing on an unmarked company, the second waits on the row and then finds
-    // it already marked (count 0), so exactly one of them reports the change and writes the audit rows
+    // it already marked (count 0), so exactly one of them reports the change and writes the audit rows. The trigger
+    // stays the backstop for every other writer.
     const { count } = await tx.org.updateMany({ where: { id: orgId, qaOnly: false }, data: { qaOnly: true } }).catch((e: unknown) => {
       if (e instanceof Error && /qa lock:.*still belongs to company/.test(e.message)) {
         // a QA account here is still in a company that is not QA-only (a row from before the lock)
-        throw new ConflictException('A QA account in this company still belongs to a company that is not QA-only, so it cannot be marked QA-only yet');
+        throw new ConflictException(QA_MARK_QA_ELSEWHERE);
       }
       if (e instanceof Error && /qa lock:/.test(e.message)) {
-        throw new ConflictException('This company still has people who are not QA accounts, so it cannot be marked QA-only');
+        throw new ConflictException(QA_MARK_REAL_PERSON);
       }
       throw e;
     });
