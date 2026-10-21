@@ -81,13 +81,14 @@ function usePdfUrl(src: string, isPdf: boolean): string | null {
   return read && read.src === src ? read.url : null;
 }
 
+// how long a saved file's blob is kept after its click, for a browser that reads it only once the download starts
+const SAVED_FILE_KEPT_MS = 60_000;
+
 /**
  * Saves a CAD revision's file when Download is tapped. The file is read with `fetch`, which this site's service worker
  * answers (from its kept copy when offline), and saved from a blob of plain bytes under `name`. A link pointing at the
  * API would be a navigation the worker never sees. A failed or refused read goes to the file's own URL, as before.
  */
-const SAVED_FILE_KEPT_MS = 60_000;
-
 function saveFile(src: string, name: string): Promise<void> {
   const open = (href: string) => {
     const link = document.createElement('a');
