@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import { SEED_DAILY_LOG, type DailyLog } from '@vitan/shared';
 import { todayCivil } from '@/lib/civilDate';
+import { warmImports } from './warm-imports';
 
 /**
  * Top 10 #1 (#769) — the Board's 7 Oct UI/UX review: demo controls never reach production. In an
@@ -11,6 +12,8 @@ import { todayCivil } from '@/lib/civilDate';
  *
  * API_BASE is resolved at module load, so each case resets the registry and imports fresh.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DailyLogScreen'), () => import('@/data/apiGateway.ts?raw'), () => import('@/screens/TeamAccessScreen'));
 
 afterEach(() => {
   cleanup();

@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import type { DailyLog, Lang } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 (QA 15 Oct, item 1) — the Daily Site Log showed 14 Oct "Submitted" while the Today card and the PMC
@@ -37,6 +38,8 @@ async function screen(now: string, over: Record<string, unknown>, lang: Lang = '
   const s = useStore.getState();
   return { r, todayCard: todayPath(s.dailyLog, 0, todayCivil(s.timeZone)) };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DailyLogScreen'), () => import('@/lib/engineerToday'), () => import('@/lib/civilDate'));
 
 afterEach(() => {
   cleanup();

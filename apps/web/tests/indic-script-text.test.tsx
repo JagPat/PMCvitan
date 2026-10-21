@@ -2,6 +2,9 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { render, cleanup, act } from '@testing-library/react';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { warmImports } from './warm-imports';
+
+await warmImports(() => import('@/store/store'), () => import('@/layout/DocumentLang'));
 
 /**
  * #827 (Top 10 #5) — Hindi and Gujarati text is drawn as those scripts need:

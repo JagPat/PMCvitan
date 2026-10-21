@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, within } from '@testing-library/react';
 import type { Decision, ProjectNode } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * #633 unit B (UX brief §10) — the Site Map says what its colours mean, and a locked record says why it is
@@ -29,6 +30,8 @@ async function load(role: 'pmc' | 'client' | 'contractor' | 'engineer' | 'consul
   const { PlacesScreen } = await import('@/screens/PlacesScreen');
   return render(<PlacesScreen />);
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/PlacesScreen'));
 
 afterEach(() => {
   cleanup();

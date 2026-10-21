@@ -3,12 +3,15 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import { actionItemText, type ActionItemFacts, type Lang, type Role } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #827 (Top 10 #5, "Also waiting" cards) — the For You cards in Hindi and Gujarati: each card's title, detail and
  * button, built from the card's facts, and the For You screen's own words. Names, titles and reasons a card quotes
  * are shown as written. English stays byte-identical.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/selectors'), () => import('@/screens/InboxScreen'));
 
 afterEach(() => {
   cleanup();

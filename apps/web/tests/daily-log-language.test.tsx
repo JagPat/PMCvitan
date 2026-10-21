@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { DailyLog, Lang } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #827 (Top 10 #5) — the daily site log, a path Board named: in Hindi and Gujarati every state of the
@@ -40,6 +41,8 @@ async function screen(lang: Lang, over: Record<string, unknown>, { demo = false,
   const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
   return render(<DailyLogScreen />);
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DailyLogScreen'), () => import('@/components/RecordBoundary'), () => import('@vitan/shared'));
 
 afterEach(() => {
   cleanup();

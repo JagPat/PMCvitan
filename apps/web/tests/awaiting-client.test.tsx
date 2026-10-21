@@ -1,12 +1,15 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, waitFor, act } from '@testing-library/react';
 import type { Decision } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 QA check (14 Oct 2026, item 4): the engineer, contractor and consultant see a read-only "Awaiting client"
  * list at the top of their decisions screen, so they can plan. It is the server's summary (title, place, how long
  * it has waited): no options, prices or decide button. The PMC's register and the client's screen do not show it.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/layout/ScreenView'), () => import('@/data/apiGateway'));
 
 afterEach(() => {
   cleanup();

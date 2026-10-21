@@ -1,12 +1,15 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { Lang, Review } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 F-C4.4 / F-C4.5 (Q4 C4) — on the PMC's Inspection Review, "Reject item" only marks an item to go back:
  * it said "Rejected — re-inspection task created" before anything was sent. And every item tile carried a
  * "PHOTO" tag, even the placeholder swatch with no photo attached.
  */
+await warmImports(() => import('@/store/store'), () => import('@/screens/InspectionReviewScreen'));
+
 afterEach(() => {
   cleanup();
   vi.resetModules();

@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import type { Decision } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * UX Wave 0 unit F-1b, review round 14 — THE THREE STATES THE BROWSER SWEEP CANNOT REACH.
@@ -44,6 +45,8 @@ async function freshStore() {
   useStore.setState(getInitialState());
   return { useStore, scope };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/components/ConsultationThread'), () => import('@/screens/TeamScreen'), () => import('@/screens/TeamAccessScreen'));
 
 afterEach(() => { cleanup(); vi.unstubAllEnvs(); vi.resetModules(); });
 beforeEach(() => { vi.unstubAllEnvs(); });

@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import type { Decision } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * Top 10 #2a (#771) — one source of truth for counts, and live-bug 3 (the PMC's Dashboard read 0 while
@@ -8,6 +9,8 @@ import type { Decision } from '@vitan/shared';
  * `countPending` (the Portfolio card's number), the For You badge counts the records the viewer acts on
  * one by one, and a live tile never shows a confident 0 before its slice has settled.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/selectors'), () => import('@/store/projectScope'), () => import('@/screens/DashboardScreen'));
 
 afterEach(() => {
   cleanup();

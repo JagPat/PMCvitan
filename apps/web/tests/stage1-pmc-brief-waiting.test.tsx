@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { Decision, PmcBriefProject } from '@vitan/shared';
 import { pmcBrief } from '@/lib/pmcBrief';
 import { HOME_NAV_CAPABILITY } from '@/lib/homeNav';
+import { warmImports } from './warm-imports';
 
 /**
  * Stage 1 live check A1 (#482 6227430525) — qa.pmc's For You listed "No site log yet today" under "Do these first"
@@ -12,6 +13,8 @@ import { HOME_NAV_CAPABILITY } from '@/lib/homeNav';
  * PMC's own reviews. The PMC's "N decisions awaiting the client" card stays on the list but no longer counts toward
  * N and the badge, so N cannot say 1 while the brief says nothing waits on the PMC. With the switch off all is as today.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/store/selectors'), () => import('@/screens/InboxScreen'));
 
 afterEach(() => {
   cleanup();

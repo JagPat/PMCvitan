@@ -1,10 +1,13 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
+import { warmImports } from './warm-imports';
 
 /**
  * #827 (Board decision 13 Oct, "remove Google sign-in, one way in"): the sign-in screen offers no
  * Google button and never loads Google's sign-in script, even when a Google client id is configured.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/screens/TeamAccessScreen'));
 
 afterEach(() => {
   cleanup();

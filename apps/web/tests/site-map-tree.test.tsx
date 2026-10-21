@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, within, fireEvent } from '@testing-library/react';
 import type { PlacedInspection, ProjectNode } from '@vitan/shared';
 import { siteMapTree } from '@/components/SiteMapTree';
+import { warmImports } from './warm-imports';
 
 /**
  * #633 unit C (mockup 10) — on a desktop the Site Map keeps the places as a tree beside the opened place: the
@@ -22,6 +23,8 @@ const insp = (id: string, nodeId: string, openIssues: number): PlacedInspection 
 
 type Item = ReturnType<typeof siteMapTree>;
 const flat = (t: Item): [string | null, number][] => [[t.id, t.depth], ...t.children.flatMap(flat)];
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/PlacesScreen'));
 
 describe('siteMapTree', () => {
   it('shows the whole project and the top-level places when nothing is open', () => {

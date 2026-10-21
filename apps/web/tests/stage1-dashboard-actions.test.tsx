@@ -5,6 +5,7 @@ import { useStore, getInitialState } from '@/store/store';
 import { countActionItems, selectActionItems } from '@/store/selectors';
 import { HOME_NAV_CAPABILITY } from '@/lib/homeNav';
 import { DashboardScreen } from '@/screens/DashboardScreen';
+import { warmImports } from './warm-imports';
 
 /**
  * Stage 1 redesign (#482, Rev 3.1 unit H2) — on a project whose `home-nav` switch is on, the Dashboard opens with
@@ -14,6 +15,8 @@ import { DashboardScreen } from '@/screens/DashboardScreen';
 const s = () => useStore.getState();
 const ROLES: Role[] = ['pmc', 'client', 'engineer', 'contractor', 'consultant'];
 const forYouBadge = () => countActionItems(selectActionItems(s()));
+
+await warmImports(() => import('@/store/store'), () => import('@/screens/DashboardActionsLine'), () => import('@/store/projectScope'));
 
 beforeEach(() => {
   globalThis.localStorage?.clear();
