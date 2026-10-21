@@ -162,12 +162,22 @@ if [ ! -f "$INBOX_REPAIR" ]; then
   exit 1
 fi
 
+# Whether Prisma's output names this migration AS the failure, on a whole line: P3018's "Migration name: <name>", or
+# P3009's "The `<name>` migration started at ... failed". Prisma 6.19.3's SQL connector never loads the stored logs
+# (sql-schema-connector/src/flavour.rs:272), so the line ends at "failed" (measured); the engine's other ending,
+# " with the following logs:", is matched in case a later Prisma prints it. A deploy that applied it and then
+# failed on a later migration names it only as "Applying migration", which is not a failure of it (#1032's check; a
+# resolve of an applied migration is refused with P3012 and buries the real failure's recovery).
+migration_failed_in_output() {
+  printf '%s\n' "$1" | grep -qE "^Migration name: $2\$|^The \`$2\` migration started at .* failed( with the following logs:)?\$"
+}
+
 # THE 4c-iii-r ADOPTION ABORT CANNOT SPEAK FOR ITSELF (found by the production-runner proof's state
 # F9; routed through BOTH deploy paths after Codex on `88ea82c`). `20271125000000` is one explicit
 # BEGIN/COMMIT, so when its diagnostic RAISEs, the transaction aborts and every later statement in
 # the file fails with `current transaction is aborted` — which is the error Prisma surfaces. The
 # carefully written message naming the recovery never reaches the operator. So the recovery is
-# printed HERE, where the operator is actually looking, whenever a failed deploy names it.
+# printed HERE, where the operator is actually looking, whenever a failed deploy names it as the failure.
 #
 # It is a FUNCTION rather than a block at the bottom because there are TWO `migrate deploy`
 # invocations: the ordinary one, and the P3005 baseline one. `20271125000000` is in
@@ -175,7 +185,7 @@ fi
 # second deploy too — where the invocation's own `|| exit 1` used to end the script before any
 # recovery could be printed, leaving that operator with Prisma's swallowed error alone.
 report_4c_iiir_migration_failure() {
-  printf '%s\n' "$1" | grep -q '20271125000000_phase6_4c_iiir_marker_seal' || return 0
+  migration_failed_in_output "$1" 20271125000000_phase6_4c_iiir_marker_seal || return 0
   echo "[migrate] That failure is the 4c-iii-r marker-seal migration. Its own message is swallowed by"
   echo "[migrate] the aborted transaction, so the recovery is repeated here:"
   echo "[migrate]   1. node dist/platform/projections/inbox-repair.cli.js seals repair"
@@ -239,7 +249,7 @@ report_4d_i_migration_failure() {
   _path="${2:-ordinary}"
   _failed_half=''
   for _half in 20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d_i_decision_facts; do
-    printf '%s\n' "$1" | grep -q "$_half" && _failed_half="$_half"
+    migration_failed_in_output "$1" "$_half" && _failed_half="$_half"
   done
   [ -n "$_failed_half" ] || return 0
   if [ "$_failed_half" = 20271221000000_phase6_t4d_i_decision_facts ]; then
@@ -289,9 +299,7 @@ report_4d_i_migration_failure() {
 # photo's key; MTISO; its 15 s lock timeout; a killed install; or this client dying mid-install), the next deploy
 # stops at P3009, and the recovery is the same. A re-run is safe even if the install had committed.
 report_media_guard_migration_failure() {
-  # only the lines that name this file AS the failure: P3018's "Migration name:" and P3009's "The `…` migration started
-  # at … failed". A deploy that applied this file and then failed on a later one names it only as "Applying migration".
-  printf '%s\n' "$1" | grep -qE '^Migration name: 20280118000000_media_tombstone_guard$|^The `20280118000000_media_tombstone_guard` migration started at .* failed$' || return 0
+  migration_failed_in_output "$1" 20280118000000_media_tombstone_guard || return 0
   echo "[migrate] That failure is the deleted-photo guard (20280118000000_media_tombstone_guard). If Prisma"
   echo "[migrate] reports it failing (P3018), nothing of it was kept. After a P3009 it may have committed, if the"
   echo "[migrate] deploy client died. The steps below are safe either way."

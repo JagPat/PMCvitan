@@ -22,7 +22,10 @@ function extractFunctions() {
   assert.ok(start >= 0 && reportStart > start, 'both 4d-i report functions are defined in migrate.sh, ledger note first');
   const end = runner.indexOf('\n}\n', reportStart);
   assert.ok(end > reportStart, 'report_4d_i_migration_failure has a closing brace');
-  return runner.slice(start, end + 3);
+  // the shared exact-line match the report uses (#1032's check), defined before it in the runner
+  const helper = runner.indexOf('migration_failed_in_output() {');
+  assert.ok(helper >= 0 && helper < start, 'the exact-line match is defined before the reports');
+  return runner.slice(helper, runner.indexOf('\n}\n', helper) + 3) + runner.slice(start, end + 3);
 }
 
 const functions = extractFunctions();
@@ -31,11 +34,17 @@ const report = (output, path) =>
     encoding: 'utf8',
   });
 
-const REGISTERS = 'Applying migration `20271220000000_phase6_t4d_i_dark_migration`\nError: ERROR: current transaction is aborted';
-const DECISIONS =
-  'Applying migration `20271220000000_phase6_t4d_i_dark_migration`\n' +
-  'Applying migration `20271221000000_phase6_t4d_i_decision_facts`\n' +
-  'Error: phase6 4d-i ABORT: row(s) already carry this unit\'s 4d-only columns';
+// Prisma's P3018 shape (measured on a real deploy): the failed migration is named on its own "Migration name:" line
+const p3018 = (applying, failed, error) => [
+  ...applying.map((m) => `Applying migration \`${m}\``),
+  'Error: P3018', '',
+  'A migration failed to apply. New migrations cannot be applied before the error is recovered from. Read more about how to resolve migration issues in a production database: https://pris.ly/d/migrate-resolve',
+  '', `Migration name: ${failed}`, '', 'Database error:', error,
+].join('\n');
+const DARK = '20271220000000_phase6_t4d_i_dark_migration';
+const FACTS = '20271221000000_phase6_t4d_i_decision_facts';
+const REGISTERS = p3018([DARK], DARK, 'ERROR: current transaction is aborted');
+const DECISIONS = p3018([DARK, FACTS], FACTS, 'ERROR: phase6 4d-i ABORT: row(s) already carry this unit\'s 4d-only columns');
 const LEDGER_NOTE = /READ THIS FIRST[\s\S]*replace `_prisma_migrations`[\s\S]*Do NOT remove or reset those rows/;
 
 for (const [half, output, halfRepair] of [
@@ -64,6 +73,19 @@ test('the decisions half is named when both halves appear in the output, and res
 test('the P3005 call site passes the baseline path and the ordinary call site does not', () => {
   assert.match(runner, /report_4d_i_migration_failure "\$baseline_out" baseline\n/);
   assert.match(runner, /\nreport_4d_i_migration_failure "\$out"\n/);
+});
+
+test('a P3009 naming a half prints that half\'s recovery', () => {
+  const out = report(`Error: P3009\n\nmigrate found failed migrations in the target database, new migrations will not be applied. Read more about how to resolve migration issues in a production database: https://pris.ly/d/migrate-resolve\nThe \`${FACTS}\` migration started at 2026-10-21 09:58:30.163191 UTC failed\n`, 'ordinary');
+  assert.match(out, /That failure is the 4d-i decisions half/);
+});
+
+// Prisma's own output, measured: every migration applied from zero, then a later one failed in the same deploy. Both
+// halves are named only as "Applying migration"; neither failed, and a resolve of either would be refused (P3012).
+test('a later migration failing after both halves applied prints nothing for either half', () => {
+  for (const path of ['ordinary', 'baseline']) {
+    assert.equal(report(p3018([DARK, FACTS, '20280119000000_probe_later'], '20280119000000_probe_later', 'ERROR: division by zero'), path), '');
+  }
 });
 
 test('an unrelated failure prints nothing', () => {
