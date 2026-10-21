@@ -10,15 +10,23 @@
 //   - a file has a listed diagnostic less often than its count, until the count is lowered (or the diagnostic deleted,
 //     at zero) in the same change, so the baseline always equals the tree;
 //   - an error tsc reports without a file, or tsc exits 2 and no error can be read from what it wrote;
-//   - the baseline allows more than the base branch's baseline does, for any file and diagnostic (it only ever goes
-//     down). This is checked against the base's copy, read from git: `TYPECHECK_BASE` if set, else the pull request's
-//     base branch (`GITHUB_BASE_REF`, fetched at depth 1), else `origin/main` (in Actions, `main` fetched at depth 1).
-//     With no base, or a base copy that cannot be read, the step fails. It skips the comparison, and says so, only when
-//     the base's tree has no baseline file (the change that adds it).
+//   - the baseline allows more than the base branch's baseline does: in any file, an error code with more errors than
+//     the base's lists for it, or one the base's does not list (it only ever goes down). This is checked against the
+//     base's copy, read from git: `TYPECHECK_BASE` if set, else the pull request's base branch (`GITHUB_BASE_REF`,
+//     fetched at depth 1), else `origin/main` (in Actions, `main` fetched at depth 1). With no base, or a base copy that
+//     cannot be read, the step fails. It skips the comparison, and says so, only when the base's tree has no baseline
+//     file (the change that adds it).
+// A diagnostic's first line includes the types tsc prints into it (a union's member order, a src type's shape, a
+// "... N more ..." count), so an unrelated change to src, to tsc, or even an added error-free file can re-key one
+// without changing the error. The author then re-lists it under its new text. The tree is held to the full diagnostic,
+// but the base comparison counts per file and per error code, so a re-keyed entry may be listed in the same change.
+// The trade-off: moving errors between two diagnostics of the same code in one file passes, but only with a visible
+// edit to the baseline. A diagnostic has no location either, so fixing one occurrence and adding an identical error
+// elsewhere in the same file is not caught; the count is what holds.
 // Each burn-down unit fixes its files and deletes their entries; the step ends when the baseline is `{}`.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const api = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -44,11 +52,12 @@ function parseBaseline(text, where) {
 /** Each `path(line,col): error TSnnnn: message` line, counted per file and per diagnostic, with paths relative to
  *  apps/api. A diagnostic is its code and its first line, with no line or column, so an edit elsewhere in the file does
  *  not change it, and one error swapped for another is a new diagnostic, not the same count. The repository's own
- *  path is taken out of a message that quotes it, so a diagnostic reads the same on every machine. */
+ *  path (with `/` separators, as tsc writes it) is taken out of a message that quotes it, so a diagnostic reads the same
+ *  on every machine. */
 export function countErrors(output) {
   const counts = {};
   const add = (file, diagnostic) => {
-    const d = diagnostic.split(`${repo}/`).join('');
+    const d = diagnostic.split(`${repo.split(sep).join('/')}/`).join('');
     counts[file] ??= {};
     counts[file][d] = (counts[file][d] ?? 0) + 1;
   };
@@ -75,11 +84,19 @@ export function judge(actual, allowed, base) {
     }
   }
   if (base) {
+    // per file and per error code: tsc prints types into a diagnostic (a union's member order, a src type's shape, a
+    // "... N more ..." count), so an unrelated change can re-key one without changing the error; the re-keyed entry may be
+    // listed in the same change as long as no code's count in a file rises above the base's
+    const byCode = (ds) => {
+      const c = {};
+      for (const [d, n] of Object.entries(ds ?? {})) { const code = d.slice(0, d.indexOf(':')); c[code] = (c[code] ?? 0) + n; }
+      return c;
+    };
     for (const [file, diagnostics] of Object.entries(allowed)) {
-      for (const [d, n] of Object.entries(diagnostics)) {
-        const was = Object.hasOwn(base, file) && Object.hasOwn(base[file], d) ? base[file][d] : 0;
-        if (was === 0) problems.push(`${file}: "${d}" added to ${BASELINE}; the baseline only goes down`);
-        else if (n > was) problems.push(`${file}: "${d}" raised from ${was} to ${n} in ${BASELINE}; the baseline only goes down`);
+      const was = byCode(Object.hasOwn(base, file) ? base[file] : undefined);
+      for (const [code, n] of Object.entries(byCode(diagnostics))) {
+        if (!was[code]) problems.push(`${file}: ${code} added to ${BASELINE}; the baseline only goes down`);
+        else if (n > was[code]) problems.push(`${file}: ${code} raised from ${was[code]} to ${n} in ${BASELINE}; the baseline only goes down`);
       }
     }
   }
