@@ -24,7 +24,7 @@ const s = () => useStore.getState();
 const end = (visitId: string, k: string): OutboxOp => ({ t: 'siteVisitEnd', visitId, claimedAt: '2026-10-14T05:30:00.000Z', idempotencyKey: k });
 const approve = (k: string): OutboxOp => ({ t: 'approve', decisionId: 'd-1', optionIndex: 0, idempotencyKey: k });
 const keysOf = (k: string) => ((JSON.parse(localStorage.getItem(k) ?? '[]') ?? []) as { idempotencyKey?: string }[]).map((o) => o.idempotencyKey);
-const photo = { t: 'siteVisitAddFile', visitId: 'v-1', scope: 's', file: { id: 'f', mime: 'image/png' }, by: { name: 'n', role: 'pmc' }, placeName: null, idempotencyKey: 'k-photo' };
+const photo = { t: 'siteVisitAddFile', visitId: '00000000-0000-4000-8000-000000000001', scope: `dev:${USER}`, file: { id: 'f', mime: 'image/png' }, by: { name: 'n', role: 'pmc' }, placeName: null, idempotencyKey: 'k-photo' };
 
 /** signed in on P1 (passwordless dev auth), offline, both keys as given */
 function signedIn(stored: { general?: unknown[]; lane?: unknown[] } = {}, gw: Record<string, unknown> = {}) {
@@ -60,14 +60,14 @@ describe('WEB-02 step A: what a stored queue key gives this release, and what it
 
   it('4344270652: a lane photo act memory leaves out stays stored at this tab’s writes', () => {
     signedIn({ lane: [photo] });
-    act(() => { s().queueSiteVisitAct(end('v-2', 'k-mine'), 'saved offline'); });
+    act(() => { s().queueSiteVisitAct(end('00000000-0000-4000-8000-000000000002', 'k-mine'), 'saved offline'); });
     expect(keysOf(lane)).toEqual(['k-mine', 'k-photo']);
   });
 
   it('4344270652: a site visit act stored in the general key, which memory leaves out, stays stored there', () => {
-    signedIn({ general: [end('v-1', 'k-in-general'), approve('k-a')] });
+    signedIn({ general: [end('00000000-0000-4000-8000-000000000001', 'k-in-general'), approve('k-a')] });
     useStore.setState((st) => { st.outbox = [...st.outbox, approve('k-b')]; });
-    act(() => { s().queueSiteVisitAct(end('v-2', 'k-v'), 'saved offline'); });
+    act(() => { s().queueSiteVisitAct(end('00000000-0000-4000-8000-000000000002', 'k-v'), 'saved offline'); });
     expect(keysOf(key)).toEqual(['k-a', 'k-b', 'k-in-general']);
   });
 
@@ -77,7 +77,7 @@ describe('WEB-02 step A: what a stored queue key gives this release, and what it
     signedIn({ general: newer }, { approveDecision });
     expect(s().outbox).toEqual([]);
     useStore.setState((st) => { st.outbox = [...st.outbox, approve('k-mine')]; });
-    act(() => { s().queueSiteVisitAct(end('v-2', 'k-v'), 'saved offline'); });
+    act(() => { s().queueSiteVisitAct(end('00000000-0000-4000-8000-000000000002', 'k-v'), 'saved offline'); });
     expect(JSON.parse(localStorage.getItem(key)!)).toEqual(newer);
     expect(keysOf(lane)).toEqual(['k-v']);
     // the act made here is copied aside beside the key, so it stays on this phone

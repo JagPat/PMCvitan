@@ -35,7 +35,7 @@ function onP1(raw: string | null, gw: Record<string, unknown> = {}) {
   s().hydrateOutbox();
 }
 /** this tab queues an approval offline */
-const queueOne = (k: string) => { useStore.setState((st) => { st.outbox = [...st.outbox, approve(k)]; }); act(() => { s().queueSiteVisitAct({ t: 'siteVisitEnd', visitId: 'v-1', claimedAt: '2026-10-14T05:30:00.000Z', idempotencyKey: `${k}-v` }, 'saved offline'); }); };
+const queueOne = (k: string) => { useStore.setState((st) => { st.outbox = [...st.outbox, approve(k)]; }); act(() => { s().queueSiteVisitAct({ t: 'siteVisitEnd', visitId: '00000000-0000-4000-8000-000000000001', claimedAt: '2026-10-14T05:30:00.000Z', idempotencyKey: `${k}-v` }, 'saved offline'); }); };
 /** another tab's write of the general key, heard: how many writes of it this tab makes in answer */
 function writesInAnswer(text: string): number {
   localStorage.setItem(key, text);
@@ -175,8 +175,26 @@ describe('WEB-02 step 2: a queue key this release cannot read is never sent or w
     expect(localStorage.getItem(key)).toBe('{bad general');
   });
 
+  it('#1085 r2 (Codex 4346169602): that failed tap leaves no copy of the first key, and the tap after room is freed copies each key once', () => {
+    localStorage.setItem(lane, '{bad lane');
+    onP1('{bad general');
+    const real = Storage.prototype.setItem;
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith(`vitan.unreadable.${lane}.`)) throw new DOMException('full', 'QuotaExceededError');
+      return real.call(this, k, v);
+    });
+    act(() => s().setAsideUnreadableQueue());
+    act(() => s().setAsideUnreadableQueue());
+    spy.mockRestore();
+    expect(s().queueSetAsideFailed).toBe(true);
+    expect([copiesOf(key), copiesOf(lane)]).toEqual([[], []]);
+    act(() => s().setAsideUnreadableQueue());
+    expect(s().queueSetAsideFailed).toBe(false);
+    expect([copiesOf(key), copiesOf(lane)]).toEqual([['{bad general'], ['{bad lane']]);
+  });
+
   it('a visit lane holding a damaged visit act is listed by itself; the general key still loads', () => {
-    localStorage.setItem(lane, JSON.stringify([{ t: 'siteVisitEnd', visitId: 'v-1', idempotencyKey: 'k-e' }]));
+    localStorage.setItem(lane, JSON.stringify([{ t: 'siteVisitEnd', visitId: '00000000-0000-4000-8000-000000000001', idempotencyKey: 'k-e' }]));
     onP1(JSON.stringify([approve('k-a')]));
     expect(s().queueUnreadable).toEqual([{ key: lane, read: 'damaged', reloaded: false }]);
     expect(s().outbox).toEqual([approve('k-a')]);

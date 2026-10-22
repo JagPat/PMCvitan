@@ -24,6 +24,18 @@ const key: Check = (v) => typeof v === 'string' && v.length > 0;
 const num: Check = (v) => typeof v === 'number' && Number.isFinite(v);
 const int: Check = (v) => Number.isInteger(v);
 const bool: Check = (v) => typeof v === 'boolean';
+/** A route id: a field the replay puts in the request's path as it stands (the gateway does not encode it). Nonempty,
+ *  only URL-unreserved characters, and never a dot segment. An empty one replayed `countersignDecision` to
+ *  `/decisions//countersign`, was refused 404 for good, and dropped (Codex 4346169580); one holding `/`, `?` or `..`
+ *  would reach another route. The server reads every such param as a plain string, and its ids (uuids, seed ids such
+ *  as `DL-1`) are all of this form */
+const routeId: Check = (v) => typeof v === 'string' && /^[A-Za-z0-9_~-][A-Za-z0-9._~-]*$/.test(v);
+/** a photo's visit, sent as its upload's `siteVisit.visitId`, which the server reads as a uuid (`siteVisitIdSchema`).
+ *  A visit's path id is a route id: the server reads that param as a plain string */
+const uuid: Check = (v) => contracts.siteVisitIdSchema.safeParse(v).success;
+/** a photo's client key, sent as its upload's `clientKey` (`createMediaSchema`: trimmed, 1 to 120 characters) and the
+ *  key of its row on this phone */
+const clientKey: Check = (v) => typeof v === 'string' && v.trim().length > 0 && v.trim().length <= 120;
 const opt = (c: Check): Check => (v) => v === undefined || c(v);
 const orNull = (c: Check): Check => (v) => v === null || c(v);
 const oneOf = (...values: readonly string[]): Check => (v) => typeof v === 'string' && values.includes(v);
@@ -53,46 +65,46 @@ const billLine = shape({ poLineId: opt(str), labourPoLineId: opt(str), quantity:
  *  another key (each lane's key holds only its own acts): add a new kind instead. */
 const OUTBOX_OP_KINDS: Record<OutboxOp['t'], Check> = {
   siteVisitStart: keyed({ body: shape({ id: str, claimedAt: str, nodeId: opt(str), location: opt(shape({ lat: num, lng: num, accuracyM: num, at: str })) }), visitor: shape({ name: str, role: str, placeName: orNull(str) }) }),
-  siteVisitEnd: keyed({ visitId: str, claimedAt: str }),
-  siteVisitClose: keyed({ visitId: str, reason: str }),
-  siteVisitAddPlace: keyed({ visitId: str, body: shape({ id: str, nodeId: str, claimedAt: str }), name: str }),
-  siteVisitRetirePlace: keyed({ visitId: str, placeId: str }),
-  siteVisitAddAttendee: keyed({ visitId: str, body: (v) => shape({ id: str, userId: str, role: str })(v) || shape({ id: str, guestName: str })(v), name: str }),
-  siteVisitRetireAttendee: keyed({ visitId: str, attendeeId: str }),
+  siteVisitEnd: keyed({ visitId: routeId, claimedAt: str }),
+  siteVisitClose: keyed({ visitId: routeId, reason: str }),
+  siteVisitAddPlace: keyed({ visitId: routeId, body: shape({ id: str, nodeId: str, claimedAt: str }), name: str }),
+  siteVisitRetirePlace: keyed({ visitId: routeId, placeId: routeId }),
+  siteVisitAddAttendee: keyed({ visitId: routeId, body: (v) => shape({ id: str, userId: str, role: str })(v) || shape({ id: str, guestName: str })(v), name: str }),
+  siteVisitRetireAttendee: keyed({ visitId: routeId, attendeeId: routeId }),
   siteVisitAddFile: keyed({
-    visitId: str, scope: str, by: shape({ name: str, role: str }), placeName: orNull(str), queuedAt: opt(str),
-    file: shape({ id: str, mime: str, takenAt: opt(str), geoLat: opt(num), geoLng: opt(num), nodeId: opt(str), note: opt(str), rating: opt(oneOf('fine', 'concern', 'action_needed')), sourceMediaId: opt(str) }),
+    visitId: uuid, scope: str, by: shape({ name: str, role: str }), placeName: orNull(str), queuedAt: opt(str),
+    file: shape({ id: clientKey, mime: str, takenAt: opt(str), geoLat: opt(num), geoLng: opt(num), nodeId: opt(str), note: opt(str), rating: opt(oneOf('fine', 'concern', 'action_needed')), sourceMediaId: opt(str) }),
   }),
   // keyless before 466814c0 (approve, change, changeWithdraw), c0940a02 (flagMismatch, submitDailyLog) and f59dc583
   // (ackDrawing): an act an earlier release queued replays unkeyed
-  approve: keyedLater({ decisionId: str, optionIndex: int }),
-  forwardDecision: keyed({ decisionId: str, input: shape({ toDesignationKind: designation, toDesignationMembershipId: opt(str), reason: str }) }),
-  countersignDecision: keyed({ decisionId: str }),
+  approve: keyedLater({ decisionId: routeId, optionIndex: int }),
+  forwardDecision: keyed({ decisionId: routeId, input: shape({ toDesignationKind: designation, toDesignationMembershipId: opt(str), reason: str }) }),
+  countersignDecision: keyed({ decisionId: routeId }),
   disagreeDecision: keyed({
-    decisionId: str,
+    decisionId: routeId,
     input: shape({ path: oneOf('reject_back', 'forward_on'), reason: str, costImpact: opt(num), timeImpactDays: opt(num), toDesignationKind: opt(designation), toDesignationMembershipId: opt(str) }),
   }),
   resolveStrandedCountersign: keyed({
-    decisionId: str,
+    decisionId: routeId,
     input: shape({ outcome: oneOf('completed', 'returned'), reason: str, costImpact: opt(num), timeImpactDays: opt(num), toDesignationKind: opt(designation), toDesignationMembershipId: opt(str) }),
   }),
-  change: keyedLater({ decisionId: str, reason: str, costImpact: num, timeImpactDays: num }),
-  changeWithdraw: keyedLater({ decisionId: str }),
-  withdraw: keyed({ decisionId: str, reason: str }),
-  consultationRequest: keyed({ decisionId: str, consulteeMembershipId: str, question: str }),
-  consultationRespond: keyed({ decisionId: str, consultationId: str, response: str, recommendedOptionIndex: opt(int) }),
-  ackDrawing: keyedLater({ revisionId: str }),
-  publishDrawing: keyed({ drawingId: str }),
-  setDrawingNode: keyed({ drawingId: str, nodeId: orNull(str) }),
-  submitInspection: act({ inspectionId: str, items: list(shape({ id: opt(str), name: str, state: orNull(oneOf('pass', 'fail', 'na')), photos: num, note: str, evidence: opt(list(str)) })) }),
+  change: keyedLater({ decisionId: routeId, reason: str, costImpact: num, timeImpactDays: num }),
+  changeWithdraw: keyedLater({ decisionId: routeId }),
+  withdraw: keyed({ decisionId: routeId, reason: str }),
+  consultationRequest: keyed({ decisionId: routeId, consulteeMembershipId: str, question: str }),
+  consultationRespond: keyed({ decisionId: routeId, consultationId: str, response: str, recommendedOptionIndex: opt(int) }),
+  ackDrawing: keyedLater({ revisionId: routeId }),
+  publishDrawing: keyed({ drawingId: routeId }),
+  setDrawingNode: keyed({ drawingId: routeId, nodeId: orNull(str) }),
+  submitInspection: act({ inspectionId: routeId, items: list(shape({ id: opt(str), name: str, state: orNull(oneOf('pass', 'fail', 'na')), photos: num, note: str, evidence: opt(list(str)) })) }),
   // keyless before Task 10: an act queued by an earlier release replays unkeyed
   // and a review queued before ce360ae5 names no item ids (`rejectedItemNames`): it is sent as that release's would be
   // now, with none, and the server takes none as none: an approval approves; a rejection sends back the rows the
   // inspection holds as failed, or is refused 400 when there are none (inspections.service.ts, "No items rejected")
-  decideReview: (v) => act({ inspectionId: str, approve: bool, idempotencyKey: opt(key) })(v) && isFields(v)
+  decideReview: (v) => act({ inspectionId: routeId, approve: bool, idempotencyKey: opt(key) })(v) && isFields(v)
     && (list(str)(v.rejectedItemIds) || (v.rejectedItemIds === undefined && list(str)(v.rejectedItemNames))),
-  startActivity: act({ activityId: str, idempotencyKey: opt(key) }),
-  completeActivity: act({ activityId: str, idempotencyKey: opt(key) }),
+  startActivity: act({ activityId: routeId, idempotencyKey: opt(key) }),
+  completeActivity: act({ activityId: routeId, idempotencyKey: opt(key) }),
   startDailyLog: keyed({}),
   addSiteMaterial: keyed({ input: shape({ name: str, qty: str, zone: opt(str), decisionId: opt(str), swatch: opt(str), nodeId: opt(str) }) }),
   flagMismatch: keyedLater({ decisionId: str }),
@@ -130,7 +142,7 @@ const OUTBOX_OP_KINDS: Record<OutboxOp['t'], Check> = {
   submitVendorBill: twoKeys({ input: shape({ billId: str }) }),
   amendVendorBill: twoKeys({ input: shape({ billId: str, reason: str, lines: list(billLine) }) }),
   rejectVendorBill: twoKeys({ input: shape({ billId: str, reason: str }) }),
-  releaseLabourAllocation: twoKeys({ allocationId: str, reason: str }),
+  releaseLabourAllocation: twoKeys({ allocationId: routeId, reason: str }),
   uploadMedia: act({
     input: shape({
       kind: oneOf('progress', 'inspection', 'decision', 'attendance', 'material', 'visit'), mime: str, data: str,
@@ -139,7 +151,7 @@ const OUTBOX_OP_KINDS: Record<OutboxOp['t'], Check> = {
       geoLat: opt(num), geoLng: opt(num), takenAt: opt(str), sourceMediaId: opt(str),
     }),
   }),
-  uploadEvidence: act({ scope: str, clientKey: str }),
+  uploadEvidence: act({ scope: str, clientKey }),
 };
 
 type ServerSchema = { safeParse: (v: unknown) => { success: boolean } };
@@ -246,6 +258,19 @@ function serverTakes(v: { t: OutboxOp['t'] } & Fields): boolean {
   return contract === null || (contracts[contract.schema] as ServerSchema).safeParse(serverBodyOf(v)).success;
 }
 
+/** The user scopes a queue key's acts may name, as the store derives them for that key: the evidence rows' (the token's
+ *  `sub`, else 'anon') and the visit photos' (the key's own sub, `visitPhotoScope`) */
+export type QueueScopes = { evidence: string; visitPhoto: string };
+/** The kinds whose replay reads a row on this phone by a scope the act itself names, and which of the key's scopes it
+ *  must be. An act naming another scope would read that user's row, send its bytes as this user, and delete it
+ *  (Codex 4346169609), so it makes its key unreadable. Read with no scopes, such an act is unreadable too: never
+ *  taken on trust */
+const SCOPE_OF: Partial<Record<OutboxOp['t'], keyof QueueScopes>> = { uploadEvidence: 'evidence', siteVisitAddFile: 'visitPhoto' };
+function boundToKey(v: Fields & { t: OutboxOp['t'] }, scopes: QueueScopes | undefined): boolean {
+  const which = SCOPE_OF[v.t];
+  return which === undefined || (scopes !== undefined && v.scope === scopes[which]);
+}
+
 /** A stored entry naming a kind of act this release knows, whatever its fields hold */
 export function isKnownOutboxKind(v: unknown): v is { t: OutboxOp['t'] } {
   if (!isFields(v)) return false;
@@ -257,8 +282,8 @@ export function isKnownOutboxKind(v: unknown): v is { t: OutboxOp['t'] } {
  *  replay reads, of its type. A key holding any other entry (a newer release's act, damaged bytes, or a known kind
  *  missing a field: Codex 4336713248) is unreadable as a whole, so it is never loaded, written or sent
  *  (WEB-02, #1037 r1, Codex 4331862684) */
-export function isKnownOutboxOp(v: unknown): v is OutboxOp {
-  return isKnownOutboxKind(v) && OUTBOX_OP_KINDS[v.t](v) && serverTakes(v as { t: OutboxOp['t'] } & Fields);
+export function isKnownOutboxOp(v: unknown, scopes?: QueueScopes): v is OutboxOp {
+  return isKnownOutboxKind(v) && OUTBOX_OP_KINDS[v.t](v) && serverTakes(v as { t: OutboxOp['t'] } & Fields) && boundToKey(v as { t: OutboxOp['t'] } & Fields, scopes);
 }
 
 /** A stored queue key's bytes, as this release reads them */
@@ -267,7 +292,7 @@ export type StoredQueue = { acts: OutboxOp[] } | { unreadable: 'newer' | 'damage
 /** An absent key is an empty list. Bytes that are not a list, or a list holding any entry this release cannot load, are
  *  unreadable as a whole: 'newer' when every such entry is an act of a kind this release does not know (a newer
  *  release's, which that release can read and send), else 'damaged'. */
-export function readStoredQueue(raw: string | null): StoredQueue {
+export function readStoredQueue(raw: string | null, scopes?: QueueScopes): StoredQueue {
   if (raw === null) return { acts: [] };
   let parsed: unknown;
   try {
@@ -278,7 +303,7 @@ export function readStoredQueue(raw: string | null): StoredQueue {
   if (!Array.isArray(parsed)) return { unreadable: 'damaged' };
   let newer = false;
   for (const entry of parsed) {
-    if (isKnownOutboxOp(entry)) continue;
+    if (isKnownOutboxOp(entry, scopes)) continue;
     if (isFields(entry) && typeof entry.t === 'string' && !isKnownOutboxKind(entry)) { newer = true; continue; }
     return { unreadable: 'damaged' };
   }

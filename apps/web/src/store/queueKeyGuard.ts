@@ -1,5 +1,5 @@
 import type { OutboxOp } from '@/data/apiGateway';
-import { readStoredQueue } from '@/data/storedActs';
+import { readStoredQueue, type QueueScopes } from '@/data/storedActs';
 
 /**
  * WEB-02 step A (#482 6333415419): the stored-act check at the writer of the stored queue keys, the general queue
@@ -25,14 +25,14 @@ export const queueActIdent = (o: OutboxOp): string => {
   return `json:${JSON.stringify(o)}`;
 };
 
-type Store = Pick<Storage, 'getItem' | 'setItem'>;
+type Store = Pick<Storage, 'getItem' | 'setItem'> & Partial<Pick<Storage, 'removeItem'>>;
 
 /** what the key holds, as this release reads it: 'ok', or why it cannot be read */
 export type KeyRead = 'ok' | 'newer' | 'damaged';
-const readOf = (raw: string | null): KeyRead => { const r = readStoredQueue(raw); return 'acts' in r ? 'ok' : r.unreadable; };
+const readOf = (raw: string | null, scopes: QueueScopes | undefined): KeyRead => { const r = readStoredQueue(raw, scopes); return 'acts' in r ? 'ok' : r.unreadable; };
 /** the key's acts, or null when this release cannot read what it holds (an absent key is an empty list) */
-function readKey(storage: Store, key: string): OutboxOp[] | null {
-  const read = readStoredQueue(storage.getItem(key));
+function readKey(storage: Store, key: string, scopes: QueueScopes | undefined): OutboxOp[] | null {
+  const read = readStoredQueue(storage.getItem(key), scopes);
   return 'acts' in read ? read.acts : null;
 }
 /** the identities of the acts a key's bytes hold, read or not: an act already there is never copied aside again */
@@ -43,31 +43,45 @@ function identsIn(raw: string | null): Set<string> {
   } catch { /* not a list: none */ }
   return new Set();
 }
-/** the name a key's bytes are copied aside under: never one in use */
-function asideName(storage: Store, key: string): string | null {
-  const base = `vitan.unreadable.${key}.${Date.now()}`;
-  let name = base;
-  for (let n = 1; storage.getItem(name) !== null; n += 1) {
-    if (n > 100) return null; // no free name: a storage that answers every name is not one to copy into
-    name = `${base}.${n}`;
-  }
-  return name;
+/** the bytes' length and 32-bit FNV-1a hash: the name of their copy, so the same bytes are copied once */
+function contentTag(raw: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < raw.length; i += 1) h = Math.imul(h ^ raw.charCodeAt(i), 0x01000193);
+  return `${raw.length}-${(h >>> 0).toString(36)}`;
 }
-/** copy `raw` aside under a new name and read it back: true only when the copy holds the same bytes */
-function copyAside(storage: Store, key: string, raw: string): boolean {
+/** Copy `raw` aside and read it back: true only when a copy holding the same bytes is there. A copy of these bytes
+ *  already there is that copy, made again by nothing (Codex 4346169602: each retry of a Set aside that failed part way
+ *  made another copy of the same key, taking the room the person freed). A copy this call makes goes on `made`; one
+ *  that does not read back as written is removed */
+function copyAside(storage: Store, key: string, raw: string, made: string[] = []): boolean {
+  const base = `vitan.unreadable.${key}.${contentTag(raw)}`;
+  let name: string | null = null;
   try {
-    const name = asideName(storage, key);
-    if (name === null) return false;
+    for (let n = 0; n <= 100; n += 1) {
+      const at = n === 0 ? base : `${base}.${n}`;
+      const there = storage.getItem(at);
+      if (there === raw) return true; // read back already: the same bytes, kept
+      if (there === null) { name = at; break; }
+    }
+    if (name === null) return false; // no free name: a storage that answers every name is not one to copy into
     storage.setItem(name, raw);
-    return storage.getItem(name) === raw;
-  } catch {
-    return false;
+    if (storage.getItem(name) === raw) { made.push(name); return true; }
+  } catch { /* not copied */ }
+  if (name !== null) removeCopies(storage, [name]);
+  return false;
+}
+/** remove copies this tab made, best effort: one that cannot be removed is a copy of bytes the key still holds */
+function removeCopies(storage: Store, names: string[]): void {
+  for (const name of names) {
+    try { storage.removeItem?.(name); } catch { /* left: a duplicate, never a loss */ }
   }
 }
 
 export type QueueKeyGuard = ReturnType<typeof createQueueKeyGuard>;
 
-export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: string | null) => void = () => {}) {
+/** `scopesOf`: the user scopes each key's acts may name (`QueueScopes`), as the store derived them with the key's name.
+ *  A key it names none for reads a scope-bearing act as damaged */
+export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: string | null) => void = () => {}, scopesOf: (key: string) => QueueScopes | undefined = () => undefined) {
   /** per key, the acts held in memory that the key does not hold now */
   const unkept = new Map<string, Set<string>>();
   /** per key, the acts a refused write already copied aside */
@@ -98,7 +112,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     /** a load of `key`: its acts when this release can read them, else none (it is reported to `onRead`, and kept) */
     load(storage: Store, key: string): OutboxOp[] {
       const raw = storage.getItem(key);
-      const read = readStoredQueue(raw);
+      const read = readStoredQueue(raw, scopesOf(key));
       onRead(key, 'acts' in read ? 'ok' : read.unreadable, raw);
       unkept.delete(key);
       loaded.add(key);
@@ -114,7 +128,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     /** another tab wrote `key` (a storage event): it is read and reported, never answered */
     heard(storage: Store, key: string): void {
       const raw = storage.getItem(key);
-      onRead(key, readOf(raw), raw);
+      onRead(key, readOf(raw, scopesOf(key)), raw);
     },
     /** every key's memory goes (the scope moved, or the person signed out) */
     forget(): void {
@@ -138,7 +152,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       let there = new Set<string>();
       try {
         if (!storage) throw new Error('no storage');
-        const stored = readKey(storage, key);
+        const stored = readKey(storage, key, scopesOf(key));
         if (stored === null) {
           // counted against the key's own entries, so an act it already holds is not copied aside again
           there = identsIn(storage.getItem(key));
@@ -170,11 +184,11 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     write(storage: Store, key: string, mine: OutboxOp[], takes: (o: OutboxOp) => boolean = () => true): boolean {
       const raw = storage.getItem(key);
       try {
-        const readAs = readOf(raw);
+        const readAs = readOf(raw, scopesOf(key));
         const copied = readAs !== 'ok' && raw === setAsideRaw.get(key);
         // bytes this release cannot read are never written over, unless the person's tap copied them aside
         if (readAs !== 'ok' && !copied) { onRead(key, readAs, raw); throw new Error('unreadable queue key'); }
-        const left = copied ? [] : (readKey(storage, key) ?? []).filter((o) => !takes(o));
+        const left = copied ? [] : (readKey(storage, key, scopesOf(key)) ?? []).filter((o) => !takes(o));
         const text = JSON.stringify([...mine, ...left]);
         if (raw !== text) storage.setItem(key, text);
         // read as it now is, only once the write has landed: a set-aside key stays listed until it is written over
@@ -197,15 +211,17 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
         return false;
       }
     },
-    /** The person's tap: copy every key's unreadable bytes aside under a new name and read each copy back; only when
-     *  every copy succeeded are those exact bytes let be written over. False when one could not be made: nothing
-     *  changes. */
+    /** The person's tap: copy every key's unreadable bytes aside and read each copy back (a copy of the same bytes
+     *  already there is kept as it is); only when every copy succeeded are those exact bytes let be written over.
+     *  False when one could not be made: no key is marked, and the copies this tap made are removed, so a retry finds
+     *  the room it had (Codex 4346169602). */
     setAside(storage: Store, keys: string[]): boolean {
       const copied = new Map<string, string>();
+      const made: string[] = [];
       for (const key of keys) {
         const raw = storage.getItem(key);
-        if (raw === null || readOf(raw) === 'ok') continue;
-        if (!copyAside(storage, key, raw)) return false; // no key is marked, so none is written over
+        if (raw === null || readOf(raw, scopesOf(key)) === 'ok') continue;
+        if (!copyAside(storage, key, raw, made)) { removeCopies(storage, made); return false; }
         copied.set(key, raw);
       }
       for (const [key, raw] of copied) setAsideRaw.set(key, raw);

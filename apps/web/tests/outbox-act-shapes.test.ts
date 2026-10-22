@@ -18,17 +18,20 @@ const line = { poLineId: 'p', quantity: '1', rate: '10' };
 const V = '6f1c2b0e-8a4d-4c5e-9b7a-1d2e3f4a5b6c';
 const P = '7a2d3c1f-9b5e-4d6f-8c8b-2e3f4a5b6c7d';
 const A = '8b3e4d2a-0c6f-4e7a-9d9c-3f4a5b6c7d8e';
+/** the user scopes the store derives for the dev user `u-eng`'s keys (below): an evidence or visit photo act naming any
+ *  other is not read (#1085 r2, Codex 4346169609) */
+const S = { evidence: 'anon', visitPhoto: 'dev:u-eng' };
 
 /** one act of every kind, holding only the fields its type requires */
 const MIN: { [K in OutboxOp['t']]: Act<K> } = {
   siteVisitStart: { t: 'siteVisitStart', body: { id: V, claimedAt: '2026-10-21T05:30:00.000Z' }, visitor: { name: 'n', role: 'pmc', placeName: null }, idempotencyKey: k },
-  siteVisitEnd: { t: 'siteVisitEnd', visitId: 'v-1', claimedAt: '2026-10-21T05:30:00.000Z', idempotencyKey: k },
-  siteVisitClose: { t: 'siteVisitClose', visitId: 'v-1', reason: 'r', idempotencyKey: k },
-  siteVisitAddPlace: { t: 'siteVisitAddPlace', visitId: 'v-1', body: { id: P, nodeId: 'n-1', claimedAt: '2026-10-21T05:30:00.000Z' }, name: 'n', idempotencyKey: k },
-  siteVisitRetirePlace: { t: 'siteVisitRetirePlace', visitId: 'v-1', placeId: 'p-1', idempotencyKey: k },
-  siteVisitAddAttendee: { t: 'siteVisitAddAttendee', visitId: 'v-1', body: { id: A, userId: 'u-1', role: 'client' }, name: 'n', idempotencyKey: k },
-  siteVisitRetireAttendee: { t: 'siteVisitRetireAttendee', visitId: 'v-1', attendeeId: 'a-1', idempotencyKey: k },
-  siteVisitAddFile: { t: 'siteVisitAddFile', visitId: 'v-1', scope: 's', file: { id: 'f-1', mime: 'image/png' }, by: { name: 'n', role: 'pmc' }, placeName: null, idempotencyKey: k },
+  siteVisitEnd: { t: 'siteVisitEnd', visitId: V, claimedAt: '2026-10-21T05:30:00.000Z', idempotencyKey: k },
+  siteVisitClose: { t: 'siteVisitClose', visitId: V, reason: 'r', idempotencyKey: k },
+  siteVisitAddPlace: { t: 'siteVisitAddPlace', visitId: V, body: { id: P, nodeId: 'n-1', claimedAt: '2026-10-21T05:30:00.000Z' }, name: 'n', idempotencyKey: k },
+  siteVisitRetirePlace: { t: 'siteVisitRetirePlace', visitId: V, placeId: P, idempotencyKey: k },
+  siteVisitAddAttendee: { t: 'siteVisitAddAttendee', visitId: V, body: { id: A, userId: 'u-1', role: 'client' }, name: 'n', idempotencyKey: k },
+  siteVisitRetireAttendee: { t: 'siteVisitRetireAttendee', visitId: V, attendeeId: A, idempotencyKey: k },
+  siteVisitAddFile: { t: 'siteVisitAddFile', visitId: V, scope: S.visitPhoto, file: { id: 'f-1', mime: 'image/png' }, by: { name: 'n', role: 'pmc' }, placeName: null, idempotencyKey: k },
   approve: { t: 'approve', decisionId: 'd-1', optionIndex: 0, idempotencyKey: k },
   forwardDecision: { t: 'forwardDecision', decisionId: 'd-1', input: { toDesignationKind: 'pmc', reason: 'r' }, idempotencyKey: k },
   countersignDecision: { t: 'countersignDecision', decisionId: 'd-1', idempotencyKey: k },
@@ -80,7 +83,7 @@ const MIN: { [K in OutboxOp['t']]: Act<K> } = {
   amendVendorBill: { t: 'amendVendorBill', input: { billId: 'b', reason: 'r', lines: [line] }, idempotencyKey: k, coalesceKey: c },
   rejectVendorBill: { t: 'rejectVendorBill', input: { billId: 'b', reason: 'r' }, idempotencyKey: k, coalesceKey: c },
   uploadMedia: { t: 'uploadMedia', input: { kind: 'progress', mime: 'image/png', data: 'AA==' } },
-  uploadEvidence: { t: 'uploadEvidence', scope: 's', clientKey: 'ck' },
+  uploadEvidence: { t: 'uploadEvidence', scope: S.evidence, clientKey: 'ck' },
 };
 
 /** the kinds with optional fields, holding every one of them */
@@ -157,13 +160,13 @@ function damaged(op: OutboxOp): { label: string; act: unknown }[] {
 
 describe('#1051 r1, Codex 4336713248: a stored act is read through the fields its replay reads', () => {
   it('an act of every kind, holding only its required fields or every optional one too, is read', () => {
-    for (const op of [...Object.values(MIN), ...FULL]) expect([op.t, isKnownOutboxOp(op)]).toEqual([op.t, true]);
+    for (const op of [...Object.values(MIN), ...FULL]) expect([op.t, isKnownOutboxOp(op, S)]).toEqual([op.t, true]);
   });
 
   it.each(Object.keys(MIN) as OutboxOp['t'][])('%s missing any field its replay reads, or holding it as the wrong type, is not read', (t) => {
     const cases = damaged(MIN[t]);
     expect(cases.length).toBeGreaterThan(0);
-    for (const { label, act } of cases) expect([label, isKnownOutboxOp(act)]).toEqual([label, false]);
+    for (const { label, act } of cases) expect([label, isKnownOutboxOp(act, S)]).toEqual([label, false]);
   });
 
   it('every shape an earlier release stored is read (re-check G2)', () => {
@@ -222,6 +225,93 @@ describe('#1085 r1 (Codex 4345664659): the body a stored act is read by is the b
     }
     vi.unstubAllGlobals();
     expect(mismatched).toEqual([]);
+  });
+});
+
+describe('#1085 r2 (Codex 4346169580): every field a replay puts in its request path is a route id the path can carry', () => {
+  /** each kind's fields the gateway puts in the request path as they stand, found by replaying it (below) */
+  const PATH_FIELDS: Record<string, string[]> = {
+    siteVisitEnd: ['visitId'], siteVisitClose: ['visitId'], siteVisitAddPlace: ['visitId'], siteVisitRetirePlace: ['visitId', 'placeId'],
+    siteVisitAddAttendee: ['visitId'], siteVisitRetireAttendee: ['visitId', 'attendeeId'],
+    approve: ['decisionId'], forwardDecision: ['decisionId'], countersignDecision: ['decisionId'], disagreeDecision: ['decisionId'],
+    resolveStrandedCountersign: ['decisionId'], change: ['decisionId'], changeWithdraw: ['decisionId'], withdraw: ['decisionId'],
+    consultationRequest: ['decisionId'], consultationRespond: ['decisionId'],
+    ackDrawing: ['revisionId'], publishDrawing: ['drawingId'], setDrawingNode: ['drawingId'],
+    submitInspection: ['inspectionId'], decideReview: ['inspectionId'],
+    startActivity: ['activityId'], completeActivity: ['activityId'], releaseLabourAllocation: ['allocationId'],
+  };
+
+  it('the path fields of every kind, found by replaying each through the real gateway, are the ones listed', async () => {
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => { urls.push(url); return { ok: true, status: 200, json: async () => ({}) }; }));
+    const gw = new ApiGateway('http://api.test', 'p-2');
+    const found: Record<string, string[]> = {};
+    for (const op of Object.values(MIN)) {
+      // a photo's and an evidence row's replay reads its row on this phone first; neither puts an act field in a path
+      if (op.t === 'siteVisitAddFile' || op.t === 'uploadEvidence') continue;
+      urls.length = 0;
+      await replayOutboxOp(gw, op).catch(() => null);
+      const segments = new URL(urls[0]).pathname.split('/').slice(4); // past /projects/p-2 (or the visit route's own prefix)
+      const fields = Object.entries(op).filter(([f, v]) => f !== 't' && typeof v === 'string' && segments.includes(v)).map(([f]) => f);
+      if (fields.length > 0) found[op.t] = fields.sort();
+    }
+    vi.unstubAllGlobals();
+    expect(found).toEqual(Object.fromEntries(Object.entries(PATH_FIELDS).map(([t, f]) => [t, [...f].sort()])));
+  });
+
+  it.each(Object.entries(PATH_FIELDS))('%s: a path field empty, holding a path character, or a dot segment is not read; a server id is', (t, fields) => {
+    const op = MIN[t as OutboxOp['t']] as unknown as Record<string, unknown>;
+    for (const f of fields) {
+      for (const bad of ['', ' ', 'a/b', '..', '.', 'a?b', 'a#b', 'a%2Fb', 'a b', 7]) expect([f, bad, isKnownOutboxOp({ ...op, [f]: bad }, S)]).toEqual([f, bad, false]);
+      // the server's ids: a uuid, or a seed id; the server reads each such param as a plain string
+      expect([f, isKnownOutboxOp({ ...op, [f]: '0F1C2B0E-8A4D-4C5E-9B7A-1D2E3F4A5B6C' }, S)]).toEqual([f, true]);
+      expect([f, isKnownOutboxOp({ ...op, [f]: 'DL-1' }, S)]).toEqual([f, true]);
+    }
+  });
+
+  it('a photo act names its visit by uuid and its file by a client key the server takes', () => {
+    expect(isKnownOutboxOp({ ...MIN.siteVisitAddFile, visitId: 'v-1' }, S)).toBe(false);
+    for (const id of ['', '  ', 'x'.repeat(121)]) expect(isKnownOutboxOp({ ...MIN.siteVisitAddFile, file: { ...MIN.siteVisitAddFile.file, id } }, S)).toBe(false);
+    for (const clientKey of ['', '  ', 'x'.repeat(121)]) expect(isKnownOutboxOp({ ...MIN.uploadEvidence, clientKey }, S)).toBe(false);
+    expect(isKnownOutboxOp({ ...MIN.uploadEvidence, clientKey: 'x'.repeat(120) }, S)).toBe(true);
+  });
+
+  it('a stored countersign naming no decision: listed, never replayed or dropped, and its key kept (the finding’s case)', async () => {
+    const raw = JSON.stringify([{ t: 'countersignDecision', decisionId: '', idempotencyKey: 'k-cs' }]);
+    onP2({ [general]: raw });
+    expect(useStore.getState().queueUnreadable.map((u) => u.key)).toEqual([general]);
+    expect(useStore.getState().outbox).toEqual([]);
+    useStore.setState({ online: true });
+    await useStore.getState().flushOutbox();
+    expect(localStorage.getItem(general)).toBe(raw);
+  });
+});
+
+describe('#1085 r2 (Codex 4346169609): an act naming a user scope is read only under its own user’s key', () => {
+  it('an evidence or visit photo act naming another scope, or read with none, is not read', () => {
+    expect(isKnownOutboxOp(MIN.uploadEvidence, S)).toBe(true);
+    expect(isKnownOutboxOp({ ...MIN.uploadEvidence, scope: 'user-a' }, S)).toBe(false);
+    expect(isKnownOutboxOp(MIN.uploadEvidence)).toBe(false);
+    expect(isKnownOutboxOp(MIN.siteVisitAddFile, S)).toBe(true);
+    expect(isKnownOutboxOp({ ...MIN.siteVisitAddFile, scope: 'dev:someone-else' }, S)).toBe(false);
+    expect(isKnownOutboxOp(MIN.siteVisitAddFile)).toBe(false);
+  });
+
+  it('user B’s key holding an evidence act naming user A: listed, A’s row never read, sent or deleted, the key kept', async () => {
+    const raw = JSON.stringify([{ t: 'uploadEvidence', scope: 'user-a', clientKey: 'ck-a' }]);
+    onP2({ [general]: raw });
+    expect(useStore.getState().queueUnreadable.map((u) => u.key)).toEqual([general]);
+    expect(useStore.getState().outbox.filter((o) => o.t === 'uploadEvidence')).toEqual([]);
+    useStore.setState({ online: true });
+    await useStore.getState().flushOutbox();
+    expect(localStorage.getItem(general)).toBe(raw);
+  });
+
+  it('the evidence act this user queued is read under their key, as before', () => {
+    const raw = JSON.stringify([MIN.uploadEvidence]);
+    onP2({ [general]: raw });
+    expect(useStore.getState().queueUnreadable).toEqual([]);
+    expect(useStore.getState().outbox).toEqual([MIN.uploadEvidence]);
   });
 });
 

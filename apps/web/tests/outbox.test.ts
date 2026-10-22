@@ -159,6 +159,22 @@ describe('Phase 8 offline outbox', () => {
     expect(globalThis.localStorage?.getItem('vitan.outbox')).toBeNull(); // legacy key consumed
   });
 
+  it('#1085 r2 audit: a legacy queue is removed only once its bytes are in the scoped key', () => {
+    const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    globalThis.localStorage?.setItem('vitan.outbox', legacy);
+    const real = Storage.prototype.setItem;
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith('vitan.outbox.')) throw new DOMException('full', 'QuotaExceededError');
+      return real.call(this, k, v);
+    });
+    s().hydrateOutbox();
+    spy.mockRestore();
+    expect(globalThis.localStorage?.getItem('vitan.outbox')).toBe(legacy); // not lost: adopted at a later load
+    s().hydrateOutbox();
+    expect(s().outbox).toEqual([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    expect(globalThis.localStorage?.getItem('vitan.outbox')).toBeNull();
+  });
+
   it('queues a progress photo while offline and shows it optimistically', () => {
     const gw = { uploadMedia: vi.fn(), snapshot: vi.fn() };
     s()._setGateway(gw as unknown as ApiGateway);

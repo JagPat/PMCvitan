@@ -93,6 +93,7 @@ import {
 import { createQueueKeyGuard } from '@/store/queueKeyGuard';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isMediaNotFound, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
+import type { QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { clearVisitPhotoStart, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { parseLocation } from '@/lib/screens';
@@ -2411,20 +2412,31 @@ export const useStore = create<Store>()(
     // into another. `hydrateOutbox` swaps the in-memory queue whenever that scope
     // changes (useApiSync re-runs it on every token / project change).
     const LEGACY_OUTBOX_KEY = 'vitan.outbox';
+    /** #1085 r2: per queue key, the user scopes its acts may name, recorded as each key's name is derived (Codex
+     *  4346169609: an evidence act naming another user's scope read that user's row). A key named once keeps its
+     *  scopes for the tab's life, so the flush's write of a scope it moved off still reads that key as its own */
+    const queueKeyScopes = new Map<string, QueueScopes>();
     const outboxKey = (): string => {
       // passwordless dev auth keeps no token: its session user scopes the queue, so two identities never share
       // queued acts (Codex 4278754328; the create hold's rule, createHoldScope)
       const user = get().sessionUserId;
       let sub = user ? `dev:${user}` : 'anon';
+      // evidence rows are scoped by the token alone (`evidenceScope`), photo rows as the key is (`visitPhotoScope`)
+      let evidence = 'anon';
       const token = get().sessionToken;
       if (token) {
         try {
           sub = (JSON.parse(atob(token.split('.')[1])) as { sub?: string }).sub ?? 'anon';
+          evidence = sub;
         } catch {
           /* malformed token — treat as the anonymous scope */
         }
       }
-      return `vitan.outbox.${sub}.${get().activeProjectId}`;
+      const key = `vitan.outbox.${sub}.${get().activeProjectId}`;
+      const scopes = { evidence, visitPhoto: sub };
+      queueKeyScopes.set(key, scopes);
+      queueKeyScopes.set(key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.'), scopes);
+      return key;
     };
     /** Site Visits (#792): site visit acts are kept under a key of their own, beside the outbox's, so a bundle from
      *  before them (a rollback, an old tab) never reads one: its replay has no case for them and would drop them as
@@ -2458,7 +2470,7 @@ export const useStore = create<Store>()(
     /** WEB-02 step A: both queue keys are read and written only through `queueKeys`, which never writes a key this
      *  release cannot read; each read of this scope's keys lists such a key in the strip */
     const strip = queueStrip({ get, set, scope: () => [outboxKey(), siteVisitKeyOf(outboxKey())], keys: () => queueKeys, persist: () => persistOutbox() });
-    const queueKeys = createQueueKeyGuard(strip.noteRead);
+    const queueKeys = createQueueKeyGuard(strip.noteRead, (key) => queueKeyScopes.get(key));
     /** true only when both keys were written (Codex 4345664686: Set aside is said done only then) */
     const persistOutbox = (): boolean => {
       try {
@@ -6722,8 +6734,10 @@ export const useStore = create<Store>()(
           // one-time migration: adopt the old unscoped queue into the current scope
           const legacy = storage.getItem(LEGACY_OUTBOX_KEY);
           if (legacy) {
-            storage.removeItem(LEGACY_OUTBOX_KEY);
+            // #1085 r2 audit: removed only once its bytes are in the scoped key, so a write that fails, or a scoped key
+            // already holding other acts, never loses them (they stay under the old key, adopted at a later load)
             if (!storage.getItem(outboxKey())) storage.setItem(outboxKey(), legacy);
+            if (storage.getItem(outboxKey()) === legacy) storage.removeItem(LEGACY_OUTBOX_KEY);
           }
           // REPLACE the in-memory queue with this scope's persisted one (WEB-02) —
           // called again on every sign-in / project switch, so ops queued under a
