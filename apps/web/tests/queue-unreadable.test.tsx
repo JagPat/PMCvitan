@@ -218,3 +218,47 @@ describe('#1088 r4 (Codex 4351952392): every scope change clears the list before
   });
 });
 
+describe('Codex 4353751499: an act made beside an unreadable key whose copy aside fails is held, never lost', () => {
+  /** this phone's storage takes no new copy aside (it is full) */
+  const copiesFail = () => {
+    const real = Storage.prototype.setItem;
+    return vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith('vitan.unreadable.')) throw new DOMException('full', 'QuotaExceededError');
+      return real.call(this, k, v);
+    });
+  };
+  const signInAgain = () => { s().completeSignOut(); onP1(null); };
+
+  it('forced probe, the finding’s case: it comes back after a sign-out and sign-in in this tab', () => {
+    onP1('{damaged');
+    copiesFail();
+    queueOne('k-1');
+    expect(copiesOf(key)).toEqual([]);
+    signInAgain();
+    expect(localStorage.getItem(key)).toBe('{damaged');
+    // the approval, held for the unreadable general key; the visit act, written to its own readable lane
+    expect(s().outbox.map((o) => (o as { idempotencyKey?: string }).idempotencyKey).sort()).toEqual(['k-1', 'k-1-v']);
+  });
+
+  it('one sent meanwhile is let go: it does not come back after a sign-out and sign-in', async () => {
+    onP1('{damaged', { approveDecision: vi.fn(async () => null), endSiteVisit: vi.fn(async () => null) });
+    copiesFail();
+    queueOne('k-2');
+    useStore.setState({ online: true });
+    await act(async () => { await s().flushOutbox(); });
+    expect(s().outbox).toEqual([]);
+    useStore.setState({ online: false });
+    signInAgain();
+    expect(s().outbox).toEqual([]);
+  });
+
+  it('guard: when the copy can be made it is made, and nothing is held twice', () => {
+    onP1('{damaged');
+    queueOne('k-3');
+    signInAgain();
+    expect(copiesOf(key).map((c) => JSON.parse(c!))).toEqual([[approve('k-3')]]);
+    // the approval stays in its copy aside, not held as well; only the visit act, from its lane, loads
+    expect(s().outbox.map((o) => o.t)).toEqual(['siteVisitEnd']);
+  });
+});
+

@@ -113,7 +113,9 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
   };
 
   /** A write of `key` that did not land: every act memory holds (`mine`) that the key, unchanged, does not hold now is
-   *  listed not kept and copied aside beside it, once each, so it stays on this phone */
+   *  listed not kept and copied aside beside it, once each, so it stays on this phone. When the copy cannot be made
+   *  (storage full), they are held stranded as `keepUnsent` holds them, so a scope change or sign-out that clears memory
+   *  never loses them (Codex 4353751499) */
   const refuse = (storage: Store, key: string, mine: OutboxOp[]): void => {
     // not kept: every act memory holds that the key, unchanged by the refused write, does not hold now
     let there = new Set<string>();
@@ -123,9 +125,10 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     for (const o of mine) { const i = queueActIdent(o); if (!there.has(i)) missing.add(i); }
     const done = setOf(asideDone, key);
     const fresh = mine.filter((o) => missing.has(queueActIdent(o)) && !done.has(queueActIdent(o)));
-    // a copy that cannot be made leaves them where they are: held in memory, listed not kept, and copied at the next
-    // write that cannot store them
+    // a copy that cannot be made leaves them in memory, listed not kept, and copied at the next write that cannot store
+    // them; they are also held stranded, as memory holds them now, so one memory then settles (sent) is let go below
     if (fresh.length > 0 && copyAside(storage, key, JSON.stringify(fresh))) for (const o of fresh) done.add(queueActIdent(o));
+    else if (fresh.length > 0) { strand(key, fresh); handed.add(key); }
     // a stranded act the key's bytes or a copy aside now hold is on this phone; one memory no longer holds since
     // the load that handed it back is settled
     const held = new Set(mine.map(queueActIdent));
