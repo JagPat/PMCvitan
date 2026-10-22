@@ -419,6 +419,42 @@ describe('Top 10 #4b unit C — the seen mark and per-notice unread (live PG)', 
     }
   });
 
+  it('a role change between org-authority roles keeps a mark\'s authority lock: no deadlock with the next role change (forced order)', async () => {
+    const admin = await orgAdmin('evaporate');
+    const n = await notice('evaporate');
+    const toggleSql = (tag: string) =>
+      `UPDATE /* ${tag} */ "OrgMembership" SET "role" = CASE WHEN "role" = 'admin' THEN 'owner' ELSE 'admin' END WHERE "orgId" = $1 AND "userId" = $2`;
+    // 1. the first role change, held open after its write: it has rewritten the admin's OrgUserAuthority row
+    const first = await hold((tx) => tx.$executeRawUnsafe(toggleSql(`t4bc-first-${run}`), f.orgA.id, admin));
+    // 2. a project-row holder, so the mark can be stopped after its standing lock and before its receipt
+    const project = await hold((tx) => tx.$queryRawUnsafe('SELECT 1 FROM "Project" WHERE "id" = $1 FOR NO KEY UPDATE', f.projectA.id));
+    // 3. the mark takes the authority row FOR SHARE: it waits on the first role change
+    const marking = settle(mark(tokenOf(admin, 'pmc'), { ids: [n] }));
+    await blockedBy(first.pid(), 'the mark waits on the first role change for the authority row');
+    // 4. the first role change commits; the mark goes on, takes the standing row FOR SHARE, and stops at the project row
+    first.release();
+    expect((await first.done).ok).toBe(true);
+    await blockedBy(project.pid(), 'the mark waits on the project row, holding its authority and standing locks');
+    // 5. the next role change: it must wait on the mark for the authority row, the first lock of the order
+    const secondTag = `t4bc-second-${run}`;
+    const second = settle(t.prisma.$executeRawUnsafe(toggleSql(secondTag), f.orgA.id, admin));
+    await tagWaits(secondTag, 'the next role change waits on a lock');
+    const markPid = (await waitersOn(project.pid()))[0]!;
+    expect(await blockersOfTag(secondTag), 'the next role change waits on the mark').toEqual([markPid]);
+    // the row it waits at: the authority row, the first lock of the order (the old body passed it and waited at the standing row)
+    const waitsAt = await t.prisma.$queryRawUnsafe<Array<{ rel: string }>>(
+      `SELECT c.relname AS rel FROM pg_locks l JOIN pg_class c ON c.oid = l.relation JOIN pg_stat_activity a ON a.pid = l.pid
+        WHERE l.locktype = 'tuple' AND a.query LIKE $1 AND a.pid <> pg_backend_pid()`, `%${secondTag}%`);
+    expect(waitsAt.map((r) => r.rel), 'the next role change waits at the authority row').toEqual(['OrgUserAuthority']);
+    // 6. the project row goes; the mark writes its receipt and commits, then the next role change goes on
+    project.release();
+    expect((await project.done).ok).toBe(true);
+    const r = await marking;
+    expect(r.ok && [r.v.status, r.v.body], 'the mark is recorded').toEqual([200, { confirmed: [n] }]);
+    const s = await second;
+    expect(s.ok ? '' : s.e).toBe('');
+  });
+
   it('an archive serializes with a mark, both orders', async () => {
     try {
       await bothOrders({
