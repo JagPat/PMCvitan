@@ -63,7 +63,7 @@ export const mayReload = (unkept: number, lang: Lang): boolean =>
 type StripState = { queueUnreadable: UnreadableKey[]; queueSetAsideFailed: boolean; lang: Lang };
 /** The store's side of the strip, for this scope's two keys (`scope()`): each read of one lists or un-lists it, Set
  *  aside copies every settable key at once (all or nothing), and Reload marks a newer release's bytes first. */
-export function queueStrip(view: { get: () => StripState; set: (p: Partial<StripState>) => void; scope: () => string[]; keys: () => QueueKeyGuard; persist: () => void }) {
+export function queueStrip(view: { get: () => StripState; set: (p: Partial<StripState>) => void; scope: () => string[]; keys: () => QueueKeyGuard; persist: () => boolean }) {
   return {
     noteRead(key: string, read: KeyRead, raw: string | null): void {
       if (!view.scope().includes(key)) return;
@@ -72,15 +72,21 @@ export function queueStrip(view: { get: () => StripState; set: (p: Partial<Strip
     },
     setAside(): void {
       const storage = globalThis.localStorage;
-      const moving = view.get().queueUnreadable.filter(settable);
+      // the list and memory are this scope's only once its load has run: a tap after the scope moved and before that
+      // load changes nothing, so no scope's acts are written under another's keys (Codex 4345664679)
+      const scope = view.scope();
+      if (!view.keys().holds(scope)) return;
+      const moving = view.get().queueUnreadable.filter((u) => settable(u) && scope.includes(u.key));
       if (!storage || moving.length === 0) return;
       const copied = view.keys().setAside(storage, moving.map((u) => u.key)); // all copied and read back, or nothing changes
-      view.set({ queueSetAsideFailed: !copied });
-      if (copied) view.persist();
+      // said done only once memory's acts are written over the copied bytes: each key leaves the list as its write
+      // lands, and one that could not be written stays listed (Codex 4345664686)
+      const written = copied && view.persist();
+      view.set({ queueSetAsideFailed: !written });
     },
     reload(): void {
       const storage = globalThis.localStorage;
-      if (!mayReload(view.scope().reduce((n, k) => n + view.keys().notKept(k).length, 0), view.get().lang)) return;
+      if (!mayReload(view.scope().reduce((n, k) => n + view.keys().notKept(k).length, 0) + view.keys().strandedCount(), view.get().lang)) return;
       markReloaded(view.get().queueUnreadable.filter((u) => u.read === 'newer').map((u) => ({ key: u.key, raw: storage?.getItem(u.key) ?? null })));
       globalThis.location?.reload();
     },

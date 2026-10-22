@@ -1,4 +1,7 @@
-import { SOD_RULES, parseCivilDate } from '@vitan/shared';
+import { SOD_RULES } from '@vitan/shared';
+// the server's own request contracts, so a stored act is read by exactly the rules its replay is parsed by. Its `zod`
+// resolves from apps/api, whose dependency it is
+import * as contracts from '../../../api/src/contracts';
 import type { OutboxOp } from '@/data/apiGateway';
 
 /**
@@ -7,9 +10,10 @@ import type { OutboxOp } from '@/data/apiGateway';
  * A stored act was taken as loadable whatever its fields held: `[{"t":"approve"}]` loaded, its replay sent `undefined`,
  * the server refused it for good, and the flush dropped it (Codex 4336713248). An act whose fields hold but that breaks a
  * server rule across them (an allocation naming both a worker and a crew) was likewise refused and dropped (#1071 F4,
- * Codex 4341067934). Each kind is now read through the fields its replay reads (`OUTBOX_OP_KINDS`) and every server
- * `.refine` its contract could break (`SERVER_REFINES_MIRRORED`). A key holding any entry that fails is unreadable as a
- * whole (`readStoredQueue`): it is never loaded, sent, or written over, and the person is offered Set aside.
+ * Codex 4341067934), as was one breaking a bound (an approval of option -1: Codex 4345664659). Each kind is now read
+ * through the fields this release reads (`OUTBOX_OP_KINDS`), and the body its replay sends is parsed by the server's own
+ * contract (`SERVER_CONTRACT_OF`). A key holding any entry that fails is unreadable as a whole (`readStoredQueue`): it is
+ * never loaded, sent, or written over, and the person is offered Set aside.
  */
 
 type Check = (v: unknown) => boolean;
@@ -138,126 +142,109 @@ const OUTBOX_OP_KINDS: Record<OutboxOp['t'], Check> = {
   uploadEvidence: act({ scope: str, clientKey: str }),
 };
 
-/** The server contract (`apps/api/src/contracts.ts`) each queued kind's replay is parsed by, or `null` with why none
- *  of its `.refine`s can be broken by the stored act (#1071 F4). Typed against `OutboxOp['t']`, so a new kind fails the
- *  build until it is named here; `stored-act-invariants.test.ts` reads the contract file and fails when any `.refine`
- *  reachable from a named schema is not in `SERVER_REFINES_MIRRORED`. */
-export const SERVER_SCHEMA_OF: Record<OutboxOp['t'], string | null> = {
-  siteVisitStart: 'startSiteVisitSchema', siteVisitEnd: 'endSiteVisitSchema', siteVisitClose: 'closeSiteVisitSchema',
-  siteVisitAddPlace: 'addSiteVisitPlaceSchema', siteVisitRetirePlace: null, siteVisitAddAttendee: 'addSiteVisitAttendeeSchema',
+type ServerSchema = { safeParse: (v: unknown) => { success: boolean } };
+type SchemaName = { [N in keyof typeof contracts]: (typeof contracts)[N] extends ServerSchema ? N : never }[keyof typeof contracts];
+const field = (v: Fields, f: string): unknown => v[f];
+const inputBody = (v: Fields): unknown => v.input;
+const bodyBody = (v: Fields): unknown => v.body;
+
+/** The request body each queued kind's replay sends (`replayOutboxOp` through its gateway method), and the server's own
+ *  contract that parses it, or `null` with why the stored act holds no body the server parses (Codex 4345664659). The
+ *  contract is the server's zod schema itself (`apps/api/src/contracts.ts`), never a copy of it, so every `min`, `max`,
+ *  `regex`, `.strict()` and `.refine` the server applies is applied here, no stricter and no looser. Typed against
+ *  `OutboxOp['t']`, so a new kind fails the build until it is named here. `stored-act-invariants.test.ts` checks each
+ *  body against what the gateway sends, and each schema against the controller that parses it. */
+const SERVER_CONTRACT_OF: Record<OutboxOp['t'], { schema: SchemaName; body: (v: Fields) => unknown } | null> = {
+  siteVisitStart: { schema: 'startSiteVisitSchema', body: bodyBody },
+  siteVisitEnd: { schema: 'endSiteVisitSchema', body: (v) => ({ claimedAt: v.claimedAt }) },
+  siteVisitClose: { schema: 'closeSiteVisitSchema', body: (v) => ({ reason: v.reason }) },
+  siteVisitAddPlace: { schema: 'addSiteVisitPlaceSchema', body: bodyBody },
+  // no body: the visit and the place are in the path
+  siteVisitRetirePlace: null,
+  siteVisitAddAttendee: { schema: 'addSiteVisitAttendeeSchema', body: bodyBody },
   siteVisitRetireAttendee: null,
-  // its replay builds the upload itself, always as kind 'visit' naming its visit (`createMediaSchema`'s one refine)
+  // its replay builds the upload from the photo's IndexedDB row, and a refusal is kept on that row with the server's
+  // words, so the screen shows which photo was not sent and why: the act is never dropped unseen
   siteVisitAddFile: null,
-  approve: 'approveSchema', forwardDecision: 'forwardDecisionSchema', countersignDecision: null,
-  disagreeDecision: 'disagreeDecisionSchema', resolveStrandedCountersign: 'resolveStrandedCountersignSchema',
-  change: 'changeSchema', changeWithdraw: null, withdraw: 'withdrawDecisionSchema',
-  consultationRequest: 'requestConsultationSchema', consultationRespond: 'respondToConsultationSchema',
-  ackDrawing: null, publishDrawing: null, setDrawingNode: 'setNodeSchema',
-  submitInspection: 'submitInspectionSchema', decideReview: 'decideReviewSchema',
-  startActivity: null, completeActivity: null, startDailyLog: null,
-  addSiteMaterial: 'addMaterialSchema', flagMismatch: 'flagMismatchSchema', submitDailyLog: 'submitDailyLogSchema',
-  reserveStock: 'reserveStockSchema', issueStock: 'issueStockSchema', consumeStock: 'consumeStockSchema',
-  createRequisition: 'createRequisitionSchema', allocateLabour: 'allocateLabourSchema', recordAttendance: 'recordAttendanceSchema',
-  recordLabourWork: 'recordLabourWorkSchema', createLabourRequisition: 'createLabourRequisitionSchema',
-  setCommercialBudget: 'setBudgetSchema', defineCostHead: 'defineCostHeadSchema', reattributeCommitment: 'reattributeSchema',
-  takeMeasurement: 'takeMeasurementSchema', correctMeasurement: 'correctMeasurementSchema',
-  recordVendorBill: 'recordVendorBillSchema', beginVerification: 'vendorBillStepSchema', verifyVendorBill: 'vendorBillStepSchema',
-  certifyBill: 'certifyBillSchema', supersedeCertificate: 'supersedeCertificateSchema', grantSodException: 'grantSodExceptionSchema',
-  recordDeduction: 'recordDeductionSchema', releaseDeduction: 'releaseDeductionSchema', approvePayment: 'approvePaymentSchema',
-  payAdvance: 'payAdvanceSchema', recordPayment: 'recordPaymentSchema', reversePayment: 'reversePaymentSchema',
-  submitVendorBill: 'vendorBillStepSchema', amendVendorBill: 'amendVendorBillSchema', rejectVendorBill: 'rejectVendorBillSchema',
-  releaseLabourAllocation: 'releaseLabourAllocationSchema', uploadMedia: 'createMediaSchema',
+  approve: { schema: 'approveSchema', body: (v) => ({ optionIndex: v.optionIndex }) },
+  forwardDecision: { schema: 'forwardDecisionSchema', body: inputBody },
+  countersignDecision: null,
+  disagreeDecision: { schema: 'disagreeDecisionSchema', body: inputBody },
+  resolveStrandedCountersign: { schema: 'resolveStrandedCountersignSchema', body: inputBody },
+  change: { schema: 'changeSchema', body: (v) => ({ reason: v.reason, costImpact: v.costImpact, timeImpactDays: v.timeImpactDays }) },
+  changeWithdraw: null,
+  withdraw: { schema: 'withdrawDecisionSchema', body: (v) => ({ reason: v.reason }) },
+  consultationRequest: { schema: 'requestConsultationSchema', body: (v) => ({ consulteeMembershipId: v.consulteeMembershipId, question: v.question }) },
+  consultationRespond: {
+    schema: 'respondToConsultationSchema',
+    body: (v) => ({ consultationId: v.consultationId, response: v.response, ...(v.recommendedOptionIndex !== undefined ? { recommendedOptionIndex: v.recommendedOptionIndex } : {}) }),
+  },
+  ackDrawing: null,
+  // its body is `{}`, which no schema parses
+  publishDrawing: null,
+  setDrawingNode: { schema: 'setNodeSchema', body: (v) => ({ nodeId: v.nodeId }) },
+  submitInspection: { schema: 'submitInspectionSchema', body: (v) => ({ items: v.items }) },
+  decideReview: { schema: 'decideReviewSchema', body: (v) => ({ approve: v.approve, rejectedItemIds: v.rejectedItemIds }) },
+  startActivity: null,
+  completeActivity: null,
+  startDailyLog: null,
+  addSiteMaterial: { schema: 'addMaterialSchema', body: inputBody },
+  flagMismatch: { schema: 'flagMismatchSchema', body: (v) => ({ decisionId: v.decisionId }) },
+  submitDailyLog: { schema: 'submitDailyLogSchema', body: (v) => field(v, 'log') },
+  reserveStock: { schema: 'reserveStockSchema', body: inputBody },
+  issueStock: { schema: 'issueStockSchema', body: inputBody },
+  consumeStock: { schema: 'consumeStockSchema', body: inputBody },
+  createRequisition: { schema: 'createRequisitionSchema', body: inputBody },
+  allocateLabour: { schema: 'allocateLabourSchema', body: inputBody },
+  recordAttendance: { schema: 'recordAttendanceSchema', body: inputBody },
+  recordLabourWork: { schema: 'recordLabourWorkSchema', body: inputBody },
+  createLabourRequisition: { schema: 'createLabourRequisitionSchema', body: inputBody },
+  setCommercialBudget: { schema: 'setBudgetSchema', body: inputBody },
+  defineCostHead: { schema: 'defineCostHeadSchema', body: inputBody },
+  reattributeCommitment: { schema: 'reattributeSchema', body: inputBody },
+  takeMeasurement: { schema: 'takeMeasurementSchema', body: inputBody },
+  correctMeasurement: { schema: 'correctMeasurementSchema', body: inputBody },
+  recordVendorBill: { schema: 'recordVendorBillSchema', body: inputBody },
+  beginVerification: { schema: 'vendorBillStepSchema', body: inputBody },
+  verifyVendorBill: { schema: 'vendorBillStepSchema', body: inputBody },
+  certifyBill: { schema: 'certifyBillSchema', body: inputBody },
+  supersedeCertificate: { schema: 'supersedeCertificateSchema', body: inputBody },
+  grantSodException: { schema: 'grantSodExceptionSchema', body: inputBody },
+  recordDeduction: { schema: 'recordDeductionSchema', body: inputBody },
+  releaseDeduction: { schema: 'releaseDeductionSchema', body: inputBody },
+  approvePayment: { schema: 'approvePaymentSchema', body: inputBody },
+  payAdvance: { schema: 'payAdvanceSchema', body: inputBody },
+  recordPayment: { schema: 'recordPaymentSchema', body: inputBody },
+  reversePayment: { schema: 'reversePaymentSchema', body: inputBody },
+  submitVendorBill: { schema: 'vendorBillStepSchema', body: inputBody },
+  amendVendorBill: { schema: 'amendVendorBillSchema', body: inputBody },
+  rejectVendorBill: { schema: 'rejectVendorBillSchema', body: inputBody },
+  releaseLabourAllocation: { schema: 'releaseLabourAllocationSchema', body: (v) => ({ reason: v.reason }) },
+  uploadMedia: { schema: 'createMediaSchema', body: inputBody },
   // its bytes and fields come from the evidence row in IndexedDB, not from the stored act
   uploadEvidence: null,
 };
-/** a designation pair the server takes: a member target names its membership, no other target names one */
-const memberPair = (input: Fields): boolean => (input.toDesignationKind === 'member') === (input.toDesignationMembershipId !== undefined);
-/** `isoCivilDateSchema`'s refine: a real calendar day */
-const realDay = (v: unknown): boolean => {
-  try { parseCivilDate(v as string); return true; } catch { return false; }
-};
-/** `commercialNonBlank`'s refine */
-const nonBlank = (v: unknown): boolean => typeof v === 'string' && v.replace(/[ \t\n\v\f\r]+/gu, '') !== '';
-const positiveQty = (v: unknown): boolean => typeof v === 'string' && Number(v.trim()) > 0;
-/** `vendorBillLineSchema`'s two refines */
-const billLineHolds = (l: Fields): boolean => positiveQty(l.quantity) && (l.poLineId == null) !== (l.labourPoLineId == null);
-const inputOf = (v: unknown): Fields => (isFields(v) && isFields(v.input) ? v.input : {});
-const bodyOf = (v: unknown): Fields => (isFields(v) && isFields(v.body) ? v.body : {});
-/** `offsetInstant`'s refine: an instant Date reads, within the years ISO text has */
-const readableInstant = (v: unknown): boolean => {
-  const t = Date.parse(v as string);
-  return Number.isFinite(t) && t >= Date.parse('0000-01-01T00:00:00.000Z') && t <= Date.parse('9999-12-31T23:59:59.999Z');
-};
-/** Every `.refine` of the server contract a queued kind's stored act could break, mirrored exactly (never stricter:
- *  an act the server takes is never set aside), each named by the refine's message (#1071 F4, Codex 4341067934). A
- *  stored act that breaks one would be refused for good and dropped by its flush, so it makes its key unreadable, set
- *  aside and never sent, as a missing field does (`isKnownOutboxOp`). */
-export const SERVER_REFINES_MIRRORED: Partial<Record<OutboxOp['t'], { refines: readonly string[]; holds: Check }>> = {
-  siteVisitStart: {
-    refines: ['Invalid datetime'],
-    holds: (v) => readableInstant(bodyOf(v).claimedAt) && (!isFields(bodyOf(v).location) || readableInstant((bodyOf(v).location as Fields).at)),
-  },
-  siteVisitEnd: { refines: ['Invalid datetime'], holds: (v) => isFields(v) && readableInstant(v.claimedAt) },
-  siteVisitAddPlace: { refines: ['Invalid datetime'], holds: (v) => readableInstant(bodyOf(v).claimedAt) },
-  forwardDecision: {
-    refines: ['toDesignationMembershipId is required exactly when toDesignationKind is member'],
-    holds: (v) => memberPair(inputOf(v)),
-  },
-  disagreeDecision: {
-    refines: ['toDesignationKind is required exactly when path is forward_on', 'toDesignationMembershipId is required exactly when toDesignationKind is member'],
-    holds: (v) => (inputOf(v).path === 'forward_on') === (inputOf(v).toDesignationKind !== undefined) && memberPair(inputOf(v)),
-  },
-  resolveStrandedCountersign: {
-    refines: ['a target is admitted only on a returned resolution', 'toDesignationMembershipId is required exactly when toDesignationKind is member'],
-    holds: (v) => (inputOf(v).outcome === 'returned' || inputOf(v).toDesignationKind === undefined) && memberPair(inputOf(v)),
-  },
-  allocateLabour: {
-    refines: ['Provide exactly one of workerId or crewId — a crew EXPANDS into one allocation per active member', 'Not a real calendar date'],
-    holds: (v) => (inputOf(v).workerId ? 1 : 0) + (inputOf(v).crewId ? 1 : 0) === 1 && realDay(inputOf(v).civilDate),
-  },
-  recordAttendance: {
-    refines: [
-      'Attendance needs trusted evidence: either the worker\'s bound deviceId, or an explicit manualReason recorded as an attributable exception',
-      'A muster is either device-evidenced or a manual exception — never both',
-      'Not a real calendar date',
-    ],
-    holds: (v) => {
-      const i = inputOf(v);
-      const reason = typeof i.manualReason === 'string' ? i.manualReason.trim() : i.manualReason;
-      return (Boolean(i.deviceId) || Boolean(reason)) && !(i.deviceId && reason) && realDay(i.civilDate);
-    },
-  },
-  createLabourRequisition: {
-    refines: ['Not a real calendar date'],
-    holds: (v) => Array.isArray(inputOf(v).lines) && (inputOf(v).lines as Fields[]).every((l) => isFields(l) && realDay(l.civilDate)),
-  },
-  setCommercialBudget: { refines: ['{label} must not be blank'], holds: (v) => nonBlank(inputOf(v).costHeadCode) && nonBlank(inputOf(v).reason) },
-  defineCostHead: { refines: ['{label} must not be blank'], holds: (v) => nonBlank(inputOf(v).code) && nonBlank(inputOf(v).name) },
-  reattributeCommitment: {
-    refines: ['{label} must not be blank', 'exactly one of poLineId or labourPoLineId must be supplied'],
-    holds: (v) => nonBlank(inputOf(v).costHeadCode) && nonBlank(inputOf(v).reason) && (inputOf(v).poLineId === undefined) !== (inputOf(v).labourPoLineId === undefined),
-  },
-  takeMeasurement: {
-    refines: ['a measurement of zero measures nothing', 'Not a real calendar date'],
-    holds: (v) => positiveQty(inputOf(v).quantity) && (inputOf(v).measuredOn === undefined || realDay(inputOf(v).measuredOn)),
-  },
-  correctMeasurement: {
-    refines: ['a correction of zero corrects nothing'],
-    holds: (v) => typeof inputOf(v).quantity === 'string' && Number((inputOf(v).quantity as string).trim()) !== 0,
-  },
-  recordVendorBill: {
-    refines: ['{label} must not be blank', 'Not a real calendar date', 'a claim line for zero claims nothing', 'a claim line names EXACTLY ONE purchase-order line — with neither, no §G bound can run; with both, the fold owner is ambiguous'],
-    holds: (v) => nonBlank(inputOf(v).vendorBillNumber) && realDay(inputOf(v).documentDate) && (inputOf(v).lines as Fields[]).every(billLineHolds),
-  },
-  amendVendorBill: {
-    refines: ['a claim line for zero claims nothing', 'a claim line names EXACTLY ONE purchase-order line — with neither, no §G bound can run; with both, the fold owner is ambiguous'],
-    holds: (v) => (inputOf(v).lines as Fields[]).every(billLineHolds),
-  },
-  uploadMedia: {
-    refines: ["a file on a site visit has kind 'visit' and names its visit; no other upload names one"],
-    holds: (v) => (inputOf(v).kind === 'visit') === (inputOf(v).siteVisit !== undefined),
-  },
-};
+
+/** each queued kind's server schema, by name (the invariants test reads the controllers for it) */
+export const SERVER_SCHEMA_OF = Object.fromEntries(
+  Object.entries(SERVER_CONTRACT_OF).map(([t, c]) => [t, c ? c.schema : null]),
+) as Record<OutboxOp['t'], SchemaName | null>;
+
+/** the body a stored act's replay sends, as the wire carries it (JSON drops an `undefined` field), or `null` for a kind
+ *  whose stored act holds no body the server parses */
+export function serverBodyOf(v: { t: OutboxOp['t'] } & Fields): unknown {
+  const contract = SERVER_CONTRACT_OF[v.t];
+  if (!contract) return null;
+  const body = contract.body(v);
+  return body === undefined ? undefined : JSON.parse(JSON.stringify(body)) as unknown;
+}
+
+/** the server's own contract takes the body the stored act's replay would send (Codex 4345664659: an act it refuses
+ *  would be refused for good and dropped by its flush, so it makes its key unreadable, set aside and never sent) */
+function serverTakes(v: { t: OutboxOp['t'] } & Fields): boolean {
+  const contract = SERVER_CONTRACT_OF[v.t];
+  return contract === null || (contracts[contract.schema] as ServerSchema).safeParse(serverBodyOf(v)).success;
+}
 
 /** A stored entry naming a kind of act this release knows, whatever its fields hold */
 export function isKnownOutboxKind(v: unknown): v is { t: OutboxOp['t'] } {
@@ -271,7 +258,7 @@ export function isKnownOutboxKind(v: unknown): v is { t: OutboxOp['t'] } {
  *  missing a field: Codex 4336713248) is unreadable as a whole, so it is never loaded, written or sent
  *  (WEB-02, #1037 r1, Codex 4331862684) */
 export function isKnownOutboxOp(v: unknown): v is OutboxOp {
-  return isKnownOutboxKind(v) && OUTBOX_OP_KINDS[v.t](v) && (SERVER_REFINES_MIRRORED[v.t]?.holds(v) ?? true);
+  return isKnownOutboxKind(v) && OUTBOX_OP_KINDS[v.t](v) && serverTakes(v as { t: OutboxOp['t'] } & Fields);
 }
 
 /** A stored queue key's bytes, as this release reads them */

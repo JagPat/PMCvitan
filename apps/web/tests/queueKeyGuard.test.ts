@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { createQueueKeyGuard, keepUnsent, queueActIdent, type KeyRead } from '@/store/queueKeyGuard';
+import { describe, it, expect } from 'vitest';
+import { createQueueKeyGuard, queueActIdent, type KeyRead } from '@/store/queueKeyGuard';
 import type { OutboxOp } from '@/data/apiGateway';
 
 /** WEB-02 step A (#482 6333415419): the stored-act check at the queue key writer, on a storage of its own */
@@ -43,16 +43,14 @@ describe('queueKeyGuard: a key this release reads', () => {
 
   it('the flush’s scope-moved write moves or drops only the acts `takes` accepts; the others stay byte for byte (Codex 4344436672)', () => {
     const st = storage({ [K]: JSON.stringify([a('sent'), visitEnd('left'), a('other')]) });
-    keepUnsent(st, K, [], [a('sent')], () => [], (o) => o.t === 'approve');
+    createQueueKeyGuard().keepUnsent(st, K, [], [a('sent')], () => [], (o) => o.t === 'approve');
     expect(st.keys(K)).toEqual(['left']);
   });
 
-  it('a refused write whose copy aside cannot be stored says so', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      expect(createQueueKeyGuard().write(full(), K, [a('m1')])).toBe(false);
-      expect(warn).toHaveBeenCalledWith('acts not kept', K);
-    } finally { warn.mockRestore(); }
+  it('a refused write whose copy aside cannot be stored lists its acts not kept', () => {
+    const q = createQueueKeyGuard();
+    expect(q.write(full(), K, [a('m1')])).toBe(false);
+    expect(q.notKept(K)).toEqual([queueActIdent(a('m1'))]);
   });
 });
 
@@ -105,6 +103,21 @@ describe('queueKeyGuard: a key this release cannot read', () => {
     expect(m.get(K)).toBe('{bad');
   });
 
+  it('#1085 r1 (Codex 4345664686): after Set aside, the key reads as fixed only once the write over it has landed', () => {
+    const m = new Map([[K, '{bad']]);
+    let fail = true;
+    const st = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => { if (k === K && fail) throw new DOMException('full', 'QuotaExceededError'); m.set(k, v); } };
+    const reads: KeyRead[] = [];
+    const q = createQueueKeyGuard((_k, read) => { reads.push(read); });
+    expect(q.setAside(st, [K])).toBe(true);
+    expect(q.write(st, K, [a('mine')])).toBe(false);
+    expect(reads).not.toContain('ok');
+    expect(m.get(K)).toBe('{bad');
+    fail = false;
+    expect(q.write(st, K, [a('mine')])).toBe(true);
+    expect(reads.at(-1)).toBe('ok');
+  });
+
   it('a Set aside of a key that reads is nothing to do', () => {
     const st = storage({ [K]: JSON.stringify([a('x')]) });
     const q = createQueueKeyGuard();
@@ -114,20 +127,33 @@ describe('queueKeyGuard: a key this release cannot read', () => {
 
   it('the flush’s write of a scope it left never writes over an unreadable key: its unsent acts are copied aside beside it', () => {
     const st = storage({ [K]: '{bad' });
-    keepUnsent(st, K, [a('unsent')], [a('sent'), a('unsent')], (l) => l);
+    expect(createQueueKeyGuard().keepUnsent(st, K, [a('unsent')], [a('sent'), a('unsent')], (l) => l)).toBe(true);
     expect(st.getItem(K)).toBe('{bad');
     expect(asides(st, K)).toEqual([JSON.stringify([a('unsent')])]);
   });
 
-  it('#1079 re-check P3: an unsent act whose copy aside cannot be stored is said, and the key is still not written over', () => {
+  it('#1085 r1 (Codex 4345664670): an unsent act whose copy aside cannot be stored is held, counted, and loaded again with its key; the key is still not written over', () => {
     const m = new Map([[K, '{bad']]);
     const st = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => { if (k.startsWith('vitan.unreadable.')) throw new DOMException('full', 'QuotaExceededError'); m.set(k, v); } };
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      keepUnsent(st, K, [a('unsent')], [a('sent'), a('unsent')], (l) => l);
-      expect(warn).toHaveBeenCalledWith('unsent acts not kept', K);
-      expect(m.get(K)).toBe('{bad');
-    } finally { warn.mockRestore(); }
+    const q = createQueueKeyGuard();
+    expect(q.keepUnsent(st, K, [a('unsent')], [a('sent'), a('unsent')], (l) => l)).toBe(false);
+    expect(m.get(K)).toBe('{bad');
+    expect(q.strandedCount()).toBe(1);
+    q.forget(); // the scope moved on: the held acts are not forgotten with it
+    expect(q.strandedCount()).toBe(1);
+    expect(q.load(st, K)).toEqual([a('unsent')]); // the return to that scope holds it again
+    expect(q.strandedCount()).toBe(0);
+  });
+
+  it('#1085 r1 (Codex 4345664670): with no storage to be had, or a key that reads but cannot be written, the unsent acts are held', () => {
+    const q = createQueueKeyGuard();
+    expect(q.keepUnsent(null, K, [a('u1')], [a('u1')], (l) => l)).toBe(false);
+    const stored = JSON.stringify([a('u2'), a('there')]);
+    const st = { getItem: (k: string) => (k === K ? stored : null), setItem: () => { throw new DOMException('full', 'QuotaExceededError'); } };
+    expect(q.keepUnsent(st, K, [a('u2'), a('u3')], [a('u2'), a('u3')], (l) => l)).toBe(false);
+    // u2 is in the unchanged key: only u1 and u3 are held, and the load gives them back once each
+    expect(q.strandedCount()).toBe(2);
+    expect(q.load(st, K).map(queueActIdent)).toEqual(['k:u1', 'k:u3', 'k:u2', 'k:there']);
   });
 
   it('gap-check 2: a refused write does not copy aside an act the unreadable key already holds', () => {
@@ -163,7 +189,7 @@ describe('queueKeyGuard: a key this release cannot read', () => {
     const st = storage({ [K]: raw });
     const q = createQueueKeyGuard();
     q.write(st, K, [a('a1'), a('a2')]); // refused write: a2 copied aside
-    keepUnsent(st, K, [a('a1'), a('a2')], [a('a1'), a('a2')], (l) => l); // a1 is in the key, so only a2 can be copied again
+    q.keepUnsent(st, K, [a('a1'), a('a2')], [a('a1'), a('a2')], (l) => l); // a1 is in the key, so only a2 can be copied again
     const all = st.writes.filter((w) => w.startsWith(`vitan.unreadable.${K}.`)).flatMap((w) => (JSON.parse(st.getItem(w)!) as OutboxOp[]).map(queueActIdent));
     expect(st.getItem(K)).toBe(raw);
     expect(all).not.toContain('k:a1');

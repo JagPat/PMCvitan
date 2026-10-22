@@ -40,6 +40,11 @@ const RULES = [
   },
   { pattern: /^scripts\/[^/]+\.mjs$/u, products: [], proofs: false },
   { pattern: /^apps\/web\//u, products: WEB, proofs: false },
+  // #1085 r1 — the web reads the server's request contracts (apps/web/src/data/storedActs.ts imports
+  // apps/api/src/contracts.ts, whose zod comes from apps/api), so they and what they import are web input too.
+  // `ci-affected.test.mjs` recomputes this set from the web's imports, so a new one cannot fall through.
+  { pattern: /^apps\/api\/src\/(?:contracts|common\/civil-date)\.ts$/u, products: [...WEB, ...API], proofs: 'runner-source' },
+  { pattern: /^apps\/api\/package\.json$/u, products: [...WEB, ...API], proofs: true },
   { pattern: /^apps\/api\/(?:prisma|scripts)\//u, products: MIGRATION, proofs: true },
   // `proofs: 'runner-source'` — the production-runner proofs run when the file is in `runnerSources`
   // (Codex 4218299993); see `runnerSourceClosure`

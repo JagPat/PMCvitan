@@ -4,100 +4,29 @@ import { resolve } from 'node:path';
 import * as contracts from '../../api/src/contracts';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
-import { isKnownOutboxOp, SERVER_REFINES_MIRRORED, SERVER_SCHEMA_OF } from '@/data/storedActs';
+import { isKnownOutboxOp, SERVER_SCHEMA_OF } from '@/data/storedActs';
 
 /**
- * #1071 F4 (Codex 4341067934). Round 1 read a stored act through the type of each field its replay reads, but not
- * through the server's rules across fields: an `allocateLabour` naming both a worker and a crew loaded, was refused for
- * good, and was dropped by its flush, its bytes lost with no Set aside offered. Every `.refine` of the server contract
- * a queued kind is parsed by is now mirrored (`SERVER_REFINES_MIRRORED`), so such an act makes its key unreadable: it
- * is listed, set aside on the tap, and never sent or dropped.
+ * #1071 F4 (Codex 4341067934) and #1085 r1 (Codex 4345664659). A stored act was read through the type of each field its
+ * replay reads, then through hand copies of the server's `.refine`s, but not through the server's bounds: an approval
+ * of option -1 loaded, was refused for good, and was dropped by its flush, its bytes lost with no Set aside offered.
+ * The body each kind's replay sends is now parsed by the server's own zod schema (`SERVER_CONTRACT_OF`), so every bound,
+ * pattern, strict object and refine applies as the server applies it, no stricter and no looser.
  *
- * The guard reads the contract file: a `.refine` reachable from a queued kind's schema that the mirror does not name
- * fails it, so the mirror cannot drift. Each mirror is checked against the server's own schema, act by act, so it is
- * never stricter (an act the server takes, an earlier release's included, is never set aside) nor looser.
- *
- * The "is not read" and store tests fail at f6e063e; the guard and the "valid today" tests are guards, each failing
- * under its break.
+ * Each case is checked against the server's own schema, act by act. `outbox-act-shapes.test.ts` checks that each
+ * kind's body is the one its replay sends. The approval store test and the bound cases fail at 85d1827.
  */
 
 const contractsSource = readFileSync(resolve(__dirname, '../../api/src/contracts.ts'), 'utf8');
 
-/** each top-level const of the contract file, with its source */
-function constsOf(src: string): Map<string, string> {
-  const at = [...src.matchAll(/^(?:export )?const (\w+)\s*=/gm)].map((m) => ({ name: m[1], start: m.index ?? 0 }));
-  return new Map(at.map((d, i) => [d.name, src.slice(d.start, at[i + 1]?.start ?? src.length)]));
-}
-/** the message of each `.refine(` in a const's source: the string after `message:`, else the last string literal among
- *  its arguments (a template's `${x}` read as `{x}`) */
-function refineMessages(body: string): string[] {
-  const out: string[] = [];
-  for (let i = body.indexOf('.refine('); i >= 0; i = body.indexOf('.refine(', i + 1)) {
-    let depth = 0;
-    let j = i + '.refine'.length;
-    let last: string | null = null;
-    let message: string | null = null;
-    for (; j < body.length; j += 1) {
-      const ch = body[j];
-      if (ch === "'" || ch === '"' || ch === '`') {
-        let k = j + 1;
-        while (k < body.length && body[k] !== ch) k += body[k] === '\\' ? 2 : 1;
-        last = body.slice(j + 1, k).replace(/\\(.)/g, '$1').replace(/\$\{(\w+)\}/g, '{$1}');
-        if (/message:\s*$/.test(body.slice(i, j))) message = last;
-        j = k;
-        continue;
-      }
-      if (ch === '(') depth += 1;
-      if (ch === ')') { depth -= 1; if (depth === 0) break; }
-    }
-    if (last === null) throw new Error(`a refine with no message: ${body.slice(i, i + 80)}`);
-    out.push(message ?? last);
-  }
-  if (body.includes('superRefine(')) throw new Error('a superRefine: the mirror cannot name it by message');
-  return out;
-}
-/** every refine message reachable from a schema through the consts it names */
-function refinesReachable(consts: Map<string, string>, name: string, seen = new Set<string>()): string[] {
-  if (seen.has(name)) return [];
-  seen.add(name);
-  const body = consts.get(name);
-  if (body === undefined) throw new Error(`no const ${name} in contracts.ts`);
-  const named = [...new Set(body.slice(name.length).match(/\b\w+\b/g) ?? [])].filter((w) => w !== name && consts.has(w));
-  return [...refineMessages(body), ...named.flatMap((w) => refinesReachable(consts, w, seen))];
-}
-
-describe('#1071 F4 guard: every server refine a queued kind could break is mirrored', () => {
-  const consts = constsOf(contractsSource);
-
-  it('each queued kind names the schema its replay is parsed by, and every refine reachable from it is mirrored', () => {
-    const missing: string[] = [];
-    const stale: string[] = [];
-    for (const [kind, schema] of Object.entries(SERVER_SCHEMA_OF) as [OutboxOp['t'], string | null][]) {
-      const server = schema === null ? [] : [...new Set(refinesReachable(consts, schema))];
-      const mirrored = SERVER_REFINES_MIRRORED[kind]?.refines ?? [];
-      for (const m of server) if (!mirrored.includes(m)) missing.push(`${kind} (${schema}): ${m}`);
-      for (const m of mirrored) if (!server.includes(m)) stale.push(`${kind}: ${m}`);
-    }
-    expect(missing).toEqual([]);
-    expect(stale).toEqual([]);
-  });
-
-  it('each named schema is one a controller parses a request body with', () => {
+describe('#1085 r1 guard: each queued kind names the server schema its replay is parsed by', () => {
+  it('each named schema is a server contract, and one a controller parses a request body with', () => {
     const root = resolve(__dirname, '../../api/src');
     const controllers = (readdirSync(root, { recursive: true }) as string[]).filter((f) => f.endsWith('.controller.ts'))
       .map((f) => readFileSync(resolve(root, f), 'utf8')).join('\n');
-    const unparsed = [...new Set(Object.values(SERVER_SCHEMA_OF).filter((x): x is string => x !== null))]
-      .filter((x) => !controllers.includes(`ZodPipe(${x})`));
-    expect(unparsed).toEqual([]);
-  });
-
-  it('the guard sees a refine it is not told of: a schema gaining one fails it', () => {
-    const grown = constsOf(contractsSource.replace(
-      'export const recordLabourWorkSchema = z',
-      'export const recordLabourWorkSchema = z.any().refine(() => true, \'a new rule\') && z',
-    ));
-    expect(refinesReachable(grown, 'recordLabourWorkSchema')).toContain('a new rule');
-    expect(SERVER_REFINES_MIRRORED.recordLabourWork).toBeUndefined();
+    const named = [...new Set(Object.values(SERVER_SCHEMA_OF).filter((x): x is NonNullable<typeof x> => x !== null))];
+    expect(named.filter((x) => !contractsSource.includes(`export const ${x} =`))).toEqual([]);
+    expect(named.filter((x) => !controllers.includes(`ZodPipe(${x})`))).toEqual([]);
   });
 });
 
@@ -277,15 +206,52 @@ const CASES: { kind: OutboxOp['t']; act: (input: Record<string, unknown>) => unk
       { label: 'a progress photo naming a visit', input: { kind: 'progress', mime: 'image/png', data: 'AA==', siteVisit: { visitId: VISIT } } },
     ],
   },
+  // #1085 r1 (Codex 4345664659): the server's bounds, patterns and strict objects, which no hand check mirrored
+  {
+    kind: 'approve',
+    act: (input) => ({ t: 'approve', decisionId: 'd-1', ...input, idempotencyKey: k }),
+    variants: [
+      { label: 'option 0', input: { optionIndex: 0 } },
+      { label: 'option -1 (Codex’s case)', input: { optionIndex: -1 } },
+    ],
+  },
+  {
+    kind: 'withdraw',
+    act: (input) => ({ t: 'withdraw', decisionId: 'd-1', ...input, idempotencyKey: k }),
+    variants: [
+      { label: 'a reason', input: { reason: 'r' } },
+      { label: 'a reason of spaces', input: { reason: ' \t' } },
+    ],
+  },
+  {
+    kind: 'submitVendorBill',
+    act: (input) => ({ t: 'submitVendorBill', input, idempotencyKey: k, coalesceKey: c }),
+    variants: [
+      { label: 'a bill', input: { billId: 'b' } },
+      { label: 'a bill with a field the strict contract does not take', input: { billId: 'b', note: 'x' } },
+    ],
+  },
+  {
+    kind: 'recordVendorBill',
+    act: (input) => ({ t: 'recordVendorBill', input, idempotencyKey: k, coalesceKey: c }),
+    variants: [
+      { label: 'a rate of two places', input: { vendorId: 'v', vendorBillNumber: 'B-1', documentDate: day, lines: [{ poLineId: 'p', quantity: '1', rate: '10.25' }] } },
+      { label: 'a rate of three places', input: { vendorId: 'v', vendorBillNumber: 'B-1', documentDate: day, lines: [{ poLineId: 'p', quantity: '1', rate: '10.255' }] } },
+    ],
+  },
+  {
+    kind: 'siteVisitStart',
+    act: (input) => ({ t: 'siteVisitStart', body: input, visitor: { name: 'n', role: 'pmc', placeName: null }, idempotencyKey: k }),
+    variants: [
+      { label: 'a visit named by a UUID', input: { id: VISIT, claimedAt: at } },
+      { label: 'a visit named by anything else', input: { id: 'v-1', claimedAt: at } },
+    ],
+  },
 ];
 type Schema = { safeParse: (v: unknown) => { success: boolean } };
 const schemaOf = (kind: OutboxOp['t']): Schema => (contracts as unknown as Record<string, Schema>)[SERVER_SCHEMA_OF[kind]!];
 
-describe('#1071 F4: a stored act the server would refuse by a rule across its fields is not read; one it takes is', () => {
-  it('every mirrored kind has its cases here', () => {
-    expect(CASES.map((x) => x.kind).sort()).toEqual(Object.keys(SERVER_REFINES_MIRRORED).sort());
-  });
-
+describe('#1071 F4, #1085 r1: a stored act the server would refuse by any rule of its contract is not read; one it takes is', () => {
   for (const { kind, act, variants } of CASES) {
     it.each(variants.map((v) => [v.label, v] as const))(`${kind}, %s: read exactly when the server's own schema takes it`, (_label, v) => {
       const server = schemaOf(kind).safeParse(v.input).success;
@@ -331,6 +297,19 @@ describe('#1071 F4: a key holding such an act is set aside, never sent or droppe
     useStore.getState().setAsideUnreadableQueue();
     const copies = Object.keys(localStorage).filter((x) => x.startsWith(`vitan.unreadable.${general}.`)).map((x) => localStorage.getItem(x));
     expect(copies).toEqual([raw]);
+  });
+
+  it('#1085 r1 (Codex 4345664659): an approval of option -1 is listed, never sent, and Set aside keeps its bytes', async () => {
+    const minus = { t: 'approve', decisionId: 'd-1', optionIndex: -1, idempotencyKey: k };
+    const raw = JSON.stringify([minus]);
+    const approveDecision = vi.fn(async () => null);
+    onP2(raw, { approveDecision });
+    expect(useStore.getState().queueUnreadable.map((u) => u.key)).toEqual([general]);
+    expect(useStore.getState().outbox).toEqual([]);
+    useStore.setState({ online: true });
+    await useStore.getState().flushOutbox();
+    expect(approveDecision).not.toHaveBeenCalled();
+    expect(localStorage.getItem(general)).toBe(raw);
   });
 
   it('guard: an allocation the server takes loads and is sent', async () => {

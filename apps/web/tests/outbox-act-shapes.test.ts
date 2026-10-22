@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
-import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
-import { isKnownOutboxOp } from '@/data/storedActs';
+import { ApiGateway, replayOutboxOp, type OutboxOp } from '@/data/apiGateway';
+import { isKnownOutboxOp, SERVER_SCHEMA_OF, serverBodyOf } from '@/data/storedActs';
 
 /**
  * #1051 r1, Codex 4336713248: a stored act was taken as loadable when it named a known kind, whatever its fields held.
@@ -14,15 +14,19 @@ type Act<K extends OutboxOp['t']> = Extract<OutboxOp, { t: K }>;
 const k = 'k-1';
 const c = 'c-1';
 const line = { poLineId: 'p', quantity: '1', rate: '10' };
+/** the server takes a visit's, a place's and an attendee's id only as a UUID */
+const V = '6f1c2b0e-8a4d-4c5e-9b7a-1d2e3f4a5b6c';
+const P = '7a2d3c1f-9b5e-4d6f-8c8b-2e3f4a5b6c7d';
+const A = '8b3e4d2a-0c6f-4e7a-9d9c-3f4a5b6c7d8e';
 
 /** one act of every kind, holding only the fields its type requires */
 const MIN: { [K in OutboxOp['t']]: Act<K> } = {
-  siteVisitStart: { t: 'siteVisitStart', body: { id: 'v-1', claimedAt: '2026-10-21T05:30:00.000Z' }, visitor: { name: 'n', role: 'pmc', placeName: null }, idempotencyKey: k },
+  siteVisitStart: { t: 'siteVisitStart', body: { id: V, claimedAt: '2026-10-21T05:30:00.000Z' }, visitor: { name: 'n', role: 'pmc', placeName: null }, idempotencyKey: k },
   siteVisitEnd: { t: 'siteVisitEnd', visitId: 'v-1', claimedAt: '2026-10-21T05:30:00.000Z', idempotencyKey: k },
   siteVisitClose: { t: 'siteVisitClose', visitId: 'v-1', reason: 'r', idempotencyKey: k },
-  siteVisitAddPlace: { t: 'siteVisitAddPlace', visitId: 'v-1', body: { id: 'p-1', nodeId: 'n-1', claimedAt: '2026-10-21T05:30:00.000Z' }, name: 'n', idempotencyKey: k },
+  siteVisitAddPlace: { t: 'siteVisitAddPlace', visitId: 'v-1', body: { id: P, nodeId: 'n-1', claimedAt: '2026-10-21T05:30:00.000Z' }, name: 'n', idempotencyKey: k },
   siteVisitRetirePlace: { t: 'siteVisitRetirePlace', visitId: 'v-1', placeId: 'p-1', idempotencyKey: k },
-  siteVisitAddAttendee: { t: 'siteVisitAddAttendee', visitId: 'v-1', body: { id: 'a-1', userId: 'u-1', role: 'client' }, name: 'n', idempotencyKey: k },
+  siteVisitAddAttendee: { t: 'siteVisitAddAttendee', visitId: 'v-1', body: { id: A, userId: 'u-1', role: 'client' }, name: 'n', idempotencyKey: k },
   siteVisitRetireAttendee: { t: 'siteVisitRetireAttendee', visitId: 'v-1', attendeeId: 'a-1', idempotencyKey: k },
   siteVisitAddFile: { t: 'siteVisitAddFile', visitId: 'v-1', scope: 's', file: { id: 'f-1', mime: 'image/png' }, by: { name: 'n', role: 'pmc' }, placeName: null, idempotencyKey: k },
   approve: { t: 'approve', decisionId: 'd-1', optionIndex: 0, idempotencyKey: k },
@@ -38,7 +42,7 @@ const MIN: { [K in OutboxOp['t']]: Act<K> } = {
   ackDrawing: { t: 'ackDrawing', revisionId: 'r-1', idempotencyKey: k },
   publishDrawing: { t: 'publishDrawing', drawingId: 'dr-1', idempotencyKey: k },
   setDrawingNode: { t: 'setDrawingNode', drawingId: 'dr-1', nodeId: null, idempotencyKey: k },
-  submitInspection: { t: 'submitInspection', inspectionId: 'i-1', items: [{ name: 'n', state: null, photos: 0, note: '' }] },
+  submitInspection: { t: 'submitInspection', inspectionId: 'i-1', items: [{ id: 'x', name: 'n', state: null, photos: 0, note: '' }] },
   decideReview: { t: 'decideReview', inspectionId: 'i-1', approve: false, rejectedItemIds: ['x'] },
   startActivity: { t: 'startActivity', activityId: 'a-1' },
   completeActivity: { t: 'completeActivity', activityId: 'a-1' },
@@ -67,7 +71,7 @@ const MIN: { [K in OutboxOp['t']]: Act<K> } = {
   certifyBill: { t: 'certifyBill', input: { billId: 'b', versionId: 'v', lifecycleVersion: 1 }, idempotencyKey: k, coalesceKey: c },
   supersedeCertificate: { t: 'supersedeCertificate', input: { billId: 'b', reason: 'r', certificateId: 'c' }, idempotencyKey: k, coalesceKey: c },
   grantSodException: { t: 'grantSodException', input: { billId: 'b', actorId: 'a', reason: 'r', versionId: 'v', status: 's', lifecycleVersion: 1, rule: 'certifier-may-not-approve' }, idempotencyKey: k, coalesceKey: c },
-  recordDeduction: { t: 'recordDeduction', input: { billId: 'b', type: 't', amount: '1' }, idempotencyKey: k, coalesceKey: c },
+  recordDeduction: { t: 'recordDeduction', input: { billId: 'b', type: 'retention', amount: '1' }, idempotencyKey: k, coalesceKey: c },
   releaseDeduction: { t: 'releaseDeduction', input: { deductionId: 'd', amount: '1', reason: 'r' }, idempotencyKey: k, coalesceKey: c },
   approvePayment: { t: 'approvePayment', input: { billId: 'b', amount: '1', lifecycleVersion: 1 }, idempotencyKey: k, coalesceKey: c },
   payAdvance: { t: 'payAdvance', input: { vendorId: 'v', amount: '1', reason: 'r', method: 'm' }, idempotencyKey: k, coalesceKey: c },
@@ -81,8 +85,8 @@ const MIN: { [K in OutboxOp['t']]: Act<K> } = {
 
 /** the kinds with optional fields, holding every one of them */
 const FULL: OutboxOp[] = [
-  { ...MIN.siteVisitStart, body: { id: 'v-1', claimedAt: '2026-10-21T05:30:00.000Z', nodeId: 'n', location: { lat: 1, lng: 2, accuracyM: 3, at: '2026-10-21T05:30:00.000Z' } } },
-  { ...MIN.siteVisitAddAttendee, body: { id: 'a-2', guestName: 'g' } },
+  { ...MIN.siteVisitStart, body: { id: V, claimedAt: '2026-10-21T05:30:00.000Z', nodeId: 'n', location: { lat: 1, lng: 2, accuracyM: 3, at: '2026-10-21T05:30:00.000Z' } } },
+  { ...MIN.siteVisitAddAttendee, body: { id: A, guestName: 'g' } },
   { ...MIN.siteVisitAddFile, queuedAt: 'T', file: { id: 'f-1', mime: 'image/png', takenAt: 'T', geoLat: 1, geoLng: 2, nodeId: 'n', note: 'x', rating: 'concern', sourceMediaId: 'm' } },
   { ...MIN.forwardDecision, input: { toDesignationKind: 'member', toDesignationMembershipId: 'm', reason: 'r' } },
   { ...MIN.disagreeDecision, input: { path: 'forward_on', reason: 'r', costImpact: 1, timeImpactDays: 2, toDesignationKind: 'member', toDesignationMembershipId: 'm' } },
@@ -98,7 +102,7 @@ const FULL: OutboxOp[] = [
   { ...MIN.issueStock, input: { ...MIN.issueStock.input, note: 'x' } },
   { ...MIN.consumeStock, input: { ...MIN.consumeStock.input, note: 'x' } },
   { ...MIN.createRequisition, input: { ...MIN.createRequisition.input, notes: 'x' } },
-  { ...MIN.allocateLabour, input: { activityId: 'a', requirementId: 'r', civilDate: '2026-10-21', crewId: 'c', capacityCommitmentId: 'cc', originRevision: 1, labourSpecFingerprint: 'f' } },
+  { ...MIN.allocateLabour, input: { activityId: 'a', requirementId: 'r', civilDate: '2026-10-21', crewId: 'c', capacityCommitmentId: 'cc', originRevision: 1, labourSpecFingerprint: 'f'.repeat(64) } },
   { ...MIN.recordAttendance, input: { workerId: 'w', civilDate: '2026-10-21', shift: 'night', manualReason: 'm', evidenceMediaId: 'e' } },
   { ...MIN.recordLabourWork, input: { ...MIN.recordLabourWork.input, note: 'x' } },
   { ...MIN.createLabourRequisition, input: { ...MIN.createLabourRequisition.input, notes: 'x' } },
@@ -111,7 +115,7 @@ const FULL: OutboxOp[] = [
   { ...MIN.recordDeduction, input: { ...MIN.recordDeduction.input, reason: 'r' } },
   { ...MIN.payAdvance, input: { ...MIN.payAdvance.input, reference: null } },
   { ...MIN.recordPayment, input: { ...MIN.recordPayment.input, reference: 'x' } },
-  { ...MIN.uploadMedia, input: { ...MIN.uploadMedia.input, kind: 'visit', decisionId: 'd', nodeId: 'n', inspectionId: 'i', inspectionItemId: 'ii', clientKey: 'ck', dailyLogId: 'dl', siteVisit: { visitId: 'v', note: 'x', rating: 'fine' }, geoLat: 1, geoLng: 2, takenAt: 'T', sourceMediaId: 's' } },
+  { ...MIN.uploadMedia, input: { ...MIN.uploadMedia.input, kind: 'visit', decisionId: 'd', nodeId: 'n', inspectionId: 'i', inspectionItemId: 'ii', clientKey: 'ck', dailyLogId: 'dl', siteVisit: { visitId: V, note: 'x', rating: 'fine' }, geoLat: 1, geoLng: 2, takenAt: 'T', sourceMediaId: 's' } },
 ];
 
 /** the fields an earlier release stored some acts of a kind without (#1051 r1 re-check G2), by their path: such an act
@@ -198,6 +202,27 @@ afterEach(() => {
   useStore.getState()._setGateway(null);
   localStorage.clear();
   sessionStorage.clear();
+});
+
+describe('#1085 r1 (Codex 4345664659): the body a stored act is read by is the body its replay sends', () => {
+  it('for every kind the server parses a body of, the gateway sends exactly the body the server contract reads it by', async () => {
+    const sent: unknown[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      sent.push(init?.body === undefined ? undefined : JSON.parse(init.body as string));
+      return { ok: true, status: 200, json: async () => ({}) };
+    }));
+    const gw = new ApiGateway('http://api.test', 'p-2');
+    const mismatched: string[] = [];
+    for (const op of [...Object.values(MIN), ...FULL]) {
+      if (SERVER_SCHEMA_OF[op.t] === null) continue;
+      sent.length = 0;
+      await replayOutboxOp(gw, op).catch(() => null);
+      const expected = serverBodyOf(op as OutboxOp & Record<string, unknown>);
+      if (JSON.stringify(sent[0]) !== JSON.stringify(expected)) mismatched.push(`${op.t}: sent ${JSON.stringify(sent[0])}, read ${JSON.stringify(expected)}`);
+    }
+    vi.unstubAllGlobals();
+    expect(mismatched).toEqual([]);
+  });
 });
 
 describe('#1051 r1, Codex 4336713248: a key holding a damaged act of a known kind is unreadable', () => {

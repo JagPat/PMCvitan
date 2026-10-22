@@ -90,7 +90,7 @@ import {
   beginCreateSend, createHoldScope, currentCreateHoldView, releaseCreate, reserveCreateRetry, reserveNewCreate, serverKeepsCreateReceipts,
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
 } from './projectCreateHold';
-import { createQueueKeyGuard, keepUnsent } from '@/store/queueKeyGuard';
+import { createQueueKeyGuard } from '@/store/queueKeyGuard';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isMediaNotFound, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
@@ -2459,14 +2459,17 @@ export const useStore = create<Store>()(
      *  release cannot read; each read of this scope's keys lists such a key in the strip */
     const strip = queueStrip({ get, set, scope: () => [outboxKey(), siteVisitKeyOf(outboxKey())], keys: () => queueKeys, persist: () => persistOutbox() });
     const queueKeys = createQueueKeyGuard(strip.noteRead);
-    const persistOutbox = (): void => {
+    /** true only when both keys were written (Codex 4345664686: Set aside is said done only then) */
+    const persistOutbox = (): boolean => {
       try {
         const storage = globalThis.localStorage;
-        if (!storage) return;
-        queueKeys.write(storage, outboxKey(), get().outbox.filter((o) => !isSiteVisitOp(o)), (o) => !isSiteVisitOp(o));
-        queueKeys.write(storage, siteVisitKeyOf(outboxKey()), get().outbox.filter(isStoredVisitOp), isStoredVisitOp);
+        if (!storage) return false;
+        const general = queueKeys.write(storage, outboxKey(), get().outbox.filter((o) => !isSiteVisitOp(o)), (o) => !isSiteVisitOp(o));
+        const lane = queueKeys.write(storage, siteVisitKeyOf(outboxKey()), get().outbox.filter(isStoredVisitOp), isStoredVisitOp);
+        return general && lane;
       } catch {
         /* storage unavailable — the in-session outbox still works */
+        return false;
       }
     };
     /** another tab's write of this scope's queue key is read and listed, never answered (`null`: storage cleared) */
@@ -6550,18 +6553,14 @@ export const useStore = create<Store>()(
         // it) — don't touch it. Persist the un-replayed remainder (plus anything the
         // old scope queued during the flush) under the ORIGINAL key so it replays
         // there on that scope's next reconnect, and skip the reconcile snapshot.
-        try {
-          const storage = globalThis.localStorage;
-          if (storage) {
-            // this flush's acts leave each stored list by identity, its unsent ones go first, and every other act stays;
-            // a key this release cannot read is never written over (step A)
-            keepUnsent(storage, flushKey, remaining.filter((o) => !isSiteVisitOp(o)), flushed.filter((o) => !isSiteVisitOp(o)), (l) => l, (o) => !isSiteVisitOp(o));
-            // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
-            keepUnsent(storage, siteVisitKeyOf(flushKey), remaining.filter(isStoredVisitOp), flushed.filter(isStoredVisitOp), (l) => remapVisits(l).filter(isStoredVisitOp), isStoredVisitOp);
-          }
-        } catch {
-          /* storage unavailable — the persisted queue simply keeps its pre-flush state */
-        }
+        // this flush's acts leave each stored list by identity, its unsent ones go first, and every other act stays; a key
+        // this release cannot read is never written over (step A). Unsent acts that can be neither written nor copied
+        // aside (no storage to be had included) are held stranded for the old scope, never dropped (Codex 4345664670)
+        let storage: Storage | null = null;
+        try { storage = globalThis.localStorage ?? null; } catch { storage = null; }
+        queueKeys.keepUnsent(storage, flushKey, remaining.filter((o) => !isSiteVisitOp(o)), flushed.filter((o) => !isSiteVisitOp(o)), (l) => l, (o) => !isSiteVisitOp(o));
+        // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
+        queueKeys.keepUnsent(storage, siteVisitKeyOf(flushKey), remaining.filter(isStoredVisitOp), flushed.filter(isStoredVisitOp), (l) => remapVisits(l).filter(isStoredVisitOp), isStoredVisitOp);
         return { ran: true, scopeMoved: true, succeededKeys, droppedKeys, pendingKeys };
       }
 

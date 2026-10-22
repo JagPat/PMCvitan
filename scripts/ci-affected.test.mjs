@@ -149,7 +149,6 @@ test('Codex 4219073959 — only what the proofs provably never build or run skip
   for (const path of [
     'apps/api/tsconfig.json',
     'apps/api/tsconfig.contracts.json',
-    'apps/api/package.json',
     'apps/api/Dockerfile',
     'apps/api/.env.example',
     'apps/api/nest-cli.json',
@@ -158,6 +157,9 @@ test('Codex 4219073959 — only what the proofs provably never build or run skip
     assert.deepEqual(result.products, ['api', 'api-e2e'], path);
     assert.equal(result.runnerProofs, true, path);
   }
+  // #1085 r1: the web bundles the API's contracts with the API's zod, so its manifest runs the web jobs too
+  assert.deepEqual(affectedProducts(['apps/api/package.json'], { runnerSources }).products, ['web', 'api', 'e2e', 'api-e2e']);
+  assert.equal(affectedProducts(['apps/api/package.json'], { runnerSources }).runnerProofs, true);
   for (const path of [
     'apps/api/test/integration/fixtures.ts',
     'apps/api/vitest.config.ts',
@@ -210,4 +212,40 @@ test('Codex 4214321794 — role-activation evidence requires only the affected p
   assert.equal(ci.state, 'success');
   // without the file classification every product check is still required
   assert.equal(normalizeCi(runs, { repository: 'o/r', pullRequest: 999, headSha: head, baseSha: 'b'.repeat(40), readAtMs: 1 }).state, 'pending');
+});
+
+test('#1085 r1 — every API source the web bundles (directly or transitively) runs the web job', async () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const sources = [];
+  const walk = async (dir) => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (/\.(?:[cm]?[jt]sx?)$/u.test(entry.name)) sources.push(path);
+    }
+  };
+  // the web's own sources, which the build bundles (a test reading an API file as text runs in the web job already)
+  await walk(join(root, 'apps/web/src'));
+  const api = join(root, 'apps/api');
+  const consumed = new Set();
+  const visit = async (file) => {
+    const target = [file, `${file}.ts`, join(file, 'index.ts')].find((f) => /\.ts$/u.test(f));
+    if (consumed.has(target)) return;
+    consumed.add(target);
+    const text = await readFile(target, 'utf8');
+    for (const match of text.matchAll(/(?:from\s+|import\()['"](\.{1,2}\/[^'"]+)['"]/gu)) await visit(resolve(dirname(target), match[1].replace(/\.js$/u, '')));
+  };
+  for (const source of sources) {
+    const text = await readFile(source, 'utf8');
+    for (const match of text.matchAll(/(?:from\s+|import\()['"]((?:\.\.\/)+api\/[^'"]+)['"]/gu)) {
+      const target = resolve(dirname(source), match[1]);
+      if (target.startsWith(api)) await visit(target);
+    }
+  }
+  assert.ok(consumed.size >= 2, 'the probe finds contracts.ts and what it imports');
+  for (const file of [...consumed, join(api, 'package.json')]) {
+    const path = relative(root, file);
+    assert.ok(affectedProducts([path]).products.includes('web'), `${path} is read by the web but does not run the web job`);
+  }
 });
