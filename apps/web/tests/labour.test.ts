@@ -563,24 +563,37 @@ describe('Task 6 — labour single-command field ops through the write-ahead out
     expect(s().labourPendingInputs[ck]?.capacityCommitmentId).toBe('CC-1');
   });
 
-  it('hydrateOutbox DROPS a malformed labour op (missing either key) — never an undefined pending entry', () => {
+  it('hydrateOutbox never drops a malformed labour op (missing either key): its key is unreadable, kept as stored, and nothing is pending (WEB-02 step 2)', () => {
     globalThis.localStorage.clear();
     const ck = musterCoalesceKey('WKR-1', '2026-08-01', 'day');
-    globalThis.localStorage.setItem(OUTBOX_KEY, JSON.stringify([
+    const raw = JSON.stringify([
       { t: 'recordAttendance', input: { workerId: 'WKR-1', civilDate: '2026-08-01', shift: 'day', manualReason: 'x' }, idempotencyKey: 'idem-1', coalesceKey: ck }, // valid
       { t: 'recordLabourWork', input: { allocationId: 'A', workedMinutes: 480 }, idempotencyKey: 'idem-2' }, // missing coalesceKey — malformed
       { t: 'allocateLabour', input: {}, coalesceKey: 'lab:alloc:x' },                                        // missing idempotencyKey — malformed
       null,
+    ]);
+    globalThis.localStorage.setItem(OUTBOX_KEY, raw);
+    s()._setGateway(gw() as unknown as ApiGateway);
+    s().hydrateOutbox();
+    expect(s().outbox).toEqual([]);
+    expect(s().labourPending).toEqual([]);
+    expect(s().queueUnreadable.map((u) => u.key)).toContain(OUTBOX_KEY);
+    // the bytes are this phone's only copy of those acts: never written over
+    expect(globalThis.localStorage.getItem(OUTBOX_KEY)).toBe(raw);
+  });
+
+  it('hydrateOutbox loads a two-keyed labour op and its pending key', () => {
+    globalThis.localStorage.clear();
+    const ck = musterCoalesceKey('WKR-1', '2026-08-01', 'day');
+    globalThis.localStorage.setItem(OUTBOX_KEY, JSON.stringify([
+      { t: 'recordAttendance', input: { workerId: 'WKR-1', civilDate: '2026-08-01', shift: 'day', manualReason: 'x' }, idempotencyKey: 'idem-1', coalesceKey: ck },
     ]));
     s()._setGateway(gw() as unknown as ApiGateway);
     s().hydrateOutbox();
     expect(s().outbox).toHaveLength(1);
     expect((s().outbox[0] as { t: string }).t).toBe('recordAttendance');
     expect(s().labourPending).toEqual([ck]);
-    expect(s().labourPending).not.toContain(undefined);
-    // the normalized queue was persisted back
-    const persisted = JSON.parse(globalThis.localStorage.getItem(OUTBOX_KEY)!) as unknown[];
-    expect(persisted).toHaveLength(1);
+    expect(s().queueUnreadable).toEqual([]);
   });
 
   it('normalizeLabourOutbox: two-keyed ops pass unchanged, malformed labour ops + junk drop, non-labour passes', () => {
