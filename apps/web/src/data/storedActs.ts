@@ -1,7 +1,5 @@
 import { SOD_RULES } from '@vitan/shared';
-// the server's own request contracts, so a stored act is read by exactly the rules its replay is parsed by. Its `zod`
-// resolves from apps/api, whose dependency it is
-import * as contracts from '../../../api/src/contracts';
+import * as contracts from './queueContracts';
 import type { OutboxOp } from '@/data/apiGateway';
 
 /**
@@ -162,8 +160,9 @@ const bodyBody = (v: Fields): unknown => v.body;
 
 /** The request body each queued kind's replay sends (`replayOutboxOp` through its gateway method), and the server's own
  *  contract that parses it, or `null` with why the stored act holds no body the server parses (Codex 4345664659). The
- *  contract is the server's zod schema itself (`apps/api/src/contracts.ts`), never a copy of it, so every `min`, `max`,
- *  `regex`, `.strict()` and `.refine` the server applies is applied here, no stricter and no looser. Typed against
+ *  contract is the server's zod schema, as `queueContracts.ts` copies it byte for byte from `apps/api/src/contracts.ts`
+ *  (`queue-contracts-drift.test.ts` holds the two the same), so every `min`, `max`, `regex`, `.strict()` and `.refine`
+ *  the server applies is applied here, no stricter and no looser. Typed against
  *  `OutboxOp['t']`, so a new kind fails the build until it is named here. `stored-act-invariants.test.ts` checks each
  *  body against what the gateway sends, and each schema against the controller that parses it. */
 const SERVER_CONTRACT_OF: Record<OutboxOp['t'], { schema: SchemaName; body: (v: Fields) => unknown } | null> = {
