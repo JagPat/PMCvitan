@@ -6734,10 +6734,24 @@ export const useStore = create<Store>()(
           // one-time migration: adopt the old unscoped queue into the current scope
           const legacy = storage.getItem(LEGACY_OUTBOX_KEY);
           if (legacy) {
-            // #1085 r2 audit: removed only once its bytes are in the scoped key, so a write that fails, or a scoped key
-            // already holding other acts, never loses them (they stay under the old key, adopted at a later load)
-            if (!storage.getItem(outboxKey())) storage.setItem(outboxKey(), legacy);
-            if (storage.getItem(outboxKey()) === legacy) storage.removeItem(LEGACY_OUTBOX_KEY);
+            // #1085 r2 audit: removed only once its bytes are kept, so a write that fails never loses them. When the
+            // scoped key already holds other acts, the old bytes are copied aside beside it, never left for another
+            // user's or project's load to adopt and replay. Only a scope with no other queue key on this phone adopts
+            // them: once another scope keeps one, bytes a failed write left behind may be that scope's, so they are
+            // copied aside, never sent here
+            try {
+              const scoped = outboxKey();
+              const lane = scoped.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
+              let another = false;
+              for (let i = 0; i < storage.length; i += 1) {
+                const k = storage.key(i);
+                if (k !== null && k !== scoped && k !== lane && (k.startsWith('vitan.outbox.') || k.startsWith('vitan.siteVisitQueue.'))) another = true;
+              }
+              if (!storage.getItem(scoped) && !another) storage.setItem(scoped, legacy);
+              const aside = `vitan.unreadable.${LEGACY_OUTBOX_KEY}.${scoped}`;
+              if (storage.getItem(scoped) !== legacy && storage.getItem(aside) !== legacy) storage.setItem(aside, legacy);
+              if (storage.getItem(scoped) === legacy || storage.getItem(aside) === legacy) storage.removeItem(LEGACY_OUTBOX_KEY);
+            } catch { /* kept under the old key: this scope's load retries it */ }
           }
           // REPLACE the in-memory queue with this scope's persisted one (WEB-02) —
           // called again on every sign-in / project switch, so ops queued under a

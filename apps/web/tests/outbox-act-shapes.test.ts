@@ -251,8 +251,16 @@ describe('#1085 r2 (Codex 4346169580): every field a replay puts in its request 
       if (op.t === 'siteVisitAddFile' || op.t === 'uploadEvidence') continue;
       urls.length = 0;
       await replayOutboxOp(gw, op).catch(() => null);
-      const segments = new URL(urls[0]).pathname.split('/').slice(4); // past /projects/p-2 (or the visit route's own prefix)
-      const fields = Object.entries(op).filter(([f, v]) => f !== 't' && typeof v === 'string' && segments.includes(v)).map(([f]) => f);
+      // every request the replay makes (a command, then its snapshot), each path past /projects/p-2
+      const segments = urls.flatMap((u) => new URL(u).pathname.split('/').slice(3));
+      // every string the act holds, however deep (`input.billId`), named by its path
+      const leaves: [string, string][] = [];
+      const walk = (at: string, v: unknown): void => {
+        if (typeof v === 'string') leaves.push([at, v]);
+        else if (v !== null && typeof v === 'object') for (const [f, x] of Object.entries(v)) walk(at ? `${at}.${f}` : f, x);
+      };
+      walk('', op);
+      const fields = leaves.filter(([f, v]) => f !== 't' && segments.includes(v)).map(([f]) => f);
       if (fields.length > 0) found[op.t] = fields.sort();
     }
     vi.unstubAllGlobals();
