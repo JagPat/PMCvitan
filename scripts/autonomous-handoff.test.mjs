@@ -204,3 +204,50 @@ test('an open queued-merge wait drains durable work before it reschedules', asyn
     /dispatchRetry|\breturn;/,
   );
 });
+
+// Board decision, #482 comment 6330461745 item 1: at most one conflict ping per PR per head,
+// and none while merges to main are still settling. The dedupe is the marker comment itself.
+function markerClient(initial) {
+  const state = { live: initial, comments: [] };
+  state.client = {
+    pullRequest: async () => state.live,
+    comments: async () => state.comments,
+    comment: async (number, body) => state.comments.push({ user: { login: 'github-actions[bot]' }, body }),
+  };
+  return state;
+}
+
+test('a conflict ping is not repeated on the same head, and a new head gets one new ping', async () => {
+  const state = markerClient(conflict());
+  const settled = { now: Date.parse('2026-10-22T12:00:00Z'), lastBaseMergeAt: Date.parse('2026-10-22T10:00:00Z') };
+  await handOffConflict(state.client, state.live, repository, 'main', settled);
+  await handOffConflict(state.client, state.live, repository, 'main', settled);
+  assert.equal(state.comments.length, 1);
+  state.live = conflict({ head: { ref: 'claude/task', sha: 'b'.repeat(40), repo: { full_name: repository } } });
+  await handOffConflict(state.client, state.live, repository, 'main', settled);
+  await handOffConflict(state.client, state.live, repository, 'main', settled);
+  assert.equal(state.comments.length, 2);
+  assert.match(state.comments[1].body, /autonomous-conflict:b{40}:/u);
+  assert.match(state.comments[1].body, /@claude/u, 'the action-required ping keeps its tag');
+});
+
+test('no conflict ping while main merged inside the settle window; a later run pings', async () => {
+  const state = markerClient(conflict());
+  const lastBaseMergeAt = Date.parse('2026-10-22T12:00:00Z');
+  for (const minutes of [0, 10, 29]) {
+    await handOffConflict(state.client, state.live, repository, 'main', {
+      lastBaseMergeAt, now: lastBaseMergeAt + minutes * 60_000,
+    });
+  }
+  assert.equal(state.comments.length, 0, 'merges to main are still settling');
+  await handOffConflict(state.client, state.live, repository, 'main', {
+    lastBaseMergeAt, now: lastBaseMergeAt + 31 * 60_000,
+  });
+  assert.equal(state.comments.length, 1);
+  assert.match(state.comments[0].body, /@claude/u);
+});
+
+test('every handoff run passes the last default-branch merge time to the conflict ping', async () => {
+  const implementation = await readFile(new URL('./autonomous-handoff.mjs', import.meta.url), 'utf8');
+  assert.match(implementation, /handOffConflict\(client, pullRequest, repository, defaultBranch, \{ lastBaseMergeAt \}\)/u);
+});

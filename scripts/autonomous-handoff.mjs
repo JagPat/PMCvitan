@@ -42,6 +42,9 @@ const MERGEABILITY_POLL_MS = Number(
 );
 const TERMINAL_WAIT_MS = Number(process.env.TERMINAL_WAIT_MS ?? 420_000);
 const TERMINAL_POLL_MS = Number(process.env.TERMINAL_POLL_MS ?? 5_000);
+// Board decision, #482 comment 6330461745 item 1: a conflict ping waits until merges to the
+// default branch settle. A deferred ping is not lost: the hourly schedule re-runs this job.
+const CONFLICT_SETTLE_MS = 30 * 60_000;
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -166,6 +169,19 @@ class GitHubClient {
     );
   }
 
+  // When the default branch last moved: its tip's committer date (a merge, squash or direct push).
+  // Unreadable is null, and null never defers a ping.
+  async lastCommitAt(ref) {
+    try {
+      const commit = await this.request(`/repos/${this.repository}/commits/${encodeURIComponent(ref)}`);
+      const at = Date.parse(commit?.commit?.committer?.date ?? '');
+      return Number.isFinite(at) ? at : null;
+    } catch (error) {
+      console.warn(`Could not read the ${ref} tip time: ${error.message}`);
+      return null;
+    }
+  }
+
   combinedStatus(head) {
     return this.request(`/repos/${this.repository}/commits/${head}/status`);
   }
@@ -245,8 +261,10 @@ export async function handOffConflict(
   pullRequest,
   repository,
   defaultBranch,
+  { lastBaseMergeAt = null, now = Date.now() } = {},
 ) {
   if (!isCorrectionEligiblePullRequest(pullRequest, repository, defaultBranch)) return;
+  if (Number.isFinite(lastBaseMergeAt) && now - lastBaseMergeAt < CONFLICT_SETTLE_MS) return;
   const live = await refreshedMergeability(client, pullRequest);
   if (!isCorrectionEligiblePullRequest(live, repository, defaultBranch)) return;
   if (live.mergeable !== false && live.mergeable_state !== 'behind') return;
@@ -714,9 +732,10 @@ export async function run() {
   // event-specific path is essential.
   let retryNeeded = false;
   const watchdogFailures = [];
+  const lastBaseMergeAt = await client.lastCommitAt(defaultBranch);
   for (const pullRequest of await client.openPullRequests()) {
     try {
-      await handOffConflict(client, pullRequest, repository, defaultBranch);
+      await handOffConflict(client, pullRequest, repository, defaultBranch, { lastBaseMergeAt });
     } catch (error) {
       if (!String(error?.message).includes('did not compute mergeability')) throw error;
       retryNeeded = true;

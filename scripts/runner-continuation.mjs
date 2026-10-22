@@ -325,6 +325,14 @@ function assessDriftCorrected(statusNow, maintenanceQueue, drift) {
     : { assessment: corrected, recorded: assessment };
 }
 
+// Board decision, #482 comment 6330461745 item 5: a post-merge or drift note tags @claude only
+// when an action is required, which is when no autonomous PR is open. The loop is then idle and
+// nothing else restarts it. While one is open, its CI, review, conflict and watchdog signals
+// keep it moving, and the note stays on record without a wake.
+function wakeTag({ openPullRequests }) {
+  return shouldShepherdOpenPullRequests({ openPullRequests }) ? '' : '@claude ';
+}
+
 export function buildPostMergeContinuation({
   statusNow,
   maintenanceQueue = [],
@@ -344,7 +352,7 @@ export function buildPostMergeContinuation({
   const nextStep = assessment.nextStep ?? 'none';
 
   const lines = [
-    '@claude This exact-head reviewed PR has merged into `main`.',
+    `${wakeTag({ openPullRequests })}This exact-head reviewed PR has merged into \`main\`.`,
     '',
     'Continue the autonomous runner from the new `main`: verify the merge, advance `docs/STATUS.md` according to its state machine, and start only the next permitted roadmap task or named correction.',
     '',
@@ -412,7 +420,7 @@ export function buildDriftHandoff({
   const nextStep = assessment.nextStep ?? 'none';
 
   return [
-    '@claude The autonomous runner detected drift between `docs/STATUS.md` and live GitHub state.',
+    `${wakeTag({ openPullRequests })}The autonomous runner detected drift between \`docs/STATUS.md\` and live GitHub state.`,
     '',
     `**STATUS drift:** ${drift.reason}.`,
     `**Next step after correcting STATUS:** \`${nextStep}\` — ${assessment.reason}`,
