@@ -200,3 +200,28 @@ test('partial-task handoff classification does not admit malformed or active wor
     assert.equal(isHandoffShape({ ...now, ...change }), false, JSON.stringify(change));
   }
 });
+
+// Board decision, #482 comment 6330461745 item 5: a status-drift or post-merge note tags
+// @claude only when an action is required. It is required when no autonomous PR is open: the
+// loop is idle and nothing else restarts it. While one is open, the note is a record on it.
+test('routine post-merge and drift notes carry no @claude while an autonomous PR is open', () => {
+  const statusNow = { task_state: 'in_review', open_pr: '700', task: '4', work_item: 'none',
+    next_task: 'none', blocking_directive: 'none' };
+  const openPullRequests = [pullRequest({ number: 701 })];
+  const postMerge = buildPostMergeContinuation({ statusNow, openPullRequests });
+  const drift = buildDriftHandoff({ statusNow, openPullRequests });
+  assert.ok(drift, 'the fixture is real drift');
+  for (const body of [postMerge, drift]) {
+    assert.doesNotMatch(body, /@claude/u);
+    assert.match(body, /open_pr/u, 'the note still records the correction');
+  }
+});
+
+test('action-required post-merge and drift notes keep the @claude tag when the loop is idle', () => {
+  const statusNow = { task_state: 'in_review', open_pr: '700', task: '4', work_item: 'none',
+    next_task: 'none', blocking_directive: 'none' };
+  const postMerge = buildPostMergeContinuation({ statusNow, openPullRequests: [] });
+  const drift = buildDriftHandoff({ statusNow, openPullRequests: [] });
+  assert.ok(drift, 'the fixture is real drift');
+  for (const body of [postMerge, drift]) assert.match(body, /^@claude /u);
+});

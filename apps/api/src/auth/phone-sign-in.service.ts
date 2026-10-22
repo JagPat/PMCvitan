@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { resolveJwtSecret } from '../config';
 import { PrismaService } from '../prisma.service';
 import { lockUserCredential } from '../common/credential-lock';
-import { EmailService } from '../platform/email.service';
+import { EmailService, PhoneSignInCodeNotSentException } from '../platform/email.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 
 /**
@@ -98,7 +98,7 @@ export class PhoneSignInService {
   }
 
   /** Mail a code for `phone`. The same (void) answer whether or not anything was sent; 429 inside the wait; 503
-   *  when the mail could not be handed over. */
+   *  when the mail transport failed, with the code's row kept live in case the mail went anyway. */
   async request(phone: string, eligible: SignInEligible): Promise<void> {
     const waitKey = phone.replace(/\D/g, '');
     if (!this.resendWait.claim(waitKey)) {
@@ -139,13 +139,18 @@ export class PhoneSignInService {
         this.log.log('Phone sign-in request: the account changed, or already has its live codes; nothing sent');
         return;
       }
+      // an ambiguous failed send keeps its row, as a password-credential code does (#806 B1): a timeout may come
+      // after the provider took the mail, so the code that arrives must still work. A send the provider certainly
+      // refused retires its row, so a code no inbox holds never takes one of the MAX_LIVE places a later send needs.
+      // Either way the request answers the same 503 (#871)
       try {
         await this.email.sendPhoneSignInCode(owner.email, code);
       } catch (err) {
-        // never handed over: retire only this row, the codes already delivered keep working
-        await this.prisma.passwordCredentialChallenge
-          .updateMany({ where: { id, consumedAt: null }, data: { consumedAt: new Date() } })
-          .catch(() => undefined);
+        if (err instanceof PhoneSignInCodeNotSentException) {
+          await this.prisma.passwordCredentialChallenge
+            .updateMany({ where: { id, consumedAt: null }, data: { consumedAt: new Date() } })
+            .catch(() => undefined);
+        }
         throw err;
       }
     } catch (err) {

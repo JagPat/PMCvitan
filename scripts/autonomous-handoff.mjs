@@ -42,6 +42,9 @@ const MERGEABILITY_POLL_MS = Number(
 );
 const TERMINAL_WAIT_MS = Number(process.env.TERMINAL_WAIT_MS ?? 420_000);
 const TERMINAL_POLL_MS = Number(process.env.TERMINAL_POLL_MS ?? 5_000);
+// Board decision, #482 comment 6330461745 item 1: a conflict ping waits until merges to the
+// default branch settle. A deferred ping is not lost: the hourly schedule re-runs this job.
+const CONFLICT_SETTLE_MS = 30 * 60_000;
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -166,6 +169,19 @@ class GitHubClient {
     );
   }
 
+  // When the default branch last moved: its tip's committer date (a merge, squash or direct push).
+  // Unreadable is null, and null never defers a ping.
+  async lastCommitAt(ref) {
+    try {
+      const commit = await this.request(`/repos/${this.repository}/commits/${encodeURIComponent(ref)}`);
+      const at = Date.parse(commit?.commit?.committer?.date ?? '');
+      return Number.isFinite(at) ? at : null;
+    } catch (error) {
+      console.warn(`Could not read the ${ref} tip time: ${error.message}`);
+      return null;
+    }
+  }
+
   combinedStatus(head) {
     return this.request(`/repos/${this.repository}/commits/${head}/status`);
   }
@@ -245,8 +261,11 @@ export async function handOffConflict(
   pullRequest,
   repository,
   defaultBranch,
+  { lastBaseMergeAt = null, clock = Date.now } = {},
 ) {
   if (!isCorrectionEligiblePullRequest(pullRequest, repository, defaultBranch)) return;
+  const settling = (at) => Number.isFinite(at) && clock() - at < CONFLICT_SETTLE_MS;
+  if (settling(lastBaseMergeAt)) return;
   const live = await refreshedMergeability(client, pullRequest);
   if (!isCorrectionEligiblePullRequest(live, repository, defaultBranch)) return;
   if (live.mergeable !== false && live.mergeable_state !== 'behind') return;
@@ -258,6 +277,9 @@ export async function handOffConflict(
   if (comments.some((comment) =>
     comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)
   )) return;
+  // The run's first read can be stale: merges run in another concurrency group (Codex
+  // r4344002054). Read it before the recheck below, so that recheck stays the last read.
+  if (typeof client.lastCommitAt === 'function' && settling(await client.lastCommitAt(defaultBranch))) return;
 
   // A metadata edit can transfer ownership without changing the head SHA. Recheck
   // after the comment read so a stale branch snapshot cannot wake the old owner.
@@ -350,19 +372,39 @@ export async function loadContinuationContext(
   defaultBranch,
   { loadStatus = loadStatusDocument } = {},
 ) {
-  const [{ now, maintenanceQueue }, openPullRequests] = await Promise.all([
+  const [{ now, maintenanceQueue }, open] = await Promise.all([
     loadStatus(),
-    client.openPullRequests().then((pullRequests) =>
-      selectAutonomousOpenPullRequests(pullRequests, repository, defaultBranch),
-    ),
+    loadOpenPullRequestContext(client, repository, defaultBranch),
   ]);
-  const headStatuses = await openHeadStatuses(client, openPullRequests);
-  return {
-    defaultBranchNow: now,
-    maintenanceQueue,
-    openPullRequests,
-    headStatuses,
-  };
+  return { defaultBranchNow: now, maintenanceQueue, ...open };
+}
+
+async function loadOpenPullRequestContext(client, repository, defaultBranch) {
+  const openPullRequests = selectAutonomousOpenPullRequests(
+    await client.openPullRequests(), repository, defaultBranch,
+  );
+  return { openPullRequests, headStatuses: await openHeadStatuses(client, openPullRequests) };
+}
+
+// Everything a post-merge or drift note says, its @claude tag, and where a drift note goes come
+// from ONE read taken here, at publication: the default branch's STATUS plus the open autonomous
+// PRs and their heads (Codex r4344002062, r4344073634). If that read fails, the run's snapshot is
+// used and the note is tagged: a post-merge note cannot wait for a later run (the merge cursor
+// moves on), and waking is the action-required side, so Claude re-reads live state itself.
+async function publicationContext(client, repository, defaultBranch, snapshot) {
+  try {
+    const markdown = await client.fileContent('docs/STATUS.md', defaultBranch);
+    if (typeof markdown !== 'string') throw new Error(`docs/STATUS.md is unreadable on ${defaultBranch}`);
+    return {
+      defaultBranchNow: parseStatusNow(markdown),
+      maintenanceQueue: parseMaintenanceQueue(markdown),
+      ...(await loadOpenPullRequestContext(client, repository, defaultBranch)),
+      wake: undefined,
+    };
+  } catch (error) {
+    console.warn(`Could not re-read open PRs before a note; using the snapshot and tagging: ${error.message}`);
+    return { ...snapshot, wake: true };
+  }
 }
 
 // STATUS as it exists at one commit, or null when it cannot be read or parsed.
@@ -392,7 +434,7 @@ export async function maintenanceQueueAtCommit(client, ref) {
   }
 }
 
-async function handOffMergedPullRequest(
+export async function handOffMergedPullRequest(
   client,
   pullRequest,
   repository,
@@ -424,8 +466,8 @@ async function handOffMergedPullRequest(
     comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)
   )) return;
 
-  const { defaultBranchNow, maintenanceQueue, openPullRequests, headStatuses } =
-    continuationContext;
+  const { defaultBranchNow, maintenanceQueue, openPullRequests, headStatuses, wake } =
+    await publicationContext(client, repository, defaultBranch, continuationContext);
   // STATUS as of THIS merge, not as of the run's checkout.
   //
   // `loadContinuationContext` reads the workflow's own checkout, which is taken
@@ -448,6 +490,7 @@ const mergedMaintenanceQueue =
       maintenanceQueue: mergedMaintenanceQueue,
         openPullRequests,
         headStatuses,
+        wake,
       }),
     ].join('\n'),
   );
@@ -459,13 +502,14 @@ export async function handOffStatusDrift(
   defaultBranch,
   continuationContext,
 ) {
-  const { defaultBranchNow, maintenanceQueue, openPullRequests, headStatuses } =
-    continuationContext;
+  const { defaultBranchNow, maintenanceQueue, openPullRequests, headStatuses, wake } =
+    await publicationContext(client, repository, defaultBranch, continuationContext);
   const body = buildDriftHandoff({
     statusNow: defaultBranchNow,
     maintenanceQueue,
     openPullRequests,
     headStatuses,
+    wake,
   });
   if (!body) return;
 
@@ -714,9 +758,10 @@ export async function run() {
   // event-specific path is essential.
   let retryNeeded = false;
   const watchdogFailures = [];
+  const lastBaseMergeAt = await client.lastCommitAt(defaultBranch);
   for (const pullRequest of await client.openPullRequests()) {
     try {
-      await handOffConflict(client, pullRequest, repository, defaultBranch);
+      await handOffConflict(client, pullRequest, repository, defaultBranch, { lastBaseMergeAt });
     } catch (error) {
       if (!String(error?.message).includes('did not compute mergeability')) throw error;
       retryNeeded = true;
