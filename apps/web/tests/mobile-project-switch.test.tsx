@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import type { MembershipSummary } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * Mobile project context.
@@ -39,6 +40,8 @@ async function loadBar(overrides: Record<string, unknown> = {}) {
   const { TopBar } = await import('@/layout/TopBar');
   return { useStore, TopBar };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/layout/TopBar'));
 
 afterEach(() => {
   cleanup();

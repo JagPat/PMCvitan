@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { Decision, Lang, ProjectMember, ProjectNode } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 QA item 3 — the Decision Log in Hindi and Gujarati: an engineer with Gujarati chosen saw the menu
@@ -76,23 +77,34 @@ async function load(lang: Lang, over: Record<string, unknown> = {}) {
   return { useStore, r: render(<DecisionLogScreen />) };
 }
 
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DecisionLogScreen'), () => import('@/components/WaitingCardActions'), () => import('@/components/ConsultationThread'), () => import('@/components/CountersignControls'), () => import('@/components/LocationContext'));
+
+/** The awaiting-client list's own read: its promise, then one turn for the screen to draw what it set. */
+const answered = (p: Promise<unknown>) => act(async () => {
+  await p.then(() => {}, () => {});
+  await new Promise((done) => setTimeout(done, 0));
+});
+
 afterEach(() => {
   cleanup();
   vi.resetModules();
 });
 
 describe.each(['hi', 'gu'] as const)('the Decision Log in %s (#482 QA item 3)', (lang) => {
-  it('the PMC\'s register, in every status and every group-by lens, shows no English', async () => {
+  it('the PMC\'s register, in every status, shows no English', async () => {
     const { r } = await load(lang);
     for (const id of ['DL-1', 'DL-2', 'DL-3', 'DL-4', 'DL-5', 'DL-6', 'DL-7', 'DL-8', 'DL-9']) expect(r.getByTestId(`log-row-${id}`)).toBeTruthy();
     expect(r.getByTestId('withdraw-DL-2')).toBeTruthy();
     expect(r.getByTestId('request-change-DL-1')).toBeTruthy();
     expect(r.getByTestId('consultation-thread-DL-5')).toBeTruthy();
     expect(leftoverEnglish(document.body, DATA)).toEqual([]);
-    for (const lens of ['room', 'element', 'status', 'flat', 'location']) {
-      fireEvent.click(r.getByTestId(`groupby-${lens}`));
-      expect(leftoverEnglish(document.body, DATA), lens).toEqual([]);
-    }
+  });
+
+  // one lens per test: a render and six full-page scans in one test do not fit its 5 s on a loaded runner
+  it.each(['room', 'element', 'status', 'flat', 'location'])('the PMC\'s register grouped by %s shows no English', async (lens) => {
+    const { r } = await load(lang);
+    fireEvent.click(r.getByTestId(`groupby-${lens}`));
+    expect(leftoverEnglish(document.body, DATA)).toEqual([]);
   });
 
   it('the status filters, and a filter that matches nothing, show no English', async () => {
@@ -170,8 +182,10 @@ describe.each(['hi', 'gu'] as const)('the Decision Log in %s (#482 QA item 3)', 
   });
 
   it('an engineer\'s screen, with the decisions awaiting the client, shows no English', async () => {
-    const { r } = await load(lang, { role: 'engineer', sessionUserId: 'u-eng' });
-    await waitFor(() => expect(r.getByTestId('awaiting-client-AW-1')).toBeTruthy());
+    const served = Promise.resolve(AWAITING);
+    const { r } = await load(lang, { role: 'engineer', sessionUserId: 'u-eng', fetchAwaitingClient: () => served });
+    await answered(served);
+    expect(r.getByTestId('awaiting-client-AW-1')).toBeTruthy();
     expect(leftoverEnglish(document.body, DATA)).toEqual([]);
   });
 
@@ -180,12 +194,17 @@ describe.each(['hi', 'gu'] as const)('the Decision Log in %s (#482 QA item 3)', 
     expect(pending.r.getByTestId('awaiting-client')).toBeTruthy();
     expect(leftoverEnglish(document.body, DATA)).toEqual([]);
     cleanup();
-    const empty = await load(lang, { role: 'consultant', fetchAwaitingClient: () => Promise.resolve([]) });
-    await waitFor(() => expect(empty.r.getByTestId('awaiting-client-empty')).toBeTruthy());
+    const none = Promise.resolve([]);
+    const empty = await load(lang, { role: 'consultant', fetchAwaitingClient: () => none });
+    await answered(none);
+    expect(empty.r.getByTestId('awaiting-client-empty')).toBeTruthy();
     expect(leftoverEnglish(document.body, DATA)).toEqual([]);
     cleanup();
-    const failed = await load(lang, { role: 'engineer', fetchAwaitingClient: () => Promise.reject(new Error('503')) });
-    await waitFor(() => expect(failed.r.getByTestId('awaiting-client-failed')).toBeTruthy());
+    const refused = Promise.reject(new Error('503'));
+    refused.catch(() => {});
+    const failed = await load(lang, { role: 'engineer', fetchAwaitingClient: () => refused });
+    await answered(refused);
+    expect(failed.r.getByTestId('awaiting-client-failed')).toBeTruthy();
     expect(leftoverEnglish(document.body, DATA)).toEqual([]);
   });
 
@@ -253,8 +272,10 @@ describe('the Decision Log in English is unchanged', () => {
     const mine = render(<WaitingCardActions d={DECISIONS[1]!} />);
     expect(mine.getByTestId('edit-state-DL-2').textContent).toBe('You asked for this change. Withdraw it to keep the approved choice.Withdraw request');
     cleanup();
-    const { r } = await load('en', { role: 'engineer', sessionUserId: 'u-eng' });
-    await waitFor(() => expect(r.getByTestId('awaiting-client-AW-1')).toBeTruthy());
+    const served = Promise.resolve(AWAITING);
+    const { r } = await load('en', { role: 'engineer', sessionUserId: 'u-eng', fetchAwaitingClient: () => served });
+    await answered(served);
+    expect(r.getByTestId('awaiting-client-AW-1')).toBeTruthy();
     expect(r.getByTestId('awaiting-client-count').textContent).toBe('2 DECISIONS');
     expect(r.getByTestId('awaiting-client-AW-1').textContent).toContain('Waiting 3 days');
     expect(r.getByTestId('awaiting-client-AW-2').textContent).toContain('Waiting 1 day');

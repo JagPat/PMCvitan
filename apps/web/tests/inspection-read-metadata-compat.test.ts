@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { ApiSnapshot } from '@/data/apiGateway';
 import type { Checklist, Review } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * #771 read contract (#482 6115700782) — the API now serves each checklist and review row's STORED assignee and
@@ -12,6 +13,8 @@ import type { Checklist, Review } from '@vitan/shared';
  *
  * Every case goes through `applySnapshot`, the path a live snapshot takes. Isolated automated tests only.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/store/selectors'));
 
 afterEach(() => {
   vi.unstubAllEnvs();

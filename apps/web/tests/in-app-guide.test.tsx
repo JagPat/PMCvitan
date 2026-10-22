@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { Checklist, Lang, Role, ScreenKey } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 (board decision 14 Oct) — the in-app guide: coach marks on the live screen.
@@ -29,6 +30,8 @@ const checklist = (): Checklist => ({
 });
 
 let hidden = new Set<string>();
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/guide/GuideHost'), () => import('@/guide/GuideMe'), () => import('@/guide/guides'), () => import('@/screens/EngineerChecklistScreen'), () => import('@/layout/CreateControl'), () => import('@/guide/guideState'), () => import('@/guide/guideTarget'), () => import('@/guide/outcomes'));
 
 beforeEach(() => {
   vi.useFakeTimers();

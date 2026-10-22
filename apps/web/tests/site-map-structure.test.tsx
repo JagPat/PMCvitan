@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import { describeLocationDelete, locationDeleteBlocked, visibleDecisionsUnder } from '@/lib/locationDelete';
 import type { Activity, Decision, Phase, ProjectNode } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * Audit B3 / B4 / F-02 — the Site Map is where the location tree is built (a PMC adds a room
@@ -47,6 +48,8 @@ async function load(overrides: Record<string, unknown> = {}) {
   const { PlacesScreen } = await import('@/screens/PlacesScreen');
   return { useStore, PlacesScreen };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/PlacesScreen'), () => import('@/screens/modals/ManageLocationsModal'), () => import('@/screens/DecisionLogScreen'), () => import('@/screens/ScheduleScreen'));
 
 afterEach(() => {
   cleanup();

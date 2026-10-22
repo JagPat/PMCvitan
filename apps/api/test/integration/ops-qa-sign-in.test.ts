@@ -8,6 +8,7 @@ import { orgsManifest } from '../../src/orgs/orgs.manifest';
 import { AuthService } from '../../src/auth/auth.service';
 import { recordAudit } from '../../src/platform/audit';
 import { systemActor } from '../../src/common/actor';
+import { OPS_DOOR_FAILURES_PER_ADDRESS } from '../../src/platform/ops/ops-token.guard';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 
@@ -124,11 +125,15 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
   });
 
   it('signs in a QA account of a marked company, with a working token, a project switch and an audit row', async () => {
+    // the round-3 test below signs this account in too, and a shuffled run (--sequence.shuffle) can put it first:
+    // the rows already there are set aside by id, so this counts the rows this sign-in wrote
+    const signIns = { projectId: ids.project, action: 'auth.qaSignIn', entityId: ids.client };
+    const before = (await t.prisma.auditLog.findMany({ where: signIns, select: { id: true } })).map((a) => a.id);
     const r = await door('/auth/ops/qa-sign-in').send(body(qaClientEmail.toUpperCase()));
     expect(r.status, r.text).toBe(201);
     expect(r.body).toMatchObject({ role: 'client', projectId: ids.project, name: 'QA Client' });
     expect((await http().get('/me/memberships').set('Authorization', `Bearer ${r.body.token}`)).status).toBe(200);
-    const audit = await t.prisma.auditLog.findMany({ where: { projectId: ids.project, action: 'auth.qaSignIn', entityId: ids.client } });
+    const audit = await t.prisma.auditLog.findMany({ where: { ...signIns, id: { notIn: before } } });
     expect(audit).toHaveLength(1);
     expect(audit[0]).toMatchObject({ actor: 'claude', entity: 'User', entityId: ids.client, payload: { reason: 'live QA run', via: 'ops-api' } });
     const pmc = await door('/auth/ops/qa-sign-in').send(body(qaEmail));
@@ -543,8 +548,12 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
   });
 
   it('Codex P2 on #1020: thirty-odd calls without the token never lock the operator out of the QA mark', async () => {
-    for (let i = 0; i < 35; i++) expect((await http().post(`/ops/orgs/${ids.org}/qa-only`).send(why)).status).toBe(401);
-    const r = await door(`/ops/orgs/${ids.org}/qa-only`).send(why);
+    // wrong tokens are counted in the door guard's own window (429 over it); the operator's token never reads it
+    const from = '198.51.100.7';
+    const statuses: number[] = [];
+    for (let i = 0; i < 35; i++) statuses.push((await http().post(`/ops/orgs/${ids.org}/qa-only`).set('X-Forwarded-For', from).send(why)).status);
+    expect(statuses).toEqual([...Array(OPS_DOOR_FAILURES_PER_ADDRESS).fill(401), ...Array(35 - OPS_DOOR_FAILURES_PER_ADDRESS).fill(429)]);
+    const r = await door(`/ops/orgs/${ids.org}/qa-only`).set('X-Forwarded-For', from).send(why);
     expect(r.status, r.text).toBe(200);
     expect(r.body).toEqual({ ok: true, orgId: ids.org, changed: false });
   });

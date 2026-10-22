@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
+import { warmImports } from './warm-imports';
 
 /**
  * Phase 2 Task 10 correction (C2) — a socket RECONNECT must request fresh state after (re)joining the
@@ -23,6 +24,8 @@ vi.mock('socket.io-client', () => ({
 vi.mock('@/data/push', () => ({ subscribeToPush: vi.fn().mockResolvedValue(undefined) }));
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+
+await warmImports(() => import('@/store/store'), () => import('@/data/useApiSync'));
 
 describe('useApiSync — socket reconnect requests fresh state (Task 10 correction, C2)', () => {
   beforeEach(() => {

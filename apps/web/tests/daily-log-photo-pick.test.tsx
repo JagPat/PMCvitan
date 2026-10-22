@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { DailyLog } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * Codex F1 on `20311f92` — the picker must not yield again before queueing the photo.
@@ -36,6 +37,8 @@ function stubFileReader(dataUrl: string): { release: () => void } {
   vi.stubGlobal('FileReader', SyncFileReader);
   return { release: () => fire() };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DailyLogScreen'), () => import('@/lib/exif'));
 
 afterEach(() => {
   cleanup();

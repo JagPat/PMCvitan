@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { ApiGateway } from '@/data/apiGateway';
+import { warmImports } from './warm-imports';
 
 /**
  * #827 one-screen sign-in (approved mockup screens 1 and 2). A live build opens straight on the mobile number,
@@ -10,6 +11,8 @@ import type { ApiGateway } from '@/data/apiGateway';
  *
  * API_BASE is resolved at module load, so each case resets the registry and imports fresh.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/screens/TeamAccessScreen'), () => import('@/data/apiGateway'));
 
 afterEach(() => {
   cleanup();

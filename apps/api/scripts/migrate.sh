@@ -162,12 +162,33 @@ if [ ! -f "$INBOX_REPAIR" ]; then
   exit 1
 fi
 
+# Whether Prisma's output names this migration AS the failure, on a whole line. Prisma 6.19.3 names it in one of three
+# shapes, each measured on a real deploy:
+#   - P3018, for a migration Prisma runs in its own transaction (the deleted-photo guard), and for one that runs its
+#     own BEGIN/COMMIT when its error comes at that COMMIT (both 4d-i halves defer triggers to it): "Migration name: <name>";
+#   - the abort of a migration that runs its own BEGIN/COMMIT (4c-iii-r and both 4d-i halves), when the error comes
+#     before its COMMIT: no P3018, only "Error: ERROR: current transaction is aborted, commands ignored until end of
+#     transaction block" and the engine's trace, whose 'with migration_name="<name>"' line names it. The trace alone
+#     is not enough: it names whichever migration Prisma was applying, so a lock timeout or lost connection on
+#     Prisma's own ledger write carries it for a migration whose SQL never ran (measured: its resolve is refused, P3011);
+#   - P3009, on the next deploy after either: "The `<name>` migration started at ... failed". The SQL connector never
+#     loads the stored logs (sql-schema-connector/src/flavour.rs:272), so the line ends at "failed"; the engine's other
+#     ending, " with the following logs:", is matched in case a later Prisma prints it.
+# A deploy that applied it and then failed on a later migration names it only as "Applying migration", which is not a
+# failure of it (#1032's check; a resolve of an applied migration is refused with P3012 and buries the real failure's
+# recovery).
+migration_failed_in_output() {
+  printf '%s\n' "$1" | grep -qE "^Migration name: $2\$|^The \`$2\` migration started at .* failed( with the following logs:)?\$" && return 0
+  printf '%s\n' "$1" | grep -qx 'Error: ERROR: current transaction is aborted, commands ignored until end of transaction block' \
+    && printf '%s\n' "$1" | grep -qE "^[[:space:]]+with migration_name=\"$2\"\$"
+}
+
 # THE 4c-iii-r ADOPTION ABORT CANNOT SPEAK FOR ITSELF (found by the production-runner proof's state
 # F9; routed through BOTH deploy paths after Codex on `88ea82c`). `20271125000000` is one explicit
 # BEGIN/COMMIT, so when its diagnostic RAISEs, the transaction aborts and every later statement in
 # the file fails with `current transaction is aborted` — which is the error Prisma surfaces. The
 # carefully written message naming the recovery never reaches the operator. So the recovery is
-# printed HERE, where the operator is actually looking, whenever a failed deploy names it.
+# printed HERE, where the operator is actually looking, whenever a failed deploy names it as the failure.
 #
 # It is a FUNCTION rather than a block at the bottom because there are TWO `migrate deploy`
 # invocations: the ordinary one, and the P3005 baseline one. `20271125000000` is in
@@ -175,7 +196,7 @@ fi
 # second deploy too — where the invocation's own `|| exit 1` used to end the script before any
 # recovery could be printed, leaving that operator with Prisma's swallowed error alone.
 report_4c_iiir_migration_failure() {
-  printf '%s\n' "$1" | grep -q '20271125000000_phase6_4c_iiir_marker_seal' || return 0
+  migration_failed_in_output "$1" 20271125000000_phase6_4c_iiir_marker_seal || return 0
   echo "[migrate] That failure is the 4c-iii-r marker-seal migration. Its own message is swallowed by"
   echo "[migrate] the aborted transaction, so the recovery is repeated here:"
   echo "[migrate]   1. node dist/platform/projections/inbox-repair.cli.js seals repair"
@@ -239,7 +260,7 @@ report_4d_i_migration_failure() {
   _path="${2:-ordinary}"
   _failed_half=''
   for _half in 20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d_i_decision_facts; do
-    printf '%s\n' "$1" | grep -q "$_half" && _failed_half="$_half"
+    migration_failed_in_output "$1" "$_half" && _failed_half="$_half"
   done
   [ -n "$_failed_half" ] || return 0
   if [ "$_failed_half" = 20271221000000_phase6_t4d_i_decision_facts ]; then
@@ -283,6 +304,24 @@ report_4d_i_migration_failure() {
   echo "[migrate] named account a real display name, then step 2 and step 3 above:"
   echo "[migrate]   UPDATE \"User\" SET \"name\" = '<real name>' WHERE \"id\" = '<the id from the sample>';"
   echo "[migrate] Full detail: docs/RUNBOOK.md §P6T4D."
+}
+
+# #482 site photos: the deleted-photo guard (20280118). Whatever stopped it (MTSTO: a stored photo carries a deleted
+# photo's key; MTISO; its 15 s lock timeout; a killed install; or this client dying mid-install), the next deploy
+# stops at P3009, and the recovery is the same. A re-run is safe even if the install had committed.
+report_media_guard_migration_failure() {
+  migration_failed_in_output "$1" 20280118000000_media_tombstone_guard || return 0
+  echo "[migrate] That failure is the deleted-photo guard (20280118000000_media_tombstone_guard). If Prisma"
+  echo "[migrate] reports it failing (P3018), nothing of it was kept. After a P3009 it may have committed, if the"
+  echo "[migrate] deploy client died. The steps below are safe either way."
+  echo "[migrate] If it says MTSTO (\"stored photo(s) carry the key of a deleted photo\"):"
+  echo "[migrate]   0. list those photos with the read-only count in docs/RUNBOOK.md §MG; the owner decides"
+  echo "[migrate]      each one before going on. Nothing removes them automatically."
+  echo "[migrate] Then, for any failure of this file (MTSTO, MTISO, the lock timeout, a killed install):"
+  echo "[migrate]   1. npx prisma migrate resolve --rolled-back 20280118000000_media_tombstone_guard"
+  echo "[migrate]      (without this the next deploy stops at P3009)"
+  echo "[migrate]   2. redeploy"
+  echo "[migrate] Full detail: docs/RUNBOOK.md §MG."
 }
 
 out=$(npx prisma migrate deploy 2>&1)
@@ -527,7 +566,13 @@ if echo "$out" | grep -q "P3005"; then
   # db-push baseline does not have. It is guarded and re-runnable.
   #
   # The #482 deleted-photo record (20280117) is here for the same reason: its seals and its writer are triggers, which a db-push
-  # baseline does not have. It is guarded and re-runnable.
+  # baseline does not have. It is guarded and re-runnable. Its guard (20280118), which refuses a recorded key on
+  # insert, is a trigger too.
+  #
+  # The org role change written in place (20280119) is here because it replaces a function 20271220 installs, and a
+  # baseline resolves a migration as applied without running it, while a function body is not in schema.prisma. So a
+  # ledger-less restore taken before 20280119 would keep 20271220's body, and a database without A7d replays 20271220
+  # and reinstalls it. Replayed after it, this file puts the in-place body back. It is re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -567,7 +612,9 @@ if echo "$out" | grep -q "P3005"; then
 20280114000000_site_visits_sv2_visit_media
 20280115000000_media_markup_voice_video
 20280116000000_qa_company_lock
-20280117000000_media_tombstone"
+20280117000000_media_tombstone
+20280118000000_media_tombstone_guard
+20280119000000_org_authority_role_change_in_place"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
@@ -758,6 +805,7 @@ if echo "$out" | grep -q "P3005"; then
     echo "[migrate] migrate deploy failed on the P3005 baseline path — refusing to start."
     report_4c_iiir_migration_failure "$baseline_out"
     report_4d_i_migration_failure "$baseline_out" baseline
+    report_media_guard_migration_failure "$baseline_out"
     exit 1
   fi
   printf '%s\n' "$baseline_out"
@@ -828,4 +876,5 @@ echo "[migrate] migrate deploy failed — refusing to start (no db push fallback
 
 report_4c_iiir_migration_failure "$out"
 report_4d_i_migration_failure "$out"
+report_media_guard_migration_failure "$out"
 exit $code

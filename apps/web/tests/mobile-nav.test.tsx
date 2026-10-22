@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent } from '@testing-library/react';
 import { splitMobileNav, MOBILE_MAX_TABS, MOBILE_PRIMARY_PREFERENCE } from '@/lib/mobileNav';
 import { enabledScreensFor } from '@/lib/screens';
 import type { Role, ScreenKey } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * Mobile information architecture.
@@ -13,6 +14,8 @@ import type { Role, ScreenKey } from '@vitan/shared';
  * destination the role cannot reach, never drop one it can, and must keep the overflow's attention
  * badges visible on the More tab.
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/layout/BottomTabs'));
 
 afterEach(() => {
   cleanup();

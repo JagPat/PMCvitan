@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import { noticeText, type AppNotification, type Lang, type NoticeFacts } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #827 (Jagrut, 13 Oct: "Client ने मंज़ूरी दी" left the role in English) — the bell says role names in Hindi and
@@ -9,6 +10,8 @@ import { leftoverEnglish } from './leftover-english';
  * an approval or forward notice (#839), never out of the text, so a person's name, a title or a material is
  * shown exactly as written, even one that looks like a role or contains "approved" (#840).
  */
+
+await warmImports(() => import('@/store/store'), () => import('@/layout/NotificationPanel'));
 
 afterEach(() => {
   cleanup();

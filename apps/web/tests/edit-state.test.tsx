@@ -1,6 +1,8 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { Decision, Drawing, DrawingRevision, ProjectNode } from '@vitan/shared';
+import { warmImports } from './warm-imports';
+import { holdFileReads } from './file-reads';
 
 /**
  * Editing states — "can I edit this? if not, why? what may I do instead?"
@@ -54,11 +56,18 @@ async function loadStore(overrides: Record<string, unknown> = {}, env: Record<st
   return useStore;
 }
 
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/components'), () => import('@/screens/DecisionLogScreen'), () => import('@/screens/DrawingsScreen'));
+
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   vi.resetModules();
 });
+// The viewer reads a PDF revision's file with fetch (drawings-offline-viewer); these tests are about the edit states, not the file:
+// the read is held, never sent, and stops when the viewer closes.
+beforeEach(() => holdFileReads());
+
 
 describe('EditState — the shared presentation', () => {
   it('carries its verdict, its reason and its action', async () => {

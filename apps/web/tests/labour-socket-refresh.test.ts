@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
+import { warmImports } from './warm-imports';
 
 /**
  * Phase 4 Task 6 — Codex round 2: the Labour bundle is module-query-only (never carried by the
@@ -22,6 +23,8 @@ vi.mock('socket.io-client', () => ({
 vi.mock('@/data/push', () => ({ subscribeToPush: vi.fn().mockResolvedValue(undefined) }));
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+
+await warmImports(() => import('@/store/store'), () => import('@/data/useApiSync'));
 
 describe('useApiSync — a `changed` ping refreshes the labour bundle (Codex round 2)', () => {
   beforeEach(() => {

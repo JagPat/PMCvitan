@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import { dashboardLabels, type Activity, type Lang, type Role } from '@vitan/shared';
 import { leftoverEnglish } from './leftover-english';
+import { warmImports } from './warm-imports';
 
 /**
  * #482 QA item 3 — the Dashboard in Hindi and Gujarati: the header, Milestone Progress and its basis line,
@@ -44,6 +45,8 @@ function outsidePhotos(container: HTMLElement): HTMLElement {
   if (screen?.lastElementChild && /PHOTO/.test(screen.lastElementChild.textContent ?? '')) screen.lastElementChild.remove();
   return copy;
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DashboardScreen'));
 
 afterEach(() => {
   cleanup();

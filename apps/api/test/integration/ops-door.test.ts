@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { HOME_NAV_CAPABILITY } from '../../src/platform/capabilities.service';
-import { OPS_TOKEN_MIN_LENGTH } from '../../src/platform/ops/ops-token.guard';
+import { OPS_DOOR_FAILURES_GLOBAL, OPS_DOOR_FAILURES_PER_ADDRESS, OPS_DOOR_WINDOW_MS, OPS_TOKEN_MIN_LENGTH, opsDoorRefusalWindows, resetOpsDoorRefusalWindows } from '../../src/platform/ops/ops-token.guard';
 
 /**
  * #482 operator door — the operator commands (the project list and the home-nav switch) as
@@ -134,5 +134,202 @@ describe('#482 operator door (live PG)', () => {
     } finally {
       await t.prisma.project.update({ where: { id: f.projectB.id }, data: { archivedAt: null } });
     }
+  });
+
+  // the four OpsController routes, and the QA routes the same guard keeps, for the loops below
+  const ROUTES = (projectId: string) => [
+    { method: 'get', path: '/ops/projects' },
+    { method: 'get', path: '/ops/people' },
+    { method: 'post', path: `/ops/projects/${projectId}/capabilities/home-nav/enable` },
+    { method: 'post', path: `/ops/projects/${projectId}/capabilities/home-nav/disable` },
+  ] as const;
+  const call = (r: { method: 'get' | 'post'; path: string }, from?: string, token?: string) => {
+    let q = r.method === 'get' ? http().get(r.path) : http().post(r.path).send(body);
+    if (from) q = q.set('X-Forwarded-For', from);
+    if (token) q = q.set('Authorization', `Bearer ${token}`);
+    return q;
+  };
+
+  it('stays 404 while closed however often it is called, on all four routes: the door is checked before any count', async () => {
+    delete process.env.OPS_TOKEN;
+    for (let i = 0; i < 35; i++) {
+      for (const r of ROUTES(f.projectA.id)) expect((await call(r, '192.0.2.1')).status, `${r.method} ${r.path}`).toBe(404);
+    }
+  });
+
+  it('answers a closed route exactly as a path the server does not have, HEAD included', async () => {
+    delete process.env.OPS_TOKEN;
+    const pairs = [
+      ['get', '/ops/people?x=1', '/ops/nobody?x=1'],
+      ['post', `/ops/projects/${f.projectA.id}/capabilities/home-nav/enable`, `/ops/nowhere/${f.projectA.id}/capabilities/home-nav/enable`],
+      ['post', '/auth/ops/qa-sign-in', '/auth/ops/qa-sign-up'],
+    ] as const;
+    for (const [method, closedPath, unroutedPath] of pairs) {
+      const closed = await http()[method](closedPath);
+      const unrouted = await http()[method](unroutedPath);
+      expect(closed.status).toBe(404);
+      expect(unrouted.status).toBe(404);
+      expect(closed.body).toEqual({ ...unrouted.body, message: (unrouted.body.message as string).replace(unroutedPath, closedPath) });
+    }
+    // the same length of path, so the same Content-Length: HEAD cannot tell them apart either
+    const head = await http().head('/ops/projects');
+    const none = await http().head('/ops/projectz');
+    expect(head.status).toBe(404);
+    expect(none.status).toBe(404);
+    expect(head.headers['content-length']).toBe(none.headers['content-length']);
+    expect(head.headers['content-type']).toBe(none.headers['content-type']);
+  });
+
+  describe('wrong tokens are counted in the guard\'s own window', () => {
+    // each test starts and ends with no refusal windows; only the clock is faked, the HTTP stack runs as usual
+    beforeEach(() => {
+      resetOpsDoorRefusalWindows();
+      vi.useFakeTimers({ toFake: ['Date'] });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+      resetOpsDoorRefusalWindows();
+    });
+    const later = (ms: number) => vi.setSystemTime(Date.now() + ms);
+
+    it('per address, across every route the guard keeps (QA ones included): 401 up to the limit, then 429; the token still opens it', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      const routes = [...ROUTES(f.projectA.id), { method: 'post', path: '/auth/ops/qa-sign-in' }, { method: 'post', path: `/ops/orgs/${f.orgA.id}/qa-only` }] as const;
+      const from = '203.0.113.10';
+      for (let i = 0; i < OPS_DOOR_FAILURES_PER_ADDRESS; i++) {
+        const r = routes[i % routes.length];
+        expect((await call(r, from, i % 2 ? `${TOKEN}x` : undefined)).status, `${r.method} ${r.path}`).toBe(401);
+      }
+      for (const r of routes) expect((await call(r, from)).status, `${r.method} ${r.path}`).toBe(429);
+      // the operator, from that same address, is never locked out: a correct token does not read the counter
+      const ok = await call(ROUTES(f.projectA.id)[1], from, TOKEN);
+      expect(ok.status, ok.text).toBe(200);
+      // another address has its own window
+      expect((await call(ROUTES(f.projectA.id)[0], '203.0.113.11')).status).toBe(401);
+    });
+
+    it('one address over its own window does not spend the shared one: the per-address check comes first', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      const [projects] = ROUTES(f.projectA.id);
+      const from = '203.0.113.20';
+      for (let i = 0; i < OPS_DOOR_FAILURES_GLOBAL + 10; i++) {
+        expect((await call(projects, from)).status).toBe(i < OPS_DOOR_FAILURES_PER_ADDRESS ? 401 : 429);
+      }
+      // only its first ten reached the shared window, so a fresh address is still refused with 401
+      expect((await call(projects, '203.0.113.21')).status).toBe(401);
+    });
+
+    it('a clock stepped back past a window resets the count', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      const [projects] = ROUTES(f.projectA.id);
+      const from = '203.0.113.30';
+      for (let i = 0; i < OPS_DOOR_FAILURES_PER_ADDRESS; i++) expect((await call(projects, from)).status).toBe(401);
+      expect((await call(projects, from)).status).toBe(429);
+      later(-2 * OPS_DOOR_WINDOW_MS);
+      expect((await call(projects, from)).status).toBe(401);
+    });
+
+    const refusal = async (from: string) => {
+      const r = await call(ROUTES(f.projectA.id)[0], from);
+      return { status: r.status, retryAfter: (r.body as { retryAfter?: number }).retryAfter };
+    };
+
+    it('an address over its own window is refused by its own counter, and told to wait for its own reset', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      expect((await refusal('203.0.113.40')).status).toBe(401); // starts the shared window
+      later(5_000);
+      for (let i = 0; i < OPS_DOOR_FAILURES_PER_ADDRESS; i++) expect((await refusal('203.0.113.41')).status).toBe(401);
+      later(OPS_DOOR_WINDOW_MS - 4_000); // the shared window has ended and restarts; the address's own has 4 s left
+      expect((await refusal('203.0.113.42')).status).toBe(401);
+      later(2_000);
+      expect(await refusal('203.0.113.41')).toEqual({ status: 429, retryAfter: 2 });
+    });
+
+    it('a new address refused by the shared window is told to wait for the shared reset', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      for (let i = 0; i < OPS_DOOR_FAILURES_GLOBAL; i++) expect((await refusal(`198.51.100.${100 + Math.floor(i / 5)}`)).status).toBe(401);
+      later(OPS_DOOR_WINDOW_MS - 5_000);
+      expect(await refusal('198.51.100.200')).toEqual({ status: 429, retryAfter: 5 });
+    });
+
+    it('with the shared window already over its cap, a new address is refused without a window made for it', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      for (let i = 0; i < OPS_DOOR_FAILURES_GLOBAL; i++) expect((await refusal(`198.51.101.${Math.floor(i / 5)}`)).status).toBe(401);
+      expect((await refusal('198.51.101.200')).status).toBe(429); // the 51st: the shared window is now over its cap
+      const held = opsDoorRefusalWindows();
+      for (let i = 0; i < 20; i++) expect((await refusal(`198.51.102.${i}`)).status).toBe(429);
+      expect(opsDoorRefusalWindows()).toBe(held);
+    });
+
+    const opened = async (from: string) => (await call(ROUTES(f.projectA.id)[0], from, TOKEN)).status;
+
+    it('with the shared window over its cap, an address over its own window is still refused by its own counter', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      expect((await refusal('203.0.113.70')).status).toBe(401); // starts the shared window
+      later(5_000);
+      for (let i = 0; i < OPS_DOOR_FAILURES_PER_ADDRESS; i++) expect((await refusal('203.0.113.71')).status).toBe(401);
+      for (let i = 0; i < OPS_DOOR_FAILURES_GLOBAL - 1 - OPS_DOOR_FAILURES_PER_ADDRESS; i++) {
+        expect((await refusal(`198.51.103.${Math.floor(i / 5)}`)).status).toBe(401);
+      }
+      expect((await refusal('203.0.113.72')).status).toBe(429); // the shared window is over its cap, 55 s left
+      expect(await refusal('203.0.113.71')).toEqual({ status: 429, retryAfter: 60 }); // its own reset, not the shared one
+    });
+
+    it('with the shared window over its cap, an address under its own limit still spends its own window', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      expect((await refusal('203.0.113.80')).status).toBe(401); // starts the shared window
+      later(5_000);
+      for (let i = 0; i < 5; i++) expect((await refusal('203.0.113.81')).status).toBe(401);
+      for (let i = 0; i < OPS_DOOR_FAILURES_GLOBAL - 6; i++) expect((await refusal(`198.51.104.${Math.floor(i / 5)}`)).status).toBe(401);
+      expect((await refusal('203.0.113.82')).status).toBe(429); // the shared window is over its cap
+      for (let i = 0; i < 5; i++) expect((await refusal('203.0.113.81')).status).toBe(429); // its own count reaches 10
+      later(OPS_DOOR_WINDOW_MS - 4_000); // the shared window has ended; its own has 4 s left
+      expect(await refusal('203.0.113.81')).toEqual({ status: 429, retryAfter: 4 });
+    });
+
+    it('with the shared window over its cap, the token opens the door from a new address and makes no window', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      for (let i = 0; i < OPS_DOOR_FAILURES_GLOBAL; i++) expect((await refusal(`198.51.105.${Math.floor(i / 5)}`)).status).toBe(401);
+      expect((await refusal('203.0.113.90')).status).toBe(429);
+      const held = opsDoorRefusalWindows();
+      expect(await opened('203.0.113.91')).toBe(200);
+      expect(opsDoorRefusalWindows()).toBe(held);
+    });
+
+    it('the token opens the door right after the clock steps back, by many windows or by one and a half', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      const from = '203.0.113.95';
+      for (let i = 0; i < OPS_DOOR_FAILURES_PER_ADDRESS; i++) expect((await refusal(from)).status).toBe(401);
+      expect((await refusal(from)).status).toBe(429);
+      later(-100 * OPS_DOOR_WINDOW_MS);
+      expect(await opened(from)).toBe(200);
+      for (let i = 0; i < OPS_DOOR_FAILURES_PER_ADDRESS; i++) expect((await refusal(from)).status).toBe(401);
+      expect((await refusal(from)).status).toBe(429);
+      later(-1.5 * OPS_DOOR_WINDOW_MS);
+      expect(await opened(from)).toBe(200);
+    });
+
+    it('a clock stepped back by many windows prunes every window it left ahead', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      for (let i = 0; i < 5; i++) expect((await refusal(`203.0.113.${50 + i}`)).status).toBe(401);
+      expect(opsDoorRefusalWindows()).toBe(6);
+      later(-100 * OPS_DOOR_WINDOW_MS);
+      expect((await refusal('203.0.113.60')).status).toBe(401);
+      expect(opsDoorRefusalWindows()).toBe(2); // that address and the shared window, both new
+    });
+
+    it('across all addresses: rotating addresses meets the shared cap; the token still opens it, and a closed door is never 429', async () => {
+      process.env.OPS_TOKEN = TOKEN;
+      const [projects, people] = ROUTES(f.projectA.id);
+      const perAddress = OPS_DOOR_FAILURES_PER_ADDRESS / 2;
+      for (let i = 0; i < OPS_DOOR_FAILURES_GLOBAL; i++) {
+        expect((await call(projects, `198.51.100.${Math.floor(i / perAddress)}`)).status).toBe(401);
+      }
+      expect((await call(projects, '198.51.100.250')).status).toBe(429);
+      const ok = await call(people, '198.51.100.250', TOKEN);
+      expect(ok.status, ok.text).toBe(200);
+      delete process.env.OPS_TOKEN;
+      for (const r of ROUTES(f.projectA.id)) expect((await call(r, '198.51.100.251')).status).toBe(404);
+    });
   });
 });

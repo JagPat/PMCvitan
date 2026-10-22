@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import { placeContents, trailOf } from '@/lib/locationTree';
 import { SNAPSHOT_SITE_PHOTO_LIMIT, type Activity, type ProjectNode } from '@vitan/shared';
+import { warmImports } from './warm-imports';
 
 /**
  * Location context — "where does this belong?", answered wherever a located record is read.
@@ -49,6 +50,8 @@ async function load(overrides: Record<string, unknown> = {}) {
   const { LocationContext } = await import('@/components');
   return { useStore, LocationContext };
 }
+
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/components'), () => import('@/screens/PlacesScreen'));
 
 afterEach(() => {
   cleanup();
