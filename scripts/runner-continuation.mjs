@@ -329,8 +329,9 @@ function assessDriftCorrected(statusNow, maintenanceQueue, drift) {
 // when an action is required, which is when no autonomous PR is open. The loop is then idle and
 // nothing else restarts it. While one is open, its CI, review, conflict and watchdog signals
 // keep it moving, and the note stays on record without a wake.
-function wakeTag({ openPullRequests }) {
-  return shouldShepherdOpenPullRequests({ openPullRequests }) ? '' : '@claude ';
+// A publisher passes `wake` from a live read; the snapshot is only the default.
+function wakeTag({ openPullRequests, wake }) {
+  return (wake ?? !shouldShepherdOpenPullRequests({ openPullRequests })) ? '@claude ' : '';
 }
 
 export function buildPostMergeContinuation({
@@ -338,6 +339,7 @@ export function buildPostMergeContinuation({
   maintenanceQueue = [],
   openPullRequests = [],
   headStatuses = [],
+  wake,
 }) {
   const drift = detectStatusDriftAcrossHeads({
     defaultBranchNow: statusNow,
@@ -352,7 +354,7 @@ export function buildPostMergeContinuation({
   const nextStep = assessment.nextStep ?? 'none';
 
   const lines = [
-    `${wakeTag({ openPullRequests })}This exact-head reviewed PR has merged into \`main\`.`,
+    `${wakeTag({ openPullRequests, wake })}This exact-head reviewed PR has merged into \`main\`.`,
     '',
     'Continue the autonomous runner from the new `main`: verify the merge, advance `docs/STATUS.md` according to its state machine, and start only the next permitted roadmap task or named correction.',
     '',
@@ -401,6 +403,7 @@ export function buildDriftHandoff({
   maintenanceQueue = [],
   openPullRequests = [],
   headStatuses = [],
+  wake,
 }) {
   const drift = detectStatusDriftAcrossHeads({
     defaultBranchNow: statusNow,
@@ -420,7 +423,7 @@ export function buildDriftHandoff({
   const nextStep = assessment.nextStep ?? 'none';
 
   return [
-    `${wakeTag({ openPullRequests })}The autonomous runner detected drift between \`docs/STATUS.md\` and live GitHub state.`,
+    `${wakeTag({ openPullRequests, wake })}The autonomous runner detected drift between \`docs/STATUS.md\` and live GitHub state.`,
     '',
     `**STATUS drift:** ${drift.reason}.`,
     `**Next step after correcting STATUS:** \`${nextStep}\` — ${assessment.reason}`,

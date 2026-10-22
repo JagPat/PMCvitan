@@ -10,6 +10,7 @@ import {
   buildPostMergeContinuation,
   isAutonomousPullRequest,
   selectAutonomousOpenPullRequests,
+  shouldShepherdOpenPullRequests,
 } from './runner-continuation.mjs';
 import { loadStatusDocument, parseStatusNow, parseMaintenanceQueue } from './autonomous-status-state.mjs';
 import {
@@ -261,10 +262,11 @@ export async function handOffConflict(
   pullRequest,
   repository,
   defaultBranch,
-  { lastBaseMergeAt = null, now = Date.now() } = {},
+  { lastBaseMergeAt = null, clock = Date.now } = {},
 ) {
   if (!isCorrectionEligiblePullRequest(pullRequest, repository, defaultBranch)) return;
-  if (Number.isFinite(lastBaseMergeAt) && now - lastBaseMergeAt < CONFLICT_SETTLE_MS) return;
+  const settling = (at) => Number.isFinite(at) && clock() - at < CONFLICT_SETTLE_MS;
+  if (settling(lastBaseMergeAt)) return;
   const live = await refreshedMergeability(client, pullRequest);
   if (!isCorrectionEligiblePullRequest(live, repository, defaultBranch)) return;
   if (live.mergeable !== false && live.mergeable_state !== 'behind') return;
@@ -288,6 +290,8 @@ export async function handOffConflict(
     || current.base.sha !== live.base.sha
     || (current.mergeable !== false && current.mergeable_state !== 'behind')
   ) return;
+  // The run's first read can be stale: merges run in another concurrency group (Codex r4344002054).
+  if (typeof client.lastCommitAt === 'function' && settling(await client.lastCommitAt(defaultBranch))) return;
 
   const instruction = routing.awakenable
     ? `@${routing.owner} This PR is behind or conflicts with the current base branch.`
@@ -410,7 +414,21 @@ export async function maintenanceQueueAtCommit(client, ref) {
   }
 }
 
-async function handOffMergedPullRequest(
+// Whether a post-merge or drift note wakes Claude, from a live read of open PRs rather than the
+// run's snapshot: a PR closed since then leaves the loop idle (Codex r4344002062). Unreadable wakes.
+async function noteWakeRequired(client, repository, defaultBranch) {
+  try {
+    const openPullRequests = selectAutonomousOpenPullRequests(
+      await client.openPullRequests(), repository, defaultBranch,
+    );
+    return !shouldShepherdOpenPullRequests({ openPullRequests });
+  } catch (error) {
+    console.warn(`Could not re-list open PRs before a note; it wakes: ${error.message}`);
+    return true;
+  }
+}
+
+export async function handOffMergedPullRequest(
   client,
   pullRequest,
   repository,
@@ -466,6 +484,7 @@ const mergedMaintenanceQueue =
       maintenanceQueue: mergedMaintenanceQueue,
         openPullRequests,
         headStatuses,
+        wake: await noteWakeRequired(client, repository, defaultBranch),
       }),
     ].join('\n'),
   );
@@ -486,6 +505,13 @@ export async function handOffStatusDrift(
     headStatuses,
   });
   if (!body) return;
+  const liveBody = async () => buildDriftHandoff({
+    statusNow: defaultBranchNow,
+    maintenanceQueue,
+    openPullRequests,
+    headStatuses,
+    wake: await noteWakeRequired(client, repository, defaultBranch),
+  });
 
   const primary = openPullRequests.at(-1);
   if (!primary) {
@@ -498,7 +524,7 @@ export async function handOffStatusDrift(
     if (comments.some((comment) =>
       comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)
     )) return;
-    await client.comment(STATE_ISSUE_NUMBER, [marker, body].join('\n'));
+    await client.comment(STATE_ISSUE_NUMBER, [marker, await liveBody()].join('\n'));
     return;
   }
 
@@ -508,7 +534,7 @@ export async function handOffStatusDrift(
     comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)
   )) return;
 
-  await client.comment(primary.number, [marker, body].join('\n'));
+  await client.comment(primary.number, [marker, await liveBody()].join('\n'));
 }
 
 // The correction WATCHDOG.
