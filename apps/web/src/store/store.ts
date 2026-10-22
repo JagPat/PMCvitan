@@ -6748,8 +6748,10 @@ export const useStore = create<Store>()(
                 if (k !== null && k !== scoped && k !== lane && (k.startsWith('vitan.outbox.') || k.startsWith('vitan.siteVisitQueue.'))) another = true;
               }
               if (!storage.getItem(scoped) && !another) storage.setItem(scoped, legacy);
-              const aside = `vitan.unreadable.${LEGACY_OUTBOX_KEY}.${scoped}`;
-              if (storage.getItem(scoped) !== legacy && storage.getItem(aside) !== legacy) storage.setItem(aside, legacy);
+              // a copy name holding other bytes (an earlier legacy queue copied aside) is never written over: the next free name
+              let aside = `vitan.unreadable.${LEGACY_OUTBOX_KEY}.${scoped}`;
+              for (let n = 1; storage.getItem(aside) !== null && storage.getItem(aside) !== legacy && n <= 100; n += 1) aside = `vitan.unreadable.${LEGACY_OUTBOX_KEY}.${scoped}.${n}`;
+              if (storage.getItem(scoped) !== legacy && storage.getItem(aside) === null) storage.setItem(aside, legacy);
               if (storage.getItem(scoped) === legacy || storage.getItem(aside) === legacy) storage.removeItem(LEGACY_OUTBOX_KEY);
             } catch { /* kept under the old key: this scope's load retries it */ }
           }

@@ -191,6 +191,22 @@ describe('Phase 8 offline outbox', () => {
     expect(s().outbox).toEqual([]);
   });
 
+  it('#1085 r2 re-check R1: a legacy queue copied aside never writes over an earlier copy holding other bytes', () => {
+    const tokenFor = (sub: string) => `x.${btoa(JSON.stringify({ sub }))}.y`;
+    const earlier = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-30' }]);
+    const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    const aside = 'vitan.unreadable.vitan.outbox.vitan.outbox.userA.ambli';
+    // an earlier load copied a legacy queue aside; a rollback to a release before scoping then wrote a new one
+    localStorage.setItem(aside, earlier);
+    localStorage.setItem('vitan.outbox', legacy);
+    localStorage.setItem('vitan.outbox.userA.ambli', JSON.stringify([{ t: 'startActivity', activityId: 'ACT-1' }]));
+    useStore.setState({ sessionToken: tokenFor('userA'), activeProjectId: 'ambli', online: false });
+    s().hydrateOutbox();
+    expect(localStorage.getItem('vitan.outbox')).toBeNull();
+    expect(localStorage.getItem(aside)).toBe(earlier);
+    expect(localStorage.getItem(`${aside}.1`)).toBe(legacy);
+  });
+
   it('#1085 r2 gap-check: a legacy queue left by a failed write is adopted only by a scope with no other queue key on this phone', () => {
     const tokenFor = (sub: string) => `x.${btoa(JSON.stringify({ sub }))}.y`;
     const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
