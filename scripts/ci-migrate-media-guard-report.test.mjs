@@ -17,7 +17,9 @@ function extractFunction() {
   assert.ok(start >= 0, 'report_media_guard_migration_failure is defined in migrate.sh');
   const end = runner.indexOf('\n}\n', start);
   assert.ok(end > start, 'it has a closing brace');
-  return runner.slice(start, end + 3);
+  const helper = runner.indexOf('migration_failed_in_output() {');
+  assert.ok(helper >= 0 && helper < start, 'the shared exact-line match is defined before it');
+  return runner.slice(helper, runner.indexOf('\n}\n', helper) + 3) + runner.slice(start, end + 3);
 }
 
 const report = (output) =>
@@ -35,7 +37,7 @@ test('a failure of the guard prints the count, the resolve and the redeploy, in 
 });
 
 test('a P3009 naming the guard prints the same recovery, and does not claim nothing was kept', () => {
-  const out = report(`Error: P3009\n\nmigrate found failed migrations in the target database, new migrations will not be applied.\nThe \`${NAME}\` migration started at 2026-10-21 04:00:00.123 UTC failed\n`);
+  const out = report(`Error: P3009\n\nmigrate found failed migrations in the target database, new migrations will not be applied. Read more about how to resolve migration issues in a production database: https://pris.ly/d/migrate-resolve\nThe \`${NAME}\` migration started at 2026-10-21 09:58:30.163191 UTC failed\n`);
   assert.match(out, /After a P3009 it may have committed/);
   assert.match(out, new RegExp(`resolve --rolled-back ${NAME}`));
 });
@@ -66,7 +68,41 @@ test('a failure of another migration prints nothing', () => {
   assert.equal(report('Applying migration `20280117000000_media_tombstone`\nError: something else'), '');
 });
 
+test('a P3009 whose line ends "with the following logs:" names the guard as well, with no "Migration name:" line after it', () => {
+  // the engine's other ending for the P3009 line (the stored logs follow it); here the logs carry no P3018 text
+  const out = report(`Error: P3009\n\nmigrate found failed migrations in the target database, new migrations will not be applied. Read more about how to resolve migration issues in a production database: https://pris.ly/d/migrate-resolve\nThe \`${NAME}\` migration started at 2026-10-21 09:58:30.163191 UTC failed with the following logs:\n\nERROR: canceling statement due to lock timeout\n`);
+  assert.match(out, new RegExp(`resolve --rolled-back ${NAME}`));
+});
+
+test('only a whole line naming the guard is its failure: a longer name, a line that only contains it, or a P3009 naming another migration prints nothing', () => {
+  for (const out of [
+    `Error: P3018\n\nMigration name: ${NAME}_v2\n`,
+    `Error: P3009\n\nThe \`${NAME}_v2\` migration started at 2026-10-21 04:00:00.123 UTC failed\n`,
+    `Error: P3009\n\nThe \`${NAME}_v2\` migration started at 2026-10-21 04:00:00.123 UTC failed with the following logs:\n`,
+    'Error: P3009\n\nThe `20280119000000_probe_later` migration started at 2026-10-21 04:00:00.123 UTC failed\n',
+    'Error: P3009\n\nThe `20280119000000_probe_later` migration started at 2026-10-21 04:00:00.123 UTC failed with the following logs:\n',
+    `Error: ERROR: boom\n           with migration_name="${NAME}_v2"\n`,
+    `Note: with migration_name="${NAME}"\n`,
+    `Note: Migration name: ${NAME}\n`,
+    `Note: The \`${NAME}\` migration started at 2026-10-21 04:00:00.123 UTC failed\n`,
+  ]) assert.equal(report(out), '', JSON.stringify(out));
+});
+
 test('both deploy paths call it', () => {
   assert.match(runner, /report_media_guard_migration_failure "\$baseline_out"/);
   assert.match(runner, /report_media_guard_migration_failure "\$out"\nexit \$code/);
+});
+
+// Prisma 6.19.3's real output when its own ledger INSERT for this migration timed out on a lock (measured): the trace
+// names the migration, but its SQL never ran, so its resolve is refused (P3011) and a plain redeploy succeeds
+test('a trace naming it under any error but the aborted transaction is not its failure', () => {
+  assert.equal(report([
+    'Error: ERROR: canceling statement due to lock timeout',
+    '   0: schema_commands::commands::apply_migrations::Applying migration',
+    `           with migration_name="${NAME}"`,
+    '             at schema-engine/commands/src/commands/apply_migrations.rs:95',
+    '   1: schema_core::state::ApplyMigrations',
+    '             at schema-engine/core/src/state.rs:260',
+    '',
+  ].join('\n')), '');
 });

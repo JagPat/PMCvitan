@@ -25,7 +25,8 @@ const RECORD = join(MIGRATIONS, '20280117000000_media_tombstone/migration.sql');
 const DB = 'media_guard_install_test';
 /** `scripts/migrate.sh`'s recovery for this file, run from the runner itself (as scripts/ci-migrate-media-guard-report.test.mjs). */
 const RUNNER = readFileSync(join(API, 'scripts/migrate.sh'), 'utf8');
-const REPORT = RUNNER.slice(RUNNER.indexOf('report_media_guard_migration_failure() {'), RUNNER.indexOf('\n}\n', RUNNER.indexOf('report_media_guard_migration_failure() {')) + 3);
+const fn = (name: string) => RUNNER.slice(RUNNER.indexOf(`${name}() {`), RUNNER.indexOf('\n}\n', RUNNER.indexOf(`${name}() {`)) + 3);
+const REPORT = fn('migration_failed_in_output') + fn('report_media_guard_migration_failure');
 const recovery = (output: string) => execFileSync('sh', ['-c', `${REPORT}\nreport_media_guard_migration_failure "$1"`, 'report', output], { encoding: 'utf8' });
 const RESOLVE = `npx prisma migrate resolve --rolled-back ${NAME}`;
 /** project:remove's own lock on the tables whose triggers it switches off, "Media" among them. */
