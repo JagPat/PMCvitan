@@ -142,7 +142,7 @@ describe('queueKeyGuard: a key this release cannot read', () => {
     q.forget(); // the scope moved on: the held acts are not forgotten with it
     expect(q.strandedCount()).toBe(1);
     expect(q.load(st, K)).toEqual([a('unsent')]); // the return to that scope holds it again
-    expect(q.strandedCount()).toBe(0);
+    expect(q.strandedCount()).toBe(1); // and still counts it: no write has stored it (#1085 r3, Codex 4346778591)
   });
 
   it('#1085 r1 (Codex 4345664670): with no storage to be had, or a key that reads but cannot be written, the unsent acts are held', () => {
