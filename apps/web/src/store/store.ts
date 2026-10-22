@@ -3103,7 +3103,7 @@ export const useStore = create<Store>()(
     // ---- shell ----
     setRole: (role) => {
       const first = screensFor(role)[0]?.key ?? 'inbox';
-      const applySwitch = () => { clearSession(); set((s) => {
+      const applySwitch = () => { clearSession(); queueKeys.forget(); set((s) => {
         s.role = role;
         s.screen = first;
         s.notifOpen = false;
@@ -3115,6 +3115,8 @@ export const useStore = create<Store>()(
         s.sessionToken = null;
         s.userName = null;
         s.sessionUserId = null;
+        // WEB-02 step A: a persona switch is a new identity, so the old one's unreadable queue keys leave the strip with it
+        s.queueUnreadable = [];
         // Codex 4219959023 — against the API, a persona switch is a NEW identity exactly like a
         // re-authentication: the previous persona's records (an engineer sees only the checklists
         // assigned to them) are not this persona's truth, and a reply issued for the old persona must
@@ -3223,6 +3225,9 @@ export const useStore = create<Store>()(
         // SV2: a held visit, and a person's Send anyway, belong to the scope they were made in
         s.siteVisitsHeld = null;
         s.siteVisitsSentAnyway = [];
+        // WEB-02 step A: so does the list of its queue keys this release cannot read (Codex 4351662045: a sign-out that
+        // reruns no load left the departed person's list on the strip)
+        s.queueUnreadable = [];
         dropVisitPhotoRetry(); // and the retry armed for it: the scope's own load arms its own
         // Codex 4210609591 — a new scope owes nothing of the old one's commands (its coordinator is abandoned)
         s.commandReconcilePending = false;
@@ -6748,7 +6753,8 @@ export const useStore = create<Store>()(
                 const k = storage.key(i);
                 if (k !== null && k !== scoped && k !== lane && (k.startsWith('vitan.outbox.') || k.startsWith('vitan.siteVisitQueue.'))) another = true;
               }
-              if (!storage.getItem(scoped) && !another) storage.setItem(scoped, legacy);
+              // only an absent key: one holding any bytes, even '' (unreadable), is never written over (Codex 4351662034)
+              if (storage.getItem(scoped) === null && !another) storage.setItem(scoped, legacy);
               // a copy name holding other bytes (an earlier legacy queue copied aside) is never written over: the next free name
               let aside = `vitan.unreadable.${LEGACY_OUTBOX_KEY}.${scoped}`;
               for (let n = 1; storage.getItem(aside) !== null && storage.getItem(aside) !== legacy && n <= 100; n += 1) aside = `vitan.unreadable.${LEGACY_OUTBOX_KEY}.${scoped}.${n}`;

@@ -145,3 +145,41 @@ describe('WEB-02 step 2: the strip', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 });
+
+describe('#1088 r3: a scoped key holding bytes is never adopted over, and sign-out takes the list with it', () => {
+  it('forced probe (Codex 4351662034): a scoped key holding "" is kept and listed; the legacy queue is copied aside, not written over it', () => {
+    const legacy = JSON.stringify([approve('k-legacy')]);
+    localStorage.setItem('vitan.outbox', legacy);
+    onP1('');
+    expect(localStorage.getItem(key)).toBe('');
+    expect(s().queueUnreadable).toEqual([{ key, read: 'damaged' }]);
+    expect(localStorage.getItem(`vitan.unreadable.vitan.outbox.${key}`)).toBe(legacy);
+    expect(localStorage.getItem('vitan.outbox')).toBeNull();
+  });
+
+  it('guard: an absent scoped key still adopts the legacy queue', () => {
+    localStorage.setItem('vitan.outbox', JSON.stringify([approve('k-legacy')]));
+    onP1(null);
+    expect(JSON.parse(localStorage.getItem(key)!)).toEqual([approve('k-legacy')]);
+    expect(s().outbox).toEqual([approve('k-legacy')]);
+  });
+
+  it('forced probe (Codex 4351662045): sign-out clears the list and the strip, with no load after it', () => {
+    onP1('{damaged');
+    render(<QueueUnreadable />);
+    expect(screen.getByRole('alert')).toBeTruthy();
+    act(() => s().completeSignOut());
+    expect(s().queueUnreadable).toEqual([]);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('forced probe (re-check of head 4): a dev-auth persona switch clears the list with the scope, with no load after it', () => {
+    onP1('{damaged');
+    render(<QueueUnreadable />);
+    expect(screen.getByRole('alert')).toBeTruthy();
+    act(() => s().setRole('engineer'));
+    expect(s().sessionUserId).toBeNull();
+    expect(s().queueUnreadable).toEqual([]);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
