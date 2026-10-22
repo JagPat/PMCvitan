@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway } from '@/data/apiGateway';
+import { holdQueueLock, nextToast, releaseQueueLocks } from './queueWrites';
 
 const s = () => useStore.getState();
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -50,6 +51,25 @@ describe('addProgressPhoto — API mode', () => {
     useStore.setState((st) => { st.online = false; });
     s().addProgressPhoto(PNG);
     expect(s().outbox).toEqual([{ t: 'uploadMedia', input: expect.objectContaining({ dailyLogId: 'log-15' }) }]);
+  });
+
+  it('a photo queued offline is said saved only once its locked write holds it (WEB-02 B1 gap-check 1)', async () => {
+    s()._setGateway({ uploadMedia: vi.fn() } as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; st.toast = null; });
+    const key = `vitan.outbox.anon.${s().activeProjectId}`;
+    const other = holdQueueLock(key);
+    try {
+      await other.has;
+      const said = nextToast();
+      s().addProgressPhoto(PNG);
+      expect(s().outbox).toHaveLength(1);
+      expect(s().toast).toBeNull(); // the photo's bytes are only in this act, and the act is not written yet
+      other.release();
+      await said;
+      expect(JSON.parse(localStorage.getItem(key) ?? '[]').map((o: { t: string }) => o.t)).toEqual(['uploadMedia']);
+    } finally {
+      releaseQueueLocks();
+    }
   });
 
   it('a photo picked for one log never lands in, or counts on, another log on screen (#482)', async () => {

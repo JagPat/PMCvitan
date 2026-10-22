@@ -4,6 +4,7 @@ import { useStore, getInitialState, checklistFrozen } from '@/store/store';
 import { getEvidence, listEvidence, putEvidence } from '@/data/evidenceStore';
 import type { ApiGateway, ApiSnapshot } from '@/data/apiGateway';
 import type { Checklist } from '@vitan/shared';
+import { holdQueueLock, nextToast, queueWritten, releaseQueueLocks } from './queueWrites';
 
 /**
  * Phase 1 Task 4 — offline evidence durability. The rules under test are the
@@ -187,6 +188,7 @@ describe('replay lifecycle', () => {
     // the reviewer's probe: the IndexedDB write succeeds, the outbox persistence throws
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('QuotaExceededError'); });
     await s().addChecklistEvidence(0, PX);
+    await queueWritten(); // step B1: the queue's write runs under its lock, after the capture
     setItem.mockRestore();
 
     // the capture message was truthful — the BYTES are durable...
@@ -1047,6 +1049,28 @@ describe('replay lifecycle', () => {
     expect(s().checklist!.items[0].state).toBe('fail');
   });
 
+  it('an OFFLINE-queued submit says it is saved only once its locked write holds it (WEB-02 B1 gap-check 1)', async () => {
+    // a project of its own: this tab's memory of the key is not carried into the tests after it
+    useStore.setState({ activeProjectId: 'b1-gap' });
+    s()._setGateway({ project: 'b1-gap', uploadMedia: vi.fn(), snapshot: vi.fn(), submitInspection: vi.fn() } as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    markTwoPass();
+    const other = holdQueueLock('vitan.outbox.anon.b1-gap');
+    try {
+      await other.has;
+      useStore.setState({ toast: null });
+      const said = nextToast();
+      s().submitInspection();
+      expect(s().submission.status).toBe('queued');
+      expect(s().toast).toBeNull(); // the other tab holds the queue's lock: nothing is written yet
+      other.release();
+      expect(await said).toMatch(/saved offline/i);
+      expect(JSON.parse(globalThis.localStorage.getItem('vitan.outbox.anon.b1-gap') ?? '[]').map((o: { t: string }) => o.t)).toEqual(['submitInspection']);
+    } finally {
+      releaseQueueLocks();
+    }
+  });
+
   it('an OFFLINE-queued submit stays frozen across a reload — the freeze is rebuilt from the durable outbox (gate round-8)', async () => {
     const gw = { project: 'ambli', uploadMedia: vi.fn(), snapshot: vi.fn(), submitInspection: vi.fn() };
     s()._setGateway(gw as unknown as ApiGateway);
@@ -1057,6 +1081,7 @@ describe('replay lifecycle', () => {
     expect(gw.submitInspection).not.toHaveBeenCalled();
     expect(s().submission.status).toBe('queued');
     expect(checklistFrozen(s())).toBe(true);
+    await queueWritten();
 
     // "reload": fresh store; the persisted outbox + the server snapshot both return
     useStore.setState(getInitialState());

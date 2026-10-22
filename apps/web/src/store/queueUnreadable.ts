@@ -2,6 +2,7 @@ import type { Lang } from '@vitan/shared';
 import { BUILD_INFO } from '@/lib/buildInfo';
 import { QW } from '@/lib/queueWords';
 import type { KeyRead, QueueKeyGuard, QueueWrite } from '@/store/queueKeyGuard';
+import { underQueueLocks } from '@/store/queueKeyLock';
 
 /**
  * WEB-02 step A (#482 6333415419): this scope's queue keys that hold bytes this release cannot read, as the strip lists
@@ -78,7 +79,7 @@ export function queueStrip(view: { get: () => StripState; set: (p: Partial<Strip
       const next = listRead(view.get().queueUnreadable, key, read, raw);
       if (next !== view.get().queueUnreadable) view.set({ queueUnreadable: next });
     },
-    setAside(): void {
+    async setAside(): Promise<void> {
       const storage = globalThis.localStorage;
       const scope = bindScope();
       if (!storage || !scope) return;
@@ -87,19 +88,25 @@ export function queueStrip(view: { get: () => StripState; set: (p: Partial<Strip
       // newer release's not yet reloaded was written over while the other refused its write)
       if (listed.length === 0 || !listed.every(settable)) return;
       const keys = listed.map((u) => u.key);
-      // every key copied and read back, or nothing changes
-      if (!view.keys().setAside(storage, keys)) { view.set({ queueSetAsideFailed: true }); return; }
-      // then memory's acts are written over each copied key, and only those: all of them, or each is put back. A key
-      // leaves the list as its write lands (Codex 4345664686)
-      const written = view.keys().writeAll(storage, view.writes().filter((w) => keys.includes(w.key)));
-      view.set({ queueSetAsideFailed: written === 'none' });
+      // step B1: the copies and the writes run under every listed key's lock, so no other tab writes between them
+      const written = await underQueueLocks(keys, () => {
+        // the scope moved while the tap waited for the locks: nothing is done for it
+        if (bindScope()?.join() !== scope.join()) return 'moved' as const;
+        // every key copied and read back, or nothing changes
+        if (!view.keys().setAside(storage, keys)) return 'none' as const;
+        // then memory's acts are written over each copied key, and only those: all of them, or each is put back. A key
+        // leaves the list as its write lands (Codex 4345664686)
+        return view.keys().writeAll(storage, view.writes().filter((w) => keys.includes(w.key)));
+      });
+      if (written !== 'moved') view.set({ queueSetAsideFailed: written === null || written === 'none' });
     },
     reload(): void {
       const storage = globalThis.localStorage;
       const scope = bindScope();
       if (!scope) return;
-      // what a reload loses: every act memory holds that no key holds, and every act held stranded
-      if (!mayReload(view.keys().notKeptCount() + view.keys().strandedCount(), view.get().lang)) return;
+      // what a reload loses: every act memory holds that no key holds, every act of a write still waiting for its lock,
+      // and every act held stranded, each once
+      if (!mayReload(view.keys().unsavedCount(), view.get().lang)) return;
       markReloaded(view.get().queueUnreadable.filter((u) => u.read === 'newer' && scope.includes(u.key)).map((u) => ({ key: u.key, raw: storage?.getItem(u.key) ?? null })));
       globalThis.location?.reload();
     },

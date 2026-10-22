@@ -3,6 +3,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import { replayOutboxOp, type ApiGateway, type OutboxOp } from '@/data/apiGateway';
+import { queueWritten } from './queueWrites';
 
 /**
  * WEB-02 step A (#482 6333415419): what this release takes from a stored queue key, and what its writes keep.
@@ -13,7 +14,7 @@ import { replayOutboxOp, type ApiGateway, type OutboxOp } from '@/data/apiGatewa
  * - Codex 4344270663, 4344812910: a list holding an entry that is not an act lost that entry at the next write, or had
  *   its acts replayed while the list itself could never be updated.
  *
- * Every store test here fails at 4711824 (main).
+ * Every store test here fails at 4711824 (main). Step B1: the writes run under the queue's lock, so each waits on them.
  */
 
 const USER = 'u-cons';
@@ -58,17 +59,19 @@ describe('WEB-02 step A: what a stored queue key gives this release, and what it
     await expect(replayOutboxOp({ project: P1 } as unknown as ApiGateway, { t: 'aKindFromANewerRelease' } as unknown as OutboxOp)).rejects.toThrow('no replay for aKindFromANewerRelease');
   });
 
-  it('4344270652: a lane photo act memory leaves out stays stored at this tab’s writes', () => {
+  it('4344270652: a lane photo act memory leaves out stays stored at this tab’s writes', async () => {
     signedIn({ lane: [photo] });
-    act(() => { s().queueSiteVisitAct(end('00000000-0000-4000-8000-000000000002', 'k-mine'), 'saved offline'); });
-    expect(keysOf(lane)).toEqual(['k-mine', 'k-photo']);
+    act(() => { s().queueSiteVisitAct(end('v-2', 'k-mine'), 'saved offline'); });
+    await queueWritten(); // step B1: the stored order is kept, and a new act goes last
+    expect(keysOf(lane)).toEqual(['k-photo', 'k-mine']);
   });
 
-  it('4344270652: a site visit act stored in the general key, which memory leaves out, stays stored there', () => {
-    signedIn({ general: [end('00000000-0000-4000-8000-000000000001', 'k-in-general'), approve('k-a')] });
+  it('4344270652: a site visit act stored in the general key, which memory leaves out, stays stored there', async () => {
+    signedIn({ general: [end('v-1', 'k-in-general'), approve('k-a')] });
     useStore.setState((st) => { st.outbox = [...st.outbox, approve('k-b')]; });
-    act(() => { s().queueSiteVisitAct(end('00000000-0000-4000-8000-000000000002', 'k-v'), 'saved offline'); });
-    expect(keysOf(key)).toEqual(['k-a', 'k-b', 'k-in-general']);
+    act(() => { s().queueSiteVisitAct(end('v-2', 'k-v'), 'saved offline'); });
+    await queueWritten();
+    expect(keysOf(key)).toEqual(['k-in-general', 'k-a', 'k-b']);
   });
 
   it('4344270663, 4344812910: a list holding an entry that is not an act gives nothing to replay and is never written over', async () => {
@@ -77,7 +80,8 @@ describe('WEB-02 step A: what a stored queue key gives this release, and what it
     signedIn({ general: newer }, { approveDecision });
     expect(s().outbox).toEqual([]);
     useStore.setState((st) => { st.outbox = [...st.outbox, approve('k-mine')]; });
-    act(() => { s().queueSiteVisitAct(end('00000000-0000-4000-8000-000000000002', 'k-v'), 'saved offline'); });
+    act(() => { s().queueSiteVisitAct(end('v-2', 'k-v'), 'saved offline'); });
+    await queueWritten();
     expect(JSON.parse(localStorage.getItem(key)!)).toEqual(newer);
     expect(keysOf(lane)).toEqual(['k-v']);
     // the act made here is copied aside beside the key, so it stays on this phone

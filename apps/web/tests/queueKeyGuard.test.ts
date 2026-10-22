@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createQueueKeyGuard, queueActIdent, type KeyRead } from '@/store/queueKeyGuard';
 import type { OutboxOp } from '@/data/apiGateway';
+import { keepUnsentLocked } from '@/store/queueKeyLock';
 
 /** WEB-02 step A (#482 6333415419): the stored-act check at the queue key writer, on a storage of its own */
 
@@ -23,8 +24,9 @@ describe('queueKeyGuard: a key this release reads', () => {
   it('a write stores memory’s acts, and keeps byte for byte every stored entry memory leaves out on purpose (Codex 4344270652)', () => {
     const st = storage({ [K]: JSON.stringify([a('old'), visitEnd('in-general')]) });
     const q = createQueueKeyGuard();
-    expect(q.write(st, K, [a('mine')], (o) => o.t !== 'siteVisitEnd')).toBe(true);
-    expect(st.keys(K)).toEqual(['mine', 'in-general']);
+    expect(q.load(st, K, (o) => o.t !== 'siteVisitEnd')).toHaveLength(2);
+    expect(q.write(st, K, [a('mine')])).toBe(true);
+    expect(st.keys(K)).toEqual(['in-general', 'mine']);
   });
 
   it('a write that changes nothing writes nothing', () => {
@@ -51,6 +53,75 @@ describe('queueKeyGuard: a key this release reads', () => {
     const q = createQueueKeyGuard();
     expect(q.write(full(), K, [a('m1')])).toBe(false);
     expect(q.notKept(K)).toEqual([queueActIdent(a('m1'))]);
+  });
+});
+
+describe('queueKeyGuard: step B1, the ordered merge', () => {
+  it('keeps the stored order: an act is replaced in place and a new one goes last (Codex 4344812888)', () => {
+    const st = storage();
+    const q = createQueueKeyGuard();
+    q.load(st, K);
+    expect(q.write(st, K, [a('close')])).toBe(true);
+    // another tab adds its act after this one
+    st.setItem(K, JSON.stringify([a('close'), a('theirs')]));
+    const edited = { ...a('close'), optionIndex: 1 } as OutboxOp;
+    expect(q.write(st, K, [edited, a('addAttendee')])).toBe(true);
+    expect(st.keys(K)).toEqual(['close', 'theirs', 'addAttendee']);
+    expect(JSON.parse(st.getItem(K)!)[0]).toEqual(edited);
+  });
+
+  it('another tab’s act is never dropped, and an act this tab settled leaves', () => {
+    const st = storage({ [K]: JSON.stringify([a('sent'), a('kept')]) });
+    const q = createQueueKeyGuard();
+    q.load(st, K);
+    st.setItem(K, JSON.stringify([a('sent'), a('kept'), a('theirs')]));
+    expect(q.write(st, K, [a('kept')])).toBe(true);
+    expect(st.keys(K)).toEqual(['kept', 'theirs']);
+  });
+
+  it('an act this tab held that another tab took off is not put back, and an act made again after its settle is (#1084 re-check G1)', () => {
+    const st = storage({ [K]: JSON.stringify([a('shared')]) });
+    const q = createQueueKeyGuard();
+    q.load(st, K);
+    st.setItem(K, JSON.stringify([])); // another tab sent it
+    expect(q.write(st, K, [a('shared'), a('new')])).toBe(true);
+    expect(st.keys(K)).toEqual(['new']);
+    expect(q.notKept(K)).toEqual([]);
+    // this tab settles it too, then makes the same act again (an act with no key is known by its bytes)
+    expect(q.write(st, K, [a('new')])).toBe(true);
+    expect(q.write(st, K, [a('new'), a('shared')])).toBe(true);
+    expect(st.keys(K)).toEqual(['new', 'shared']);
+  });
+
+  it('after Set aside, every act memory holds is written back, those this tab wrote before too (gap-check B)', () => {
+    const st = storage();
+    const q = createQueueKeyGuard();
+    q.load(st, K);
+    expect(q.write(st, K, [a('mine')])).toBe(true);
+    st.setItem(K, '{"damaged":'); // another tab damaged the key
+    q.heard(st, K, [a('mine')]);
+    expect(q.setAside(st, [K])).toBe(true);
+    expect(q.write(st, K, [a('mine')])).toBe(true);
+    expect(st.keys(K)).toEqual(['mine']);
+  });
+
+  it('a write that could not run writes nothing and lists the acts the key does not hold as not kept', () => {
+    const st = storage({ [K]: JSON.stringify([a('there')]) });
+    const q = createQueueKeyGuard();
+    q.unwritten(st, K, [a('there'), a('new')]);
+    expect(st.writes).toEqual([]);
+    expect(q.notKept(K)).toEqual([queueActIdent(a('new'))]);
+  });
+
+  it('a heard key that turned unreadable copies this tab’s acts it does not hold aside, once each (Codex 4344812904)', () => {
+    const st = storage({ [K]: JSON.stringify([a('x'), { t: 'aKindFromANewerRelease', idempotencyKey: 'n' }]) });
+    const q = createQueueKeyGuard();
+    q.heard(st, K, [a('x'), a('mine')]);
+    q.heard(st, K, [a('x'), a('mine')]);
+    const asides = st.writes.filter((w) => w.startsWith(`vitan.unreadable.${K}.`));
+    expect(asides).toHaveLength(1);
+    expect(JSON.parse(st.getItem(asides[0])!)).toEqual([a('mine')]);
+    expect(q.notKept(K)).toEqual([queueActIdent(a('mine'))]);
   });
 });
 
@@ -143,6 +214,18 @@ describe('queueKeyGuard: a key this release cannot read', () => {
     expect(q.strandedCount()).toBe(1);
     expect(q.load(st, K)).toEqual([a('unsent')]); // the return to that scope holds it again
     expect(q.strandedCount()).toBe(1); // and still counts it: no write has stored it (#1085 r3, Codex 4346778591)
+  });
+
+  it('#1085 r1 on B1: the scope-moved write that cannot take the lock, and cannot copy aside, holds the unsent acts', async () => {
+    vi.stubGlobal('navigator', {});
+    try {
+      const m = new Map([[K, JSON.stringify([a('there')])]]);
+      const st = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => { if (k.startsWith('vitan.unreadable.')) throw new DOMException('full', 'QuotaExceededError'); m.set(k, v); } };
+      const q = createQueueKeyGuard();
+      expect(await keepUnsentLocked(q, st, K, [a('u1'), a('there')], [a('u1')], (l) => l, () => true)).toBe(false);
+      expect(q.strandedCount()).toBe(1);
+      expect(q.load(st, K).map(queueActIdent)).toEqual(['k:u1', 'k:there']);
+    } finally { vi.unstubAllGlobals(); }
   });
 
   it('#1085 r1 (Codex 4345664670): with no storage to be had, or a key that reads but cannot be written, the unsent acts are held', () => {

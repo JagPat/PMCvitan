@@ -3,6 +3,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
+import { queueWritten } from './queueWrites';
 
 /**
  * #1085 round 1. Three ways the queue key writer said an update was safe, or let it go, before it was on this phone:
@@ -75,29 +76,29 @@ describe('#1085 r1, Codex 4345664670: unsent acts of a scope left mid-flush are 
     useStore.setState({ online: false });
     act(() => { s().hydrateOutbox(); });
     expect(s().outbox).toEqual([approve('a2')]);
-    act(() => s().setAsideUnreadableQueue());
+    await act(async () => { s().setAsideUnreadableQueue(); await queueWritten(); });
     expect(JSON.parse(localStorage.getItem(keyOf('p-1'))!)).toEqual([approve('a2')]);
   });
 });
 
 describe('#1085 r1, Codex 4345664679: Set aside acts only for the scope its load ran for', () => {
-  it('a tap after the project changed and before its load copies nothing and writes nothing under the new project', () => {
+  it('a tap after the project changed and before its load copies nothing and writes nothing under the new project', async () => {
     localStorage.setItem(keyOf('p-1'), '{bad');
     onProject('p-1');
     useStore.setState((st) => { st.outbox = [approve('k-p1')]; });
     expect(s().queueUnreadable.map((u) => u.key)).toEqual([keyOf('p-1')]);
     moveTo('p-2'); // the sign-in moved; p-2's load has not run yet
-    act(() => s().setAsideUnreadableQueue());
+    await act(async () => { s().setAsideUnreadableQueue(); await queueWritten(); });
     expect(copiesOf(keyOf('p-1'))).toEqual([]);
     expect(localStorage.getItem(keyOf('p-2'))).toBeNull();
     expect(localStorage.getItem(laneOf('p-2'))).toBeNull();
     expect(localStorage.getItem(keyOf('p-1'))).toBe('{bad');
   });
 
-  it('guard: once the load has run, Set aside works as before', () => {
+  it('guard: once the load has run, Set aside works as before', async () => {
     localStorage.setItem(keyOf('p-1'), '{bad');
     onProject('p-1');
-    act(() => s().setAsideUnreadableQueue());
+    await act(async () => { s().setAsideUnreadableQueue(); await queueWritten(); });
     expect(copiesOf(keyOf('p-1'))).toHaveLength(1);
     expect(s().queueUnreadable).toEqual([]);
     expect(s().queueSetAsideFailed).toBe(false);
@@ -105,7 +106,7 @@ describe('#1085 r1, Codex 4345664679: Set aside acts only for the scope its load
 });
 
 describe('#1085 r1, Codex 4345664686: Set aside is said done only once the write over the copied bytes lands', () => {
-  it('the copy is made but the write over the key fails: the key stays listed and the strip says it could not be done', () => {
+  it('the copy is made but the write over the key fails: the key stays listed and the strip says it could not be done', async () => {
     const raw = '{bad';
     localStorage.setItem(keyOf('p-1'), raw);
     onProject('p-1');
@@ -115,7 +116,7 @@ describe('#1085 r1, Codex 4345664686: Set aside is said done only once the write
       if (k === keyOf('p-1')) throw new DOMException('full', 'QuotaExceededError');
       return real.call(this, k, v);
     });
-    act(() => s().setAsideUnreadableQueue());
+    await act(async () => { s().setAsideUnreadableQueue(); await queueWritten(); });
     expect(localStorage.getItem(keyOf('p-1'))).toBe(raw);
     expect(s().queueUnreadable.map((u) => u.key)).toEqual([keyOf('p-1')]);
     expect(s().queueSetAsideFailed).toBe(true);

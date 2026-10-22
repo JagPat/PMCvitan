@@ -6,6 +6,7 @@ import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { refreshSiteVisits, uuidV4, VISIT_PAGE, withQueued } from '@/lib/useSiteVisits';
 import type { ApiGateway, ApiSnapshot, OutboxOp, SiteVisit } from '@/data/apiGateway';
 import { leftoverEnglish } from './leftover-english';
+import { queueWritten } from './queueWrites';
 
 /**
  * Site Visits SV1-c (#792, QA item 6): the screen reads every visit for every member, and offers only the acts
@@ -910,10 +911,11 @@ describe('the snapshot a flush with site visit acts takes (#908)', () => {
 describe('the queue of site visit acts', () => {
   const end = { t: 'siteVisitEnd' as const, visitId: 'v-1', claimedAt: '2026-10-14T06:00:00.000Z', idempotencyKey: 'k-end' };
 
-  it('is kept per person under passwordless dev sign-in (Codex 4278754328)', () => {
+  it('is kept per person under passwordless dev sign-in (Codex 4278754328)', async () => {
     useStore.setState({ ...getInitialState(), sessionToken: null, sessionUserId: 'u-a', online: false });
     useStore.getState()._setGateway({ project: useStore.getState().activeProjectId } as unknown as ApiGateway);
     useStore.getState().queueSiteVisitAct(end, 'saved');
+    await queueWritten(); // step B1: written under the queue's lock, after the act
     const project = useStore.getState().activeProjectId;
     expect(JSON.parse(localStorage.getItem(`vitan.siteVisitQueue.dev:u-a.${project}`) ?? '[]')).toEqual([end]);
     // another dev persona on the same project does not get it
@@ -959,13 +961,15 @@ describe('the queue of site visit acts', () => {
     localStorage.clear();
   });
 
-  it('is kept apart from the outbox an older bundle reads, so it never replays an act it has no case for (Codex 4278991737)', () => {
+  it('is kept apart from the outbox an older bundle reads, so it never replays an act it has no case for (Codex 4278991737)', async () => {
     useStore.setState({ ...getInitialState(), sessionToken: null, sessionUserId: 'u-a', online: false });
     useStore.getState()._setGateway({ project: useStore.getState().activeProjectId } as unknown as ApiGateway);
     const project = useStore.getState().activeProjectId;
     const other: OutboxOp = { t: 'changeWithdraw', decisionId: 'd-1', idempotencyKey: 'k-w' };
+    useStore.getState().hydrateOutbox(); // this scope's keys as loaded now: an earlier test's acts are not this tab's
     useStore.setState({ outbox: [other] });
     useStore.getState().queueSiteVisitAct(end, 'saved');
+    await queueWritten();
     // the outbox key an older bundle reads holds no site visit act
     expect(JSON.parse(localStorage.getItem(`vitan.outbox.dev:u-a.${project}`) ?? '[]')).toEqual([other]);
     expect(JSON.parse(localStorage.getItem(`vitan.siteVisitQueue.dev:u-a.${project}`) ?? '[]')).toEqual([end]);

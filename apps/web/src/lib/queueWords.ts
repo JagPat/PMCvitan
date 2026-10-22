@@ -31,4 +31,10 @@ export const QW = {
     hi: '{n} बदलाव इस फ़ोन पर सहेजे नहीं गए हैं और खो जाएँगे। जारी रखें?',
     gu: '{n} ફેરફારો આ ફોન પર સચવાયા નથી અને ખોવાઈ જશે. ચાલુ રાખવું છે?',
   },
+  /** step B: an act made while this tab could not write it to this phone (no cross-tab lock, an unreadable key) */
+  notSavedYet: {
+    en: 'Not saved on this phone yet. Keep Vitan open until it sends.',
+    hi: 'अभी इस फ़ोन पर सहेजा नहीं गया। भेजे जाने तक Vitan खुला रखें।',
+    gu: 'હજુ આ ફોન પર સાચવાયું નથી. મોકલાય ત્યાં સુધી Vitan ખુલ્લું રાખો.',
+  },
 } satisfies Record<string, Words>;

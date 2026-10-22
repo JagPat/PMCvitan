@@ -15,6 +15,7 @@ import type { ApiGateway } from '@/data/apiGateway';
 import { COMMERCIAL_OP_PERMISSION, COMMERCIAL_OUTBOX_OP_TYPES, advanceCoalesceKey, budgetCoalesceKey, billCoalesceKey, isBudgetPendingForHead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import type { CommercialClaimView, CommercialView } from '@/store/commercial';
 import type { CashForecastReadDto, CommercialBudgetDto, CostHeadPositionDto, MeasurementRegisterDto } from '@vitan/shared';
+import { queueWritten } from './queueWrites';
 
 /**
  * Phase 5 Task 7B-i (§M) — the pilot COMMERCIAL money-position hub: the capability-gated nav entry
@@ -1221,7 +1222,7 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     expect(s().commercialPendingQty, 'the reservation outlived the key it belongs to').toEqual({});
   });
 
-  it('R5-1: a reservation survives a RELOAD, like the key it belongs to', () => {
+  it('R5-1: a reservation survives a RELOAD, like the key it belongs to', async () => {
     // RED before: hydration rebuilt `commercialPending` from localStorage and not the reservations,
     // so a correction queued offline came back with its button disabled and its authority silently
     // freed — the round-4 lifecycle broken at the one moment it is rebuilt from scratch.
@@ -1230,6 +1231,7 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     s().correctMeasurement('m1', '5', 'more work', 'LPL-1');
     expect(s().outbox).toHaveLength(1);
     const key = s().commercialPending[0]!;
+    await queueWritten(); // step B1: the act is written under the queue's lock
 
     // a RELOAD: a fresh store over the same persisted queue
     const projectId = s().activeProjectId;
