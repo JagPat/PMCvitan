@@ -101,19 +101,40 @@ describe('WEB-02 step 1: a stored queue key keeps every tab’s acts', () => {
     expect(keysOf(key)).toEqual(['k-b', 'k-a']);
   });
 
-  it('no write loop: an act left out again is not written back a second time, and this tab’s next write stores it', () => {
+  it('#1079 4344270659: every stale write that leaves out an act made here is answered, once each, so the act stays stored', () => {
     signedIn();
     act(() => { s().queueSiteVisitAct(end('v-2', 'k-b'), 'saved offline'); });
     const stale = [end('v-1', 'k-a')];
-    expect(writesInAnswer(lane, stale)).toBe(1);
-    expect(keysOf(lane)).toEqual(['k-b', 'k-a']);
-    // the other tab (an older release writing the lane whole) leaves it out again
-    expect(writesInAnswer(lane, stale)).toBe(0);
-    expect(writesInAnswer(lane, stale)).toBe(0);
-    // memory still holds it, so it is sent from here, and this tab's own next write stores it again
-    expect(s().outbox.map((o) => (o as { idempotencyKey?: string }).idempotencyKey)).toContain('k-b');
-    act(() => { s().queueSiteVisitAct(end('v-3', 'k-c'), 'saved offline'); });
-    expect(keysOf(lane)).toEqual(['k-b', 'k-c', 'k-a']);
+    // an older release writes the lane whole from a read before this tab's act, three times: each write is answered once
+    for (let n = 0; n < 3; n += 1) {
+      expect(writesInAnswer(lane, stale)).toBe(1);
+      expect(keysOf(lane)).toEqual(['k-b', 'k-a']);
+    }
+  });
+
+  it('#1079 4344270652: a lane entry of a kind this release leaves out of memory stays stored at this tab’s writes', () => {
+    const newer = { t: 'visitVoiceNote', visitId: 'v-1', idempotencyKey: 'k-newer' };
+    const photo = { t: 'siteVisitAddFile', visitId: 'v-1', scope: 's', file: { id: 'f', mime: 'image/png' }, by: { name: 'n', role: 'pmc' }, placeName: null, idempotencyKey: 'k-photo' };
+    signedIn({ lane: [newer, photo] });
+    act(() => { s().queueSiteVisitAct(end('v-2', 'k-mine'), 'saved offline'); });
+    expect(keysOf(lane)).toEqual(['k-mine', 'k-newer', 'k-photo']);
+  });
+
+  it('#1079 4344270652: a site visit act stored in the general key, which memory leaves out, stays stored there', () => {
+    signedIn({ general: [end('v-1', 'k-in-general'), approve('k-a')] });
+    useStore.setState((st) => { st.outbox = [...st.outbox, approve('k-b')]; });
+    act(() => { s().queueSiteVisitAct(end('v-2', 'k-v'), 'saved offline'); });
+    expect(keysOf(key)).toEqual(['k-a', 'k-b', 'k-in-general']);
+  });
+
+  it('#1079 4344270663: a newer release’s list holding an entry that is not an act is never written over by this tab', () => {
+    const newer = ['v3:queue-format', approve('k-n')];
+    signedIn();
+    localStorage.setItem(key, JSON.stringify(newer));
+    useStore.setState((st) => { st.outbox = [...st.outbox, approve('k-mine')]; });
+    act(() => { s().queueSiteVisitAct(end('v-2', 'k-v'), 'saved offline'); });
+    expect(JSON.parse(localStorage.getItem(key)!)).toEqual(newer);
+    expect(keysOf(lane)).toEqual(['k-v']);
   });
 
   it('guard: another tab’s write that keeps every act this tab holds is not answered', () => {

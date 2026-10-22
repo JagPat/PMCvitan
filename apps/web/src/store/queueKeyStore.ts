@@ -10,10 +10,9 @@ import type { OutboxOp } from '@/data/apiGateway';
  * another tab's and stays where it is. A write never takes another tab's acts into memory: that tab sends them, or
  * the next load does.
  *
- * Another tab's write that leaves out an act this tab holds is answered by writing the merge back, once per act
- * (#1071 F3 for the lane). An act left out again is not written back a second time, so two tabs never answer each
- * other for ever: it stays in memory, is sent from here, and is listed as not kept (`notKept`) until this tab's next
- * write stores it.
+ * Another tab's write that leaves out an act made here is answered by writing it back, every time (#1071 F3 for the
+ * lane, #1079 Codex 4344270659); an act the load read is listed as not kept (`notKept`) until this tab's next write.
+ * A list holding an entry that is not an act (a newer release's format) is never written over (Codex 4344270663).
  */
 
 /** an act's identity: its idempotency key, else a photo's client key, else its bytes */
@@ -27,18 +26,29 @@ export const queueActIdent = (o: OutboxOp): string => {
 
 type Store = Pick<Storage, 'getItem' | 'setItem'>;
 
-/** the key's acts, or null when it holds bytes that are not a list (an absent key is an empty list). `whole`: null
- *  too when the list holds an entry that is not an act (a newer release's shape), so it is never written over unasked */
-function readKey(storage: Store, key: string, whole = false): OutboxOp[] | null {
+/** the key's acts; null when it holds bytes that are not a list; 'opaque' when it is a list holding an entry that is
+ *  not an act (a newer release's format), which no write of this release touches (Codex 4344270663) */
+function readKey(storage: Store, key: string): OutboxOp[] | null | 'opaque' {
   const raw = storage.getItem(key);
   if (raw === null) return [];
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return null;
-    const acts = (parsed as OutboxOp[]).filter((o) => o !== null && typeof o === 'object');
-    return whole && acts.length !== parsed.length ? null : acts;
+    return parsed.every((o) => o !== null && typeof o === 'object' && !Array.isArray(o)) ? (parsed as OutboxOp[]) : 'opaque';
   } catch {
     return null;
+  }
+}
+/** copy `text` under a name of its own beside `key` (never one in use), and read it back */
+function copyAside(storage: Store, key: string, text: string): boolean {
+  try {
+    const base = `vitan.unreadable.${key}.${Date.now()}`;
+    let name = base;
+    for (let n = 1; storage.getItem(name) !== null; n += 1) name = `${base}.${n}`;
+    storage.setItem(name, text);
+    return storage.getItem(name) === text;
+  } catch {
+    return false;
   }
 }
 
@@ -47,6 +57,8 @@ function readKey(storage: Store, key: string, whole = false): OutboxOp[] | null 
  *  `after`. Another tab's merged write may put its own acts ahead of this tab's, so no position is trusted. */
 export function keepUnsent(storage: Store, key: string, rest: OutboxOp[], batch: OutboxOp[], after: (l: OutboxOp[]) => OutboxOp[]): void {
   const stored = readKey(storage, key);
+  // a newer release's format is never written over: the unsent acts are copied aside beside it
+  if (stored === 'opaque') { if (rest.length > 0) copyAside(storage, key, JSON.stringify(rest)); return; }
   const flushed = new Set([...batch, ...rest].map(queueActIdent));
   const others = (stored ?? []).filter((o) => !flushed.has(queueActIdent(o)));
   storage.setItem(key, JSON.stringify([...rest, ...after(others)]));
@@ -57,8 +69,6 @@ export type QueueKeyStore = ReturnType<typeof createQueueKeyStore>;
 export function createQueueKeyStore() {
   /** per key, every act this tab has held since that key's load */
   const known = new Map<string, Set<string>>();
-  /** per key, the acts this tab has written back once after another tab's write left them out */
-  const putBack = new Map<string, Set<string>>();
   /** per key, the acts held in memory that the key does not hold now */
   const unkept = new Map<string, Set<string>>();
   /** per key, the acts its load read: every tab of this scope may hold them, so another tab's write that leaves one out
@@ -75,6 +85,7 @@ export function createQueueKeyStore() {
   /** read now, merge `mine` over it, write if that changes it. False when nothing was stored. */
   const writeMerged = (storage: Store, key: string, mine: OutboxOp[], skip: Set<string> = new Set()): boolean => {
     const stored = readKey(storage, key);
+    if (stored === 'opaque') throw new Error('a list this release does not write');
     const held = new Set(mine.map(queueActIdent));
     const seen = setOf(known, key);
     for (const i of held) seen.add(i);
@@ -94,7 +105,6 @@ export function createQueueKeyStore() {
     loaded(key: string, stored: unknown): void {
       known.set(key, new Set(Array.isArray(stored) ? (stored as OutboxOp[]).filter((o) => o && typeof o === 'object').map(queueActIdent) : []));
       fromLoad.set(key, new Set(known.get(key)));
-      putBack.delete(key);
       unkept.delete(key);
       loadedKeys.add(key);
     },
@@ -106,7 +116,6 @@ export function createQueueKeyStore() {
     forget(): void {
       known.clear();
       fromLoad.clear();
-      putBack.clear();
       unkept.clear();
       loadedKeys.clear();
     },
@@ -117,35 +126,34 @@ export function createQueueKeyStore() {
       } catch {
         // not kept: every act memory holds that the key, unchanged by the failed write, does not hold now
         let there = new Set<string>();
-        try { there = new Set((readKey(storage, key) ?? []).map(queueActIdent)); } catch { /* unreadable: none */ }
+        try { const now = readKey(storage, key); there = new Set((Array.isArray(now) ? now : []).map(queueActIdent)); } catch { /* unreadable: none */ }
         const missing = setOf(unkept, key);
         missing.clear();
         for (const o of mine) { const i = queueActIdent(o); if (!there.has(i)) missing.add(i); }
         return false;
       }
     },
-    /** Another tab wrote `key` (a storage event). Writes the merge back when that write left out an act this tab holds
-     *  for the first time, or put back an act this tab settled; never twice for the same act. */
+    /** Another tab wrote `key` (a storage event). An act made here since the load exists nowhere but this tab's memory
+     *  and this key, so every write that leaves it out is answered by writing it back (#1079, Codex 4344270659): no tab
+     *  of this release answers that write, since none holds the act or heals it, so the answers never chain. An act the
+     *  load read is not written back (another tab most likely sent it): it is listed not kept until this tab's next
+     *  write. An act made here and settled here that a stale write put back is taken off again, so it is not sent twice;
+     *  one the load read is not, so two tabs that loaded it never answer each other. */
     heard(storage: Store, key: string, mine: OutboxOp[]): void {
-      const stored = readKey(storage, key, true);
-      if (stored === null) return;
+      const stored = readKey(storage, key);
+      if (!Array.isArray(stored)) return;
       const there = new Set(stored.map(queueActIdent));
       const held = new Set(mine.map(queueActIdent));
       const seen = setOf(known, key);
-      const once = setOf(putBack, key);
       const loadedHere = fromLoad.get(key) ?? new Set<string>();
       const gone = mine.map(queueActIdent).filter((i) => !there.has(i));
       const missing = gone.filter((i) => !loadedHere.has(i));
-      const again = new Set(missing.filter((i) => once.has(i)));
-      // not written back now: an act left out again, and an act the load read (another tab most likely sent it)
-      const left = new Set([...again, ...gone.filter((i) => loadedHere.has(i))]);
+      const left = new Set(gone.filter((i) => loadedHere.has(i)));
       const notThere = setOf(unkept, key);
       for (const i of [...notThere]) if (!held.has(i) || there.has(i)) notThere.delete(i);
       for (const i of left) notThere.add(i);
-      // an act this tab settled that a stale write put back is taken off again, so it is not sent twice
-      const settledBack = stored.some((o) => { const i = queueActIdent(o); return seen.has(i) && !held.has(i); });
-      if (!settledBack && missing.length === again.size) return;
-      for (const i of missing) once.add(i);
+      const settledBack = stored.some((o) => { const i = queueActIdent(o); return seen.has(i) && !held.has(i) && !loadedHere.has(i); });
+      if (!settledBack && missing.length === 0) return;
       try {
         writeMerged(storage, key, mine, left);
       } catch {

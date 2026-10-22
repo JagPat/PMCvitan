@@ -2378,6 +2378,8 @@ export const useStore = create<Store>()(
      *  release before it, which replays every `siteVisit…` act it finds and has no case for a photo, never meets one,
      *  and this lane is stored exactly as before (Codex 4320122193, 4320404449, 4320404441). */
     const isStoredVisitOp = (o: OutboxOp): boolean => isSiteVisitOp(o) && o.t !== 'siteVisitAddFile';
+    /** a stored entry naming a site visit kind (read safely: an entry may be anything) */
+    const isLaneEntry = (o: unknown): o is OutboxOp => typeof (o as { t?: unknown } | null)?.t === 'string' && isSiteVisitOp(o as OutboxOp);
     /** WEB-02 step 1: both queue keys are written only through `queueKeys`, which merges with what each holds now */
     const queueKeys = createQueueKeyStore();
     const persistOutbox = (): void => {
@@ -6508,7 +6510,8 @@ export const useStore = create<Store>()(
           queueKeys.forget();
           const raw = storage.getItem(outboxKey());
           const parsed = raw ? (JSON.parse(raw) as unknown) : [];
-          queueKeys.loaded(outboxKey(), parsed);
+          // the acts memory takes from this key, or drops on purpose below; a lane act it leaves out stays stored (#1079)
+          queueKeys.loaded(outboxKey(), Array.isArray(parsed) ? parsed.filter((o) => !isLaneEntry(o)) : parsed);
           // Phase 3 Task 7 (correction 4) — a materials op persisted by PR #207 carries only
           // `idempotencyKey` (no `coalesceKey`); PR #208 keys coalescing on `coalesceKey`, so without this
           // a legacy queued op would not coalesce and could execute a SECOND time (double reserve). Derive
@@ -6530,14 +6533,15 @@ export const useStore = create<Store>()(
           // persist the migrated queue back to the SAME scoped key so the one-time normalization is durable;
           // a write that fails (storage full) keeps the queue in memory, and the next load derives the same keys
           if (changed) {
-            queueKeys.write(storage, outboxKey(), photosNorm.ops);
+            queueKeys.write(storage, outboxKey(), photosNorm.ops.filter((o) => !isSiteVisitOp(o)));
           }
           // the site visit acts, from their own key (malformed → none); a visit photo's act comes from its row (SV2)
           let visitOps: OutboxOp[] = [];
           try {
             const rawVisits: unknown = JSON.parse(storage.getItem(siteVisitKeyOf(outboxKey())) ?? '[]');
-            queueKeys.loaded(siteVisitKeyOf(outboxKey()), rawVisits);
-            visitOps = Array.isArray(rawVisits) ? (rawVisits as OutboxOp[]).filter((o) => o && isStoredVisitOp(o)) : [];
+            visitOps = Array.isArray(rawVisits) ? (rawVisits as OutboxOp[]).filter((o) => isLaneEntry(o) && isStoredVisitOp(o)) : [];
+            // only the acts memory holds: one it leaves out (a newer release's kind) stays stored (#1079, Codex 4344270652)
+            queueKeys.loaded(siteVisitKeyOf(outboxKey()), visitOps);
           } catch {
             visitOps = [];
           }
