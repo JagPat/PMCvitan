@@ -295,6 +295,63 @@ describe('#1085 r2 (Codex 4346169580): every field a replay puts in its request 
   });
 });
 
+describe('#1088 r2 (Codex 4350723956): an idempotency key is one the Idempotency-Key header can carry and the server keeps', () => {
+  /** every kind's act as stored with every optional field, a key included */
+  const withKey = (t: OutboxOp['t']): Record<string, unknown> => {
+    const full = FULL.find((o) => o.t === t && 'idempotencyKey' in o);
+    return { ...(full ?? MIN[t]) } as Record<string, unknown>;
+  };
+  const KEYED = (Object.keys(MIN) as OutboxOp['t'][]).filter((t) => 'idempotencyKey' in withKey(t));
+
+  it('the only act field a replay sends as a header is its idempotency key, found by replaying every kind through the real gateway', async () => {
+    const heads: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      heads.push(...new Headers(init?.headers).values());
+      return { ok: true, status: 200, json: async () => ({}) };
+    }));
+    const gw = new ApiGateway('http://api.test', 'p-2');
+    const found = new Set<string>();
+    for (const op of [...Object.values(MIN), ...FULL]) {
+      // a photo's and an evidence row's replay reads its row on this phone first (the photo act's key is checked below)
+      if (op.t === 'siteVisitAddFile' || op.t === 'uploadEvidence') continue;
+      heads.length = 0;
+      await replayOutboxOp(gw, op).catch(() => null);
+      for (const [f, v] of Object.entries(op)) if (f !== 't' && typeof v === 'string' && heads.includes(v)) found.add(f);
+    }
+    vi.unstubAllGlobals();
+    expect([...found]).toEqual(['idempotencyKey']);
+  });
+
+  it.each(KEYED)('%s: a blank key, or one a header cannot carry, is not read; every key this app makes is', (t) => {
+    const op = withKey(t);
+    for (const bad of ['', ' ', '\t', ' \t ', 'a\r\nb', 'a\nb', 'a\rb', 'a\u0000b', 'ключ', 'clé', 7]) {
+      expect([t, bad, isKnownOutboxOp({ ...op, idempotencyKey: bad }, S)]).toEqual([t, bad, false]);
+    }
+    for (const good of ['6f1c2b0e-8a4d-4c5e-9b7a-1d2e3f4a5b6c', 'k-1712345678901-4fzyo82mvyk', 'k-1', ' k-1 ']) {
+      expect([t, good, isKnownOutboxOp({ ...op, idempotencyKey: good }, S)]).toEqual([t, good, true]);
+    }
+  });
+
+  it('forced probe, the finding’s case: a stored approval whose key is blank is listed, never replayed, and its key kept', async () => {
+    const raw = JSON.stringify([{ t: 'approve', decisionId: 'd-1', optionIndex: 0, idempotencyKey: '   ' }]);
+    const approveDecision = vi.fn(async () => null);
+    onP2({ [general]: raw });
+    useStore.getState()._setGateway({ project: P2, listSiteVisits: vi.fn(async () => []), approveDecision } as unknown as ApiGateway);
+    expect(useStore.getState().queueUnreadable.map((u) => u.key)).toEqual([general]);
+    expect(useStore.getState().outbox).toEqual([]);
+    useStore.setState({ online: true });
+    await useStore.getState().flushOutbox();
+    expect(approveDecision).not.toHaveBeenCalled();
+    expect(localStorage.getItem(general)).toBe(raw);
+  });
+
+  it('forced probe: a stored labour start whose key holds a line break is listed, never replayed', () => {
+    onP2({ [general]: JSON.stringify([{ t: 'startActivity', activityId: 'a-1', idempotencyKey: 'k\r\nX-Other: 1' }]) });
+    expect(useStore.getState().queueUnreadable.map((u) => u.key)).toEqual([general]);
+    expect(useStore.getState().outbox).toEqual([]);
+  });
+});
+
 describe('#1085 r2 (Codex 4346169609): an act naming a user scope is read only under its own user’s key', () => {
   it('an evidence or visit photo act naming another scope, or read with none, is not read', () => {
     expect(isKnownOutboxOp(MIN.uploadEvidence, S)).toBe(true);

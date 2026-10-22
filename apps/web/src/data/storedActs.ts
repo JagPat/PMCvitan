@@ -19,6 +19,13 @@ type Fields = Record<string, unknown>;
 const isFields = (v: unknown): v is Fields => typeof v === 'object' && v !== null && !Array.isArray(v);
 const str: Check = (v) => typeof v === 'string';
 const key: Check = (v) => typeof v === 'string' && v.length > 0;
+/** An idempotency key, which the replay sends as its `Idempotency-Key` header as it stands. The server trims the header and
+ *  takes a blank one as no key (`platform/commands.ts:147`): a command that needs one is refused for good and its act
+ *  dropped, and one that does not runs with no receipt, so a lost response can run it twice. A CR, LF, NUL or other
+ *  character a header cannot carry makes `fetch` throw before it sends, at every flush. So the key is nonblank once
+ *  trimmed and only printable ASCII, spaces and tabs (Codex 4350723956). Every key this app has made is a uuid or
+ *  `k-<time>-<random>`, so every stored key it wrote still reads */
+const headerKey: Check = (v) => typeof v === 'string' && v.trim().length > 0 && /^[\t\x20-\x7E]+$/.test(v);
 const num: Check = (v) => typeof v === 'number' && Number.isFinite(v);
 const int: Check = (v) => Number.isInteger(v);
 const bool: Check = (v) => typeof v === 'boolean';
@@ -41,13 +48,13 @@ const list = (c: Check): Check => (v) => Array.isArray(v) && v.every(c);
 const shape = (fields: Record<string, Check>): Check => (v) => isFields(v) && Object.entries(fields).every(([k, c]) => c(v[k]));
 /** an act: its own fields, under its kind */
 const act = (fields: Record<string, Check>): Check => shape(fields);
-const keyed = (fields: Record<string, Check>): Check => act({ ...fields, idempotencyKey: key });
+const keyed = (fields: Record<string, Check>): Check => act({ ...fields, idempotencyKey: headerKey });
 /** a kind an earlier release queued with no key: such an act replays unkeyed, as it did there (#1051 r1 re-check G2) */
-const keyedLater = (fields: Record<string, Check>): Check => act({ ...fields, idempotencyKey: opt(key) });
+const keyedLater = (fields: Record<string, Check>): Check => act({ ...fields, idempotencyKey: opt(headerKey) });
 /** the two-key split (materials, labour, commercial): a fresh key per act and the coalescing identity. A materials act
  *  from PR #207 has no `coalesceKey`; `normalizeMaterialsOutbox` derives it on load */
-const twoKeys = (fields: Record<string, Check>): Check => act({ ...fields, idempotencyKey: key, coalesceKey: key });
-const twoKeysMaterials = (fields: Record<string, Check>): Check => act({ ...fields, idempotencyKey: key, coalesceKey: opt(key) });
+const twoKeys = (fields: Record<string, Check>): Check => act({ ...fields, idempotencyKey: headerKey, coalesceKey: key });
+const twoKeysMaterials = (fields: Record<string, Check>): Check => act({ ...fields, idempotencyKey: headerKey, coalesceKey: opt(key) });
 const designation = oneOf('client', 'pmc', 'member', 'architect');
 const billLine = shape({ poLineId: opt(str), labourPoLineId: opt(str), quantity: str, rate: str, taxAmount: opt(str), freightAmount: opt(str) });
 
@@ -99,10 +106,10 @@ const OUTBOX_OP_KINDS: Record<OutboxOp['t'], Check> = {
   // and a review queued before ce360ae5 names no item ids (`rejectedItemNames`): it is sent as that release's would be
   // now, with none, and the server takes none as none: an approval approves; a rejection sends back the rows the
   // inspection holds as failed, or is refused 400 when there are none (inspections.service.ts, "No items rejected")
-  decideReview: (v) => act({ inspectionId: routeId, approve: bool, idempotencyKey: opt(key) })(v) && isFields(v)
+  decideReview: (v) => act({ inspectionId: routeId, approve: bool, idempotencyKey: opt(headerKey) })(v) && isFields(v)
     && (list(str)(v.rejectedItemIds) || (v.rejectedItemIds === undefined && list(str)(v.rejectedItemNames))),
-  startActivity: act({ activityId: routeId, idempotencyKey: opt(key) }),
-  completeActivity: act({ activityId: routeId, idempotencyKey: opt(key) }),
+  startActivity: act({ activityId: routeId, idempotencyKey: opt(headerKey) }),
+  completeActivity: act({ activityId: routeId, idempotencyKey: opt(headerKey) }),
   startDailyLog: keyed({}),
   addSiteMaterial: keyed({ input: shape({ name: str, qty: str, zone: opt(str), decisionId: opt(str), swatch: opt(str), nodeId: opt(str) }) }),
   flagMismatch: keyedLater({ decisionId: str }),
