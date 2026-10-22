@@ -940,12 +940,13 @@ describe('the queue of site visit acts', () => {
     };
     useStore.setState({ ...getInitialState(), sessionUserId: PMC, activeProjectId: 'p-a', online: true });
     useStore.getState()._setGateway(gw as unknown as ApiGateway);
-    const start = { t: 'siteVisitStart' as const, idempotencyKey: 'k-s', visitor: { name: 'Priya Shah', role: 'pmc', placeName: null }, body: { id: 'v-tmp', claimedAt: '2026-10-14T04:30:00.000Z' } };
-    useStore.setState({ outbox: [start, { ...end, visitId: 'v-tmp' }] });
+    // the server takes a visit's and an attendee's id only as a UUID (#1085 r1: a stored act is read by its contract)
+    const start = { t: 'siteVisitStart' as const, idempotencyKey: 'k-s', visitor: { name: 'Priya Shah', role: 'pmc', placeName: null }, body: { id: '0b9c8d7e-6f5a-4b3c-8d2e-1f0a9b8c7d6e', claimedAt: '2026-10-14T04:30:00.000Z' } };
+    useStore.setState({ outbox: [start, { ...end, visitId: '0b9c8d7e-6f5a-4b3c-8d2e-1f0a9b8c7d6e' }] });
     const flushed = useStore.getState().flushOutbox();
     await vi.waitFor(() => expect(gw.listSiteVisits).toHaveBeenCalled());
     // a guest added on the visit being started, while the lookup is out
-    const guest = { t: 'siteVisitAddAttendee' as const, visitId: 'v-tmp', idempotencyKey: 'k-g', name: 'Mr Mehta', body: { id: 'a-1', guestName: 'Mr Mehta' } };
+    const guest = { t: 'siteVisitAddAttendee' as const, visitId: '0b9c8d7e-6f5a-4b3c-8d2e-1f0a9b8c7d6e', idempotencyKey: 'k-g', name: 'Mr Mehta', body: { id: '1c0d9e8f-7a6b-4c5d-9e3f-2a1b0c9d8e7f', guestName: 'Mr Mehta' } };
     useStore.getState().queueSiteVisitAct(guest, 'saved');
     lookup([open]);
     await vi.waitFor(() => expect(gw.endSiteVisit).toHaveBeenCalledWith('v-open', expect.any(String), expect.any(String)));
