@@ -47,8 +47,10 @@ export function PlacesScreen() {
   const drawings = useStore(useShallow((s) => s.drawings.filter((d) => !d.draft)));
   const photos = useStore(useShallow((s) => s.photos));
   // the snapshot carries only the newest SNAPSHOT_SITE_PHOTO_LIMIT site photos: once that window is full, a
-  // place's photos are those among the latest, never its whole record (Codex 4194155412, shadow review)
-  const photosCapped = photos.length >= SNAPSHOT_SITE_PHOTO_LIMIT;
+  // place's photos are those among the latest, never its whole record (Codex 4194155412, shadow review). A full window
+  // a delete shortened is still a window until a snapshot rebuilds it (Codex 4337661439)
+  const photosWindowShort = useStore((s) => s.photosWindowShort);
+  const photosCapped = photos.length >= SNAPSHOT_SITE_PHOTO_LIMIT || photosWindowShort;
   const activities = useStore(useShallow((s) => s.activities));
   // Module-owned activities (`moduleQuery`) are known only once their read answers: until then, or after it
   // fails, an empty list says nothing about where work is — the same boundary the Schedule draws (Codex

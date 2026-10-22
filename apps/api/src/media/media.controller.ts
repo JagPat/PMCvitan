@@ -6,6 +6,7 @@ import { ZodPipe } from '../common/zod.pipe';
 import { createMediaSchema, setNodeSchema, type CreateMediaInput, type SetNodeInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { Public, RolesFor, RolesGuard } from '../common/roles';
+import { MEDIA_NOT_FOUND_MESSAGE } from '@vitan/shared';
 
 @Controller()
 export class MediaController {
@@ -71,7 +72,8 @@ export class MediaController {
   @RolesFor('media.delete')
   async remove(@Param('id') id: string, @CurrentUser() user: AuthUser): Promise<{ ok: boolean; dailyLogId: string | null }> {
     const removed = await this.media.removeFiled(id, user);
-    if (!removed) throw new NotFoundException('Media not found');
+    // the web reads this exact text as "already deleted" (shared, #991)
+    if (!removed) throw new NotFoundException(MEDIA_NOT_FOUND_MESSAGE);
     // the day's log the photo was counted on, so a client can take it off that count at once (Codex 4317884791)
     return { ok: true, dailyLogId: removed.dailyLogId };
   }
