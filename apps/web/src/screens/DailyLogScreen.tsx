@@ -13,11 +13,13 @@ import { pathOf } from '@/lib/locationTree';
 import { todayCivil } from '@/lib/civilDate';
 import { sentOnEarlierDay } from '@/lib/engineerToday';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
-import { can, dailyLogLabels as L, dailyLogText as T, labourLabels, type ScreenKey, type Lang } from '@vitan/shared';
+import { can, dailyLogLabels as L, dailyLogText as T, labourLabels, sitePhotoLabels, type ScreenKey, type Lang } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 export function DailyLogScreen() {
   const dailyLog = useStore((s) => s.dailyLog);
+  // #482 site photos — after a photo on this log was deleted, the count waits for the server's own (Codex 4322142057)
+  const photoCountUpdating = useStore((s) => s.dailyLogPhotoCountAfter !== null);
   const photos = useStore(useShallow((s) => s.dailyLog?.photos ?? []));
   const nodes = useStore(useShallow((s) => s.nodes));
   const online = useStore((s) => s.online);
@@ -397,7 +399,7 @@ export function DailyLogScreen() {
         <div style={sectionLabel}>{L.progressTitle[lang]}</div>
         <div style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 13, padding: 13, display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600, fontSize: 13.5 }}>{T.photos(dailyLog.progress, lang)}</div>
+            <div style={{ fontWeight: 600, fontSize: 13.5 }} data-testid="progress-photo-count">{photoCountUpdating ? sitePhotoLabels.countUpdating[lang] : T.photos(dailyLog.progress, lang)}</div>
             <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>{L.stamped[lang]}</div>
           </div>
           {/* No `capture`: on Android it forces the camera and hides the gallery. The stamp comes from

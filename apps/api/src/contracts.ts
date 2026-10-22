@@ -472,6 +472,13 @@ export const isoCivilDateSchema = z
       return false;
     }
   }, 'Not a real calendar date');
+/** A civil date in a body: trimmed and required as before, then `isoCivilDateSchema`. The trim and the required
+ *  check run first, so a padded day still lands and an empty one keeps its own 400; a value that is no real day was
+ *  handed to `parseCivilDate`, which throws a plain Error (500), and is now the 400 above at the boundary. */
+export const civilDateField = z.string().trim().min(1).pipe(isoCivilDateSchema);
+/** A civil date in a query string: absent or empty means none, as the services read it; anything else must be a
+ *  real day, the same 400 as a body field. */
+export const civilDateQuery = z.preprocess((v) => (v === '' ? undefined : v), isoCivilDateSchema.optional());
 
 /** A real IANA time zone — validated against the runtime's zone database, so a
  *  typo can't silently corrupt every "today on site" the Clock stamps. */
@@ -1007,7 +1014,7 @@ export const createRfqSchema = z.object({ requisitionId: z.string().min(1) }).st
 export type CreateRfqInput = z.infer<typeof createRfqSchema>;
 export const recordQuoteSchema = z.object({
   vendorId: z.string().min(1),
-  validUntil: z.string().trim().min(1), // ISO civil date (validated by the civil-date helper)
+  validUntil: civilDateField,
   leadTimeDays: z.number().int().min(0).max(3650).optional(),
   paymentTerms: z.string().trim().max(1000).optional(),
   warrantyTerms: z.string().trim().max(1000).optional(),
@@ -1022,7 +1029,7 @@ export const recordQuoteSchema = z.object({
     matchesSpecification: z.boolean(),
     sampleCompliant: z.boolean().optional(),
     vendorStockQty: z.string().trim().min(1).optional(),
-    deliveryPromise: z.string().trim().min(1).optional(), // ISO civil date
+    deliveryPromise: civilDateField.optional(),
   }).strict()).min(1).max(50),
 }).strict();
 export type RecordQuoteInput = z.infer<typeof recordQuoteSchema>;
@@ -1095,11 +1102,11 @@ export const closeShortPoSchema = z.object({ reason: z.string().trim().min(1).ma
 export type CloseShortPoInput = z.infer<typeof closeShortPoSchema>;
 export const commitDeliverySchema = z.object({
   poLineId: z.string().min(1),
-  promisedDate: z.string().trim().min(1), // ISO civil date (validated by the civil-date helper)
+  promisedDate: civilDateField,
 }).strict();
 export type CommitDeliveryInput = z.infer<typeof commitDeliverySchema>;
 export const reviseDeliverySchema = z.object({
-  promisedDate: z.string().trim().min(1),
+  promisedDate: civilDateField,
   reason: z.string().trim().min(1).max(1000), // every revision explains itself (§F)
 }).strict();
 export type ReviseDeliveryInput = z.infer<typeof reviseDeliverySchema>;
@@ -1231,7 +1238,7 @@ export const createLabourRequisitionSchema = z.object({
   lines: z.array(z.object({
     requirementId: z.string().min(1),
     revision: z.number().int().min(1),
-    civilDate: z.string().trim().min(1), // ISO civil date — must name a demand slice of the revision
+    civilDate: civilDateField, // must name a demand slice of the revision
     personShiftQty, // integer person-shifts, > 0
   }).strict()).min(1).max(100),
 }).strict();
@@ -1244,7 +1251,7 @@ export type CreateLabourRfqInput = z.infer<typeof createLabourRfqSchema>;
 
 export const recordLabourQuoteSchema = z.object({
   vendorId: z.string().min(1),
-  validUntil: z.string().trim().min(1), // ISO civil date
+  validUntil: civilDateField,
   leadTimeDays: z.number().int().min(0).max(3650).optional(),
   notes: z.string().trim().max(1000).optional(),
   lines: z.array(z.object({
@@ -1308,11 +1315,11 @@ export type CloseShortLabourPoInput = z.infer<typeof closeShortLabourPoSchema>;
 // first dated promise carries no reason, each revision does (§F append-only register).
 export const commitCapacitySchema = z.object({
   poLineId: z.string().min(1),
-  promisedDate: z.string().trim().min(1), // ISO civil date
+  promisedDate: civilDateField,
 }).strict();
 export type CommitCapacityInput = z.infer<typeof commitCapacitySchema>;
 export const reviseCapacitySchema = z.object({
-  promisedDate: z.string().trim().min(1),
+  promisedDate: civilDateField,
   reason: z.string().trim().min(1).max(1000),
 }).strict();
 export type ReviseCapacityInput = z.infer<typeof reviseCapacitySchema>;
@@ -1434,6 +1441,12 @@ export const resolveLabourMismatchSchema = z
   })
   .strict();
 export type ResolveLabourMismatchInput = z.infer<typeof resolveLabourMismatchSchema>;
+// The two labour reads' civil-date query strings (`labour/capacity?from&to`, `labour/presence?civilDate`): checked
+// here, so a day that is not real is a 400 rather than `parseCivilDate`'s 500. Other query strings pass, as before.
+export const labourCapacityQuerySchema = z.object({ from: civilDateQuery, to: civilDateQuery });
+export type LabourCapacityQueryInput = z.infer<typeof labourCapacityQuerySchema>;
+export const labourPresenceQuerySchema = z.object({ civilDate: civilDateQuery });
+export type LabourPresenceQueryInput = z.infer<typeof labourPresenceQuerySchema>;
 
 /** Record the §I ACTIVITIES-owned measured-output fact: quantity + UOM (+ optional photo
  *  evidence), immutable. Quantity travels as a decimal string (the shared decimal rule). */

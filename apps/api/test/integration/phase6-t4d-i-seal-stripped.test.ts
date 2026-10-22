@@ -221,6 +221,9 @@ function buildBase(): void {
     '20280112000000_site_visits_sv1a_record',
     // Site Visits SV2's visit files reference SV1-a's visit table: built on SV1-a, excluded with it.
     '20280114000000_site_visits_sv2_visit_media',
+    // The org role change written in place re-issues 4d-i's `phase6_t4d_org_authority`: built on 4d-i, excluded with
+    // the rest (applied to this pre-4d base it would install a `phase6_t4d_*` function before the unit under test).
+    '20280119000000_org_authority_role_change_in_place',
     // 4d-ii-a / A4a's consultation-cycle seals are 4d-i's bodies re-issued, guarded on 4d-i's
     // retirement marker, so they too apply only on top of 4d-i.
     '20271227000000_phase6_t4d_ii_consultation_finalized_cycle']);

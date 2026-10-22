@@ -2,7 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-import { isAutonomousPullRequest, handOffConflict } from './autonomous-handoff.mjs';
+import {
+  isAutonomousPullRequest,
+  handOffConflict,
+  handOffStatusDrift,
+} from './autonomous-handoff.mjs';
 
 const repository = 'JagPat/PMCvitan';
 
@@ -203,4 +207,179 @@ test('an open queued-merge wait drains durable work before it reschedules', asyn
     implementation.slice(waitStart, backlogStart),
     /dispatchRetry|\breturn;/,
   );
+});
+
+// Board decision, #482 comment 6330461745 item 1: at most one conflict ping per PR per head,
+// and none while merges to main are still settling. The dedupe is the marker comment itself.
+function markerClient(initial) {
+  const state = { live: initial, comments: [] };
+  state.client = {
+    pullRequest: async () => state.live,
+    comments: async () => state.comments,
+    comment: async (number, body) => state.comments.push({ user: { login: 'github-actions[bot]' }, body }),
+  };
+  return state;
+}
+
+test('a conflict ping is not repeated on the same head, and a new head gets one new ping', async () => {
+  const state = markerClient(conflict());
+  const settled = { clock: () => Date.parse('2026-10-22T12:00:00Z'), lastBaseMergeAt: Date.parse('2026-10-22T10:00:00Z') };
+  await handOffConflict(state.client, state.live, repository, 'main', settled);
+  await handOffConflict(state.client, state.live, repository, 'main', settled);
+  assert.equal(state.comments.length, 1);
+  state.live = conflict({ head: { ref: 'claude/task', sha: 'b'.repeat(40), repo: { full_name: repository } } });
+  await handOffConflict(state.client, state.live, repository, 'main', settled);
+  await handOffConflict(state.client, state.live, repository, 'main', settled);
+  assert.equal(state.comments.length, 2);
+  assert.match(state.comments[1].body, /autonomous-conflict:b{40}:/u);
+  assert.match(state.comments[1].body, /@claude/u, 'the action-required ping keeps its tag');
+});
+
+test('no conflict ping while main merged inside the settle window; a later run pings', async () => {
+  const state = markerClient(conflict());
+  const lastBaseMergeAt = Date.parse('2026-10-22T12:00:00Z');
+  for (const minutes of [0, 10, 29]) {
+    await handOffConflict(state.client, state.live, repository, 'main', {
+      lastBaseMergeAt, clock: () => lastBaseMergeAt + minutes * 60_000,
+    });
+  }
+  assert.equal(state.comments.length, 0, 'merges to main are still settling');
+  await handOffConflict(state.client, state.live, repository, 'main', {
+    lastBaseMergeAt, clock: () => lastBaseMergeAt + 31 * 60_000,
+  });
+  assert.equal(state.comments.length, 1);
+  assert.match(state.comments[0].body, /@claude/u);
+});
+
+test('every handoff run passes the last default-branch merge time to the conflict ping', async () => {
+  const implementation = await readFile(new URL('./autonomous-handoff.mjs', import.meta.url), 'utf8');
+  assert.match(implementation, /handOffConflict\(client, pullRequest, repository, defaultBranch, \{ lastBaseMergeAt \}\)/u);
+});
+
+// Codex r4344002054: the tip time read at the start of the run can be stale by the time a ping
+// is published, because merges run in another concurrency group. The final decision re-reads it.
+test('a merge to main during the run defers the conflict ping at publication time', async () => {
+  const state = markerClient(conflict());
+  const at = Date.now();
+  let reads = 0;
+  state.client.lastCommitAt = async () => { reads += 1; return at - 5 * 60_000; };
+  await handOffConflict(state.client, state.live, repository, 'main', {
+    lastBaseMergeAt: at - 2 * 60 * 60_000, clock: () => at,
+  });
+  assert.equal(state.comments.length, 0, 'the fresh read saw a merge inside the window');
+  assert.equal(reads, 1);
+  state.client.lastCommitAt = async () => null;
+  await handOffConflict(state.client, state.live, repository, 'main', {
+    lastBaseMergeAt: at - 2 * 60 * 60_000, clock: () => at,
+  });
+  assert.equal(state.comments.length, 1, 'an unreadable tip time still pings');
+});
+
+// Codex r4344002062: the wake tag on a post-merge or drift note is decided from a live read of
+// open PRs, not the run's snapshot. An unreadable list wakes.
+const idleStatus = { task_state: 'in_review', open_pr: '700', task: '4', work_item: 'none',
+  next_task: 'none', blocking_directive: 'none' };
+const snapshotOpen = [conflict({ number: 701, mergeable: true, mergeable_state: 'clean' })];
+
+function statusMarkdown(now) {
+  return `# Status\n\n## Now\n\n\`\`\`yaml\n${
+    Object.entries(now).map(([key, value]) => `${key}: ${value}`).join('\n')}\n\`\`\`\n`;
+}
+
+function noteClient(liveOpen, statusByRef = { main: idleStatus }) {
+  const posted = [];
+  return {
+    posted,
+    openPullRequests: async () => { if (liveOpen instanceof Error) throw liveOpen; return liveOpen; },
+    comments: async () => [],
+    comment: async (number, body) => posted.push(body),
+    combinedStatus: async () => ({ statuses: [{ context: 'codex-current-head', state: 'success' }] }),
+    fileContent: async (path, ref) => (statusByRef[ref] ? statusMarkdown(statusByRef[ref]) : null),
+  };
+}
+
+test('a post-merge note wakes when the last open PR closed after the snapshot, or the list is unreadable', async () => {
+  const merged = pullRequest({ number: 690, state: 'closed', merged: true, merge_commit_sha: 'c'.repeat(40),
+    head: { ref: 'claude/task', sha: 'd'.repeat(40), repo: { full_name: repository } } });
+  const { handOffMergedPullRequest } = await import('./autonomous-handoff.mjs');
+  assert.equal(typeof handOffMergedPullRequest, 'function', 'the post-merge publisher is exported for this probe');
+  const context = { defaultBranchNow: idleStatus, maintenanceQueue: [], openPullRequests: snapshotOpen, headStatuses: [] };
+  for (const [liveOpen, tagged] of [[[], true], [new Error('GitHub 502'), true], [snapshotOpen, false]]) {
+    const client = noteClient(liveOpen);
+    await handOffMergedPullRequest(client, merged, repository, 'main', context);
+    assert.equal(client.posted.length, 1);
+    assert.equal(/^<!--[^\n]*-->\n@claude /u.test(client.posted[0]), tagged, String(liveOpen));
+  }
+});
+
+test('a drift note wakes when the last open PR closed after the snapshot, or the list is unreadable', async () => {
+  const context = { defaultBranchNow: idleStatus, maintenanceQueue: [], openPullRequests: snapshotOpen, headStatuses: [] };
+  for (const [liveOpen, tagged] of [[[], true], [new Error('GitHub 502'), true], [snapshotOpen, false]]) {
+    const client = noteClient(liveOpen);
+    await handOffStatusDrift(client, repository, 'main', context);
+    assert.equal(client.posted.length, 1);
+    assert.equal(/^<!--[^\n]*-->\n@claude /u.test(client.posted[0]), tagged, String(liveOpen));
+  }
+});
+
+// Codex r4344073634: everything a note says, its tag and (for drift) where it goes come from
+// one live read of the open autonomous PRs taken at publication, not the run's snapshot.
+const liveOpen = [conflict({ number: 702, mergeable: true, mergeable_state: 'clean',
+  head: { ref: 'claude/other', sha: 'e'.repeat(40), repo: { full_name: repository } } })];
+const mergedPullRequest = () => pullRequest({ number: 690, state: 'closed', merged: true,
+  merge_commit_sha: 'c'.repeat(40), head: { ref: 'claude/task', sha: 'd'.repeat(40), repo: { full_name: repository } } });
+
+test('a post-merge note after the last PR closed is tagged and does not send Claude to the closed PR', async () => {
+  const { handOffMergedPullRequest } = await import('./autonomous-handoff.mjs');
+  const client = noteClient([]);
+  await handOffMergedPullRequest(client, mergedPullRequest(), repository, 'main',
+    { defaultBranchNow: idleStatus, maintenanceQueue: [], openPullRequests: snapshotOpen, headStatuses: [] });
+  assert.equal(client.posted.length, 1);
+  assert.match(client.posted[0], /^<!--[^\n]*-->\n@claude /u);
+  assert.doesNotMatch(client.posted[0], /#701|shepherd it/u);
+  assert.match(client.posted[0], /\*\*Open autonomous PRs:\*\* none/u);
+});
+
+test('a post-merge note after a PR opened is untagged and names that PR, not a competing branch', async () => {
+  const { handOffMergedPullRequest } = await import('./autonomous-handoff.mjs');
+  const client = noteClient(liveOpen);
+  await handOffMergedPullRequest(client, mergedPullRequest(), repository, 'main',
+    { defaultBranchNow: idleStatus, maintenanceQueue: [], openPullRequests: [], headStatuses: [] });
+  assert.equal(client.posted.length, 1);
+  assert.doesNotMatch(client.posted[0], /@claude/u);
+  assert.match(client.posted[0], /#702 `claude\/other`/u);
+  assert.doesNotMatch(client.posted[0], /Create the next same-repository/u);
+});
+
+test('the drift note goes to the live primary PR, or to the state issue when none is open live', async () => {
+  for (const [live, destination, tagged] of [[liveOpen, 702, false], [[], 235, true]]) {
+    const targets = [];
+    const client = { ...noteClient(live), comment: async (number, body) => targets.push({ number, body }) };
+    await handOffStatusDrift(client, repository, 'main',
+      { defaultBranchNow: idleStatus, maintenanceQueue: [], openPullRequests: snapshotOpen, headStatuses: [] });
+    assert.deepEqual(targets.map((target) => target.number), [destination]);
+    assert.equal(/\n@claude /u.test(targets[0].body), tagged);
+    assert.doesNotMatch(targets[0].body, /#701/u, 'the stale snapshot PR is not named');
+  }
+});
+
+test('an owner change during the tip-time read stops the conflict ping', async () => {
+  const state = markerClient(conflict());
+  state.client.lastCommitAt = async () => {
+    state.live = { ...state.live, body: '<!-- correction-owner: codex -->' };
+    return null;
+  };
+  await handOffConflict(state.client, state.live, repository, 'main');
+  assert.equal(state.comments.length, 0, 'the head/body recheck is the last read before publishing');
+});
+
+// Audit of r4344073634: the default branch's STATUS is part of the same publication-time read.
+// A merge during the run can update it, and judging live PRs against the checkout's copy
+// reports drift that main has already corrected.
+test('drift is judged against main STATUS read at publication, not the run checkout', async () => {
+  const corrected = { ...idleStatus, task_state: 'merged', open_pr: 'none', next_task: 'phase-6-task-5' };
+  const client = noteClient([], { main: corrected });
+  await handOffStatusDrift(client, repository, 'main',
+    { defaultBranchNow: idleStatus, maintenanceQueue: [], openPullRequests: snapshotOpen, headStatuses: [] });
+  assert.equal(client.posted.length, 0, 'main already records no open PR, so there is no drift');
 });
