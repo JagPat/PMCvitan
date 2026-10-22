@@ -329,7 +329,7 @@ function assessDriftCorrected(statusNow, maintenanceQueue, drift) {
 // when an action is required, which is when no autonomous PR is open. The loop is then idle and
 // nothing else restarts it. While one is open, its CI, review, conflict and watchdog signals
 // keep it moving, and the note stays on record without a wake.
-// A publisher passes `wake` from a live read; the snapshot is only the default.
+// `wake: true` forces the tag when the publisher could not read live state.
 function wakeTag({ openPullRequests, wake }) {
   return (wake ?? !shouldShepherdOpenPullRequests({ openPullRequests })) ? '@claude ' : '';
 }

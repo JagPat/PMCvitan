@@ -281,7 +281,12 @@ const idleStatus = { task_state: 'in_review', open_pr: '700', task: '4', work_it
   next_task: 'none', blocking_directive: 'none' };
 const snapshotOpen = [conflict({ number: 701, mergeable: true, mergeable_state: 'clean' })];
 
-function noteClient(liveOpen) {
+function statusMarkdown(now) {
+  return `# Status\n\n## Now\n\n\`\`\`yaml\n${
+    Object.entries(now).map(([key, value]) => `${key}: ${value}`).join('\n')}\n\`\`\`\n`;
+}
+
+function noteClient(liveOpen, statusByRef = { main: idleStatus }) {
   const posted = [];
   return {
     posted,
@@ -289,7 +294,7 @@ function noteClient(liveOpen) {
     comments: async () => [],
     comment: async (number, body) => posted.push(body),
     combinedStatus: async () => ({ statuses: [{ context: 'codex-current-head', state: 'success' }] }),
-    fileContent: async () => null,
+    fileContent: async (path, ref) => (statusByRef[ref] ? statusMarkdown(statusByRef[ref]) : null),
   };
 }
 
@@ -315,4 +320,66 @@ test('a drift note wakes when the last open PR closed after the snapshot, or the
     assert.equal(client.posted.length, 1);
     assert.equal(/^<!--[^\n]*-->\n@claude /u.test(client.posted[0]), tagged, String(liveOpen));
   }
+});
+
+// Codex r4344073634: everything a note says, its tag and (for drift) where it goes come from
+// one live read of the open autonomous PRs taken at publication, not the run's snapshot.
+const liveOpen = [conflict({ number: 702, mergeable: true, mergeable_state: 'clean',
+  head: { ref: 'claude/other', sha: 'e'.repeat(40), repo: { full_name: repository } } })];
+const mergedPullRequest = () => pullRequest({ number: 690, state: 'closed', merged: true,
+  merge_commit_sha: 'c'.repeat(40), head: { ref: 'claude/task', sha: 'd'.repeat(40), repo: { full_name: repository } } });
+
+test('a post-merge note after the last PR closed is tagged and does not send Claude to the closed PR', async () => {
+  const { handOffMergedPullRequest } = await import('./autonomous-handoff.mjs');
+  const client = noteClient([]);
+  await handOffMergedPullRequest(client, mergedPullRequest(), repository, 'main',
+    { defaultBranchNow: idleStatus, maintenanceQueue: [], openPullRequests: snapshotOpen, headStatuses: [] });
+  assert.equal(client.posted.length, 1);
+  assert.match(client.posted[0], /^<!--[^\n]*-->\n@claude /u);
+  assert.doesNotMatch(client.posted[0], /#701|shepherd it/u);
+  assert.match(client.posted[0], /\*\*Open autonomous PRs:\*\* none/u);
+});
+
+test('a post-merge note after a PR opened is untagged and names that PR, not a competing branch', async () => {
+  const { handOffMergedPullRequest } = await import('./autonomous-handoff.mjs');
+  const client = noteClient(liveOpen);
+  await handOffMergedPullRequest(client, mergedPullRequest(), repository, 'main',
+    { defaultBranchNow: idleStatus, maintenanceQueue: [], openPullRequests: [], headStatuses: [] });
+  assert.equal(client.posted.length, 1);
+  assert.doesNotMatch(client.posted[0], /@claude/u);
+  assert.match(client.posted[0], /#702 `claude\/other`/u);
+  assert.doesNotMatch(client.posted[0], /Create the next same-repository/u);
+});
+
+test('the drift note goes to the live primary PR, or to the state issue when none is open live', async () => {
+  for (const [live, destination, tagged] of [[liveOpen, 702, false], [[], 235, true]]) {
+    const targets = [];
+    const client = { ...noteClient(live), comment: async (number, body) => targets.push({ number, body }) };
+    await handOffStatusDrift(client, repository, 'main',
+      { defaultBranchNow: idleStatus, maintenanceQueue: [], openPullRequests: snapshotOpen, headStatuses: [] });
+    assert.deepEqual(targets.map((target) => target.number), [destination]);
+    assert.equal(/\n@claude /u.test(targets[0].body), tagged);
+    assert.doesNotMatch(targets[0].body, /#701/u, 'the stale snapshot PR is not named');
+  }
+});
+
+test('an owner change during the tip-time read stops the conflict ping', async () => {
+  const state = markerClient(conflict());
+  state.client.lastCommitAt = async () => {
+    state.live = { ...state.live, body: '<!-- correction-owner: codex -->' };
+    return null;
+  };
+  await handOffConflict(state.client, state.live, repository, 'main');
+  assert.equal(state.comments.length, 0, 'the head/body recheck is the last read before publishing');
+});
+
+// Audit of r4344073634: the default branch's STATUS is part of the same publication-time read.
+// A merge during the run can update it, and judging live PRs against the checkout's copy
+// reports drift that main has already corrected.
+test('drift is judged against main STATUS read at publication, not the run checkout', async () => {
+  const corrected = { ...idleStatus, task_state: 'merged', open_pr: 'none', next_task: 'phase-6-task-5' };
+  const client = noteClient([], { main: corrected });
+  await handOffStatusDrift(client, repository, 'main',
+    { defaultBranchNow: idleStatus, maintenanceQueue: [], openPullRequests: snapshotOpen, headStatuses: [] });
+  assert.equal(client.posted.length, 0, 'main already records no open PR, so there is no drift');
 });
