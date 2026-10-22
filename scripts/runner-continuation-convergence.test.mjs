@@ -329,7 +329,11 @@ test('C1b: a LATER drift with a different stale value is not swallowed', async (
 });
 
 test('C1c: drift with a live PR is posted on that PR, keyed to its head SHA (finding 4 path intact)', async () => {
-  const client = fakeClient({});
+  // The publisher re-reads main's STATUS and open PRs at publication, so the client serves both.
+  const client = fakeClient({
+    openPrs: [pullRequest(256)],
+    headStatusBySha: { main: '# Status\n\n## Now\n\n```yaml\ntask_state: merged\nopen_pr: none\nnext_task: phase-5-planning\n```\n' },
+  });
   await handOffStatusDrift(client, repository, 'main', {
     defaultBranchNow: { task_state: 'merged', open_pr: 'none', next_task: 'phase-5-planning' },
     maintenanceQueue: [],
