@@ -42,6 +42,46 @@ export interface MemberInviteEmailResult {
   live: boolean;
 }
 
+/** #871: the phone sign-in mail was certainly NOT taken by the provider (the transport was never built, or the
+ *  server answered with a refusal before accepting the message). The same 503 and message as any failed send;
+ *  only the caller's bookkeeping differs, because no inbox can hold this code. */
+export class PhoneSignInCodeNotSentException extends ServiceUnavailableException {
+  constructor() {
+    super('Could not send the sign-in code. Please try again.');
+  }
+}
+
+/** nodemailer codes that prove the message was never accepted: authentication, envelope (MAIL FROM, RCPT TO or
+ *  DATA refused), the message itself refused (a 4xx/5xx reply to it), TLS or DNS. */
+const MAIL_NOT_TAKEN_CODES = new Set(['EAUTH', 'ENOAUTH', 'EOAUTH2', 'EENVELOPE', 'EMESSAGE', 'ETLS', 'EREQUIRETLS', 'EDNS', 'ECONFIG']);
+
+/** #871 (Codex on #1080): the server refused the session before MAIL FROM, in the forms nodemailer 10 reports, each
+ *  matched by its code AND the stage it names with the server's reply: a greeting that is not 220 (a 421 or garbage),
+ *  a 421 to EHLO, or a refused HELO. A close with no reply carries `ECONNECTION`/`CONN` whether it came before the
+ *  greeting or after DATA, so it is not matched here. */
+function handshakeRefused(e: { code?: unknown; command?: unknown; response?: unknown; message?: unknown }): boolean {
+  if (typeof e.response !== 'string') return false;
+  if (e.code === 'EPROTOCOL' && e.command === 'CONN') return typeof e.message === 'string' && e.message.startsWith('Invalid greeting.');
+  if (e.code === 'ECONNECTION' && e.command === 'EHLO') return true;
+  return e.code === 'EPROTOCOL' && e.command === 'HELO';
+}
+
+/** nodemailer's connect and greeting timers fire only before the server's 220: the connect timer is cleared once the
+ *  socket (and, on 465, TLS) is up, and the greeting timer checks the greeting is still awaited. So no message can
+ *  have been submitted. Its socket-idle timeout ('Timeout') can come after DATA and stays ambiguous. */
+const PRE_GREETING_TIMEOUTS = new Set(['Connection timeout', 'Greeting never received']);
+
+/** A failure that proves the provider did not take the mail. Never connecting (the socket's own connect or
+ *  lookup failed) is certain too, as is a handshake the server refused. A timeout, socket error or dropped
+ *  connection after that is ambiguous: the message may have gone, so it is not certain. */
+export function mailCertainlyNotTaken(error: unknown): boolean {
+  const e = (error ?? {}) as { code?: unknown; syscall?: unknown; command?: unknown; response?: unknown; message?: unknown };
+  if (e.syscall === 'connect' || e.syscall === 'getaddrinfo') return true;
+  if (handshakeRefused(e)) return true;
+  if (e.code === 'ETIMEDOUT' && e.command === 'CONN' && typeof e.message === 'string' && PRE_GREETING_TIMEOUTS.has(e.message)) return true;
+  return typeof e.code === 'string' && MAIL_NOT_TAKEN_CODES.has(e.code);
+}
+
 /**
  * Email OTP delivery, dev-stub-first. When SMTP is configured
  * (SMTP_HOST + SMTP_USER + SMTP_PASS) it emails a code we generate; with no SMTP
@@ -126,8 +166,15 @@ export class EmailService {
    *  here). Throws 503 when the mail cannot be handed over, so the caller never claims a code is on its way. */
   async sendPhoneSignInCode(email: string, code: string): Promise<void> {
     const to = email.trim().toLowerCase();
+    let transport: Transporter;
     try {
-      await this.tx().sendMail({
+      transport = this.tx();
+    } catch (error) {
+      this.log.error(`Phone sign-in email failed before the provider: ${(error as Error).constructor.name}`);
+      throw new PhoneSignInCodeNotSentException();
+    }
+    try {
+      await transport.sendMail({
         from: this.from,
         to,
         subject: 'Your Vitan PMC sign-in code',
@@ -137,6 +184,7 @@ export class EmailService {
     } catch (error) {
       const smtpCode = (error as { code?: unknown }).code;
       this.log.error(`Phone sign-in email failed: ${(error as Error).constructor.name}${typeof smtpCode === 'string' ? ` (${smtpCode})` : ''}`);
+      if (mailCertainlyNotTaken(error)) throw new PhoneSignInCodeNotSentException();
       throw new ServiceUnavailableException('Could not send the sign-in code. Please try again.');
     }
   }
