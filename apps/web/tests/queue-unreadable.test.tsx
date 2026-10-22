@@ -183,3 +183,38 @@ describe('#1088 r3: a scoped key holding bytes is never adopted over, and sign-o
     expect(screen.queryByRole('alert')).toBeNull();
   });
 });
+
+describe('#1088 r4 (Codex 4351952392): every scope change clears the list before it touches storage', () => {
+  /** this phone's storage refuses every access from now on (its permission withdrawn) */
+  const storageThrows = () => vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => { throw new DOMException('denied', 'SecurityError'); });
+
+  it('forced probe, the finding’s case: a load of another project with storage throwing leaves no list from the last one', () => {
+    onP1('{damaged');
+    render(<QueueUnreadable />);
+    expect(screen.getByRole('alert')).toBeTruthy();
+    storageThrows();
+    act(() => { useStore.setState({ activeProjectId: 'p-2' }); s().hydrateOutbox(); });
+    expect(s().queueUnreadable).toEqual([]);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('forced probe: a project switch the server confirms clears the list, with storage throwing and no load after it', async () => {
+    onP1('{damaged', { switchProject: vi.fn(async () => ({ role: 'pmc', token: 't-2', projectId: 'p-2' })) });
+    expect(s().queueUnreadable).toEqual([{ key, read: 'damaged' }]);
+    storageThrows();
+    await act(async () => { await s().switchProject('p-2'); });
+    expect(s().activeProjectId).toBe('p-2');
+    expect(s().queueUnreadable).toEqual([]);
+  });
+
+  it.each([
+    ['sign-out', () => s().completeSignOut()],
+    ['a persona switch', () => s().setRole('engineer')],
+  ])('%s with storage throwing clears the list', (_how, change) => {
+    onP1('{damaged');
+    storageThrows();
+    act(() => change());
+    expect(s().queueUnreadable).toEqual([]);
+  });
+});
+

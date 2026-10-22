@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import { ApiGateway, replayOutboxOp, type OutboxOp } from '@/data/apiGateway';
 import { isKnownOutboxOp, SERVER_SCHEMA_OF, serverBodyOf } from '@/data/storedActs';
+import { syncResultText as SYNC } from '@vitan/shared';
 
 /**
  * #1051 r1, Codex 4336713248: a stored act was taken as loadable when it named a known kind, whatever its fields held.
@@ -127,6 +128,9 @@ const KEYED_LATER = ['approve', 'change', 'changeWithdraw', 'ackDrawing', 'flagM
 const HISTORICAL: Partial<Record<OutboxOp['t'], string[]>> = {
   ...Object.fromEntries(KEYED_LATER.map((t) => [t, ['idempotencyKey']])),
   grantSodException: ['input.rule'],
+  // #1088 r4 (Codex 4351952407): a certification #310 queued names no lifecycleVersion; a checklist before #114, no row id
+  certifyBill: ['input.lifecycleVersion'],
+  submitInspection: ['items.0.id'],
 };
 const MATERIALS: string[] = ['reserveStock', 'issueStock', 'consumeStock', 'createRequisition'];
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -462,5 +466,77 @@ describe('#1051 r1, Codex 4336713248: a key holding a damaged act of a known kin
   it('a whole act beside a newer release’s act is still a newer release’s key', () => {
     onP2({ [general]: JSON.stringify([MIN.approve, { t: 'futureOperation', idempotencyKey: 'k-f' }]) });
     expect(useStore.getState().queueUnreadable.filter((u) => u.read === 'newer').map((u) => u.key)).toEqual([general]);
+  });
+});
+
+/** #1088 r4 (Codex 4351952407): every body a released build stored, kind by kind, as `apps/web/src/data/apiGateway.ts`'s
+ *  queue and its types held it at each release in git history. Each reads; a key holding one beside an unrelated act
+ *  loads both. Only the three marked are refused by today's contract for their shape (`RELEASED_CONTRACTS_OF`) */
+const RELEASED: { since: string; act: unknown }[] = [
+  // b4671544 (#20's queue, 4 Jul): keyless decision acts, a review naming rows by label, a keyless labour start
+  { since: 'b4671544', act: { t: 'approve', decisionId: 'd-1', optionIndex: 0 } },
+  { since: 'b4671544', act: { t: 'change', decisionId: 'd-1', reason: 'r', costImpact: 0, timeImpactDays: 0 } },
+  { since: 'b4671544', act: { t: 'decideReview', inspectionId: 'i-1', approve: false, rejectedItemNames: ['Slope'] } },
+  { since: 'b4671544', act: { t: 'startActivity', activityId: 'a-1' } },
+  { since: 'b4671544', act: { t: 'completeActivity', activityId: 'a-1' } },
+  { since: 'b4671544', act: { t: 'flagMismatch', decisionId: 'd-1' } },
+  { since: 'b4671544', act: { t: 'submitDailyLog', log: { checkedIn: true, checkinTime: '9:03 AM', progress: 2, crew: [{ trade: 'Mason', count: 3 }] } } },
+  // shape refused today: rows named by label only, before #114 (ce360ae5)
+  { since: 'b4671544', act: { t: 'submitInspection', inspectionId: 'i-1', items: [{ name: 'Slope', state: 'pass', photos: 0, note: '' }, { name: 'Slope', state: null, photos: 1, note: 'n' }] } },
+  // shape refused today: a photo of any image type, before #54's raster list (6f8f22ba)
+  { since: 'ecc9f049', act: { t: 'uploadMedia', input: { kind: 'progress', mime: 'image/bmp', data: 'AA==' } } },
+  { since: '14c397fa', act: { t: 'changeWithdraw', decisionId: 'd-1' } },
+  { since: '4a552e7b', act: { t: 'ackDrawing', revisionId: 'r-1' } },
+  { since: '1ceccf71', act: { t: 'submitInspection', inspectionId: 'i-1', items: [{ id: 'x', name: 'Slope', state: 'fail', photos: 1, note: '', evidence: ['/media/m-1'] }] } },
+  { since: '3380f758', act: { t: 'decideReview', inspectionId: 'i-1', approve: true, rejectedItemIds: [] } },
+  { since: 'a1d78807', act: { t: 'reserveStock', input: { lotId: 'l', storeLocation: 's', activityId: 'a', qty: '1' }, idempotencyKey: 'k-1' } },
+  // shape refused today: a certification #310 queued, before #312 made lifecycleVersion required (fbc95108)
+  { since: '6861a850', act: { t: 'certifyBill', input: { billId: 'b', versionId: 'v' }, idempotencyKey: 'k-1', coalesceKey: 'c-1' } },
+  { since: '090ec501', act: { t: 'grantSodException', input: { billId: 'b', actorId: 'u', reason: 'r', versionId: 'v', status: 's', lifecycleVersion: 1 }, idempotencyKey: 'k-1', coalesceKey: 'c-1' } },
+];
+
+describe('#1088 r4 (Codex 4351952407): every shape a released build stored is read, never taken as damage', () => {
+  it.each(RELEASED.map((r) => [(r.act as { t: string }).t, r.since, r.act] as const))('%s as %s stored it is read', (_t, _since, act) => {
+    expect(isKnownOutboxOp(act, S)).toBe(true);
+  });
+
+  it('forced probe, the finding’s case: a checklist submitted before #114, its rows named by label, loads with the act behind it', () => {
+    const before114 = RELEASED.find((r) => (r.act as { t: string }).t === 'submitInspection')!.act;
+    const behind = { t: 'startActivity', activityId: 'n-1', idempotencyKey: 'k-n' };
+    onP2({ [general]: JSON.stringify([before114, behind]) });
+    expect(useStore.getState().queueUnreadable).toEqual([]);
+    expect(useStore.getState().outbox).toEqual([before114, behind]);
+  });
+
+  it('its body is its release’s: the rows by label, no id made up', async () => {
+    const before114 = RELEASED.find((r) => (r.act as { t: string }).t === 'submitInspection')!.act as { items: unknown };
+    expect(serverBodyOf(before114 as never)).toEqual({ items: before114.items });
+  });
+
+  it('today’s server refuses it, so its flush drops it as discarded, and the act behind it is sent', async () => {
+    const before114 = RELEASED.find((r) => (r.act as { t: string }).t === 'submitInspection')!.act;
+    const behind = { t: 'startActivity', activityId: 'n-1', idempotencyKey: 'k-n' };
+    onP2({ [general]: JSON.stringify([before114, behind]) });
+    const submitInspection = vi.fn(async () => { throw Object.assign(new Error('items.0.id: Required'), { status: 400 }); });
+    const startActivity = vi.fn(async () => null);
+    useStore.getState()._setGateway({ project: P2, listSiteVisits: vi.fn(async () => []), snapshot: vi.fn(async () => null), submitInspection, startActivity } as unknown as ApiGateway);
+    useStore.setState({ online: true });
+    await useStore.getState().flushOutbox();
+    expect(submitInspection).toHaveBeenCalledTimes(1);
+    expect(startActivity).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().outbox).toEqual([]);
+    expect(useStore.getState().toast).toContain(SYNC.dropped(1, 'en'));
+  });
+
+  it('a body no release stored is still damage: rows some of which name an id, or a certification naming an unknown field', () => {
+    const mixed = { t: 'submitInspection', inspectionId: 'i-1', items: [{ id: 'x', name: 'a', state: null, photos: 0, note: '' }, { name: 'b', state: null, photos: 0, note: '' }] };
+    expect(isKnownOutboxOp(mixed, S)).toBe(false);
+    expect(isKnownOutboxOp({ ...MIN.certifyBill, input: { billId: 'b', versionId: 'v', extra: 1 } }, S)).toBe(false);
+    expect(isKnownOutboxOp({ ...MIN.uploadMedia, input: { kind: 'progress', mime: 'text/html', data: 'AA==' } }, S)).toBe(false);
+    // a photo of any image type is read only in the fields its release sent (and the client key a load gave it)
+    expect(isKnownOutboxOp({ ...MIN.uploadMedia, input: { kind: 'progress', mime: 'image/bmp', data: 'AA==', clientKey: 'ck' } }, S)).toBe(true);
+    expect(isKnownOutboxOp({ ...MIN.uploadMedia, input: { kind: 'progress', mime: 'image/bmp', data: 'AA==', clientKey: ' ' } }, S)).toBe(false);
+    expect(isKnownOutboxOp({ ...MIN.uploadMedia, input: { kind: 'progress', mime: 'image/bmp', data: 'AA==', nodeId: 'n' } }, S)).toBe(false);
+    expect(isKnownOutboxOp({ ...MIN.uploadMedia, input: { kind: 'progress', mime: 'image/png', data: 'AA==', siteVisit: { visitId: V } } }, S)).toBe(false);
   });
 });

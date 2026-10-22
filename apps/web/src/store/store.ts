@@ -2469,6 +2469,13 @@ export const useStore = create<Store>()(
      *  release cannot read; each read of this scope's keys lists such a key in the strip */
     const strip = queueStrip({ get, set, scope: () => [outboxKey(), siteVisitKeyOf(outboxKey())] });
     const queueKeys = createQueueKeyGuard(strip.noteRead, (key) => queueKeyScopes.get(key));
+    /** Every scope change (an auth result, a persona switch, a sign-out, and each load of a scope's queue) ends the old
+     *  scope's queue-key memory and its strip list here, first, before any storage access: a storage that throws can
+     *  then never leave the old scope's list on the next one (Codex 4351952392, the third such leak's root cause) */
+    const resetQueueScope = (): void => {
+      queueKeys.forget();
+      set({ queueUnreadable: [] });
+    };
     /** each stored key's write from memory: the general queue, then the visit lane */
     const queueWrites = (): QueueWrite[] => [
       { key: outboxKey(), mine: get().outbox.filter((o) => !isSiteVisitOp(o)), takes: (o) => !isSiteVisitOp(o) },
@@ -2973,6 +2980,7 @@ export const useStore = create<Store>()(
       res: { role: Role; token: string; name?: string; projectId?: string },
       opts?: { msg?: string; targetScreen?: ScreenKey; targetItem?: string; quiet?: boolean },
     ): void => {
+      resetQueueScope();
       set((s) => {
         const changedProject = !!res.projectId && res.projectId !== s.activeProjectId;
         const wasPending = s.pendingProjectId !== null;
@@ -3103,7 +3111,7 @@ export const useStore = create<Store>()(
     // ---- shell ----
     setRole: (role) => {
       const first = screensFor(role)[0]?.key ?? 'inbox';
-      const applySwitch = () => { clearSession(); queueKeys.forget(); set((s) => {
+      const applySwitch = () => { resetQueueScope(); clearSession(); set((s) => {
         s.role = role;
         s.screen = first;
         s.notifOpen = false;
@@ -3115,8 +3123,6 @@ export const useStore = create<Store>()(
         s.sessionToken = null;
         s.userName = null;
         s.sessionUserId = null;
-        // WEB-02 step A: a persona switch is a new identity, so the old one's unreadable queue keys leave the strip with it
-        s.queueUnreadable = [];
         // Codex 4219959023 — against the API, a persona switch is a NEW identity exactly like a
         // re-authentication: the previous persona's records (an engineer sees only the checklists
         // assigned to them) are not this persona's truth, and a reply issued for the old persona must
@@ -3196,8 +3202,8 @@ export const useStore = create<Store>()(
     /** The sign-out teardown itself — separated so the push unlink can complete first on a
      *  push-capable browser (round-1 Codex F1) while every other environment stays synchronous. */
     completeSignOut: () => {
+      resetQueueScope(); // WEB-02 step A: this tab's memory of its keys, and their strip list, leave with the session
       clearSession();
-      queueKeys.forget(); // WEB-02 step A: this tab's memory of its keys is not carried to the next session
       restoreSwitchTarget = null;
       set((s) => {
         s.sessionToken = null;
@@ -3225,9 +3231,6 @@ export const useStore = create<Store>()(
         // SV2: a held visit, and a person's Send anyway, belong to the scope they were made in
         s.siteVisitsHeld = null;
         s.siteVisitsSentAnyway = [];
-        // WEB-02 step A: so does the list of its queue keys this release cannot read (Codex 4351662045: a sign-out that
-        // reruns no load left the departed person's list on the strip)
-        s.queueUnreadable = [];
         dropVisitPhotoRetry(); // and the retry armed for it: the scope's own load arms its own
         // Codex 4210609591 — a new scope owes nothing of the old one's commands (its coordinator is abandoned)
         s.commandReconcilePending = false;
@@ -6732,6 +6735,7 @@ export const useStore = create<Store>()(
       }
     },
     hydrateOutbox: () => {
+      resetQueueScope(); // before any storage access: a storage that throws below leaves no other scope's list
       // this scope's evidence rows are read again below: until then an own evidence photo's Delete waits (#482)
       set((s) => { s.pendingEvidenceKeys = null; });
       try {
@@ -6765,8 +6769,6 @@ export const useStore = create<Store>()(
           // REPLACE the in-memory queue with this scope's persisted one (WEB-02) —
           // called again on every sign-in / project switch, so ops queued under a
           // different user or project never leak into the current context.
-          queueKeys.forget();
-          set({ queueUnreadable: [] });
           const parsed: unknown = queueKeys.load(storage, outboxKey()); // step A: a key this release cannot read loads none
           // Phase 3 Task 7 (correction 4) — a materials op persisted by PR #207 carries only
           // `idempotencyKey` (no `coalesceKey`); PR #208 keys coalescing on `coalesceKey`, so without this

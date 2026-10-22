@@ -1,4 +1,5 @@
 import { SOD_RULES } from '@vitan/shared';
+import { z } from 'zod';
 import * as contracts from './queueContracts';
 import type { OutboxOp } from '@/data/apiGateway';
 
@@ -134,7 +135,8 @@ const OUTBOX_OP_KINDS: Record<OutboxOp['t'], Check> = {
   recordVendorBill: twoKeys({ input: shape({ vendorId: str, vendorBillNumber: str, documentDate: str, lines: list(billLine) }) }),
   beginVerification: twoKeys({ input: shape({ billId: str }) }),
   verifyVendorBill: twoKeys({ input: shape({ billId: str }) }),
-  certifyBill: twoKeys({ input: shape({ billId: str, versionId: str, lifecycleVersion: num }) }),
+  // `lifecycleVersion` came in fbc95108 (#312); a certification #310 queued names none (`RELEASED_CONTRACTS_OF`)
+  certifyBill: twoKeys({ input: shape({ billId: str, versionId: str, lifecycleVersion: opt(num) }) }),
   supersedeCertificate: twoKeys({ input: shape({ billId: str, reason: str, certificateId: str }) }),
   // `rule` came in 86d45cf7 (#317); a grant queued before names none, and the server takes it so
   grantSodException: twoKeys({ input: shape({ billId: str, actorId: str, reason: str, versionId: str, status: str, lifecycleVersion: num, rule: opt(oneOf(...Object.values(SOD_RULES))) }) }),
@@ -243,6 +245,50 @@ const SERVER_CONTRACT_OF: Record<OutboxOp['t'], { schema: SchemaName; body: (v: 
   uploadEvidence: null,
 };
 
+/** Bodies a released build queued whose shape today's contract refuses, each read by the contract of the release that
+ *  queued it, copied from that release's `apps/api/src/contracts.ts`. Such an act is a released shape, never damaged, so
+ *  its key stays readable and the acts behind it are sent (Codex 4351952407). Today's server refuses the act itself (400:
+ *  the row id, the `lifecycleVersion` pin and the raster list are required now), so its flush drops it, counted as
+ *  discarded, as any refused act. No phone holds one: none of those releases was deployed with users. Every kind was walked against each body its
+ *  queue ever stored, release by release (`apps/web/src/data/apiGateway.ts`, the contracts and the shared types in
+ *  git history); these three are the bodies today's contract refuses for their shape:
+ *  - a checklist submitted before #114 (ce360ae5) names its rows by label only, no `id`: its release's contract
+ *  - a certification queued by #310 (6861a850) names no `lifecycleVersion`, which #312 (fbc95108) made required
+ *  - a photo queued before #54 (6f8f22ba) took any `image/` type and any size, before the raster list and the cap */
+const RELEASED_CONTRACTS_OF: Partial<Record<OutboxOp['t'], ServerSchema>> = {
+  submitInspection: z.object({
+    items: z.array(
+      z.object({
+        name: z.string(),
+        state: z.enum(['pass', 'fail', 'na']).nullable(),
+        photos: z.number().int().min(0),
+        note: z.string(),
+      }),
+    ),
+  }),
+  certifyBill: z
+    .object({ billId: z.string().min(1), versionId: z.string().min(1) })
+    .strict(),
+  uploadMedia: z.object({
+    kind: z.enum(['progress', 'inspection', 'decision', 'attendance', 'material']),
+    mime: z.string().regex(/^image\//, 'images only'),
+    data: z.string().min(1),
+    decisionId: z.string().optional(),
+    dailyLogId: z.string().optional(),
+    geoLat: z.number().optional(),
+    geoLng: z.number().optional(),
+    takenAt: z.string().optional(),
+  }),
+};
+/** the fields each such release stored, so a body today's contract refuses for another reason is not read as released:
+ *  a checklist's rows before #114 name no `id` (rows some of which name one are no release's), and a photo before #54
+ *  holds only the fields its release sent, and the `clientKey` a load since #482 gives it (`keyQueuedPhotoUploads`) */
+const PHOTO_BEFORE_54 = new Set(['kind', 'mime', 'data', 'decisionId', 'geoLat', 'geoLng', 'takenAt', 'clientKey']);
+const RELEASED_SHAPE_OF: Partial<Record<OutboxOp['t'], (v: Fields) => boolean>> = {
+  submitInspection: (v) => Array.isArray(v.items) && v.items.every((i) => isFields(i) && !('id' in i)),
+  uploadMedia: (v) => isFields(v.input) && Object.keys(v.input).every((f) => PHOTO_BEFORE_54.has(f)) && opt(clientKey)(v.input.clientKey),
+};
+
 /** each queued kind's server schema, by name (the invariants test reads the controllers for it) */
 export const SERVER_SCHEMA_OF = Object.fromEntries(
   Object.entries(SERVER_CONTRACT_OF).map(([t, c]) => [t, c ? c.schema : null]),
@@ -261,7 +307,9 @@ export function serverBodyOf(v: { t: OutboxOp['t'] } & Fields): unknown {
  *  would be refused for good and dropped by its flush, so it makes its key unreadable, set aside and never sent) */
 function serverTakes(v: { t: OutboxOp['t'] } & Fields): boolean {
   const contract = SERVER_CONTRACT_OF[v.t];
-  return contract === null || (contracts[contract.schema] as ServerSchema).safeParse(serverBodyOf(v)).success;
+  if (contract === null || (contracts[contract.schema] as ServerSchema).safeParse(serverBodyOf(v)).success) return true;
+  const released = RELEASED_CONTRACTS_OF[v.t];
+  return released !== undefined && (RELEASED_SHAPE_OF[v.t]?.(v) ?? true) && released.safeParse(serverBodyOf(v)).success;
 }
 
 /** The user scopes a queue key's acts may name, as the store derives them for that key: the evidence rows' (the token's
