@@ -578,9 +578,8 @@ describe('Task 6 — labour single-command field ops through the write-ahead out
     expect((s().outbox[0] as { t: string }).t).toBe('recordAttendance');
     expect(s().labourPending).toEqual([ck]);
     expect(s().labourPending).not.toContain(undefined);
-    // the normalized queue was persisted back
-    const persisted = JSON.parse(globalThis.localStorage.getItem(OUTBOX_KEY)!) as unknown[];
-    expect(persisted).toHaveLength(1);
+    // #1079 (Codex 4344270663): a stored list holding an entry that is not an act is never written over
+    expect(JSON.parse(globalThis.localStorage.getItem(OUTBOX_KEY)!) as unknown[]).toHaveLength(4);
   });
 
   it('normalizeLabourOutbox: two-keyed ops pass unchanged, malformed labour ops + junk drop, non-labour passes', () => {

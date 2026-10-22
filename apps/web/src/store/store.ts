@@ -89,6 +89,7 @@ import {
   beginCreateSend, createHoldScope, currentCreateHoldView, releaseCreate, reserveCreateRetry, reserveNewCreate, serverKeepsCreateReceipts,
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
 } from './projectCreateHold';
+import { createQueueKeyStore, keepUnsent } from '@/store/queueKeyStore';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { clearVisitPhotoStart, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
@@ -2377,15 +2378,29 @@ export const useStore = create<Store>()(
      *  release before it, which replays every `siteVisit…` act it finds and has no case for a photo, never meets one,
      *  and this lane is stored exactly as before (Codex 4320122193, 4320404449, 4320404441). */
     const isStoredVisitOp = (o: OutboxOp): boolean => isSiteVisitOp(o) && o.t !== 'siteVisitAddFile';
+    /** a stored entry naming a site visit kind (read safely: an entry may be anything) */
+    const isLaneEntry = (o: unknown): o is OutboxOp => typeof (o as { t?: unknown } | null)?.t === 'string' && isSiteVisitOp(o as OutboxOp);
+    /** WEB-02 step 1: both queue keys are written only through `queueKeys`, which merges with what each holds now */
+    const queueKeys = createQueueKeyStore();
     const persistOutbox = (): void => {
       try {
         const storage = globalThis.localStorage;
-        storage?.setItem(outboxKey(), JSON.stringify(get().outbox.filter((o) => !isSiteVisitOp(o))));
-        storage?.setItem(siteVisitKeyOf(outboxKey()), JSON.stringify(get().outbox.filter(isStoredVisitOp)));
+        if (!storage) return;
+        queueKeys.write(storage, outboxKey(), get().outbox.filter((o) => !isSiteVisitOp(o)));
+        queueKeys.write(storage, siteVisitKeyOf(outboxKey()), get().outbox.filter(isStoredVisitOp));
       } catch {
         /* storage unavailable — the in-session outbox still works */
       }
     };
+    /** another tab's write of this scope's queue key, once its load ran here (`queueKeys.heard`; `null`: storage cleared) */
+    globalThis.addEventListener?.('storage', (e: StorageEvent) => {
+      const storage = globalThis.localStorage;
+      if (!storage || e.storageArea !== storage) return;
+      const key = outboxKey();
+      const lane = siteVisitKeyOf(key);
+      if ((e.key === null || e.key === key) && queueKeys.holds(key)) queueKeys.heard(storage, key, get().outbox.filter((o) => !isSiteVisitOp(o)), e.key === key ? e.newValue : null);
+      if ((e.key === null || e.key === lane) && queueKeys.holds(lane)) queueKeys.heard(storage, lane, get().outbox.filter(isStoredVisitOp), e.key === lane ? e.newValue : null);
+    });
 
     // Evidence bytes share the outbox's user scope (WEB-02): the IndexedDB entries are
     // keyed (sub, projectId, clientKey), so a user/project switch neither loses nor leaks.
@@ -3083,6 +3098,7 @@ export const useStore = create<Store>()(
      *  push-capable browser (round-1 Codex F1) while every other environment stays synchronous. */
     completeSignOut: () => {
       clearSession();
+      queueKeys.forget(); // WEB-02 step 1: memory leaves with the session, so no key is held until the next load
       restoreSwitchTarget = null;
       set((s) => {
         s.sessionToken = null;
@@ -6072,10 +6088,9 @@ export const useStore = create<Store>()(
       // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
       // take its own acts out of `ops` as it goes)
       const taken = ops.length;
-      const takenVisits = ops.filter(isStoredVisitOp).length;
-      // and of the generic stored lane: a visit photo's act is in neither stored lane, so it is counted in neither
-      // (Codex 4321998480)
-      const takenGeneric = ops.filter((o) => !isSiteVisitOp(o)).length;
+      // the acts this flush took, as taken: a scope move writes each stored lane without them, by identity (a visit
+      // photo's act is in neither stored lane, Codex 4321998480)
+      const flushed = ops.slice();
       // the visits whose photo's row this flush could not read or update while sending it: held from then on, like the
       // visits a failed read holds, and never a stall of the rest of the queue (coordinator, sv2-unit-h)
       const stuck = new Set<string>();
@@ -6324,15 +6339,10 @@ export const useStore = create<Store>()(
         try {
           const storage = globalThis.localStorage;
           if (storage) {
-            // each stored list holds its kind of the flushed ops as its prefix — drop the replayed part
-            const keep = (key: string, rest: OutboxOp[], took: number, after: (l: OutboxOp[]) => OutboxOp[]) => {
-              const stored: unknown = JSON.parse(storage.getItem(key) ?? '[]');
-              const leftover = Array.isArray(stored) && stored.length >= took ? [...rest, ...after(stored.slice(took) as OutboxOp[])] : rest;
-              storage.setItem(key, JSON.stringify(leftover));
-            };
-            keep(flushKey, remaining.filter((o) => !isSiteVisitOp(o)), takenGeneric, (l) => l);
+            // this flush's acts leave each stored list by identity, its unsent ones go first, and every other act stays
+            keepUnsent(storage, flushKey, remaining.filter((o) => !isSiteVisitOp(o)), flushed.filter((o) => !isSiteVisitOp(o)), (l) => l);
             // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
-            keep(siteVisitKeyOf(flushKey), remaining.filter(isStoredVisitOp), takenVisits, (l) => remapVisits(l).filter(isStoredVisitOp));
+            keepUnsent(storage, siteVisitKeyOf(flushKey), remaining.filter(isStoredVisitOp), flushed.filter(isStoredVisitOp), (l) => remapVisits(l).filter(isStoredVisitOp), isStoredVisitOp);
           }
         } catch {
           /* storage unavailable — the persisted queue simply keeps its pre-flush state */
@@ -6497,8 +6507,11 @@ export const useStore = create<Store>()(
           // REPLACE the in-memory queue with this scope's persisted one (WEB-02) —
           // called again on every sign-in / project switch, so ops queued under a
           // different user or project never leak into the current context.
+          queueKeys.forget();
           const raw = storage.getItem(outboxKey());
           const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+          // the acts memory takes from this key, or drops on purpose below; a lane act it leaves out stays stored (#1079)
+          queueKeys.loaded(outboxKey(), Array.isArray(parsed) ? parsed.filter((o) => !isLaneEntry(o)) : parsed);
           // Phase 3 Task 7 (correction 4) — a materials op persisted by PR #207 carries only
           // `idempotencyKey` (no `coalesceKey`); PR #208 keys coalescing on `coalesceKey`, so without this
           // a legacy queued op would not coalesce and could execute a SECOND time (double reserve). Derive
@@ -6520,17 +6533,15 @@ export const useStore = create<Store>()(
           // persist the migrated queue back to the SAME scoped key so the one-time normalization is durable;
           // a write that fails (storage full) keeps the queue in memory, and the next load derives the same keys
           if (changed) {
-            try {
-              storage.setItem(outboxKey(), JSON.stringify(photosNorm.ops));
-            } catch {
-              /* storage full — the queue still replays from memory this session */
-            }
+            queueKeys.write(storage, outboxKey(), photosNorm.ops.filter((o) => !isSiteVisitOp(o)));
           }
           // the site visit acts, from their own key (malformed → none); a visit photo's act comes from its row (SV2)
           let visitOps: OutboxOp[] = [];
           try {
             const rawVisits: unknown = JSON.parse(storage.getItem(siteVisitKeyOf(outboxKey())) ?? '[]');
-            visitOps = Array.isArray(rawVisits) ? (rawVisits as OutboxOp[]).filter((o) => o && isStoredVisitOp(o)) : [];
+            visitOps = Array.isArray(rawVisits) ? (rawVisits as OutboxOp[]).filter((o) => isLaneEntry(o) && isStoredVisitOp(o)) : [];
+            // only the acts memory holds: one it leaves out (a newer release's kind) stays stored (#1079, Codex 4344270652)
+            queueKeys.loaded(siteVisitKeyOf(outboxKey()), visitOps);
           } catch {
             visitOps = [];
           }
