@@ -48,7 +48,7 @@ describe('WEB-02 step A: what a stored queue key gives this release, and what it
     const newer = { t: 'aKindFromANewerRelease', idempotencyKey: 'k-new' };
     signedIn({ general: [newer] });
     expect(s().outbox).toEqual([]);
-    expect(s().queueUnreadable).toEqual([{ key, read: 'newer' }]);
+    expect(s().queueUnreadable).toEqual([{ key, read: 'newer', reloaded: false }]);
     useStore.setState({ online: true });
     await act(async () => { await s().flushOutbox(); });
     expect(JSON.parse(localStorage.getItem(key)!)).toEqual([newer]);

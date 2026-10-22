@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
 import { QueueUnreadable } from '@/layout/QueueUnreadable';
@@ -11,8 +11,9 @@ import { QueueUnreadable } from '@/layout/QueueUnreadable';
  * loaded as far as it parsed, sent, refused for good and dropped, or written over at the next save: its bytes were lost
  * and nobody was told (Codex 4336713248, #1071 F4 4341067934).
  *
- * Now such a key loads nothing, is never sent or written over, and is listed on a strip that says so, a newer
- * release's key in words of its own. An update this tab cannot store there is copied aside beside it.
+ * Now such a key loads nothing, is never sent or written over, and is listed on a strip. A damaged key is offered Set
+ * aside, which copies its bytes under a new name, reads the copy back, and only then lets new updates be saved there.
+ * A newer release's key is offered Reload first, and Set aside once a reload of this same build still cannot read it.
  *
  * Every test here fails at 4711824 (main). The two guards fail there only because the list they read does not exist;
  * each also fails under its own break.
@@ -44,6 +45,11 @@ function writesInAnswer(text: string): number {
     return write.mock.calls.filter(([w]) => w === key).length;
   } finally { write.mockRestore(); }
 }
+const reloadStub = () => {
+  const reload = vi.fn();
+  vi.stubGlobal('location', { ...window.location, reload });
+  return reload;
+};
 
 afterEach(() => {
   s().completeSignOut();
@@ -55,11 +61,11 @@ afterEach(() => {
 });
 
 describe('WEB-02 step 2: a queue key this release cannot read is never sent or written over', () => {
-  it('a known kind missing a field: listed, nothing loaded or sent, and the key kept', async () => {
+  it('a known kind missing a field: listed, nothing loaded or sent, the key kept, and Set aside copies it', async () => {
     const raw = JSON.stringify([{ t: 'approve' }]);
     const approveDecision = vi.fn(async () => null);
     onP1(raw, { approveDecision });
-    expect(s().queueUnreadable).toEqual([{ key, read: 'damaged' }]);
+    expect(s().queueUnreadable).toEqual([{ key, read: 'damaged', reloaded: false }]);
     expect(s().outbox).toEqual([]);
     useStore.setState({ online: true });
     await act(async () => { await s().flushOutbox(); });
@@ -69,12 +75,16 @@ describe('WEB-02 step 2: a queue key this release cannot read is never sent or w
     expect(localStorage.getItem(key)).toBe(raw);
     // the update this tab could not store there was copied aside beside the key (#1079 4344436665)
     expect(copiesOf(key)).toEqual([JSON.stringify([approve('k-new')])]);
-    expect(s().queueUnreadable).toEqual([{ key, read: 'damaged' }]);
+    act(() => s().setAsideUnreadableQueue());
+    // the key's bytes are copied aside; the update's own copy is removed once Set aside writes it to the key (#1096)
+    expect(copiesOf(key)).toEqual([raw]);
+    expect(s().queueUnreadable).toEqual([]);
+    expect(JSON.parse(localStorage.getItem(key)!)).toEqual([approve('k-new')]);
   });
 
   it('bytes that are not a list: listed, and never written over by this tab’s next save', () => {
     onP1('{not a list');
-    expect(s().queueUnreadable).toEqual([{ key, read: 'damaged' }]);
+    expect(s().queueUnreadable).toEqual([{ key, read: 'damaged', reloaded: false }]);
     queueOne('k-new');
     expect(localStorage.getItem(key)).toBe('{not a list');
   });
@@ -90,14 +100,42 @@ describe('WEB-02 step 2: a queue key this release cannot read is never sent or w
     expect(JSON.parse(localStorage.getItem(key)!)).toEqual([both]);
   });
 
-  it('a newer release’s act: listed as a newer release’s, nothing loaded, and never written over', () => {
+  it('a newer release’s act: Reload is offered, not Set aside; after a reload of this build the same bytes may be set aside', () => {
     const raw = JSON.stringify([{ t: 'aKindFromANewerRelease', idempotencyKey: 'k-n' }]);
     onP1(raw);
-    expect(s().queueUnreadable).toEqual([{ key, read: 'newer' }]);
-    expect(s().outbox).toEqual([]);
-    queueOne('k-new');
-    expect(localStorage.getItem(key)).toBe(raw);
-    expect(copiesOf(key)).toEqual([JSON.stringify([approve('k-new')])]);
+    expect(s().queueUnreadable).toEqual([{ key, read: 'newer', reloaded: false }]);
+    act(() => s().setAsideUnreadableQueue());
+    expect(copiesOf(key)).toEqual([]);
+    const reload = reloadStub();
+    act(() => s().reloadForNewerQueue());
+    expect(reload).toHaveBeenCalledTimes(1);
+    // the page loads again, in this same build, and the key still holds the same bytes
+    onP1(null);
+    expect(s().queueUnreadable).toEqual([{ key, read: 'newer', reloaded: true }]);
+    act(() => s().setAsideUnreadableQueue());
+    expect(copiesOf(key)).toEqual([raw]);
+    expect(s().queueUnreadable).toEqual([]);
+  });
+
+  it('guard: other bytes after the reload are offered Reload again, never Set aside', () => {
+    onP1(JSON.stringify([{ t: 'aKindFromANewerRelease', idempotencyKey: 'k-n' }]));
+    reloadStub();
+    act(() => s().reloadForNewerQueue());
+    localStorage.setItem(key, JSON.stringify([{ t: 'aKindFromANewerRelease', idempotencyKey: 'k-other' }]));
+    onP1(null);
+    expect(s().queueUnreadable).toEqual([{ key, read: 'newer', reloaded: false }]);
+  });
+
+  it('Reload while an update is not saved on this phone asks first; Cancel reloads nothing and marks nothing', () => {
+    onP1(JSON.stringify([{ t: 'aKindFromANewerRelease', idempotencyKey: 'k-n' }]));
+    queueOne('k-new'); // the key cannot be written, so this update is not saved on this phone
+    const ask = vi.fn(() => false);
+    vi.stubGlobal('confirm', ask);
+    const reload = reloadStub();
+    act(() => s().reloadForNewerQueue());
+    expect(ask).toHaveBeenCalledWith('1 updates aren’t saved on this phone and will be lost. Continue?');
+    expect(reload).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('vitan.queueReloaded')).toBeNull();
   });
 
   it('another tab’s write of bytes this release cannot read is listed and never answered; readable bytes un-list it', () => {
@@ -105,15 +143,60 @@ describe('WEB-02 step 2: a queue key this release cannot read is never sent or w
     queueOne('k-mine');
     expect(writesInAnswer('{damaged')).toBe(0);
     expect(localStorage.getItem(key)).toBe('{damaged');
-    expect(s().queueUnreadable).toEqual([{ key, read: 'damaged' }]);
+    expect(s().queueUnreadable).toEqual([{ key, read: 'damaged', reloaded: false }]);
     expect(writesInAnswer(JSON.stringify([approve('k-mine')]))).toBe(0);
     expect(s().queueUnreadable).toEqual([]);
+  });
+
+  it('a Set aside whose copy cannot be stored changes nothing and says so', () => {
+    const raw = '{not a list';
+    onP1(raw);
+    const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation((k) => { if (k.startsWith('vitan.unreadable.')) throw new DOMException('full', 'QuotaExceededError'); });
+    act(() => s().setAsideUnreadableQueue());
+    write.mockRestore();
+    expect(s().queueSetAsideFailed).toBe(true);
+    expect(localStorage.getItem(key)).toBe(raw);
+    expect(s().queueUnreadable).toEqual([{ key, read: 'damaged', reloaded: false }]);
+  });
+
+  it('gap-check 1: a Set aside whose second copy fails marks no key, so the first key is not written over either', () => {
+    localStorage.setItem(lane, '{bad lane');
+    onP1('{bad general');
+    expect(s().queueUnreadable.map((u) => u.key).sort()).toEqual([key, lane].sort());
+    const real = Storage.prototype.setItem;
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith(`vitan.unreadable.${lane}.`)) throw new DOMException('full', 'QuotaExceededError');
+      return real.call(this, k, v);
+    });
+    act(() => s().setAsideUnreadableQueue());
+    spy.mockRestore();
+    expect(s().queueSetAsideFailed).toBe(true);
+    queueOne('k-1');
+    expect(localStorage.getItem(key)).toBe('{bad general');
+  });
+
+  it('#1085 r2 (Codex 4346169602): that failed tap leaves no copy of the first key, and the tap after room is freed copies each key once', () => {
+    localStorage.setItem(lane, '{bad lane');
+    onP1('{bad general');
+    const real = Storage.prototype.setItem;
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith(`vitan.unreadable.${lane}.`)) throw new DOMException('full', 'QuotaExceededError');
+      return real.call(this, k, v);
+    });
+    act(() => s().setAsideUnreadableQueue());
+    act(() => s().setAsideUnreadableQueue());
+    spy.mockRestore();
+    expect(s().queueSetAsideFailed).toBe(true);
+    expect([copiesOf(key), copiesOf(lane)]).toEqual([[], []]);
+    act(() => s().setAsideUnreadableQueue());
+    expect(s().queueSetAsideFailed).toBe(false);
+    expect([copiesOf(key), copiesOf(lane)]).toEqual([['{bad general'], ['{bad lane']]);
   });
 
   it('a visit lane holding a damaged visit act is listed by itself; the general key still loads', () => {
     localStorage.setItem(lane, JSON.stringify([{ t: 'siteVisitEnd', visitId: '00000000-0000-4000-8000-000000000001', idempotencyKey: 'k-e' }]));
     onP1(JSON.stringify([approve('k-a')]));
-    expect(s().queueUnreadable).toEqual([{ key: lane, read: 'damaged' }]);
+    expect(s().queueUnreadable).toEqual([{ key: lane, read: 'damaged', reloaded: false }]);
     expect(s().outbox).toEqual([approve('k-a')]);
   });
 
@@ -125,18 +208,21 @@ describe('WEB-02 step 2: a queue key this release cannot read is never sent or w
 });
 
 describe('WEB-02 step 2: the strip', () => {
-  it('a damaged key shows its words, a newer release’s shows its own, and the strip offers no action', () => {
+  it('a damaged key shows the words and Set aside; a newer release’s shows Reload, then Set aside after a reload', () => {
     onP1('{damaged');
     const { unmount } = render(<QueueUnreadable />);
     expect(screen.getByRole('alert').textContent).toContain('Updates saved on this phone for this project can’t be read.');
-    expect(screen.queryByTestId('queue-newer')).toBeNull();
-    expect(screen.queryAllByRole('button')).toEqual([]);
+    expect(screen.getByRole('button', { name: 'Set aside and continue' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Reload' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Set aside and continue' }));
+    expect(screen.queryByRole('alert')).toBeNull();
     unmount();
     localStorage.setItem(key, JSON.stringify([{ t: 'aKindFromANewerRelease', idempotencyKey: 'k-n' }]));
     onP1(null);
     render(<QueueUnreadable />);
-    expect(screen.getByTestId('queue-newer').textContent).toBe('Updates saved on this phone by a newer version of Vitan can’t be read here.');
-    expect(screen.queryAllByRole('button')).toEqual([]);
+    expect(screen.getByTestId('queue-newer')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reload' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Set aside and continue' })).toBeNull();
   });
 
   it('guard: a key this release reads shows no strip', () => {
@@ -152,7 +238,7 @@ describe('#1088 r3: a scoped key holding bytes is never adopted over, and sign-o
     localStorage.setItem('vitan.outbox', legacy);
     onP1('');
     expect(localStorage.getItem(key)).toBe('');
-    expect(s().queueUnreadable).toEqual([{ key, read: 'damaged' }]);
+    expect(s().queueUnreadable).toEqual([{ key, read: 'damaged', reloaded: false }]);
     expect(localStorage.getItem(`vitan.unreadable.vitan.outbox.${key}`)).toBe(legacy);
     expect(localStorage.getItem('vitan.outbox')).toBeNull();
   });
@@ -200,7 +286,7 @@ describe('#1088 r4 (Codex 4351952392): every scope change clears the list before
 
   it('forced probe: a project switch the server confirms clears the list, with storage throwing and no load after it', async () => {
     onP1('{damaged', { switchProject: vi.fn(async () => ({ role: 'pmc', token: 't-2', projectId: 'p-2' })) });
-    expect(s().queueUnreadable).toEqual([{ key, read: 'damaged' }]);
+    expect(s().queueUnreadable).toEqual([{ key, read: 'damaged', reloaded: false }]);
     storageThrows();
     await act(async () => { await s().switchProject('p-2'); });
     expect(s().activeProjectId).toBe('p-2');
