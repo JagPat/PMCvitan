@@ -44,6 +44,8 @@ const SNAPSHOT_KEYS = [
   'companies',
   'nodes',
   'photos',
+  // #482 site photos: the viewer's own photos in their delete hour past the photos window
+  'myDeletablePhotos',
   'materials',
 ].sort();
 

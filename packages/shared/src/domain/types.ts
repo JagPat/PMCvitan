@@ -621,6 +621,9 @@ export interface PlacedInspection {
 export interface MediaRef {
   id?: string;
   url: string;
+  /** #482 — this device's upload key on a copy of a photo still queued here (its local data URL); never sent by the
+   *  server. A queued send answered 410 removes the copy carrying its key. */
+  clientKey?: string;
   takenAt?: string;
   geoLat?: number;
   geoLng?: number;
