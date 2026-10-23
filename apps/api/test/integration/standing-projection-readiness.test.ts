@@ -18,6 +18,8 @@ import { readinessLockKey } from '../../src/common/readiness-lock';
  * 5. Every app writer holds the key itself, so the function's try-lock is re-entrant there: a member add, re-role
  *    and removal, and an org admin promotion, all answer as before.
  * 6. The installed body is this file's: a replay of 20271220 must not leave the unguarded body in place.
+ * 7. A raw insert over a standing row that a key-holding transaction is deleting is decided after that delete
+ *    commits, not from a snapshot that still shows the row: it adds the holder WITH the key (the re-check's probe E).
  *
  * Isolated automated-test fixtures only.
  */
@@ -148,11 +150,70 @@ describe('#1100 — the standing projection refuses a direct write under a forei
     expect(await standing(admin)).toEqual(['pmc']);
   }, 60_000);
 
+  it('7. a raw insert over a row a key-holding transaction is deleting adds the holder only with the key', async () => {
+    const x = await user('escape');
+    // X is an org admin, so X stands as pmc on project A (set up under the key, as the app roster would).
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', readinessLockKey(f.projectA.id));
+      await tx.$executeRawUnsafe(`INSERT INTO "OrgMembership" ("id", "orgId", "userId", "role") VALUES ($1, $2, $3, 'admin')`,
+        randomUUID(), f.orgA.id, x);
+    });
+    expect(await standing(x)).toEqual(['pmc']);
+
+    // T1 holds the key and demotes X to member, which deletes X's pmc standing row. It stays open.
+    const t1deleted = gate(); const t1release = gate();
+    let t1pid = 0;
+    const T1 = t.prisma.$transaction(async (tx) => {
+      t1pid = Number((await tx.$queryRawUnsafe<Array<{ pid: number }>>('SELECT pg_backend_pid() AS pid'))[0]!.pid);
+      await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', readinessLockKey(f.projectA.id));
+      await tx.$executeRawUnsafe(`UPDATE "OrgMembership" SET "role" = 'member' WHERE "orgId" = $1 AND "userId" = $2`, f.orgA.id, x);
+      t1deleted.open();
+      await t1release.p;
+    }, { timeout: 60_000, maxWait: 10_000 });
+    await Promise.race([t1deleted.p, T1]);
+
+    // T2: a direct write that adds X as a pmc holder. It meets T1's deleted row and waits for T1.
+    const t2inserted = gate(); const t2release = gate();
+    const T2 = settle(t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`INSERT INTO "Membership" ("id", "projectId", "userId", "role", "status") VALUES ($1, $2, $3, 'pmc', 'active')`,
+        randomUUID(), f.projectA.id, x);
+      t2inserted.open();
+      await t2release.p;
+    }, { timeout: 60_000, maxWait: 10_000 }));
+    let t2settled = false;
+    void T2.then(() => { t2settled = true; });
+    try {
+      for (;;) {
+        if (t2settled) break; // T2 did not wait for T1: asserted below
+        const [{ n }] = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+          'SELECT COUNT(*)::bigint AS n FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))', t1pid);
+        if (Number(n) > 0) break;
+        await new Promise((r) => setImmediate(r));
+      }
+    } finally {
+      t1release.open();
+    }
+    await T1;
+    const t2 = await Promise.race([t2inserted.p.then(() => null), T2]);
+    try {
+      expect(t2, 'the raw insert after T1 committed was refused').toBe(null);
+      // While T2 is open with its new holder, a forward cannot take the readiness key: T2 holds it.
+      const got = await t.prisma.$transaction(async (tx) => (await tx.$queryRawUnsafe<Array<{ got: boolean }>>(
+        'SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS got', readinessLockKey(f.projectA.id)))[0]!.got);
+      expect(got, 'a real holder add is open without the readiness key held').toBe(false);
+    } finally {
+      t2release.open();
+    }
+    expect((await T2).ok).toBe(true);
+    expect(await standing(x)).toEqual(['pmc']);
+  }, 60_000);
+
   it('6. the installed body tries the readiness key and refuses', async () => {
     const [{ src }] = await t.prisma.$queryRawUnsafe<Array<{ src: string }>>(
       `SELECT p.prosrc AS src FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public' AND p.proname = 'platform_user_standing_apply'`);
     expect(src).toContain('phase6_try_readiness(p_project)');
     expect(src).toContain('the project readiness key is held elsewhere');
+    expect(src).toMatch(/FOR UPDATE;\s*v_exists := FOUND;/);
   });
 });
