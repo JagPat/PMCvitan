@@ -98,28 +98,47 @@ export function madeActs(storage: Store, key: string, scopes: QueueScopes | unde
   return out;
 }
 
-/** Remove `key`'s made records whose every act is `done` (the key holds it, or it is settled). Returns the identities of
- *  the acts the records still there hold (not done, or not removed), whose settled marks must stay; null when a record
- *  is there whose acts this release cannot read, so every mark of the key stays (#1101 r2, Codex 4360012661). */
-export function releaseMade(storage: Store, key: string, done: (ident: string) => boolean, ident: (o: OutboxOp) => string, scopes: QueueScopes | undefined): Set<string> | null {
-  const left = new Set<string>();
+/** Remove `key`'s made records whose every act is `done`: the key holds it, or it is settled. `done` counts
+ *  occurrences (B1 U1, R3): two identical acts an earlier release queued with no key are two acts, so a record of one is
+ *  done only by an occurrence no other record has used. Records are taken in their order. Returns how many times each
+ *  identity occurs in the records still there (not done, or not removed), whose settled marks must stay; null when a
+ *  record is there whose acts this release cannot read, so every mark of the key stays (#1101 r2, Codex 4360012661). */
+export function releaseMade(storage: Store, key: string, done: Map<string, number>, ident: (o: OutboxOp) => string, scopes: QueueScopes | undefined): Map<string, number> | null {
+  const left = new Map<string, number>();
+  const spare = new Map(done);
   let unread = false;
-  for (const name of namesUnder(storage, `${MADE}${key}.`)) {
+  const prefix = `${MADE}${key}.`;
+  const names = namesUnder(storage, prefix).sort((a, b) => orderOf(a, prefix) - orderOf(b, prefix) || (a < b ? -1 : a > b ? 1 : 0));
+  for (const name of names) {
     let raw: string | null = null;
     try { raw = storage.getItem(name); } catch { unread = true; continue; }
     if (raw === null) continue; // gone since it was listed
     const read = readStoredQueue(raw, scopes);
     if (!('acts' in read)) { unread = true; continue; }
-    const idents = read.acts.map(ident);
-    if (idents.every(done) && remove(storage, name)) continue;
-    for (const i of idents) left.add(i);
+    const need = new Map<string, number>();
+    for (const o of read.acts) need.set(ident(o), (need.get(ident(o)) ?? 0) + 1);
+    if ([...need].every(([i, n]) => (spare.get(i) ?? 0) >= n) && remove(storage, name)) {
+      for (const [i, n] of need) spare.set(i, (spare.get(i) ?? 0) - n);
+      continue;
+    }
+    for (const [i, n] of need) left.set(i, (left.get(i) ?? 0) + n);
   }
   return unread ? null : left;
 }
 
-/** Mark an act of `key` settled (sent, or refused for good); true when the mark reads back. */
-export function markSettled(storage: Store, key: string, ident: string): boolean {
-  const name = `${SETTLED}${key}.${tag(ident)}`;
+/** a mark's name: the first occurrence of an identity under the name B1a gave it, the n-th after it with `.n` */
+const markName = (key: string, ident: string, ordinal: number): string => `${SETTLED}${key}.${tag(ident)}${ordinal > 1 ? `.${ordinal}` : ''}`;
+/** a mark's occurrence, from its name (`<tag>` or `<tag>.<n>` after the key's prefix) */
+function ordinalOf(name: string, prefix: string): number {
+  const n = Number(name.slice(prefix.length).split('.')[1] ?? '1');
+  return Number.isSafeInteger(n) && n > 0 ? n : 1;
+}
+
+/** Mark an act of `key` settled (sent, or refused for good); true when the mark reads back. `ordinal` is which
+ *  occurrence of its identity it is, in its key's order (B1 U1, R3): an act a release queued with no key shares its
+ *  identity with an identical one, and marking the first never marks the second. An act with a key is unique: 1 */
+export function markSettled(storage: Store, key: string, ident: string, ordinal = 1): boolean {
+  const name = markName(key, ident, ordinal);
   try {
     if (storage.getItem(name) !== ident) storage.setItem(name, ident);
     return storage.getItem(name) === ident;
@@ -128,20 +147,28 @@ export function markSettled(storage: Store, key: string, ident: string): boolean
   }
 }
 
-/** the identities of `key`'s acts marked settled */
-export function settledIdents(storage: Store, key: string): Set<string> {
-  const out = new Set<string>();
-  for (const name of namesUnder(storage, `${SETTLED}${key}.`)) {
-    try { const v = storage.getItem(name); if (v !== null) out.add(v); } catch { /* unread: not marked */ }
+/** `key`'s settled marks: per identity, the occurrences marked */
+export function settledMarks(storage: Store, key: string): Map<string, Set<number>> {
+  const out = new Map<string, Set<number>>();
+  const prefix = `${SETTLED}${key}.`;
+  for (const name of namesUnder(storage, prefix)) {
+    try {
+      const v = storage.getItem(name);
+      if (v !== null) { const s = out.get(v) ?? new Set<number>(); s.add(ordinalOf(name, prefix)); out.set(v, s); }
+    } catch { /* unread: not marked */ }
   }
   return out;
 }
 
-/** Remove `key`'s settled marks for acts nothing holds any more (`held`: the key's acts, and its made records' acts). */
-export function releaseSettled(storage: Store, key: string, held: Set<string>): void {
-  for (const name of namesUnder(storage, `${SETTLED}${key}.`)) {
+/** Remove `key`'s settled marks of occurrences nothing holds any more: `held` counts each identity's occurrences in
+ *  the key and in its made records, and a mark of the n-th occurrence goes once fewer than n are held. Every mark of an
+ *  identity in `dropped` goes: a landed write took its sent occurrences out of the key, so what the key holds of it now
+ *  is unsent, and a mark left would leave that out of the next load (B1 U1, the B1a residual). */
+export function releaseSettled(storage: Store, key: string, held: Map<string, number>, dropped: Set<string> = new Set()): void {
+  const prefix = `${SETTLED}${key}.`;
+  for (const name of namesUnder(storage, prefix)) {
     let v: string | null = null;
     try { v = storage.getItem(name); } catch { continue; }
-    if (v === null || !held.has(v)) remove(storage, name);
+    if (v === null || dropped.has(v) || ordinalOf(name, prefix) > (held.get(v) ?? 0)) remove(storage, name);
   }
 }

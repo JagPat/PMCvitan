@@ -90,7 +90,7 @@ import {
   beginCreateSend, createHoldScope, currentCreateHoldView, releaseCreate, reserveCreateRetry, reserveNewCreate, serverKeepsCreateReceipts,
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
 } from './projectCreateHold';
-import { createQueueKeyGuard, type QueueWrite } from '@/store/queueKeyGuard';
+import { createQueueKeyGuard, queueActIdent, type QueueWrite } from '@/store/queueKeyGuard';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isMediaNotFound, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import type { QueueScopes } from '@/data/storedActs';
@@ -6394,7 +6394,14 @@ export const useStore = create<Store>()(
       // closed before this flush writes its key without it never sends it again
       let markStore: Storage | null = null;
       try { markStore = globalThis.localStorage ?? null; } catch { markStore = null; }
-      const settle = (o: OutboxOp): void => { queueKeys.settled(markStore, isSiteVisitOp(o) ? siteVisitKeyOf(flushKey) : flushKey, o); };
+      // B1 U1: the mark names which occurrence of its identity the act is, in this flush's order, so an identical act
+      // queued with no key after it is never left out with it (R3, the B1a residual)
+      const settle = (o: OutboxOp): void => {
+        const i = queueActIdent(o);
+        const at = ops.indexOf(o);
+        const nth = at < 0 ? 1 : ops.slice(0, at + 1).filter((x) => queueActIdent(x) === i).length;
+        queueKeys.settled(markStore, isSiteVisitOp(o) ? siteVisitKeyOf(flushKey) : flushKey, o, nth);
+      };
       for (let i = 0; i < ops.length; i++) {
         // live check BEFORE each replay: if the project or session changed while a
         // previous op was in flight, the rest of this queue belongs to the OLD

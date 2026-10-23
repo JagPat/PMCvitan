@@ -23,8 +23,10 @@ describe('queueKeyGuard: a key this release reads', () => {
   it('a write stores memory’s acts, and keeps byte for byte every stored entry memory leaves out on purpose (Codex 4344270652)', () => {
     const st = storage({ [K]: JSON.stringify([a('old'), visitEnd('in-general')]) });
     const q = createQueueKeyGuard();
+    expect(q.load(st, K)).toHaveLength(2);
     expect(q.write(st, K, [a('mine')], (o) => o.t !== 'siteVisitEnd')).toBe(true);
-    expect(st.keys(K)).toEqual(['mine', 'in-general']);
+    // B1 U1: the stored order is kept, and a new act goes last; `old`, which this tab loaded and no longer holds, goes
+    expect(st.keys(K)).toEqual(['in-general', 'mine']);
   });
 
   it('a write that changes nothing writes nothing', () => {

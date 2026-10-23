@@ -150,12 +150,14 @@ describe('step B1a: one forced probe per step of an act’s life (guard)', () =>
     expect(named(`vitan.settled.${key}.`)).toEqual([]);
   });
 
-  it('removed: a mark is kept while the key still holds the act (a write from memory that still holds it)', () => {
+  it('removed: a write from memory that still holds a sent act (the flush has not ended) takes it out of the key, and its mark with it', () => {
     localStorage.setItem(key, JSON.stringify([approve('k-1')]));
     const g = createQueueKeyGuard();
     g.settled(localStorage, key, approve('k-1'));
     g.write(localStorage, key, [approve('k-1')]);
-    expect(named(`vitan.settled.${key}.`)).toHaveLength(1);
+    // B1 U1 (#1106 r1): a marked occurrence is never matched to memory's act, and a sent act is not put back
+    expect(JSON.parse(localStorage.getItem(key)!)).toEqual([]);
+    expect(named(`vitan.settled.${key}.`)).toHaveLength(0);
     expect(createQueueKeyGuard().load(localStorage, key)).toEqual([]);
   });
 
