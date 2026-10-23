@@ -173,3 +173,75 @@ describe('step B1a: one forced probe per step of an act’s life (guard)', () =>
     expect(idents(createQueueKeyGuard().load(localStorage, key))).toEqual([queueActIdent(approve('k-1'))]);
   });
 });
+
+describe('#1101 round 1 (Codex review 5628535504)', () => {
+  const copiesFailFor = (match: (k: string, v: string) => boolean) => {
+    const real = Storage.prototype.setItem;
+    return vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (match(k, v)) throw new DOMException('full', 'QuotaExceededError');
+      return real.call(this, k, v);
+    });
+  };
+
+  it('forced probe (4359759846): a Set aside whose second write fails leaves the first key’s made record, so its act loads after a reload', () => {
+    const lane = `vitan.siteVisitQueue.dev:${USER}.${P}`;
+    localStorage.setItem(key, '{damaged');
+    localStorage.setItem(lane, '{damaged too');
+    // an act beside the general key that no copy could hold: kept in a made record
+    const spy = copiesFailFor((k) => k.startsWith('vitan.unreadable.'));
+    createQueueKeyGuard().write(localStorage, key, [approve('k-1')]);
+    spy.mockRestore();
+    expect(named(`vitan.made.${key}.`)).toHaveLength(1);
+    // the person's Set aside: both keys copied, the general key written, then the lane's write fails
+    const g = createQueueKeyGuard();
+    expect(g.setAside(localStorage, [key, lane])).toBe(true);
+    copiesFailFor((k, v) => k === lane && v !== '{damaged too');
+    expect(g.writeAll(localStorage, [{ key, mine: [approve('k-1')], takes: () => true }, { key: lane, mine: [], takes: () => true }])).toBe('none');
+    vi.restoreAllMocks();
+    expect(localStorage.getItem(key)).toBe('{damaged');
+    expect(idents(createQueueKeyGuard().load(localStorage, key))).toEqual([queueActIdent(approve('k-1'))]);
+  });
+
+  it('guard: a Set aside whose writes all land removes the made record', () => {
+    localStorage.setItem(key, '{damaged');
+    const spy = copiesFailFor((k) => k.startsWith('vitan.unreadable.'));
+    createQueueKeyGuard().write(localStorage, key, [approve('k-1')]);
+    spy.mockRestore();
+    const g = createQueueKeyGuard();
+    expect(g.setAside(localStorage, [key])).toBe(true);
+    expect(g.writeAll(localStorage, [{ key, mine: [approve('k-1')], takes: () => true }])).toBe('all');
+    expect(named(`vitan.made.${key}.`)).toEqual([]);
+  });
+
+  it('forced probe (4359759832): acts kept in successive made records load in the order they were made', () => {
+    // the first act made (a visit's start, say) and the one made after it (its end), each refused in turn
+    const first = (n: number) => approve(`first-${n}`);
+    const then = (n: number) => approve(`then-${n}`);
+    copiesFailFor((k) => k.startsWith('vitan.unreadable.'));
+    // eight keys, one pair each: with no order kept, the names' hashes put some later acts first
+    const keys = Array.from({ length: 8 }, (_, n) => `vitan.outbox.dev:${USER}.p-order-${n}`);
+    keys.forEach((k, n) => {
+      localStorage.setItem(k, '{damaged');
+      const g = createQueueKeyGuard();
+      g.write(localStorage, k, [first(n)]);
+      g.write(localStorage, k, [first(n), then(n)]);
+    });
+    vi.restoreAllMocks();
+    for (const [n, k] of keys.entries()) {
+      expect(named(`vitan.made.${k}.`)).toHaveLength(2);
+      expect(idents(createQueueKeyGuard().load(localStorage, k))).toEqual([queueActIdent(first(n)), queueActIdent(then(n))]);
+    }
+  });
+
+  it('forced probe (4359759858): an act held stranded that the server has is not handed back by the next load', () => {
+    const g = createQueueKeyGuard();
+    // a scope-moved write with no storage to be had: the unsent act is held stranded
+    expect(g.keepUnsent(null, key, [approve('k-1')], [approve('k-1')], (l) => l)).toBe(false);
+    // handed back once, sent, and marked settled before the scope moved again
+    expect(idents(g.load(localStorage, key))).toEqual([queueActIdent(approve('k-1'))]);
+    expect(g.settled(localStorage, key, approve('k-1'))).toBe(true);
+    g.forget();
+    expect(g.load(localStorage, key)).toEqual([]);
+    expect(g.strandedCount()).toBe(0);
+  });
+});

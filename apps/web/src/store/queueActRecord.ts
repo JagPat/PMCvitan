@@ -6,7 +6,8 @@ import { readStoredQueue, type QueueScopes } from '@/data/storedActs';
  * storage beside its queue key, so no step of it is only in this tab's memory.
  *
  * - made: an act this tab holds that its key could not store is kept in a record of its own,
- *   `vitan.made.<queue key>.<tag>`. The record's name is new to the acts it holds, so writing it never needs the key's
+ *   `vitan.made.<queue key>.<order>.<tag>`, where order is one more than any record of the key holds, so a load takes
+ *   them back in the order they were made (#1101 r1, Codex 4359759832). The record's name is new to the acts it holds, so writing it never needs the key's
  *   lock and never writes over another tab's. A load takes the acts back from it, so a sign-out, a project switch or a
  *   closed page does not lose them. It is removed once its key holds its acts, or each is settled.
  * - settled: the moment the server has an act (sent), or refused it for good (dropped), a mark
@@ -51,13 +52,23 @@ function remove(storage: Store, name: string): void {
   try { storage.removeItem?.(name); } catch { /* left: a record or mark is never a loss */ }
 }
 
-/** Keep `acts` (made by this tab, not in `key`) in a record of their own; true when it reads back as written. */
+/** a made record's order, from its name (`<order>.<tag>` after the key's prefix); 0 when it has none */
+function orderOf(name: string, prefix: string): number {
+  const n = Number(name.slice(prefix.length).split('.')[0]);
+  return Number.isSafeInteger(n) && n > 0 ? n : 0;
+}
+
+/** Keep `acts` (made by this tab, not in `key`) in a record of their own, after every record the key has; true when it
+ *  reads back as written. The same acts already in a record are that record. */
 export function recordMade(storage: Store, key: string, acts: OutboxOp[]): boolean {
   if (acts.length === 0) return true;
   const raw = JSON.stringify(acts);
-  const name = `${MADE}${key}.${tag(raw)}`;
+  const prefix = `${MADE}${key}.`;
+  const names = namesUnder(storage, prefix);
+  const t = tag(raw);
   try {
-    if (storage.getItem(name) === raw) return true;
+    if (names.some((n) => n.endsWith(`.${t}`) && storage.getItem(n) === raw)) return true;
+    const name = `${prefix}${Math.max(0, ...names.map((n) => orderOf(n, prefix))) + 1}.${t}`;
     storage.setItem(name, raw);
     return storage.getItem(name) === raw;
   } catch {
@@ -69,7 +80,9 @@ export function recordMade(storage: Store, key: string, acts: OutboxOp[]): boole
  *  where it is and loads none */
 export function madeActs(storage: Store, key: string, scopes: QueueScopes | undefined): OutboxOp[] {
   const out: OutboxOp[] = [];
-  for (const name of namesUnder(storage, `${MADE}${key}.`).sort()) {
+  const prefix = `${MADE}${key}.`;
+  const names = namesUnder(storage, prefix).sort((a, b) => orderOf(a, prefix) - orderOf(b, prefix) || (a < b ? -1 : a > b ? 1 : 0));
+  for (const name of names) {
     let raw: string | null = null;
     try { raw = storage.getItem(name); } catch { raw = null; }
     const read = readStoredQueue(raw, scopes);
