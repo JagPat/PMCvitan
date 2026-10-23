@@ -82,11 +82,12 @@ describe('B1 U1: the merge writer (forced probes)', () => {
   it('forced probe (B1a residual, guard): the first of two identical unkeyed acts is sent and marked; the next load still owes the second', () => {
     const g = createQueueKeyGuard();
     localStorage.setItem(key, JSON.stringify([U, U]));
-    expect(g.load(localStorage, key)).toEqual([U, U]);
-    expect(g.settled(localStorage, key, U, 1)).toBe(true); // the first is sent
+    const [first, second] = g.load(localStorage, key);
+    expect([first, second]).toEqual([U, U]);
+    expect(g.settled(localStorage, key, first, 1)).toBe(true); // the first is sent
     // a page closed before the flush's end write: the key still holds both
     expect(createQueueKeyGuard().load(localStorage, key)).toEqual([U]);
-    expect(g.write(localStorage, key, [U])).toBe(true); // the flush stops on the second; memory holds one
+    expect(g.write(localStorage, key, [second])).toBe(true); // the flush stops on the second; memory holds one
     expect(stored()).toEqual([U]);
     expect(createQueueKeyGuard().load(localStorage, key)).toEqual([U]);
     expect(marks()).toEqual([]);
