@@ -130,11 +130,11 @@ jobs:
       - name: Playwright font cache key
         id: pw-fonts-key
         # The runner image fixes which font packages apt would fetch, and the Playwright version
-        # fixes which ones `--with-deps` asks for. The leading v1 is bumped to force one cold run.
+        # fixes which ones `--with-deps` asks for. The leading v2 is bumped to force one cold run.
         run: |
           version=$(pnpm --filter web exec playwright --version | awk '{print $2}')
           if [ -z "$version" ]; then echo '::error::playwright --version gave no version for the font cache key'; exit 1; fi
-          echo "key=pw-fonts-v1-$ImageOS-$ImageVersion-$version" >> "$GITHUB_OUTPUT"
+          echo "key=pw-fonts-v2-$ImageOS-$ImageVersion-$version" >> "$GITHUB_OUTPUT"
       - name: Restore the Playwright font packages
         id: pw-fonts
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -208,6 +208,13 @@ jobs:
           # gets 4 of the step's 8 minutes and the retry against archive.ubuntu.com the rest.
           if ! timeout --kill-after=10 240 "${pw_install[@]}"; then
             echo '::warning::the Playwright install failed or ran out of time on the runner mirror; retrying once against archive.ubuntu.com'
+            # timeout stops pnpm, but the Playwright installer and the apt-get it started under sudo
+            # outlive it, and that apt-get (or the dpkg it runs) keeps the dpkg lock the retry needs.
+            # They are stopped first; a dpkg stopped mid-unpack is settled by dpkg --configure -a.
+            pkill -f 'install --with-deps chromium' || true
+            sudo pkill -x 'apt-get|dpkg' || true
+            for _ in $(seq 30); do pgrep -x 'apt-get|dpkg' > /dev/null || break; sleep 1; done
+            sudo pkill -KILL -x 'apt-get|dpkg' || true
             sudo dpkg --configure -a || true
             sudo sed -i 's#azure\.archive\.ubuntu\.com#archive.ubuntu.com#g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
             "${pw_install[@]}"
@@ -271,11 +278,11 @@ jobs:
       - name: Playwright font cache key
         id: pw-fonts-key
         # The runner image fixes which font packages apt would fetch, and the Playwright version
-        # fixes which ones `--with-deps` asks for. The leading v1 is bumped to force one cold run.
+        # fixes which ones `--with-deps` asks for. The leading v2 is bumped to force one cold run.
         run: |
           version=$(pnpm --filter web exec playwright --version | awk '{print $2}')
           if [ -z "$version" ]; then echo '::error::playwright --version gave no version for the font cache key'; exit 1; fi
-          echo "key=pw-fonts-v1-$ImageOS-$ImageVersion-$version" >> "$GITHUB_OUTPUT"
+          echo "key=pw-fonts-v2-$ImageOS-$ImageVersion-$version" >> "$GITHUB_OUTPUT"
       - name: Restore the Playwright font packages
         id: pw-fonts
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -315,6 +322,13 @@ jobs:
           # gets 4 of the step's 8 minutes and the retry against archive.ubuntu.com the rest.
           if ! timeout --kill-after=10 240 "${pw_install[@]}"; then
             echo '::warning::the Playwright install failed or ran out of time on the runner mirror; retrying once against archive.ubuntu.com'
+            # timeout stops pnpm, but the Playwright installer and the apt-get it started under sudo
+            # outlive it, and that apt-get (or the dpkg it runs) keeps the dpkg lock the retry needs.
+            # They are stopped first; a dpkg stopped mid-unpack is settled by dpkg --configure -a.
+            pkill -f 'install --with-deps chromium' || true
+            sudo pkill -x 'apt-get|dpkg' || true
+            for _ in $(seq 30); do pgrep -x 'apt-get|dpkg' > /dev/null || break; sleep 1; done
+            sudo pkill -KILL -x 'apt-get|dpkg' || true
             sudo dpkg --configure -a || true
             sudo sed -i 's#azure\.archive\.ubuntu\.com#archive.ubuntu.com#g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
             "${pw_install[@]}"
