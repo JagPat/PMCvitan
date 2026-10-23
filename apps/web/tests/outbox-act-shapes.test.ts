@@ -7,7 +7,7 @@ import { syncResultText as SYNC } from '@vitan/shared';
 /**
  * #1051 r1, Codex 4336713248: a stored act was taken as loadable when it named a known kind, whatever its fields held.
  * `[{"t":"approve"}]` loaded, its replay sent `undefined`, the 4xx dropped it, and the key was written over: the
- * stored bytes were lost and nobody was told. Each known kind is now read through the fields its replay reads,
+ * stored bytes were lost with no Set aside offered. Each known kind is now read through the fields its replay reads,
  * and a key holding any entry that fails them is unreadable as a whole. The per-kind store tests fail before the fix.
  */
 
@@ -388,7 +388,7 @@ describe('#1051 r1, Codex 4336713248: a key holding a damaged act of a known kin
   // the photo's act is kept in its IndexedDB row, never in a queue key: a damaged row is left as it is (gap 5's rule)
   const stored = (Object.keys(MIN) as OutboxOp['t'][]).filter((t) => t !== 'siteVisitAddFile');
 
-  it.each(stored)('%s missing its first field: listed, never loaded, replayed or written over', async (t) => {
+  it.each(stored)('%s missing its first field: listed, set aside on the tap, never loaded, replayed or written over', async (t) => {
     const bad = damaged(MIN[t])[0].act;
     const raw = JSON.stringify([neighbour(t), bad]);
     onP2({ [keyOf(t)]: raw });
@@ -400,11 +400,14 @@ describe('#1051 r1, Codex 4336713248: a key holding a damaged act of a known kin
     useStore.setState({ online: false });
     useStore.getState().startActivity('B-1');
     expect(localStorage.getItem(keyOf(t))).toBe(raw);
-    expect(useStore.getState().queueUnreadable.map((u) => u.key)).toEqual([keyOf(t)]);
-    // beside the general key, the start this tab could not store there is copied aside (#1079 4344436665)
+    useStore.getState().setAsideUnreadableQueue();
+    expect(useStore.getState().queueUnreadable).toEqual([]);
+    // the key's bytes are copied aside. The start this tab could not store beside the general key was copied aside too
+    // (#1079 4344436665); once Set aside writes it to the key, that copy is removed (#1096, Codex 4356145036)
     const copies = copiesOf(keyOf(t));
-    expect(copies.filter((c) => c === raw)).toHaveLength(0);
-    expect(copies.filter((c) => c !== raw).map((c) => (JSON.parse(c!) as OutboxOp[]).map((o) => o.t))).toEqual(keyOf(t) === general ? [['startActivity']] : []);
+    expect(copies.filter((c) => c === raw)).toHaveLength(1);
+    expect(copies.filter((c) => c !== raw)).toEqual([]);
+    expect((JSON.parse(localStorage.getItem(general)!) as OutboxOp[]).map((o) => o.t)).toEqual(['startActivity']);
   });
 
   it('a key holding an act of every kind it keeps, each whole, loads every one', () => {

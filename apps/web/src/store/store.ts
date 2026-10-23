@@ -424,8 +424,8 @@ export interface AppState {
   online: boolean;
   syncQueue: string[];
   outbox: OutboxOp[];
-  /** WEB-02 step A: this scope's queue keys this release cannot read */
-  queueUnreadable: UnreadableKey[];
+  /** WEB-02 step A: this scope's queue keys this release cannot read, and whether the last Set aside could not copy them */
+  queueUnreadable: UnreadableKey[]; queueSetAsideFailed: boolean;
   /** SV2: the visits whose acts the last flush held behind a photo this phone may still keep but could not read, for the
    *  project and sign-in it ran in; null when it held none. The Site Visits screen says so, with "Send anyway". */
   siteVisitsHeld: { project: string; generation: number; visits: string[] } | null;
@@ -849,6 +849,8 @@ export interface AppActions {
    *  load only (Codex 4323247780). */
   sendSiteVisitAnyway: (visitId: string) => void;
   hydrateOutbox: () => void;
+  /** WEB-02 step A: copy this scope's unreadable queue keys aside (Set aside), or reload for a newer release's */
+  setAsideUnreadableQueue: () => void; reloadForNewerQueue: () => void;
   // team access
   accWho: (who: Exclude<AccessWho, null>) => void;
   accTrade: (t: string) => void;
@@ -1451,7 +1453,7 @@ export function getInitialState(): AppState {
     online: true,
     syncQueue: [],
     outbox: [],
-    queueUnreadable: [],
+    queueUnreadable: [], queueSetAsideFailed: false,
     siteVisitsHeld: null,
     siteVisitsSentAnyway: [],
     photoUploadsInFlight: [],
@@ -2467,14 +2469,14 @@ export const useStore = create<Store>()(
     const isStoredVisitOp = (o: OutboxOp): boolean => isSiteVisitOp(o) && o.t !== 'siteVisitAddFile';
     /** WEB-02 step A: both queue keys are read and written only through `queueKeys`, which never writes a key this
      *  release cannot read; each read of this scope's keys lists such a key in the strip */
-    const strip = queueStrip({ get, set, scope: () => [outboxKey(), siteVisitKeyOf(outboxKey())] });
+    const strip = queueStrip({ get, set, scope: () => [outboxKey(), siteVisitKeyOf(outboxKey())], keys: () => queueKeys, writes: () => queueWrites() });
     const queueKeys = createQueueKeyGuard(strip.noteRead, (key) => queueKeyScopes.get(key));
     /** Every scope change (an auth result, a persona switch, a sign-out, and each load of a scope's queue) ends the old
      *  scope's queue-key memory and its strip list here, first, before any storage access: a storage that throws can
      *  then never leave the old scope's list on the next one (Codex 4351952392, the third such leak's root cause) */
     const resetQueueScope = (): void => {
       queueKeys.forget();
-      set({ queueUnreadable: [] });
+      set({ queueUnreadable: [], queueSetAsideFailed: false });
     };
     /** each stored key's write from memory: the general queue, then the visit lane */
     const queueWrites = (): QueueWrite[] => [
@@ -6734,6 +6736,8 @@ export const useStore = create<Store>()(
         }
       }
     },
+    setAsideUnreadableQueue: () => strip.setAside(),
+    reloadForNewerQueue: () => strip.reload(),
     hydrateOutbox: () => {
       resetQueueScope(); // before any storage access: a storage that throws below leaves no other scope's list
       // this scope's evidence rows are read again below: until then an own evidence photo's Delete waits (#482)

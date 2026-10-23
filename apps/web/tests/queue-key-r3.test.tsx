@@ -7,11 +7,11 @@ import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
 
 /**
  * #1085 round 3, Codex 4346778591: unsent acts a scope-moved write held stranded (their key unreadable, no copy aside
- * possible) came back into memory on the return to their scope, and the guard let go of them there, so nothing counted
- * them any more (a later reload asked about none and lost them). They stay held, and counted, until a write puts them
- * on this phone or they are settled.
+ * possible) came back into memory on the return to their scope, and the guard let go of them there. With the key a
+ * newer release's, the strip offers Reload, and the reload question counted none of them: Reload went ahead without
+ * asking and they were lost. They stay held, and counted, until a write puts them on this phone or they are settled.
  *
- * The guard's "a load hands the act back and still counts it" fails at c21b993.
+ * The forced probe (the first test) fails at c21b993.
  */
 
 const USER = 'u-pmc';
@@ -38,7 +38,7 @@ afterEach(() => {
 });
 
 describe('#1085 r3, Codex 4346778591: acts held stranded stay counted until they are on this phone', () => {
-  it('back on a project whose key a newer release now holds, the act held there is in memory again and the key is kept', async () => {
+  it('forced probe: back on a project whose key a newer release now holds, Reload asks before it loses the act held there', async () => {
     const real = Storage.prototype.setItem;
     const approveDecision = vi.fn(async () => {
       // while a1 is sent: a newer release's tab writes p-1's key, and this tab moves to p-2
@@ -56,13 +56,19 @@ describe('#1085 r3, Codex 4346778591: acts held stranded stay counted until they
     await act(async () => { await s().flushOutbox(); });
     expect(approveDecision).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem(keyOf('p-1'))).toBe(NEWER);
-    // back on p-1: a2 is in memory again; the key is a newer release's, so the strip lists it
+    // back on p-1: a2 is in memory again; the key is a newer release's, so the strip offers Reload
     moveTo('p-1');
     useStore.setState({ online: false });
     act(() => { s().hydrateOutbox(); });
     expect(s().outbox).toEqual([approve('a2')]);
     expect(s().queueUnreadable.map((u) => [u.key, u.read])).toEqual([[keyOf('p-1'), 'newer']]);
-    expect(localStorage.getItem(keyOf('p-1'))).toBe(NEWER);
+    const ask = vi.fn(() => false);
+    vi.stubGlobal('confirm', ask);
+    const reload = vi.fn();
+    vi.stubGlobal('location', { ...window.location, reload });
+    act(() => s().reloadForNewerQueue());
+    expect(ask).toHaveBeenCalledWith('1 updates aren’t saved on this phone and will be lost. Continue?');
+    expect(reload).not.toHaveBeenCalled();
   });
 });
 
@@ -87,7 +93,7 @@ describe('#1085 r3: the guard lets go of a stranded act only once it is on this 
     expect(q.load(st, K)).toEqual([a('a2')]);
     expect(q.load(st, K)).toEqual([a('a2')]); // a load again hands it back again, once
     expect(q.strandedCount()).toBe(1);
-    // the key turns readable (the newer tab's own write), and this tab's write stores the act
+    // the key turns readable (Set aside, or the newer tab's own write), and this tab's write stores the act
     st.map.set(K, '[]');
     expect(q.write(st, K, [a('a2')])).toBe(true);
     expect(q.strandedCount()).toBe(0);
