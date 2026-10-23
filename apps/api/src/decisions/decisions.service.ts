@@ -1186,11 +1186,9 @@ export class DecisionsService {
     const d = await tx.decision.findUnique({ where: { id: decisionId }, select: { deciderKind: true, deciderMembershipId: true } });
     const memberIds = [d?.deciderKind === 'member' ? d.deciderMembershipId : null, toKind === 'member' ? toMembershipId : null]
       .filter((id): id is string => id !== null);
-    const named = memberIds.length === 0 ? [] : await tx.membership.findMany({
-      where: { projectId, id: { in: memberIds } }, select: { userId: true },
-    });
+    const named = await this.orgsParticipant.membershipUserIds(tx, projectId, memberIds);
     const roleHolders = toKind === 'member' ? [] : await RoleStandingQuery.holderUserIds(tx, projectId, toKind);
-    return [...named.map((m) => m.userId), ...roleHolders];
+    return [...named, ...roleHolders];
   }
 
   private async provisionalHead(tx: Prisma.TransactionClient, projectId: string, decisionId: string) {
