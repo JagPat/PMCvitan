@@ -344,8 +344,10 @@ describe('Codex 4353751499: an act made beside an unreadable key whose copy asid
     await queueOne('k-3');
     signInAgain();
     expect(copiesOf(key).map((c) => JSON.parse(c!))).toEqual([[approve('k-3')]]);
-    // the approval stays in its copy aside, not held as well; only the visit act, from its lane, loads
-    expect(s().outbox.map((o) => o.t)).toEqual(['siteVisitEnd']);
+    // the approval stays in its copy aside, and is not held stranded as well. It loads once, from the made record its
+    // write kept while it waited for the lock (#1099 r2, Codex 4358855955): a copy aside alone is never loaded, so it is
+    // not the act's actionable record (#1101, Codex 4359759846). The visit act loads from its lane
+    expect(s().outbox.map((o) => o.t).sort()).toEqual(['approve', 'siteVisitEnd']);
   });
 });
 

@@ -2827,11 +2827,15 @@ export const useStore = create<Store>()(
       const written = writeAhead(inRow.includes(op) ? [] : [op]);
       // on this phone once its own key's write holds it, or a photo's row does, whatever the other key's write does
       const stored = (kept: boolean) => kept || !aheadUnsaved.has(queueActIdent(op));
+      // the scope, person and key the act was made in: a write that returns after any of them moved starts no flush
+      // and says nothing there; the act is in its own key, sent from its own scope's next flush (#1099 r2, Codex 4358855946)
+      const madeIn = { scope: currentScope(), token: get().sessionToken, key: outboxKey() };
+      const stillThere = (): boolean => scopeStillCurrent(madeIn.scope) && get().sessionToken === madeIn.token && outboxKey() === madeIn.key;
       if (get().online) {
         // sent only once its write holds it; otherwise it waits in memory, said not saved, for a later write
-        void written.then((kept) => { if (stored(kept)) void get().flushOutbox({ okMsg }); else get().flash(QW.notSavedYet[get().lang]); });
+        void written.then((kept) => { if (!stillThere()) return; if (stored(kept)) void get().flushOutbox({ okMsg }); else get().flash(QW.notSavedYet[get().lang]); });
       } else {
-        void written.then((kept) => get().flash(stored(kept) ? (offlineMsg ?? label + ' — saved offline, will sync when you reconnect.') : QW.notSavedYet[get().lang]));
+        void written.then((kept) => { if (stillThere()) get().flash(stored(kept) ? (offlineMsg ?? label + ' — saved offline, will sync when you reconnect.') : QW.notSavedYet[get().lang]); });
       }
       return true;
     };
@@ -6661,7 +6665,9 @@ export const useStore = create<Store>()(
         // snapshot below, which reconciles it to read-only).
         reconcileSubmission(s);
       });
-      persistOutbox();
+      // the flush goes on only once its key no longer holds what it sent (#1099 r2, review-body P1): its word and its
+      // reconcile come after. Until then each sent act's settled mark keeps a reload from sending it again (step B1a)
+      await persistOutbox();
       // finding 1 — a write-ahead command passes its own success toast (`okMsg`); the reconcile
       // announces it on `applied`. In that case suppress the batch "N synced" line below (the okMsg
       // already reported success), but still surface the error parts (dropped / still-pending).
@@ -6841,6 +6847,10 @@ export const useStore = create<Store>()(
           // #482 — a photo queued by an earlier release carries no key, so a replay whose reply was lost would
           // store it twice. It gets one key now, persisted below, so every later replay is the same photo.
           const photosNorm = keyQueuedPhotoUploads(commercialNorm.ops, outboxKey());
+          // a made record a write still waiting for its lock keeps holds a photo under the key it got here, while the
+          // stored queue still holds it with none (#1099 r2): once keyed, the same act is taken once
+          const keyedOnce = new Set<string>();
+          photosNorm.ops = photosNorm.ops.filter((o) => { const i = queueActIdent(o); if (keyedOnce.has(i)) return false; keyedOnce.add(i); return true; });
           const changed = materialsNorm.changed || labourNorm.changed || commercialNorm.changed || photosNorm.changed;
           // persist the migrated queue back to the SAME scoped key so the one-time normalization is durable;
           // a write that fails (storage full) keeps the queue in memory, and the next load derives the same keys

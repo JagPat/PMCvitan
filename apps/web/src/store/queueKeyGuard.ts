@@ -519,7 +519,12 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       let there = new Set<string>();
       try { if (storage) there = identsIn(storage.getItem(key)); } catch { /* unreadable: none */ }
       asks += 1;
-      waiting.set(asks, { key, idents: new Set(acts.map(queueActIdent).filter((i) => !there.has(i))) });
+      const fresh = acts.filter((o) => !there.has(queueActIdent(o)));
+      waiting.set(asks, { key, idents: new Set(fresh.map(queueActIdent)) });
+      // step B1a: while it waits, its acts the key does not hold are kept in a made record, which needs no lock, so a
+      // sign-out, a project switch or a closed page during the wait loses none; the landed write tidies it (#1099 r2,
+      // Codex 4358855955)
+      if (storage && fresh.length > 0) keepMade(storage, key, fresh);
       return asks;
     },
     /** the write asked as `ask` has run (or could not): its acts are counted where it left them */
