@@ -90,7 +90,10 @@ import {
   beginCreateSend, createHoldScope, currentCreateHoldView, releaseCreate, reserveCreateRetry, reserveNewCreate, serverKeepsCreateReceipts,
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
 } from './projectCreateHold';
+import { createQueueKeyGuard, type QueueWrite } from '@/store/queueKeyGuard';
+import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isMediaNotFound, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
+import type { QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { clearVisitPhotoStart, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { parseLocation } from '@/lib/screens';
@@ -421,6 +424,8 @@ export interface AppState {
   online: boolean;
   syncQueue: string[];
   outbox: OutboxOp[];
+  /** WEB-02 step A: this scope's queue keys this release cannot read */
+  queueUnreadable: UnreadableKey[];
   /** SV2: the visits whose acts the last flush held behind a photo this phone may still keep but could not read, for the
    *  project and sign-in it ran in; null when it held none. The Site Visits screen says so, with "Send anyway". */
   siteVisitsHeld: { project: string; generation: number; visits: string[] } | null;
@@ -1446,6 +1451,7 @@ export function getInitialState(): AppState {
     online: true,
     syncQueue: [],
     outbox: [],
+    queueUnreadable: [],
     siteVisitsHeld: null,
     siteVisitsSentAnyway: [],
     photoUploadsInFlight: [],
@@ -2404,20 +2410,31 @@ export const useStore = create<Store>()(
     // into another. `hydrateOutbox` swaps the in-memory queue whenever that scope
     // changes (useApiSync re-runs it on every token / project change).
     const LEGACY_OUTBOX_KEY = 'vitan.outbox';
+    /** #1085 r2: per queue key, the user scopes its acts may name, recorded as each key's name is derived (Codex
+     *  4346169609: an evidence act naming another user's scope read that user's row). A key named once keeps its
+     *  scopes for the tab's life, so the flush's write of a scope it moved off still reads that key as its own */
+    const queueKeyScopes = new Map<string, QueueScopes>();
     const outboxKey = (): string => {
       // passwordless dev auth keeps no token: its session user scopes the queue, so two identities never share
       // queued acts (Codex 4278754328; the create hold's rule, createHoldScope)
       const user = get().sessionUserId;
       let sub = user ? `dev:${user}` : 'anon';
+      // evidence rows are scoped by the token alone (`evidenceScope`), photo rows as the key is (`visitPhotoScope`)
+      let evidence = 'anon';
       const token = get().sessionToken;
       if (token) {
         try {
           sub = (JSON.parse(atob(token.split('.')[1])) as { sub?: string }).sub ?? 'anon';
+          evidence = sub;
         } catch {
           /* malformed token — treat as the anonymous scope */
         }
       }
-      return `vitan.outbox.${sub}.${get().activeProjectId}`;
+      const key = `vitan.outbox.${sub}.${get().activeProjectId}`;
+      const scopes = { evidence, visitPhoto: sub };
+      queueKeyScopes.set(key, scopes);
+      queueKeyScopes.set(key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.'), scopes);
+      return key;
     };
     /** Site Visits (#792): site visit acts are kept under a key of their own, beside the outbox's, so a bundle from
      *  before them (a rollback, an old tab) never reads one: its replay has no case for them and would drop them as
@@ -2448,15 +2465,40 @@ export const useStore = create<Store>()(
      *  release before it, which replays every `siteVisit…` act it finds and has no case for a photo, never meets one,
      *  and this lane is stored exactly as before (Codex 4320122193, 4320404449, 4320404441). */
     const isStoredVisitOp = (o: OutboxOp): boolean => isSiteVisitOp(o) && o.t !== 'siteVisitAddFile';
-    const persistOutbox = (): void => {
+    /** WEB-02 step A: both queue keys are read and written only through `queueKeys`, which never writes a key this
+     *  release cannot read; each read of this scope's keys lists such a key in the strip */
+    const strip = queueStrip({ get, set, scope: () => [outboxKey(), siteVisitKeyOf(outboxKey())] });
+    const queueKeys = createQueueKeyGuard(strip.noteRead, (key) => queueKeyScopes.get(key));
+    /** Every scope change (an auth result, a persona switch, a sign-out, and each load of a scope's queue) ends the old
+     *  scope's queue-key memory and its strip list here, first, before any storage access: a storage that throws can
+     *  then never leave the old scope's list on the next one (Codex 4351952392, the third such leak's root cause) */
+    const resetQueueScope = (): void => {
+      queueKeys.forget();
+      set({ queueUnreadable: [] });
+    };
+    /** each stored key's write from memory: the general queue, then the visit lane */
+    const queueWrites = (): QueueWrite[] => [
+      { key: outboxKey(), mine: get().outbox.filter((o) => !isSiteVisitOp(o)), takes: (o) => !isSiteVisitOp(o) },
+      { key: siteVisitKeyOf(outboxKey()), mine: get().outbox.filter(isStoredVisitOp), takes: isStoredVisitOp },
+    ];
+    /** true only when both keys were written */
+    const persistOutbox = (): boolean => {
       try {
         const storage = globalThis.localStorage;
-        storage?.setItem(outboxKey(), JSON.stringify(get().outbox.filter((o) => !isSiteVisitOp(o))));
-        storage?.setItem(siteVisitKeyOf(outboxKey()), JSON.stringify(get().outbox.filter(isStoredVisitOp)));
+        if (!storage) return false;
+        let all = true;
+        for (const w of queueWrites()) all = queueKeys.write(storage, w.key, w.mine, w.takes) && all;
+        return all;
       } catch {
         /* storage unavailable — the in-session outbox still works */
+        return false;
       }
     };
+    /** another tab's write of this scope's queue key is read and listed, never answered (`null`: storage cleared) */
+    globalThis.addEventListener?.('storage', (e: StorageEvent) => {
+      const storage = globalThis.localStorage;
+      if (storage && e.storageArea === storage && get().sessionUserId) for (const k of [outboxKey(), siteVisitKeyOf(outboxKey())]) if (e.key === null || e.key === k) queueKeys.heard(storage, k);
+    });
 
     // Evidence bytes share the outbox's user scope (WEB-02): the IndexedDB entries are
     // keyed (sub, projectId, clientKey), so a user/project switch neither loses nor leaks.
@@ -2938,6 +2980,7 @@ export const useStore = create<Store>()(
       res: { role: Role; token: string; name?: string; projectId?: string },
       opts?: { msg?: string; targetScreen?: ScreenKey; targetItem?: string; quiet?: boolean },
     ): void => {
+      resetQueueScope();
       set((s) => {
         const changedProject = !!res.projectId && res.projectId !== s.activeProjectId;
         const wasPending = s.pendingProjectId !== null;
@@ -3068,7 +3111,7 @@ export const useStore = create<Store>()(
     // ---- shell ----
     setRole: (role) => {
       const first = screensFor(role)[0]?.key ?? 'inbox';
-      const applySwitch = () => { clearSession(); set((s) => {
+      const applySwitch = () => { resetQueueScope(); clearSession(); set((s) => {
         s.role = role;
         s.screen = first;
         s.notifOpen = false;
@@ -3159,6 +3202,7 @@ export const useStore = create<Store>()(
     /** The sign-out teardown itself — separated so the push unlink can complete first on a
      *  push-capable browser (round-1 Codex F1) while every other environment stays synchronous. */
     completeSignOut: () => {
+      resetQueueScope(); // WEB-02 step A: this tab's memory of its keys, and their strip list, leave with the session
       clearSession();
       restoreSwitchTarget = null;
       set((s) => {
@@ -6244,10 +6288,9 @@ export const useStore = create<Store>()(
       // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
       // take its own acts out of `ops` as it goes)
       const taken = ops.length;
-      const takenVisits = ops.filter(isStoredVisitOp).length;
-      // and of the generic stored lane: a visit photo's act is in neither stored lane, so it is counted in neither
-      // (Codex 4321998480)
-      const takenGeneric = ops.filter((o) => !isSiteVisitOp(o)).length;
+      // the acts this flush took, as taken: a scope move writes each stored lane without them, by identity (a visit
+      // photo's act is in neither stored lane, Codex 4321998480)
+      const flushed = ops.slice();
       // the visits whose photo's row this flush could not read or update while sending it: held from then on, like the
       // visits a failed read holds, and never a stall of the rest of the queue (coordinator, sv2-unit-h)
       const stuck = new Set<string>();
@@ -6533,22 +6576,14 @@ export const useStore = create<Store>()(
         // it) — don't touch it. Persist the un-replayed remainder (plus anything the
         // old scope queued during the flush) under the ORIGINAL key so it replays
         // there on that scope's next reconnect, and skip the reconcile snapshot.
-        try {
-          const storage = globalThis.localStorage;
-          if (storage) {
-            // each stored list holds its kind of the flushed ops as its prefix — drop the replayed part
-            const keep = (key: string, rest: OutboxOp[], took: number, after: (l: OutboxOp[]) => OutboxOp[]) => {
-              const stored: unknown = JSON.parse(storage.getItem(key) ?? '[]');
-              const leftover = Array.isArray(stored) && stored.length >= took ? [...rest, ...after(stored.slice(took) as OutboxOp[])] : rest;
-              storage.setItem(key, JSON.stringify(leftover));
-            };
-            keep(flushKey, remaining.filter((o) => !isSiteVisitOp(o)), takenGeneric, (l) => l);
-            // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
-            keep(siteVisitKeyOf(flushKey), remaining.filter(isStoredVisitOp), takenVisits, (l) => remapVisits(l).filter(isStoredVisitOp));
-          }
-        } catch {
-          /* storage unavailable — the persisted queue simply keeps its pre-flush state */
-        }
+        // this flush's acts leave each stored list by identity, its unsent ones go first, and every other act stays; a key
+        // this release cannot read is never written over (step A). Unsent acts that can be neither written nor copied
+        // aside (no storage to be had included) are held stranded for the old scope, never dropped (Codex 4345664670)
+        let storage: Storage | null = null;
+        try { storage = globalThis.localStorage ?? null; } catch { storage = null; }
+        queueKeys.keepUnsent(storage, flushKey, remaining.filter((o) => !isSiteVisitOp(o)), flushed.filter((o) => !isSiteVisitOp(o)), (l) => l, (o) => !isSiteVisitOp(o));
+        // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
+        queueKeys.keepUnsent(storage, siteVisitKeyOf(flushKey), remaining.filter(isStoredVisitOp), flushed.filter(isStoredVisitOp), (l) => remapVisits(l).filter(isStoredVisitOp), isStoredVisitOp);
         return { ran: true, scopeMoved: true, succeededKeys, droppedKeys, pendingKeys };
       }
 
@@ -6700,6 +6735,7 @@ export const useStore = create<Store>()(
       }
     },
     hydrateOutbox: () => {
+      resetQueueScope(); // before any storage access: a storage that throws below leaves no other scope's list
       // this scope's evidence rows are read again below: until then an own evidence photo's Delete waits (#482)
       set((s) => { s.pendingEvidenceKeys = null; });
       try {
@@ -6708,14 +6744,32 @@ export const useStore = create<Store>()(
           // one-time migration: adopt the old unscoped queue into the current scope
           const legacy = storage.getItem(LEGACY_OUTBOX_KEY);
           if (legacy) {
-            storage.removeItem(LEGACY_OUTBOX_KEY);
-            if (!storage.getItem(outboxKey())) storage.setItem(outboxKey(), legacy);
+            // #1085 r2 audit: removed only once its bytes are kept, so a write that fails never loses them. When the
+            // scoped key already holds other acts, the old bytes are copied aside beside it, never left for another
+            // user's or project's load to adopt and replay. Only a scope with no other queue key on this phone adopts
+            // them: once another scope keeps one, bytes a failed write left behind may be that scope's, so they are
+            // copied aside, never sent here
+            try {
+              const scoped = outboxKey();
+              const lane = scoped.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
+              let another = false;
+              for (let i = 0; i < storage.length; i += 1) {
+                const k = storage.key(i);
+                if (k !== null && k !== scoped && k !== lane && (k.startsWith('vitan.outbox.') || k.startsWith('vitan.siteVisitQueue.'))) another = true;
+              }
+              // only an absent key: one holding any bytes, even '' (unreadable), is never written over (Codex 4351662034)
+              if (storage.getItem(scoped) === null && !another) storage.setItem(scoped, legacy);
+              // a copy name holding other bytes (an earlier legacy queue copied aside) is never written over: the next free name
+              let aside = `vitan.unreadable.${LEGACY_OUTBOX_KEY}.${scoped}`;
+              for (let n = 1; storage.getItem(aside) !== null && storage.getItem(aside) !== legacy && n <= 100; n += 1) aside = `vitan.unreadable.${LEGACY_OUTBOX_KEY}.${scoped}.${n}`;
+              if (storage.getItem(scoped) !== legacy && storage.getItem(aside) === null) storage.setItem(aside, legacy);
+              if (storage.getItem(scoped) === legacy || storage.getItem(aside) === legacy) storage.removeItem(LEGACY_OUTBOX_KEY);
+            } catch { /* kept under the old key: this scope's load retries it */ }
           }
           // REPLACE the in-memory queue with this scope's persisted one (WEB-02) —
           // called again on every sign-in / project switch, so ops queued under a
           // different user or project never leak into the current context.
-          const raw = storage.getItem(outboxKey());
-          const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+          const parsed: unknown = queueKeys.load(storage, outboxKey()); // step A: a key this release cannot read loads none
           // Phase 3 Task 7 (correction 4) — a materials op persisted by PR #207 carries only
           // `idempotencyKey` (no `coalesceKey`); PR #208 keys coalescing on `coalesceKey`, so without this
           // a legacy queued op would not coalesce and could execute a SECOND time (double reserve). Derive
@@ -6736,17 +6790,11 @@ export const useStore = create<Store>()(
           const changed = materialsNorm.changed || labourNorm.changed || commercialNorm.changed || photosNorm.changed;
           // persist the migrated queue back to the SAME scoped key so the one-time normalization is durable;
           // a write that fails (storage full) keeps the queue in memory, and the next load derives the same keys
-          if (changed) {
-            try {
-              storage.setItem(outboxKey(), JSON.stringify(photosNorm.ops));
-            } catch {
-              /* storage full — the queue still replays from memory this session */
-            }
-          }
+          if (changed) queueKeys.write(storage, outboxKey(), photosNorm.ops);
           // the site visit acts, from their own key (malformed → none); a visit photo's act comes from its row (SV2)
           let visitOps: OutboxOp[] = [];
           try {
-            const rawVisits: unknown = JSON.parse(storage.getItem(siteVisitKeyOf(outboxKey())) ?? '[]');
+            const rawVisits: unknown = queueKeys.load(storage, siteVisitKeyOf(outboxKey()));
             visitOps = Array.isArray(rawVisits) ? (rawVisits as OutboxOp[]).filter((o) => o && isStoredVisitOp(o)) : [];
           } catch {
             visitOps = [];

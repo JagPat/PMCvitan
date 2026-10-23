@@ -2275,5 +2275,8 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
         return gw.snapshot().catch(() => null);
       });
     }
+    default:
+      // WEB-02 step A (Codex 4344812918): a kind this release has no case for is never counted as sent; it stays queued
+      return Promise.reject(new Error(`no replay for ${String((op as { t?: unknown }).t)}`));
   }
 }

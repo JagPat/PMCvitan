@@ -211,3 +211,10 @@ test('Codex 4214321794 — role-activation evidence requires only the affected p
   // without the file classification every product check is still required
   assert.equal(normalizeCi(runs, { repository: 'o/r', pullRequest: 999, headSha: head, baseSha: 'b'.repeat(40), readAtMs: 1 }).state, 'pending');
 });
+
+test('#1088 r1 — the two API files the web’s contract drift test reads run the web job', () => {
+  for (const path of ['apps/api/src/contracts.ts', 'apps/api/src/common/civil-date.ts']) {
+    assert.ok(affectedProducts([path]).products.includes('web'), `${path} does not run the web job`);
+    assert.ok(affectedProducts([path]).products.includes('api'), `${path} does not run the api job`);
+  }
+});
