@@ -61,14 +61,15 @@ describe('WEB-02 step A: what a stored queue key gives this release, and what it
   it('4344270652: a lane photo act memory leaves out stays stored at this tab’s writes', () => {
     signedIn({ lane: [photo] });
     act(() => { s().queueSiteVisitAct(end('00000000-0000-4000-8000-000000000002', 'k-mine'), 'saved offline'); });
-    expect(keysOf(lane)).toEqual(['k-mine', 'k-photo']);
+    // B1 U1: the stored order is kept, and a new act goes last (#1084, Codex 4344812888)
+    expect(keysOf(lane)).toEqual(['k-photo', 'k-mine']);
   });
 
   it('4344270652: a site visit act stored in the general key, which memory leaves out, stays stored there', () => {
     signedIn({ general: [end('00000000-0000-4000-8000-000000000001', 'k-in-general'), approve('k-a')] });
     useStore.setState((st) => { st.outbox = [...st.outbox, approve('k-b')]; });
     act(() => { s().queueSiteVisitAct(end('00000000-0000-4000-8000-000000000002', 'k-v'), 'saved offline'); });
-    expect(keysOf(key)).toEqual(['k-a', 'k-b', 'k-in-general']);
+    expect(keysOf(key)).toEqual(['k-in-general', 'k-a', 'k-b']);
   });
 
   it('4344270663, 4344812910: a list holding an entry that is not an act gives nothing to replay and is never written over', async () => {
