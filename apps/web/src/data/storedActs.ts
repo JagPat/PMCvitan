@@ -281,11 +281,14 @@ const RELEASED_CONTRACTS_OF: Partial<Record<OutboxOp['t'], ServerSchema>> = {
   }),
 };
 /** the fields each such release stored, so a body today's contract refuses for another reason is not read as released:
- *  a checklist's rows before #114 name no `id` (rows some of which name one are no release's), and a photo before #54
- *  holds only the fields its release sent, and the `clientKey` a load since #482 gives it (`keyQueuedPhotoUploads`) */
+ *  a checklist's rows before #114 hold only the four fields that release's rows had, so a row naming an `id`, or a field
+ *  that came after it such as `evidence`, is no release's (Codex 4356145032: the legacy contract strips such a field),
+ *  and a photo before #54 holds only the fields its release sent, and the `clientKey` a load since #482 gives it
+ *  (`keyQueuedPhotoUploads`) */
+const ROW_BEFORE_114 = new Set(['name', 'state', 'photos', 'note']);
 const PHOTO_BEFORE_54 = new Set(['kind', 'mime', 'data', 'decisionId', 'geoLat', 'geoLng', 'takenAt', 'clientKey']);
 const RELEASED_SHAPE_OF: Partial<Record<OutboxOp['t'], (v: Fields) => boolean>> = {
-  submitInspection: (v) => Array.isArray(v.items) && v.items.every((i) => isFields(i) && !('id' in i)),
+  submitInspection: (v) => Array.isArray(v.items) && v.items.every((i) => isFields(i) && Object.keys(i).every((f) => ROW_BEFORE_114.has(f))),
   uploadMedia: (v) => isFields(v.input) && Object.keys(v.input).every((f) => PHOTO_BEFORE_54.has(f)) && opt(clientKey)(v.input.clientKey),
 };
 
