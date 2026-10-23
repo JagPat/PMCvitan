@@ -147,12 +147,15 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     const recorded = new Set(madeActs(storage, key, scopesOf(key)).map(queueActIdent));
     recordMade(storage, key, acts.filter((o) => !recorded.has(queueActIdent(o))));
   };
-  /** step B1a: the key holds `there` now: the made records whose acts it holds or that are settled go, and so do the
-   *  settled marks of acts it no longer holds */
+  /** step B1a: the key holds `there` now: the made records whose acts it holds or that are settled go first, then the
+   *  settled marks of acts neither the key nor a record left there holds. A mark goes only once nothing it guards is
+   *  left: a record whose removal failed keeps its acts' marks, and a record this release cannot read keeps them all
+   *  (#1101 r2, Codex 4360012661) */
   const tidy = (storage: Store, key: string, there: Set<string>): void => {
     const settled = settledIdents(storage, key);
-    releaseMade(storage, key, (i) => there.has(i) || settled.has(i), queueActIdent, scopesOf(key));
-    releaseSettled(storage, key, there);
+    const left = releaseMade(storage, key, (i) => there.has(i) || settled.has(i), queueActIdent, scopesOf(key));
+    if (left === null) return;
+    releaseSettled(storage, key, new Set([...there, ...left]));
   };
 
   /** A write of `key` that did not land: every act memory holds (`mine`) that the key, unchanged, does not hold now is
@@ -307,11 +310,14 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
         // holds it (settled)
         const kept = new Set(mine.map(queueActIdent));
         unstrand(key, (i) => kept.has(i) || handed.has(key));
-        // the key now holds what memory holds, so this tab's copies of it are not needed
-        releaseAside(storage, key, new Set());
-        // a write of Set aside's all-or-nothing tidies only once every key's write has landed (`writeAll`): until then
-        // a key may be put back, and its made records with it are still its acts' only record (#1101 r1, Codex 4359759846)
-        if (tidyNow) tidy(storage, key, identsIn(text));
+        // the key now holds what memory holds, so this tab's copies of it are not needed, nor its records and marks.
+        // A write of Set aside's all-or-nothing lets them go only once every key's write has landed (`writeAll`): until
+        // then a key may be put back, and its copies and made records with it are still its acts' only record (#1101
+        // r1, Codex 4359759846; r2 audit: the copies aside too)
+        if (tidyNow) {
+          releaseAside(storage, key, new Set());
+          tidy(storage, key, identsIn(text));
+        }
         return true;
       } catch {
         refuse(storage, key, mine);
@@ -355,8 +361,11 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
         }
         return back ? 'none' : 'some';
       }
-      // every write landed: the records and marks they settle go now
-      for (const { w } of landed) { try { tidy(storage, w.key, identsIn(storage.getItem(w.key))); } catch { /* kept: a record is never a loss */ } }
+      // every write landed: the copies, records and marks they settle go now
+      for (const { w } of landed) {
+        releaseAside(storage, w.key, new Set());
+        try { tidy(storage, w.key, identsIn(storage.getItem(w.key))); } catch { /* kept: a record is never a loss */ }
+      }
       return 'all';
     },
     /** how many acts memory holds that their key does not hold now, over every key */

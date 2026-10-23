@@ -245,3 +245,115 @@ describe('#1101 round 1 (Codex review 5628535504)', () => {
     expect(g.strandedCount()).toBe(0);
   });
 });
+
+describe('#1101 round 2 (Codex 4360012661): a mark goes only once nothing it guards is left', () => {
+  const failing = (method: 'setItem' | 'removeItem' | 'getItem', match: (k: string) => boolean, how: 'throw' | 'ignore' = 'throw') => {
+    const real = Storage.prototype[method] as (...a: unknown[]) => unknown;
+    return vi.spyOn(Storage.prototype, method).mockImplementation(function (this: Storage, ...a: unknown[]) {
+      if (match(a[0] as string)) {
+        if (how === 'throw') throw new DOMException('refused', 'QuotaExceededError');
+        return undefined; // a removal that answers but leaves the item
+      }
+      return real.apply(this, a);
+    } as never);
+  };
+  /** k-1 kept only in a made record (its key unreadable, no copy aside), then sent and marked settled, then the key is
+   *  written by another tab without it: the next load's tidy finds the record done */
+  const madeThenSettled = () => {
+    localStorage.setItem(key, '{damaged');
+    const spy = failing('setItem', (k) => k.startsWith('vitan.unreadable.'));
+    createQueueKeyGuard().write(localStorage, key, [approve('k-1')]);
+    spy.mockRestore();
+    expect(createQueueKeyGuard().settled(localStorage, key, approve('k-1'))).toBe(true);
+    localStorage.setItem(key, '[]');
+  };
+
+  for (const how of ['throw', 'ignore'] as const) {
+    it(`forced probe (4360012661, removal ${how === 'throw' ? 'throws' : 'leaves the record'}): the settled mark stays while the made record does, so a reload does not send the act again`, () => {
+      madeThenSettled();
+      const spy = failing('removeItem', (k) => k.startsWith('vitan.made.'), how);
+      expect(createQueueKeyGuard().load(localStorage, key)).toEqual([]);
+      spy.mockRestore();
+      expect(named(`vitan.made.${key}.`)).toHaveLength(1);
+      // the reload: the record is still there, and so is the act's mark
+      expect(createQueueKeyGuard().load(localStorage, key)).toEqual([]);
+      // that load's tidy removed the record, and then the mark
+      expect(named(`vitan.made.${key}.`)).toEqual([]);
+      expect(named(`vitan.settled.${key}.`)).toEqual([]);
+    });
+  }
+
+  it('audit (a made record that cannot be read when tidied): every mark of the key stays', () => {
+    madeThenSettled();
+    const spy = failing('getItem', (k) => k.startsWith('vitan.made.'));
+    expect(createQueueKeyGuard().load(localStorage, key)).toEqual([]);
+    spy.mockRestore();
+    expect(createQueueKeyGuard().load(localStorage, key)).toEqual([]);
+  });
+
+  it('audit (a made record a newer release wrote): every mark of the key stays, and the record with it', () => {
+    localStorage.setItem(key, '[]');
+    createQueueKeyGuard().settled(localStorage, key, approve('k-1'));
+    localStorage.setItem(`vitan.made.${key}.1.x`, '{"v":99}');
+    createQueueKeyGuard().load(localStorage, key);
+    expect(named(`vitan.settled.${key}.`)).toHaveLength(1);
+    expect(localStorage.getItem(`vitan.made.${key}.1.x`)).toBe('{"v":99}');
+  });
+
+  it('audit (a mark whose removal fails): it stays, and the act it names, held by nothing, loads nowhere', () => {
+    localStorage.setItem(key, JSON.stringify([approve('k-1')]));
+    const g = createQueueKeyGuard();
+    g.settled(localStorage, key, approve('k-1'));
+    const spy = failing('removeItem', (k) => k.startsWith('vitan.settled.'));
+    expect(g.write(localStorage, key, [])).toBe(true);
+    spy.mockRestore();
+    expect(named(`vitan.settled.${key}.`)).toHaveLength(1);
+    expect(createQueueKeyGuard().load(localStorage, key)).toEqual([]);
+  });
+
+  it('forced probe (audit, copies aside): a Set aside whose second write fails keeps the copy aside the first key’s acts were in', () => {
+    const lane = `vitan.siteVisitQueue.dev:${USER}.${P}`;
+    localStorage.setItem(key, '{damaged');
+    localStorage.setItem(lane, '{damaged too');
+    const g = createQueueKeyGuard();
+    // a refused write of memory's act: copied aside beside the key
+    expect(g.write(localStorage, key, [approve('k-1')])).toBe(false);
+    const heldIn = () => named(`vitan.unreadable.${key}.`).filter((n) => localStorage.getItem(n) === JSON.stringify([approve('k-1')]));
+    expect(heldIn()).toHaveLength(1);
+    expect(g.setAside(localStorage, [key, lane])).toBe(true);
+    // the lane's write fails, and so would any new copy or record: the put-back key holds k-1 no more
+    failing('setItem', (k) => k === lane || k.startsWith('vitan.unreadable.') || k.startsWith('vitan.made.'));
+    expect(g.writeAll(localStorage, [{ key, mine: [approve('k-1')], takes: () => true }, { key: lane, mine: [], takes: () => true }])).toBe('none');
+    vi.restoreAllMocks();
+    expect(localStorage.getItem(key)).toBe('{damaged');
+    expect(heldIn()).toHaveLength(1);
+  });
+
+  it('guard: a Set aside whose writes all land removes the copies aside of acts the key now holds', () => {
+    localStorage.setItem(key, '{damaged');
+    const g = createQueueKeyGuard();
+    g.write(localStorage, key, [approve('k-1')]);
+    expect(g.setAside(localStorage, [key])).toBe(true);
+    expect(g.writeAll(localStorage, [{ key, mine: [approve('k-1')], takes: () => true }])).toBe('all');
+    expect(named(`vitan.unreadable.${key}.`).filter((n) => localStorage.getItem(n) === JSON.stringify([approve('k-1')]))).toEqual([]);
+  });
+
+  it('audit (a made record that storage refuses): the act stays held, counted, and listed not kept', () => {
+    localStorage.setItem(key, '{damaged');
+    failing('setItem', (k) => k.startsWith('vitan.unreadable.') || k.startsWith('vitan.made.'));
+    const g = createQueueKeyGuard();
+    expect(g.write(localStorage, key, [approve('k-1')])).toBe(false);
+    vi.restoreAllMocks();
+    expect(named(`vitan.made.${key}.`)).toEqual([]);
+    expect(g.notKept(key)).toEqual([queueActIdent(approve('k-1'))]);
+    expect(g.strandedCount() + g.notKeptCount()).toBeGreaterThan(0);
+  });
+
+  it('audit (a mark that storage refuses): settled says so, and the act stays in its key under its idempotency key', () => {
+    localStorage.setItem(key, JSON.stringify([approve('k-1')]));
+    const spy = failing('setItem', (k) => k.startsWith('vitan.settled.'));
+    expect(createQueueKeyGuard().settled(localStorage, key, approve('k-1'))).toBe(false);
+    spy.mockRestore();
+    expect(createQueueKeyGuard().load(localStorage, key)).toEqual([approve('k-1')]);
+  });
+});

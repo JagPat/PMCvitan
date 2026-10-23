@@ -48,8 +48,15 @@ function namesUnder(storage: Store, prefix: string): string[] {
   return out;
 }
 
-function remove(storage: Store, name: string): void {
-  try { storage.removeItem?.(name); } catch { /* left: a record or mark is never a loss */ }
+/** true only once `name` reads back as gone: a removal that throws, or leaves the item, or cannot be read back, is not
+ *  one (#1101 r2, Codex 4360012661) */
+function remove(storage: Store, name: string): boolean {
+  try {
+    storage.removeItem?.(name);
+    return storage.getItem(name) === null;
+  } catch {
+    return false; // left: a record or mark is never a loss
+  }
 }
 
 /** a made record's order, from its name (`<order>.<tag>` after the key's prefix); 0 when it has none */
@@ -91,14 +98,23 @@ export function madeActs(storage: Store, key: string, scopes: QueueScopes | unde
   return out;
 }
 
-/** Remove `key`'s made records whose every act is `done` (the key holds it, or it is settled). */
-export function releaseMade(storage: Store, key: string, done: (ident: string) => boolean, ident: (o: OutboxOp) => string, scopes: QueueScopes | undefined): void {
+/** Remove `key`'s made records whose every act is `done` (the key holds it, or it is settled). Returns the identities of
+ *  the acts the records still there hold (not done, or not removed), whose settled marks must stay; null when a record
+ *  is there whose acts this release cannot read, so every mark of the key stays (#1101 r2, Codex 4360012661). */
+export function releaseMade(storage: Store, key: string, done: (ident: string) => boolean, ident: (o: OutboxOp) => string, scopes: QueueScopes | undefined): Set<string> | null {
+  const left = new Set<string>();
+  let unread = false;
   for (const name of namesUnder(storage, `${MADE}${key}.`)) {
     let raw: string | null = null;
-    try { raw = storage.getItem(name); } catch { continue; }
+    try { raw = storage.getItem(name); } catch { unread = true; continue; }
+    if (raw === null) continue; // gone since it was listed
     const read = readStoredQueue(raw, scopes);
-    if ('acts' in read && read.acts.every((o) => done(ident(o)))) remove(storage, name);
+    if (!('acts' in read)) { unread = true; continue; }
+    const idents = read.acts.map(ident);
+    if (idents.every(done) && remove(storage, name)) continue;
+    for (const i of idents) left.add(i);
   }
+  return unread ? null : left;
 }
 
 /** Mark an act of `key` settled (sent, or refused for good); true when the mark reads back. */
@@ -121,11 +137,11 @@ export function settledIdents(storage: Store, key: string): Set<string> {
   return out;
 }
 
-/** Remove `key`'s settled marks for acts the key no longer holds (`there`). */
-export function releaseSettled(storage: Store, key: string, there: Set<string>): void {
+/** Remove `key`'s settled marks for acts nothing holds any more (`held`: the key's acts, and its made records' acts). */
+export function releaseSettled(storage: Store, key: string, held: Set<string>): void {
   for (const name of namesUnder(storage, `${SETTLED}${key}.`)) {
     let v: string | null = null;
     try { v = storage.getItem(name); } catch { continue; }
-    if (v === null || !there.has(v)) remove(storage, name);
+    if (v === null || !held.has(v)) remove(storage, name);
   }
 }
