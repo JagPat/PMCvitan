@@ -262,3 +262,38 @@ describe('Codex 4353751499: an act made beside an unreadable key whose copy asid
   });
 });
 
+describe('Codex 4356145036: a copy aside this tab made is removed once its acts settle, and kept until then', () => {
+  const sendable = (approveDecision: ReturnType<typeof vi.fn>) => ({ approveDecision, endSiteVisit: vi.fn(async () => null) });
+
+  it('forced probe, the finding’s case: once the act is sent, its copy beside the unreadable key is removed', async () => {
+    const approveDecision = vi.fn(async () => null);
+    onP1('{damaged', sendable(approveDecision));
+    queueOne('p2-1');
+    expect(copiesOf(key).map((c) => JSON.parse(c!))).toEqual([[approve('p2-1')]]);
+    useStore.setState({ online: true });
+    await act(async () => { await s().flushOutbox(); });
+    expect(approveDecision).toHaveBeenCalledTimes(1);
+    expect(copiesOf(key)).toEqual([]);
+    expect(localStorage.getItem(key)).toBe('{damaged');
+  });
+
+  it('a copy whose act is not sent yet stays', async () => {
+    const approveDecision = vi.fn(async () => { throw Object.assign(new Error('down'), { status: 503 }); });
+    onP1('{damaged', sendable(approveDecision));
+    queueOne('p2-2');
+    useStore.setState({ online: true });
+    await act(async () => { await s().flushOutbox(); });
+    expect(s().outbox.map((o) => o.t)).toContain('approve');
+    expect(copiesOf(key).map((c) => JSON.parse(c!))).toEqual([[approve('p2-2')]]);
+  });
+
+  it('a copy outlives a sign-out before its act is sent: it is then this phone’s only copy', async () => {
+    onP1('{damaged');
+    queueOne('p2-3');
+    s().completeSignOut();
+    onP1(null, sendable(vi.fn(async () => null)));
+    useStore.setState({ online: true });
+    await act(async () => { await s().flushOutbox(); });
+    expect(copiesOf(key).map((c) => JSON.parse(c!))).toEqual([[approve('p2-3')]]);
+  });
+});

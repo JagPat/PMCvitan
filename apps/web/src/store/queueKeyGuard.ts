@@ -50,8 +50,9 @@ function contentTag(raw: string): string {
   return `${raw.length}-${(h >>> 0).toString(36)}`;
 }
 /** Copy `raw` aside and read it back: true only when a copy holding the same bytes is there. A copy of these bytes
- *  already there is that copy, made again by nothing; one that does not read back as written is removed */
-function copyAside(storage: Store, key: string, raw: string): boolean {
+ *  already there is that copy, made again by nothing; one that does not read back as written is removed. `made` hears
+ *  the name of a copy this call wrote */
+function copyAside(storage: Store, key: string, raw: string, made: (name: string) => void = () => {}): boolean {
   const base = `vitan.unreadable.${key}.${contentTag(raw)}`;
   let name: string | null = null;
   try {
@@ -63,7 +64,7 @@ function copyAside(storage: Store, key: string, raw: string): boolean {
     }
     if (name === null) return false; // no free name: a storage that answers every name is not one to copy into
     storage.setItem(name, raw);
-    if (storage.getItem(name) === raw) return true;
+    if (storage.getItem(name) === raw) { made(name); return true; }
   } catch { /* not copied */ }
   // best effort: a copy that cannot be removed holds bytes still held elsewhere, never a loss
   if (name !== null) try { storage.removeItem?.(name); } catch { /* left */ }
@@ -106,6 +107,24 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
   /** the keys whose stranded acts a load since the last `forget` handed back to memory: a write of such a key whose
    *  memory no longer holds one has settled it (sent, or refused and kept on its row) */
   const handed = new Set<string>();
+  /** per key, the copies a refused write of this tab made of acts memory held (Codex 4356145036). Memory sends them from
+   *  here, so a copy is removed once memory holds none of its acts (each sent or settled), or once its key is written;
+   *  until then it is this phone's copy of them. `forget` keeps the copies and only forgets these: what memory held is
+   *  gone, so the copy is again the only one */
+  const madeAside = new Map<string, { name: string; raw: string; idents: string[] }[]>();
+  /** the copies of `key` this tab made whose acts memory (`held`) no longer holds are removed, and their acts may be
+   *  copied again; a copy whose bytes changed, or that cannot be removed, stays */
+  const releaseAside = (storage: Store, key: string, held: Set<string>): void => {
+    const made = madeAside.get(key);
+    if (!made) return;
+    const left = made.filter((c) => {
+      if (c.idents.some((i) => held.has(i))) return true;
+      try { if (storage.getItem(c.name) === c.raw) storage.removeItem?.(c.name); } catch { /* left: kept bytes are never a loss */ }
+      for (const i of c.idents) asideDone.get(key)?.delete(i);
+      return false;
+    });
+    if (left.length > 0) madeAside.set(key, left); else madeAside.delete(key);
+  };
   const setOf = (m: Map<string, Set<string>>, key: string): Set<string> => {
     let s = m.get(key);
     if (!s) m.set(key, (s = new Set()));
@@ -127,12 +146,15 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     const fresh = mine.filter((o) => missing.has(queueActIdent(o)) && !done.has(queueActIdent(o)));
     // a copy that cannot be made leaves them in memory, listed not kept, and copied at the next write that cannot store
     // them; they are also held stranded, as memory holds them now, so one memory then settles (sent) is let go below
-    if (fresh.length > 0 && copyAside(storage, key, JSON.stringify(fresh))) for (const o of fresh) done.add(queueActIdent(o));
+    const raw = JSON.stringify(fresh);
+    const record = (name: string) => { const list = madeAside.get(key) ?? []; list.push({ name, raw, idents: fresh.map(queueActIdent) }); madeAside.set(key, list); };
+    if (fresh.length > 0 && copyAside(storage, key, raw, record)) for (const o of fresh) done.add(queueActIdent(o));
     else if (fresh.length > 0) { strand(key, fresh); handed.add(key); }
     // a stranded act the key's bytes or a copy aside now hold is on this phone; one memory no longer holds since
     // the load that handed it back is settled
     const held = new Set(mine.map(queueActIdent));
     unstrand(key, (i) => there.has(i) || done.has(i) || (handed.has(key) && !held.has(i)));
+    releaseAside(storage, key, held);
   };
 
   const guard = {
@@ -160,6 +182,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     },
     /** every key's memory goes (the scope moved, or the person signed out) */
     forget(): void {
+      madeAside.clear();
       unkept.clear();
       asideDone.clear();
       handed.clear();
@@ -227,6 +250,8 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
         // holds it (settled)
         const kept = new Set(mine.map(queueActIdent));
         unstrand(key, (i) => kept.has(i) || handed.has(key));
+        // the key now holds what memory holds, so this tab's copies of it are not needed
+        releaseAside(storage, key, new Set());
         return true;
       } catch {
         refuse(storage, key, mine);
