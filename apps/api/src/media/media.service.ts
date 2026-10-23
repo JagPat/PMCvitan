@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, GoneException, Injectable, NotFoundException } from '@nestjs/common';
+import { lockStandingAnchors } from '../common/standing-anchor';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from './storage.service';
@@ -239,6 +240,10 @@ export class MediaService {
         // first statement otherwise: the place's publication under the tree lock's shared side (a refusal here
         // rolls back and goes through the earned object cleanup below)
         await resolvePublishedProjectNode(tx, projectId, nodeId);
+        // #1061 — the uploader's standing anchor after the keys and before the insert: outside a visit this takes no
+        // project key, and the insert key-share locks a linked decision, so the emit's shared call would otherwise
+        // come after a row lock without the readiness key, which the anchor's order rule does not allow
+        await lockStandingAnchors(tx, { read: [user.sub] });
         const created = await tx.media.create({
           data: {
             projectId,

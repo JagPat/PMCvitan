@@ -300,14 +300,15 @@ describe('OrgsService.createProject', () => {
     ];
     for (const readOrLock of requiredReadsAndLocks) expect(readOrLock).toHaveBeenCalled();
     // the two display-id locks, the org key (4d-ii-a / A3c), the new project's key for the creator,
-    // and (4d-ii-a / A6d) the registration key the event's delivery materialization takes SHARED
-    expect(tx.$executeRaw).toHaveBeenCalledTimes(5);
+    // (#1061) the creator's standing anchor the event's envelope takes SHARED, and (4d-ii-a / A6d) the
+    // registration key the event's delivery materialization takes SHARED
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(6);
     expect(tx.activity.findMany).toHaveBeenCalledTimes(2);
     expect(tx.inspection.findMany).toHaveBeenCalledTimes(2);
     const projectWriteOrder = tx.project.create.mock.invocationCallOrder[0]!;
     for (const readOrLock of requiredReadsAndLocks) {
-      // the four locks precede the write; the fifth `$executeRaw` is the registration key the
-      // project-created EVENT's delivery materialization takes (4d-ii-a / A6d), after it by design
+      // the four locks precede the write; the fifth and sixth `$executeRaw` are the creator's standing
+      // anchor (#1061) and the registration key the project-created EVENT takes (4d-ii-a / A6d), after it by design
       const orders = readOrLock === tx.$executeRaw ? readOrLock.mock.invocationCallOrder.slice(0, 4) : readOrLock.mock.invocationCallOrder;
       expect(Math.max(...orders)).toBeLessThan(projectWriteOrder);
     }

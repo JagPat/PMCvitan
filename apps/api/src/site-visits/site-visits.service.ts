@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma.service';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { lockProjectTree } from '../common/tree-lock';
 import { lockProjectReadiness } from '../common/readiness-lock';
+import { lockStandingAnchors } from '../common/standing-anchor';
 import type { AuthUser } from '../common/auth';
 import { resolveActor, type Actor } from '../common/actor';
 import { emitEvent } from '../platform/events';
@@ -338,6 +339,9 @@ export class SiteVisitsService {
    * registers FOR SHARE, the project row (the operability check), then the envelope (the identity FOR UPDATE).
    */
   private async standing(tx: CommandTx, projectId: string, actor: Actor, user: AuthUser, attendeeId?: string): Promise<ActorEnvelope> {
+    // #1061 — both people's anchors in ONE sorted call before either's rows: two visits naming the same two
+    // people the other way round take them in the same order
+    await lockStandingAnchors(tx, { read: attendeeId === undefined ? [user.sub] : [user.sub, attendeeId] });
     await lockActorStanding(tx, projectId, user.sub);
     if (attendeeId !== undefined && attendeeId !== user.sub) await lockActorStanding(tx, projectId, attendeeId);
     const [state] = await tx.$queryRaw<Array<{ operable: boolean }>>(Prisma.sql`SELECT phase6_project_operable(${projectId}) AS "operable"`);
