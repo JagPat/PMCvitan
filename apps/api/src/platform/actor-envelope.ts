@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { ForbiddenException } from '@nestjs/common';
 import { AUTOMATION_IDENTITIES, type AutomationIdentity, type EventActor } from '../common/actor';
+import { lockStandingAnchors } from '../common/standing-anchor';
 
 /**
  * Phase 6 task 4d unit 4d-ii-a / A1 — the actor ENVELOPE a human event records.
@@ -114,9 +115,13 @@ export async function resolveActorEnvelope(
  * The actor's standing registers, locked `FOR SHARE` in the order {@link resolveActorEnvelope} takes them:
  * `OrgUserAuthority` BEFORE `ProjectUserStanding`, the OrgMembership projection writers' order. A command that must
  * take another lock between the registers and the identity (a module's project-row check) calls this first; the
- * envelope's own re-lock of rows this transaction already holds is then a no-op.
+ * envelope's own re-lock of rows this transaction already holds is then a no-op. The person's standing anchor
+ * ({@link lockStandingAnchors}) comes first.
  */
 export async function lockActorStanding(tx: Prisma.TransactionClient, projectId: string, userId: string): Promise<void> {
+  // #1061 — the person's anchor first: a row below can be deleted and re-created by a writer, the anchor
+  // cannot (a no-op when the command already took it up front)
+  await lockStandingAnchors(tx, { read: [userId] });
   // `Prisma.sql` objects rather than tagged-template calls, as the kernel's other raw reads are, so
   // every bind value is carried on the one argument.
   await tx.$queryRaw(Prisma.sql`
@@ -148,9 +153,11 @@ export async function lockIdentities(tx: Prisma.TransactionClient, userIds: read
  * the fact's pre-state pair), so without this they would take the stream first and the target's rows
  * second: the opposite order to a concurrent command BY the target on the same project, which holds
  * those rows and waits on the stream (a deadlock PostgreSQL aborts). Taking the target's rows first
- * keeps one order — standing, then stream — on every path.
+ * keeps one order — standing, then stream — on every path. #1061: the target's anchor is taken exclusive
+ * first; the command takes it up front with its actor's, so this is a re-take that never waits.
  */
 export async function lockStandingForWrite(tx: Prisma.TransactionClient, projectId: string, userId: string): Promise<void> {
+  await lockStandingAnchors(tx, { write: [userId] });
   await tx.$queryRaw(Prisma.sql`
     SELECT 1 FROM "ProjectUserStanding"
      WHERE "projectId" = ${projectId} AND "userId" = ${userId}

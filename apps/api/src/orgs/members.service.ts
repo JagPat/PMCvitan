@@ -9,6 +9,7 @@ import { resolveActor, type Actor, type EventActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { lockStandingForWrite, resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
+import { lockStandingAnchors } from '../common/standing-anchor';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import { DecisionsParticipant } from '../decisions/decisions.participant';
 import { OrgsParticipant, refuseQaLock } from './orgs.participant';
@@ -435,6 +436,9 @@ export class MembersService {
         // An ADD's membership does not exist yet, so its id is minted here for the fact to name;
         // the fact's membership FK is deferred to commit for exactly this order.
         const membershipId = prior?.id ?? randomUUID();
+        // #1061 — both people's standing anchors in one sorted call, before any standing or project row:
+        // the requester's read by `factPair`, the target's written by this command
+        await lockStandingAnchors(tx, { read: [actor.actorId], write: [user.id] });
         const pair = await this.factPair(tx, projectId, actor);
         // 4d-iii / R0a-2 — the target's standing rows before this command emits: standing, then stream,
         // the one order every emitter takes (`lockStandingForWrite`); after `factPair`, which takes the
@@ -543,6 +547,9 @@ export class MembersService {
           throw new ConflictException('Only an active member\'s role can be changed — add them to the team again instead');
         }
         if (cur.role === input.role) throw new ConflictException('This member\'s role changed while updating — reload and retry');
+        // #1061 — both people's standing anchors in one sorted call, before any standing or project row:
+        // the requester's read by `factPair`, the target's written by this command
+        await lockStandingAnchors(tx, { read: [actor.actorId], write: [userId] });
         const pair = await this.factPair(tx, projectId, actor);
         // 4d-iii / R0a-2 — the target's standing rows before this command emits: standing, then stream,
         // the one order every emitter takes (`lockStandingForWrite`); after `factPair`, which takes the
@@ -613,6 +620,10 @@ export class MembersService {
           throw new ConflictException('Only an active member can be changed — add them to the team again instead');
         }
         if ((cur.discipline ?? null) === discipline) return { resultRef: cur.id, value: cur, events: [] };
+        // #1061 — the target's standing row is written here and the requester's read at the emit: both
+        // anchors in one sorted call first, so two edits naming the same two people the other way round
+        // (on another project) cannot each hold one
+        await lockStandingAnchors(tx, { read: [actor.actorId], write: [userId] });
         const m = await tx.membership.update({ where: { id: cur.id }, data: { discipline }, include: { user: true } });
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: discipline ? { discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} });
         return { resultRef: m.id, value: m, events: [ev] };
@@ -664,6 +675,9 @@ export class MembersService {
             'This member is the named decider on an open decision — withdraw and reissue it first',
           );
         }
+        // #1061 — both people's standing anchors in one sorted call, before any standing or project row:
+        // the requester's read by `factPair`, the target's written by this command
+        await lockStandingAnchors(tx, { read: [actor.actorId], write: [userId] });
         const pair = await this.factPair(tx, projectId, actor);
         // 4d-iii / R0a-2 — the target's standing rows before this command emits: standing, then stream,
         // the one order every emitter takes (`lockStandingForWrite`); after `factPair`, which takes the
