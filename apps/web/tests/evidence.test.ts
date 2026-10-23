@@ -198,7 +198,9 @@ describe('replay lifecycle', () => {
     useStore.setState(getInitialState());
     s()._setGateway(gw as unknown as ApiGateway);
     s().hydrateOutbox(); // the boot path — must merge the durable pending rows back into replay
-    await settles(() => s().outbox.some((o) => (o as { clientKey?: string }).clientKey === key));
+    // this tab also holds the op stranded (its write and copy aside both failed: Codex 4353751499), so the load hands
+    // it back before the durable rows are read; the reconciliation's own signal is the pending count
+    await settles(() => s().outbox.some((o) => (o as { clientKey?: string }).clientKey === key) && s().pendingEvidenceCount === 1);
     expect(s().outbox.map((o) => (o as { clientKey?: string }).clientKey)).toContain(key);
     expect(s().pendingEvidenceCount).toBe(1);
 

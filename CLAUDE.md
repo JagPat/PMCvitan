@@ -4,8 +4,13 @@ Read [docs/POLICY.md](docs/POLICY.md) before authoring or correcting work.
 It is the canonical contract; [scripts/review-policy.mjs](scripts/review-policy.mjs)
 provides shared executable definitions.
 
-Read [docs/STATUS.md](docs/STATUS.md), then its active phase plan and blocking directive.
-Use [docs/AUTONOMOUS_LOOP.md](docs/AUTONOMOUS_LOOP.md) for operation and recovery.
-Coordinate the active producer through the PR and the repository coordination thread.
+Then read, before any work:
+1. [docs/STATUS.md](docs/STATUS.md), its "Now" block only.
+2. The active phase plan and blocking directive that STATUS names.
+3. The pinned summary of the coordination issue that STATUS names.
+
+Only when needed: [docs/AUTONOMOUS_LOOP.md](docs/AUTONOMOUS_LOOP.md) (operation and recovery),
+the RUNBOOKs, old #482 threads, and archived STATUS history in Git.
+
+Coordinate the active producer through the PR and the coordination issue.
 Do not duplicate the contract or infer current work from historical chronology.
-The former chronology remains in Git history; STATUS identifies the active plan.

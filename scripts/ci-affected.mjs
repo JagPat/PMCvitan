@@ -40,6 +40,9 @@ const RULES = [
   },
   { pattern: /^scripts\/[^/]+\.mjs$/u, products: [], proofs: false },
   { pattern: /^apps\/web\//u, products: WEB, proofs: false },
+  // #1088 r1 — the web keeps its own copy of the queue's request contracts (apps/web/src/data/queueContracts.ts), and
+  // its drift test reads these two API files as text, so a change to either runs the web job too
+  { pattern: /^apps\/api\/src\/(?:contracts|common\/civil-date)\.ts$/u, products: [...WEB, ...API], proofs: 'runner-source' },
   { pattern: /^apps\/api\/(?:prisma|scripts)\//u, products: MIGRATION, proofs: true },
   // `proofs: 'runner-source'` — the production-runner proofs run when the file is in `runnerSources`
   // (Codex 4218299993); see `runnerSourceClosure`

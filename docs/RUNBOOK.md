@@ -1083,12 +1083,12 @@ LEASED, the cancellation relies on the sender's final pre-send re-check of its o
 that exists only in 4a-and-later code. A PRE-4a relay process still running beside a new API
 instance would send a leased stale push regardless of the cancellation mark.
 
-This platform's deploy model already excludes that state: one service, whose OLD process stops
-before `scripts/migrate.sh` runs and the NEW process starts (the same drain-first discipline as
-cutover step 1 above). Keep it that way for the 4a rollout specifically: do NOT run pre-4a and
-post-4a application processes side by side. If a multi-instance rolling strategy is ever
-introduced, the exposure is bounded to pushes leased by old senders during the one rollout that
-ships 4a — after that, every sender carries the pre-send re-check.
+This platform's deploy model does NOT exclude that state on its own: Coolify's rolling swap starts the
+NEW container (which runs `scripts/migrate.sh`) while the OLD one keeps serving until the new one is
+healthy, and a failed migration leaves the previous container running (docs/DEPLOY.md, API step 2; the
+rolling deploys this runbook's projection fence is built for). So the old and new processes overlap.
+For the 4a rollout that overlap was the exposure: pushes leased by pre-4a senders during that one
+rollout. After it, every sender carries the pre-send re-check, so later overlapping deploys are safe.
 
 ## §P6T4B. Phase 6 task 4b — the decider migration aborts: a published open decision has no holder
 
