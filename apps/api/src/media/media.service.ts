@@ -20,7 +20,7 @@ import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
 import { VOICE_NOTE_MAX_SEC, VOICE_NOTE_SEC_TOLERANCE, type CreateMediaInput } from '../contracts';
-import { SITE_PHOTO_DELETE_WINDOW_MS } from '@vitan/shared';
+import { SITE_PHOTO_DELETE_WINDOW_MS, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
@@ -59,8 +59,9 @@ async function lockSendKey(tx: Prisma.TransactionClient, projectId: string, clie
   await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${`media-send-key:${projectId}:${clientKey}`}, 0))`);
 }
 
-/** #482 site photos — a key whose photo was deleted is never used again: a late copy of its send stores nothing. */
-const DELETED_PHOTO = 'This photo was deleted';
+/** #482 site photos — a key whose photo was deleted is never used again: a late copy of its send stores nothing. The
+ *  web matches this exact text (shared), so it is never changed here alone. */
+const DELETED_PHOTO = SITE_PHOTO_DELETED_MESSAGE;
 
 /** #482 site photos — the database's own refusal of a deleted photo's key (`Media_tombstone_guard`, 20280118, SQLSTATE
  *  MT410). Prisma reports a trigger's error on a model write as an unknown request error carrying the code in its

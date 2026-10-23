@@ -159,6 +159,67 @@ describe('Phase 8 offline outbox', () => {
     expect(globalThis.localStorage?.getItem('vitan.outbox')).toBeNull(); // legacy key consumed
   });
 
+  it('#1085 r2 audit: a legacy queue is removed only once its bytes are in the scoped key', () => {
+    const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    globalThis.localStorage?.setItem('vitan.outbox', legacy);
+    const real = Storage.prototype.setItem;
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith('vitan.outbox.')) throw new DOMException('full', 'QuotaExceededError');
+      return real.call(this, k, v);
+    });
+    s().hydrateOutbox();
+    spy.mockRestore();
+    expect(globalThis.localStorage?.getItem('vitan.outbox')).toBe(legacy); // not lost: adopted at a later load
+    s().hydrateOutbox();
+    expect(s().outbox).toEqual([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    expect(globalThis.localStorage?.getItem('vitan.outbox')).toBeNull();
+  });
+
+  it('#1085 r2 gap-check G1: a legacy queue beside a non-empty scoped key is copied aside, never adopted by the next user or project', () => {
+    const tokenFor = (sub: string) => `x.${btoa(JSON.stringify({ sub }))}.y`;
+    const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    const mine = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-1' }]);
+    localStorage.setItem('vitan.outbox', legacy);
+    localStorage.setItem('vitan.outbox.userA.ambli', mine);
+    useStore.setState({ sessionToken: tokenFor('userA'), activeProjectId: 'ambli', online: false });
+    s().hydrateOutbox();
+    expect(localStorage.getItem('vitan.outbox')).toBeNull();
+    expect(localStorage.getItem('vitan.unreadable.vitan.outbox.vitan.outbox.userA.ambli')).toBe(legacy);
+    expect(localStorage.getItem('vitan.outbox.userA.ambli')).toBe(mine);
+    useStore.setState({ sessionToken: tokenFor('userB'), activeProjectId: 'villa' });
+    s().hydrateOutbox();
+    expect(s().outbox).toEqual([]);
+  });
+
+  it('#1085 r2 re-check R1: a legacy queue copied aside never writes over an earlier copy holding other bytes', () => {
+    const tokenFor = (sub: string) => `x.${btoa(JSON.stringify({ sub }))}.y`;
+    const earlier = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-30' }]);
+    const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    const aside = 'vitan.unreadable.vitan.outbox.vitan.outbox.userA.ambli';
+    // an earlier load copied a legacy queue aside; a rollback to a release before scoping then wrote a new one
+    localStorage.setItem(aside, earlier);
+    localStorage.setItem('vitan.outbox', legacy);
+    localStorage.setItem('vitan.outbox.userA.ambli', JSON.stringify([{ t: 'startActivity', activityId: 'ACT-1' }]));
+    useStore.setState({ sessionToken: tokenFor('userA'), activeProjectId: 'ambli', online: false });
+    s().hydrateOutbox();
+    expect(localStorage.getItem('vitan.outbox')).toBeNull();
+    expect(localStorage.getItem(aside)).toBe(earlier);
+    expect(localStorage.getItem(`${aside}.1`)).toBe(legacy);
+  });
+
+  it('#1085 r2 gap-check: a legacy queue left by a failed write is adopted only by a scope with no other queue key on this phone', () => {
+    const tokenFor = (sub: string) => `x.${btoa(JSON.stringify({ sub }))}.y`;
+    const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    localStorage.setItem('vitan.outbox', legacy);
+    // user A keeps a queue on another project, so this phone holds another scope's key
+    localStorage.setItem('vitan.siteVisitQueue.userA.villa', '[]');
+    useStore.setState({ sessionToken: tokenFor('userB'), activeProjectId: 'ambli', online: false });
+    s().hydrateOutbox();
+    expect(s().outbox).toEqual([]);
+    expect(localStorage.getItem('vitan.outbox')).toBeNull();
+    expect(localStorage.getItem('vitan.unreadable.vitan.outbox.vitan.outbox.userB.ambli')).toBe(legacy);
+  });
+
   it('queues a progress photo while offline and shows it optimistically', () => {
     const gw = { uploadMedia: vi.fn(), snapshot: vi.fn() };
     s()._setGateway(gw as unknown as ApiGateway);

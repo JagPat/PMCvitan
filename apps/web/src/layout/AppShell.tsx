@@ -10,6 +10,7 @@ import { CreateControl } from './CreateControl';
 import { ScreenView } from './ScreenView';
 import { RouteBridge } from './RouteBridge';
 import { ProjectLoadBoundary } from './ProjectLoadBoundary';
+import { QueueUnreadable } from './QueueUnreadable';
 import { AuthGate } from './AuthGate';
 import { LangPreference } from './LangPreference';
 import { GuideHost } from '@/guide/GuideHost';
@@ -38,6 +39,7 @@ export function AppShell() {
         <main className={`${styles.stage} vscroll`}>
           <div className={`drawing-grid ${styles.backdrop}`} />
           <div className={styles.stageInner}>
+            <QueueUnreadable />
             {/* On a project transition the previous project's records are ALREADY cleared;
                 the boundary covers the gap until the new project's snapshot lands, and a
                 failed transition shows a recoverable error — never stale records. */}

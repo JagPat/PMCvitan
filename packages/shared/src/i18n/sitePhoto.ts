@@ -8,7 +8,26 @@ import { forYouRole } from './actionItems';
 
 export const sitePhotoLabels = {
   add: { en: 'Add site photo', hi: 'साइट फ़ोटो जोड़ें', gu: 'સાઇટ ફોટો ઉમેરો' },
+  // deleting your own photo within the hour (Board, 14 Oct 2026)
+  delete: { en: 'Delete', hi: 'हटाएँ', gu: 'કાઢી નાખો' },
+  confirmDelete: { en: 'Delete this photo?', hi: 'यह फ़ोटो हटाएँ?', gu: 'આ ફોટો કાઢી નાખવો?' },
+  keep: { en: 'Keep', hi: 'रखें', gu: 'રાખો' },
+  deleted: { en: 'Photo deleted.', hi: 'फ़ोटो हटा दी गई।', gu: 'ફોટો કાઢી નાખ્યો.' },
+  deleteOffline: { en: 'Connect to the internet to delete a photo.', hi: 'फ़ोटो हटाने के लिए इंटरनेट से जुड़ें।', gu: 'ફોટો કાઢવા માટે ઇન્ટરનેટ સાથે જોડાઓ.' },
+  stillUploading: { en: 'This photo is still uploading. You can delete it once it has gone.', hi: 'यह फ़ोटो अभी अपलोड हो रही है। भेजे जाने के बाद इसे हटा सकते हैं।', gu: 'આ ફોટો હજી અપલોડ થઈ રહ્યો છે. મોકલાઈ જાય પછી તેને કાઢી શકો છો.' },
+  countUpdating: { en: 'Progress photos: updating the count…', hi: 'काम की फ़ोटो: गिनती अपडेट हो रही है…', gu: 'કામના ફોટા: ગણતરી અપડેટ થઈ રહી છે…' },
 } as const;
+
+/** Whether the viewer may still delete this photo: the server marked it `deletable` (the PMC and the engineer any
+ *  photo no record keeps; a member their own site photo, not on a sent log) and, where it gave a `deletableUntil`,
+ *  that time has not come (the server decides again on delete). `now` is the device's clock in ms. */
+export function sitePhotoDeletable(p: { deletable?: boolean; deletableUntil?: string }, now: number): boolean {
+  // the server says whether the viewer may delete it; a deadline, when there is one, ends that (a member's own hour)
+  if (p.deletable !== true) return false;
+  if (!p.deletableUntil) return true;
+  const until = Date.parse(p.deletableUntil);
+  return !Number.isNaN(until) && now < until;
+}
 
 /** When a photo was added, in the project's time zone: "19 Oct, 3:00 PM" in English; in Hindi and Gujarati the
  *  day and month in that language and a 24-hour clock, as the photo stamps there read. Empty when unknown. */
