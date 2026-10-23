@@ -531,6 +531,9 @@ describe('#1088 r4 (Codex 4351952407): every shape a released build stored is re
   it('a body no release stored is still damage: rows some of which name an id, or a certification naming an unknown field', () => {
     const mixed = { t: 'submitInspection', inspectionId: 'i-1', items: [{ id: 'x', name: 'a', state: null, photos: 0, note: '' }, { name: 'b', state: null, photos: 0, note: '' }] };
     expect(isKnownOutboxOp(mixed, S)).toBe(false);
+    // Codex 4356145032: rows with no id but a field that came after #114 (evidence) are no release's either
+    const hybrid = { t: 'submitInspection', inspectionId: 'i-1', items: [{ name: 'a', state: 'fail', photos: 1, note: '', evidence: ['/media/m-1'] }] };
+    expect(isKnownOutboxOp(hybrid, S)).toBe(false);
     expect(isKnownOutboxOp({ ...MIN.certifyBill, input: { billId: 'b', versionId: 'v', extra: 1 } }, S)).toBe(false);
     expect(isKnownOutboxOp({ ...MIN.uploadMedia, input: { kind: 'progress', mime: 'text/html', data: 'AA==' } }, S)).toBe(false);
     // a photo of any image type is read only in the fields its release sent (and the client key a load gave it)
