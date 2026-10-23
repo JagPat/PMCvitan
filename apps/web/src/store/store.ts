@@ -6390,6 +6390,11 @@ export const useStore = create<Store>()(
       );
       let stoppedAt = -1;
       let scopeMoved = false;
+      // step B1a: an act the server now has, or refused for good, is marked so at once, before the flush goes on: a page
+      // closed before this flush writes its key without it never sends it again
+      let markStore: Storage | null = null;
+      try { markStore = globalThis.localStorage ?? null; } catch { markStore = null; }
+      const settle = (o: OutboxOp): void => { queueKeys.settled(markStore, isSiteVisitOp(o) ? siteVisitKeyOf(flushKey) : flushKey, o); };
       for (let i = 0; i < ops.length; i++) {
         // live check BEFORE each replay: if the project or session changed while a
         // previous op was in flight, the rest of this queue belongs to the OLD
@@ -6407,6 +6412,7 @@ export const useStore = create<Store>()(
           let photoGone = false;
           let goneEvidence: { url: string; inspectionId?: string; inspectionItemId?: string } | undefined;
           const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation, (local) => { photoGone = true; goneEvidence = local; });
+          settle(ops[i]);
           if (snap) { lastSnap = snap; lastSnapStale = false; } else if (lastSnap && isSiteVisitOp(ops[i])) lastSnapStale = true;
           // an evidence send settled with its refresh failed (its bytes are gone, so it is never sent again): the pull it
           // owes is asked for once the flush is done, as a 410's is (#482)
@@ -6522,7 +6528,7 @@ export const useStore = create<Store>()(
                 } else {
                   // not sent, and kept with the server's words, so the screen says which photos and why
                   ops.splice(i + 1, rest.length, ...rest.filter((o) => !onIt.includes(o)));
-                  for (const o of onIt) { const k = keyOf(o); if (k) droppedKeys.push(k); }
+                  for (const o of onIt) { settle(o); const k = keyOf(o); if (k) droppedKeys.push(k); }
                 }
                 visitMoves.push([op.body.id, open?.id ?? null]);
               }
@@ -6533,6 +6539,7 @@ export const useStore = create<Store>()(
             } else {
               dropped += 1; // server will never accept this one — discard and keep going
             }
+            settle(ops[i]);
             const k = keyOf(ops[i]); if (k) droppedKeys.push(k);
             if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
             if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }

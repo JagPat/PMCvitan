@@ -1,5 +1,6 @@
 import type { OutboxOp } from '@/data/apiGateway';
 import { readStoredQueue, type QueueScopes } from '@/data/storedActs';
+import { madeActs, markSettled, recordMade, releaseMade, releaseSettled, settledIdents } from '@/store/queueActRecord';
 
 /**
  * WEB-02 step A (#482 6333415419): the stored-act check at the writer of the stored queue keys, the general queue
@@ -141,6 +142,19 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     return s;
   };
 
+  /** step B1a: `acts` the key does not hold go into a made record, all but those a record already holds */
+  const keepMade = (storage: Store, key: string, acts: OutboxOp[]): void => {
+    const recorded = new Set(madeActs(storage, key, scopesOf(key)).map(queueActIdent));
+    recordMade(storage, key, acts.filter((o) => !recorded.has(queueActIdent(o))));
+  };
+  /** step B1a: the key holds `there` now: the made records whose acts it holds or that are settled go, and so do the
+   *  settled marks of acts it no longer holds */
+  const tidy = (storage: Store, key: string, there: Set<string>): void => {
+    const settled = settledIdents(storage, key);
+    releaseMade(storage, key, (i) => there.has(i) || settled.has(i), queueActIdent, scopesOf(key));
+    releaseSettled(storage, key, there);
+  };
+
   /** A write of `key` that did not land: every act memory holds (`mine`) that the key, unchanged, does not hold now is
    *  listed not kept and copied aside beside it, once each, so it stays on this phone. When the copy cannot be made
    *  (storage full), they are held stranded as `keepUnsent` holds them, so a scope change or sign-out that clears memory
@@ -159,7 +173,9 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     const raw = JSON.stringify(fresh);
     const record = (name: string) => { const list = madeAside.get(key) ?? []; list.push({ name, raw, idents: fresh.map(queueActIdent) }); madeAside.set(key, list); };
     if (fresh.length > 0 && copyAside(storage, key, raw, record)) for (const o of fresh) done.add(queueActIdent(o));
-    else if (fresh.length > 0) { strand(key, fresh); handed.add(key); }
+    // step B1a: not copied, they are also kept in a made record, which a load takes back: a closed page loses them no
+    // more than a sign-out or a project switch does
+    else if (fresh.length > 0) { strand(key, fresh); handed.add(key); keepMade(storage, key, fresh); }
     // a stranded act the key's bytes or a copy aside now hold is on this phone; one memory no longer holds since
     // the load that handed it back is settled
     const held = new Set(mine.map(queueActIdent));
@@ -175,16 +191,25 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       onRead(key, 'acts' in read ? 'ok' : read.unreadable, raw);
       unkept.delete(key);
       loaded.add(key);
-      const acts = 'acts' in read ? read.acts : [];
+      // step B1a: an act marked settled is not loaded (sent, or refused for good, before the key was written without
+      // it); the acts of this key's made records the key does not hold come back after its own
+      const settled = settledIdents(storage, key);
+      const stored = 'acts' in read ? read.acts : [];
+      const there = 'acts' in read ? new Set(stored.map(queueActIdent)) : identsIn(raw);
+      // a made act is taken once, and never beside the same act in the key
+      const seen = new Set(there);
+      const made = madeActs(storage, key, scopesOf(key)).filter((o) => { const i = queueActIdent(o); if (seen.has(i)) return false; seen.add(i); return true; });
+      const acts = [...stored, ...made].filter((o) => !settled.has(queueActIdent(o)));
+      tidy(storage, key, there);
       // this key's stranded acts come back first, as the scope-move write puts its unsent acts first; one the key now
       // holds (read or not) is not taken twice
       // one the key now holds is on this phone, so let go; the rest stay held until a write stores them (`unstrand`)
-      const there = 'acts' in read ? new Set(acts.map(queueActIdent)) : identsIn(raw);
       unstrand(key, (i) => there.has(i));
       const held = stranded.get(key);
       if (!held) return acts;
       handed.add(key);
-      return [...held, ...acts];
+      const kept = new Set(held.map(queueActIdent));
+      return [...held, ...acts.filter((o) => !kept.has(queueActIdent(o)))];
     },
     /** another tab wrote `key` (a storage event): it is read and reported, never answered */
     heard(storage: Store, key: string): void {
@@ -226,21 +251,32 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
             return true;
           }
           strand(key, fresh);
+          keepMade(storage, key, fresh); // step B1a: neither written nor copied, they come back with the key's next load
           return false;
         }
         there = new Set(stored.map(queueActIdent));
         const flushed = new Set([...batch, ...rest].map(queueActIdent));
         const others = stored.filter((o) => !flushed.has(queueActIdent(o)));
         const next = [...rest, ...after(others.filter(takes)), ...others.filter((o) => !takes(o))];
-        storage.setItem(key, JSON.stringify(next));
+        const text = JSON.stringify(next);
+        storage.setItem(key, text);
         const kept = new Set(next.map(queueActIdent));
         unstrand(key, (i) => kept.has(i));
+        tidy(storage, key, identsIn(text));
         return true;
       } catch {
-        // the key, unchanged, holds what it held: an unsent act it does not hold is stranded
-        strand(key, rest.filter((o) => !there.has(queueActIdent(o))));
+        // the key, unchanged, holds what it held: an unsent act it does not hold is stranded, and kept in a made record
+        // when storage takes one
+        const left = rest.filter((o) => !there.has(queueActIdent(o)));
+        strand(key, left);
+        if (storage) keepMade(storage, key, left);
         return false;
       }
+    },
+    /** step B1a: an act of `key` the server now has (sent) or refused for good, marked so before the flush goes on: a
+     *  load before the key is written without it does not take it again. False when the mark could not be made */
+    settled(storage: Store | null, key: string, o: OutboxOp): boolean {
+      return storage ? markSettled(storage, key, queueActIdent(o)) : false;
     },
     /** how many acts are held stranded, over every key */
     strandedCount(): number {
@@ -272,6 +308,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
         unstrand(key, (i) => kept.has(i) || handed.has(key));
         // the key now holds what memory holds, so this tab's copies of it are not needed
         releaseAside(storage, key, new Set());
+        tidy(storage, key, identsIn(text));
         return true;
       } catch {
         refuse(storage, key, mine);
