@@ -11,20 +11,22 @@
 -- `platform_role_has_holder ... FOR UPDATE` can wait on that holder's row while the holder's own mark waits on the
 -- project row the forward holds: a deadlock (#1076's review, discussion_r4358540856).
 --
--- WHAT. Before this function adds a "ProjectUserStanding" row that is not there, or deletes one that is, it tries
+-- WHAT. When this function adds a "ProjectUserStanding" row that is not there, or removes one that is, it tries
 -- the project's readiness key (`phase6_try_readiness`) and refuses the write if another transaction holds it, as
 -- `phase6_t4d_actor_bound` already does for a direct fact write. A write that changes nothing (an upsert of a row that
 -- exists, which only refreshes its "membershipId", or a delete of a row that is not there) is not refused: the org
 -- roster's member-only arm takes no project key and its trigger fans out a no-op delete to every project of the org.
 --
--- DECIDED UNDER THE ROW LOCK. Whether the write changes a holder is read with FOR UPDATE on the standing row, not
--- from a plain snapshot. A plain read still sees a row another transaction has deleted but not committed: an
--- upsert over it would skip the key, wait in ON CONFLICT for that delete to commit, and then insert a new holder
--- without the key (the unit's re-check, probe E). FOR UPDATE waits for that transaction, re-reads the row as it now
--- is, and keeps it locked to commit, so a row it finds cannot be deleted under this write and a row it misses is
--- added with the key. This wait is the one the INSERT ... ON CONFLICT or the DELETE below already made on the same
--- row, moved before the key: it adds no wait edge. A row another transaction is inserting and has not committed is
--- not seen: the upsert then tries the key first (and holds it), and a delete of it is a true no-op.
+-- DECIDED FROM THE WRITE, NOT FROM A SNAPSHOT. A plain read before the write still sees a row another transaction
+-- has deleted but not committed: an upsert over it would skip the key, wait in ON CONFLICT for that delete to
+-- commit, and then insert a new holder without the key (the unit's re-check, probe E). So:
+-- * an add reads the standing row FOR UPDATE first. That waits for such a transaction, re-reads the row as it now
+--   is, and keeps it locked to commit: a row it finds cannot be deleted under this write, and a row it misses is
+--   added with the key. A row inserted and committed between that read and the upsert is only refreshed, and the
+--   key was taken anyway. This wait is the one the upsert already made on the same row, moved before the key.
+-- * a removal deletes first and tries the key only when the DELETE removed a row (its own row count), so no row
+--   can appear between the decision and the write. A refusal raises, which undoes the delete with the statement.
+--   A row another transaction is inserting and has not committed is not seen: deleting it is a true no-op.
 --
 -- LOCK ORDER. A try-lock never waits, so it adds no edge to any wait cycle. It is re-entrant in a transaction, so
 -- every app writer, which holds the key already, takes it again at no cost and is never refused. A direct writer that
@@ -49,15 +51,16 @@ CREATE OR REPLACE FUNCTION public.platform_user_standing_apply(
 ) RETURNS VOID LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE
   v_exists BOOLEAN;
+  v_removed BIGINT;
 BEGIN
-  PERFORM 1 FROM public."ProjectUserStanding"
-   WHERE "projectId" = p_project AND "userId" = p_user AND "role" = p_role
-     FOR UPDATE;
-  v_exists := FOUND;
-  IF v_exists IS DISTINCT FROM p_present AND NOT public.phase6_try_readiness(p_project) THEN
-    RAISE EXCEPTION 'phase6 4d: the project readiness key is held elsewhere — this direct write of % standing on project % is refused rather than waiting inside a trigger', p_role, p_project;
-  END IF;
   IF p_present THEN
+    PERFORM 1 FROM public."ProjectUserStanding"
+     WHERE "projectId" = p_project AND "userId" = p_user AND "role" = p_role
+       FOR UPDATE;
+    v_exists := FOUND;
+    IF NOT v_exists AND NOT public.phase6_try_readiness(p_project) THEN
+      RAISE EXCEPTION 'phase6 4d: the project readiness key is held elsewhere — this direct write of % standing on project % is refused rather than waiting inside a trigger', p_role, p_project;
+    END IF;
     INSERT INTO public."ProjectUserStanding" ("projectId", "userId", "role", "membershipId")
     VALUES (p_project, p_user, p_role, p_membership)
     ON CONFLICT ("projectId", "userId", "role")
@@ -65,5 +68,9 @@ BEGIN
   ELSE
     DELETE FROM public."ProjectUserStanding"
      WHERE "projectId" = p_project AND "userId" = p_user AND "role" = p_role;
+    GET DIAGNOSTICS v_removed = ROW_COUNT;
+    IF v_removed > 0 AND NOT public.phase6_try_readiness(p_project) THEN
+      RAISE EXCEPTION 'phase6 4d: the project readiness key is held elsewhere — this direct write of % standing on project % is refused rather than waiting inside a trigger', p_role, p_project;
+    END IF;
   END IF;
 END $$;

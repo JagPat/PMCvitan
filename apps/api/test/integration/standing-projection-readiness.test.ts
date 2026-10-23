@@ -215,5 +215,6 @@ describe('#1100 — the standing projection refuses a direct write under a forei
     expect(src).toContain('phase6_try_readiness(p_project)');
     expect(src).toContain('the project readiness key is held elsewhere');
     expect(src).toMatch(/FOR UPDATE;\s*v_exists := FOUND;/);
+    expect(src).toContain('GET DIAGNOSTICS v_removed = ROW_COUNT');
   });
 });
