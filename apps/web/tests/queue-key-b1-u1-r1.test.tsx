@@ -149,3 +149,21 @@ describe('#1106 r1: the stranded matrix', () => {
     expect(g.strandedCount()).toBe(n - inKey + (keyedToo ? 1 : 0));
   });
 });
+
+describe('#1106 r1b: the leave question counts identical acts not kept', () => {
+  it('forced probe: two identical unkeyed acts a full key cannot store are two not kept, and none is counted twice', () => {
+    localStorage.setItem(key, '[]');
+    const g = createQueueKeyGuard();
+    g.load(localStorage, key);
+    const full = {
+      getItem: (n: string) => localStorage.getItem(n),
+      setItem: (n: string, v: string) => { if (n === key || n.startsWith('vitan.unreadable.')) throw new DOMException('full', 'QuotaExceededError'); localStorage.setItem(n, v); },
+      removeItem: (n: string) => localStorage.removeItem(n),
+    };
+    expect(g.write(full, key, [{ ...U }, { ...U }])).toBe(false);
+    expect(g.notKeptCount()).toBe(2);
+    expect(g.notKept(key)).toHaveLength(2);
+    // held stranded too (no copy could be made), and counted once, as not kept
+    expect(g.notKeptCount() + g.strandedCount()).toBe(2);
+  });
+});

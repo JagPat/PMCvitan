@@ -129,8 +129,8 @@ export type QueueWrite = { key: string; mine: OutboxOp[]; takes: (o: OutboxOp) =
 /** `scopesOf`: the user scopes each key's acts may name (`QueueScopes`), as the store derived them with the key's name.
  *  A key it names none for reads a scope-bearing act as damaged */
 export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: string | null) => void = () => {}, scopesOf: (key: string) => QueueScopes | undefined = () => undefined) {
-  /** per key, the acts held in memory that the key does not hold now */
-  const unkept = new Map<string, Set<string>>();
+  /** per key, how many occurrences of each act memory holds that the key does not hold now (counted: R3) */
+  const unkept = new Map<string, Map<string, number>>();
   /** per key, how many times this tab held each act at its last load or landed write of it (B1 U1). A write leaves out
    *  an act the key still holds that this tab held and no longer does: this tab settled it (sent, or dropped). One this
    *  tab never held is another tab's, and stays (#1086, Codex 4349463910) */
@@ -193,11 +193,6 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     });
     if (left.length > 0) madeAside.set(key, left); else madeAside.delete(key);
   };
-  const setOf = (m: Map<string, Set<string>>, key: string): Set<string> => {
-    let s = m.get(key);
-    if (!s) m.set(key, (s = new Set()));
-    return s;
-  };
 
   /** the sent acts of `key` memory (`mine`) still holds stay known as sent; the rest are let go */
   const keepSentIn = (key: string, mine: OutboxOp[]): void => {
@@ -235,9 +230,8 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     let there = new Map<string, number>();
     try { there = countsIn(storage.getItem(key)); } catch { /* unreadable: none */ }
     const notThere = unanswered(mine, there);
-    const missing = setOf(unkept, key);
-    missing.clear();
-    for (const o of notThere) missing.add(queueActIdent(o));
+    // counted (R3, #1106 r1b): two identical acts not kept are two, so the leave question says N=2
+    unkept.set(key, identityCounts(notThere));
     // an occurrence already copied aside is not copied again; a further identical one is (R3)
     const done = asideDone.get(key) ?? new Map<string, number>();
     asideDone.set(key, done);
@@ -397,7 +391,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     strandedCount(): number {
       // one this tab also lists not kept for its key is counted there, not twice
       let n = 0;
-      for (const [key, acts] of stranded) n += acts.filter((o) => !unkept.get(key)?.has(queueActIdent(o))).length;
+      for (const [key, acts] of stranded) n += unanswered(acts, unkept.get(key) ?? new Map<string, number>()).length;
       return n;
     },
     /** Write this tab's acts (`mine`) for `key`, and every stored entry `takes` refuses (memory left it out on purpose).
@@ -562,12 +556,12 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     /** how many acts memory holds that their key does not hold now, over every key */
     notKeptCount(): number {
       let n = 0;
-      for (const s of unkept.values()) n += s.size;
+      for (const counts of unkept.values()) for (const c of counts.values()) n += c;
       return n;
     },
-    /** the acts memory holds for `key` that the key does not hold now */
+    /** the acts memory holds for `key` that the key does not hold now: each identity once per occurrence */
     notKept(key: string): string[] {
-      return [...(unkept.get(key) ?? [])];
+      return [...(unkept.get(key) ?? [])].flatMap(([i, c]) => Array.from({ length: c }, () => i));
     },
   };
   return guard;
