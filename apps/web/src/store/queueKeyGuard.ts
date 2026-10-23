@@ -101,6 +101,9 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
   const withheld = new Map<string, Set<string>>();
   /** per key, the acts held in memory that the key does not hold now */
   const unkept = new Map<string, Set<string>>();
+  /** per key, the acts memory held at its last write or refused write, so the ones listed not kept can be held stranded
+   *  when memory goes (#1099 r1, Codex 4358186338) */
+  const lastMine = new Map<string, OutboxOp[]>();
   /** each locked write still waiting for its lock (`ask`): its key, and the acts it carries that the key did not hold
    *  when it was asked. Until it runs they are in no key and no copy, so the reload question counts them (B1 re-check) */
   const waiting = new Map<number, { key: string; idents: Set<string> }>();
@@ -164,14 +167,14 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
    *  listed not kept and copied aside beside it, once each, so it stays on this phone. When the copy cannot be made
    *  (storage full), they are held stranded as `keepUnsent` holds them, so a scope change or sign-out that clears memory
    *  never loses them (Codex 4353751499) */
-  const refuse = (storage: Store, key: string, mine: OutboxOp[], copy = true): void => {
+  const refuse = (storage: Store, key: string, mine: OutboxOp[]): void => {
     // not kept: every act memory holds that the key, unchanged by the refused write, does not hold now
     let there = new Set<string>();
     try { there = identsIn(storage.getItem(key)); } catch { /* unreadable: none */ }
     const missing = setOf(unkept, key);
     missing.clear();
     for (const o of mine) { const i = queueActIdent(o); if (!there.has(i)) missing.add(i); }
-    if (!copy) return; // a write that could not run (no lock): listed not kept only, copied at the next refused write
+    lastMine.set(key, mine);
     const done = setOf(asideDone, key);
     const fresh = mine.filter((o) => missing.has(queueActIdent(o)) && !done.has(queueActIdent(o)));
     // a copy that cannot be made leaves them in memory, listed not kept, and copied at the next write that cannot store
@@ -187,6 +190,16 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     releaseAside(storage, key, held);
   };
 
+  /** Memory's acts listed not kept for `key` that no copy aside holds are held stranded, before memory of them goes (a
+   *  scope change, a sign-out, a load that replaces memory): an act is then never only in a memory about to be dropped
+   *  (#1099 r1, Codex 4358186338: a lockless write's acts were lost at the next project switch) */
+  const strandUnkept = (key: string): void => {
+    const missing = unkept.get(key);
+    if (!missing || missing.size === 0) return;
+    const done = asideDone.get(key);
+    const acts = (lastMine.get(key) ?? []).filter((o) => missing.has(queueActIdent(o)) && !done?.has(queueActIdent(o)));
+    if (acts.length > 0) strand(key, acts);
+  };
   /** `rest`'s acts the key's bytes do not hold are copied aside beside it (a key this release cannot read, or one this
    *  tab could not take the lock of), counted against the key's own entries; true once they are on this phone. Those
    *  that can be neither copied nor read against the key (no storage) are held stranded (Codex 4345664670) */
@@ -213,7 +226,9 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       const raw = storage.getItem(key);
       const read = readStoredQueue(raw, scopesOf(key));
       onRead(key, 'acts' in read ? 'ok' : read.unreadable, raw);
+      strandUnkept(key); // memory is replaced by this load: what it alone held is held stranded first
       unkept.delete(key);
+      lastMine.delete(key);
       withheld.delete(key);
       loaded.add(key);
       const acts = 'acts' in read ? read.acts : [];
@@ -236,19 +251,35 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       const raw = storage.getItem(key);
       const readAs = readOf(raw, scopesOf(key));
       onRead(key, readAs, raw);
+      if (raw === null) {
+        // another tab cleared the key: nothing was sent, so what this tab saw there is not taken off by a sender, and
+        // memory's acts are not saved on this phone until a write stores them (#1099 r1, Codex 4358186342)
+        known.delete(key);
+        withheld.delete(key);
+        refuse(storage, key, mine);
+        return;
+      }
       if (readAs === 'ok' || raw === setAsideRaw.get(key)) { withheld.delete(key); return; }
       const saw = known.get(key);
       if (saw && saw.size > 0) withheld.set(key, new Set([...(withheld.get(key) ?? []), ...saw]));
       refuse(storage, key, mine);
     },
+    /** `key` read as it is now, and reported to `onRead`: the person's Set aside reads it again under its lock */
+    reread(storage: Store, key: string): KeyRead {
+      const raw = storage.getItem(key);
+      const readAs = readOf(raw, scopesOf(key));
+      onRead(key, readAs, raw);
+      return readAs;
+    },
     /** whether `o`, an act of memory's for `key`, is held from sending (`heard`) */
     withholds(key: string, o: OutboxOp): boolean {
       return withheld.get(key)?.has(queueActIdent(o)) ?? false;
     },
-    /** a write that could not run (no cross-tab lock): nothing is written, and `mine`'s acts the key does not hold are
-     *  listed not kept */
+    /** a write that could not run (no cross-tab lock): the key is not written; `mine`'s acts it does not hold are listed
+     *  not kept and copied aside beside it, once each, or held stranded when no copy can be made, as a refused write's
+     *  are (#1099 r1, Codex 4358186338). A copy names a new entry by its bytes, so it needs no lock */
     unwritten(storage: Store, key: string, mine: OutboxOp[]): void {
-      refuse(storage, key, mine, false);
+      refuse(storage, key, mine);
     },
     /** the key's load as a write is asked for, and the acts this tab then held: passed to `write` when it runs later,
      *  under its lock */
@@ -257,6 +288,9 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     },
     /** every key's memory goes (the scope moved, or the person signed out) */
     forget(): void {
+      // what memory alone held is held stranded before memory goes (#1099 r1, Codex 4358186338)
+      for (const key of unkept.keys()) strandUnkept(key);
+      lastMine.clear();
       // a write of the old scope's key still waiting for its lock keeps what it asked with (`epoch`)
       known.clear();
       withheld.clear();
@@ -282,6 +316,12 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
      *  dropped (Codex 4345664670). */
     keepUnsent(storage: Store | null, key: string, rest: OutboxOp[], batch: OutboxOp[], after: (l: OutboxOp[]) => OutboxOp[], takes: (o: OutboxOp) => boolean = () => true): boolean {
       let there = new Set<string>();
+      // an act of this flush memory no longer holds is settled (sent, or refused and kept elsewhere): not listed not
+      // kept, so a later `forget` never holds it stranded (#1099 r1)
+      const left = new Set(rest.map(queueActIdent));
+      const settled = new Set(batch.map(queueActIdent).filter((i) => !left.has(i)));
+      const missing = unkept.get(key);
+      if (missing) for (const i of settled) missing.delete(i);
       try {
         if (!storage) throw new Error('no storage');
         const stored = readKey(storage, key, scopesOf(key));
@@ -345,6 +385,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
         const missing = setOf(unkept, key);
         missing.clear();
         for (const i of held.keys()) if (!kept.has(i) && !taken.has(i)) missing.add(i);
+        lastMine.set(key, mine);
         // a stranded act is let go once the key holds it, or once memory, since the load that handed it back, no longer
         // holds it (settled)
         unstrand(key, (i) => kept.has(i) || handed.has(key));

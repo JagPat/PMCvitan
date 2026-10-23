@@ -90,7 +90,7 @@ import {
   beginCreateSend, createHoldScope, currentCreateHoldView, releaseCreate, reserveCreateRetry, reserveNewCreate, serverKeepsCreateReceipts,
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
 } from './projectCreateHold';
-import { createQueueKeyGuard, type QueueWrite } from '@/store/queueKeyGuard';
+import { createQueueKeyGuard, queueActIdent, type QueueWrite } from '@/store/queueKeyGuard';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
@@ -2478,6 +2478,7 @@ export const useStore = create<Store>()(
      *  then never leave the old scope's list on the next one (Codex 4351952392, the third such leak's root cause) */
     const resetQueueScope = (): void => {
       queueKeys.forget();
+      aheadUnsaved.clear(); // what this tab held back for the scope it left goes with that scope's memory
       set({ queueUnreadable: [], queueSetAsideFailed: false });
     };
     /** each stored key's write from memory: the general queue, then the visit lane */
@@ -2485,13 +2486,22 @@ export const useStore = create<Store>()(
       { key: outboxKey(), mine: get().outbox.filter((o) => !isSiteVisitOp(o)), takes: (o) => !isSiteVisitOp(o) },
       { key: siteVisitKeyOf(outboxKey()), mine: get().outbox.filter(isStoredVisitOp), takes: isStoredVisitOp },
     ];
+    /** the write-ahead acts no write has yet stored in their key: a flush never sends one until its key's write
+     *  returns true, so a send always has its retry record on this phone (#1099 r1, Codex 4358186328) */
+    const aheadUnsaved = new Set<string>();
+    /** acts now on this phone: their key's write holds them, or a kept photo's row (IndexedDB) does */
+    const storedHere = (acts: OutboxOp[]): void => { for (const o of acts) aheadUnsaved.delete(queueActIdent(o)); };
     /** step B1: each key is merged under its own cross-tab lock; true only when both then hold every act memory holds */
     const persistOutbox = async (): Promise<boolean> => {
       try {
         const storage = globalThis.localStorage;
         if (!storage) return false;
         const writes = queueWrites(); // memory as it is now, so the writes run in the order the acts were made
-        return (await Promise.all(writes.map((w) => writeQueueKey(queueKeys, storage, w.key, w.mine)))).every(Boolean);
+        return (await Promise.all(writes.map(async (w) => {
+          const kept = await writeQueueKey(queueKeys, storage, w.key, w.mine);
+          if (kept) storedHere(w.mine);
+          return kept;
+        }))).every(Boolean);
       } catch {
         return false; // storage unavailable — the in-session outbox still works, and nothing says it is saved
       }
@@ -2630,6 +2640,8 @@ export const useStore = create<Store>()(
           rebuilt = true;
         }
       });
+      // a kept photo's row holds its act and the start it needs: their retry record is on this phone
+      for (const row of rows) if (row.state === 'queued') storedHere([row.op, ...(row.start ? [row.start] : [])]);
       if (rebuilt) persistOutbox();
       return rebuilt;
     };
@@ -2800,21 +2812,26 @@ export const useStore = create<Store>()(
     // follows a language the viewer switched to while the command was on its way (#835)
     /** the write-ahead writes still waiting for their lock (C2b) */
     const aheadWrites = new Set<Promise<boolean>>();
-    const writeAhead = (): Promise<boolean> => {
+    const writeAhead = (acts: OutboxOp[]): Promise<boolean> => {
+      for (const o of acts) aheadUnsaved.add(queueActIdent(o));
       const written = persistOutbox();
       aheadWrites.add(written);
       void written.finally(() => aheadWrites.delete(written));
       return written;
     };
-    const runWriteAhead = (op: OutboxOp, label: string, okMsg: string | (() => string), offlineMsg?: string): boolean => {
+    const runWriteAhead = (op: OutboxOp, label: string, okMsg: string | (() => string), offlineMsg?: string, inRow: OutboxOp[] = []): boolean => {
       if (!gateway) return false;
       set((s) => { s.outbox.push(op); if (!s.online) s.syncQueue.push(label); });
+      storedHere(inRow);
       // stored before any network call (C2b): no flush takes the outbox while a write-ahead's write is still waiting
-      const written = writeAhead();
+      const written = writeAhead(inRow.includes(op) ? [] : [op]);
+      // on this phone once its own key's write holds it, or a photo's row does, whatever the other key's write does
+      const stored = (kept: boolean) => kept || !aheadUnsaved.has(queueActIdent(op));
       if (get().online) {
-        void written.then(() => get().flushOutbox({ okMsg }));
+        // sent only once its write holds it; otherwise it waits in memory, said not saved, for a later write
+        void written.then((kept) => { if (stored(kept)) void get().flushOutbox({ okMsg }); else get().flash(QW.notSavedYet[get().lang]); });
       } else {
-        void written.then((kept) => get().flash(kept ? (offlineMsg ?? label + ' — saved offline, will sync when you reconnect.') : QW.notSavedYet[get().lang]));
+        void written.then((kept) => get().flash(stored(kept) ? (offlineMsg ?? label + ' — saved offline, will sync when you reconnect.') : QW.notSavedYet[get().lang]));
       }
       return true;
     };
@@ -4205,7 +4222,7 @@ export const useStore = create<Store>()(
               if (!s.online) s.syncQueue.push('Publish ' + number);
             });
           });
-          writeAhead(); // C2b: no flush sends these before their locked write has run
+          writeAhead(get().outbox.filter((o) => o.t === 'publishDrawing' && drawingKeys.includes((o as { idempotencyKey?: string }).idempotencyKey ?? ''))); // C2b: no flush sends these before their locked write has stored them
           if (get().online) flushDone = get().flushOutbox();
         }
         void (async () => {
@@ -6234,7 +6251,9 @@ export const useStore = create<Store>()(
         get().flash(DLX.synced(n, get().lang));
       }
     },
-    queueSiteVisitAct: (op, offlineMsg) => runWriteAhead(op, 'Site visit', '', offlineMsg),
+    // a photo is queued only once its row holds it and the start it needs (`keepAndQueue`)
+    queueSiteVisitAct: (op, offlineMsg) => runWriteAhead(op, 'Site visit', '', offlineMsg, op.t === 'siteVisitAddFile'
+      ? [op, ...get().outbox.filter((o) => o.t === 'siteVisitStart' && o.body.id === op.visitId)] : []),
     // the screen's own reads: a sent photo not listed yet, or its kept photos not read. A retry holds nothing: the flush
     // it runs holds only the visits a kept photo may be on
     retrySiteVisits: () => { if (get().online) retryVisitPhotos(); },
@@ -6298,6 +6317,13 @@ export const useStore = create<Store>()(
         // C2b: a write-ahead act is sent only once its locked write has run
         const waitKey = outboxKey();
         while (aheadWrites.size > 0) await Promise.all([...aheadWrites]);
+        if (outboxKey() !== waitKey) return notRun();
+      }
+      if (aheadUnsaved.size > 0) {
+        // a write-ahead act whose write did not store it: written again first (the later attempt), and held below if
+        // that write does not store it either (#1099 r1, Codex 4358186328)
+        const waitKey = outboxKey();
+        await writeAhead([]);
         if (outboxKey() !== waitKey) return notRun();
       }
       const heldVisits: OutboxOp[] = [];
@@ -6416,7 +6442,7 @@ export const useStore = create<Store>()(
         }
         // an act this tab last saw in a key another tab then made unreadable is held, not sent: that tab's bytes may
         // hold it (Codex 4353751507); it stays in memory, listed not kept, until the key is read or written again
-        if (holds(ops[i]) || queueKeys.withholds(isSiteVisitOp(ops[i]) ? siteVisitKeyOf(flushKey) : flushKey, ops[i])) { heldVisits.push(ops[i]); continue; }
+        if (holds(ops[i]) || aheadUnsaved.has(queueActIdent(ops[i])) || queueKeys.withholds(isSiteVisitOp(ops[i]) ? siteVisitKeyOf(flushKey) : flushKey, ops[i])) { heldVisits.push(ops[i]); continue; }
         const mat = isMaterialsOp(ops[i]);
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);

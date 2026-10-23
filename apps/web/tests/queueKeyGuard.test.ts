@@ -105,11 +105,12 @@ describe('queueKeyGuard: step B1, the ordered merge', () => {
     expect(st.keys(K)).toEqual(['mine']);
   });
 
-  it('a write that could not run writes nothing and lists the acts the key does not hold as not kept', () => {
+  it('a write that could not run leaves the key alone, lists the acts it does not hold as not kept, and copies them aside (#1099 r1, Codex 4358186338)', () => {
     const st = storage({ [K]: JSON.stringify([a('there')]) });
     const q = createQueueKeyGuard();
     q.unwritten(st, K, [a('there'), a('new')]);
-    expect(st.writes).toEqual([]);
+    expect(st.writes.filter((w) => w === K)).toEqual([]);
+    expect(st.writes.filter((w) => w.startsWith(`vitan.unreadable.${K}.`)).map((w) => JSON.parse(st.getItem(w)!))).toEqual([[a('new')]]);
     expect(q.notKept(K)).toEqual([queueActIdent(a('new'))]);
   });
 

@@ -123,7 +123,7 @@ describe('Site Visits screen', () => {
 
   it('saves the phone’s location when it shares one, and starts without it when the prompt goes unanswered', async () => {
     const geo = { getCurrentPosition: vi.fn((ok: PositionCallback) => ok({ coords: { latitude: 23.03, longitude: 72.5, accuracy: 12 }, timestamp: Date.parse('2026-10-14T04:30:00Z') } as GeolocationPosition)) };
-    vi.stubGlobal('navigator', { ...navigator, geolocation: geo });
+    vi.stubGlobal('navigator', { ...navigator, locks: navigator.locks, geolocation: geo });
     const gw = fakeGateway([]);
     await mount('pmc', PMC, gw);
     await act(async () => { fireEvent.click(screen.getByTestId('sv-start')); });
@@ -132,7 +132,7 @@ describe('Site Visits screen', () => {
 
     // a permission prompt nobody answers never calls back; the start goes without a location after the wait
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    vi.stubGlobal('navigator', { ...navigator, geolocation: { getCurrentPosition: vi.fn() } });
+    vi.stubGlobal('navigator', { ...navigator, locks: navigator.locks, geolocation: { getCurrentPosition: vi.fn() } });
     const gw2 = fakeGateway([]);
     await mount('pmc', PMC, gw2);
     await act(async () => { fireEvent.click(screen.getByTestId('sv-start')); });
@@ -325,7 +325,7 @@ describe('Site Visits screen', () => {
 
   it('never sends a start whose location wait outlives the project it was pressed in (Codex 4274234657)', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    vi.stubGlobal('navigator', { ...navigator, geolocation: { getCurrentPosition: vi.fn() } });
+    vi.stubGlobal('navigator', { ...navigator, locks: navigator.locks, geolocation: { getCurrentPosition: vi.fn() } });
     const gw = fakeGateway([]);
     await mount('pmc', PMC, gw);
     await act(async () => { fireEvent.click(screen.getByTestId('sv-start')); });
