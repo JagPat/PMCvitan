@@ -16,19 +16,21 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: site-map-633
-reviewed_merge: 0936d32
-open_pr: 883
+work_item: none
+reviewed_merge: 6034fe3
+open_pr: none
 next_task: phase-6-task-4d-iii
 blocking_directive: none
-updated: 2026-10-14
+updated: 2026-10-23
 ```
 
 ### Current unit
 
-**#633 unit C: desktop tree layout** (#883, on `claude/project-thread-cm4aq9`): on a desktop-width screen the Site Map
-shows a "Places" tree beside the selected place, with the path to it open and each blocked or issue-carrying place
-flagged in words; phones keep the single column. Unit B merged as `0936d32` (#879), unit A as `4a60d1a` (#877). Lane 1.
+Coordination issue: **#1094** (pinned summary, edited in place after each merge). It lists the open
+implementation PRs (cap 3), what each waits on, and the next units. This block records no open PR:
+#883 (#633 unit C) is closed, and current work is shepherded from #1094 and each PR.
+Last reviewed merge: `6034fe3` (#1088, WEB-02 step A1). Its deferred head-6 findings are in #1093; the
+two-tab findings 4346778582, 4349463910 and 4353751507 stay open in #1086 until B1 merges.
 
 Live bug #806 unit A merged at `6cae444` (#809); POLICY's second-head stop at `9b68c3c` (#810). #807 stays open and
 stopped at `104fa41`; unit B of #806 is a separate proposal there.
