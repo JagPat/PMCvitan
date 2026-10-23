@@ -24,6 +24,7 @@ import { consultationOpen } from './consultation-open';
 import { assertPhase6_4dOpen } from '../platform/phase6-4d-rollout';
 import { assertCountersignClient } from '../platform/countersign-contract';
 import { RoleStandingQuery } from '../platform/role-standing.query';
+import { lockStandingAnchors } from '../common/standing-anchor';
 import { decisionPath } from '../platform/record-paths';
 
 /** The consultation commands REQUIRE a client key (review round 19) — see `requestConsultation`. */
@@ -782,6 +783,16 @@ export class DecisionsService {
         // the reservation door, judged under the readiness key: 409 until 4d-iii retires it
         await assertPhase6_4dOpen(tx, 'Forwarding a decision');
         await assertCountersignClient(tx, projectId, user.decisionsContract, 'Forwarding a decision');
+        // #1061 — the standing anchors of everyone this forward locks, in one sorted call before any row: the
+        // actor (read here, written when they hold a role the seal locks), the displaced named holder and the
+        // new holder(s), whose standing rows the seal locks FOR UPDATE after the project row
+        // (`platform_membership_active_user`, `platform_role_has_holder`). A holder's own mark takes their
+        // anchor first, so it waits here instead of holding their row while the seal waits on it. Every
+        // standing writer takes this project's readiness key, held above, so these sets cannot move.
+        await lockStandingAnchors(tx, {
+          read: [actor.actorId],
+          write: await this.forwardLockedPeople(tx, projectId, decisionId, toKind, toMembershipId),
+        });
         // AUTHORITY (the owner's amendment: the current HOLDER + the PMC + the architect), every arm judged
         // LIVE under the standing rows' locks — Membership before the decision row (the one order): the
         // route's role re-validated, then the holder arm (a named holder's own membership, locked; a role
@@ -1159,6 +1170,24 @@ export class DecisionsService {
 
   // ═══ Phase 6 task 4d (4d-ii-a / A8b) — THE CHAIN'S THREE REMAINING WRITERS ═══════════════════════
 
+  /**
+   * #1061 — the people whose standing rows a forward's seal locks FOR UPDATE after the project row: the
+   * decision's displaced NAMED holder and the new holder (a named member's user, or every holder of the
+   * target role). Plain reads, under the readiness key the caller holds: every decision command and every
+   * standing writer takes it, so neither the holder nor the role's holders can move before commit, and a
+   * membership's user never changes.
+   */
+  private async forwardLockedPeople(
+    tx: Prisma.TransactionClient, projectId: string, decisionId: string, toKind: string, toMembershipId: string | null,
+  ): Promise<string[]> {
+    const d = await tx.decision.findUnique({ where: { id: decisionId }, select: { deciderKind: true, deciderMembershipId: true } });
+    const memberIds = [d?.deciderKind === 'member' ? d.deciderMembershipId : null, toKind === 'member' ? toMembershipId : null]
+      .filter((id): id is string => id !== null);
+    const named = await this.orgsParticipant.membershipUserIds(tx, projectId, memberIds);
+    const roleHolders = toKind === 'member' ? [] : await RoleStandingQuery.holderUserIds(tx, projectId, toKind);
+    return [...named, ...roleHolders];
+  }
+
   /** The decision's OPEN provisional approval: its highest-version revision, still unfinalized, with the
    *  option it chose. What the countersign and the stranded resolution act on (4d-i's
    *  `phase6_t4d_provisional_head` judges the same thing at the fact's insert). */
@@ -1531,6 +1560,14 @@ export class DecisionsService {
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         await assertCountersignClient(tx, projectId, user.decisionsContract, 'Rejecting a provisional approval');
+        // #1061 — a forward-on bundle locks the displaced and new holders' standing FOR UPDATE in the
+        // forward seal, after the project row: their anchors first, with the actor's, in one call
+        if (target) {
+          await lockStandingAnchors(tx, {
+            read: [actor.actorId],
+            write: await this.forwardLockedPeople(tx, projectId, decisionId, target.kind, target.membershipId),
+          });
+        }
         if (user.role !== 'architect' || !(await RoleStandingQuery.holdsRole(tx, projectId, user.sub, 'architect'))) {
           throw new ForbiddenException('Only an active architect can reject a provisional approval');
         }
@@ -1605,6 +1642,14 @@ export class DecisionsService {
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
+        // #1061 — a forward-on bundle locks the displaced and new holders' standing FOR UPDATE in the
+        // forward seal, after the project row: their anchors first, with the actor's, in one call
+        if (target) {
+          await lockStandingAnchors(tx, {
+            read: [actor.actorId],
+            write: await this.forwardLockedPeople(tx, projectId, decisionId, target.kind, target.membershipId),
+          });
+        }
         // AUTHORITY: the PMC, live under the standing row's lock (the fact freezes `pmc`)
         if (user.role !== 'pmc' || !(await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, user.sub, ['pmc'], { forUpdate: true }))) {
           throw new ForbiddenException('Only the PMC can resolve a stranded decision');

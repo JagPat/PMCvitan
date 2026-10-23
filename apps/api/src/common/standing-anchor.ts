@@ -7,15 +7,14 @@ import { Prisma } from '@prisma/client';
  * `"OrgUserAuthority"` row, and a project re-role deletes the old-role `"ProjectUserStanding"` row and
  * inserts the new one (the role is in its key). A reader that waits on such a row and finds it deleted
  * locks nothing, goes on to the project row, and deadlocks with the next writer. So every reader of a
- * person's standing takes this anchor SHARED and every writer of it takes it EXCLUSIVE, before any row:
- * the anchor is a transaction advisory lock and is never deleted. The decision forward, which locks its
- * holders' standing `FOR UPDATE`, is not a taker yet: it joins in a later unit, once the standing
- * projection is serialized for direct writers (#1100); it stays reserved until 4d-iii.
+ * person's standing takes this anchor SHARED and every writer of it (and every transaction that locks
+ * that person's standing `FOR UPDATE`, a forward's holders) takes it EXCLUSIVE, before any row: the
+ * anchor is a transaction advisory lock and is never deleted.
  *
  * Order: after the transaction's ORG, readiness and tree keys (never a key after an anchor), and before
  * the named people's `"OrgUserAuthority"` / `"ProjectUserStanding"` rows and the `"Project"` row. Every
- * EXCLUSIVE taker (members add / re-role / remove / discipline, the org roster's standing arm) takes its
- * people in ONE call, ascending by user id, one mode per person
+ * EXCLUSIVE taker (members add / re-role / remove / discipline, the org roster's standing arm, a forward
+ * and its countersign forward-ons) takes its people in ONE call, ascending by user id, one mode per person
  * (exclusive if it writes them at all), before any row lock: two transactions naming the same two people
  * in opposite roles, on different projects, cannot deadlock on the anchors, and a self-act never asks
  * shared and then exclusive. Nothing checks this at run time: a new exclusive caller must keep it.
