@@ -36,7 +36,7 @@ WEB-02 B1 is frozen and superseded (Board approval of the L1 plan r3 v4, #1094 6
 Neither takes another push. L1′ (`Replaces: #1109`, closes #1111) and L2 (`Replaces: #1106`) supersede them.
 **Next: B2f-1**, U2a's per-key Web Lock moved ahead, opened from `main` after this file merges. Then B2f-2
 (detection only), L1′, L2, and U2b, U3 and the rest of step B2. B2f-3 is dropped. The two-tab findings
-4346778582, 4349463910 and 4353751507 stay open in #1086 until B1 merges.
+4346778582, 4349463910 and 4353751507 stay open in #1086 until L1′ and L2, B1's replacements, both merge.
 
 Live bug #806 unit A merged at `6cae444` (#809); POLICY's second-head stop at `9b68c3c` (#810). #807 stays open and
 stopped at `104fa41`; unit B of #806 is a separate proposal there.
