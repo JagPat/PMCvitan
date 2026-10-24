@@ -224,8 +224,8 @@ export class DailyLogService {
       scope, actor, commandType: 'daily-log.addMaterial', idempotencyKey, requestHash,
       run: async (tx) => {
         // #1061 — the actor's standing anchor before any row: this command takes no project key and locks the
-        // linked decision FOR SHARE below, so its emit's shared call would otherwise come after a row lock
-        // without the readiness key, which the anchor's order rule (common/standing-anchor.ts) does not allow
+        // linked decision FOR SHARE below, and a forward that holds this person's anchor exclusive waits on
+        // that row; taking the anchor only at the emit would close the cycle
         await lockStandingAnchors(tx, { read: [actor.actorId] });
         if (input.decisionId) {
           // Round 13 (Codex): the AUTHORITY — re-checked inside the command transaction under

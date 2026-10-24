@@ -241,8 +241,8 @@ export class MediaService {
         // rolls back and goes through the earned object cleanup below)
         await resolvePublishedProjectNode(tx, projectId, nodeId);
         // #1061 — the uploader's standing anchor after the keys and before the insert: outside a visit this takes no
-        // project key, and the insert key-share locks a linked decision, so the emit's shared call would otherwise
-        // come after a row lock without the readiness key, which the anchor's order rule does not allow
+        // project key, and the insert key-share locks a linked decision, which a forward holding this person's
+        // anchor exclusive waits on; taking the anchor only at the emit would close the cycle
         await lockStandingAnchors(tx, { read: [user.sub] });
         const created = await tx.media.create({
           data: {
