@@ -98,8 +98,9 @@ export function queueStrip(view: { get: () => StripState; set: (p: Partial<Strip
       const storage = globalThis.localStorage;
       const scope = bindScope();
       if (!scope) return;
-      // what a reload loses: every act memory holds that no key holds, and every act held stranded
-      if (!mayReload(view.keys().notKeptCount() + view.keys().strandedCount(), view.get().lang)) return;
+      // what a reload loses: every act memory holds that no key holds, every act of a write still waiting for its lock,
+      // and every act held stranded, each once
+      if (!mayReload(view.keys().unsavedCount(), view.get().lang)) return;
       markReloaded(view.get().queueUnreadable.filter((u) => u.read === 'newer' && scope.includes(u.key)).map((u) => ({ key: u.key, raw: storage?.getItem(u.key) ?? null })));
       globalThis.location?.reload();
     },

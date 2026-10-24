@@ -3,6 +3,7 @@ import { useStore, getInitialState } from '@/store/store';
 import { ApiGateway, replayOutboxOp, type OutboxOp } from '@/data/apiGateway';
 import { isKnownOutboxOp, SERVER_SCHEMA_OF, serverBodyOf } from '@/data/storedActs';
 import { syncResultText as SYNC } from '@vitan/shared';
+import { queueWritten } from './queueWrites';
 
 /**
  * #1051 r1, Codex 4336713248: a stored act was taken as loadable when it named a known kind, whatever its fields held.
@@ -399,8 +400,10 @@ describe('#1051 r1, Codex 4336713248: a key holding a damaged act of a known kin
     await useStore.getState().flushOutbox();
     useStore.setState({ online: false });
     useStore.getState().startActivity('B-1');
+    await queueWritten(); // step B1: written under the queue's lock, after the act
     expect(localStorage.getItem(keyOf(t))).toBe(raw);
     useStore.getState().setAsideUnreadableQueue();
+    await queueWritten();
     expect(useStore.getState().queueUnreadable).toEqual([]);
     // the key's bytes are copied aside. The start this tab could not store beside the general key was copied aside too
     // (#1079 4344436665); once Set aside writes it to the key, that copy is removed (#1096, Codex 4356145036)

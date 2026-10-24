@@ -3,6 +3,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import { replayOutboxOp, type ApiGateway, type OutboxOp } from '@/data/apiGateway';
+import { queueWritten } from './queueWrites';
 
 /**
  * WEB-02 step A (#482 6333415419): what this release takes from a stored queue key, and what its writes keep.
@@ -58,16 +59,18 @@ describe('WEB-02 step A: what a stored queue key gives this release, and what it
     await expect(replayOutboxOp({ project: P1 } as unknown as ApiGateway, { t: 'aKindFromANewerRelease' } as unknown as OutboxOp)).rejects.toThrow('no replay for aKindFromANewerRelease');
   });
 
-  it('4344270652: a lane photo act memory leaves out stays stored at this tab’s writes', () => {
+  it('4344270652: a lane photo act memory leaves out stays stored at this tab’s writes', async () => {
     signedIn({ lane: [photo] });
     act(() => { s().queueSiteVisitAct(end('00000000-0000-4000-8000-000000000002', 'k-mine'), 'saved offline'); });
+    await queueWritten(); // step B2f-1: the write runs under the queue's lock, after the act
     expect(keysOf(lane)).toEqual(['k-mine', 'k-photo']);
   });
 
-  it('4344270652: a site visit act stored in the general key, which memory leaves out, stays stored there', () => {
+  it('4344270652: a site visit act stored in the general key, which memory leaves out, stays stored there', async () => {
     signedIn({ general: [end('00000000-0000-4000-8000-000000000001', 'k-in-general'), approve('k-a')] });
     useStore.setState((st) => { st.outbox = [...st.outbox, approve('k-b')]; });
     act(() => { s().queueSiteVisitAct(end('00000000-0000-4000-8000-000000000002', 'k-v'), 'saved offline'); });
+    await queueWritten(); // step B2f-1: the write runs under the queue's lock, after the act
     expect(keysOf(key)).toEqual(['k-a', 'k-b', 'k-in-general']);
   });
 
@@ -78,6 +81,7 @@ describe('WEB-02 step A: what a stored queue key gives this release, and what it
     expect(s().outbox).toEqual([]);
     useStore.setState((st) => { st.outbox = [...st.outbox, approve('k-mine')]; });
     act(() => { s().queueSiteVisitAct(end('00000000-0000-4000-8000-000000000002', 'k-v'), 'saved offline'); });
+    await queueWritten(); // step B2f-1: the write runs under the queue's lock, after the act
     expect(JSON.parse(localStorage.getItem(key)!)).toEqual(newer);
     expect(keysOf(lane)).toEqual(['k-v']);
     // the act made here is copied aside beside the key, so it stays on this phone

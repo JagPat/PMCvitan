@@ -4,6 +4,7 @@ import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, ApiSnapshot } from '@/data/apiGateway';
 import { ProjectLoadBoundary } from '@/layout/ProjectLoadBoundary';
 import { leftoverEnglish } from './leftover-english';
+import { nextToast } from './queueWrites';
 
 /**
  * #827 (Board order: error messages) — the lines a decision action shows afterwards (approve, change,
@@ -70,12 +71,13 @@ describe('approve', () => {
       expect(latinLeft(s().toast!)).toEqual([]);
     });
 
-    it(`${lang}: queued offline names the decision and nothing else in English`, () => {
+    it(`${lang}: queued offline names the decision and nothing else in English`, async () => {
       const d = firstDecision();
       connect({ approveDecision: vi.fn() }, lang, false);
       useStore.setState({ modal: { type: 'approve', decId: d.id, optIdx: 0 } } as never);
+      const said = nextToast(); // step B1: said once the act is written on this phone
       s().confirmApprove();
-      expect(s().toast).toContain(d.id);
+      expect(await said).toContain(d.id);
       expect(latinLeft(s().toast!, [d.id])).toEqual([]);
       // the sync list keeps its English label: it is the outbox's key, not a toast
       expect(s().syncQueue).toEqual(['Approve ' + d.id]);
@@ -89,12 +91,13 @@ describe('approve', () => {
     });
   }
 
-  it('English offline line is unchanged', () => {
+  it('English offline line is unchanged', async () => {
     const d = firstDecision();
     connect({ approveDecision: vi.fn() }, 'en', false);
     useStore.setState({ modal: { type: 'approve', decId: d.id, optIdx: 0 } } as never);
+    const said = nextToast();
     s().confirmApprove();
-    expect(s().toast).toBe(`Approve ${d.id} — saved offline, will sync when you reconnect.`);
+    expect(await said).toBe(`Approve ${d.id} — saved offline, will sync when you reconnect.`);
   });
 });
 
