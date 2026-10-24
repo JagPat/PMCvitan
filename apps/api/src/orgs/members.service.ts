@@ -80,15 +80,21 @@ function holderGuard4dRefusal(message: string): string | null {
 }
 
 /**
- * Phase 6 task 4d unit 4d-ii-a / A3b — the one 4d-i transition-seal refusal a correct command can
- * still meet: the actor's team-management authority, re-judged LIVE by
- * `MembershipTransition_t4d_seal` at the fact's insert. `canManage` read it before the
- * transaction (and a `pmc` token is trusted as issued), so a PMC demoted or an owner/admin removed
- * in between reaches the seal, and the caller is owed the 403 `canManage` would now give.
+ * Phase 6 task 4d unit 4d-ii-a / A3b — the two 4d-i transition-seal refusals a correct command can
+ * still meet, both re-judged LIVE by `MembershipTransition_t4d_seal` at the fact's insert:
+ * - the actor's team-management authority. `canManage` read it before the transaction (and a `pmc`
+ *   token is trusted as issued), so a PMC demoted or an owner/admin removed in between reaches the
+ *   seal, and the caller is owed the 403 `canManage` would now give;
+ * - the project's operability (#1072). An archive that commits after the command passed its checks
+ *   is met at the seal's project-row lock ("is archived — no decision fact may be recorded"), and
+ *   the caller is owed a 409, like the other archived-project refusals, not a 500.
  */
-function rethrowTransitionAuthority(e: unknown): never {
+function rethrowTransitionSealRefusal(e: unknown): never {
   if (e instanceof Error && /holds neither owner\/admin authority/.test(e.message)) {
     throw new ForbiddenException('Only the project PMC or an org admin can manage the team');
+  }
+  if (e instanceof Error && /phase6 4d-i: project \S+ is archived — no decision fact may be recorded against it/.test(e.message)) {
+    throw new ConflictException('This project is archived — its team can no longer be changed');
   }
   throw e;
 }
@@ -273,7 +279,7 @@ export class MembersService {
         },
         select: { id: true },
       })
-      .catch(rethrowTransitionAuthority);
+      .catch(rethrowTransitionSealRefusal);
     return id;
   }
 

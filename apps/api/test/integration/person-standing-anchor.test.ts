@@ -524,11 +524,10 @@ describe('#1061 — the person standing anchor (live PG)', () => {
     expect(await lifecycleVsReRole('editor2', (tok) => http().patch(`/orgs/${f.orgA.id}/projects/${f.projectA.id}`).set('Authorization', `Bearer ${tok}`).send({ name: `Project A ${run} b` }))).toBe(200);
   }, 60_000);
 
-  // The re-role runs after the archive commits, so it must not succeed. It answers 500 today: the 4d-i seal's
-  // "is archived" raise is not mapped. That race is not the anchor's: it is the same with an unrelated member
-  // (design-check probe G3, base and patched), so it is pinned here as is and left to #1072.
+  // The re-role runs after the archive commits, so it must not succeed: the 4d-i seal's "is archived" raise
+  // answers 409 (#1072; `member-archive-race.test.ts` forces the same race for an unrelated member).
   it('8. a project archive, stopped at its project UPDATE, against a re-role of the archiver: the re-role waits at the anchor', async () => {
-    await lifecycleVsReRole('archiver', (tok) => http().delete(`/orgs/${f.orgA.id}/projects/${f.projectA.id}`).set('Authorization', `Bearer ${tok}`), [409, 500]);
+    await lifecycleVsReRole('archiver', (tok) => http().delete(`/orgs/${f.orgA.id}/projects/${f.projectA.id}`).set('Authorization', `Bearer ${tok}`), [409]);
   }, 60_000);
   // 9: a command that takes no project key and locks a row before its emit must take its actor's anchor first. A
   // daily-log material add locks the linked decision FOR SHARE; a forward of that decision to the adder holds the
