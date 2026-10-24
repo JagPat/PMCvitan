@@ -4,6 +4,7 @@ import { act, render, screen } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
 import { QueueUnreadable } from '@/layout/QueueUnreadable';
+import { queueWritten } from './queueWrites';
 
 /**
  * #1085 round 4. Codex 4348114926: after a project switch and before that project's load, the strip and memory were
@@ -31,7 +32,7 @@ function onProject(p: string) {
   s()._setGateway({ project: p, listSiteVisits: vi.fn(async () => []), snapshot: vi.fn(async () => null) } as unknown as ApiGateway);
   s().hydrateOutbox();
 }
-const queueOne = (k: string) => { act(() => { s().queueSiteVisitAct({ t: 'siteVisitEnd', visitId: '00000000-0000-4000-8000-000000000001', claimedAt: '2026-10-14T05:30:00.000Z', idempotencyKey: k }, 'saved offline'); }); };
+const queueOne = async (k: string) => { act(() => { s().queueSiteVisitAct({ t: 'siteVisitEnd', visitId: '00000000-0000-4000-8000-000000000001', claimedAt: '2026-10-14T05:30:00.000Z', idempotencyKey: k }, 'saved offline'); }); await queueWritten(); };
 const reloadStub = () => {
   const reload = vi.fn();
   vi.stubGlobal('location', { ...window.location, reload });
@@ -56,10 +57,10 @@ afterEach(() => {
 });
 
 describe('#1085 r4, Codex 4348114926: Reload acts only for the scope the strip was read for', () => {
-  it('forced probe: after a project switch and before its load, Reload neither reloads nor marks', () => {
+  it('forced probe: after a project switch and before its load, Reload neither reloads nor marks', async () => {
     localStorage.setItem(lane, NEWER);
     onProject('p-1');
-    queueOne('k-v'); // the lane is a newer release's: this act is not saved on this phone
+    await queueOne('k-v'); // the lane is a newer release's: this act is not saved on this phone
     expect(s().queueUnreadable.map((u) => u.key)).toEqual([lane]);
     const ask = vi.fn(() => true); // even a person who would say yes is not asked: the tap does nothing yet
     vi.stubGlobal('confirm', ask);
@@ -71,10 +72,10 @@ describe('#1085 r4, Codex 4348114926: Reload acts only for the scope the strip w
     expect(sessionStorage.getItem('vitan.queueReloaded')).toBeNull();
   });
 
-  it('guard: once the project’s load has run, Reload asks about every act not saved on this phone', () => {
+  it('guard: once the project’s load has run, Reload asks about every act not saved on this phone', async () => {
     localStorage.setItem(lane, NEWER);
     onProject('p-1');
-    queueOne('k-v');
+    await queueOne('k-v');
     const ask = vi.fn(() => false);
     vi.stubGlobal('confirm', ask);
     const reload = reloadStub();
@@ -150,12 +151,12 @@ describe('#1085 r4, Codex 4348114913: Set aside sets every listed key aside, or 
 });
 
 describe('step A2 on #1088 head 6 and #1096: Set aside and Reload keep every act that a copy aside holds or that is held stranded', () => {
-  it('a Set aside put back re-copies the act whose earlier copy its landed write removed, and the next tap removes both act copies', () => {
+  it('a Set aside put back re-copies the act whose earlier copy its landed write removed, and the next tap removes both act copies', async () => {
     localStorage.setItem(lane, '{bad lane');
     localStorage.setItem(key, '{bad general');
     onProject('p-1');
     useStore.setState((st) => { st.outbox = [approve('k-a')]; });
-    queueOne('k-v'); // both keys refuse the write: each act is copied aside beside its key
+    await queueOne('k-v'); // both keys refuse the write: each act is copied aside beside its key
     expect(copiesOf(key)).toEqual([JSON.stringify([approve('k-a')])]);
     expect(copiesOf(lane)).toHaveLength(1);
     const spy = refusing((k) => k === lane);
@@ -173,11 +174,11 @@ describe('step A2 on #1088 head 6 and #1096: Set aside and Reload keep every act
     expect(s().queueUnreadable).toEqual([]);
   });
 
-  it('Reload counts an act held stranded because its copy aside failed (#1088 head 6), after a switch away and back', () => {
+  it('Reload counts an act held stranded because its copy aside failed (#1088 head 6), after a switch away and back', async () => {
     localStorage.setItem(lane, NEWER);
     onProject('p-1');
     const spy = refusing((k) => k === lane || k.startsWith('vitan.unreadable.'));
-    queueOne('k-v'); // neither the write nor the copy can be made: the act is held stranded
+    await queueOne('k-v'); // neither the write nor the copy can be made: the act is held stranded
     spy.mockRestore();
     expect(copiesOf(lane)).toEqual([]);
     onProject('p-2');

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, ApiSnapshot } from '@/data/apiGateway';
+import { queueWritten } from './queueWrites';
 
 /**
  * Codex gate findings 1/3/6: EVERY server reply that mutates project state must
@@ -175,6 +176,7 @@ describe('outbox replay is pinned to the scope that queued it (finding 1)', () =
     s().confirmApprove();
     s().startActivity('ACT-31');
     expect(s().outbox.length).toBe(2);
+    await queueWritten(); // step B2f-1: a flush sends no act before its locked write has stored it
     const aKey = 'vitan.outbox.anon.ambli';
 
     // reconnect: flush begins; the FIRST replay is in flight when the user switches

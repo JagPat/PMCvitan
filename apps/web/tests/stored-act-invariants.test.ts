@@ -5,6 +5,7 @@ import * as contracts from '../../api/src/contracts';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
 import { isKnownOutboxOp, SERVER_SCHEMA_OF } from '@/data/storedActs';
+import { queueWritten } from './queueWrites';
 
 /**
  * #1071 F4 (Codex 4341067934) and #1085 r1 (Codex 4345664659). A stored act was read through the type of each field its
@@ -295,6 +296,7 @@ describe('#1071 F4: a key holding such an act is set aside, never sent or droppe
     expect(allocateLabour).not.toHaveBeenCalled();
     expect(localStorage.getItem(general)).toBe(raw);
     useStore.getState().setAsideUnreadableQueue();
+    await queueWritten(); // step B1: Set aside runs under the keys' locks
     const copies = Object.keys(localStorage).filter((x) => x.startsWith(`vitan.unreadable.${general}.`)).map((x) => localStorage.getItem(x));
     expect(copies).toEqual([raw]);
   });
