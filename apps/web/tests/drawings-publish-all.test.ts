@@ -44,8 +44,13 @@ describe('Task 10 correction (C2b) — publishAllDrafts drawing publishes are du
     useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; st.projectScopeGeneration = 1; st.activeProjectId = 'ambli'; st.toast = null; st.outbox = []; });
   });
 
-  it('write-aheads a durable publishDrawing op per draft (distinct stable keys), persisted BEFORE any network call', () => {
-    const gw = { publishDrawing: vi.fn().mockResolvedValue(makeSnapshot([])), publishDecision: vi.fn(), snapshot: vi.fn().mockResolvedValue(makeSnapshot([])) };
+  it('write-aheads a durable publishDrawing op per draft (distinct stable keys), persisted BEFORE any network call', async () => {
+    const gw = { publishDrawing: vi.fn(), publishDecision: vi.fn(), snapshot: vi.fn().mockResolvedValue(makeSnapshot([])) };
+    // what this phone holds at the first network request (step B1: the write is locked, so it runs after the act)
+    let atSend: string | null | undefined;
+    const sent = new Promise<void>((resolve) => {
+      gw.publishDrawing.mockImplementation(() => { atSend ??= globalThis.localStorage.getItem(OUTBOX_KEY); resolve(); return Promise.resolve(makeSnapshot([])); });
+    });
     s()._setGateway(gw as unknown as ApiGateway);
     useStore.setState((st) => { st.drawings = [dwg('DWG-1', 'A-1', true), dwg('DWG-2', 'A-2', true)]; });
 
@@ -58,7 +63,8 @@ describe('Task 10 correction (C2b) — publishAllDrafts drawing publishes are du
     expect(new Set(keys).size).toBe(2);
     expect(keys.every((k) => typeof k === 'string' && k.length > 0)).toBe(true);
     // …and they were persisted to the durable outbox in localStorage BEFORE the network request
-    const persisted = JSON.parse(globalThis.localStorage.getItem(OUTBOX_KEY) ?? '[]') as typeof ops;
+    await sent;
+    const persisted = JSON.parse(atSend ?? '[]') as typeof ops;
     expect(persisted.filter((o) => o.t === 'publishDrawing').map((o) => o.drawingId).sort()).toEqual(['DWG-1', 'DWG-2']);
   });
 
