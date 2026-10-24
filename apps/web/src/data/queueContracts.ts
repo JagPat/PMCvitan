@@ -118,6 +118,17 @@ export const RASTER_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/jpg', 'imag
 export const MAX_MEDIA_BASE64 = 14_000_000;
 
  // ~10.5 MB decoded
+// Stage 1 voice notes (Jagrut, 19 Oct 2026, "yes to all" on the media plan): a spoken note on a site visit, up to two
+// minutes. Android browsers record WebM (Opus), iPhones MP4 (AAC), Firefox Ogg; only base types are named, so a
+// recorder's `;codecs=` parameter is the client's to strip. Two minutes is about 1 to 2 MB, well inside the cap above.
+export const VOICE_NOTE_MIMES = ['audio/webm', 'audio/mp4', 'audio/ogg'] as const;
+
+export const VOICE_NOTE_MAX_SEC = 120;
+
+// the length a voice note is stored with is read from the file; a length the client also sends must agree with it to
+// within this many seconds (a recorder's timer and its container can differ by a frame or a rounding)
+export const VOICE_NOTE_SEC_TOLERANCE = 2;
+
 // Site Visits #792 SV2 — a file added on a site visit: the visit, and what the adder saw (a note, a rating), both
 // optional. Such a file is its own kind, 'visit', so it stays inside its visit: every photo list (the Site Map, the
 // Dashboard, the daily log) reads the kinds it shows, and none of them reads 'visit'.
@@ -131,8 +142,11 @@ const mediaSiteVisitSchema = z.object({
 
 export const createMediaSchema = z.object({
   kind: z.enum(['progress', 'inspection', 'decision', 'attendance', 'material', 'visit']),
-  mime: z.enum(RASTER_IMAGE_MIMES),
-  data: z.string().min(1).max(MAX_MEDIA_BASE64, 'image too large'),
+  mime: z.enum([...RASTER_IMAGE_MIMES, ...VOICE_NOTE_MIMES]),
+  data: z.string().min(1).max(MAX_MEDIA_BASE64, 'file too large'),
+  // a voice note's length in whole seconds as the recorder counted it, optional: the length stored is read from the
+  // file, and this, when sent, must agree with it; a photo has none (the database holds the same rule)
+  durationSec: z.number().int().min(1).max(VOICE_NOTE_MAX_SEC).optional(),
   decisionId: z.string().optional(),
   dailyLogId: z.string().optional(),
   // Evidence linkage (Phase 1 Task 4): the inspection item this photo proves.
@@ -153,6 +167,9 @@ export const createMediaSchema = z.object({
 }).refine((m) => (m.kind === 'visit') === (m.siteVisit !== undefined), {
   message: "a file on a site visit has kind 'visit' and names its visit; no other upload names one",
   path: ['siteVisit'],
+}).refine((m) => m.mime.startsWith('audio/') || m.durationSec === undefined, {
+  message: 'a photo has no length',
+  path: ['durationSec'],
 });
 
 // Re-file an existing photo or drawing onto a location-tree node (or null to unfile).

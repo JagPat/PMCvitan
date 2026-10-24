@@ -20,11 +20,12 @@ import { isPlaceHiddenFrom, previewPublishedProjectNode, resolvePublishedProject
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
-import type { CreateMediaInput } from '../contracts';
+import { VOICE_NOTE_MAX_SEC, VOICE_NOTE_SEC_TOLERANCE, type CreateMediaInput } from '../contracts';
 import { SITE_PHOTO_DELETE_WINDOW_MS, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
+import { readVoiceRecording } from './voice-container';
 
 export interface UploadedMedia {
   id: string;
@@ -166,6 +167,12 @@ export class MediaService {
         throw new BadRequestException('A marked-up copy keeps the camera time and location of the photo it was drawn on');
       }
     }
+    // Stage 1 voice notes, site visits first (Jagrut, 19 Oct 2026): a voice note is a file on a visit, never a copy
+    if (input.mime.startsWith('audio/')) {
+      if (!isSiteVisitFile(input) || input.sourceMediaId !== undefined) {
+        throw new BadRequestException('A voice note is added on a site visit');
+      }
+    }
     if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input) && !isSiteVisitFile(input)) {
       throw new ForbiddenException('Your role may add a site photo, not evidence linked to a record');
     }
@@ -187,6 +194,21 @@ export class MediaService {
     // A visit file: the visit is this project's, not closed, and the caller is on it (an early no, as above)
     const visit = input.siteVisit;
     if (visit) await this.siteVisitFiles.assertMayAdd(projectId, visit.visitId, user.sub);
+    // a voice note is read only once its adder may add to the visit (Codex P1 on #1013 round 3): the type is the
+    // client's word, so the file is served only as what it is, an audio-only recording (Codex P2 on #1010), and its
+    // length is the file's own, for the two-minute cap and the play bar, never the request's (Codex P2 on #1013 round 3)
+    let durationSec: number | null = null;
+    if (input.mime.startsWith('audio/')) {
+      const recording = readVoiceRecording(input.mime, Buffer.from(input.data, 'base64'));
+      if (!recording) throw new BadRequestException('This file is not the voice recording its type says');
+      // the rules apply to the length as stored, the file's rounded to the nearest second (#1013 replacement review):
+      // under half a second the reader refuses, and 120.5 s or more would be stored past two minutes, so is refused
+      durationSec = recording.durationSec;
+      if (durationSec > VOICE_NOTE_MAX_SEC) throw new BadRequestException('A voice note is at most two minutes long');
+      if (input.durationSec !== undefined && Math.abs(input.durationSec - recording.seconds) > VOICE_NOTE_SEC_TOLERANCE) {
+        throw new BadRequestException('This voice note is not as long as its upload says');
+      }
+    }
     const source = visit && input.sourceMediaId ? await this.markupSource(this.prisma, projectId, visit.visitId, input.sourceMediaId) : null;
     // Project-owned references: a photo may only point at THIS project's decision/log.
     const decisionId = await this.decisions.resolveRefInProject(projectId, input.decisionId, 'decisionId');
@@ -258,6 +280,7 @@ export class MediaService {
             geoLng: source ? source.geoLng : input.geoLng,
             takenAt: source ? source.takenAt : input.takenAt,
             sourceMediaId: source?.id ?? null,
+            durationSec,
             decisionId,
             dailyLogId,
             nodeId,
