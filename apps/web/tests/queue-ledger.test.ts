@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import type { OutboxOp } from '@/data/apiGateway';
 import { readStoredQueue } from '@/data/storedActs';
-import { queueActIdent } from '@/store/queueKeyGuard';
+import { queueActIdent } from '@/store/queueActIdent';
+import { queueActIdent as guardIdent } from '@/store/queueKeyGuard';
 import { madeActs, markSettled, settledIdents } from '@/store/queueActRecord';
 import {
   decodeSidecar, encodeSidecar, evidenceOf, ledgerTag, markName, owedOf, planWrite, readMarkName, recordName, recordOid, sidecarName, unkeptOf,
@@ -481,6 +482,10 @@ describe('#1109 round 1 (review 5636193453): each finding as its own probe', () 
     expect(after.frame.exact).toBe(false);
     expect(after.owed.map((o) => o.act)).toEqual([U, U, U]);
     expect(evidenceOf(snapshot(w.phone), Object.assign([...lastPlan!.legacySpent], lastPlan!))).toEqual({ records: [], marks: [], legacy: [] });
+  });
+
+  it('#1109 r2: the queue key guard exports the leaf’s identity, unchanged', () => {
+    expect(guardIdent).toBe(queueActIdent);
   });
 
   it('a pending side is read as written; a side whose pending is anything but true is damaged', () => {

@@ -1,5 +1,5 @@
 import type { OutboxOp } from '@/data/apiGateway';
-import { queueActIdent } from '@/store/queueKeyGuard';
+import { queueActIdent } from '@/store/queueActIdent';
 
 /**
  * WEB-02 B1 L1 (#1094, the Board's U1 re-plan after #1106 round 2): the occurrence ledger, the one place a queue key's

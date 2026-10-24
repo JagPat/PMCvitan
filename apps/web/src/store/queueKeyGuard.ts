@@ -1,6 +1,7 @@
 import type { OutboxOp } from '@/data/apiGateway';
 import { readStoredQueue, type QueueScopes } from '@/data/storedActs';
 import { madeActs, markSettled, recordMade, releaseMade, releaseSettled, settledIdents } from '@/store/queueActRecord';
+import { queueActIdent } from '@/store/queueActIdent';
 
 /**
  * WEB-02 step A (#482 6333415419): the stored-act check at the writer of the stored queue keys, the general queue
@@ -17,14 +18,8 @@ import { madeActs, markSettled, recordMade, releaseMade, releaseSettled, settled
  * tabs' writes are ordered is step B's (a cross-tab lock).
  */
 
-/** an act's identity: its idempotency key, else a photo's client key, else its bytes */
-export const queueActIdent = (o: OutboxOp): string => {
-  const key = (o as { idempotencyKey?: unknown }).idempotencyKey;
-  if (typeof key === 'string') return `k:${key}`;
-  const clientKey = (o as { input?: { clientKey?: unknown } }).input?.clientKey;
-  if (o.t === 'uploadMedia' && typeof clientKey === 'string') return `photo:${clientKey}`;
-  return `json:${JSON.stringify(o)}`;
-};
+// an act's identity lives in a leaf both queue modules import (#1109 r2); kept exported here for this module's importers
+export { queueActIdent };
 
 type Store = Pick<Storage, 'getItem' | 'setItem'> & Partial<Pick<Storage, 'removeItem'>>;
 
