@@ -2486,8 +2486,10 @@ export const useStore = create<Store>()(
       { key: outboxKey(), mine: get().outbox.filter((o) => !isSiteVisitOp(o)), takes: (o) => !isSiteVisitOp(o) },
       { key: siteVisitKeyOf(outboxKey()), mine: get().outbox.filter(isStoredVisitOp), takes: isStoredVisitOp },
     ];
-    /** the write-ahead acts no write has yet stored in their key: a flush never sends one until its key's write
-     *  returns true, so a send always has its retry record on this phone (#1099 r1, Codex 4358186328) */
+    /** the new acts no write has yet stored in their key. A flush sends none while its write is still running (#1099 r1,
+     *  Codex 4358186328); once that write has run and not stored it, the flush writes it again and then sends it from
+     *  memory, said not saved: its ask's made record is its retry record on this phone, and an act this tab could not
+     *  store is never held from the server (#1113 r1 re-check) */
     const aheadUnsaved = new Set<string>();
     /** acts now on this phone: their key's write holds them, or a kept photo's row (IndexedDB) does */
     const storedHere = (acts: OutboxOp[]): void => { for (const o of acts) aheadUnsaved.delete(queueActIdent(o)); };
@@ -2506,11 +2508,25 @@ export const useStore = create<Store>()(
         return false; // storage unavailable — the in-session outbox still works, and nothing says it is saved
       }
     };
-    /** an offline act is said saved only once the locked write holds it (Codex 4344812898, 4344270659); the line is
-     *  shown only while the scope, person and key it was made in still hold (#1099 r3, Codex 4360928308) */
-    const flashSaved = (msg: string): void => {
+    /** step B2f-1: every write of a new act (write-ahead or offline) is tracked here until it has run; a flush sends
+     *  nothing until they have (#1113 r1, Codex 4367242045) */
+    const aheadWrites = new Set<Promise<boolean>>();
+    const writeAhead = (acts: OutboxOp[]): Promise<boolean> => {
+      for (const o of acts) aheadUnsaved.add(queueActIdent(o));
+      const written = persistOutbox();
+      aheadWrites.add(written);
+      void written.finally(() => aheadWrites.delete(written));
+      return written;
+    };
+    /** whether `acts` are on this phone: their own key's write held them, or a kept photo's row does, whatever the other
+     *  key's write did (#1113 r1, Codex 4367242052) */
+    const storedNow = (acts: OutboxOp[]): boolean => acts.every((o) => !aheadUnsaved.has(queueActIdent(o)));
+    /** an offline act is said saved only once the locked write of its own key holds it (Codex 4344812898, 4344270659,
+     *  4367242052); its write is tracked as a write-ahead's is, so no flush sends it first (Codex 4367242045). The line
+     *  is shown only while the scope, person and key it was made in still hold (#1099 r3, Codex 4360928308) */
+    const flashSaved = (msg: string, acts: OutboxOp[]): void => {
       const stillThere = madeHere();
-      void persistOutbox().then((kept) => { if (stillThere()) get().flash(kept ? msg : QW.notSavedYet[get().lang]); });
+      void writeAhead(acts).then(() => { if (stillThere()) get().flash(storedNow(acts) ? msg : QW.notSavedYet[get().lang]); });
     };
     /** the scope, person and key an act is made in: a write that returns after any of them moved says nothing and starts
      *  nothing there (#1099 r2, Codex 4358855946) */
@@ -2786,7 +2802,7 @@ export const useStore = create<Store>()(
         s.outbox.push(op);
         s.syncQueue.push(label);
       });
-      flashSaved(offlineMsg ?? label + ' — saved offline, will sync when you reconnect.'); // said once the locked write holds it
+      flashSaved(offlineMsg ?? label + ' — saved offline, will sync when you reconnect.', [op]); // said once the locked write holds it
       return true;
     };
 
@@ -2819,15 +2835,6 @@ export const useStore = create<Store>()(
     // viewer's language); without it, the label plus the standard English line, as before
     // okMsg may be a function: it is then read when the result is shown, so a translated success line
     // follows a language the viewer switched to while the command was on its way (#835)
-    /** step B2f-1: the write-ahead writes still waiting for their lock; a flush sends nothing until they have run */
-    const aheadWrites = new Set<Promise<boolean>>();
-    const writeAhead = (acts: OutboxOp[]): Promise<boolean> => {
-      for (const o of acts) aheadUnsaved.add(queueActIdent(o));
-      const written = persistOutbox();
-      aheadWrites.add(written);
-      void written.finally(() => aheadWrites.delete(written));
-      return written;
-    };
     // `inRow`: acts a kept photo's row (IndexedDB) already holds, so on this phone before any key's write
     const runWriteAhead = (op: OutboxOp, label: string, okMsg: string | (() => string), offlineMsg?: string, inRow: OutboxOp[] = []): boolean => {
       if (!gateway) return false;
@@ -2836,13 +2843,14 @@ export const useStore = create<Store>()(
       // stored before any network call: no flush takes the outbox while a write-ahead's write is still waiting
       const written = writeAhead(inRow.includes(op) ? [] : [op]);
       // on this phone once its own key's write holds it, or a photo's row does, whatever the other key's write does
-      const stored = (kept: boolean) => kept || !aheadUnsaved.has(queueActIdent(op));
+      const stored = () => storedNow([op]);
       const stillThere = madeHere();
       if (get().online) {
-        // sent only once its write holds it; otherwise it waits in memory, said not saved, for a later write
-        void written.then((kept) => { if (!stillThere()) return; if (stored(kept)) void get().flushOutbox({ okMsg }); else get().flash(QW.notSavedYet[get().lang]); });
+        // sent once its write has run; one that write could not store is said not saved, and sent from memory with its
+        // ask's made record on this phone (#1113 r1 re-check: never held from the server)
+        void written.then(() => { if (!stillThere()) return; if (!stored()) get().flash(QW.notSavedYet[get().lang]); void get().flushOutbox({ okMsg }); });
       } else {
-        void written.then((kept) => { if (stillThere()) get().flash(stored(kept) ? (offlineMsg ?? label + ' — saved offline, will sync when you reconnect.') : QW.notSavedYet[get().lang]); });
+        void written.then(() => { if (stillThere()) get().flash(stored() ? (offlineMsg ?? label + ' — saved offline, will sync when you reconnect.') : QW.notSavedYet[get().lang]); });
       }
       return true;
     };
@@ -3945,13 +3953,14 @@ export const useStore = create<Store>()(
         }
         // offline: QUEUE the submit (persisted) and freeze as 'queued'. The freeze
         // survives a reload because reconcileSubmission rebuilds it from the outbox.
+        const submit: OutboxOp = { t: 'submitInspection', inspectionId: c.id, items: c.items };
         set((s) => {
-          s.outbox.push({ t: 'submitInspection', inspectionId: c.id, items: c.items });
+          s.outbox.push(submit);
           s.syncQueue.push('Submit inspection');
           s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'queued', attempt: 0 };
         });
         emitGuideOutcome('inspection-submitted', c.id);
-        flashSaved(CHT.savedOfflineSubmit[get().lang]); // said only once the locked write holds it (Codex 4344812898)
+        flashSaved(CHT.savedOfflineSubmit[get().lang], [submit]); // said only once the locked write holds it (Codex 4344812898)
         return;
       }
       // demo (no gateway): the submit succeeds locally and synchronously — the
@@ -4235,7 +4244,7 @@ export const useStore = create<Store>()(
               if (!s.online) s.syncQueue.push('Publish ' + number);
             });
           });
-          // no flush sends these before their locked write has stored them (`aheadUnsaved`)
+          // no flush sends these while their locked write is still running (`aheadWrites`)
           void writeAhead(get().outbox.filter((o) => o.t === 'publishDrawing' && drawingKeys.includes((o as { idempotencyKey?: string }).idempotencyKey ?? '')));
           if (get().online) flushDone = get().flushOutbox();
         }
@@ -6066,8 +6075,9 @@ export const useStore = create<Store>()(
         // (local data URL) and queue the upload for replay on reconnect — instead
         // of losing it. Mirrors runRemoteOrQueue for the JSON mutations.
         if (!get().online) {
+          const upload: OutboxOp = { t: 'uploadMedia', input };
           set((s) => {
-            s.outbox.push({ t: 'uploadMedia', input });
+            s.outbox.push(upload);
             s.syncQueue.push('Progress photo');
             const log = onPickedLog(s);
             if (log) {
@@ -6078,7 +6088,7 @@ export const useStore = create<Store>()(
             }
           });
           persistDailyLogDraft();
-          flashSaved(DLT.photoOffline[get().lang]); // the photo's bytes live only in this act: said once it is written
+          flashSaved(DLT.photoOffline[get().lang], [upload]); // the photo's bytes live only in this act: said once it is written
           return;
         }
         // raw-DTO reconcile: pin the reply to the scope that uploaded it — a late
@@ -6328,9 +6338,10 @@ export const useStore = create<Store>()(
       // not read: a photo may be waiting whether or not any act is queued, so this is tried again (Codex 4321558423)
       if (holdVisits) retryVisitPhotos();
       if (aheadWrites.size > 0 || aheadUnsaved.size > 0) {
-        // step B2f-1: a write-ahead act is sent only once a locked write has stored it. Each waiting write runs first;
-        // one whose write did not store it is written again (the later attempt), and held below if that write does not
-        // store it either (#1099 r1, Codex 4358186328). A scope move meanwhile leaves this flush's queue to its own scope
+        // step B2f-1: no new act is sent while its write is still running: each waiting write runs first. One whose write
+        // did not store it is written again (the later attempt); if that does not store it either it is sent from memory,
+        // its ask's made record on this phone (#1099 r1 4358186328, #1113 r1 re-check). A scope move meanwhile leaves this
+        // flush's queue to its own scope
         const here = madeHere();
         const waitGateway = gateway;
         while (aheadWrites.size > 0) await Promise.all([...aheadWrites]);
@@ -6456,8 +6467,7 @@ export const useStore = create<Store>()(
           scopeMoved = true;
           break;
         }
-        // a write-ahead act no write has stored yet is held, not sent: a send needs its retry record on this phone
-        if (holds(ops[i]) || aheadUnsaved.has(queueActIdent(ops[i]))) { heldVisits.push(ops[i]); continue; }
+        if (holds(ops[i])) { heldVisits.push(ops[i]); continue; }
         const mat = isMaterialsOp(ops[i]);
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);
@@ -6676,6 +6686,9 @@ export const useStore = create<Store>()(
       // Its lines are said only in the scope it ran in; the reconciles below carry their own scope guards
       const endHere = madeHere();
       await persistOutbox();
+      // an act this flush settled is no longer one to write again
+      const left = new Set(get().outbox.map(queueActIdent));
+      for (const i of [...aheadUnsaved]) if (!left.has(i)) aheadUnsaved.delete(i);
       // finding 1 — a write-ahead command passes its own success toast (`okMsg`); the reconcile
       // announces it on `applied`. In that case suppress the batch "N synced" line below (the okMsg
       // already reported success), but still surface the error parts (dropped / still-pending).

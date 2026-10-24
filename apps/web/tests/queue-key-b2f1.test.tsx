@@ -13,7 +13,8 @@ import { holdQueueLock, nextToast, queueWritten, releaseQueueLocks } from './que
  * - #1086 4346778582: another tab's bytes, written between this tab's read of the key and its write, were written over.
  * - #1079 4344270659, #1084 4344812898: "saved offline" was said before any write, and with no lock to be had.
  * - #1099 r1 4358186338: a write with no lock left its acts only in memory; 4358186328: a write-ahead act was sent
- *   although no write had stored it.
+ *   before its write had run. An act whose write ran and could not store it is still sent from memory, said not saved
+ *   (#1113 r1 re-check: never held from the server).
  * - #1099 r2 4358855955: an act whose write waited for its lock was only in memory the whole wait; 4358855946 and r3
  *   4360928308: a late write's answer started a flush, or said "saved", in another project; review-body P1: the flush
  *   returned before its end write.
@@ -81,13 +82,21 @@ function flushesSettled(): () => Promise<void> {
   useStore.setState({ flushOutbox: ((...a: Parameters<typeof real>) => { const p = real(...a); started.push(p); return p; }) as typeof real });
   return async () => { while (started.length > 0) await Promise.all(started.splice(0)); };
 }
-/** each flush first reads this phone's visit photos: a test may act once that read is back (a signal) */
-const visitReads: (() => void)[] = [];
+/** each flush first reads this phone's visit photos: a test may act once that read is back (a signal). `visitRead()`
+ *  settles when a read begun after it is back, never on a read already in flight (the load's own read, #1113 r2) */
+let visitReadsBegun = 0;
+const visitReads: { after: number; done: () => void }[] = [];
 vi.mock('@/data/visitPhotoStore', async (importOriginal) => {
   const m = await importOriginal<typeof import('@/data/visitPhotoStore')>();
-  return { ...m, listVisitPhotos: (...a: Parameters<typeof m.listVisitPhotos>) => m.listVisitPhotos(...a).then((rows) => { for (const f of visitReads.splice(0)) f(); return rows; }) };
+  return { ...m, listVisitPhotos: (...a: Parameters<typeof m.listVisitPhotos>) => {
+    const n = ++visitReadsBegun;
+    return m.listVisitPhotos(...a).then((rows) => {
+      for (const w of visitReads.filter((x) => x.after < n)) { visitReads.splice(visitReads.indexOf(w), 1); w.done(); }
+      return rows;
+    });
+  } };
 });
-const visitRead = () => new Promise<void>((r) => { visitReads.push(r); });
+const visitRead = () => new Promise<void>((done) => { visitReads.push({ after: visitReadsBegun, done }); });
 /** every promise job queued so far has run (one task turn, not a duration): what a flush does after its read without
  *  waiting on anything outside this document has happened. "Not sent yet" has no signal of its own. */
 const drained = () => new Promise<void>((r) => { setTimeout(r, 0); });
@@ -159,10 +168,43 @@ describe('B2f-1: the write runs under the key’s lock, and "saved" waits for it
       act(() => { s().startActivity('B-1'); });
       expect(await said).toBe(NOT_SAVED);
       expect(localStorage.getItem(key)).toBe('[]');
-      expect(madeHere()).toHaveLength(1); // still held here, and sent when online
+      expect(madeHere()).toHaveLength(1); // still held here, and sent when online (below)
     } finally {
       Object.defineProperty(navigator, 'locks', locks);
     }
+  });
+
+  it('forced probe (#1113 r1 re-check): with no cross-tab lock, an offline act is sent from memory on reconnect in the same tab', async () => {
+    const startActivity = vi.fn(async () => null);
+    signedIn('[]', { startActivity });
+    const locks = Object.getOwnPropertyDescriptor(navigator, 'locks')!;
+    Object.defineProperty(navigator, 'locks', { value: undefined, configurable: true });
+    try {
+      const said = nextToast();
+      act(() => { s().startActivity('B-1'); });
+      expect(await said).toBe(NOT_SAVED);
+      useStore.setState({ online: true });
+      await act(async () => { await s().flushOutbox(); });
+      expect(startActivity).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(navigator, 'locks', locks);
+    }
+  });
+
+  it('forced probe (#1113 r1 re-check): with its own key full, an offline act is sent from memory on reconnect in the same tab', async () => {
+    const startActivity = vi.fn(async () => null);
+    signedIn('[]', { startActivity });
+    const real = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k === key) throw new DOMException('full', 'QuotaExceededError');
+      return real.call(this, k, v);
+    });
+    const said = nextToast();
+    act(() => { s().startActivity('B-1'); });
+    expect(await said).toBe(NOT_SAVED);
+    useStore.setState({ online: true });
+    await act(async () => { await s().flushOutbox(); });
+    expect(startActivity).toHaveBeenCalledTimes(1);
   });
 
   it('forced probe: an act whose write waits for the lock is counted, so Reload asks with N=1', async () => {
@@ -268,39 +310,44 @@ describe('B2f-1: an act whose write had no lock is never only in memory (#1099 r
   });
 });
 
-describe('B2f-1: a write-ahead act is sent only once its write has stored it (#1099 r1, Codex 4358186328)', () => {
-  it('forced probe: its key cannot be written (storage refuses), so it is not sent; it is sent once a write stores it', async () => {
-    const endSiteVisit = vi.fn(async () => null);
+describe('B2f-1: a write-ahead act is not sent while its write runs, and its write is on this phone when sent (#1099 r1, Codex 4358186328; #1113 r1 re-check)', () => {
+  /** the visit acts the lane's made records hold when `endSiteVisit` is called */
+  const recordedAtSend = () => {
+    const at: (string | undefined)[][] = [];
+    const endSiteVisit = vi.fn(async () => { at.push(named(`vitan.made.${lane}.`).flatMap((x) => idents(localStorage.getItem(x)))); return null; });
+    return { endSiteVisit, at };
+  };
+
+  it('forced probe: its key cannot be written (storage refuses): it is said not saved, and sent from memory with its made record on this phone', async () => {
+    const { endSiteVisit, at } = recordedAtSend();
     signedIn(null, { endSiteVisit });
     useStore.setState({ online: true });
     const real = Storage.prototype.setItem;
-    const refuse = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
       if (k === lane) throw new DOMException('full', 'QuotaExceededError');
       return real.call(this, k, v);
     });
     const flushed = flushesSettled();
+    const said = nextToast();
     act(() => { s().queueSiteVisitAct(visitEnd('k-end'), 'queued'); });
-    await act(async () => { await queueWritten(); });
-    expect(s().toast).toBe(NOT_SAVED);
-    await act(async () => { await s().flushOutbox(); await flushed(); });
-    expect(endSiteVisit).not.toHaveBeenCalled();
-    expect(s().outbox).toEqual([visitEnd('k-end')]);
-    refuse.mockRestore();
-    await act(async () => { await s().flushOutbox(); await flushed(); });
+    expect(await said).toBe(NOT_SAVED);
+    await act(async () => { await queueWritten(); await flushed(); });
     expect(endSiteVisit).toHaveBeenCalledTimes(1);
+    expect(at).toEqual([['k-end']]); // its retry record was on this phone when it was sent
   });
 
-  it('forced probe: no lock can be had, so it is not sent', async () => {
-    const endSiteVisit = vi.fn(async () => null);
+  it('forced probe: no lock can be had: it is said not saved, and sent from memory with its made record on this phone', async () => {
+    const { endSiteVisit, at } = recordedAtSend();
     signedIn(null, { endSiteVisit });
     useStore.setState({ online: true });
     locksRefused();
     const flushed = flushesSettled();
+    const said = nextToast();
     act(() => { s().queueSiteVisitAct(visitEnd('k-end'), 'queued'); });
-    await act(async () => { await queueWritten(); });
-    expect(s().toast).toBe(NOT_SAVED);
-    await act(async () => { await s().flushOutbox(); await flushed(); });
-    expect(endSiteVisit).not.toHaveBeenCalled();
+    expect(await said).toBe(NOT_SAVED);
+    await act(async () => { await flushed(); });
+    expect(endSiteVisit).toHaveBeenCalledTimes(1);
+    expect(at).toEqual([['k-end']]);
   });
 
   it('guard: an act its own key stored is sent although the other key could not be written', async () => {
@@ -348,8 +395,8 @@ describe('B2f-1: a write-ahead act is sent only once its write has stored it (#1
     act(() => { s().startDailyLog(); }); // its write waits behind the other tab
     const second = holdQueueLock(key); // the other tab asks again, ahead of the next write
     useStore.setState((st) => { st.projectLoadState = 'ready'; st.drawings = [{ id: 'DWG-1', number: 'A-1', draft: true, current: { id: 'r' }, revisions: [] } as never]; });
+    const read = visitRead(); // the flush the publish starts reads this phone's visit photos first
     act(() => { s().publishAllDrafts(); }); // its write waits behind that
-    const read = visitRead();
     first.release();
     await second.has;
     await read; // the first act's flush has read; the publish's write still waits
@@ -463,6 +510,49 @@ describe('B2f-1: a late write’s answer stays in its scope (#1099 r2 4358855946
     await act(async () => { await lockRan(key); await Promise.resolve(); });
     expect(s().toast).toBeNull();
     expect(idents(localStorage.getItem(key))).toHaveLength(1); // written to its own project's key
+  });
+});
+
+describe('#1113 r1: an offline act’s write is tracked, and judged by its own key', () => {
+  it('forced probe (Codex 4367242045): an offline act whose write waits behind another tab is not sent by a reconnect flush first', async () => {
+    let atSend: string | null | undefined;
+    let sent!: () => void;
+    const send = new Promise<void>((r) => { sent = r; });
+    const startActivity = vi.fn(async () => { atSend ??= localStorage.getItem(key); sent(); return null; });
+    signedIn('[]', { startActivity });
+    const other = holdQueueLock(key);
+    await other.has;
+    s().startActivity('B-1'); // offline: its write waits behind the other tab
+    const made = madeHere()[0].idempotencyKey;
+    // the phone comes back online before the other tab lets the lock go
+    useStore.setState({ online: true });
+    const read = visitRead();
+    const flushed = s().flushOutbox();
+    await read; // the flush has read this phone's visit photos
+    await drained();
+    expect(startActivity).not.toHaveBeenCalled();
+    other.release();
+    await send;
+    await flushed;
+    expect(idents(atSend ?? null)).toEqual([made]); // its key held it when it was sent
+    expect(startActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it('forced probe (Codex 4367242052): an offline act its own key stored is said saved although the other key could not be written', async () => {
+    localStorage.setItem(lane, NEWER); // the visit lane holds a newer release's bytes: its write is refused
+    signedIn('[]');
+    const said = nextToast();
+    s().startActivity('B-1');
+    expect(await said).toContain('saved offline');
+    expect(idents(localStorage.getItem(key))).toEqual([madeHere()[0].idempotencyKey]);
+  });
+
+  it('guard: an offline act its own key could not store is said not saved, whatever the other key did', async () => {
+    signedIn(NEWER);
+    const said = nextToast();
+    s().startActivity('B-1');
+    expect(await said).toBe(NOT_SAVED);
+    expect(localStorage.getItem(key)).toBe(NEWER);
   });
 });
 
