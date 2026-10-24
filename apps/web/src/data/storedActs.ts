@@ -343,14 +343,23 @@ export function isKnownOutboxOp(v: unknown, scopes?: QueueScopes): v is OutboxOp
   return isKnownOutboxKind(v) && OUTBOX_OP_KINDS[v.t](v) && serverTakes(v as { t: OutboxOp['t'] } & Fields) && boundToKey(v as { t: OutboxOp['t'] } & Fields, scopes);
 }
 
-/** A stored queue key's bytes, as this release reads them */
-export type StoredQueue = { acts: OutboxOp[] } | { unreadable: 'newer' | 'damaged' };
+/** A stored queue key's bytes, as this release reads them: its acts, and the write token they carry (null for none) */
+export type StoredQueue = { acts: OutboxOp[]; token: string | null } | { unreadable: 'newer' | 'damaged' };
 
-/** An absent key is an empty list. Bytes that are not a list, or a list holding any entry this release cannot load, are
+/** WEB-02 L2a (plan r3 v4): the write token a ledger write puts first in a queue key, in the same write as its acts,
+ *  `{ "t": "vitan.writeToken", "n": "<nonce>" }`. It is no act: it is never loaded, sent or counted. The same kind as
+ *  the ledger's `TOKEN_KIND` (pinned by a test). Releases from step A1 to the one before this read it as a newer
+ *  release's entry, so they never send or write a key that carries it */
+export const WRITE_TOKEN_KIND = 'vitan.writeToken';
+const isWriteToken = (v: Fields): boolean =>
+  Object.keys(v).length === 2 && v.t === WRITE_TOKEN_KIND && typeof v.n === 'string' && v.n.length > 0;
+
+/** An absent key is an empty list. A first entry that is a write token is the key's token, never an act. Bytes that are
+ *  not a list, a token anywhere else or one malformed, or a list holding any other entry this release cannot load, are
  *  unreadable as a whole: 'newer' when every such entry is an act of a kind this release does not know (a newer
  *  release's, which that release can read and send), else 'damaged'. */
 export function readStoredQueue(raw: string | null, scopes?: QueueScopes): StoredQueue {
-  if (raw === null) return { acts: [] };
+  if (raw === null) return { acts: [], token: null };
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -358,11 +367,17 @@ export function readStoredQueue(raw: string | null, scopes?: QueueScopes): Store
     return { unreadable: 'damaged' };
   }
   if (!Array.isArray(parsed)) return { unreadable: 'damaged' };
+  const first: unknown = parsed[0];
+  const tokened = isFields(first) && first.t === WRITE_TOKEN_KIND;
+  if (tokened && !isWriteToken(first)) return { unreadable: 'damaged' };
+  const entries = tokened ? parsed.slice(1) : parsed;
   let newer = false;
-  for (const entry of parsed) {
+  for (const entry of entries) {
     if (isKnownOutboxOp(entry, scopes)) continue;
+    // a token after the first entry: the key was not written by one ledger write
+    if (isFields(entry) && entry.t === WRITE_TOKEN_KIND) return { unreadable: 'damaged' };
     if (isFields(entry) && typeof entry.t === 'string' && !isKnownOutboxKind(entry)) { newer = true; continue; }
     return { unreadable: 'damaged' };
   }
-  return newer ? { unreadable: 'newer' } : { acts: parsed as OutboxOp[] };
+  return newer ? { unreadable: 'newer' } : { acts: entries as OutboxOp[], token: tokened ? (first as { n: string }).n : null };
 }

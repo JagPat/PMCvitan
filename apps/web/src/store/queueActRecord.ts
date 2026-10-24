@@ -83,6 +83,15 @@ export function recordMade(storage: Store, key: string, acts: OutboxOp[]): boole
   }
 }
 
+/** a made record as main's guard reads it: a record whose bytes start with a write token is the ledger's (plan r3 v4),
+ *  and reads as a newer release's, as it did before this release read tokens. So this guard never loads its acts and
+ *  never removes it by identity: its keyless act may be another occurrence than a byte-identical one in the key (L2a
+ *  gap-check G1). The ledger reads its own records once L2b routes writes through it */
+function readRecord(raw: string | null, scopes: QueueScopes | undefined): ReturnType<typeof readStoredQueue> {
+  const read = readStoredQueue(raw, scopes);
+  return 'acts' in read && read.token !== null ? { unreadable: 'newer' } : read;
+}
+
 /** the acts `key`'s made records hold, in the order each record holds them; a record this release cannot read is left
  *  where it is and loads none */
 export function madeActs(storage: Store, key: string, scopes: QueueScopes | undefined): OutboxOp[] {
@@ -92,7 +101,7 @@ export function madeActs(storage: Store, key: string, scopes: QueueScopes | unde
   for (const name of names) {
     let raw: string | null = null;
     try { raw = storage.getItem(name); } catch { raw = null; }
-    const read = readStoredQueue(raw, scopes);
+    const read = readRecord(raw, scopes);
     if ('acts' in read) out.push(...read.acts);
   }
   return out;
@@ -108,7 +117,7 @@ export function releaseMade(storage: Store, key: string, done: (ident: string) =
     let raw: string | null = null;
     try { raw = storage.getItem(name); } catch { unread = true; continue; }
     if (raw === null) continue; // gone since it was listed
-    const read = readStoredQueue(raw, scopes);
+    const read = readRecord(raw, scopes);
     if (!('acts' in read)) { unread = true; continue; }
     const idents = read.acts.map(ident);
     if (idents.every(done) && remove(storage, name)) continue;
