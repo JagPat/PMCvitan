@@ -17,20 +17,26 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 6034fe3
+reviewed_merge: 98acd9d
 open_pr: none
 next_task: phase-6-task-4d-iii
 blocking_directive: none
-updated: 2026-10-23
+updated: 2026-10-24
 ```
 
 ### Current unit
 
 Coordination issue: **#1094** (pinned summary, edited in place after each merge). It lists the open
-implementation PRs (cap 3), what each waits on, and the next units. This block records no open PR:
-#883 (#633 unit C) is closed, and current work is shepherded from #1094 and each PR.
-Last reviewed merge: `6034fe3` (#1088, WEB-02 step A1). Its deferred head-6 findings are in #1093; the
-two-tab findings 4346778582, 4349463910 and 4353751507 stay open in #1086 until B1 merges.
+implementation PRs (cap 3), what each waits on, and the next units. This block records no open PR,
+because current work is shepherded from #1094 and each PR. Last reviewed merge: `98acd9d` (#1108, Unit 2b
+of the #1076 plan; #1100 closed, #1061 open).
+
+WEB-02 B1 is frozen and superseded (Board approval of the L1 plan r3 v4, #1094 6382477473):
+#1109 (L1) stops at `0d5b1bd` after its third P1-reviewed head, and #1106 (U1) stops at `e9fca3e`.
+Neither takes another push. L1′ (`Replaces: #1109`, closes #1111) and L2 (`Replaces: #1106`) supersede them.
+**Next: B2f-1**, U2a's per-key Web Lock moved ahead, opened from `main` after this file merges. Then B2f-2
+(detection only), L1′, L2, and U2b, U3 and the rest of step B2. B2f-3 is dropped. The two-tab findings
+4346778582, 4349463910 and 4353751507 stay open in #1086 until L1′ and L2, B1's replacements, both merge.
 
 Live bug #806 unit A merged at `6cae444` (#809); POLICY's second-head stop at `9b68c3c` (#810). #807 stays open and
 stopped at `104fa41`; unit B of #806 is a separate proposal there.
