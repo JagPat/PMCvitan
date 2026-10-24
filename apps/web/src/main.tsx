@@ -8,6 +8,7 @@ import './i18n/i18n';
 import { App } from './App';
 import { useStore } from './store/store';
 import { DEV_AUTH } from './data/apiGateway';
+import { startWindowAnnouncements } from './data/windowGate';
 
 // #482 6227430525 — a reload keeps the person signed in: adopt the session this tab saved (if still valid)
 // BEFORE the outbox is rehydrated, so the queue loaded is that person's own.
@@ -55,5 +56,7 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {
       /* no-op: the app works fine without the SW */
     });
+    // WEB-02 step B2f-2: this window tells the worker its release, for the ledger's "may write" answer (unread until L1')
+    startWindowAnnouncements();
   });
 }
