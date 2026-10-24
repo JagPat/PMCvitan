@@ -5,7 +5,7 @@ import { queueActIdent } from '@/store/queueKeyGuard';
 import { madeActs, markSettled, settledIdents } from '@/store/queueActRecord';
 import {
   decodeSidecar, encodeSidecar, evidenceOf, ledgerTag, markName, owedOf, planWrite, readMarkName, recordName, recordOid, sidecarName, unkeptOf,
-  type Occ, type Snapshot,
+  type Occ, type Snapshot, type WritePlan,
 } from '@/store/queueLedger';
 
 /**
@@ -18,9 +18,12 @@ import {
  * (stranded), then the key's unsent serials in its order, then memory's other unsent ones (records, new acts).
  *
  * The matrix: every key of 0 to 4 acts (each `U`, an unkeyed act, or a unique keyed act), 0 to 2 stranded `U`, 0 to 2
- * made records of a `U`, each partial flush counted in memory's order, another tab's act (none, an append of `U` or of
- * a keyed act, a send with its mark, a send and its write, a clear), a new `U` here or none, and this tab's write
- * (lands, the key write fails, the sidecar write fails, the page closes between the sidecar's write and the key's).
+ * made records of a `U`, each partial flush counted in memory's order with its marks made or failing, another tab's
+ * act (none, an append of `U` or of a keyed act, a send with its mark, a send and its write, a clear), a new `U` here
+ * or none, the scope-move write's front or none, and this tab's write stopped at each of its steps: it lands; the
+ * sidecar write fails; the page closes after the sidecar, after the key, or after the records went; the key write fails,
+ * and then its sidecar is not put back, it closes before its record, or its record cannot be made. A landed write is
+ * followed by another tab's clear and a refused restore.
  */
 
 const K = 'vitan.outbox.dev:u-pmc.p-1';
@@ -62,12 +65,16 @@ class World {
   phone = new Phone();
   serial = 0;
   sent = new Set<string>();
+  /** sent, but the mark could not be made: only the sending tab knows */
+  unmarked = new Set<string>();
   /** the serials the key holds in order, and each record's */
   key: string[] = [];
   records = new Map<string, string[]>();
   alias = new Map<string, string>();
   of = (oid: string) => this.alias.get(oid) ?? oid;
-  fresh(act: OutboxOp): Occ { this.serial += 1; return { oid: `s${this.serial}`, act: { ...act } }; }
+  /** each serial's act */
+  acts = new Map<string, OutboxOp>();
+  fresh(act: OutboxOp): Occ { this.serial += 1; this.acts.set(`s${this.serial}`, act); return { oid: `s${this.serial}`, act: { ...act } }; }
   /** what a page opened now owes, by the truth */
   owed(): string[] {
     const inKey = new Set(this.key);
@@ -94,7 +101,8 @@ class World {
   }
 }
 
-type Tab = { mem: Occ[]; known: Set<string>; sent: Set<string>; stranded: Occ[]; loadedKey: string[] };
+/** `front`: the scope-move write's unsent acts, put first (until that write lands) */
+type Tab = { mem: Occ[]; known: Set<string>; sent: Set<string>; stranded: Occ[]; loadedKey: string[]; front?: Set<string> };
 const tab = (): Tab => ({ mem: [], known: new Set(), sent: new Set(), stranded: [], loadedKey: [] });
 
 function load(w: World, t: Tab) {
@@ -104,8 +112,9 @@ function load(w: World, t: Tab) {
   t.sent = new Set();
   t.loadedKey = [...w.key];
 }
-function settle(w: World, t: Tab, o: Occ) {
-  w.phone.setItem(markName(K, o.act, o.oid), queueActIdent(o.act));
+/** the flush settles `o`: marked (unless the mark cannot be made: `marks` false), and known sent here */
+function settle(w: World, t: Tab, o: Occ, marks = true) {
+  if (marks) w.phone.setItem(markName(K, o.act, o.oid), queueActIdent(o.act)); else w.unmarked.add(w.of(o.oid));
   t.sent.add(o.oid);
   w.sent.add(w.of(o.oid));
   // a stranded act settled is held no more
@@ -114,45 +123,85 @@ function settle(w: World, t: Tab, o: Occ) {
 
 /** the one right answer for `t`'s write now, by the truth */
 function rightWrite(w: World, t: Tab): string[] {
-  const mine = t.mem.map((o) => w.of(o.oid)).filter((s) => !w.sent.has(s));
-  if (w.phone.getItem(K) === null) return mine;
+  // what `t` can know is sent: marked, or sent by `t` itself (another tab's send whose mark failed it cannot know)
+  const here = new Set([...t.sent].map(w.of));
+  const gone = (s: string) => w.sent.has(s) && (!w.unmarked.has(s) || here.has(s));
+  // memory's place for each act counts the sent ones too: a new act after a sent one the key holds goes after the key's
+  const all = t.mem.map((o) => w.of(o.oid));
+  if (w.phone.getItem(K) === null) return all.filter((s) => !gone(s));
+  // the scope-move write's unsent acts go first, in memory order, wherever the key holds them
+  const front = new Set([...(t.front ?? [])].map(w.of));
   const inKey = new Set(w.key);
-  const first = mine.findIndex((s) => inKey.has(s));
-  const out = mine.filter((s, n) => !inKey.has(s) && (first < 0 || n < first));
-  out.push(...w.key.filter((s) => !w.sent.has(s)));
-  out.push(...mine.filter((s, n) => !inKey.has(s) && first >= 0 && n > first));
+  const first = all.findIndex((s) => inKey.has(s));
+  const out = all.filter((s) => front.has(s) && !gone(s));
+  out.push(...all.filter((s, n) => !front.has(s) && !gone(s) && !inKey.has(s) && (first < 0 || n < first)));
+  out.push(...w.key.filter((s) => !front.has(s) && !gone(s)));
+  out.push(...all.filter((s, n) => !front.has(s) && !gone(s) && !inKey.has(s) && first >= 0 && n > first));
   return out;
 }
 
-type Mode = 'lands' | 'key fails' | 'sidecar fails' | 'closes between';
-/** `t`'s write, as L2 does it: sidecar, key, read back, then the evidence (records first, then marks). A write that does
- *  not land keeps memory's unsent occurrences the key lacks in a made record, and held stranded */
+/** the matrix case running, for messages */
+let current = '';
+type Mode =
+  | 'lands' | 'key fails' | 'sidecar fails' | 'closes between' | 'closes before the commit' | 'the commit fails'
+  | 'closes after the commit' | 'closes after records'
+  // the refused write's own steps: its sidecar is not put back, it closes before its record, its record cannot be made
+  | 'key fails, the sidecar stays' | 'key fails, closes before the record' | 'key fails, the record fails';
+/** the last write's plan, for the rows that follow it */
+let lastPlan: WritePlan | null = null;
+
+/** `t`'s write, as L2 does it: the sidecar with its `next` side pending, then the key (not written again when its bytes
+ *  are the same), then the sidecar committed, each read back; then the evidence, records first, then marks. A write
+ *  whose key does not land puts the sidecar back as it was, and keeps memory's occurrences the key lacks and no record
+ *  holds in a new made record, held stranded too. A commit that cannot be written is a write that did not land: the
+ *  same, against the key as it now reads (by `prev` when its bytes are the same, else as the fallback). The `closes`
+ *  modes stop there: the page is gone, with its memory */
 function write(w: World, t: Tab, mode: Mode = 'lands'): 'landed' | 'refused' | 'closed' {
   const s = snapshot(w.phone);
-  const plan = planWrite(s, { mine: t.mem, known: t.known, sent: t.sent });
+  const mem = { mine: t.mem, known: t.known, sent: t.sent, front: t.front };
+  const plan = planWrite(s, mem);
   if (!plan) throw new Error('unreadable');
+  lastPlan = plan;
   const want = rightWrite(w, t);
-  expect(plan.next.map((o) => w.of(o.oid)), 'the write stores the right occurrences in order').toEqual(want);
-  const refuse = () => {
-    // the record's own occurrences are in it already
-    const left = unkeptOf(s, { mine: t.mem, known: t.known, sent: t.sent }).filter((o) => !o.oid.startsWith('r:'));
+  expect(plan.next.map((o) => w.of(o.oid)), `${current}: the write stores the right occurrences in order`).toEqual(want);
+  const sidecarWas = w.phone.getItem(sidecarName(K));
+  const refuse = (now: Snapshot = s): 'refused' | 'closed' => {
+    // the sidecar is put back, so no side names bytes the key never held (best effort: a side that does not match the
+    // key's bytes is never read)
+    if (mode !== 'key fails, the sidecar stays') try { if (sidecarWas === null) w.phone.removeItem(sidecarName(K)); else w.phone.setItem(sidecarName(K), sidecarWas); } catch { /* kept */ }
+    if (mode === 'key fails, closes before the record') return 'closed';
+    const left = unkeptOf(now, mem);
     const was = new Set(left.map((o) => w.of(o.oid)));
+    if (mode === 'key fails, the record fails') w.phone.fail.add(`vitan.made.${K}.`);
     // recorded, they are also held stranded, under the record's ids, so a scope move or sign-out keeps them
-    if (left.length > 0 && w.record(left)) t.stranded = [...t.stranded.filter((o) => !was.has(w.of(o.oid))), ...left.map((o) => ({ ...o }))];
-    return 'refused' as const;
+    const kept = left.length > 0 && w.record(left);
+    w.phone.fail.clear();
+    if (kept) t.stranded = [...t.stranded.filter((o) => !was.has(w.of(o.oid))), ...left.map((o) => ({ ...o }))];
+    return 'refused';
   };
   if (mode === 'sidecar fails') { w.phone.fail.add(sidecarName(K)); try { w.phone.setItem(sidecarName(K), encodeSidecar(plan.sidecar)); } catch { w.phone.fail.clear(); return refuse(); } }
   w.phone.setItem(sidecarName(K), encodeSidecar(plan.sidecar));
   // the same bytes are not written again: the sidecar alone names them anew, and the write has landed with it
   const same = plan.raw === s.raw;
-  if (mode === 'closes between') { if (same) w.key = want; return 'closed'; }
-  if (mode === 'key fails' && !same) return refuse();
-  if (!same) w.phone.setItem(K, plan.raw);
-  w.key = want;
+  if (mode === 'closes between') return 'closed';
+  if (mode.startsWith('key fails') && !same) return refuse();
+  // the key's new bytes hold the plan's occurrences once written; the same bytes are renamed only by the commit
+  if (!same) { w.phone.setItem(K, plan.raw); w.key = want; }
   expect(w.phone.getItem(K)).toBe(plan.raw);
-  const first = evidenceOf(snapshot(w.phone), plan.legacySpent);
+  if (mode === 'closes before the commit') return 'closed';
+  if (mode === 'the commit fails') {
+    // the write has not landed: as a refused write, against the key as it now reads (by `prev`, or as the fallback)
+    w.phone.fail.add(sidecarName(K));
+    try { w.phone.setItem(sidecarName(K), encodeSidecar(plan.commit)); } catch { /* the commit is not written */ }
+    return refuse(snapshot(w.phone));
+  }
+  w.phone.setItem(sidecarName(K), encodeSidecar(plan.commit));
+  if (same) w.key = want;
+  if (mode === 'closes after the commit') return 'closed';
+  const first = evidenceOf(snapshot(w.phone), Object.assign([...plan.legacySpent], plan));
   for (const n of first.records) { w.phone.removeItem(n); if (w.phone.getItem(n) === null) w.records.delete(n); }
-  const then = evidenceOf(snapshot(w.phone), plan.legacySpent);
+  if (mode === 'closes after records') return 'closed';
+  const then = evidenceOf(snapshot(w.phone), Object.assign([...plan.legacySpent], plan));
   for (const n of w.phone.names(`vitan.settled.${K}.`)) {
     const m = readMarkName(K, n);
     if ((m && 'oid' in m && then.marks.includes(m.oid)) || (m && 'legacy' in m && then.legacy.includes(w.phone.getItem(n)!))) w.phone.removeItem(n);
@@ -160,22 +209,39 @@ function write(w: World, t: Tab, mode: Mode = 'lands'): 'landed' | 'refused' | '
   t.mem = plan.next;
   t.known = new Set(plan.next.map((o) => o.oid));
   t.sent = new Set();
+  t.front = undefined;
   t.stranded = t.stranded.filter((o) => !t.known.has(o.oid));
   t.loadedKey = [...w.key];
   return 'landed';
 }
 
 /** a plan written as L2 writes it, with no right-answer check (the fallback rows check their own) */
-function land(w: World, plan: { raw: string; sidecar: Parameters<typeof encodeSidecar>[0] }) {
+function land(w: World, plan: Pick<WritePlan, 'raw' | 'sidecar' | 'commit'>) {
   w.phone.setItem(sidecarName(K), encodeSidecar(plan.sidecar));
   w.phone.setItem(K, plan.raw);
+  w.phone.setItem(sidecarName(K), encodeSidecar(plan.commit));
 }
 
 const freshOwed = (w: World) => owedOf(snapshot(w.phone)).owed.map((o) => w.of(o.oid));
 
+/** a page opened on a key read as the fallback owes every act the truth owes, by identity, and at most repeats: of
+ *  what a record holds, or of what was sent */
+function covers(w: World, label: string, spare: number) {
+  const owed = owedOf(snapshot(w.phone)).owed.map((o) => queueActIdent(o.act));
+  const truth = w.owed().map((x) => queueActIdent(w.acts.get(x)!));
+  const n = (list: string[], i: string) => list.filter((x) => x === i).length;
+  for (const i of new Set(truth)) expect(n(owed, i), `${label}: ${i} owed`).toBeGreaterThanOrEqual(n(truth, i));
+  const recorded = [...w.records.values()].flat().length;
+  expect(owed.length, `${label}: repeats only of records or sends`).toBeLessThanOrEqual(truth.length + recorded + spare);
+}
+
 type Other = 'none' | 'appends U' | 'appends a keyed act' | 'sends with its mark' | 'sends and writes' | 'clears';
 const OTHERS: Other[] = ['none', 'appends U', 'appends a keyed act', 'sends with its mark', 'sends and writes', 'clears'];
-const MODES: Mode[] = ['lands', 'key fails', 'sidecar fails', 'closes between'];
+const MODES: Mode[] = [
+  'lands', 'key fails', 'sidecar fails', 'closes between', 'closes before the commit', 'the commit fails',
+  'closes after the commit', 'closes after records',
+  'key fails, the sidecar stays', 'key fails, closes before the record', 'key fails, the record fails',
+];
 
 function other(w: World, op: Other) {
   if (op === 'none') return;
@@ -197,12 +263,15 @@ function shapes(): string[] {
 }
 
 describe('the ledger matrix: key, made records, stranded acts, marks and memory together', () => {
-  it.each(shapes().map((shape) => ({ shape: shape || '(empty)' })))('key $shape', ({ shape }) => {
+  // one test per key, stranded count and record count, so each stays small
+  const rows = shapes().flatMap((shape) => [0, 1, 2].flatMap((stranded) => [0, 1, 2].map((records) => ({ shape: shape || '(empty)', stranded, records }))));
+  it.each(rows)('key $shape, stranded $stranded, records $records', ({ shape, stranded, records }) => {
     let cases = 0;
-    for (let stranded = 0; stranded <= 2; stranded++) for (let records = 0; records <= 2; records++) {
+    {
       const len = shape.replace('(empty)', '').length + stranded + records;
-      for (let sent = 0; sent <= len; sent++) for (const op of OTHERS) for (const extra of [false, true]) for (const mode of MODES) {
-        const name = `${shape} stranded ${stranded} records ${records} sent ${sent} other ${op} new ${extra ? 'U' : 'none'} write ${mode}`;
+      for (let sent = 0; sent <= len; sent++) for (const marks of [true, false]) for (const op of OTHERS) for (const extra of [false, true]) for (const front of op === 'none' && marks && !extra ? [false, true] : [false]) for (const mode of MODES) {
+        const name = `${shape} stranded ${stranded} records ${records} sent ${sent}${marks ? '' : ' (marks fail)'} other ${op} new ${extra ? 'U' : 'none'}${front ? ' front' : ''} write ${mode}`;
+        current = name;
         const w = new World();
         w.seed(shape.replace('(empty)', '').split('').filter(Boolean).map((c, n) => w.fresh(c === 'U' ? U : keyed(`q${n}`))));
         // a page closed after a write it could not make: its acts are in made records
@@ -212,17 +281,33 @@ describe('the ledger matrix: key, made records, stranded acts, marks and memory 
         for (let n = 0; n < stranded; n++) t.stranded.push(w.fresh(U));
         load(w, t);
         expect(t.mem.map((o) => w.of(o.oid)), name).toEqual([...t.stranded.map((o) => w.of(o.oid)), ...w.owed()]);
-        // the flush sends from the front of memory, marking each as it goes
-        for (const o of t.mem.slice(0, sent)) settle(w, t, o);
-        expect(freshOwed(w), `${name}: a page opened mid-flush`).toEqual(w.owed());
+        // the flush sends from the front of memory, marking each as it goes (or failing to)
+        const unmarked = new Set<string>();
+        for (const o of t.mem.slice(0, sent)) { settle(w, t, o, marks); if (!marks) unmarked.add(w.of(o.oid)); }
+        // a page opened mid-flush owes every unsent act; one sent whose mark failed it may send again, never more
+        const mid = freshOwed(w);
+        expect(mid.filter((x) => !unmarked.has(x)), `${name}: a page opened mid-flush`).toEqual(w.owed());
         other(w, op);
         if (extra) t.mem.push(w.fresh(U));
+        // the scope-move write: memory's last unsent act goes first, wherever the key holds it
+        if (front) { const last = [...t.mem].reverse().find((o) => !w.sent.has(w.of(o.oid))); if (last) t.front = new Set([last.oid]); }
         const unsentHere = t.mem.map((o) => w.of(o.oid)).filter((s) => !w.sent.has(s));
+        const durableBefore = new Set(w.owed());
+        const rawBefore = w.phone.getItem(K);
         const result = write(w, t, mode);
-        expect(freshOwed(w), `${name}: a page opened after`).toEqual(w.owed());
-        if (result !== 'closed') {
+        // a write stopped after its key, before its commit, reads as the fallback: a repeat at most
+        const fallback = lastPlan!.raw !== rawBefore && (mode === 'closes before the commit' || mode === 'the commit fails');
+        if (fallback) covers(w, `${name}: a page opened after`, w.sent.size);
+        else expect(freshOwed(w).filter((x) => !unmarked.has(x) || result === 'landed'), `${name}: a page opened after`).toEqual(w.owed());
+        // nothing that was on this phone before the write is lost, at any point it stops
+        const durable = new Set(w.owed());
+        for (const s of durableBefore) expect(durable.has(s) || w.sent.has(s), `${name}: ${s} was on the phone`).toBe(true);
+        if (result === 'closed') {
+          // a page closed during the write loses only what memory alone held, as a close just before it would: what
+          // memory held that the key or a record did not (stranded, new acts) was never on this phone
+          for (const s of unsentHere) expect(durable.has(s) || !durableBefore.has(s), `${name}: ${s}`).toBe(true);
+        } else {
           // nothing unsent this tab held is lost: the key or a record holds it, or this tab still does
-          const durable = new Set(w.owed());
           for (const s of unsentHere) expect(durable.has(s) || t.mem.some((o) => w.of(o.oid) === s), `${name}: ${s} kept`).toBe(true);
         }
         if (result === 'landed') {
@@ -236,11 +321,195 @@ describe('the ledger matrix: key, made records, stranded acts, marks and memory 
           // and this tab's next load owes the same
           load(w, t);
           expect(t.mem.map((o) => w.of(o.oid)), `${name}: this tab's next load`).toEqual([...t.stranded.map((o) => w.of(o.oid)).filter((s) => !w.key.includes(s)), ...w.owed()]);
+          // then another tab clears the key and this tab's restoring write is refused: every unsent act is still on
+          // this phone, in a record (#1109 r1, Codex 4365534650: a record-born act whose record went with the write)
+          other(w, 'clears');
+          write(w, t, 'key fails');
+          const after = new Set(w.owed());
+          for (const o of t.mem) expect(after.has(w.of(o.oid)) || w.sent.has(w.of(o.oid)), `${name}: ${w.of(o.oid)} after a clear and a refused restore`).toBe(true);
+          expect(freshOwed(w), `${name}: a page opened after a clear and a refused restore`).toEqual(w.owed());
+        }
+        // the pending side left behind, then an earlier release writing those same bytes with occurrences of its own
+        // (#1109 r1 re-check of 4365534649): the pending side names nothing, so nothing is hidden and nothing goes
+        if ((mode === 'closes between' || mode === 'key fails, the sidecar stays') && lastPlan!.raw !== rawBefore) {
+          const had = JSON.parse(w.phone.getItem(K) ?? '[]') as OutboxOp[];
+          const want = JSON.parse(lastPlan!.raw) as OutboxOp[];
+          if (had.every((a, n) => JSON.stringify(a) === JSON.stringify(want[n]))) {
+            if (w.phone.getItem(K) === null) w.key = [];
+            for (const act of want.slice(had.length)) w.key.push(w.fresh(act).oid);
+            w.phone.setItem(K, lastPlan!.raw);
+            covers(w, `${name}: then an earlier release writes the same bytes`, w.sent.size);
+            const ev = evidenceOf(snapshot(w.phone), Object.assign([...lastPlan!.legacySpent], lastPlan!));
+            expect(ev, `${name}: then an earlier release writes the same bytes: no evidence goes`).toEqual({ records: [], marks: [], legacy: [] });
+          }
         }
         cases += 1;
       }
     }
     expect(cases).toBeGreaterThan(0);
+  });
+});
+
+describe('#1109 round 1 (review 5636193453): each finding as its own probe', () => {
+  it('4365534649: a page closed between the sidecar’s write and the key’s owes what it owed before; only memory’s new act, never on this phone, is gone', () => {
+    const w = new World();
+    w.seed([w.fresh(U), w.fresh(keyed('a'))]);
+    const t = tab();
+    load(w, t);
+    settle(w, t, t.mem[0]);
+    const before = freshOwed(w);
+    t.mem.push(w.fresh(U));
+    expect(write(w, t, 'closes between')).toBe('closed');
+    expect(freshOwed(w)).toEqual(before);
+    expect(owedOf(snapshot(w.phone)).frame.exact).toBe(true);
+  });
+
+  it('4365534649: a page closed after the commit owes the new act, read exactly, before any evidence goes', () => {
+    const w = new World();
+    w.seed([w.fresh(U)]);
+    w.record([w.fresh(U)]);
+    const t = tab();
+    load(w, t);
+    settle(w, t, t.mem[0]);
+    t.mem.push(w.fresh(keyed('n')));
+    expect(write(w, t, 'closes after the commit')).toBe('closed');
+    expect(owedOf(snapshot(w.phone)).owed.map((o) => o.act)).toEqual([U, keyed('n')]);
+    expect(owedOf(snapshot(w.phone)).frame.exact).toBe(true);
+  });
+
+  it('4365534650: an act its record held, written into the key (the record goes), then cleared there and refused here, is kept in a new record', () => {
+    const w = new World();
+    w.seed([]);
+    w.record([w.fresh(U)]);
+    const t = tab();
+    load(w, t);
+    expect(write(w, t)).toBe('landed');
+    expect(w.phone.names(`vitan.made.${K}.`)).toEqual([]);
+    other(w, 'clears');
+    expect(write(w, t, 'key fails')).toBe('refused');
+    expect(owedOf(snapshot(w.phone)).owed.map((o) => o.act)).toEqual([U]);
+  });
+
+  it('4365534650: a refused write keeps in a new record only what no record there holds already', () => {
+    const w = new World();
+    w.seed([]);
+    w.record([w.fresh(U)]);
+    const t = tab();
+    load(w, t);
+    t.mem.push(w.fresh(keyed('n')));
+    expect(unkeptOf(snapshot(w.phone), { mine: t.mem, known: t.known, sent: t.sent }).map((o) => o.act)).toEqual([keyed('n')]);
+  });
+
+  it('4365534650 sibling (the round-1 pass): a refused scope-move write keeps in a new record no act the key holds', () => {
+    const w = new World();
+    w.seed([w.fresh(U), w.fresh(keyed('a'))]);
+    const t = tab();
+    load(w, t);
+    t.front = new Set([t.mem[1].oid]);
+    expect(unkeptOf(snapshot(w.phone), { mine: t.mem, known: t.known, sent: t.sent, front: t.front })).toEqual([]);
+    expect(write(w, t, 'sidecar fails')).toBe('refused');
+    expect(w.phone.names(`vitan.made.${K}.`)).toEqual([]);
+    expect(freshOwed(w)).toEqual(w.owed());
+  });
+
+  it('4365534639: a sidecar naming two positions alike is damaged; the key reads by its bytes, and a mark hides neither', () => {
+    const w = new World();
+    const raw = JSON.stringify([U, U]);
+    w.phone.setItem(K, raw);
+    const t = ledgerTag(queueActIdent(U));
+    w.phone.setItem(sidecarName(K), encodeSidecar({ next: { tag: ledgerTag(raw), occ: [[t, 'x'], [t, 'x']] }, prev: null }));
+    expect(decodeSidecar(w.phone.getItem(sidecarName(K)))).toBeNull();
+    expect(decodeSidecar(encodeSidecar({ next: { tag: ledgerTag(raw), occ: [[t, ''], [t, 'y']] }, prev: null }))).toBeNull();
+    w.phone.setItem(markName(K, U, 'x'), queueActIdent(U));
+    expect(owedOf(snapshot(w.phone)).owed.map((o) => o.act)).toEqual([U, U]);
+  });
+
+  it('4365534644: an act from a record, sent here with its mark not made, goes with the record at the write; a fresh page does not send it again', () => {
+    const w = new World();
+    w.seed([]);
+    w.record([w.fresh(U)]);
+    const t = tab();
+    load(w, t);
+    settle(w, t, t.mem[0], false);
+    expect(write(w, t)).toBe('landed');
+    expect(w.phone.names(`vitan.made.${K}.`)).toEqual([]);
+    expect(owedOf(snapshot(w.phone)).owed).toEqual([]);
+  });
+
+  it('4365534644: evidence from a landed write lets the record of an act sent here go, though its mark was not made (call shape b09cb52 also takes)', () => {
+    const w = new World();
+    w.seed([]);
+    w.record([w.fresh(U)]);
+    const t = tab();
+    load(w, t);
+    settle(w, t, t.mem[0], false);
+    const plan = planWrite(snapshot(w.phone), { mine: t.mem, known: t.known, sent: t.sent })!;
+    expect(plan.next).toEqual([]);
+    w.phone.setItem(sidecarName(K), encodeSidecar((plan as Partial<WritePlan>).commit ?? plan.sidecar));
+    // the plan as an array of its spent marks, carrying its fields: b09cb52's evidenceOf takes the array, this one the plan
+    const ev = evidenceOf(snapshot(w.phone), Object.assign([...plan.legacySpent], plan));
+    expect(ev.records).toEqual([...w.records.keys()]);
+  });
+
+  it('#1109 r1 re-check of 4365534649: a pending side left by a close, then an earlier release writing those bytes, hides no record act and lets no record go', () => {
+    for (const mode of ['closes between', 'key fails, the sidecar stays'] as const) {
+      current = mode;
+      const w = new World();
+      w.seed([w.fresh(U)]);
+      w.record([w.fresh(U)]);
+      const t = tab();
+      load(w, t);
+      expect(write(w, t, mode)).toBe(mode === 'closes between' ? 'closed' : 'refused');
+      expect(lastPlan!.raw).toBe(JSON.stringify([U, U]));
+      // an earlier release's tab appends its own U: the key's bytes are now the pending side's
+      w.key.push(w.fresh(U).oid);
+      w.phone.setItem(K, JSON.stringify([U, U]));
+      expect(freshOwed(w).length, mode).toBe(w.owed().length);
+      expect(w.owed().length).toBe(3);
+      expect(evidenceOf(snapshot(w.phone), Object.assign([...lastPlan!.legacySpent], lastPlan!)).records, mode).toEqual([]);
+    }
+  });
+
+  it('a page closed after the key, before the commit, reads the key as the fallback: a record act it holds is a repeat at most, and nothing goes', () => {
+    const w = new World();
+    w.seed([w.fresh(U)]);
+    w.record([w.fresh(U)]);
+    const t = tab();
+    load(w, t);
+    expect(write(w, t, 'closes before the commit')).toBe('closed');
+    const after = owedOf(snapshot(w.phone));
+    expect(after.frame.exact).toBe(false);
+    expect(after.owed.map((o) => o.act)).toEqual([U, U, U]);
+    expect(evidenceOf(snapshot(w.phone), Object.assign([...lastPlan!.legacySpent], lastPlan!))).toEqual({ records: [], marks: [], legacy: [] });
+  });
+
+  it('a pending side is read as written; a side whose pending is anything but true is damaged', () => {
+    const side = { tag: ledgerTag('[]'), occ: [] as [string, string][] };
+    expect(decodeSidecar(JSON.stringify({ next: { ...side, pending: true }, prev: null }))?.next?.pending).toBe(true);
+    expect(decodeSidecar(JSON.stringify({ next: { ...side, pending: 'yes' }, prev: null }))).toBeNull();
+  });
+
+  it('4365534635: an act from a record an earlier release marked sent is not written into the key, and a fresh page does not send it again', () => {
+    const w = new World();
+    w.seed([w.fresh(keyed('a'))]);
+    w.record([w.fresh(U)]);
+    const t = tab();
+    load(w, t);
+    // an earlier release's tab sent the recorded act and marked it, one mark per identity
+    markSettled(w.phone, K, queueActIdent(U));
+    w.sent.add(w.of(t.mem[1].oid));
+    expect(write(w, t)).toBe('landed');
+    expect(JSON.parse(w.phone.getItem(K)!)).toEqual([keyed('a')]);
+    expect(owedOf(snapshot(w.phone)).owed.map((o) => o.act)).toEqual([keyed('a')]);
+  });
+
+  it('4365534635: a stranded act held under its record’s id, which an earlier release marked sent, is not owed', () => {
+    const w = new World();
+    w.seed([]);
+    const held = w.fresh(U);
+    w.record([held]);
+    markSettled(w.phone, K, queueActIdent(U));
+    expect(owedOf(snapshot(w.phone), [{ ...held }]).owed).toEqual([]);
   });
 });
 

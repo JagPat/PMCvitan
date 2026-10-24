@@ -12,7 +12,9 @@ import { queueActIdent } from '@/store/queueKeyGuard';
  * order, a made record as beyond the key, a stranded act in memory only. Every round-2 finding read one frame in
  * another. Here each occurrence has one name (an occurrence id, `oid`) from the moment it is on this phone:
  * - in the key: the sidecar `vitan.occ.<key>` names each position, for the key bytes it was written with (`next`), and
- *   for the bytes before them (`prev`), so a page closed between the sidecar's write and the key's still reads exactly;
+ *   for the bytes before them (`prev`), so a page closed between the sidecar's write and the key's still reads exactly.
+ *   `next` is written pending, then committed once the key's bytes read back; a pending side names nothing, as an
+ *   earlier release may have written its bytes since, with other occurrences;
  * - in a made record: the record's name and the act's index in it (`recordOid`), so no record is reshaped;
  * - a settled mark: `vitan.settled.<key>.<tag>.o<oid>`, whose value stays the identity, as an earlier release reads it;
  * - stranded and memory: the caller keeps each act's oid beside it.
@@ -26,20 +28,22 @@ import { queueActIdent } from '@/store/queueKeyGuard';
  *   while a record it may guard is there.
  * - R6: every occurrence is owed, settled (marked or sent), or another tab's; one the ledger cannot place is owed.
  *
- * The fallback: a key whose bytes match neither sidecar side was written by an earlier release (this release writes
- * the sidecar first), as every key is before this release first writes it. Its positions get ids from its bytes and
- * place (`f:<bytes tag>:<n>`), the same in every tab that reads the same bytes, so a mark made on them holds while the
- * bytes do; an identity found once in the last sidecar side and once in the key keeps that side's id. An occurrence
- * whose id the bytes' change took away stays owed, and is not taken as another tab's send (R2): a repeat at most, which
- * the server refuses for every kind with no key, never a loss. It ends with B2, which keeps an earlier release from
- * writing a key this one wrote. (An earlier release that writes the same bytes back after a send and an identical new
- * act can only make a mark hide that new act, which is byte for byte the sent one: the server refuses it as a repeat.)
+ * The fallback: a key whose bytes match no committed sidecar side was written by an earlier release (this release
+ * writes the sidecar first), as every key is before this release first writes it, or by this release's write that
+ * closed before its commit. Its positions get ids from its bytes and place (`f:<bytes tag>:<n>`), the same in every tab
+ * that reads the same bytes, so a mark made on them holds while the bytes do; an identity found once in the last
+ * committed side and once in the key keeps that side's id, unless a record there names it. An occurrence whose id the
+ * bytes' change took away stays owed, and is not taken as another tab's send (R2): a repeat at most, which the server
+ * refuses for every kind with no key, never a loss. It ends with B2, which keeps an earlier release from writing a key
+ * this one wrote. (An earlier release that writes the same bytes back after a send and an identical new act can only
+ * make a mark hide that new act, which is byte for byte the sent one: the server refuses it as a repeat.)
  */
 
 /** an act occurrence and its name */
 export type Occ = { oid: string; act: OutboxOp };
-/** one sidecar side: the key bytes' tag, and each position's identity tag and oid */
-export type SidecarSide = { tag: string; occ: [string, string][] };
+/** one sidecar side: the key bytes' tag, and each position's identity tag and oid. `pending`: written before the key,
+ *  and not yet committed after the key's bytes read back, so the key may never have held them */
+export type SidecarSide = { tag: string; occ: [string, string][]; pending?: true };
 export type Sidecar = { next: SidecarSide | null; prev: SidecarSide | null };
 /** a key's marks: oids marked settled, and the identities an earlier release marked (one mark per identity) */
 export type Marks = { ids: Set<string>; legacy: Set<string> };
@@ -103,10 +107,14 @@ export function encodeSidecar(s: Sidecar): string {
 }
 const isSide = (v: unknown): v is SidecarSide => {
   if (v === null || typeof v !== 'object') return false;
-  const s = v as { tag?: unknown; occ?: unknown };
-  return typeof s.tag === 'string' && Array.isArray(s.occ) && s.occ.every((p) => Array.isArray(p) && p.length === 2 && typeof p[0] === 'string' && typeof p[1] === 'string');
+  const s = v as { tag?: unknown; occ?: unknown; pending?: unknown };
+  if (typeof s.tag !== 'string' || !Array.isArray(s.occ) || (s.pending !== undefined && s.pending !== true)) return false;
+  // each position its own non-empty oid (#1109 r1, Codex 4365534639): a side naming two positions alike is damaged
+  const oids = new Set<string>();
+  return s.occ.every((p) => Array.isArray(p) && p.length === 2 && typeof p[0] === 'string' && typeof p[1] === 'string' && p[1] !== '' && !oids.has(p[1]) && Boolean(oids.add(p[1])));
 };
-/** a sidecar's bytes read; anything else (absent, damaged, a newer shape) is none, which reads the key as the fallback */
+/** a sidecar's bytes read; anything else (absent, damaged, a newer shape, a side naming two positions alike) is none,
+ *  which reads the key as the fallback */
 export function decodeSidecar(raw: string | null): Sidecar | null {
   if (raw === null) return null;
   try {
@@ -120,6 +128,9 @@ export function decodeSidecar(raw: string | null): Sidecar | null {
   }
 }
 
+/** each made record's occurrences, named */
+const recordOccs = (s: Snapshot): Occ[] => s.records.flatMap((r) => r.acts.map((act, n) => ({ oid: recordOid(s.key, r.name, n), act })));
+
 /** the key's occurrences, each named; `exact` when a sidecar side names these bytes; `side` names them as read */
 export type Frame = { occs: Occ[]; exact: boolean; side: SidecarSide | null };
 
@@ -128,17 +139,22 @@ export function frameOf(s: Snapshot): Frame {
   if (s.raw === null) return { occs: [], exact: true, side: null };
   const tag = ledgerTag(s.raw);
   const tags = acts.map(identTag);
-  for (const side of [s.sidecar?.next, s.sidecar?.prev]) {
-    if (side && side.tag === tag && side.occ.length === acts.length && side.occ.every(([t], n) => t === tags[n])) {
+  // a pending side never names the key: the page may have closed before the key's write, and an earlier release may
+  // since have written the same bytes with other occurrences (#1109 r1 re-check of 4365534649)
+  const committed = [s.sidecar?.next, s.sidecar?.prev].filter((side): side is SidecarSide => Boolean(side) && !side!.pending);
+  for (const side of committed) {
+    if (side.tag === tag && side.occ.length === acts.length && side.occ.every(([t], n) => t === tags[n])) {
       return { occs: acts.map((act, n) => ({ oid: side.occ[n][1], act })), exact: true, side };
     }
   }
-  // fallback: ids from the bytes, but an identity once in the last side and once here keeps its id
+  // fallback: ids from the bytes, but an identity once in the last side written (pending or not) and once here keeps its
+  // id, unless a record there names it (then the key's act may be another occurrence, and the record's stays owed)
   const base = s.sidecar?.next ?? s.sidecar?.prev ?? null;
+  const recorded = new Set(recordOccs(s).map((o) => o.oid));
   const count = (list: string[], t: string) => list.reduce((n, x) => n + (x === t ? 1 : 0), 0);
   const baseTags = base ? base.occ.map(([t]) => t) : [];
   const occs = acts.map((act, n) => {
-    const kept = base && count(baseTags, tags[n]) === 1 && count(tags, tags[n]) === 1;
+    const kept = base && count(baseTags, tags[n]) === 1 && count(tags, tags[n]) === 1 && !recorded.has(base.occ[baseTags.indexOf(tags[n])][1]);
     return { oid: kept ? base.occ[baseTags.indexOf(tags[n])][1] : `f:${tag}:${n}`, act };
   });
   return { occs, exact: false, side: { tag, occ: occs.map((o, n) => [tags[n], o.oid]) } };
@@ -155,8 +171,12 @@ function legacySettled(s: Snapshot, all: Occ[]): Set<string> {
   return out;
 }
 
-/** each made record's occurrences, named */
-const recordOccs = (s: Snapshot): Occ[] => s.records.flatMap((r) => r.acts.map((act, n) => ({ oid: recordOid(s.key, r.name, n), act })));
+
+/** the occurrences an earlier release's marks settle, over the key and its records' beyond it */
+function settledByEarlier(s: Snapshot, frame: Frame): Set<string> {
+  const inKey = new Set(frame.occs.map((o) => o.oid));
+  return legacySettled(s, [...frame.occs, ...recordOccs(s).filter((o) => !inKey.has(o.oid))]);
+}
 
 /** A load: what this key owes, in order: the stranded occurrences memory holds (`stranded`, first, as the scope-move
  *  write puts its unsent ones first), then the key's, then its records' beyond the key. A settled occurrence is not
@@ -165,9 +185,9 @@ export function owedOf(s: Snapshot, stranded: Occ[] = []): { owed: Occ[]; frame:
   const frame = frameOf(s);
   const inKey = new Set(frame.occs.map((o) => o.oid));
   const records = recordOccs(s).filter((o) => !inKey.has(o.oid));
-  const legacy = legacySettled(s, [...frame.occs, ...records]);
+  const legacy = settledByEarlier(s, frame);
   const fromKey = frame.occs.filter((o) => !legacy.has(o.oid) && !s.marks.ids.has(o.oid));
-  const held = stranded.filter((o) => !inKey.has(o.oid) && !s.marks.ids.has(o.oid));
+  const held = stranded.filter((o) => !inKey.has(o.oid) && !s.marks.ids.has(o.oid) && !legacy.has(o.oid));
   const heldIds = new Set(held.map((o) => o.oid));
   const fromRecords = records.filter((o) => !heldIds.has(o.oid) && !s.marks.ids.has(o.oid) && !legacy.has(o.oid));
   return { owed: [...held, ...fromKey, ...fromRecords], frame };
@@ -179,6 +199,9 @@ export function owedOf(s: Snapshot, stranded: Occ[] = []): { owed: Occ[]; frame:
  *  occurrences are always head, wherever the key holds them */
 function beyondKey(s: Snapshot, frame: Frame, m: Memory): { head: Occ[]; tail: Occ[] } {
   const inKey = new Set(frame.occs.map((o) => o.oid));
+  // an occurrence an earlier release's mark settles is settled here too, wherever memory holds it (#1109 r1, Codex
+  // 4365534635: one loaded from a record was written back into the key)
+  const legacy = settledByEarlier(s, frame);
   const front = m.front ?? new Set<string>();
   const taken = (o: Occ) => s.raw !== null && frame.exact && m.known.has(o.oid) && !front.has(o.oid);
   const firstInKey = m.mine.findIndex((o) => inKey.has(o.oid));
@@ -186,28 +209,34 @@ function beyondKey(s: Snapshot, frame: Frame, m: Memory): { head: Occ[]; tail: O
   const tail: Occ[] = [];
   m.mine.forEach((o, n) => {
     if (inKey.has(o.oid) && !front.has(o.oid)) return;
-    if (m.sent.has(o.oid) || s.marks.ids.has(o.oid) || taken(o)) return;
+    if (m.sent.has(o.oid) || s.marks.ids.has(o.oid) || legacy.has(o.oid) || taken(o)) return;
     (front.has(o.oid) || firstInKey < 0 || n < firstInKey ? head : tail).push(o);
   });
   return { head, tail };
 }
 
-/** A refused write: memory's occurrences the key, unchanged, does not hold, and that are neither settled nor taken by
- *  another tab, in memory order: the ones to keep in a made record and hold stranded, and to list not kept */
+/** A refused write: memory's occurrences the key, unchanged, does not hold, no record there holds, and that are neither
+ *  settled nor taken by another tab, in memory order: the ones to keep in a new made record and hold stranded */
 export function unkeptOf(s: Snapshot, m: Memory): Occ[] {
-  const { head, tail } = beyondKey(s, frameOf(s), m);
-  return [...head, ...tail];
+  const frame = frameOf(s);
+  const { head, tail } = beyondKey(s, frame, m);
+  // one the key or a record still there holds is on this phone (a `front` one the key holds is head, for the write to
+  // move); one whose record went (its key held it) is not (#1109 r1, Codex 4365534650: the `r:` id outlives its record)
+  const onPhone = new Set([...frame.occs, ...recordOccs(s)].map((o) => o.oid));
+  return [...head, ...tail].filter((o) => !onPhone.has(o.oid));
 }
 
 /** what this tab's memory holds for the key: its occurrences in order (`mine`), the oids it read in the key at its last
  *  load or landed write (`known`), the ones it marked settled since (`sent`; a flush keeps them in memory until its
  *  end), and the ones to put first (`front`: the scope-move write's unsent ones) */
 export type Memory = { mine: Occ[]; known: Set<string>; sent: Set<string>; front?: Set<string> };
-/** a write's plan: the key's next occurrences (`raw`: the exact bytes to write), the sidecar to write first, and the
- *  earlier release's marks this write settles for good. When `raw` is the key's bytes now, the key is not written
- *  again: the sidecar names them anew (a stranded act in the place of an identical sent one), and the write has landed
- *  once the sidecar reads back */
-export type WritePlan = { next: Occ[]; raw: string; sidecar: Sidecar; legacySpent: string[] };
+/** a write's plan: the key's next occurrences (`raw`: the exact bytes to write), the sidecar to write first (its `next`
+ *  side pending), the sidecar to write once the key's bytes read back (`commit`: the same, committed), the earlier
+ *  release's marks this write settles for good, and the occurrences this tab sent (`sent`: a record holding one goes
+ *  with the write, even when its mark could not be made). When `raw` is the key's bytes now, the key is not written
+ *  again: the committed sidecar names them anew (a stranded act in the place of an identical sent one). The write has
+ *  landed once the committed sidecar reads back; until then the key reads by `prev` or as the fallback */
+export type WritePlan = { next: Occ[]; raw: string; sidecar: Sidecar; commit: Sidecar; legacySpent: string[]; sent: string[] };
 
 /** A write of memory into the key as it holds it now. Null when this release cannot read the key: it is never written
  *  over. In stored order: an entry memory does not take (`takes`) stays byte for byte; a settled one goes; one memory
@@ -218,8 +247,7 @@ export function planWrite(s: Snapshot, m: Memory, takes: (o: OutboxOp) => boolea
   if (s.acts === null && s.raw !== null) return null;
   const frame = frameOf(s);
   const mine = new Map(m.mine.map((o) => [o.oid, o]));
-  const inKey = new Set(frame.occs.map((o) => o.oid));
-  const legacy = legacySettled(s, [...frame.occs, ...recordOccs(s).filter((o) => !inKey.has(o.oid))]);
+  const legacy = settledByEarlier(s, frame);
   const settled = (o: Occ) => m.sent.has(o.oid) || legacy.has(o.oid) || s.marks.ids.has(o.oid);
   const front = m.front ?? new Set<string>();
   const stored: Occ[] = [];
@@ -237,22 +265,25 @@ export function planWrite(s: Snapshot, m: Memory, takes: (o: OutboxOp) => boolea
   const raw = JSON.stringify(next.map((o) => o.act));
   const prev = s.raw === null ? null : frame.side;
   const legacySpent = [...s.marks.legacy].filter((i) => !frame.occs.some((o) => !takes(o.act) && queueActIdent(o.act) === i));
-  return { next, raw, sidecar: { next: { tag: ledgerTag(raw), occ: next.map((o) => [identTag(o.act), o.oid]) }, prev }, legacySpent };
+  const side: SidecarSide = { tag: ledgerTag(raw), occ: next.map((o) => [identTag(o.act), o.oid]) };
+  return { next, raw, sidecar: { next: { ...side, pending: true }, prev }, commit: { next: side, prev }, legacySpent, sent: [...m.sent] };
 }
 
 /** The evidence a snapshot read back after a landed write shows is no longer needed (R5): records whose every
- *  occurrence the key holds or is settled, then marks whose occurrence neither the key nor a record still there holds,
- *  and the earlier release's marks the write settled for good (`spent`, from its plan) that no record still there
- *  holds an act of. Run it again after the records are removed and read back: a mark a record there may guard stays
- *  until then. Nothing goes while the key is not read exactly (another release wrote it), and no mark while a record is
- *  unreadable */
-export function evidenceOf(s: Snapshot, spent: string[] = []): { records: string[]; marks: string[]; legacy: string[] } {
+ *  occurrence the key holds or is settled (marked, or sent by the write's tab), then marks whose occurrence neither the
+ *  key nor a record still there holds, and the earlier release's marks the write settled for good (from its plan)
+ *  that no record still there holds an act of. Run it again after the records are removed and read back: a mark a
+ *  record there may guard stays until then. Nothing goes while the key is not read exactly (another release wrote
+ *  it), and no mark while a record is unreadable */
+export function evidenceOf(s: Snapshot, plan: Pick<WritePlan, 'legacySpent' | 'sent'> = { legacySpent: [], sent: [] }): { records: string[]; marks: string[]; legacy: string[] } {
   const frame = frameOf(s);
   if (s.acts === null || !frame.exact) return { records: [], marks: [], legacy: [] };
   const inKey = new Set(frame.occs.map((o) => o.oid));
   const occs = recordOccs(s);
-  const legacy = legacySettled(s, [...frame.occs, ...occs.filter((o) => !inKey.has(o.oid))]);
-  const done = (oid: string) => inKey.has(oid) || s.marks.ids.has(oid) || legacy.has(oid);
+  const legacy = settledByEarlier(s, frame);
+  // sent by the write's tab: settled, whether or not its mark could be made (#1109 r1, Codex 4365534644)
+  const sent = new Set(plan.sent);
+  const done = (oid: string) => inKey.has(oid) || s.marks.ids.has(oid) || legacy.has(oid) || sent.has(oid);
   const records = s.records.filter((r) => r.acts.every((_, n) => done(recordOid(s.key, r.name, n)))).map((r) => r.name);
   if (s.recordsUnread) return { records, marks: [], legacy: [] };
   const guarded = new Set(occs.map((o) => o.oid));
@@ -260,6 +291,6 @@ export function evidenceOf(s: Snapshot, spent: string[] = []): { records: string
   return {
     records,
     marks: [...s.marks.ids].filter((oid) => !inKey.has(oid) && !guarded.has(oid)),
-    legacy: spent.filter((i) => s.marks.legacy.has(i) && !heldIdents.has(i)),
+    legacy: plan.legacySpent.filter((i) => s.marks.legacy.has(i) && !heldIdents.has(i)),
   };
 }
