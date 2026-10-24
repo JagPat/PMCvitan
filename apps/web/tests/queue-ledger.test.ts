@@ -3,11 +3,12 @@ import type { OutboxOp } from '@/data/apiGateway';
 import { readStoredQueue } from '@/data/storedActs';
 import { queueActIdent } from '@/store/queueActIdent';
 import { queueActIdent as guardIdent } from '@/store/queueKeyGuard';
-import { madeActs, markSettled, settledIdents } from '@/store/queueActRecord';
+import { madeActs, markSettled, releaseMade, settledIdents } from '@/store/queueActRecord';
 import {
   decodeSidecar, encodeSidecar, evidenceOf, ledgerTag, markName, owedOf, planWrite, readMarkName, recordName, recordOid, sidecarName, unkeptOf,
   type Occ, type Snapshot, type WritePlan,
 } from '@/store/queueLedger';
+import * as ledger from '@/store/queueLedger';
 
 /**
  * WEB-02 B1 L1: the occurrence ledger, driven by a small writer over one phone's storage (what L2 wires into the queue
@@ -28,6 +29,9 @@ import {
  */
 
 const K = 'vitan.outbox.dev:u-pmc.p-1';
+/** a new record's bytes (`recordBytes`); the earlier heads these probes also run at (#1109's, 7f96531) have none, and
+ *  their records are the acts alone */
+const recordBytes = (acts: OutboxOp[], nonce: string): string => ledger.recordBytes?.(acts, nonce) ?? JSON.stringify(acts);
 /** the ledger's fence: B2f-2's answer (plan r3 v4), no while a tab of an earlier release is listed; the matrix runs
  *  under yes */
 let fenceNow = true;
@@ -73,7 +77,7 @@ function snapshot(p: Phone): Snapshot {
     if (m && 'oid' in m) ids.add(m.oid); else if (m) legacy.add(p.getItem(n)!);
   }
   const order = (n: string) => Number(n.slice(`vitan.made.${K}.`.length).split('.')[0]);
-  const records = p.names(`vitan.made.${K}.`).sort((a, b) => order(a) - order(b)).map((name) => ({ name, acts: JSON.parse(p.getItem(name)!) as OutboxOp[] }));
+  const records = p.names(`vitan.made.${K}.`).sort((a, b) => order(a) - order(b)).map((name) => ({ name, acts: actsIn(p.getItem(name)) }));
   return { key: K, raw, acts: 'acts' in read ? read.acts : null, sidecar: decodeSidecar(p.getItem(sidecarName(K))), marks: { ids, legacy }, records, recordsUnread: false, fence: fenceNow, token: split.token };
 }
 
@@ -109,8 +113,8 @@ class World {
    *  name is never used twice (main's writer takes the same bytes for one record, which L2 changes); their oids become
    *  the record's */
   record(occs: Occ[]): boolean {
-    const raw = JSON.stringify(occs.map((o) => o.act));
     this.serial += 1;
+    const raw = recordBytes(occs.map((o) => o.act), `m${this.serial}`);
     const name = recordName(K, this.phone.names(`vitan.made.${K}.`), raw, `m${this.serial}`);
     try { this.phone.setItem(name, raw); } catch { return false; }
     occs.forEach((o, n) => { const was = this.of(o.oid); o.oid = recordOid(K, name, n); this.alias.set(o.oid, was); });
@@ -741,12 +745,13 @@ describe('the writers the guard keeps', () => {
     expect(plan.next.map((o) => o.oid)).toEqual([u.oid, b.oid]);
   });
 
-  it('an earlier release reads a record this release names, as its own', () => {
+  it('an earlier release reads a record this release names as newer: it loads none of its acts, and keeps it', () => {
     const p = new Phone();
-    const raw = JSON.stringify([U, U]);
+    const raw = recordBytes([U, U], 'm1');
     p.setItem(recordName(K, [], raw, 'm1'), raw);
-    p.setItem(recordName(K, p.names(`vitan.made.${K}.`), raw, 'm2'), raw);
-    expect(madeActs(p, K, undefined)).toEqual([U, U, U, U]);
+    expect(madeActs(p, K, undefined)).toEqual([]);
+    expect(releaseMade(p, K, () => true, queueActIdent, undefined), 'every mark of the key stays').toBeNull();
+    expect(p.names(`vitan.made.${K}.`)).toHaveLength(1);
   });
 });
 

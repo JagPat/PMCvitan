@@ -56,7 +56,7 @@ export type Snapshot = {
   acts: OutboxOp[] | null;
   sidecar: Sidecar | null;
   marks: Marks;
-  /** the key's readable made records, in made order, by their full names */
+  /** the key's readable made records, in made order, by their full names; `acts` without a record's token */
   records: { name: string; acts: OutboxOp[] }[];
   /** a record is there this release cannot read: it may guard any mark, so none goes */
   recordsUnread: boolean;
@@ -102,9 +102,14 @@ export const sidecarName = (key: string): string => `vitan.occ.${key}`;
 export const markName = (key: string, act: OutboxOp, oid: string): string => `vitan.settled.${key}.${identTag(act)}.o${oid}`;
 /** the oid of the `n`-th act of the made record `name` */
 export const recordOid = (key: string, name: string, n: number): string => `r:${name.slice(`vitan.made.${key}.`.length)}#${n}`;
-/** A new made record's name: after every record the key has (`names`), and never a name a record had before, so its
- *  occurrences' oids are new too (`nonce`: unique to this record, such as an idempotency key). An earlier release reads
- *  it as its own: it orders records by the first part and reads every name under the key's prefix */
+/** A new made record's bytes: its acts after a write token with the record's nonce (#1116 r1, Codex 4368074449). Every
+ *  release with made records (B1a on, after step A1) reads them as `unreadable: 'newer'`, so it loads none of their acts
+ *  and never saves them again in a record of its own (4366320607); its `releaseMade` keeps the record and every mark;
+ *  and its `recordMade` never takes it for its own save of a byte-identical act it holds, which gets its own record */
+export const recordBytes = (acts: OutboxOp[], nonce: string): string => JSON.stringify([{ t: TOKEN_KIND, n: nonce }, ...acts]);
+/** A new made record's name, for its bytes `raw` (`recordBytes`): after every record the key has (`names`), and never a
+ *  name a record had before, so its occurrences' oids are new too (`nonce`: unique to this record). It keeps an earlier
+ *  release's shape, `<order>.` first and the bytes' tag last (#1111) */
 export const recordName = (key: string, names: string[], raw: string, nonce: string): string => {
   const prefix = `vitan.made.${key}.`;
   const order = Math.max(0, ...names.map((n) => Number(n.slice(prefix.length).split('.')[0])).filter(Number.isSafeInteger)) + 1;

@@ -3,7 +3,7 @@ import type { OutboxOp } from '@/data/apiGateway';
 import { queueActIdent } from '@/store/queueActIdent';
 import { madeActs, recordMade } from '@/store/queueActRecord';
 import * as ledger from '@/store/queueLedger';
-import { decodeSidecar, encodeSidecar, evidenceOf, owedOf, planWrite, recordName, type Snapshot } from '@/store/queueLedger';
+import { decodeSidecar, encodeSidecar, evidenceOf, ledgerTag, owedOf, planWrite, recordName, type Snapshot } from '@/store/queueLedger';
 
 /**
  * WEB-02 L1' (plan r3 v4): the write token. Each ledger write puts its token, `{ t: 'vitan.writeToken', n: <nonce> }`,
@@ -13,6 +13,9 @@ import { decodeSidecar, encodeSidecar, evidenceOf, owedOf, planWrite, recordName
  * At #1109's last head 0d5b1bd every row is red by assertion but the three that head already got right.
  */
 const K = 'vitan.outbox.dev:u-pmc.p-1';
+/** a new record's bytes (`recordBytes`); the earlier heads these probes also run at (#1109's, 7f96531) have none, and
+ *  their records are the acts alone */
+const recordBytes = (acts: OutboxOp[], nonce: string): string => ledger.recordBytes?.(acts, nonce) ?? JSON.stringify(acts);
 const TOKEN = 'vitan.writeToken';
 const U = { t: 'submitInspection', inspectionId: 'i-1', items: [] } as unknown as OutboxOp;
 const P = { t: 'uploadMedia', input: { projectId: 'p-1', evidenceId: 'e-1', mime: 'image/jpeg' } } as unknown as OutboxOp;
@@ -36,13 +39,14 @@ const snap = (p: Phone, fence: boolean, over: Partial<Snapshot> = {}): Snapshot 
   const raw = p.getItem(K);
   const { token, acts } = split(raw);
   const order = (n: string) => Number(n.slice(`vitan.made.${K}.`.length).split('.')[0]);
-  const records = p.names(`vitan.made.${K}.`).sort((a, b) => order(a) - order(b)).map((name) => ({ name, acts: JSON.parse(p.getItem(name)!) as OutboxOp[] }));
+  const records = p.names(`vitan.made.${K}.`).sort((a, b) => order(a) - order(b)).map((name) => ({ name, acts: split(p.getItem(name)).acts! }));
   return { key: K, raw, acts, sidecar: decodeSidecar(p.getItem(`vitan.occ.${K}`)), marks: { ids: new Set(), legacy: new Set() }, records, recordsUnread: false, fence, token, ...over } as Snapshot;
 };
 const withRecord = (act: OutboxOp) => {
   const p = new Phone();
   p.setItem(K, '[]');
-  p.setItem(recordName(K, [], JSON.stringify([act]), 'm1'), JSON.stringify([act]));
+  const raw = recordBytes([act], 'm1');
+  p.setItem(recordName(K, [], raw, 'm1'), raw);
   return p;
 };
 /** L2's record release: remove, read the token again, and put every record back if the key changed meanwhile */
@@ -189,13 +193,21 @@ describe('plan r3 v4: the write token', () => {
     expect(owedOf(snap(p, true, { marks: legacy })).owed.map((o) => o.act), 'read: both U owed').toEqual([U, U]);
   });
 
-  it('4366320607: an earlier release preserving acts already in a record this release named keeps that record, and writes none of its own', () => {
+  it('4366320607: an earlier release cannot load the acts of a record this release named, so it never saves them again', () => {
+    const p = withRecord(U);
+    const [name] = p.names(`vitan.made.${K}.`);
+    expect(madeActs(p, K, undefined), 'it loads none').toEqual([]);
+    expect(name.endsWith(`.m1.${ledgerTag(p.getItem(name)!)}`), 'the name ends in its bytes’ tag (#1111)').toBe(true);
+  });
+
+  it('4368074449: an earlier release’s tab whose key write fails keeps its own byte-identical U in a record of its own: both U owed', () => {
     const p = new Phone();
-    const raw = JSON.stringify([U]);
+    const raw = recordBytes([U], 'm1');
     p.setItem(recordName(K, [], raw, 'm1'), raw);
-    expect(recordMade(p, K, [U])).toBe(true);
-    expect(p.names(`vitan.made.${K}.`).length).toBe(1);
-    expect(madeActs(p, K, undefined)).toEqual([U]);
+    // a frozen B1a-era tab queued its own U; its key write fails, so it keeps the U with its recordMade
+    expect(recordMade(p, K, [U]), 'its save reads back').toBe(true);
+    expect(p.names(`vitan.made.${K}.`), 'a record of its own').toHaveLength(2);
+    expect(owedOf(snap(p, true)).owed.map((o) => o.act), 'both U owed').toEqual([U, U]);
   });
 });
 
