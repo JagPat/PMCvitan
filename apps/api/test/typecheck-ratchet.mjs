@@ -151,7 +151,10 @@ function main() {
   let output = '';
   let status = 0;
   try {
-    output = execFileSync('npx', ['tsc', '-p', 'tsconfig.tests.json', '--noEmit', '--pretty', 'false'], { cwd: api, encoding: 'utf8', maxBuffer: 64 << 20 });
+    // every test file and the src it imports need about 2.7 GB of heap, more than Node's default on a smaller machine;
+    // a caller's own NODE_OPTIONS comes after this, so its heap size wins
+    const env = { ...process.env, NODE_OPTIONS: `--max-old-space-size=4096 ${process.env.NODE_OPTIONS ?? ''}`.trim() };
+    output = execFileSync('npx', ['tsc', '-p', 'tsconfig.tests.json', '--noEmit', '--pretty', 'false'], { cwd: api, env, encoding: 'utf8', maxBuffer: 64 << 20 });
   } catch (e) {
     // tsc exits 2 when it reports errors; anything else (no output to read) is a failure of the step itself
     if (e.status !== 2 || !e.stdout) throw e;
