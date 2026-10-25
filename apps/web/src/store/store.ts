@@ -2542,10 +2542,11 @@ export const useStore = create<Store>()(
       const made = { scope: currentScope(), token: get().sessionToken, key: outboxKey() };
       return () => scopeStillCurrent(made.scope) && get().sessionToken === made.token && outboxKey() === made.key;
     };
-    /** another tab's write of this scope's queue key is read and listed, never answered (`null`: storage cleared) */
+    /** another tab's write of this scope's queue key is read and listed, never written back (`null`: storage cleared);
+     *  memory's acts for it go with it, for the guard to copy aside or hold (U3) */
     globalThis.addEventListener?.('storage', (e: StorageEvent) => {
       const storage = globalThis.localStorage;
-      if (storage && e.storageArea === storage && get().sessionUserId) for (const k of [outboxKey(), siteVisitKeyOf(outboxKey())]) if (e.key === null || e.key === k) queueKeys.heard(storage, k);
+      if (storage && e.storageArea === storage && get().sessionUserId) for (const w of queueWrites()) if (e.key === null || e.key === w.key) queueKeys.heard(storage, w.key, w.mine);
     });
 
     // Evidence bytes share the outbox's user scope (WEB-02): the IndexedDB entries are
@@ -6477,6 +6478,15 @@ export const useStore = create<Store>()(
       let markStore: Storage | null = null;
       try { markStore = globalThis.localStorage ?? null; } catch { markStore = null; }
       const settle = (o: OutboxOp): void => { queueKeys.settled(markStore, isSiteVisitOp(o) ? siteVisitKeyOf(flushKey) : flushKey, o); };
+      const withheldVisits = new Set<string>();
+      let generalWithheld = false;
+      const withheldNow = (op: OutboxOp): boolean => {
+        const visit = isSiteVisitOp(op);
+        if (visit ? withheldVisits.has(siteVisitOf(op)) : generalWithheld) return true;
+        if (!queueKeys.withholds(visit ? siteVisitKeyOf(flushKey) : flushKey, op)) return false;
+        if (visit) withheldVisits.add(siteVisitOf(op)); else generalWithheld = true;
+        return true;
+      };
       for (let i = 0; i < ops.length; i++) {
         // live check BEFORE each replay: if the project or session changed while a
         // previous op was in flight, the rest of this queue belongs to the OLD
@@ -6486,7 +6496,12 @@ export const useStore = create<Store>()(
           scopeMoved = true;
           break;
         }
-        if (holds(ops[i])) { heldVisits.push(ops[i]); continue; }
+        // U3 (Codex 4353751507): an act its key withholds (another tab made the key unreadable) stays here, unsent, and
+        // so does every later act that may depend on it: the rest of its visit, or the rest of the general queue (a
+        // later act sent alone would be refused for good and dropped: Stage 1 gap check of 3302f45, gap 1). It is asked
+        // first, so an act the photo hold also holds still latches its visit (#1122 r2, 4370280911)
+        const withheldHere = withheldNow(ops[i]);
+        if (holds(ops[i]) || withheldHere) { heldVisits.push(ops[i]); continue; }
         const mat = isMaterialsOp(ops[i]);
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);
