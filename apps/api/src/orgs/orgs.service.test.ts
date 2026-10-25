@@ -40,7 +40,7 @@ const initParticipants = (prisma: unknown) => [
   // healthy for these unit suites (no open decisions held; standing present). The refusal
   // behaviour is integration-probed (P39).
   { holdsOpenDecisions: vi.fn(async () => ({ named: false, heldRoles: [] as string[] })) } as unknown as DecisionsParticipant,
-  { effectiveRoleStanding: vi.fn(async () => 1) } as unknown as OrgsParticipant,
+  { effectiveRoleStanding: vi.fn(async () => 1), isProjectOperable: vi.fn(async () => true) } as unknown as OrgsParticipant,
 ] as const;
 
 function makeAtomicProjectInit(throwFromInspection = false) {

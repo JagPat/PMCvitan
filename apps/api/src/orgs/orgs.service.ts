@@ -1263,6 +1263,11 @@ export class OrgsService {
       // #1061 — the actor's standing anchor BEFORE the project row: the emit reads their standing after
       // it, and a member command re-roling them holds their anchor and then waits on this project row
       await lockStandingAnchors(tx, { read: [actor.actorId] });
+      // #1128 — an archived project is not edited. Re-read it under its row lock, after the org key (which an
+      // archive also holds), so an archive that committed after the door's checks is refused, not written past
+      if (!(await this.orgsParticipant.isProjectOperable(tx, pid))) {
+        throw new ConflictException('This project is archived — restore it before editing it');
+      }
       const u = await tx.project.update({ where: { id: pid }, data: input });
       await emitEvent(tx, { projectId: pid, actor, eventType: 'project.updated', entityType: 'Project', entityId: pid, effectKey: 'project.updated', dispatch: {} });
       return u;
