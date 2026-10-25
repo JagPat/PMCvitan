@@ -1,0 +1,185 @@
+#!/usr/bin/env node
+// The api test type-check ratchet: the third step of `pnpm --filter api typecheck`.
+//
+// It runs `tsc -p tsconfig.tests.json` and holds every file to the diagnostics test/typecheck-baseline.json lists for
+// it, each with a count. A diagnostic is an error's code and first line (`TS2339: Property 'email' does not exist ...`),
+// without its line or column. The step fails when:
+//   - a file has a diagnostic the baseline does not list for it (every new or fixed test file stays clean, and an error
+//     swapped for a different one in a listed file is new, not the same count);
+//   - a file has a listed diagnostic more often than its count;
+//   - a file has a listed diagnostic less often than its count, until the count is lowered (or the diagnostic deleted,
+//     at zero) in the same change, so the baseline always equals the tree;
+//   - an error tsc reports without a file, or tsc exits 2 and no error can be read from what it wrote;
+//   - the baseline allows more than the base branch's baseline does: in any file, an error code with more errors than
+//     the base's lists for it, or one the base's does not list (it only ever goes down). This is checked against the
+//     base's copy, read from git: `TYPECHECK_BASE` if set, else the pull request's base branch (`GITHUB_BASE_REF`,
+//     fetched at depth 1); in Actions otherwise, on a push the commit the branch held before it (the event's `before`,
+//     fetched at depth 1) and on a dispatch `main`; outside Actions `origin/main`. With no base, or a base copy that
+//     cannot be read, the step fails. It skips the comparison, and says so, only when the base's tree has no baseline
+//     file (the change that adds it).
+// A diagnostic's first line includes the types tsc prints into it (a union's member order, a src type's shape, a
+// "... N more ..." count), so an unrelated change to src, to tsc, or even an added error-free file can re-key one
+// without changing the error. The author then re-lists it under its new text. The tree is held to the full diagnostic,
+// but the base comparison counts per file and per error code, so a re-keyed entry may be listed in the same change.
+// The trade-off: moving errors between two diagnostics of the same code in one file passes, but only with a visible
+// edit to the baseline. A diagnostic has no location either, so fixing one occurrence and adding an identical error
+// elsewhere in the same file is not caught; the count is what holds.
+// Each burn-down unit fixes its files and deletes their entries; the step ends when the baseline is `{}`.
+import { execFileSync, spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { dirname, join, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const api = join(dirname(fileURLToPath(import.meta.url)), '..');
+const repo = join(api, '..', '..');
+const BASELINE = 'test/typecheck-baseline.json';
+const REPO_PATH = `apps/api/${BASELINE}`;
+const UNPLACED = '(an error tsc reports without a file)';
+
+/** A baseline's JSON: an object whose every file maps each of its diagnostics to a count, a whole number of at least 1. */
+function parseBaseline(text, where) {
+  const b = JSON.parse(text);
+  const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  if (!isObject(b)) throw new Error(`${where} is not a JSON object`);
+  for (const [file, diagnostics] of Object.entries(b)) {
+    if (!isObject(diagnostics) || !Object.keys(diagnostics).length) throw new Error(`${where}: ${file} does not map its diagnostics to counts`);
+    for (const [diagnostic, n] of Object.entries(diagnostics)) {
+      if (!Number.isInteger(n) || n < 1) throw new Error(`${where}: ${file} has ${JSON.stringify(n)} for ${JSON.stringify(diagnostic)}, not a count of 1 or more`);
+    }
+  }
+  return b;
+}
+
+/** Each `path(line,col): error TSnnnn: message` line, counted per file and per diagnostic, with paths relative to
+ *  apps/api. A diagnostic is its code and its first line, with no line or column, so an edit elsewhere in the file does
+ *  not change it, and one error swapped for another is a new diagnostic, not the same count. The repository's own
+ *  path (with `/` separators, as tsc writes it) is taken out of a message that quotes it, so a diagnostic reads the same
+ *  on every machine. */
+export function countErrors(output) {
+  const counts = {};
+  const add = (file, diagnostic) => {
+    const d = diagnostic.split(`${repo.split(sep).join('/')}/`).join('');
+    counts[file] ??= {};
+    counts[file][d] = (counts[file][d] ?? 0) + 1;
+  };
+  for (const m of output.matchAll(/^(.+?)\(\d+,\d+\): error (TS\d+: .*)$/gm)) add(m[1], m[2]);
+  // an error tsc reports without a file (TS18003 no inputs, TS2688 a missing types entry, ...) is never in the baseline
+  for (const m of output.matchAll(/^error (TS\d+: .*)$/gm)) add(UNPLACED, m[1]);
+  return counts;
+}
+
+/** Every way `actual` breaks `allowed`, and `allowed` breaks `base` (null when there is no base to compare with). */
+export function judge(actual, allowed, base) {
+  const problems = [];
+  for (const [file, diagnostics] of Object.entries(actual)) {
+    for (const [d, n] of Object.entries(diagnostics)) {
+      const may = Object.hasOwn(allowed, file) && Object.hasOwn(allowed[file], d) ? allowed[file][d] : 0;
+      if (may === 0) problems.push(`${file}: ${n} × "${d}", which ${BASELINE} does not list for it`);
+      else if (n > may) problems.push(`${file}: ${n} × "${d}", more than the ${may} ${BASELINE} allows`);
+    }
+  }
+  for (const [file, diagnostics] of Object.entries(allowed)) {
+    for (const [d, n] of Object.entries(diagnostics)) {
+      const now = actual[file]?.[d] ?? 0;
+      if (now < n) problems.push(`${file}: ${now} × "${d}", fewer than its ${n}: ${now === 0 ? 'delete it' : `lower its count to ${now}`} in ${BASELINE}`);
+    }
+  }
+  if (base) {
+    // per file and per error code: tsc prints types into a diagnostic (a union's member order, a src type's shape, a
+    // "... N more ..." count), so an unrelated change can re-key one without changing the error; the re-keyed entry may be
+    // listed in the same change as long as no code's count in a file rises above the base's
+    const byCode = (ds) => {
+      const c = {};
+      for (const [d, n] of Object.entries(ds ?? {})) { const code = d.slice(0, d.indexOf(':')); c[code] = (c[code] ?? 0) + n; }
+      return c;
+    };
+    for (const [file, diagnostics] of Object.entries(allowed)) {
+      const was = byCode(Object.hasOwn(base, file) ? base[file] : undefined);
+      for (const [code, n] of Object.entries(byCode(diagnostics))) {
+        if (!was[code]) problems.push(`${file}: ${code} added to ${BASELINE}; the baseline only goes down`);
+        else if (n > was[code]) problems.push(`${file}: ${code} raised from ${was[code]} to ${n} in ${BASELINE}; the baseline only goes down`);
+      }
+    }
+  }
+  return { problems };
+}
+
+function git(...args) {
+  return spawnSync('git', args, { cwd: api, encoding: 'utf8' });
+}
+
+/** A push event's `before`: the commit the pushed branch held before the push. */
+function pushedOver() {
+  const path = process.env.GITHUB_EVENT_PATH;
+  if (!path) throw new Error('a push with no GITHUB_EVENT_PATH: no base to compare the baseline with');
+  const before = JSON.parse(readFileSync(path, 'utf8')).before;
+  if (typeof before !== 'string' || !/^[0-9a-f]{40}$/.test(before) || /^0+$/.test(before)) {
+    throw new Error(`a push whose event has no previous commit (before: ${JSON.stringify(before)}): no base to compare the baseline with`);
+  }
+  return before;
+}
+
+/** The base branch's baseline, or why there is none to compare with. */
+function baseBaseline() {
+  let ref = process.env.TYPECHECK_BASE;
+  if (!ref && process.env.GITHUB_BASE_REF) {
+    const fetched = git('fetch', '--no-tags', '--depth=1', 'origin', process.env.GITHUB_BASE_REF);
+    if (fetched.status !== 0) throw new Error(`could not fetch the base branch ${process.env.GITHUB_BASE_REF}: ${fetched.stderr}`);
+    ref = 'FETCH_HEAD';
+  }
+  if (!ref && process.env.GITHUB_ACTIONS === 'true') {
+    // In Actions the checkout's own origin/main is the commit under check on a push to main, so it is never the base.
+    // A push compares with the commit the branch held before it (the event's `before`); a dispatch with main.
+    const want = process.env.GITHUB_EVENT_NAME === 'push' ? pushedOver() : 'main';
+    const fetched = git('fetch', '--no-tags', '--depth=1', 'origin', want);
+    if (fetched.status !== 0) throw new Error(`could not fetch ${want} to compare the baseline with: ${fetched.stderr}`);
+    ref = 'FETCH_HEAD';
+  }
+  if (!ref && git('rev-parse', '--verify', '--quiet', 'origin/main').status === 0) ref = 'origin/main';
+  if (!ref) throw new Error('no base to compare the baseline with: fetch origin/main, or set TYPECHECK_BASE');
+  if (git('rev-parse', '--verify', '--quiet', `${ref}^{commit}`).status !== 0) throw new Error(`no such base: ${ref}`);
+  const listed = git('ls-tree', '--full-tree', '--name-only', ref, '--', REPO_PATH);
+  if (listed.status !== 0) throw new Error(`could not list ${ref}'s tree: ${listed.stderr}`);
+  if (listed.stdout.trim() === '') return { base: null, skipped: `${ref} has no ${BASELINE} yet` };
+  const shown = git('show', `${ref}:${REPO_PATH}`);
+  if (shown.status !== 0) throw new Error(`could not read ${ref}'s ${BASELINE}: ${shown.stderr}`);
+  return { base: parseBaseline(shown.stdout, `${ref}:${REPO_PATH}`), skipped: null };
+}
+
+function main() {
+  const allowed = parseBaseline(readFileSync(join(api, BASELINE), 'utf8'), BASELINE);
+  let output = '';
+  let status = 0;
+  try {
+    // every test file and the src it imports need about 2.7 GB of heap, more than Node's default on a smaller machine;
+    // a caller's own NODE_OPTIONS comes after this, so its heap size wins
+    const env = { ...process.env, NODE_OPTIONS: `--max-old-space-size=4096 ${process.env.NODE_OPTIONS ?? ''}`.trim() };
+    output = execFileSync('npx', ['tsc', '-p', 'tsconfig.tests.json', '--noEmit', '--pretty', 'false'], { cwd: api, env, encoding: 'utf8', maxBuffer: 64 << 20 });
+  } catch (e) {
+    // tsc exits 2 when it reports errors; anything else (no output to read) is a failure of the step itself
+    if (e.status !== 2 || !e.stdout) throw e;
+    output = e.stdout;
+    status = 2;
+  }
+  const actual = countErrors(output);
+  if (status === 2 && !Object.keys(actual).length) throw new Error(`tsc exited 2, but no error could be read from what it wrote:\n${output.slice(0, 2000)}`);
+  const { base, skipped } = baseBaseline();
+  const { problems } = judge(actual, allowed, base);
+  const total = (counts) => Object.values(counts).reduce((a, ds) => a + Object.values(ds).reduce((x, n) => x + n, 0), 0);
+  if (problems.length) {
+    // the errors of the files at fault, each with the lines tsc wrote under it
+    let shown = false;
+    for (const line of output.split('\n')) {
+      const file = /^(.+?)\(\d+,\d+\): error TS/.exec(line)?.[1] ?? (/^error TS\d+:/.test(line) ? UNPLACED : undefined);
+      if (file !== undefined) shown = problems.some((p) => p.startsWith(`${file}: `));
+      if (shown && line) console.error(line);
+    }
+    console.error(`\napi test type-check ratchet: FAILED\n${problems.map((p) => `  - ${p}`).join('\n')}`);
+    process.exit(1);
+  }
+  const files = Object.keys(allowed).length;
+  console.log(`api test type-check ratchet: ${total(actual)} known error(s) in ${files} listed file(s), none new`
+    + (skipped ? `; the baseline was not compared with a base (${skipped})` : ', and the baseline allows no more than the base\'s'));
+}
+
+main();
