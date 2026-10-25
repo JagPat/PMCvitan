@@ -6478,6 +6478,15 @@ export const useStore = create<Store>()(
       let markStore: Storage | null = null;
       try { markStore = globalThis.localStorage ?? null; } catch { markStore = null; }
       const settle = (o: OutboxOp): void => { queueKeys.settled(markStore, isSiteVisitOp(o) ? siteVisitKeyOf(flushKey) : flushKey, o); };
+      const withheldVisits = new Set<string>();
+      let generalWithheld = false;
+      const withheldNow = (op: OutboxOp): boolean => {
+        const visit = isSiteVisitOp(op);
+        if (visit ? withheldVisits.has(siteVisitOf(op)) : generalWithheld) return true;
+        if (!queueKeys.withholds(visit ? siteVisitKeyOf(flushKey) : flushKey, op)) return false;
+        if (visit) withheldVisits.add(siteVisitOf(op)); else generalWithheld = true;
+        return true;
+      };
       for (let i = 0; i < ops.length; i++) {
         // live check BEFORE each replay: if the project or session changed while a
         // previous op was in flight, the rest of this queue belongs to the OLD
@@ -6487,8 +6496,10 @@ export const useStore = create<Store>()(
           scopeMoved = true;
           break;
         }
-        // U3 (Codex 4353751507): an act its key withholds (another tab made the key unreadable) stays here, unsent
-        if (holds(ops[i]) || queueKeys.withholds(isSiteVisitOp(ops[i]) ? siteVisitKeyOf(flushKey) : flushKey, ops[i])) { heldVisits.push(ops[i]); continue; }
+        // U3 (Codex 4353751507): an act its key withholds (another tab made the key unreadable) stays here, unsent, and
+        // so does every later act that may depend on it: the rest of its visit, or the rest of the general queue (a
+        // later act sent alone would be refused for good and dropped: Stage 1 gap check of 3302f45, gap 1)
+        if (holds(ops[i]) || withheldNow(ops[i])) { heldVisits.push(ops[i]); continue; }
         const mat = isMaterialsOp(ops[i]);
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);

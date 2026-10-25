@@ -104,7 +104,10 @@ export function queueStrip(view: { get: () => StripState; set: (p: Partial<Strip
         // leaves the list as its write lands (Codex 4345664686)
         return view.keys().writeAll(storage, view.writes().filter((w) => keys.includes(w.key)));
       });
-      if (done === 'moved' || done === 'changed') return;
+      if (done === 'moved') return;
+      // a key changed while the tap waited: nothing failed, the strip now offers what fits its bytes, and an earlier
+      // tap's failure line goes (Stage 1 gap check of 3302f45, note 3)
+      if (done === 'changed') { view.set({ queueSetAsideFailed: false }); return; }
       // R6 (Codex 4360928316): anything short of every write landing is a failure to the person, a key that could not
       // be put back ('some') included
       view.set({ queueSetAsideFailed: done !== 'all' });

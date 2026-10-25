@@ -663,9 +663,15 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       let told: [string, KeyRead, string | null][];
       try {
         for (const w of writes) {
-          const raw = storage.getItem(w.key);
-          const side = storage.getItem(sidecarName(w.key));
-          if (guard.write(storage, w.key, w.mine, w.takes, false)) { done.push({ key: w.key, raw, side }); continue; }
+          // the bytes a put-back restores are read inside the same rule: a read that throws is a write that did not land
+          // (Stage 1 gap check of 3302f45, note 2)
+          let landedHere = false;
+          try {
+            const raw = storage.getItem(w.key);
+            const side = storage.getItem(sidecarName(w.key));
+            if (guard.write(storage, w.key, w.mine, w.takes, false)) { done.push({ key: w.key, raw, side }); landedHere = true; }
+          } catch { landedHere = false; }
+          if (landedHere) continue;
           let back = true;
           for (const { key, raw: bytes, side: sideBytes } of done.reverse()) {
             try {
@@ -681,7 +687,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
             let now: string | null = null;
             try { now = storage.getItem(w2.key); } catch { now = null; }
             onRead(w2.key, readOf(now, scopesOf(w2.key)), now);
-            refuse(storage, w2.key, occsOf(w2.key, w2.mine));
+            try { refuse(storage, w2.key, occsOf(w2.key, w2.mine)); } catch { /* held in memory, listed by the next write */ }
           }
           return back ? 'none' : 'some';
         }

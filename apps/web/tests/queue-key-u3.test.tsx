@@ -113,9 +113,38 @@ describe('Codex 4353751507, 4344812904: a key another tab makes unreadable', () 
     expect(s().queueUnreadable).toEqual([{ key: lane, read: 'newer', reloaded: false }]);
   });
 
-  it('guard: an act this tab made after the key turned unreadable is sent', async () => {
+  it('forced probe (gap check of 3302f45, gap 1): a general act made after a withheld one waits behind it, unsent', async () => {
     const startActivity = vi.fn(async () => null);
     signedIn(JSON.stringify([approve('k-a')]), null, { startActivity, approveDecision: vi.fn(async () => null) });
+    otherTabWrites(key, DAMAGED);
+    s().startActivity('B-1');
+    await queueWritten();
+    await goOnline();
+    expect(startActivity).not.toHaveBeenCalled();
+    expect(s().outbox.map((o) => o.t)).toEqual(['approve', 'startActivity']);
+  });
+
+  it('forced probe (gap check of 3302f45, gap 1): a later act of a withheld visit is not sent ahead of its start', async () => {
+    const VID = '0b9c8d7e-6f5a-4b3c-8d2e-1f0a9b8c7d6e';
+    const start = { t: 'siteVisitStart', idempotencyKey: 'k-s', visitor: { name: 'Priya Shah', role: 'pmc', placeName: null }, body: { id: VID, claimedAt: '2026-10-14T04:30:00.000Z' } } as unknown as OutboxOp;
+    const close = { t: 'siteVisitEnd', visitId: VID, claimedAt: '2026-10-14T05:30:00.000Z', idempotencyKey: 'k-e' } as OutboxOp;
+    const startSiteVisit = vi.fn(async () => ({ id: VID }));
+    const endSiteVisit = vi.fn(async () => { throw Object.assign(new Error('no such visit'), { status: 404 }); });
+    signedIn(null, null, { startSiteVisit, endSiteVisit });
+    act(() => { s().queueSiteVisitAct(start, 'saved offline'); });
+    await queueWritten();
+    otherTabWrites(lane, NEWER);
+    act(() => { s().queueSiteVisitAct(close, 'saved offline'); });
+    await queueWritten();
+    await goOnline();
+    expect(startSiteVisit).not.toHaveBeenCalled();
+    expect(endSiteVisit).not.toHaveBeenCalled();
+    expect(s().outbox.map((o) => o.t)).toEqual(['siteVisitStart', 'siteVisitEnd']);
+  });
+
+  it('guard: an act made after the key turned unreadable, with nothing of this tab’s withheld, is sent', async () => {
+    const startActivity = vi.fn(async () => null);
+    signedIn(null, null, { startActivity });
     otherTabWrites(key, DAMAGED);
     s().startActivity('B-1');
     await queueWritten();
@@ -184,6 +213,19 @@ describe('Codex 4358186333: Set aside reads every key again once it holds the lo
     });
   }
 
+  it('forced probe (gap check of 3302f45, note 3): that tap takes down an earlier tap’s failure line', async () => {
+    signedIn(DAMAGED);
+    useStore.setState({ queueSetAsideFailed: true }); // an earlier tap failed
+    const other = holdQueueLock(key);
+    await other.has;
+    const tap = s().setAsideUnreadableQueue();
+    otherTabWrites(key, NEWER);
+    other.release();
+    await act(async () => { await tap; });
+    expect(localStorage.getItem(key)).toBe(NEWER);
+    expect(s().queueSetAsideFailed).toBe(false);
+  });
+
   it('guard: an unchanged key is still set aside after the wait', async () => {
     signedIn(DAMAGED);
     const other = holdQueueLock(key);
@@ -243,6 +285,28 @@ describe('Codex 4360928324, 4360928316, the audit: a Set aside that rolls back l
     await setAside();
     full.mockRestore();
     expect(s().queueSetAsideFailed).toBe(true);
+  });
+
+  it('forced probe (gap check of 3302f45, note 2): a read that throws after the first key landed still rolls it back', async () => {
+    twoListed();
+    const real = Storage.prototype.getItem;
+    let tapWroteKey = false;
+    const realSet = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, n: string, v: string) {
+      if (n === key && v !== DAMAGED) tapWroteKey = true;
+      realSet.call(this, n, v);
+    });
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, n: string) {
+      if (tapWroteKey && n === lane) throw new DOMException('gone', 'SecurityError');
+      return real.call(this, n);
+    });
+    await setAside();
+    vi.restoreAllMocks();
+    expect(localStorage.getItem(key)).toBe(DAMAGED);
+    expect(s().queueSetAsideFailed).toBe(true);
+    s().startActivity('B-1');
+    await queueWritten();
+    expect(localStorage.getItem(key)).toBe(DAMAGED);
   });
 
   it('guard (R1): a failed write whose act can be kept only in a made record is counted once at Reload', async () => {
