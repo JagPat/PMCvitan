@@ -630,6 +630,12 @@ export class MembersService {
         // anchors in one sorted call first, so two edits naming the same two people the other way round
         // (on another project) cannot each hold one
         await lockStandingAnchors(tx, { read: [actor.actorId], write: [userId] });
+        // #1110 — no transition fact, so no 4d-i seal re-judges the project here, and an archive takes no
+        // readiness key: lock the project row and re-read it, as the seal does for the other member
+        // commands, so an archive that committed after the door's checks is refused, not written past
+        if (!(await this.standing.isProjectOperable(tx, projectId))) {
+          throw new ConflictException('This project is archived — its team can no longer be changed');
+        }
         const m = await tx.membership.update({ where: { id: cur.id }, data: { discipline }, include: { user: true } });
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: discipline ? { discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} });
         return { resultRef: m.id, value: m, events: [ev] };
