@@ -93,14 +93,21 @@ export function queueStrip(view: { get: () => StripState; set: (p: Partial<Strip
       const done = await underQueueLocks(keys, () => {
         // the scope may have moved while the locks were asked for: then this tap acts for nothing
         if (bindScope() === null || bindScope()!.join() !== scope.join()) return 'moved' as const;
+        // U3 (Codex 4358186333): each key is read again now that this tap holds its lock. One another tab changed while
+        // the tap waited to bytes Set aside may not move (a newer release's, not reloaded over) changes nothing: the
+        // strip now offers what fits those bytes
+        for (const key of keys) view.keys().reread(storage, key);
+        if (!view.get().queueUnreadable.filter((u) => keys.includes(u.key)).every(settable)) return 'changed' as const;
         // every key copied and read back, or nothing changes
         if (!view.keys().setAside(storage, keys)) return 'none' as const;
         // then memory's acts are written over each copied key, and only those: all of them, or each is put back. A key
         // leaves the list as its write lands (Codex 4345664686)
         return view.keys().writeAll(storage, view.writes().filter((w) => keys.includes(w.key)));
       });
-      if (done === 'moved') return;
-      view.set({ queueSetAsideFailed: done === null || done === 'none' });
+      if (done === 'moved' || done === 'changed') return;
+      // R6 (Codex 4360928316): anything short of every write landing is a failure to the person, a key that could not
+      // be put back ('some') included
+      view.set({ queueSetAsideFailed: done !== 'all' });
     },
     reload(): void {
       const storage = globalThis.localStorage;

@@ -2542,10 +2542,11 @@ export const useStore = create<Store>()(
       const made = { scope: currentScope(), token: get().sessionToken, key: outboxKey() };
       return () => scopeStillCurrent(made.scope) && get().sessionToken === made.token && outboxKey() === made.key;
     };
-    /** another tab's write of this scope's queue key is read and listed, never answered (`null`: storage cleared) */
+    /** another tab's write of this scope's queue key is read and listed, never written back (`null`: storage cleared);
+     *  memory's acts for it go with it, for the guard to copy aside or hold (U3) */
     globalThis.addEventListener?.('storage', (e: StorageEvent) => {
       const storage = globalThis.localStorage;
-      if (storage && e.storageArea === storage && get().sessionUserId) for (const k of [outboxKey(), siteVisitKeyOf(outboxKey())]) if (e.key === null || e.key === k) queueKeys.heard(storage, k);
+      if (storage && e.storageArea === storage && get().sessionUserId) for (const w of queueWrites()) if (e.key === null || e.key === w.key) queueKeys.heard(storage, w.key, w.mine);
     });
 
     // Evidence bytes share the outbox's user scope (WEB-02): the IndexedDB entries are
@@ -6486,7 +6487,8 @@ export const useStore = create<Store>()(
           scopeMoved = true;
           break;
         }
-        if (holds(ops[i])) { heldVisits.push(ops[i]); continue; }
+        // U3 (Codex 4353751507): an act its key withholds (another tab made the key unreadable) stays here, unsent
+        if (holds(ops[i]) || queueKeys.withholds(isSiteVisitOp(ops[i]) ? siteVisitKeyOf(flushKey) : flushKey, ops[i])) { heldVisits.push(ops[i]); continue; }
         const mat = isMaterialsOp(ops[i]);
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);

@@ -136,7 +136,7 @@ describe('#1085 r4, Codex 4348114913: Set aside sets every listed key aside, or 
     expect(s().queueUnreadable).toEqual([]);
   });
 
-  it('guard: a key that cannot be put back holds memory’s acts and is no longer listed; the person is not told nothing changed', async () => {
+  it('guard: a key that cannot be put back holds memory’s acts and is no longer listed; the person is told Set aside failed', async () => {
     localStorage.setItem(lane, '{bad lane');
     localStorage.setItem(key, '{bad general');
     onProject('p-1');
@@ -146,7 +146,8 @@ describe('#1085 r4, Codex 4348114913: Set aside sets every listed key aside, or 
     expect(storedQueue(localStorage.getItem(key))).toEqual([]);
     expect(copiesOf(key)).toEqual(['{bad general']);
     expect(s().queueUnreadable.map((u) => u.key)).toEqual([lane]);
-    expect(s().queueSetAsideFailed).toBe(false);
+    // U3 (R6, Codex 4360928316): a tap whose writes did not all land is a failure to the person, this one included
+    expect(s().queueSetAsideFailed).toBe(true);
   });
 });
 
