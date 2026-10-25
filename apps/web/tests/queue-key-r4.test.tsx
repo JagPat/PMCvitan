@@ -4,7 +4,7 @@ import { act, render, screen } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
 import { QueueUnreadable } from '@/layout/QueueUnreadable';
-import { queueWritten } from './queueWrites';
+import { queueWritten, storedQueue } from './queueWrites';
 
 /**
  * #1085 round 4. Codex 4348114926: after a project switch and before that project's load, the strip and memory were
@@ -86,12 +86,12 @@ describe('#1085 r4, Codex 4348114926: Reload acts only for the scope the strip w
 });
 
 describe('#1085 r4, Codex 4348114913: Set aside sets every listed key aside, or none', () => {
-  it('forced probe: a damaged key beside a newer release’s not yet reloaded is not set aside, and the strip offers Reload only', () => {
+  it('forced probe: a damaged key beside a newer release’s not yet reloaded is not set aside, and the strip offers Reload only', async () => {
     localStorage.setItem(lane, NEWER);
     localStorage.setItem(key, '{damaged');
     onProject('p-1');
     expect(s().queueUnreadable.map((u) => u.key).sort()).toEqual([key, lane].sort());
-    act(() => s().setAsideUnreadableQueue());
+    await act(async () => { await s().setAsideUnreadableQueue(); });
     expect(localStorage.getItem(key)).toBe('{damaged');
     expect(localStorage.getItem(lane)).toBe(NEWER);
     expect([copiesOf(key), copiesOf(lane)]).toEqual([[], []]);
@@ -101,27 +101,27 @@ describe('#1085 r4, Codex 4348114913: Set aside sets every listed key aside, or 
     expect(screen.queryByRole('button', { name: 'Set aside and continue' })).toBeNull();
   });
 
-  it('guard: after a reload of this build, both keys are set aside in one tap', () => {
+  it('guard: after a reload of this build, both keys are set aside in one tap', async () => {
     localStorage.setItem(lane, NEWER);
     localStorage.setItem(key, '{damaged');
     onProject('p-1');
     reloadStub();
     act(() => s().reloadForNewerQueue());
     onProject('p-1');
-    act(() => s().setAsideUnreadableQueue());
+    await act(async () => { await s().setAsideUnreadableQueue(); });
     expect([copiesOf(key), copiesOf(lane)]).toEqual([['{damaged'], [NEWER]]);
-    expect([localStorage.getItem(key), localStorage.getItem(lane)]).toEqual(['[]', '[]']);
+    expect([storedQueue(localStorage.getItem(key)), storedQueue(localStorage.getItem(lane))]).toEqual([[], []]);
     expect(s().queueUnreadable).toEqual([]);
     expect(s().queueSetAsideFailed).toBe(false);
   });
 
-  it('forced probe: when the second key’s write is refused, the first is put back and the person is told nothing changed', () => {
+  it('forced probe: when the second key’s write is refused, the first is put back and the person is told nothing changed', async () => {
     localStorage.setItem(lane, '{bad lane');
     localStorage.setItem(key, '{bad general');
     onProject('p-1');
     useStore.setState((st) => { st.outbox = [approve('k-a')]; });
     const spy = refusing((k) => k === lane);
-    act(() => s().setAsideUnreadableQueue());
+    await act(async () => { await s().setAsideUnreadableQueue(); });
     spy.mockRestore();
     expect(localStorage.getItem(key)).toBe('{bad general');
     expect(localStorage.getItem(lane)).toBe('{bad lane');
@@ -130,20 +130,20 @@ describe('#1085 r4, Codex 4348114913: Set aside sets every listed key aside, or 
     // the act memory holds is copied aside beside the key put back, so it stays on this phone
     expect(copiesOf(key)).toEqual(expect.arrayContaining(['{bad general', JSON.stringify([approve('k-a')])]));
     // the next tap, with room, sets both aside
-    act(() => s().setAsideUnreadableQueue());
-    expect(JSON.parse(localStorage.getItem(key)!)).toEqual([approve('k-a')]);
-    expect(localStorage.getItem(lane)).toBe('[]');
+    await act(async () => { await s().setAsideUnreadableQueue(); });
+    expect(storedQueue(localStorage.getItem(key)!)).toEqual([approve('k-a')]);
+    expect(storedQueue(localStorage.getItem(lane))).toEqual([]);
     expect(s().queueUnreadable).toEqual([]);
   });
 
-  it('guard: a key that cannot be put back holds memory’s acts and is no longer listed; the person is not told nothing changed', () => {
+  it('guard: a key that cannot be put back holds memory’s acts and is no longer listed; the person is not told nothing changed', async () => {
     localStorage.setItem(lane, '{bad lane');
     localStorage.setItem(key, '{bad general');
     onProject('p-1');
     const spy = refusing((k, v) => k === lane || (k === key && v === '{bad general'));
-    act(() => s().setAsideUnreadableQueue());
+    await act(async () => { await s().setAsideUnreadableQueue(); });
     spy.mockRestore();
-    expect(localStorage.getItem(key)).toBe('[]');
+    expect(storedQueue(localStorage.getItem(key))).toEqual([]);
     expect(copiesOf(key)).toEqual(['{bad general']);
     expect(s().queueUnreadable.map((u) => u.key)).toEqual([lane]);
     expect(s().queueSetAsideFailed).toBe(false);
@@ -160,16 +160,16 @@ describe('step A2 on #1088 head 6 and #1096: Set aside and Reload keep every act
     expect(copiesOf(key)).toEqual([JSON.stringify([approve('k-a')])]);
     expect(copiesOf(lane)).toHaveLength(1);
     const spy = refusing((k) => k === lane);
-    act(() => s().setAsideUnreadableQueue());
+    await act(async () => { await s().setAsideUnreadableQueue(); });
     spy.mockRestore();
     // the general key's write landed (its act's copy removed, #1096), then it was put back: the act is copied again
     expect(localStorage.getItem(key)).toBe('{bad general');
     expect(copiesOf(key)).toEqual(expect.arrayContaining(['{bad general', JSON.stringify([approve('k-a')])]));
     expect(copiesOf(key)).toHaveLength(2);
     expect(s().queueSetAsideFailed).toBe(true);
-    act(() => s().setAsideUnreadableQueue());
-    expect(JSON.parse(localStorage.getItem(key)!)).toEqual([approve('k-a')]);
-    expect((JSON.parse(localStorage.getItem(lane)!) as OutboxOp[]).map((o) => o.t)).toEqual(['siteVisitEnd']);
+    await act(async () => { await s().setAsideUnreadableQueue(); });
+    expect(storedQueue(localStorage.getItem(key)!)).toEqual([approve('k-a')]);
+    expect((storedQueue(localStorage.getItem(lane)!) as OutboxOp[]).map((o) => o.t)).toEqual(['siteVisitEnd']);
     expect([copiesOf(key), copiesOf(lane)]).toEqual([['{bad general'], ['{bad lane']]);
     expect(s().queueUnreadable).toEqual([]);
   });

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import { isTerminalOutboxError, type ApiGateway, type ApiSnapshot } from '@/data/apiGateway';
-import { queueWritten } from './queueWrites';
+import { queueWritten, storedQueue } from './queueWrites';
 
 const s = () => useStore.getState();
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -156,14 +156,18 @@ describe('Phase 8 offline outbox', () => {
     expect(s().outbox).toEqual([{ t: 'approve', decisionId: 'DL-014', optionIndex: 1, idempotencyKey: expect.any(String) }]);
   });
 
-  it('WEB-02: migrates a legacy unscoped queue into the current scope once', () => {
+  it('WEB-02: migrates a legacy unscoped queue into the current scope once', async () => {
     globalThis.localStorage?.setItem('vitan.outbox', JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]));
     s().hydrateOutbox();
     expect(s().outbox).toEqual([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    await queueWritten(); // L2b (gap check 9): the migration writes through the locked ledger write
     expect(globalThis.localStorage?.getItem('vitan.outbox')).toBeNull(); // legacy key consumed
+    // a second load takes it once, from the key
+    s().hydrateOutbox();
+    expect(s().outbox).toEqual([{ t: 'startActivity', activityId: 'ACT-31' }]);
   });
 
-  it('#1085 r2 audit: a legacy queue is removed only once its bytes are in the scoped key', () => {
+  it('#1085 r2 audit: a legacy queue is removed only once its bytes are in the scoped key', async () => {
     const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
     globalThis.localStorage?.setItem('vitan.outbox', legacy);
     const real = Storage.prototype.setItem;
@@ -172,9 +176,13 @@ describe('Phase 8 offline outbox', () => {
       return real.call(this, k, v);
     });
     s().hydrateOutbox();
+    await queueWritten(); // L2b: the migration's locked write runs, and is refused
     spy.mockRestore();
-    expect(globalThis.localStorage?.getItem('vitan.outbox')).toBe(legacy); // not lost: adopted at a later load
+    expect(globalThis.localStorage?.getItem('vitan.outbox')).toBe(legacy); // not lost
+    // the next load takes the act once, from the record the refused write kept; the old bytes are copied aside, never
+    // adopted a second time
     s().hydrateOutbox();
+    await queueWritten();
     expect(s().outbox).toEqual([{ t: 'startActivity', activityId: 'ACT-31' }]);
     expect(globalThis.localStorage?.getItem('vitan.outbox')).toBeNull();
   });
@@ -292,7 +300,7 @@ describe('Phase 8 offline outbox', () => {
     expect(key).toEqual(expect.any(String));
     await queueWritten();
     // persisted, so a reload does not mint a different one
-    expect(JSON.parse(globalThis.localStorage!.getItem(scopedKey)!)[0].input.clientKey).toBe(key);
+    expect(storedQueue<{ input: { clientKey?: string } }>(globalThis.localStorage!.getItem(scopedKey)!)[0].input.clientKey).toBe(key);
     s().hydrateOutbox();
     expect((s().outbox[0] as { input: { clientKey?: string } }).input.clientKey).toBe(key);
   });

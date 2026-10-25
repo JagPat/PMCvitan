@@ -6,7 +6,7 @@ import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { refreshSiteVisits, uuidV4, VISIT_PAGE, withQueued } from '@/lib/useSiteVisits';
 import type { ApiGateway, ApiSnapshot, OutboxOp, SiteVisit } from '@/data/apiGateway';
 import { leftoverEnglish } from './leftover-english';
-import { queueWritten } from './queueWrites';
+import { queueWritten, storedQueue } from './queueWrites';
 
 /**
  * Site Visits SV1-c (#792, QA item 6): the screen reads every visit for every member, and offers only the acts
@@ -917,7 +917,7 @@ describe('the queue of site visit acts', () => {
     useStore.getState().queueSiteVisitAct(end, 'saved');
     await queueWritten(); // step B1: written under the queue's lock, after the act
     const project = useStore.getState().activeProjectId;
-    expect(JSON.parse(localStorage.getItem(`vitan.siteVisitQueue.dev:u-a.${project}`) ?? '[]')).toEqual([end]);
+    expect(storedQueue(localStorage.getItem(`vitan.siteVisitQueue.dev:u-a.${project}`) ?? '[]')).toEqual([end]);
     // another dev persona on the same project does not get it
     useStore.setState({ sessionUserId: 'u-b' });
     useStore.getState().hydrateOutbox();
@@ -956,7 +956,7 @@ describe('the queue of site visit acts', () => {
     useStore.setState((s) => ({ activeProjectId: 'p-b', projectScopeGeneration: s.projectScopeGeneration + 1 }));
     ended(open);
     await flushed;
-    const kept = JSON.parse(localStorage.getItem(`vitan.siteVisitQueue.dev:${PMC}.p-a`) ?? '[]') as { t: string; visitId: string }[];
+    const kept = storedQueue(localStorage.getItem(`vitan.siteVisitQueue.dev:${PMC}.p-a`) ?? '[]') as { t: string; visitId: string }[];
     expect(kept).toEqual([expect.objectContaining({ t: 'siteVisitAddAttendee', visitId: 'v-open' })]);
     localStorage.clear();
   });
@@ -970,8 +970,8 @@ describe('the queue of site visit acts', () => {
     useStore.getState().queueSiteVisitAct(end, 'saved');
     await queueWritten();
     // the outbox key an older bundle reads holds no site visit act
-    expect(JSON.parse(localStorage.getItem(`vitan.outbox.dev:u-a.${project}`) ?? '[]')).toEqual([other]);
-    expect(JSON.parse(localStorage.getItem(`vitan.siteVisitQueue.dev:u-a.${project}`) ?? '[]')).toEqual([end]);
+    expect(storedQueue(localStorage.getItem(`vitan.outbox.dev:u-a.${project}`) ?? '[]')).toEqual([other]);
+    expect(storedQueue(localStorage.getItem(`vitan.siteVisitQueue.dev:u-a.${project}`) ?? '[]')).toEqual([end]);
     // a reload reads both back
     useStore.setState({ outbox: [] });
     useStore.getState().hydrateOutbox();

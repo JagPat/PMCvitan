@@ -8,6 +8,7 @@ import { moveSiteVisitOps, type ApiGateway, type OutboxOp, type SiteVisit } from
 import { VISIT_PHOTO_ABORT_WAIT_MS, VISIT_PHOTO_READ_WAIT_MS, failVisitPhoto, failVisitPhotosOn, fileVisitPhoto, listVisitPhotos, moveVisitPhotos, putVisitPhoto, settleFiledVisitPhotos, visitPhotoScope, visitsHeldByPhotos } from '@/data/visitPhotoStore';
 import { refreshSiteVisits } from '@/lib/useSiteVisits';
 import { calledTimes, flushesEnded, heldOnPurpose, settled, startWork, throughBounds, tracked } from './site-visit-work';
+import { storedQueue } from './queueWrites';
 
 /**
  * Site Visits SV2 (#792): a photo added on a visit is kept on the phone with the act that sends it (`visitPhotoStore`),
@@ -471,7 +472,7 @@ describe('Site Visits SV2: a kept photo is never stranded (#792, #999 round 1)',
     const project = useStore.getState().activeProjectId;
     const v1 = `vitan.siteVisitQueue.dev:${CONSULTANT}.${project}`;
     expect(Object.keys(localStorage).filter((k) => (localStorage.getItem(k) ?? '').includes('siteVisitAddFile'))).toEqual([]);
-    expect(localStorage.getItem(v1)).toBe('[]');
+    expect(storedQueue(localStorage.getItem(v1))).toEqual([]);
     // an earlier release's tab ends the visit, where it reads and writes
     const end: OutboxOp = { t: 'siteVisitEnd', visitId: 'v-1', claimedAt: '2026-10-14T05:30:00.000Z', idempotencyKey: 'k-e' };
     localStorage.setItem(v1, JSON.stringify([end]));
@@ -482,7 +483,7 @@ describe('Site Visits SV2: a kept photo is never stranded (#792, #999 round 1)',
     await settled();
     expect(useStore.getState().outbox.map((o) => o.t)).toEqual(['siteVisitAddFile', 'siteVisitEnd']);
     expect(queuedFile()!.file.id).toBe(key);
-    expect(JSON.parse(localStorage.getItem(v1)!)).toEqual([end]);
+    expect(storedQueue(localStorage.getItem(v1)!)).toEqual([end]);
   });
 
   it('sends the start a kept photo needs when the outbox lost both, ahead of the photo (Codex 4320122186)', async () => {
@@ -1098,7 +1099,7 @@ describe('Site Visits SV2: a sent photo is kept until the server lists it; queue
     useStore.setState((st) => { st.activeProjectId = 'B'; st.projectScopeGeneration += 1; });
     release();
     await flushing;
-    expect((JSON.parse(localStorage.getItem(lane) ?? '[]') as OutboxOp[]).map((o) => (o as { idempotencyKey?: string }).idempotencyKey)).toEqual(['k-b']);
+    expect((storedQueue(localStorage.getItem(lane) ?? '[]') as OutboxOp[]).map((o) => (o as { idempotencyKey?: string }).idempotencyKey)).toEqual(['k-b']);
   });
 
   it('puts a kept photo’s start back ahead of it when only the photo is queued (Codex 4321998492)', async () => {

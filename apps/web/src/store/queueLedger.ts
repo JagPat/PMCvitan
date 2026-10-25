@@ -240,7 +240,9 @@ function beyondKey(s: Snapshot, frame: Frame, m: Memory): { head: Occ[]; tail: O
   m.mine.forEach((o, n) => {
     if (inKey.has(o.oid) && !front.has(o.oid)) return;
     if (m.sent.has(o.oid) || s.marks.ids.has(o.oid) || legacy.has(o.oid) || taken(o)) return;
-    (front.has(o.oid) || firstInKey < 0 || n < firstInKey ? head : tail).push(o);
+    // L2b (Codex 4344812888): with none of the key's occurrences in memory, the key's acts were stored first, so
+    // memory's new ones go after them; only the stranded ones (`front`) lead
+    (front.has(o.oid) || (firstInKey >= 0 && n < firstInKey) ? head : tail).push(o);
   });
   return { head, tail };
 }
