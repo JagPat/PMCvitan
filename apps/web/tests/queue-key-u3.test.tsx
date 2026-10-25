@@ -335,3 +335,102 @@ describe('Codex 4360928324, 4360928316, the audit: a Set aside that rolls back l
     expect(approveDecision).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('#1122 round 1: every read of an unreadable key reconciles what this tab holds, in one place', () => {
+  it('forced probe (4370036882): a key this tab’s own write finds unreadable, with no storage event, withholds what it loaded', async () => {
+    const approveDecision = vi.fn(async () => null);
+    signedIn(JSON.stringify([approve('k-a')]), null, { approveDecision });
+    localStorage.setItem(key, DAMAGED); // another tab's write, its event not yet delivered
+    s().startActivity('B-1');
+    await queueWritten();
+    expect(s().queueUnreadable.map((u) => u.key)).toEqual([key]);
+    await goOnline();
+    expect(approveDecision).not.toHaveBeenCalled();
+  });
+
+  it('forced probe (4370036882): a key Set aside reads as changed while it waited withholds what this tab loaded', async () => {
+    const approveDecision = vi.fn(async () => null);
+    signedIn(JSON.stringify([approve('k-a')]), LANE_DAMAGED, { approveDecision });
+    const other = holdQueueLock(lane);
+    await other.has;
+    const tap = s().setAsideUnreadableQueue();
+    localStorage.setItem(key, NEWER); // its event not yet delivered
+    other.release();
+    await act(async () => { await tap; });
+    expect(localStorage.getItem(key)).toBe(NEWER);
+    await goOnline();
+    expect(approveDecision).not.toHaveBeenCalled();
+  });
+
+  for (const told of [true, false]) {
+    it(`forced probe (4370036892): a key that turns unreadable while the tap waits stops the tap${told ? '' : ' (its storage event not yet heard)'}`, async () => {
+      signedIn(DAMAGED);
+      expect(s().queueUnreadable.map((u) => u.key)).toEqual([key]);
+      const other = holdQueueLock(key);
+      await other.has;
+      const tap = s().setAsideUnreadableQueue();
+      if (told) otherTabWrites(lane, NEWER); else localStorage.setItem(lane, NEWER);
+      other.release();
+      await act(async () => { await tap; });
+      expect(localStorage.getItem(key)).toBe(DAMAGED);
+      expect(copiesOf(key)).toEqual([]);
+      expect(s().queueUnreadable.map((u) => u.key).sort()).toEqual([key, lane].sort());
+      expect(s().queueSetAsideFailed).toBe(false);
+    });
+  }
+
+  it('forced probe (4370036886): a key another tab makes readable again, holding the act, is no longer counted unsaved', async () => {
+    signedIn(JSON.stringify([approve('k-a')]));
+    otherTabWrites(key, DAMAGED);
+    expect(reloadAsks()).toEqual(['1 updates aren’t saved on this phone and will be lost. Continue?']);
+    otherTabWrites(key, JSON.stringify([approve('k-a')]));
+    expect(reloadAsks()).toEqual([]);
+  });
+
+  it('guard: a key made readable again without the act still counts it unsaved', async () => {
+    signedIn(JSON.stringify([approve('k-a')]));
+    otherTabWrites(key, DAMAGED);
+    otherTabWrites(key, JSON.stringify([approve('k-b')]));
+    expect(reloadAsks()).toEqual(['1 updates aren’t saved on this phone and will be lost. Continue?']);
+  });
+
+  it('guard (4370036888): a storage event whose read of the key throws changes nothing listed or held', async () => {
+    const approveDecision = vi.fn(async () => null);
+    signedIn(JSON.stringify([approve('k-a')]), null, { approveDecision });
+    otherTabWrites(key, DAMAGED);
+    const realGet = Storage.prototype.getItem;
+    const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, n: string) {
+      if (n === key) throw new DOMException('gone', 'SecurityError');
+      return realGet.call(this, n);
+    });
+    act(() => { window.dispatchEvent(new StorageEvent('storage', { key, newValue: null, storageArea: localStorage })); });
+    spy.mockRestore();
+    expect(s().queueUnreadable.map((u) => u.key)).toEqual([key]);
+    await goOnline();
+    expect(approveDecision).not.toHaveBeenCalled();
+  });
+
+  it('forced probe (4370036888): a rollback whose read of a key throws keeps that key listed', async () => {
+    signedIn(DAMAGED, LANE_DAMAGED);
+    const realSet = Storage.prototype.setItem;
+    const realGet = Storage.prototype.getItem;
+    let putBack = false;
+    let reads = 0;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, n: string, v: string) {
+      if (n === lane) throw new DOMException('full', 'QuotaExceededError');
+      if (n === key && v === DAMAGED) putBack = true;
+      realSet.call(this, n, v);
+    });
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, n: string) {
+      // after the put-back: its own read-back answers, the next read of the key throws once
+      if (putBack && n === key && (reads += 1) === 2) throw new DOMException('gone', 'SecurityError');
+      return realGet.call(this, n);
+    });
+    await setAside();
+    vi.restoreAllMocks();
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(localStorage.getItem(key)).toBe(DAMAGED);
+    expect(s().queueUnreadable.map((u) => u.key).sort()).toEqual([key, lane].sort());
+    expect(s().queueSetAsideFailed).toBe(true);
+  });
+});

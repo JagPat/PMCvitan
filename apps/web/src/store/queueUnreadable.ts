@@ -95,9 +95,13 @@ export function queueStrip(view: { get: () => StripState; set: (p: Partial<Strip
         if (bindScope() === null || bindScope()!.join() !== scope.join()) return 'moved' as const;
         // U3 (Codex 4358186333): each key is read again now that this tap holds its lock. One another tab changed while
         // the tap waited to bytes Set aside may not move (a newer release's, not reloaded over) changes nothing: the
-        // strip now offers what fits those bytes
-        for (const key of keys) view.keys().reread(storage, key);
-        if (!view.get().queueUnreadable.filter((u) => keys.includes(u.key)).every(settable)) return 'changed' as const;
+        // strip now offers what fits those bytes.
+        // #1122 r1: every key of the scope is read again through the guard's one reconciliation (`heard`), so a key
+        // found unreadable now also holds what this tab loaded from it (4370036882). The tap holds only the locks of the
+        // keys it listed: a key of the scope newly unreadable stops it too (4370036892)
+        for (const w of view.writes()) if (scope.includes(w.key)) view.keys().heard(storage, w.key, w.mine);
+        const now = view.get().queueUnreadable.filter((u) => scope.includes(u.key));
+        if (now.some((u) => !keys.includes(u.key)) || !now.every(settable)) return 'changed' as const;
         // every key copied and read back, or nothing changes
         if (!view.keys().setAside(storage, keys)) return 'none' as const;
         // then memory's acts are written over each copied key, and only those: all of them, or each is put back. A key
