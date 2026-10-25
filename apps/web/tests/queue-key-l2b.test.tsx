@@ -317,6 +317,26 @@ describe('L2b: the old unscoped queue is adopted through the locked write (gap c
     expect(startActivity).toHaveBeenCalledTimes(1);
   });
 
+  it('forced probe (Stage 1 gap check of d500f0d, NEW-1): two tabs adopt the old queue while the record cannot be made; the key holds it once', async () => {
+    const legacy = { t: 'startActivity', activityId: 'ACT-31' } as unknown as OutboxOp;
+    localStorage.setItem('vitan.outbox', JSON.stringify([legacy]));
+    const real = Storage.prototype.setItem;
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith('vitan.made.')) throw new DOMException('full', 'QuotaExceededError');
+      return real.call(this, k, v);
+    });
+    const other = holdQueueLock(key);
+    await other.has;
+    signedIn(useStore); // tab A adopts; its write waits for the lock
+    const tabB = await page(false); // tab B opens before A's write lands, and adopts the same bytes
+    spy.mockRestore();
+    other.release();
+    await queueWritten();
+    expect(stored(), 'the old act is stored once').toEqual([legacy]);
+    expect(tabB.getState().outbox).toEqual([legacy]);
+    tabB.getState().completeSignOut();
+  });
+
   it('audit (gap check 9): a load after the adoption’s write was refused takes the act once, from the record that write kept', async () => {
     localStorage.setItem('vitan.outbox', JSON.stringify([legacy]));
     const real = Storage.prototype.setItem;
@@ -454,7 +474,7 @@ describe('L2b: the plan draft 2 re-check (notes/coordinator/web02-L2b-plan-reche
     const loaded = g.load(localStorage, key);
     // as the store's dedupe does for a photo keyed at load beside its record's keyed copy
     const dropped = { ...loaded[0] } as OutboxOp;
-    g.merge?.(key, dropped); // main has no merge: there this row is red by assertion
+    g.merge?.(key, dropped); // main has no merge: this row is green there (main spends the record at load), a guard
     expect(g.write(localStorage, key, [])).toBe(true);
     expect(records()).toEqual([]);
   });

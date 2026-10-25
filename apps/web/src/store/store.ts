@@ -6867,11 +6867,11 @@ export const useStore = create<Store>()(
               }
               // only an absent key: one holding any bytes, even '' (unreadable), is never written over (Codex 4351662034).
               // Its acts are adopted only when this release reads them all; else they are copied aside
-              // A load again while the adoption's write waits adopts them again, as new occurrences: that write lands
-              // first (the lock is first come, first served), so this tab knows its occurrences and the next write
-              // replaces them (probe "gap check 9: two loads while the adoption's write waits")
+              // A load again, in this tab or another, while the adoption's write waits adopts them again: their
+              // occurrences are named from the old bytes (`adoptLegacy`), so every adoption names the same ones and the
+              // key holds each once (probes "gap check 9: two loads ..." and "two tabs adopt ...")
               const read = storage.getItem(scoped) === null && !another ? readLedgerQueue(legacy, queueKeyScopes.get(scoped)) : null;
-              if (read && 'acts' in read) adopted = read.acts;
+              if (read && 'acts' in read) { adopted = read.acts; queueKeys.adoptLegacy(legacy, adopted); }
               else {
                 // a copy name holding other bytes (an earlier legacy queue copied aside) is never written over: the next free name
                 let aside = `vitan.unreadable.${LEGACY_OUTBOX_KEY}.${scoped}`;

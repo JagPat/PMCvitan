@@ -673,6 +673,13 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     adopt(key: string, from: OutboxOp, to: OutboxOp): void {
       if (from !== to) oids.set(to, oidOf(key, from));
     },
+    /** `acts`, read from the old unscoped queue's bytes `raw`, are adopted into this tab's key: each occurrence is named from
+     *  those bytes and its place in them, so every tab that adopts the same bytes names the same occurrences, and the
+     *  writes of two tabs that both adopted them store each once (Stage 1 gap check of d500f0d, gap 1) */
+    adoptLegacy(raw: string, acts: OutboxOp[]): void {
+      const tag = ledgerTag(raw);
+      acts.forEach((o, n) => { const oid = `a:${tag}:${n}`; oids.set(o, oid); identOf.set(oid, queueActIdent(o)); });
+    },
     /** the load took `dropped`, an occurrence of an identity no other act shares, as `kept`, the same act (the store's
      *  keyed photo dedupe): `dropped` is never this tab's to write, and a record holding it goes at the next landed
      *  write, whatever memory then holds (re-check N2) */
