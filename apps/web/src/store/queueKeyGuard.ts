@@ -514,7 +514,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
           } catch { /* unread: still listed, never fewer than it should be */ }
         }
         return readAs;
-      } else holdSeen(key);
+      } else holdSeen(key, raw);
       refuse(storage, key, occs);
       return readAs;
     },

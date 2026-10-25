@@ -433,4 +433,61 @@ describe('#1122 round 1: every read of an unreadable key reconciles what this ta
     expect(s().queueUnreadable.map((u) => u.key).sort()).toEqual([key, lane].sort());
     expect(s().queueSetAsideFailed).toBe(true);
   });
+
+  for (const told of [true, false]) {
+    it(`forced probe (4370036892, re-check of 244a717): a key that turns merely damaged while the tap waits stops it too${told ? '' : ' (its storage event not yet heard)'}`, async () => {
+      signedIn(DAMAGED);
+      expect(s().queueUnreadable.map((u) => u.key)).toEqual([key]);
+      const other = holdQueueLock(key);
+      await other.has;
+      const tap = s().setAsideUnreadableQueue();
+      if (told) otherTabWrites(lane, LANE_DAMAGED); else localStorage.setItem(lane, LANE_DAMAGED);
+      other.release();
+      await act(async () => { await tap; });
+      expect(localStorage.getItem(key)).toBe(DAMAGED);
+      expect(copiesOf(key)).toEqual([]);
+      expect(s().queueUnreadable.map((u) => u.key).sort()).toEqual([key, lane].sort());
+    });
+  }
+
+  /** an act this release's own reader rejects (a negative option index): this tab's own write leaves bytes it reads
+   *  as damaged, as `site-visits-photos-offline.test.tsx` does with a visit start's id */
+  const selfRejected = { t: 'approve', decisionId: 'd-1', optionIndex: -1, idempotencyKey: 'k-self' } as OutboxOp;
+
+  it('forced probe (re-check of 244a717, gap 1): Set aside’s read of this tab’s own bytes holds nothing, after a tap that does not land', async () => {
+    const approveDecision = vi.fn(async () => null);
+    signedIn(null, null, { approveDecision });
+    useStore.setState((st) => { st.outbox = [selfRejected]; });
+    s().startActivity('B-1'); // this tab's write stores both; its own reader then reads the key as damaged
+    await queueWritten();
+    s().startActivity('B-2'); // the next write finds it so, and lists it
+    await queueWritten();
+    expect(s().queueUnreadable.map((u) => u.key)).toEqual([key]);
+    const full = refusing((n) => n.startsWith('vitan.unreadable.'));
+    await setAside();
+    full.mockRestore();
+    expect(s().queueSetAsideFailed).toBe(true);
+    await goOnline();
+    expect(approveDecision).toHaveBeenCalledTimes(1);
+  });
+
+  it('forced probe (re-check of 244a717): a rollback restores which bytes are this tab’s own, so they hold nothing after it', async () => {
+    const approveDecision = vi.fn(async () => null);
+    signedIn(null, LANE_DAMAGED, { approveDecision });
+    useStore.setState((st) => { st.outbox = [selfRejected]; });
+    s().startActivity('B-1');
+    await queueWritten();
+    s().startActivity('B-2');
+    await queueWritten();
+    expect(s().queueUnreadable.map((u) => u.key).sort()).toEqual([key, lane].sort());
+    const own = localStorage.getItem(key);
+    const full = refusing((n) => n === lane); // the general key's write lands, the lane's does not: the general key is put back
+    await setAside();
+    full.mockRestore();
+    expect(localStorage.getItem(key)).toBe(own);
+    s().startActivity('B-3'); // a write that finds the restored bytes, this tab's own
+    await queueWritten();
+    await goOnline();
+    expect(approveDecision).toHaveBeenCalledTimes(1);
+  });
 });
