@@ -295,7 +295,7 @@ describe('#1071 F4: a key holding such an act is set aside, never sent or droppe
     await useStore.getState().flushOutbox();
     expect(allocateLabour).not.toHaveBeenCalled();
     expect(localStorage.getItem(general)).toBe(raw);
-    useStore.getState().setAsideUnreadableQueue();
+    await useStore.getState().setAsideUnreadableQueue();
     await queueWritten(); // step B1: Set aside runs under the keys' locks
     const copies = Object.keys(localStorage).filter((x) => x.startsWith(`vitan.unreadable.${general}.`)).map((x) => localStorage.getItem(x));
     expect(copies).toEqual([raw]);

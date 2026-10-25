@@ -17,7 +17,8 @@ import * as ledger from '@/store/queueLedger';
  * The right answer follows each occurrence by a serial of its own, never by its bytes: which serials are unsent, which
  * the key holds in order, which a record holds. A fresh page owes the key's unsent serials in order, then the records'
  * the key lacks. A write stores memory's unsent serials the key lacks that memory holds ahead of every one the key holds
- * (stranded), then the key's unsent serials in its order, then memory's other unsent ones (records, new acts).
+ * (stranded), then the key's unsent serials in its order, then memory's other unsent ones (records, new acts). Memory
+ * holding none of the key's serials puts all of its own, but the scope-move write's front, after the key's (L2b).
  *
  * The matrix: every key of 0 to 4 acts (each `U`, an unkeyed act, or a unique keyed act), 0 to 2 stranded `U`, 0 to 2
  * made records of a `U`, each partial flush counted in memory's order with its marks made or failing, another tab's
@@ -156,9 +157,10 @@ function rightWrite(w: World, t: Tab): string[] {
   const inKey = new Set(w.key);
   const first = all.findIndex((s) => inKey.has(s));
   const out = all.filter((s) => front.has(s) && !gone(s));
-  out.push(...all.filter((s, n) => !front.has(s) && !gone(s) && !inKey.has(s) && (first < 0 || n < first)));
+  // L2b (Codex 4344812888): memory holding none of the key's acts puts its own after them: the key's were stored first
+  out.push(...all.filter((s, n) => !front.has(s) && !gone(s) && !inKey.has(s) && first >= 0 && n < first));
   out.push(...w.key.filter((s) => !front.has(s) && !gone(s)));
-  out.push(...all.filter((s, n) => !front.has(s) && !gone(s) && !inKey.has(s) && first >= 0 && n > first));
+  out.push(...all.filter((s, n) => !front.has(s) && !gone(s) && !inKey.has(s) && (first < 0 || n > first)));
   return out;
 }
 

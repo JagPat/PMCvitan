@@ -4,7 +4,7 @@ import { act, render, screen, fireEvent } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
 import { QueueUnreadable } from '@/layout/QueueUnreadable';
-import { queueWritten } from './queueWrites';
+import { queueWritten, storedQueue } from './queueWrites';
 
 /**
  * WEB-02 step 2 (#482 6326129029). A stored queue key holding bytes this release cannot read (not a list, an act of a
@@ -76,11 +76,11 @@ describe('WEB-02 step 2: a queue key this release cannot read is never sent or w
     expect(localStorage.getItem(key)).toBe(raw);
     // the update this tab could not store there was copied aside beside the key (#1079 4344436665)
     expect(copiesOf(key)).toEqual([JSON.stringify([approve('k-new')])]);
-    await act(async () => { s().setAsideUnreadableQueue(); await queueWritten(); });
+    await act(async () => { await s().setAsideUnreadableQueue(); });
     // the key's bytes are copied aside; the update's own copy is removed once Set aside writes it to the key (#1096)
     expect(copiesOf(key)).toEqual([raw]);
     expect(s().queueUnreadable).toEqual([]);
-    expect(JSON.parse(localStorage.getItem(key)!)).toEqual([approve('k-new')]);
+    expect(storedQueue(localStorage.getItem(key)!)).toEqual([approve('k-new')]);
   });
 
   it('bytes that are not a list: listed, and never written over by this tab’s next save', async () => {
@@ -98,14 +98,14 @@ describe('WEB-02 step 2: a queue key this release cannot read is never sent or w
     useStore.setState({ online: true });
     await act(async () => { await s().flushOutbox(); });
     expect(allocateLabour).not.toHaveBeenCalled();
-    expect(JSON.parse(localStorage.getItem(key)!)).toEqual([both]);
+    expect(storedQueue(localStorage.getItem(key)!)).toEqual([both]);
   });
 
   it('a newer release’s act: Reload is offered, not Set aside; after a reload of this build the same bytes may be set aside', async () => {
     const raw = JSON.stringify([{ t: 'aKindFromANewerRelease', idempotencyKey: 'k-n' }]);
     onP1(raw);
     expect(s().queueUnreadable).toEqual([{ key, read: 'newer', reloaded: false }]);
-    await act(async () => { s().setAsideUnreadableQueue(); await queueWritten(); });
+    await act(async () => { await s().setAsideUnreadableQueue(); });
     expect(copiesOf(key)).toEqual([]);
     const reload = reloadStub();
     act(() => s().reloadForNewerQueue());
@@ -113,7 +113,7 @@ describe('WEB-02 step 2: a queue key this release cannot read is never sent or w
     // the page loads again, in this same build, and the key still holds the same bytes
     onP1(null);
     expect(s().queueUnreadable).toEqual([{ key, read: 'newer', reloaded: true }]);
-    await act(async () => { s().setAsideUnreadableQueue(); await queueWritten(); });
+    await act(async () => { await s().setAsideUnreadableQueue(); });
     expect(copiesOf(key)).toEqual([raw]);
     expect(s().queueUnreadable).toEqual([]);
   });
@@ -153,7 +153,7 @@ describe('WEB-02 step 2: a queue key this release cannot read is never sent or w
     const raw = '{not a list';
     onP1(raw);
     const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation((k) => { if (k.startsWith('vitan.unreadable.')) throw new DOMException('full', 'QuotaExceededError'); });
-    await act(async () => { s().setAsideUnreadableQueue(); await queueWritten(); });
+    await act(async () => { await s().setAsideUnreadableQueue(); });
     write.mockRestore();
     expect(s().queueSetAsideFailed).toBe(true);
     expect(localStorage.getItem(key)).toBe(raw);
@@ -169,7 +169,7 @@ describe('WEB-02 step 2: a queue key this release cannot read is never sent or w
       if (k.startsWith(`vitan.unreadable.${lane}.`)) throw new DOMException('full', 'QuotaExceededError');
       return real.call(this, k, v);
     });
-    await act(async () => { s().setAsideUnreadableQueue(); await queueWritten(); });
+    await act(async () => { await s().setAsideUnreadableQueue(); });
     spy.mockRestore();
     expect(s().queueSetAsideFailed).toBe(true);
     await queueOne('k-1');
@@ -184,12 +184,12 @@ describe('WEB-02 step 2: a queue key this release cannot read is never sent or w
       if (k.startsWith(`vitan.unreadable.${lane}.`)) throw new DOMException('full', 'QuotaExceededError');
       return real.call(this, k, v);
     });
-    await act(async () => { s().setAsideUnreadableQueue(); await queueWritten(); });
-    await act(async () => { s().setAsideUnreadableQueue(); await queueWritten(); });
+    await act(async () => { await s().setAsideUnreadableQueue(); });
+    await act(async () => { await s().setAsideUnreadableQueue(); });
     spy.mockRestore();
     expect(s().queueSetAsideFailed).toBe(true);
     expect([copiesOf(key), copiesOf(lane)]).toEqual([[], []]);
-    await act(async () => { s().setAsideUnreadableQueue(); await queueWritten(); });
+    await act(async () => { await s().setAsideUnreadableQueue(); });
     expect(s().queueSetAsideFailed).toBe(false);
     expect([copiesOf(key), copiesOf(lane)]).toEqual([['{bad general'], ['{bad lane']]);
   });
@@ -247,7 +247,8 @@ describe('#1088 r3: a scoped key holding bytes is never adopted over, and sign-o
   it('guard: an absent scoped key still adopts the legacy queue', async () => {
     localStorage.setItem('vitan.outbox', JSON.stringify([approve('k-legacy')]));
     onP1(null);
-    expect(JSON.parse(localStorage.getItem(key)!)).toEqual([approve('k-legacy')]);
+    await queueWritten(); // L2b (gap check 9): the migration writes through the locked ledger write
+    expect(storedQueue(localStorage.getItem(key)!)).toEqual([approve('k-legacy')]);
     expect(s().outbox).toEqual([approve('k-legacy')]);
   });
 

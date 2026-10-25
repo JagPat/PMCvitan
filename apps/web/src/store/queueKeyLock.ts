@@ -44,3 +44,17 @@ export async function keepUnsentLocked(guard: QueueKeyGuard, storage: Store | nu
   guard.asked(ask);
   return out ?? guard.copyUnsentAside(storage, key, args[0]);
 }
+
+/** Run `fn` holding every one of `keys`' locks, taken in one fixed order (by name) so two tabs never wait on each other;
+ *  `null` when a lock could not be had. Set aside writes, and may put back, both of a scope's keys at once (L2b gap
+ *  check 5: a put-back outside the lock could remove an act another tab's locked write had just stored) */
+export async function underQueueLocks<T>(keys: string[], fn: () => T | Promise<T>): Promise<T | null> {
+  const order = [...new Set(keys)].sort();
+  const run = async (n: number): Promise<{ v: T } | null> => {
+    if (n === order.length) return { v: await fn() };
+    const inner = await underQueueLock(order[n], () => run(n + 1));
+    return inner ?? null;
+  };
+  const out = await run(0);
+  return out === null ? null : out.v;
+}

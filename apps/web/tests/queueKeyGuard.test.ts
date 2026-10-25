@@ -13,7 +13,8 @@ function storage(init: Record<string, string> = {}) {
   return {
     getItem: (k: string) => m.get(k) ?? null,
     setItem: (k: string, v: string) => { writes.push(k); m.set(k, v); },
-    keys: (k: string) => (JSON.parse(m.get(k) ?? '[]') as { idempotencyKey: string }[]).map((o) => o.idempotencyKey),
+    // L2b: a key the ledger writes starts with its write token, which is no act
+    keys: (k: string) => (JSON.parse(m.get(k) ?? '[]') as { t: string; idempotencyKey: string }[]).filter((o) => o.t !== 'vitan.writeToken').map((o) => o.idempotencyKey),
     writes,
   };
 }
@@ -24,11 +25,18 @@ describe('queueKeyGuard: a key this release reads', () => {
     const st = storage({ [K]: JSON.stringify([a('old'), visitEnd('in-general')]) });
     const q = createQueueKeyGuard();
     expect(q.write(st, K, [a('mine')], (o) => o.t !== 'siteVisitEnd')).toBe(true);
-    expect(st.keys(K)).toEqual(['mine', 'in-general']);
+    // L2b (#1106, Codex 4349463910): an act this tab never held is another tab's, and stays; this tab's new act goes
+    // after the stored ones (Codex 4344812888)
+    expect(st.keys(K)).toEqual(['old', 'in-general', 'mine']);
   });
 
   it('a write that changes nothing writes nothing', () => {
     const st = storage({ [K]: JSON.stringify([a('x')]) });
+    const q = createQueueKeyGuard();
+    // L2b: a key with no write token is written once, so the ledger names its occurrences
+    expect(q.write(st, K, [a('x')])).toBe(true);
+    st.writes.length = 0;
+    expect(q.write(st, K, [a('x')])).toBe(true);
     expect(createQueueKeyGuard().write(st, K, [a('x')])).toBe(true);
     expect(st.writes).toEqual([]);
   });

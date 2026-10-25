@@ -2,6 +2,7 @@ import type { Lang } from '@vitan/shared';
 import { BUILD_INFO } from '@/lib/buildInfo';
 import { QW } from '@/lib/queueWords';
 import type { KeyRead, QueueKeyGuard, QueueWrite } from '@/store/queueKeyGuard';
+import { underQueueLocks } from '@/store/queueKeyLock';
 
 /**
  * WEB-02 step A (#482 6333415419): this scope's queue keys that hold bytes this release cannot read, as the strip lists
@@ -78,7 +79,7 @@ export function queueStrip(view: { get: () => StripState; set: (p: Partial<Strip
       const next = listRead(view.get().queueUnreadable, key, read, raw);
       if (next !== view.get().queueUnreadable) view.set({ queueUnreadable: next });
     },
-    setAside(): void {
+    async setAside(): Promise<void> {
       const storage = globalThis.localStorage;
       const scope = bindScope();
       if (!storage || !scope) return;
@@ -87,12 +88,19 @@ export function queueStrip(view: { get: () => StripState; set: (p: Partial<Strip
       // newer release's not yet reloaded was written over while the other refused its write)
       if (listed.length === 0 || !listed.every(settable)) return;
       const keys = listed.map((u) => u.key);
-      // every key copied and read back, or nothing changes
-      if (!view.keys().setAside(storage, keys)) { view.set({ queueSetAsideFailed: true }); return; }
-      // then memory's acts are written over each copied key, and only those: all of them, or each is put back. A key
-      // leaves the list as its write lands (Codex 4345664686)
-      const written = view.keys().writeAll(storage, view.writes().filter((w) => keys.includes(w.key)));
-      view.set({ queueSetAsideFailed: written === 'none' });
+      // L2b (gap check 5): the copies, the writes and any put-back run holding every listed key's lock, so no other tab
+      // of this release writes a key between this tap's write and its put-back. No lock: nothing is changed
+      const done = await underQueueLocks(keys, () => {
+        // the scope may have moved while the locks were asked for: then this tap acts for nothing
+        if (bindScope() === null || bindScope()!.join() !== scope.join()) return 'moved' as const;
+        // every key copied and read back, or nothing changes
+        if (!view.keys().setAside(storage, keys)) return 'none' as const;
+        // then memory's acts are written over each copied key, and only those: all of them, or each is put back. A key
+        // leaves the list as its write lands (Codex 4345664686)
+        return view.keys().writeAll(storage, view.writes().filter((w) => keys.includes(w.key)));
+      });
+      if (done === 'moved') return;
+      view.set({ queueSetAsideFailed: done === null || done === 'none' });
     },
     reload(): void {
       const storage = globalThis.localStorage;

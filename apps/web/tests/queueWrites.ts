@@ -34,3 +34,11 @@ export function holdQueueLock(key: string): { has: Promise<void>; release: () =>
 export function releaseQueueLocks(): void {
   for (const release of heldLocks.splice(0)) release();
 }
+
+/** L2b: a stored queue key's entries, without the write token this release's writes lead it with (a key an earlier
+ *  release wrote has none). Parsed as JSON.parse would, so damaged bytes still throw */
+export function storedQueue<T = Record<string, unknown>>(raw: string | null): T[] {
+  const entries = JSON.parse(raw ?? 'null') as T[];
+  const first = entries[0] as { t?: unknown } | undefined;
+  return first?.t === 'vitan.writeToken' ? entries.slice(1) : entries;
+}

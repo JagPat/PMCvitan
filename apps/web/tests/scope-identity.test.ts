@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, ApiSnapshot } from '@/data/apiGateway';
-import { queueWritten } from './queueWrites';
+import { queueWritten, storedQueue } from './queueWrites';
 
 /**
  * Codex gate findings 1/3/6: EVERY server reply that mutates project state must
@@ -159,7 +159,7 @@ describe('outbox replay is pinned to the scope that queued it (finding 1)', () =
 
     // B's queue survives in memory AND in storage — never replaced with A's empty result
     expect(s().outbox).toEqual(bOps);
-    expect(JSON.parse(globalThis.localStorage.getItem('vitan.outbox.anon.project-b') ?? '[]')).toEqual(bOps);
+    expect(storedQueue(globalThis.localStorage.getItem('vitan.outbox.anon.project-b') ?? '[]')).toEqual(bOps);
   });
 
   it('stops replaying when the project changes mid-flush and leaves the rest under the ORIGINAL scope key', async () => {
@@ -190,7 +190,7 @@ describe('outbox replay is pinned to the scope that queued it (finding 1)', () =
     // the second op was NOT sent to project B's gateway scope
     expect(gw.startActivity).not.toHaveBeenCalled();
     // the un-replayed remainder is persisted under AMBLI's key, not B's
-    const persistedA = JSON.parse(globalThis.localStorage.getItem(aKey) ?? '[]');
+    const persistedA = storedQueue(globalThis.localStorage.getItem(aKey) ?? '[]');
     expect(persistedA).toEqual([{ t: 'startActivity', activityId: 'ACT-31', idempotencyKey: expect.any(String) }]);
     // B's in-memory queue stays untouched
     expect(s().outbox).toEqual([]);

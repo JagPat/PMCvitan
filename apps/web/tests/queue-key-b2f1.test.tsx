@@ -3,7 +3,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
-import { holdQueueLock, nextToast, queueWritten, releaseQueueLocks } from './queueWrites';
+import { holdQueueLock, nextToast, queueWritten, releaseQueueLocks, storedQueue } from './queueWrites';
 
 /**
  * WEB-02 step B2f-1 (plan r3 v4, #1094 6382477473): every write of a stored queue key runs under one cross-tab Web Lock
@@ -36,7 +36,7 @@ const NOT_SAVED = 'Not saved on this phone yet. Keep Vitan open until it sends.'
 const NEWER = JSON.stringify([{ t: 'aKindFromANewerRelease', idempotencyKey: 'k-newer' }]);
 const approve = (k: string): OutboxOp => ({ t: 'approve', decisionId: 'd-1', optionIndex: 0, idempotencyKey: k });
 const visitEnd = (k: string): OutboxOp => ({ t: 'siteVisitEnd', visitId: '00000000-0000-4000-8000-000000000001', claimedAt: '2026-10-14T05:30:00.000Z', idempotencyKey: k } as OutboxOp);
-const idents = (raw: string | null) => ((JSON.parse(raw ?? '[]') ?? []) as { idempotencyKey?: string; t?: string }[]).map((o) => o.idempotencyKey ?? o.t);
+const idents = (raw: string | null) => ((storedQueue(raw ?? '[]') ?? []) as { idempotencyKey?: string; t?: string }[]).map((o) => o.idempotencyKey ?? o.t);
 const named = (prefix: string) => Object.keys(localStorage).filter((x) => x.startsWith(prefix));
 const copiesOf = (k: string) => named(`vitan.unreadable.${k}.`).map((x) => localStorage.getItem(x));
 const madeHere = (store: typeof useStore = useStore) => store.getState().outbox.filter((o) => o.t === 'startActivity');
@@ -382,7 +382,7 @@ describe('B2f-1: a write-ahead act is not sent while its write runs, and its wri
     expect(publishDrawing).not.toHaveBeenCalled();
     other.release();
     await send;
-    expect((JSON.parse(atSend ?? '[]') as { t: string }[]).map((o) => o.t)).toEqual(['publishDrawing']);
+    expect(storedQueue<{ t: string }>(atSend ?? '[]').map((o) => o.t)).toEqual(['publishDrawing']);
   });
 
   it('forced probe (C2b): an act whose write waits behind another tab is not sent by an earlier act’s flush', async () => {
@@ -407,7 +407,7 @@ describe('B2f-1: a write-ahead act is not sent while its write runs, and its wri
     expect(publishDrawing).not.toHaveBeenCalled();
     second.release();
     await send;
-    expect((JSON.parse(atSend ?? '[]') as { t: string }[]).map((o) => o.t)).toContain('publishDrawing');
+    expect(storedQueue<{ t: string }>(atSend ?? '[]').map((o) => o.t)).toContain('publishDrawing');
   });
 });
 

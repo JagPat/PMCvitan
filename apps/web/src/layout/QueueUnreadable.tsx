@@ -25,7 +25,7 @@ export function QueueUnreadable() {
       {listed.some((u) => u.read === 'damaged') && <span>{QW.unreadable[lang]}</span>}
       {failed && <span data-testid="queue-unreadable-failed">{QW.setAsideFailed[lang]}</span>}
       {newer.some((u) => !u.reloaded) && <button type="button" style={button} onClick={reload}>{QW.reload[lang]}</button>}
-      {listed.every(settable) && <button type="button" style={button} onClick={setAside}>{QW.setAside[lang]}</button>}
+      {listed.every(settable) && <button type="button" style={button} onClick={() => { void setAside(); }}>{QW.setAside[lang]}</button>}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
 import { createQueueKeyGuard, queueActIdent } from '@/store/queueKeyGuard';
+import { storedQueue } from './queueWrites';
 
 /**
  * WEB-02 step B1a: each queued act's life is kept on this phone, beside its queue key, at every step.
@@ -84,7 +85,7 @@ describe('step B1a, page closes: nothing is lost and nothing is sent twice', () 
     localStorage.setItem(key, JSON.stringify([approve('k-1')]));
     const first = await page({ approveDecision: vi.fn(async () => null) }, true);
     await act(async () => { await first.getState().flushOutbox(); });
-    expect(JSON.parse(localStorage.getItem(key)!)).toEqual([]);
+    expect(storedQueue(localStorage.getItem(key)!)).toEqual([]);
     expect(named('vitan.settled.')).toEqual([]);
     expect(named('vitan.made.')).toEqual([]);
   });
@@ -122,7 +123,7 @@ describe('step B1a: one forced probe per step of an act’s life (guard)', () =>
     localStorage.setItem(key, '[]'); // the person set the bytes aside, or another tab wrote the key
     const g = createQueueKeyGuard();
     expect(g.write(localStorage, key, g.load(localStorage, key))).toBe(true);
-    expect(JSON.parse(localStorage.getItem(key)!)).toEqual([approve('k-1')]);
+    expect(storedQueue(localStorage.getItem(key)!)).toEqual([approve('k-1')]);
     expect(named(`vitan.made.${key}.`)).toEqual([]);
   });
 
@@ -132,7 +133,7 @@ describe('step B1a: one forced probe per step of an act’s life (guard)', () =>
     const g = createQueueKeyGuard();
     g.write(localStorage, key, [approve('k-1')]);
     g.write(localStorage, key, [approve('k-1'), approve('k-2')]);
-    const records = named(`vitan.made.${key}.`).map((n) => (JSON.parse(localStorage.getItem(n)!) as OutboxOp[]).map(queueActIdent)).sort();
+    const records = named(`vitan.made.${key}.`).map((n) => (storedQueue(localStorage.getItem(n)!) as OutboxOp[]).map(queueActIdent)).sort();
     expect(records).toEqual([[queueActIdent(approve('k-1'))], [queueActIdent(approve('k-2'))]]);
   });
 
@@ -150,12 +151,15 @@ describe('step B1a: one forced probe per step of an act’s life (guard)', () =>
     expect(named(`vitan.settled.${key}.`)).toEqual([]);
   });
 
-  it('removed: a mark is kept while the key still holds the act (a write from memory that still holds it)', () => {
+  it('removed: a write from memory that still holds a settled act does not put it back, and its mark then goes', () => {
     localStorage.setItem(key, JSON.stringify([approve('k-1')]));
     const g = createQueueKeyGuard();
     g.settled(localStorage, key, approve('k-1'));
-    g.write(localStorage, key, [approve('k-1')]);
-    expect(named(`vitan.settled.${key}.`)).toHaveLength(1);
+    // L2b (gap check 2): the settled occurrence stays settled while memory holds it, so the write leaves it out; with
+    // the key no longer holding it, its mark guards nothing
+    expect(g.write(localStorage, key, [approve('k-1')])).toBe(true);
+    expect(storedQueue(localStorage.getItem(key))).toEqual([]);
+    expect(named(`vitan.settled.${key}.`)).toEqual([]);
     expect(createQueueKeyGuard().load(localStorage, key)).toEqual([]);
   });
 
@@ -276,8 +280,11 @@ describe('#1101 round 2 (Codex 4360012661): a mark goes only once nothing it gua
       spy.mockRestore();
       expect(named(`vitan.made.${key}.`)).toHaveLength(1);
       // the reload: the record is still there, and so is the act's mark
-      expect(createQueueKeyGuard().load(localStorage, key)).toEqual([]);
-      // that load's tidy removed the record, and then the mark
+      const g = createQueueKeyGuard();
+      expect(g.load(localStorage, key)).toEqual([]);
+      // L2b (plan §2): records and marks go only at a write, under its lock, never at a load. The next write's release
+      // removes the record, and then the mark
+      expect(g.write(localStorage, key, [])).toBe(true);
       expect(named(`vitan.made.${key}.`)).toEqual([]);
       expect(named(`vitan.settled.${key}.`)).toEqual([]);
     });

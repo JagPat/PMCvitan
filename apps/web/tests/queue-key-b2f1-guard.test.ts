@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import type { OutboxOp } from '@/data/apiGateway';
 import { createQueueKeyGuard, queueActIdent } from '@/store/queueKeyGuard';
 import { underQueueLock, writeQueueKey } from '@/store/queueKeyLock';
-import { holdQueueLock, releaseQueueLocks } from './queueWrites';
+import { holdQueueLock, releaseQueueLocks, storedQueue } from './queueWrites';
 
 /**
  * WEB-02 step B2f-1: the locked writer (`queueKeyLock.ts`) around main's guard, and what the guard keeps while a write
@@ -58,7 +58,7 @@ describe('B2f-1: the lock', () => {
     q.load(st, 'vitan.outbox.dev:u-pmc.p-2');
     other.release();
     expect(await written).toBe(true);
-    expect(st.getItem(key)).toBe('[]');
+    expect(storedQueue(st.getItem(key))).toEqual([]);
   });
 });
 
@@ -68,7 +68,7 @@ describe('B2f-1: what the guard keeps while a write waits (B1a records)', () => 
     const g = createQueueKeyGuard();
     g.load(localStorage, key);
     const n = g.ask(localStorage, key, [approve('k-1'), approve('k-2')]);
-    const records = named(`vitan.made.${key}.`).map((x) => idents(JSON.parse(localStorage.getItem(x)!) as OutboxOp[]));
+    const records = named(`vitan.made.${key}.`).map((x) => idents(storedQueue(localStorage.getItem(x)!) as OutboxOp[]));
     expect(records).toEqual([[queueActIdent(approve('k-2'))]]);
     expect(g.unsavedCount()).toBe(1);
     g.asked(n);

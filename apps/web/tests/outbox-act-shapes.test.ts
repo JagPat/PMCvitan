@@ -3,7 +3,7 @@ import { useStore, getInitialState } from '@/store/store';
 import { ApiGateway, replayOutboxOp, type OutboxOp } from '@/data/apiGateway';
 import { isKnownOutboxOp, SERVER_SCHEMA_OF, serverBodyOf } from '@/data/storedActs';
 import { syncResultText as SYNC } from '@vitan/shared';
-import { queueWritten } from './queueWrites';
+import { queueWritten, storedQueue } from './queueWrites';
 
 /**
  * #1051 r1, Codex 4336713248: a stored act was taken as loadable when it named a known kind, whatever its fields held.
@@ -402,7 +402,7 @@ describe('#1051 r1, Codex 4336713248: a key holding a damaged act of a known kin
     useStore.getState().startActivity('B-1');
     await queueWritten(); // step B1: written under the queue's lock, after the act
     expect(localStorage.getItem(keyOf(t))).toBe(raw);
-    useStore.getState().setAsideUnreadableQueue();
+    await useStore.getState().setAsideUnreadableQueue();
     await queueWritten();
     expect(useStore.getState().queueUnreadable).toEqual([]);
     // the key's bytes are copied aside. The start this tab could not store beside the general key was copied aside too
@@ -410,7 +410,7 @@ describe('#1051 r1, Codex 4336713248: a key holding a damaged act of a known kin
     const copies = copiesOf(keyOf(t));
     expect(copies.filter((c) => c === raw)).toHaveLength(1);
     expect(copies.filter((c) => c !== raw)).toEqual([]);
-    expect((JSON.parse(localStorage.getItem(general)!) as OutboxOp[]).map((o) => o.t)).toEqual(['startActivity']);
+    expect((storedQueue(localStorage.getItem(general)!) as OutboxOp[]).map((o) => o.t)).toEqual(['startActivity']);
   });
 
   it('a key holding an act of every kind it keeps, each whole, loads every one', () => {
@@ -452,7 +452,7 @@ describe('#1051 r1, Codex 4336713248: a key holding a damaged act of a known kin
     await useStore.getState().flushOutbox();
     expect(send.mock.calls).toEqual([args]);
     expect(useStore.getState().outbox).toEqual([]);
-    expect(JSON.parse(localStorage.getItem(general) ?? '[]')).toEqual([]);
+    expect(storedQueue(localStorage.getItem(general) ?? '[]')).toEqual([]);
   });
 
   it('a July approve in the legacy unscoped queue moves into the scoped key and loads (re-check G2)', () => {
