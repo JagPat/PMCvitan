@@ -16,6 +16,9 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
  * unrelated to the archiver) then waits on the archive at the seal, and H is released. The archive
  * commits first, and the command must answer exactly 409 and write nothing.
  *
+ * #1110 — a discipline edit (a PATCH that keeps the role) writes no transition fact, so no seal meets it.
+ * It locks and re-reads the project row itself before its membership write; case 4 forces the same race there.
+ *
  * Isolated automated-test fixtures only.
  */
 describe('#1072 — a member command racing a project archive answers 409 (live PG)', () => {
@@ -105,10 +108,12 @@ describe('#1072 — a member command racing a project archive answers 409 (live 
   const factCount = (membershipId: string) => t.prisma.membershipTransition.count({ where: { projectId: f.projectA.id, membershipId } });
 
   /** H holds the project's event-stream counter, so the archive stops at its emit, after its project UPDATE: it
-   *  holds the archived row, uncommitted. `send` then waits on the archive itself at the transition seal's
-   *  project-row lock, and H is released. Without H the two would both wait on whoever held the row, and the
-   *  member command could take the row first and commit before the archive (a legitimate 2xx, not this race). */
-  const raceArchive = async (send: () => request.Test) => {
+   *  holds the archived row, uncommitted. `send` then waits on the archive itself at the project-row lock named
+   *  by `waitsAt` (by default the transition seal's), and H is released. Without H the two would both wait on
+   *  whoever held the row, and the member command could take the row first and commit before the archive (a
+   *  legitimate 2xx, not this race). */
+  const AT_TRANSITION = { site: /^INSERT INTO "public"\."MembershipTransition"/, what: 'its transition fact (the seal locks the project row)' };
+  const raceArchive = async (send: () => request.Test, waitsAt = AT_TRANSITION) => {
     const inFlight: Array<{ release: () => void; settled: Promise<unknown> }> = [];
     try {
       const h = await hold((tx) => tx.$queryRawUnsafe('SELECT 1 FROM "ProjectEventStream" WHERE "projectId" = $1 FOR UPDATE', f.projectA.id));
@@ -119,7 +124,7 @@ describe('#1072 — a member command racing a project archive answers 409 (live 
       inFlight.push({ release: () => {}, settled: cmd });
       const cmdPid = await waiterOn([arcPid], 'the member command waits on the archive');
       const [{ q }] = await t.prisma.$queryRawUnsafe<Array<{ q: string }>>('SELECT query AS q FROM pg_stat_activity WHERE pid = $1', cmdPid);
-      expect(q, 'the member command waits at its transition fact (the seal locks the project row)').toMatch(/^INSERT INTO "public"\."MembershipTransition"/);
+      expect(q, `the member command waits at ${waitsAt.what}`).toMatch(waitsAt.site);
       h.release();
       const [ar, cr] = await Promise.all([arc, cmd]);
       await h.done;
@@ -157,5 +162,19 @@ describe('#1072 — a member command racing a project archive answers 409 (live 
     expect(text(r)).toContain(ARCHIVED);
     expect((await t.prisma.membership.findUniqueOrThrow({ where: { id: m.membershipId } })).status).toBe('active');
     expect(await factCount(m.membershipId)).toBe(before);
+  }, 60_000);
+
+  it('4. a discipline edit of an unrelated consultant, behind an archive: 409, and the discipline and its events are unchanged (#1110)', async () => {
+    const m = await addNew('discipline', 'consultant');
+    const set = await patch(m.userId, { role: 'consultant', discipline: 'Structural' });
+    expect(set.status, set.text).toBe(200);
+    const events = () => t.prisma.domainEvent.count({ where: { projectId: f.projectA.id, eventType: 'membership.discipline_changed', entityId: m.userId } });
+    const before = await events();
+    const r = await raceArchive(() => patch(m.userId, { role: 'consultant', discipline: 'MEP' }),
+      { site: /FROM "Project" WHERE "id" = \$1 FOR NO KEY UPDATE/, what: 'its own project-row lock (no seal reaches it)' });
+    expect(status(r), text(r)).toBe(409);
+    expect(text(r)).toContain(ARCHIVED);
+    expect((await t.prisma.membership.findUniqueOrThrow({ where: { id: m.membershipId } })).discipline).toBe('Structural');
+    expect(await events()).toBe(before);
   }, 60_000);
 });

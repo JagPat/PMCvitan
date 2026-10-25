@@ -97,7 +97,7 @@ function make(orgRole: string | null = null, opts: HolderOpts = {}) {
   const svc = new MembersService(
     prisma as unknown as PrismaService,
     { holdsOpenDecisions: vi.fn(async () => ({ named: false, heldRoles: [] as string[], namedAwaiting: false, awaitingRoles: [] as string[], ...opts.holders })) } as unknown as DecisionsParticipant,
-    { effectiveRoleStanding: vi.fn(async () => opts.standing ?? 1) } as unknown as OrgsParticipant,
+    { effectiveRoleStanding: vi.fn(async () => opts.standing ?? 1), isProjectOperable: vi.fn(async () => true) } as unknown as OrgsParticipant,
     { notify } as unknown as InvitationsService,
   );
   return { svc, users, memberships, transitions, receipts, notify, prisma };
