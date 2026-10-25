@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import { isTerminalOutboxError, type ApiGateway, type ApiSnapshot } from '@/data/apiGateway';
+import { queueWritten, storedQueue } from './queueWrites';
 
 const s = () => useStore.getState();
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -88,13 +89,14 @@ describe('Phase 8 offline outbox', () => {
     expect(s().outbox).toHaveLength(0);
   });
 
-  it('persists the queue to identity-scoped storage and rehydrates it (WEB-02)', () => {
+  it('persists the queue to identity-scoped storage and rehydrates it (WEB-02)', async () => {
     const gw = { approveDecision: vi.fn() };
     s()._setGateway(gw as unknown as ApiGateway);
     useStore.setState((st) => { st.online = false; });
 
     s().openApprove('DL-014', 1);
     s().confirmApprove();
+    await queueWritten(); // step B1: written under the queue's lock, after the act
     // key carries WHO (anon — no session token) and WHERE (the active project)
     const scopedKey = `vitan.outbox.anon.${s().activeProjectId}`;
     expect(globalThis.localStorage?.getItem(scopedKey)).toContain('DL-014');
@@ -106,7 +108,7 @@ describe('Phase 8 offline outbox', () => {
     expect(s().outbox).toEqual([{ t: 'approve', decisionId: 'DL-014', optionIndex: 1, idempotencyKey: expect.any(String) }]);
   });
 
-  it('WEB-02: work queued under one project is not hydrated in another', () => {
+  it('WEB-02: work queued under one project is not hydrated in another', async () => {
     const gw = { approveDecision: vi.fn() };
     s()._setGateway(gw as unknown as ApiGateway);
     useStore.setState((st) => { st.online = false; });
@@ -114,6 +116,7 @@ describe('Phase 8 offline outbox', () => {
     s().openApprove('DL-014', 1);
     s().confirmApprove();
     expect(s().outbox).toHaveLength(1);
+    await queueWritten();
 
     // switch to another project: hydration swaps to THAT scope's (empty) queue…
     useStore.setState((st) => { st.activeProjectId = 'villa'; });
@@ -126,7 +129,7 @@ describe('Phase 8 offline outbox', () => {
     expect(s().outbox).toEqual([{ t: 'approve', decisionId: 'DL-014', optionIndex: 1, idempotencyKey: expect.any(String) }]);
   });
 
-  it('WEB-02: work queued by one user is not hydrated for another (shared browser)', () => {
+  it('WEB-02: work queued by one user is not hydrated for another (shared browser)', async () => {
     const gw = { approveDecision: vi.fn() };
     s()._setGateway(gw as unknown as ApiGateway);
     // JWT payloads: {"sub":"u1"} and {"sub":"u2"} — header/signature are irrelevant here
@@ -140,6 +143,7 @@ describe('Phase 8 offline outbox', () => {
     // sign out: the queue is quarantined (cleared in memory, persisted under u1's key)
     s().signOut();
     expect(s().outbox).toHaveLength(0);
+    await queueWritten();
 
     // another user signs in on the same browser — nothing of u1's leaks in
     useStore.setState((st) => { st.sessionToken = tokenFor('u2'); });
@@ -152,11 +156,80 @@ describe('Phase 8 offline outbox', () => {
     expect(s().outbox).toEqual([{ t: 'approve', decisionId: 'DL-014', optionIndex: 1, idempotencyKey: expect.any(String) }]);
   });
 
-  it('WEB-02: migrates a legacy unscoped queue into the current scope once', () => {
+  it('WEB-02: migrates a legacy unscoped queue into the current scope once', async () => {
     globalThis.localStorage?.setItem('vitan.outbox', JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]));
     s().hydrateOutbox();
     expect(s().outbox).toEqual([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    await queueWritten(); // L2b (gap check 9): the migration writes through the locked ledger write
     expect(globalThis.localStorage?.getItem('vitan.outbox')).toBeNull(); // legacy key consumed
+    // a second load takes it once, from the key
+    s().hydrateOutbox();
+    expect(s().outbox).toEqual([{ t: 'startActivity', activityId: 'ACT-31' }]);
+  });
+
+  it('#1085 r2 audit: a legacy queue is removed only once its bytes are in the scoped key', async () => {
+    const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    globalThis.localStorage?.setItem('vitan.outbox', legacy);
+    const real = Storage.prototype.setItem;
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith('vitan.outbox.')) throw new DOMException('full', 'QuotaExceededError');
+      return real.call(this, k, v);
+    });
+    s().hydrateOutbox();
+    await queueWritten(); // L2b: the migration's locked write runs, and is refused
+    spy.mockRestore();
+    expect(globalThis.localStorage?.getItem('vitan.outbox')).toBe(legacy); // not lost
+    // the next load takes the act once, from the record the refused write kept; the old bytes are copied aside, never
+    // adopted a second time
+    s().hydrateOutbox();
+    await queueWritten();
+    expect(s().outbox).toEqual([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    expect(globalThis.localStorage?.getItem('vitan.outbox')).toBeNull();
+  });
+
+  it('#1085 r2 gap-check G1: a legacy queue beside a non-empty scoped key is copied aside, never adopted by the next user or project', () => {
+    const tokenFor = (sub: string) => `x.${btoa(JSON.stringify({ sub }))}.y`;
+    const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    const mine = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-1' }]);
+    localStorage.setItem('vitan.outbox', legacy);
+    localStorage.setItem('vitan.outbox.userA.ambli', mine);
+    useStore.setState({ sessionToken: tokenFor('userA'), activeProjectId: 'ambli', online: false });
+    s().hydrateOutbox();
+    expect(localStorage.getItem('vitan.outbox')).toBeNull();
+    expect(localStorage.getItem('vitan.unreadable.vitan.outbox.vitan.outbox.userA.ambli')).toBe(legacy);
+    expect(localStorage.getItem('vitan.outbox.userA.ambli')).toBe(mine);
+    useStore.setState({ sessionToken: tokenFor('userB'), activeProjectId: 'villa' });
+    s().hydrateOutbox();
+    expect(s().outbox).toEqual([]);
+  });
+
+  it('#1085 r2 re-check R1: a legacy queue copied aside never writes over an earlier copy holding other bytes', () => {
+    const tokenFor = (sub: string) => `x.${btoa(JSON.stringify({ sub }))}.y`;
+    const earlier = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-30' }]);
+    const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    const aside = 'vitan.unreadable.vitan.outbox.vitan.outbox.userA.ambli';
+    // an earlier load copied a legacy queue aside; a rollback to a release before scoping then wrote a new one
+    localStorage.setItem(aside, earlier);
+    localStorage.setItem('vitan.outbox', legacy);
+    localStorage.setItem('vitan.outbox.userA.ambli', JSON.stringify([{ t: 'startActivity', activityId: 'ACT-1' }]));
+    useStore.setState({ sessionToken: tokenFor('userA'), activeProjectId: 'ambli', online: false });
+    s().hydrateOutbox();
+    expect(localStorage.getItem('vitan.outbox')).toBeNull();
+    expect(localStorage.getItem(aside)).toBe(earlier);
+    expect(localStorage.getItem(`${aside}.1`)).toBe(legacy);
+  });
+
+  it('#1085 r2 gap-check: a legacy queue left by a failed write is adopted only by a scope with no other queue key on this phone', () => {
+    const tokenFor = (sub: string) => `x.${btoa(JSON.stringify({ sub }))}.y`;
+    const legacy = JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    localStorage.setItem('vitan.outbox', legacy);
+    // user A keeps a queue on another project, so this phone holds another scope's key
+    localStorage.setItem('vitan.siteVisitQueue.userA.villa', '[]');
+    useStore.setState({ sessionToken: tokenFor('userB'), activeProjectId: 'ambli', online: false });
+    s().hydrateOutbox();
+    expect(s().outbox).toEqual([]);
+    expect(localStorage.getItem('vitan.outbox')).toBeNull();
+    expect(localStorage.getItem('vitan.unreadable.vitan.outbox.vitan.outbox.userB.ambli')).toBe(legacy);
   });
 
   it('queues a progress photo while offline and shows it optimistically', () => {
@@ -219,14 +292,15 @@ describe('Phase 8 offline outbox', () => {
     expect(s().outbox).toHaveLength(0);
   });
 
-  it('a photo queued by an earlier release, with no key, gets one key on load, kept for every replay (#482)', () => {
+  it('a photo queued by an earlier release, with no key, gets one key on load, kept for every replay (#482)', async () => {
     const scopedKey = `vitan.outbox.anon.${s().activeProjectId}`;
     globalThis.localStorage?.setItem(scopedKey, JSON.stringify([{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/png', data: 'BBBB' } }]));
     s().hydrateOutbox();
     const key = (s().outbox[0] as { input: { clientKey?: string } }).input.clientKey;
     expect(key).toEqual(expect.any(String));
+    await queueWritten();
     // persisted, so a reload does not mint a different one
-    expect(JSON.parse(globalThis.localStorage!.getItem(scopedKey)!)[0].input.clientKey).toBe(key);
+    expect(storedQueue<{ input: { clientKey?: string } }>(globalThis.localStorage!.getItem(scopedKey)!)[0].input.clientKey).toBe(key);
     s().hydrateOutbox();
     expect((s().outbox[0] as { input: { clientKey?: string } }).input.clientKey).toBe(key);
   });

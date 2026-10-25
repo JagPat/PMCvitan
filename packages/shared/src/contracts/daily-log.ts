@@ -18,6 +18,14 @@ export const SNAPSHOT_SITE_PHOTO_LIMIT = 300;
  *  server recorded it; after that it stays. */
 export const SITE_PHOTO_DELETE_WINDOW_MS = 60 * 60 * 1000;
 
+/** #482 site photos — the server's 410 text for a send whose photo was deleted. The web settles a 410 quietly only
+ *  when it carries exactly this text: any other 410 (a proxy's, a route's) is an ordinary refusal. */
+export const SITE_PHOTO_DELETED_MESSAGE = 'This photo was deleted';
+
+/** #482 site photos — the server's 404 text for a delete of a photo it does not hold. The web takes a 404 on a delete
+ *  as "already deleted" only when it carries exactly this text, never a route's or a proxy's 404 (#991). */
+export const MEDIA_NOT_FOUND_MESSAGE = 'Media not found';
+
 /** The daily-log module's state-changing commands (must equal the manifest `commands`). */
 export const DAILY_LOG_COMMANDS = [
   'daily-log.start',

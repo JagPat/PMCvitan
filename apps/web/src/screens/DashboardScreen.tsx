@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { decisionRecordLink, inspectionsSettledForLinks, selectDecisionsAwaitingAction, selectOpenReinspections, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats, selectProjectProgress, phaseRollup } from '@/store/selectors';
@@ -12,10 +12,11 @@ import { ROUTE_ONLY_SCREENS, SCREEN_MODULE } from '@/lib/screens';
 import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { AddSitePhoto } from '@/components/AddSitePhoto';
+import { SitePhotoDelete } from '@/components/SitePhotoDelete';
 import { queuedSitePhotos } from '@/lib/queuedSitePhotos';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
-import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, inspectionTitle, sitePhotoWho, type Lang, type WaitParty } from '@vitan/shared';
+import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, inspectionTitle, sitePhotoDeletable, sitePhotoWho, type Lang, type WaitParty } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 /** Top 10 #2 (#771) — a count whose slice has not settled is shown as unknown, never as 0. */
@@ -87,16 +88,36 @@ export function DashboardScreen() {
   const phases = useStore(useShallow((s) => s.phases));
   const activities = useStore(useShallow((s) => s.activities));
   const photoStats = useStore(useShallow(selectPhotoStats));
+  // a delete took a photo out of a full window: still a window of the newest, so still "at least" until a snapshot
+  // rebuilds it (Codex 4337661439)
+  const photosCapped = useStore((s) => s.photosWindowShort) || photoStats.capped;
   const recordedPhotos = useStore(useShallow((s) => s.photos));
   // #482 site photos: a photo picked with no signal shows first at once, until its upload is sent
   const outbox = useStore((s) => s.outbox);
   const userName = useStore((s) => s.userName);
-  // a queued photo is this viewer's own pick: it says their name; its role and time come once the server records it
+  // #482 site photos: past the newest four, the viewer's own photos still in their hour, from the window and from the
+  // snapshot's list of those past it (Codex 4316959529, 4322976249). The PMC's and engineer's Delete has no hour.
+  const myDeletablePhotos = useStore(useShallow((s) => s.myDeletablePhotos));
+  // a queued photo is this viewer's own pick: it says their name; its role and time come once the server records it.
+  // One the server already holds shows once, as recorded, whether in the window or in the own list past it (Codex 4339094796)
   const queuedPhotos = useMemo(
-    () => (API_BASE ? queuedSitePhotos(outbox, recordedPhotos).map((p) => (userName ? { ...p, by: userName } : p)) : []),
-    [outbox, recordedPhotos, userName],
+    () => (API_BASE ? queuedSitePhotos(outbox, [...recordedPhotos, ...myDeletablePhotos]).map((p) => (userName ? { ...p, by: userName } : p)) : []),
+    [outbox, recordedPhotos, myDeletablePhotos, userName],
   );
   const sitePhotos = useMemo(() => [...queuedPhotos, ...recordedPhotos], [queuedPhotos, recordedPhotos]);
+  // re-read at the earliest deadline among them, so a card whose hour is up leaves (Codex 4322976255)
+  const [photoClock, setPhotoClock] = useState(() => Date.now());
+  const extraPhotos = useMemo(
+    () => [...sitePhotos.slice(4), ...myDeletablePhotos].filter((p) => p.deletableUntil && sitePhotoDeletable(p, photoClock)),
+    [sitePhotos, myDeletablePhotos, photoClock],
+  );
+  useEffect(() => {
+    const deadlines = extraPhotos.map((p) => Date.parse(p.deletableUntil!)).filter(Number.isFinite);
+    if (deadlines.length === 0) return;
+    // a deadline already past fires at once
+    const timer = setTimeout(() => setPhotoClock(Date.now()), Math.max(0, Math.min(...deadlines) - Date.now()) + 50);
+    return () => clearTimeout(timer);
+  }, [extraPhotos]);
   // the photos tile counts the queued photos with the recorded ones, and the places among all of them
   const photoZones = useMemo(() => new Set(sitePhotos.map((p) => p.nodeId).filter(Boolean)).size, [sitePhotos]);
   const timeZone = useStore((s) => s.timeZone);
@@ -157,8 +178,8 @@ export function DashboardScreen() {
     // The snapshot carries the newest SNAPSHOT_SITE_PHOTO_LIMIT only: a full window is "at least", and its
     // places are the places among those (Codex 4194155412) — never presented as the total on record.
     {
-      key: 'photos', label: L.photosTile[photoLang], value: photoStats.capped ? `${sitePhotos.length}+` : sitePhotos.length, accent: 'var(--green-solid)',
-      sub: photoStats.capped
+      key: 'photos', label: L.photosTile[photoLang], value: photosCapped ? `${sitePhotos.length}+` : sitePhotos.length, accent: 'var(--green-solid)',
+      sub: photosCapped
         ? `${T.photosLatest(sitePhotos.length, photoLang)}${photoZones > 0 ? ` · ${T.photosAcross(photoZones, photoLang, true)}` : ''}`
         : photoZones > 0 ? T.photosAcross(photoZones, photoLang) : sitePhotos.length > 0 ? L.photosNotPlaced[photoLang] : L.photosNone[photoLang],
       onClick: canOpen('places') ? () => setScreen('places') : undefined,
@@ -321,7 +342,9 @@ export function DashboardScreen() {
           ) : (
             <div className={styles.photos}>
               {/* the snapshot sends the newest photo first (#482) */}
-              {sitePhotos.slice(0, 4).map((p, i) => (
+              {/* the newest four, and any older photo still within the viewer's own hour, so that hour's Delete is never
+                  out of reach (Codex 4316959529); the PMC's and engineer's Delete has no hour, so it stays on the four */}
+              {[...sitePhotos.slice(0, 4), ...extraPhotos].map((p, i) => (
                 <div key={p.id} style={{ borderRadius: 10, overflow: 'hidden', border: '1px solid var(--hairline)' }}>
                   <div style={{ height: 120, position: 'relative', background: '#000' }}>
                     <img src={p.url} alt={T.sitePhotoAlt(i + 1, lang)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
@@ -331,6 +354,8 @@ export function DashboardScreen() {
                     {/* #482 site photos: who added it, their role on the project and when */}
                     <div data-testid="dash-photo-who" style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 2, overflowWrap: 'anywhere' }}>{sitePhotoWho(p, lang, timeZone)}</div>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)', marginTop: 2 }}>{stampText(p.takenAt)}</div>
+                    {/* #482 site photos: the viewer deletes a photo they added, within the hour */}
+                    <SitePhotoDelete photo={p} />
                   </div>
                 </div>
               ))}

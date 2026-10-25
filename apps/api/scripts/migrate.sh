@@ -573,6 +573,9 @@ if echo "$out" | grep -q "P3005"; then
   # baseline resolves a migration as applied without running it, while a function body is not in schema.prisma. So a
   # ledger-less restore taken before 20280119 would keep 20271220's body, and a database without A7d replays 20271220
   # and reinstalls it. Replayed after it, this file puts the in-place body back. It is re-runnable.
+  #
+  # The standing projection's readiness refusal (20280120) is here for the same reason: it replaces
+  # `platform_user_standing_apply`, which 20271220 installs. It is re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -614,7 +617,8 @@ if echo "$out" | grep -q "P3005"; then
 20280116000000_qa_company_lock
 20280117000000_media_tombstone
 20280118000000_media_tombstone_guard
-20280119000000_org_authority_role_change_in_place"
+20280119000000_org_authority_role_change_in_place
+20280120000000_standing_projection_readiness"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

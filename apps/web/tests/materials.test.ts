@@ -6,6 +6,7 @@ import type { ApiGateway, ProjectShell } from '@/data/apiGateway';
 import type { MaterialsView } from '@/store/materials';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import type { MaterialReadinessResult, ActivityShortageRow, ActivityReadinessRow, RequirementReadinessRow } from '@vitan/shared';
+import { queueWritten, storedQueue } from './queueWrites';
 
 /**
  * Phase 3 Task 7 (+ correction) — the pilot MATERIALS frontend: the capability-gated nav entry, the
@@ -470,7 +471,8 @@ describe('Task 7 (correction 2) — Materials single-command actions through the
       expect((s().outbox[0] as { idempotencyKey?: unknown }).idempotencyKey).toBe(c.coalesceKey); // unchanged
       expect(s().materialsPending).toEqual([c.coalesceKey]);
       expect(s().materialsPending).not.toContain(undefined);
-      const persisted = JSON.parse(globalThis.localStorage.getItem(OUTBOX_KEY)!) as Array<{ coalesceKey?: string }>;
+      await queueWritten(); // step B1: the migrated queue is written under the queue's lock
+      const persisted = storedQueue(globalThis.localStorage.getItem(OUTBOX_KEY)!) as Array<{ coalesceKey?: string }>;
       expect(persisted[0]!.coalesceKey).toBe(c.coalesceKey);
 
       // (b) an equivalent action while the legacy op is pending produces NO second op (coalesced)
@@ -504,21 +506,34 @@ describe('Task 7 (correction 2) — Materials single-command actions through the
     expect(g.reserveStock.mock.calls[1]![1]).not.toBe(legacyKey); // the fresh action gets a NEW idempotency key
   });
 
-  it('correction 4: malformed stored materials ops are dropped and never introduce `undefined` pending entries', async () => {
+  it('correction 4 (WEB-02 step 2): a malformed stored materials op is never dropped: its key is unreadable, kept as stored, and nothing is pending', async () => {
     globalThis.localStorage.clear();
     const goodKey = reserveCoalesceKey('ACT-1', 'LOT-1', 'main');
     seedLegacyQueue([
       { t: 'reserveStock', input: { lotId: 'LOT-1', storeLocation: 'main', activityId: 'ACT-1', qty: '10' }, idempotencyKey: goodKey }, // valid legacy op
       { t: 'issueStock', input: { lotId: 'LOT-2', storeLocation: 'main', activityId: 'ACT-1', qty: '5' } }, // materials op with NEITHER key — malformed
-      null,                                                                                                  // junk
-      42,                                                                                                    // junk
+    ]);
+    const raw = globalThis.localStorage.getItem(OUTBOX_KEY);
+    s()._setGateway(gw() as unknown as ApiGateway);
+    s().hydrateOutbox();
+    expect(s().materialsPending).toEqual([]);
+    expect(s().outbox).toEqual([]);
+    expect(s().queueUnreadable.map((u) => u.key)).toContain(OUTBOX_KEY);
+    expect(globalThis.localStorage.getItem(OUTBOX_KEY)).toBe(raw);
+  });
+
+  it('correction 4: a legacy materials op still migrates on load, with its pending key', async () => {
+    globalThis.localStorage.clear();
+    const goodKey = reserveCoalesceKey('ACT-1', 'LOT-1', 'main');
+    seedLegacyQueue([
+      { t: 'reserveStock', input: { lotId: 'LOT-1', storeLocation: 'main', activityId: 'ACT-1', qty: '10' }, idempotencyKey: goodKey }, // valid legacy op
     ]);
     s()._setGateway(gw() as unknown as ApiGateway);
     s().hydrateOutbox();
     expect(s().materialsPending).toEqual([goodKey]);
-    expect(s().materialsPending).not.toContain(undefined);
-    expect(s().outbox).toHaveLength(1); // the malformed op + junk were dropped
+    expect(s().outbox).toHaveLength(1);
     expect((s().outbox[0] as { t: string }).t).toBe('reserveStock');
+    expect(s().queueUnreadable).toEqual([]);
   });
 
   // ── the pure normalizer (table-driven, no store) — the crisp unit proof of the derivation + filtering. ──

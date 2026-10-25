@@ -727,6 +727,25 @@ export class OrgsParticipant {
   }
 
   /**
+   * #1061 — the user behind each of `membershipIds` on `projectId`, whatever the row's status. A plain read
+   * with no lock: the decision forward calls it under the project readiness key, which every membership
+   * writer also takes, to name the people whose standing anchors it must take before any row. Ids that name
+   * nobody here are left out.
+   */
+  async membershipUserIds(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    membershipIds: readonly string[],
+  ): Promise<string[]> {
+    if (membershipIds.length === 0) return [];
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ userId: string }>>(
+      `SELECT "userId" FROM "Membership" WHERE "projectId" = $1 AND "id" = ANY($2::text[])`,
+      projectId, [...membershipIds],
+    );
+    return rows.map((r) => r.userId);
+  }
+
+  /**
    * Phase 6 task 4b (§B.2) — EFFECTIVE role standing for a `(projectId, role)`: active
    * memberships in the role plus, for `pmc`, membership-less owner/admin standing on the
    * project's org (the same precedence as authorization). The DB primitive
