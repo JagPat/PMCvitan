@@ -366,3 +366,38 @@ export function readStoredQueue(raw: string | null, scopes?: QueueScopes): Store
   }
   return newer ? { unreadable: 'newer' } : { acts: parsed as OutboxOp[] };
 }
+
+/** WEB-02 L2a (plan r3 v4): the write token a ledger write puts first in a queue key, in the same write as its acts,
+ *  `{ "t": "vitan.writeToken", "n": "<nonce>" }`. It is no act: it is never loaded, sent or counted. The same kind as
+ *  the ledger's `TOKEN_KIND` (pinned by a test) */
+export const WRITE_TOKEN_KIND = 'vitan.writeToken';
+const isWriteToken = (v: Fields): boolean =>
+  Object.keys(v).length === 2 && v.t === WRITE_TOKEN_KIND && typeof v.n === 'string' && v.n.length > 0;
+
+/** A queue key's bytes as the ledger reads them (L2b): its acts, and the write token they carry (null for none)
+ *  (#1117 r1, Codex 4368845658) */
+export type LedgerQueue = { acts: OutboxOp[]; token: string | null } | { unreadable: 'newer' | 'damaged' };
+
+/** The ledger's reader, and only the ledger's. A first entry that is a write token is the key's token, never an act; a
+ *  token anywhere else, or one malformed, makes the bytes damaged; the rest reads as `readStoredQueue` reads it.
+ *  `readStoredQueue` itself, which main's guard and its made records read through, still takes a token as a newer
+ *  release's entry: that guard matches acts by identity, and a key, record or settled mark the ledger wrote holds
+ *  occurrences it cannot tell apart (#1117 gap-check G1, Codex 4368845658), so it never loads, removes or writes them */
+export function readLedgerQueue(raw: string | null, scopes?: QueueScopes): LedgerQueue {
+  if (raw === null) return { acts: [], token: null };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { unreadable: 'damaged' };
+  }
+  if (!Array.isArray(parsed)) return { unreadable: 'damaged' };
+  const first: unknown = parsed[0];
+  const tokened = isFields(first) && first.t === WRITE_TOKEN_KIND;
+  if (tokened && !isWriteToken(first)) return { unreadable: 'damaged' };
+  const rest = tokened ? parsed.slice(1) : parsed;
+  // a token after the first entry: the bytes were not written by one ledger write
+  if (rest.some((e) => isFields(e) && e.t === WRITE_TOKEN_KIND)) return { unreadable: 'damaged' };
+  const read = readStoredQueue(JSON.stringify(rest), scopes);
+  return 'acts' in read ? { acts: read.acts, token: tokened ? (first as { n: string }).n : null } : read;
+}
