@@ -35,13 +35,19 @@ type Store = Pick<Storage, 'getItem' | 'setItem'> & Partial<Pick<Storage, 'remov
 /** what the key holds, as this release reads it: 'ok', or why it cannot be read */
 export type KeyRead = 'ok' | 'newer' | 'damaged';
 const readOf = (raw: string | null, scopes: QueueScopes | undefined): KeyRead => { const r = readLedgerQueue(raw, scopes); return 'acts' in r ? 'ok' : r.unreadable; };
-/** the identities of the acts a key's bytes hold, read or not: an act already there is never copied aside again */
-function identsIn(raw: string | null): Set<string> {
+/** an act's bytes with every object's keys in order: two entries holding the same act read the same, whichever
+ *  release wrote them (a release never reshapes an outbox kind) */
+const canon = (o: unknown): string => JSON.stringify(o, (_k, v: unknown) => (v !== null && typeof v === 'object' && !Array.isArray(v)
+  ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, (v as Record<string, unknown>)[k]])) : v));
+/** how many entries equal to each act a key's bytes hold, read or not: only an entry that is the act itself covers
+ *  it, never one that merely keeps its key (#1132 r2, 4374538867) */
+function entryCounts(raw: string | null): Map<string, number> {
+  const n = new Map<string, number>();
   try {
     const now: unknown = JSON.parse(raw ?? '[]');
-    if (Array.isArray(now)) return new Set(now.filter((o) => o !== null && typeof o === 'object' && !Array.isArray(o)).map((o) => queueActIdent(o as OutboxOp)));
+    if (Array.isArray(now)) for (const o of now) if (o !== null && typeof o === 'object' && !Array.isArray(o)) { const c = canon(o); n.set(c, (n.get(c) ?? 0) + 1); }
   } catch { /* not a list: none */ }
-  return new Set();
+  return n;
 }
 /** the bytes' length and 32-bit FNV-1a hash: the name of their copy, so the same bytes are copied once */
 function contentTag(raw: string): string {
@@ -143,13 +149,19 @@ function snapshotOf(storage: Store, key: string, scopes: QueueScopes | undefined
   return { key, raw, acts: 'acts' in read ? read.acts : null, token: 'acts' in read ? read.token : null, sidecar, marks: { ids, legacy }, records, recordsUnread, fence: true, markNames, legacyNames };
 }
 
+/** whether two snapshots of a key read the same bytes: the key's, its sidecar's and its settled marks' */
+const sameRead = (a: Read, b: Read): boolean => {
+  const same = (x: Set<string>, y: Set<string>) => x.size === y.size && [...x].every((v) => y.has(v));
+  return a.raw === b.raw && JSON.stringify(a.sidecar) === JSON.stringify(b.sidecar) && same(a.marks.ids, b.marks.ids) && same(a.marks.legacy, b.marks.legacy);
+};
+
 export type QueueKeyGuard = ReturnType<typeof createQueueKeyGuard>;
 /** one queue key's write from memory: this tab's acts for it, and which stored entries memory takes (`write`) */
 export type QueueWrite = { key: string; mine: OutboxOp[]; takes: (o: OutboxOp) => boolean };
 
 /** `scopesOf`: the user scopes each key's acts may name (`QueueScopes`), as the store derived them with the key's name.
  *  A key it names none for reads a scope-bearing act as damaged */
-export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: string | null) => void = () => {}, scopesOf: (key: string) => QueueScopes | undefined = () => undefined) {
+export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: string | null) => void = () => {}, scopesOf: (key: string) => QueueScopes | undefined = () => undefined, onRelease: (key: string) => void = () => {}) {
   /** each act object this tab holds, and its occurrence id: given at the load that read it, at the record that kept
    *  it, or at its first write (a new act). The store keeps a queued act as the same object until the flush removes it
    *  (`notes/site-visits/web-02-L2b/identity-map.md`); an act it re-creates has a key, and is found by it (`oidOf`) */
@@ -171,6 +183,15 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
   const asideDone = new Map<string, Set<string>>();
   /** per key, the bytes the person's tap copied aside: the key may be written over while it still holds them */
   const setAsideRaw = new Map<string, string>();
+  /** per key, the occurrences this tab last saw in it, held from sending once another tab made the key unreadable: that
+   *  tab's bytes may hold them (Codex 4353751507). Let go once the key is loaded, written, or heard readable again */
+  const withheld = new Map<string, Set<string>>();
+  /** a hold let go by a landed write or a heard read: what it held may go now, so the store is told (#1132 r2,
+   *  4374538874) */
+  const letGo = (key: string): void => { const had = (withheld.get(key)?.size ?? 0) > 0; withheld.delete(key); if (had) onRelease(key); };
+  /** per key, the bytes this tab's last landed write left there: bytes a write finds that are still these are this
+   *  tab's own, not another tab's, and hold nothing (#1122 r1) */
+  const ownRaw = new Map<string, string>();
   /** the keys loaded since the last `forget`: the scope a load ran for (Codex 4345664679) */
   const loaded = new Set<string>();
   /** per key, the unsent occurrences of a scope this tab moved off that could be neither written there nor copied
@@ -273,6 +294,8 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       for (const w of waiting.values()) if (w.key === key && w.oids.delete(o.oid)) w.oids.add(oid);
       const un = unkept.get(key);
       if (un?.delete(o.oid)) un.add(oid);
+      const hold = withheld.get(key);
+      if (hold?.delete(o.oid)) hold.add(oid);
       o.oid = oid;
     });
     return true;
@@ -328,9 +351,9 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
    *  now is listed not kept and copied aside beside it, once each, so it stays on this phone. When the copy cannot be
    *  made (storage full), they are held stranded and kept in a made record, so a scope change, sign-out or closed page
    *  never loses them (Codex 4353751499) */
-  const refuse = (storage: Store, key: string, mine: Occ[]): void => {
-    let s: Read | null = null;
-    try { s = snapshotOf(storage, key, scopesOf(key)); } catch { s = null; }
+  const refuse = (storage: Store, key: string, mine: Occ[], pinned?: Read): void => {
+    let s: Read | null = pinned ?? null;
+    if (!pinned) try { s = snapshotOf(storage, key, scopesOf(key)); } catch { s = null; }
     const missing = setOf(unkept, key);
     missing.clear();
     const notHere = s ? notOnPhone(s, mine) : mine;
@@ -352,11 +375,13 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
   const frameOids = (s: Snapshot): string[] => frameOf(s).occs.map((o) => o.oid);
   /** `mine`'s occurrences the key does not hold: the ones a refused write lists not kept and copies aside. As at
    *  22f5560 only the key counts, so an act a made record also keeps is still copied (Codex 4353751499). A key this
-   *  release cannot read is counted by the identities its bytes hold (its occurrences cannot be named) */
+   *  release cannot read is counted by the entries its bytes hold equal to an act (its occurrences cannot be named) */
   const notOnPhone = (s: Read, mine: Occ[]): Occ[] => {
     if (s.acts === null) {
-      const there = identsIn(s.raw);
-      return mine.filter((o) => !there.has(queueActIdent(o.act)));
+      // each entry equal to an act covers one occurrence: two identical keyless acts there once are one kept, one not
+      // (#1132 r1, 4374102398); an entry that only keeps the act's key covers none (#1132 r2, 4374538867)
+      const there = entryCounts(s.raw);
+      return mine.filter((o) => { const c = canon(o.act); const n = there.get(c) ?? 0; if (n === 0) return true; there.set(c, n - 1); return false; });
     }
     const there = new Set(frameOids(s));
     return mine.filter((o) => !there.has(o.oid));
@@ -402,12 +427,48 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
   /** a landed write's memory: the key holds `next`. A settled occurrence memory (`mine`) still holds stays settled
    *  here until memory lets it go (a write-ahead during the flush, before its end write: L2b gap check 2), so no later
    *  write puts it back once its mark has gone */
-  const landed = (key: string, next: Occ[], mine: Occ[]): void => {
+  const landed = (key: string, next: Occ[], mine: Occ[], raw: string): void => {
     known.set(key, new Map(next.map((o) => [o.oid, o.act])));
+    ownRaw.set(key, raw);
     const held = new Set(mine.map((o) => o.oid));
     const was = sent.get(key);
     if (was) { for (const oid of [...was]) if (!held.has(oid)) was.delete(oid); if (was.size === 0) sent.delete(key); }
     unkept.delete(key);
+    letGo(key);
+  };
+
+  /** a key found unreadable: the occurrences this tab last saw in it are held from sending, as another tab's bytes may
+   *  hold them (Codex 4353751507), however this tab came to read it (#1122 r1, 4370036882) */
+  const holdSeen = (key: string, raw?: string | null): void => {
+    if (raw !== undefined && raw !== null && raw === ownRaw.get(key)) return; // this tab's own bytes: no other tab's write
+    for (const oid of known.get(key)?.keys() ?? []) setOf(withheld, key).add(oid);
+  };
+
+  /** Reconcile `key` from the one snapshot `s` (`heard`): the strip hears it, and, once memory holds the key's scope,
+   *  what this tab holds follows those same bytes */
+  const observe = (storage: Store, key: string, mine: OutboxOp[], s: Read): KeyRead => {
+    const raw = s.raw;
+    const readAs = readOf(raw, scopesOf(key));
+    onRead(key, readAs, raw);
+    if (!loaded.has(key)) return readAs;
+    const occs = occsOf(key, mine);
+    if (raw === null) {
+      known.delete(key);
+      letGo(key);
+    } else if (readAs === 'ok') {
+      letGo(key);
+      // what the key holds again is kept again: an act listed not kept that it holds is no longer counted (4370036886)
+      const un = unkept.get(key);
+      if (un && un.size > 0) {
+        const frame = frameOf(s).occs;
+        const inKey = new Set(frame.map((o) => o.oid));
+        const idents = new Set(frame.filter((o) => unique(o.act)).map((o) => queueActIdent(o.act)));
+        for (const o of occs) if (un.has(o.oid) && (inKey.has(o.oid) || (unique(o.act) && idents.has(queueActIdent(o.act))))) un.delete(o.oid);
+      }
+      return readAs;
+    } else holdSeen(key, raw);
+    refuse(storage, key, occs, s);
+    return readAs;
   };
 
   const guard = {
@@ -418,12 +479,16 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       onRead(key, readAs, s.raw);
       unkept.delete(key);
       sent.delete(key);
+      withheld.delete(key);
       loaded.add(key);
       const held = stranded.get(key) ?? [];
       // a key this release cannot read: its records' acts come back, but not one its bytes may hold (its occurrences
-      // cannot be named), and none is written over
+      // cannot be named), and none is written over. Only an entry equal to the act covers it (4374538867): a keyless one
+      // covers one record act (R3), a keyed one every equal record act, all one act
+      const there = entryCounts(s.raw);
+      const theirs = (o: OutboxOp): boolean => { const c = canon(o); const n = there.get(c) ?? 0; if (n === 0) return false; if (!unique(o)) there.set(c, n - 1); return true; };
       const snap: Snapshot = s.acts === null && s.raw !== null
-        ? { ...s, records: s.records.map((r) => ({ ...r, acts: r.acts.filter((o) => !identsIn(s.raw).has(queueActIdent(o))) })) }
+        ? { ...s, records: s.records.map((r) => ({ ...r, acts: r.acts.filter((o) => !theirs(o)) })) }
         : s;
       const all = owedOf(snap, held);
       const frame = all.frame;
@@ -441,10 +506,39 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       if (stranded.has(key)) handed.add(key);
       return owed.map((o) => o.act);
     },
-    /** another tab wrote `key` (a storage event): it is read and reported, never answered */
-    heard(storage: Store, key: string): void {
-      const raw = storage.getItem(key);
-      onRead(key, readOf(raw, scopesOf(key)), raw);
+    /** Another tab wrote `key` (a storage event): it is read and reported, never written back. Once memory holds the
+     *  key's scope (its load ran), a key that can no longer be read gets this tab's acts (`mine`) it does not hold copied
+     *  aside beside it (Codex 4344812904), and the occurrences this tab last saw in it are held from sending (Codex
+     *  4353751507). A key another tab cleared holds none of memory's acts: they are not kept until a write stores them,
+     *  and what this tab saw there says nothing of what was sent (R2, Codex 4358186342) */
+    heard(storage: Store, key: string, mine: OutboxOp[] = []): KeyRead | null {
+      // #1122 r1: a read of a key's bytes by another tab's hand reconciles here, so none can list a key without
+      // holding what it held (4370036882). A read that throws says nothing: what is listed and held stays as it is
+      // (4370036888).
+      // #1122 r2 (4370280895): each pass takes one snapshot and reads the key, its sidecar and its marks again; only
+      // a snapshot that read the same twice is reconciled, so nothing is changed from bytes not confirmed (#1132 r1,
+      // 4374102392). A snapshot still changing after three passes holds what this tab saw there (fail closed). A read
+      // again that throws confirms nothing (null), and holds what this tab saw there too (U3a gap-check, gap 1)
+      for (let pass = 0; pass < 3; pass += 1) {
+        let s: Read;
+        try { s = snapshotOf(storage, key, scopesOf(key)); } catch { return null; }
+        let now: Read;
+        try { now = snapshotOf(storage, key, scopesOf(key)); } catch { if (loaded.has(key)) holdSeen(key); return null; }
+        if (sameRead(now, s)) return observe(storage, key, mine, s);
+      }
+      if (loaded.has(key)) holdSeen(key);
+      return null;
+    },
+    /** whether `o`, an act memory holds for `key`, is held from sending (`heard`); a keyed act the store re-created is
+     *  found by its identity */
+    withholds(key: string, o: OutboxOp): boolean {
+      const w = withheld.get(key);
+      if (!w) return false;
+      const oid = oids.get(o);
+      if (oid !== undefined && w.has(oid)) return true;
+      if (!unique(o)) return false;
+      const ident = queueActIdent(o);
+      return [...w].some((i) => identOf.get(i) === ident);
     },
     /** every key's memory goes (the scope moved, or the person signed out) */
     forget(): void {
@@ -452,6 +546,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       unkept.clear();
       asideDone.clear();
       setAsideRaw.clear();
+      withheld.clear();
       loaded.clear();
       handed.clear();
       // `known` and `sent` stay, by key: a write of the scope left that runs late (it waited for its lock) still knows
@@ -485,7 +580,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
         const m: Memory = { mine, known: new Set(frame.occs.map((o) => o.oid)), sent: new Set([...(sent.get(key) ?? [])]), front: restIds };
         const plan = planWrite(s, m, takes);
         if (plan === null || !apply(storage, key, plan, s.raw)) throw new Error('not written');
-        landed(key, plan.next, mine);
+        landed(key, plan.next, mine, plan.raw);
         const kept = new Set(plan.next.map((o) => o.oid));
         unstrand(key, (i) => kept.has(i));
         release(storage, key, plan);
@@ -537,7 +632,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
         const copied = readAs !== 'ok' && s.raw === setAsideRaw.get(key);
         // bytes this release cannot read are never written over, unless the person's tap copied them aside: then the
         // key is written as one another tab cleared (its bytes are in their copy)
-        if (readAs !== 'ok' && !copied) { onRead(key, readAs, s.raw); throw new Error('unreadable queue key'); }
+        if (readAs !== 'ok' && !copied) { onRead(key, readAs, s.raw); holdSeen(key, s.raw); throw new Error('unreadable queue key'); }
         const raw = s.raw;
         if (copied) s = { ...s, raw: null, acts: [], token: null, sidecar: null };
         const plan = planWrite(s, memoryOf(key, occs), takes);
@@ -550,7 +645,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
           && plan.next.every((o, n) => o.oid === was[n].oid && JSON.stringify(o.act) === JSON.stringify(was[n].act));
         if (!same && !apply(storage, key, plan, raw)) throw new Error('not written');
         onRead(key, 'ok', same ? raw : plan.raw);
-        landed(key, plan.next, occs);
+        landed(key, plan.next, occs, same && raw !== null ? raw : plan.raw);
         // a stranded occurrence is let go once the key holds it, or once memory, since the load that handed it back,
         // no longer holds it (settled)
         const kept = new Set(plan.next.map((o) => o.oid));
