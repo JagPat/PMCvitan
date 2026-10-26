@@ -46,16 +46,27 @@
 --       `project:remove` disables ON DELETE triggers on the tables it empties for its own run and puts them back, as for
 --       every other sealed table; the sanctioned reset lifts the two TRUNCATE seals by name ("TRUNCATE_SEALS" in
 --       prisma/sanctioned-reset.ts).
---   The link's own columns stay writable within H5: U7 links, unlinks and relinks a project through that one row.
+--   H7  A Hub row never leaves its project: the columns that place it are never changed once it exists. A link's
+--       "projectId", "orgId" and "hubProjectId" (a project follows one Hub project for life; a relink after an unlink
+--       is to the same one); a Hub drawing's "id" and "projectId"; a Hub revision's "id", "projectId" and "drawingId".
+--       (A ledger row's project is H3's; receipts and tombstones are never changed at all, H6.) The guard reads the Hub
+--       id from the row as it was, so one UPDATE that clears the id and moves the row is refused; H3 refuses clearing
+--       or setting the id at all, so a row never becomes, or stops being, a Hub row after insert. A PMC drawing or
+--       revision, whose Hub id is NULL, is not judged. A change of a project's own "id" that would cascade
+--       into a Hub row is refused with it, as H6 refuses it for a record.
+--   The link's lifecycle columns, "linkedAt", "linkedBy" and "unlinkedAt", stay writable within H5: U7 links, unlinks
+--       and relinks a project through that one row.
 --
 -- SAFE UNDER THE PREVIOUS RELEASE. Every new column is nullable with no default and every new table is unknown to the
 -- previous release, so its reads and inserts are unchanged and its rows carry NULLs, which no unique judges. The H3/H4
 -- triggers fire only on an UPDATE whose SET names a Hub column (UPDATE OF), which the previous release never writes, so
 -- its issue, publish, refile, link and acknowledge writes never reach them. The H5 checks judge only the new columns,
 -- which that release leaves NULL, and the new tables, which it never writes; the H6 seals are on the new tables only.
+-- The H7 triggers judge only a row with a Hub id, which that release never writes, and pass any UPDATE that keeps the
+-- value, so its writes to PMC drawings and revisions are unchanged.
 --
 -- LOCKS WHILE IT RUNS. The file runs in one transaction, so every lock below is held until it commits. The new tables,
--- their keys and checks, the four functions and the new tables' triggers come first. Adding each key takes
+-- their keys and checks, the five functions and the new tables' triggers come first. Adding each key takes
 -- ShareRowExclusiveLock on "Project" or "Org", so from then until commit, inserts, updates and deletes on those two
 -- tables wait; reads and row locks do not. Adding the new tables' checks takes AccessExclusiveLock on those four
 -- tables, which nothing else uses yet. The statements on "Drawing" and "DrawingRevision" come last. ADD COLUMN (a
@@ -198,11 +209,36 @@ BEGIN
   RETURN OLD;
 END $$;
 
+-- H7: the first argument names the Hub id that makes the row a Hub row ('' for every row); the rest name the columns
+-- that place it.
+CREATE OR REPLACE FUNCTION public.drawings_hub_owner_frozen() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+  was jsonb := pg_catalog.to_jsonb(OLD);
+  now_ jsonb := pg_catalog.to_jsonb(NEW);
+BEGIN
+  IF TG_ARGV[0] <> '' AND pg_catalog.jsonb_typeof(was -> TG_ARGV[0]) IS DISTINCT FROM 'string' THEN
+    RETURN NEW;
+  END IF;
+  FOR i IN 1 .. TG_NARGS - 1 LOOP
+    IF was -> TG_ARGV[i] IS DISTINCT FROM now_ -> TG_ARGV[i] THEN
+      RAISE EXCEPTION 'drawings: %.% places a Hub row in its project and is never changed (from % to %)',
+        TG_TABLE_NAME, TG_ARGV[i], was -> TG_ARGV[i], now_ -> TG_ARGV[i];
+    END IF;
+  END LOOP;
+  RETURN NEW;
+END $$;
+
 CREATE OR REPLACE FUNCTION public.drawings_hub_record_no_truncate() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
   RAISE EXCEPTION 'drawings: % rows are records and are never truncated; each goes only with its %', TG_TABLE_NAME, TG_ARGV[0];
 END $$;
+
+DROP TRIGGER IF EXISTS "DrawingHubLink_owner_frozen" ON public."DrawingHubLink";
+CREATE TRIGGER "DrawingHubLink_owner_frozen"
+  BEFORE UPDATE OF "projectId", "orgId", "hubProjectId" ON public."DrawingHubLink"
+  FOR EACH ROW EXECUTE FUNCTION public.drawings_hub_owner_frozen('', 'projectId', 'orgId', 'hubProjectId');
 
 DROP TRIGGER IF EXISTS "HubWebhookReceipt_sealed" ON public."HubWebhookReceipt";
 CREATE TRIGGER "HubWebhookReceipt_sealed"
@@ -262,7 +298,7 @@ ALTER TABLE public."DrawingRevision"
   DROP CONSTRAINT IF EXISTS "DrawingRevision_hub_order_needs_version",
   ADD CONSTRAINT "DrawingRevision_hub_order_needs_version" CHECK ("hubVersionOrder" IS NULL OR "hubVersionId" IS NOT NULL);
 
--- H3 and H4 on "Drawing" and "DrawingRevision".
+-- H3, H4 and H7 on "Drawing" and "DrawingRevision".
 DROP TRIGGER IF EXISTS "Drawing_hub_ids_immutable" ON public."Drawing";
 CREATE TRIGGER "Drawing_hub_ids_immutable"
   BEFORE UPDATE OF "hubFileId" ON public."Drawing"
@@ -277,3 +313,13 @@ DROP TRIGGER IF EXISTS "Drawing_hub_mark_rises" ON public."Drawing";
 CREATE TRIGGER "Drawing_hub_mark_rises"
   BEFORE UPDATE OF "hubGovernedOrder" ON public."Drawing"
   FOR EACH ROW EXECUTE FUNCTION public.drawings_hub_mark_rises();
+
+DROP TRIGGER IF EXISTS "Drawing_hub_owner_frozen" ON public."Drawing";
+CREATE TRIGGER "Drawing_hub_owner_frozen"
+  BEFORE UPDATE OF "id", "projectId" ON public."Drawing"
+  FOR EACH ROW EXECUTE FUNCTION public.drawings_hub_owner_frozen('hubFileId', 'id', 'projectId');
+
+DROP TRIGGER IF EXISTS "DrawingRevision_hub_owner_frozen" ON public."DrawingRevision";
+CREATE TRIGGER "DrawingRevision_hub_owner_frozen"
+  BEFORE UPDATE OF "id", "projectId", "drawingId" ON public."DrawingRevision"
+  FOR EACH ROW EXECUTE FUNCTION public.drawings_hub_owner_frozen('hubVersionId', 'id', 'projectId', 'drawingId');

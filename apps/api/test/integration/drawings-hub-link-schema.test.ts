@@ -10,7 +10,7 @@ import { sanctionedReset, TRUNCATE_SEALS } from '../../prisma/sanctioned-reset';
 
 /**
  * #1118 U1 — the Hub drawing link schema (`20280121000000_drawings_hub_link`), against live PostgreSQL. It proves what
- * the database holds on every writer (H1-H6 in the migration), that the file re-runs and changes nothing, and that a
+ * the database holds on every writer (H1-H7 in the migration), that the file re-runs and changes nothing, and that a
  * PMC issue and acknowledge still work with every Hub column NULL.
  *
  * Isolated automated-test fixtures only.
@@ -139,8 +139,8 @@ describe('#1118 U1 — the Hub drawing link schema (live PG)', () => {
       await expect(raw(`UPDATE "HubFetchedBlob" SET ${set} WHERE "storageKey" = $1`, `${own}/drawings/hub/h3-${run}`), set).rejects.toThrow(/is a Hub id/);
     }
 
-    // the link stays writable: U7 unlinks and relinks through its one row
-    await raw(`UPDATE "DrawingHubLink" SET "unlinkedAt" = now(), "hubProjectId" = 'hp-relinked' WHERE "projectId" = $1`, own);
+    // the link's lifecycle stays writable: U7 unlinks and relinks through its one row
+    await raw(`UPDATE "DrawingHubLink" SET "unlinkedAt" = now(), "linkedBy" = 'it-2' WHERE "projectId" = $1`, own);
   });
 
   it('H4: a drawing\'s Hub governed order only rises', async () => {
@@ -194,9 +194,9 @@ describe('#1118 U1 — the Hub drawing link schema (live PG)', () => {
       await raw(`INSERT INTO "DrawingHubLink" ("projectId", "orgId", "hubProjectId", "linkedBy", "linkedAt") VALUES ($1, $2, 'hp', 'it', '2026-10-26 10:00')`, linked, f.orgA.id);
       await raw(`UPDATE "DrawingHubLink" SET "unlinkedAt" = '2026-10-26 10:30' WHERE "projectId" = $1`, linked);
       await expect(raw(`UPDATE "DrawingHubLink" SET "unlinkedAt" = '2026-10-26 09:59' WHERE "projectId" = $1`, linked)).rejects.toThrow(/DrawingHubLink_unlinked_after_linked/);
-      await expect(raw(`UPDATE "DrawingHubLink" SET "linkedAt" = '2026-10-26 11:00', "hubProjectId" = 'hp2', "linkedBy" = 'it2' WHERE "projectId" = $1`, linked))
+      await expect(raw(`UPDATE "DrawingHubLink" SET "linkedAt" = '2026-10-26 11:00', "linkedBy" = 'it2' WHERE "projectId" = $1`, linked))
         .rejects.toThrow(/DrawingHubLink_unlinked_after_linked/);
-      await raw(`UPDATE "DrawingHubLink" SET "linkedAt" = '2026-10-26 11:00', "hubProjectId" = 'hp2', "linkedBy" = 'it2', "unlinkedAt" = NULL WHERE "projectId" = $1`, linked);
+      await raw(`UPDATE "DrawingHubLink" SET "linkedAt" = '2026-10-26 11:00', "linkedBy" = 'it2', "unlinkedAt" = NULL WHERE "projectId" = $1`, linked);
       await raw(`UPDATE "DrawingHubLink" SET "unlinkedAt" = '2026-10-26 11:00' WHERE "projectId" = $1`, linked);
     } finally {
       await raw(`DELETE FROM "Project" WHERE "id" = $1`, linked);
@@ -267,6 +267,70 @@ describe('#1118 U1 — the Hub drawing link schema (live PG)', () => {
     expect(states.map((x) => x.enabled)).toEqual(['O', 'O']);
   });
 
+  it('H7: a Hub row never leaves its project; a PMC drawing or revision is not judged', async () => {
+    // the link: neither its project, its org nor its Hub project moves, within its org or to another one; only its
+    // lifecycle columns (linkedAt, linkedBy, unlinkedAt) stay writable
+    const p7 = `it-hub1-p7-${run}`;
+    await t.prisma.project.create({ data: {
+      id: p7, orgId: f.orgA.id, name: p7, short: 'P7', descriptor: '', stage: 'x', siteCode: 'P7', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0,
+    } });
+    try {
+      await t.prisma.drawingHubLink.create({ data: { projectId: p7, orgId: f.orgA.id, hubProjectId: `hp7-${run}`, linkedBy: 'it' } });
+      await expect(raw(`UPDATE "DrawingHubLink" SET "projectId" = $2 WHERE "projectId" = $1`, p7, f.projectA.id)).rejects.toThrow(/DrawingHubLink\.projectId places a Hub row/);
+      await expect(raw(`UPDATE "DrawingHubLink" SET "projectId" = $2, "orgId" = $3 WHERE "projectId" = $1`, p7, f.projectB.id, f.orgB.id)).rejects.toThrow(/places a Hub row/);
+      await expect(raw(`UPDATE "DrawingHubLink" SET "hubProjectId" = 'hp-other' WHERE "projectId" = $1`, p7)).rejects.toThrow(/DrawingHubLink\.hubProjectId places a Hub row/);
+      await raw(`UPDATE "DrawingHubLink" SET "projectId" = "projectId", "orgId" = "orgId", "hubProjectId" = "hubProjectId", "unlinkedAt" = now() WHERE "projectId" = $1`, p7);
+      // a relink while unlinked still keeps its Hub project
+      await expect(raw(`UPDATE "DrawingHubLink" SET "linkedAt" = now(), "unlinkedAt" = NULL, "hubProjectId" = 'hp7-other' WHERE "projectId" = $1`, p7)).rejects.toThrow(/hubProjectId places a Hub row/);
+      await raw(`UPDATE "DrawingHubLink" SET "linkedAt" = now(), "linkedBy" = 'it-relink', "unlinkedAt" = NULL WHERE "projectId" = $1`, p7);
+      expect((await t.prisma.drawingHubLink.findUniqueOrThrow({ where: { projectId: p7 } })).orgId).toBe(f.orgA.id);
+
+      // a Hub drawing and its revisions stay in their project and on their drawing
+      const hub = await drawing({ hubFileId: `file-${run}-h7`, projectId: p7 });
+      const other = await drawing({ hubFileId: `file-${run}-h7b`, projectId: p7 });
+      const r = await revision(hub.id, 'A', { hubVersionId: `ver-${run}-h7`, hubVersionOrder: 1, projectId: p7 });
+      await expect(raw(`UPDATE "Drawing" SET "projectId" = $2 WHERE "id" = $1`, hub.id, f.projectA.id)).rejects.toThrow(/Drawing\.projectId places a Hub row/);
+      await expect(raw(`UPDATE "Drawing" SET "id" = 'moved' WHERE "id" = $1`, hub.id)).rejects.toThrow(/Drawing\.id places a Hub row/);
+      await expect(raw(`UPDATE "DrawingRevision" SET "drawingId" = $2 WHERE "id" = $1`, r.id, other.id)).rejects.toThrow(/DrawingRevision\.drawingId places a Hub row/);
+      await expect(raw(`UPDATE "DrawingRevision" SET "id" = 'moved' WHERE "id" = $1`, r.id)).rejects.toThrow(/DrawingRevision\.id places a Hub row/);
+      await expect(raw(`UPDATE "DrawingRevision" SET "projectId" = $2 WHERE "id" = $1`, r.id, f.projectA.id)).rejects.toThrow(/DrawingRevision\.projectId places a Hub row/);
+      // no bypass by clearing the Hub id first (H3 refuses the clear), or by clearing it and moving in one statement
+      await expect(raw(`UPDATE "Drawing" SET "hubFileId" = NULL WHERE "id" = $1`, hub.id)).rejects.toThrow(/hubFileId is a Hub id/);
+      await expect(raw(`UPDATE "Drawing" SET "hubFileId" = NULL, "projectId" = $2 WHERE "id" = $1`, hub.id, f.projectA.id)).rejects.toThrow(/is a Hub id|places a Hub row/);
+      await expect(raw(`UPDATE "DrawingRevision" SET "hubVersionId" = NULL, "hubVersionOrder" = NULL WHERE "id" = $1`, r.id)).rejects.toThrow(/is a Hub id/);
+      await expect(raw(`UPDATE "DrawingRevision" SET "hubVersionId" = NULL, "hubVersionOrder" = NULL, "drawingId" = $2 WHERE "id" = $1`, r.id, other.id))
+        .rejects.toThrow(/is a Hub id|places a Hub row/);
+      // the guard reads the row's Hub id as it was (OLD), so even with the id-freeze off a one-statement clear-and-move is refused
+      await t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`ALTER TABLE "Drawing" DISABLE TRIGGER "Drawing_hub_ids_immutable"`);
+        await expect(tx.$executeRawUnsafe(`SAVEPOINT s1`).then(() => tx.$executeRawUnsafe(`UPDATE "Drawing" SET "hubFileId" = NULL, "projectId" = $2 WHERE "id" = $1`, hub.id, f.projectA.id)))
+          .rejects.toThrow(/Drawing\.projectId places a Hub row/);
+        await tx.$executeRawUnsafe(`ROLLBACK TO SAVEPOINT s1`);
+        await tx.$executeRawUnsafe(`ALTER TABLE "Drawing" ENABLE TRIGGER "Drawing_hub_ids_immutable"`);
+      });
+      // a PMC drawing or revision never gains a Hub id after insert (H3), so it never becomes a frozen Hub row late
+      const pmcLate = await drawing({ projectId: p7 });
+      await expect(raw(`UPDATE "Drawing" SET "hubFileId" = 'late' WHERE "id" = $1`, pmcLate.id)).rejects.toThrow(/hubFileId is a Hub id/);
+      // a project's own id change would carry its Hub rows with it, so it is refused
+      await expect(raw(`UPDATE "Project" SET "id" = $2 WHERE "id" = $1`, p7, `${p7}-moved`)).rejects.toThrow(/places a Hub row/);
+      // the same values, and every other column, still write
+      await raw(`UPDATE "Drawing" SET "id" = "id", "projectId" = "projectId", "title" = 'Kept' WHERE "id" = $1`, hub.id);
+      await raw(`UPDATE "DrawingRevision" SET "id" = "id", "projectId" = "projectId", "drawingId" = "drawingId", "status" = 'superseded' WHERE "id" = $1`, r.id);
+
+      // PMC rows are not judged: a PMC revision moves to another PMC drawing, and a PMC drawing to another project
+      const pmcA = await drawing({ projectId: p7 });
+      const pmcB = await drawing({ projectId: p7 });
+      const pr = await revision(pmcA.id, 'A', { projectId: p7 });
+      await raw(`UPDATE "DrawingRevision" SET "drawingId" = $2 WHERE "id" = $1`, pr.id, pmcB.id);
+      await raw(`UPDATE "Drawing" SET "projectId" = $2 WHERE "id" = $1`, pmcA.id, f.projectA.id);
+      expect((await t.prisma.drawing.findUniqueOrThrow({ where: { id: pmcA.id } })).projectId).toBe(f.projectA.id);
+    } finally {
+      await t.prisma.drawingRevision.deleteMany({ where: { projectId: p7 } });
+      await t.prisma.drawing.deleteMany({ where: { projectId: p7 } });
+      await raw(`DELETE FROM "Project" WHERE "id" = $1`, p7);
+    }
+  });
+
   it('a PMC issue and acknowledge work as before, with every Hub column NULL', async () => {
     const p = f.projectA.id;
     const svc = t.app.get(DrawingsService);
@@ -305,15 +369,16 @@ describe('#1118 U1 — the Hub drawing link schema (live PG)', () => {
       UNION ALL
       SELECT 'trigger', tgname, pg_get_triggerdef(oid) FROM pg_trigger
        WHERE NOT tgisinternal AND tgname IN ('Drawing_hub_ids_immutable', 'Drawing_hub_mark_rises', 'DrawingRevision_hub_ids_immutable', 'HubFetchedBlob_ids_immutable',
-                                             'HubWebhookReceipt_sealed', 'HubWebhookReceipt_no_truncate', 'HubVersionTombstone_sealed', 'HubVersionTombstone_no_truncate')
+                                             'HubWebhookReceipt_sealed', 'HubWebhookReceipt_no_truncate', 'HubVersionTombstone_sealed', 'HubVersionTombstone_no_truncate',
+                                             'DrawingHubLink_owner_frozen', 'Drawing_hub_owner_frozen', 'DrawingRevision_hub_owner_frozen')
       UNION ALL
       SELECT 'function', p.proname, array_to_string(p.proconfig, ',') FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-       WHERE n.nspname = 'public' AND p.proname IN ('drawings_hub_ids_immutable', 'drawings_hub_mark_rises', 'drawings_hub_record_sealed', 'drawings_hub_record_no_truncate')
+       WHERE n.nspname = 'public' AND p.proname IN ('drawings_hub_ids_immutable', 'drawings_hub_mark_rises', 'drawings_hub_record_sealed', 'drawings_hub_record_no_truncate', 'drawings_hub_owner_frozen')
       ORDER BY 1, 2`);
     const before = await shape();
-    expect(before.filter((r) => r.kind === 'trigger')).toHaveLength(8);
+    expect(before.filter((r) => r.kind === 'trigger')).toHaveLength(11);
     expect(before.filter((r) => r.kind === 'constraint' && r.def.startsWith('CHECK'))).toHaveLength(14);
-    expect(before.filter((r) => r.kind === 'function').map((r) => r.def)).toEqual(Array(4).fill('search_path=pg_catalog, public, pg_temp'));
+    expect(before.filter((r) => r.kind === 'function').map((r) => r.def)).toEqual(Array(5).fill('search_path=pg_catalog, public, pg_temp'));
     expect(before.find((r) => r.name === 'Drawing_hub_file_per_project')?.def).toMatch(/WHERE \("hubFileId" IS NOT NULL\)/);
     replay();
     replay();

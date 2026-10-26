@@ -1263,6 +1263,7 @@ model Drawing {
   // #1118 U1 (20280121): the Hub file this drawing follows (null for a PMC drawing). At most one drawing per Hub file
   // in a project: the partial unique "Drawing_hub_file_per_project" (raw SQL; Prisma cannot express partial uniques).
   // Never changed once the row exists (trigger "Drawing_hub_ids_immutable"); never blank (check "Drawing_hubFileId_present").
+  // While it is set, the drawing's id and projectId never change (trigger "Drawing_hub_owner_frozen").
   hubFileId        String?
   // #1118 U1: the highest Hub order ever written for construction on this drawing (the plan's mark). It only rises
   // (trigger "Drawing_hub_mark_rises"), and is set only beside hubFileId (check "Drawing_hub_order_needs_file").
@@ -1311,6 +1312,7 @@ model DrawingRevision {
   // revision per Hub version in a project: the partial unique "DrawingRevision_hub_version_per_project" (raw SQL).
   // Neither changes once the row exists (trigger "DrawingRevision_hub_ids_immutable"). The id is never blank and the order
   // is set only beside it (checks "DrawingRevision_hubVersionId_present", "DrawingRevision_hub_order_needs_version").
+  // While the id is set, the revision's id, projectId and drawingId never change (trigger "DrawingRevision_hub_owner_frozen").
   hubVersionId       String?
   hubVersionOrder    Int?
   acks               DrawingAck[]
@@ -1324,7 +1326,8 @@ model DrawingRevision {
 
 // #1118 U1 (20280121): the Hub drawing link. One row per linked project: the Hub project its drawings follow. The org is
 // the project's own (composite key to Project (orgId, id)). Unlinking stamps unlinkedAt and keeps the row; it goes only
-// with its project. Checks: hubProjectId and linkedBy present, unlinkedAt never before linkedAt.
+// with its project. Checks: hubProjectId and linkedBy present, unlinkedAt never before linkedAt. Its projectId and
+// orgId never change (trigger "DrawingHubLink_owner_frozen").
 model DrawingHubLink {
   project      Project   @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade, onUpdate: Cascade)
   projectId    String    @id
