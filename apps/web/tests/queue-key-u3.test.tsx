@@ -277,13 +277,13 @@ describe('#1122 round 2: each read is one pinned observation, confirmed by a rea
     act(() => { s().queueSiteVisitAct(end('k-mine'), 'saved offline'); });
     await queueWritten();
     const mineRaw = localStorage.getItem(lane);
-    // another tab writes a newer release's bytes; while this tab reads them, a second read finds this tab's own bytes
-    // for a moment (a third tab put them back and wrote the newer bytes again)
+    // another tab writes a newer release's bytes; once this tab has read them twice alike, a later read finds this
+    // tab's own bytes for a moment (a third tab put them back and wrote the newer bytes again)
     localStorage.setItem(lane, NEWER);
     const realGet = Storage.prototype.getItem;
     let reads = 0;
     const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, n: string) {
-      if (n === lane) { reads += 1; if (reads === 2) return mineRaw; }
+      if (n === lane) { reads += 1; if (reads === 3) return mineRaw; }
       return realGet.call(this, n);
     });
     act(() => { window.dispatchEvent(new StorageEvent('storage', { key: lane, newValue: NEWER, storageArea: localStorage })); });
@@ -372,3 +372,71 @@ describe('#1122 round 2: each read is one pinned observation, confirmed by a rea
     expect(endSiteVisit).not.toHaveBeenCalled();
   });
 });
+
+describe('#1132 round 1', () => {
+  it('forced probe (4374102392): a confirming read that throws leaves the key listed and its act counted unsaved', async () => {
+    signedIn(JSON.stringify([approve('k-a')]));
+    otherTabWrites(key, DAMAGED);
+    expect(reloadAsks()).toEqual(['1 updates aren’t saved on this phone and will be lost. Continue?']);
+    // another tab writes readable bytes; this tab's confirming read of them throws, so nothing confirms them
+    const readable = JSON.stringify([approve('k-a')]);
+    localStorage.setItem(key, readable);
+    const realGet = Storage.prototype.getItem;
+    let reads = 0;
+    const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, n: string) {
+      if (n === key && ++reads === 2) throw new DOMException('gone', 'SecurityError');
+      return realGet.call(this, n);
+    });
+    act(() => { window.dispatchEvent(new StorageEvent('storage', { key, newValue: readable, storageArea: localStorage })); });
+    spy.mockRestore();
+    expect(reads).toBe(2);
+    expect(s().queueUnreadable.map((u) => u.key)).toEqual([key]);
+    expect(reloadAsks()).toEqual(['1 updates aren’t saved on this phone and will be lost. Continue?']);
+  });
+  it('forced probe (4374102398): two identical keyless acts, bytes another tab cannot let this release read holding one: the other is counted and copied aside', async () => {
+    signedIn(JSON.stringify([U, U]));
+    const theirs = JSON.stringify([U, { t: 'aKindFromANewerRelease', idempotencyKey: 'k-newer' }]);
+    otherTabWrites(key, theirs);
+    expect(s().queueUnreadable).toEqual([{ key, read: 'newer', reloaded: false }]);
+    expect(reloadAsks()).toEqual(['1 updates aren’t saved on this phone and will be lost. Continue?']);
+    expect(copiesOf(key)).toEqual([JSON.stringify([U])]);
+  });
+  it('guard (fail closed): a readable key whose bytes never settle while heard reads them holds what this tab saw', async () => {
+    const approveDecision = vi.fn(async () => null);
+    signedIn(JSON.stringify([approve('k-a')]), null, { approveDecision });
+    const readable = JSON.stringify([approve('k-a')]);
+    const realGet = Storage.prototype.getItem;
+    let reads = 0;
+    const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, n: string) {
+      if (n === key) { reads += 1; return reads % 2 === 1 ? readable : DAMAGED; }
+      return realGet.call(this, n);
+    });
+    act(() => { window.dispatchEvent(new StorageEvent('storage', { key, newValue: DAMAGED, storageArea: localStorage })); });
+    spy.mockRestore();
+    localStorage.setItem(key, DAMAGED);
+    await goOnline();
+    expect(approveDecision).not.toHaveBeenCalled();
+  });
+  it('guard (fail closed): a readable key whose confirming read throws holds what this tab saw', async () => {
+    const approveDecision = vi.fn(async () => null);
+    signedIn(JSON.stringify([approve('k-a')]), null, { approveDecision });
+    const realGet = Storage.prototype.getItem;
+    let reads = 0;
+    const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, n: string) {
+      if (n === key && ++reads === 2) throw new DOMException('gone', 'SecurityError');
+      return realGet.call(this, n);
+    });
+    act(() => { window.dispatchEvent(new StorageEvent('storage', { key, newValue: DAMAGED, storageArea: localStorage })); });
+    spy.mockRestore();
+    localStorage.setItem(key, DAMAGED);
+    await goOnline();
+    expect(approveDecision).not.toHaveBeenCalled();
+  });
+  it('guard: two identical keyless acts, bytes holding both: neither is counted', async () => {
+    signedIn(JSON.stringify([U, U]));
+    otherTabWrites(key, JSON.stringify([U, U, { t: 'aKindFromANewerRelease', idempotencyKey: 'k-newer' }]));
+    expect(reloadAsks()).toEqual([]);
+    expect(copiesOf(key)).toEqual([]);
+  });
+});
+

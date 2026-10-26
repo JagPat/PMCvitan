@@ -43,6 +43,15 @@ function identsIn(raw: string | null): Set<string> {
   } catch { /* not a list: none */ }
   return new Set();
 }
+/** how many acts of each identity a key's bytes hold, read or not */
+function identCounts(raw: string | null): Map<string, number> {
+  const n = new Map<string, number>();
+  try {
+    const now: unknown = JSON.parse(raw ?? '[]');
+    if (Array.isArray(now)) for (const o of now) if (o !== null && typeof o === 'object' && !Array.isArray(o)) { const i = queueActIdent(o as OutboxOp); n.set(i, (n.get(i) ?? 0) + 1); }
+  } catch { /* not a list: none */ }
+  return n;
+}
 /** the bytes' length and 32-bit FNV-1a hash: the name of their copy, so the same bytes are copied once */
 function contentTag(raw: string): string {
   let h = 0x811c9dc5;
@@ -369,8 +378,10 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
    *  release cannot read is counted by the identities its bytes hold (its occurrences cannot be named) */
   const notOnPhone = (s: Read, mine: Occ[]): Occ[] => {
     if (s.acts === null) {
-      const there = identsIn(s.raw);
-      return mine.filter((o) => !there.has(queueActIdent(o.act)));
+      // each act the bytes hold covers one occurrence: two identical keyless acts there once are one kept, one not
+      // (#1132 r1, 4374102398)
+      const there = identCounts(s.raw);
+      return mine.filter((o) => { const i = queueActIdent(o.act); const n = there.get(i) ?? 0; if (n === 0) return true; there.set(i, n - 1); return false; });
     }
     const there = new Set(frameOids(s));
     return mine.filter((o) => !there.has(o.oid));
@@ -501,17 +512,16 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       // #1122 r1: a read of a key's bytes by another tab's hand reconciles here, so none can list a key without
       // holding what it held (4370036882). A read that throws says nothing: what is listed and held stays as it is
       // (4370036888).
-      // #1122 r2 (4370280895): each pass reconciles from one snapshot, read once, and the key, its sidecar and its
-      // marks are read again after it. What changed meanwhile is reconciled again; a snapshot still changing after
-      // three passes holds what this tab saw there (fail closed). A read again that throws confirms nothing (null), and
-      // holds what this tab saw there too (U3a gap-check, gap 1)
+      // #1122 r2 (4370280895): each pass takes one snapshot and reads the key, its sidecar and its marks again; only
+      // a snapshot that read the same twice is reconciled, so nothing is changed from bytes not confirmed (#1132 r1,
+      // 4374102392). A snapshot still changing after three passes holds what this tab saw there (fail closed). A read
+      // again that throws confirms nothing (null), and holds what this tab saw there too (U3a gap-check, gap 1)
       for (let pass = 0; pass < 3; pass += 1) {
         let s: Read;
         try { s = snapshotOf(storage, key, scopesOf(key)); } catch { return null; }
-        const readAs = observe(storage, key, mine, s);
         let now: Read;
         try { now = snapshotOf(storage, key, scopesOf(key)); } catch { if (loaded.has(key)) holdSeen(key); return null; }
-        if (sameRead(now, s)) return readAs;
+        if (sameRead(now, s)) return observe(storage, key, mine, s);
       }
       if (loaded.has(key)) holdSeen(key);
       return null;
