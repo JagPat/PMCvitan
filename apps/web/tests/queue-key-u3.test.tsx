@@ -1070,3 +1070,216 @@ describe('U3b', () => {
   });
 });
 
+
+/**
+ * WEB-02 U3c (plan §2 U3c): Set aside reads its whole scope again, holding every lock of it.
+ * - Codex 4358186333 (#1099 r1): Set aside, after waiting for the locks, copied and wrote over bytes another tab changed
+ *   while it waited.
+ * - Codex 4370036882, 4370036892 (#1122 r1): the tap's re-read is the guard's one reconciliation (`heard`), and a key
+ *   of the scope newly unreadable stops it.
+ * - Codex 4370280900, 4370280905 (#1122 r2): the tap holds every key of its scope's lock, and a read that throws stops it.
+ * - Plan gap-check gap 3 and re-check gap 2: `setAside` copies only the bytes `heard` reconciled from, and a read of
+ *   it that throws removes the copies the tap made.
+ * Each row waits on a held lock (another tab's, released by the row), the lock manager's queue or a storage write, never
+ * a clock or a count of turns.
+ */
+describe('U3c', () => {
+  const LANE_DAMAGED = '{lane damaged';
+  const setAside = async () => { await act(async () => { await s().setAsideUnreadableQueue(); }); };
+  /** the tap runs while another tab holds `k`'s lock; `meanwhile` is what that tab does before it lets go */
+  const tapBehind = async (k: string, meanwhile: () => void) => {
+    const other = holdQueueLock(k);
+    await other.has;
+    const tap = s().setAsideUnreadableQueue(); // waits behind the other tab's lock
+    meanwhile();
+    other.release();
+    await act(async () => { await tap; });
+  };
+
+  for (const told of [true, false]) {
+    it(`forced probe (4358186333): a damaged key replaced by a newer release's bytes while the tap waited is not touched${told ? '' : ' (its storage event not yet heard)'}`, async () => {
+      signedIn(DAMAGED);
+      expect(s().queueUnreadable).toEqual([{ key, read: 'damaged', reloaded: false }]);
+      await tapBehind(key, () => { if (told) otherTabWrites(key, NEWER); else localStorage.setItem(key, NEWER); });
+      expect(localStorage.getItem(key)).toBe(NEWER);
+      expect(copiesOf(key)).toEqual([]);
+      expect(s().queueUnreadable).toEqual([{ key, read: 'newer', reloaded: false }]);
+      expect(s().queueSetAsideFailed).toBe(false);
+    });
+  }
+
+  it('forced probe (gap check of 3302f45, note 3): that tap takes down an earlier tap’s failure line', async () => {
+    signedIn(DAMAGED);
+    useStore.setState({ queueSetAsideFailed: true }); // an earlier tap failed
+    await tapBehind(key, () => { otherTabWrites(key, NEWER); });
+    expect(localStorage.getItem(key)).toBe(NEWER);
+    expect(s().queueSetAsideFailed).toBe(false);
+  });
+
+  it('guard: an unchanged key is still set aside after the wait', async () => {
+    signedIn(DAMAGED);
+    await tapBehind(key, () => undefined);
+    expect(copiesOf(key)).toEqual([DAMAGED]);
+    expect(s().queueUnreadable).toEqual([]);
+    expect(s().queueSetAsideFailed).toBe(false);
+  });
+
+  it('forced probe (4370036882): a key Set aside reads as changed while it waited withholds what this tab loaded', async () => {
+    const approveDecision = vi.fn(async () => null);
+    signedIn(JSON.stringify([approve('k-a')]), LANE_DAMAGED, { approveDecision });
+    await tapBehind(lane, () => { localStorage.setItem(key, NEWER); }); // its event not yet delivered
+    expect(localStorage.getItem(key)).toBe(NEWER);
+    expect(copiesOf(key)).toEqual([JSON.stringify([approve('k-a')])]);
+    await goOnline();
+    expect(approveDecision).not.toHaveBeenCalled();
+  });
+
+  for (const [what, bytes] of [['unreadable', NEWER], ['merely damaged', LANE_DAMAGED]] as const) {
+    for (const told of [true, false]) {
+      it(`forced probe (4370036892): a scope key with no act of this tab’s that turns ${what} while the tap waits stops it${told ? '' : ' (its storage event not yet heard)'}`, async () => {
+        signedIn(DAMAGED);
+        expect(s().queueUnreadable.map((u) => u.key)).toEqual([key]);
+        await tapBehind(key, () => { if (told) otherTabWrites(lane, bytes); else localStorage.setItem(lane, bytes); });
+        expect(localStorage.getItem(key)).toBe(DAMAGED);
+        expect(localStorage.getItem(lane)).toBe(bytes);
+        expect([copiesOf(key), copiesOf(lane)]).toEqual([[], []]);
+        expect(s().queueUnreadable.map((u) => u.key).sort()).toEqual([key, lane].sort());
+        expect(s().queueSetAsideFailed).toBe(false);
+      });
+    }
+  }
+
+  // #1136 r1 (Codex 4380084840; Stage 1's rule): every key the person tapped for is checked by identity once the tap
+  // holds its locks. Another tab repairs it, clears it or rewrites it while the tap waits on that tab's held lock: the
+  // tap writes nothing to it, copies nothing of it, and what that tab stored stays as it stored it
+  const OTHER = JSON.stringify([approve('k-other')]);
+  const REWRITTEN = '{damaged by another tab';
+  for (const [how, bytes] of [['repairs', OTHER], ['clears', null], ['rewrites', REWRITTEN]] as const) {
+    it(`forced probe (#1136 r1, 4380084840): another tab ${how} a listed key while the tap waits: nothing of this tab’s is written there`, async () => {
+      const approveDecision = vi.fn(async () => null);
+      signedIn(JSON.stringify([approve('k-a')]), LANE_DAMAGED, { approveDecision });
+      otherTabWrites(key, DAMAGED); // another tab damages the key this tab loaded k-a from: k-a is withheld
+      expect(s().queueUnreadable.map((u) => u.key).sort()).toEqual([key, lane].sort());
+      await tapBehind(key, () => { if (bytes === null) localStorage.removeItem(key); else localStorage.setItem(key, bytes); });
+      expect(localStorage.getItem(key)).toBe(bytes);
+      expect(localStorage.getItem(lane)).toBe(LANE_DAMAGED);
+      expect([copiesOf(key).filter((c) => c === bytes), copiesOf(lane)]).toEqual([[], []]);
+      expect(s().queueSetAsideFailed).toBe(false);
+    });
+  }
+
+  it('guard (#1136 r1, 4380084840): a listed key drained while another scope key turns damaged stops the tap: the list holds as many keys, not the same ones', async () => {
+    signedIn(JSON.stringify([approve('k-a')]));
+    otherTabWrites(key, DAMAGED);
+    expect(s().queueUnreadable.map((u) => u.key)).toEqual([key]);
+    await tapBehind(key, () => { localStorage.setItem(key, '[]'); localStorage.setItem(lane, LANE_DAMAGED); });
+    expect(keysIn(localStorage.getItem(key))).toEqual([]);
+    expect(localStorage.getItem(lane)).toBe(LANE_DAMAGED);
+    expect(copiesOf(lane)).toEqual([]);
+    expect(s().queueUnreadable.map((u) => u.key)).toEqual([lane]);
+    expect(s().queueSetAsideFailed).toBe(false);
+  });
+
+  /** an act this release's own reader rejects (a negative option index): this tab's own write leaves bytes it reads
+   *  as damaged, as `site-visits-photos-offline.test.tsx` does with a visit start's id */
+  const selfRejected = { t: 'approve', decisionId: 'd-1', optionIndex: -1, idempotencyKey: 'k-self' } as OutboxOp;
+
+  it('guard (re-check of 244a717, gap 1): Set aside’s read of this tab’s own bytes holds nothing, after a tap that does not land', async () => {
+    const approveDecision = vi.fn(async () => null);
+    signedIn(null, null, { approveDecision });
+    useStore.setState((st) => { st.outbox = [selfRejected]; });
+    s().startActivity('B-1'); // this tab's write stores both; its own reader then reads the key as damaged
+    await queueWritten();
+    s().startActivity('B-2'); // the next write finds it so, and lists it
+    await queueWritten();
+    expect(s().queueUnreadable.map((u) => u.key)).toEqual([key]);
+    const full = refusing((n) => n.startsWith('vitan.unreadable.'));
+    await setAside();
+    full.mockRestore();
+    expect(s().queueSetAsideFailed).toBe(true);
+    await goOnline();
+    expect(approveDecision.mock.calls.map((c) => (c as unknown[]).length > 0)).toEqual([true]);
+  });
+
+  it('forced probe (4370280900): the tap waits for every key of its scope, so a key another tab writes meanwhile stops it', async () => {
+    signedIn(DAMAGED);
+    const laneLock = `vitan.queue.${lane}`;
+    const other = holdQueueLock(lane); // another tab holds the visit key's lock: it may write that key now
+    await other.has;
+    let ended = false;
+    const tap = s().setAsideUnreadableQueue().then(() => { ended = true; });
+    // a signal: the tap is either asking for the visit key's lock, or done
+    for (;;) {
+      const { pending = [] } = await navigator.locks.query();
+      if (ended || pending.some((l) => l.name === laneLock)) break;
+    }
+    localStorage.setItem(lane, LANE_DAMAGED); // the lock holder writes the visit key
+    other.release();
+    await act(async () => { await tap; });
+    expect(localStorage.getItem(key)).toBe(DAMAGED);
+    expect(copiesOf(key)).toEqual([]);
+    expect(s().queueUnreadable.map((u) => u.key).sort()).toEqual([key, lane].sort());
+  });
+
+  it('guard (4370280905): a read that throws during the tap stops it, says Set aside failed, and a newer release’s bytes behind it are not touched', async () => {
+    signedIn(DAMAGED);
+    const realGet = Storage.prototype.getItem;
+    let thrown = false;
+    await tapBehind(key, () => {
+      localStorage.setItem(key, NEWER); // another tab's write while the tap waits; its event not yet delivered
+      vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, n: string) {
+        if (n === key && !thrown) { thrown = true; throw new DOMException('busy', 'SecurityError'); }
+        return realGet.call(this, n);
+      });
+    });
+    vi.restoreAllMocks();
+    expect(thrown).toBe(true);
+    expect(localStorage.getItem(key)).toBe(NEWER);
+    expect(copiesOf(key)).toEqual([]);
+    expect(s().queueSetAsideFailed).toBe(true);
+  });
+
+  it('forced probe (plan gap-check, gap 3): bytes that change between the tap’s read and Set aside’s copy are copied by nobody and not written over', async () => {
+    signedIn(DAMAGED, LANE_DAMAGED);
+    const realGet = Storage.prototype.getItem;
+    await tapBehind(key, () => {
+      // the general key is read first; once the tap reads the visit key, the general key's bytes change (another
+      // context's write the lock does not cover, e.g. an earlier release's tab)
+      vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, n: string) {
+        if (n === lane && realGet.call(this, key) === DAMAGED) Storage.prototype.setItem.call(this, key, '{changed');
+        return realGet.call(this, n);
+      });
+    });
+    vi.restoreAllMocks();
+    expect(localStorage.getItem(key)).toBe('{changed');
+    expect(localStorage.getItem(lane)).toBe(LANE_DAMAGED);
+    expect([copiesOf(key), copiesOf(lane)]).toEqual([[], []]);
+    expect(s().queueSetAsideFailed).toBe(false);
+  });
+
+  it('forced probe (plan re-check, gap 2): Set aside’s read of the second key throws: the first key’s copy is removed, nothing is written, and Set aside failed shows', async () => {
+    signedIn(DAMAGED, LANE_DAMAGED);
+    const realGet = Storage.prototype.getItem;
+    const realSet = Storage.prototype.setItem;
+    let copied = false;
+    let thrown = false;
+    await tapBehind(key, () => {
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, n: string, v: string) {
+        if (n.startsWith(`vitan.unreadable.${key}.`)) copied = true;
+        realSet.call(this, n, v);
+      });
+      // once the general key's copy is made, the next read of the visit key throws
+      vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, n: string) {
+        if (n === lane && copied && !thrown) { thrown = true; throw new DOMException('busy', 'SecurityError'); }
+        return realGet.call(this, n);
+      });
+    });
+    vi.restoreAllMocks();
+    expect([copied, thrown]).toEqual([true, true]);
+    expect(localStorage.getItem(key)).toBe(DAMAGED);
+    expect(localStorage.getItem(lane)).toBe(LANE_DAMAGED);
+    expect([copiesOf(key), copiesOf(lane)]).toEqual([[], []]);
+    expect(s().queueSetAsideFailed).toBe(true);
+    expect(s().queueUnreadable.map((u) => u.key).sort()).toEqual([key, lane].sort());
+  });
+});
