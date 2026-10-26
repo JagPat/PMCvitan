@@ -18,6 +18,8 @@ function storage(init: Record<string, string> = {}) {
     writes,
   };
 }
+/** U3c: Set aside copies only the bytes `heard` last reconciled a key from, so each tap here hears its keys first */
+const heard = <S extends { getItem(k: string): string | null }>(st: S, keys: string[], q = createQueueKeyGuard()) => { for (const k of keys) q.heard(st as never, k); return q; };
 const full = () => ({ getItem: () => '{bad', setItem: () => { throw new DOMException('full', 'QuotaExceededError'); } });
 
 describe('queueKeyGuard: a key this release reads', () => {
@@ -86,8 +88,8 @@ describe('queueKeyGuard: a key this release cannot read', () => {
 
   it('Set aside copies the bytes under a new name and reads them back; only then is the key written over', () => {
     const st = storage({ [K]: '{bad' });
-    const q = createQueueKeyGuard();
-    expect(q.setAside(st, [K])).toBe(true);
+    const q = heard(st, [K]);
+    expect(q.setAside(st, [K])).toBe('ok');
     expect(asides(st, K)).toEqual(['{bad']);
     expect(q.write(st, K, [a('mine')])).toBe(true);
     expect(st.keys(K)).toEqual(['mine']);
@@ -95,8 +97,8 @@ describe('queueKeyGuard: a key this release cannot read', () => {
 
   it('bytes that changed after Set aside are not written over: only the bytes copied are', () => {
     const st = storage({ [K]: '{bad' });
-    const q = createQueueKeyGuard();
-    q.setAside(st, [K]);
+    const q = heard(st, [K]);
+    expect(q.setAside(st, [K])).toBe('ok');
     st.setItem(K, '{other');
     expect(q.write(st, K, [a('mine')])).toBe(false);
     expect(st.getItem(K)).toBe('{other');
@@ -105,8 +107,8 @@ describe('queueKeyGuard: a key this release cannot read', () => {
   it('a Set aside whose copy does not read back changes nothing', () => {
     const m = new Map([[K, '{bad']]);
     const st = { getItem: (k: string) => (k.startsWith('vitan.unreadable.') ? null : m.get(k) ?? null), setItem: (k: string, v: string) => { m.set(k, v); } };
-    const q = createQueueKeyGuard();
-    expect(q.setAside(st, [K])).toBe(false);
+    const q = heard(st, [K]);
+    expect(q.setAside(st, [K])).toBe('none');
     expect(q.write(st, K, [a('mine')])).toBe(false);
     expect(m.get(K)).toBe('{bad');
   });
@@ -116,8 +118,8 @@ describe('queueKeyGuard: a key this release cannot read', () => {
     let fail = true;
     const st = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => { if (k === K && fail) throw new DOMException('full', 'QuotaExceededError'); m.set(k, v); } };
     const reads: KeyRead[] = [];
-    const q = createQueueKeyGuard((_k, read) => { reads.push(read); });
-    expect(q.setAside(st, [K])).toBe(true);
+    const q = heard(st, [K], createQueueKeyGuard((_k, read) => { reads.push(read); }));
+    expect(q.setAside(st, [K])).toBe('ok');
     expect(q.write(st, K, [a('mine')])).toBe(false);
     expect(reads).not.toContain('ok');
     expect(m.get(K)).toBe('{bad');
@@ -126,10 +128,40 @@ describe('queueKeyGuard: a key this release cannot read', () => {
     expect(reads.at(-1)).toBe('ok');
   });
 
+  it('U3c: Set aside copies only the bytes heard last reconciled: bytes it never heard, or bytes changed since, are copied by nobody and the tap says changed', () => {
+    const st = storage({ [K]: '{bad' });
+    expect(createQueueKeyGuard().setAside(st, [K])).toBe('changed'); // never heard
+    const q = heard(st, [K]);
+    st.setItem(K, '{newer');
+    st.writes.length = 0;
+    expect(q.setAside(st, [K])).toBe('changed');
+    expect(st.writes).toEqual([]);
+    expect(q.write(st, K, [a('mine')])).toBe(false);
+    expect(st.getItem(K)).toBe('{newer');
+  });
+
+  it('U3c: a Set aside whose read of a later key throws removes the copies it made, and says none', () => {
+    const M = 'vitan.outbox.u.q';
+    const m = new Map([[K, '{bad'], [M, '{bad2']]);
+    let throwOn: string | null = null;
+    const st = {
+      getItem: (k: string) => { if (k === throwOn) throw new DOMException('denied', 'SecurityError'); return m.get(k) ?? null; },
+      setItem: (k: string, v: string) => { m.set(k, v); },
+      removeItem: (k: string) => { m.delete(k); },
+    };
+    const q = heard(st, [K, M]);
+    throwOn = M;
+    expect(q.setAside(st, [K, M])).toBe('none');
+    expect([...m.keys()].sort()).toEqual([K, M].sort());
+    throwOn = null;
+    expect(q.write(st, K, [a('mine')])).toBe(false);
+    expect(m.get(K)).toBe('{bad');
+  });
+
   it('a Set aside of a key that reads is nothing to do', () => {
     const st = storage({ [K]: JSON.stringify([a('x')]) });
     const q = createQueueKeyGuard();
-    expect(q.setAside(st, [K])).toBe(true);
+    expect(q.setAside(st, [K])).toBe('ok');
     expect(st.writes).toEqual([]);
   });
 
@@ -225,18 +257,18 @@ describe('#1085 r2 (Codex 4346169602): a Set aside that fails part way leaves no
 
   it('both keys unreadable, room for one copy: the tap fails and removes the copy it made; once room is freed the next tap copies each key once', () => {
     const st = tight({ [K]: '{bad', [L]: '{bad2' }, 1);
-    const q = createQueueKeyGuard();
-    expect(q.setAside(st, [K, L])).toBe(false);
+    const q = heard(st, [K, L]);
+    expect(q.setAside(st, [K, L])).toBe('none');
     expect([st.copies(K), st.copies(L), st.room]).toEqual([[], [], 1]); // the room it had is the room it has
     st.room = 2; // the person frees room for both
-    expect(q.setAside(st, [K, L])).toBe(true);
+    expect(q.setAside(st, [K, L])).toBe('ok');
     expect([st.copies(K), st.copies(L)]).toEqual([['{bad'], ['{bad2']]);
   });
 
   it('a copy of the same bytes already there is that copy: a second tap, or a tab after a reload, makes none', () => {
     const st = tight({ [K]: '{bad', [L]: '{bad2' }, 2);
-    expect(createQueueKeyGuard().setAside(st, [K, L])).toBe(true);
-    expect(createQueueKeyGuard().setAside(st, [K, L])).toBe(true); // the write after the first failed; the person taps again
+    expect(heard(st, [K, L]).setAside(st, [K, L])).toBe('ok');
+    expect(heard(st, [K, L]).setAside(st, [K, L])).toBe('ok'); // the write after the first failed; the person taps again
     expect([st.copies(K), st.copies(L), st.room]).toEqual([['{bad'], ['{bad2'], 0]);
   });
 
@@ -255,7 +287,7 @@ describe('#1085 r2 (Codex 4346169602): a Set aside that fails part way leaves no
       setItem: (k: string, v: string) => { m.set(k, k.startsWith('vitan.unreadable.') ? v.slice(1) : v); },
       removeItem: (k: string) => { removed.push(k); m.delete(k); },
     };
-    expect(createQueueKeyGuard().setAside(st, [K])).toBe(false);
+    expect(heard(st, [K]).setAside(st, [K])).toBe('none');
     expect([...m.keys()]).toEqual([K]);
     expect(removed.length).toBe(1);
   });
@@ -263,10 +295,11 @@ describe('#1085 r2 (Codex 4346169602): a Set aside that fails part way leaves no
   it('a name already holding other bytes is never taken for the copy: the copy goes beside it, and both stay', () => {
     // the name the key's bytes are copied under, as a first tap makes it
     const first = new Map<string, string>([[K, '{bad']]);
-    createQueueKeyGuard().setAside({ getItem: (k: string) => first.get(k) ?? null, setItem: (k: string, v: string) => { first.set(k, v); } }, [K]);
+    const once = { getItem: (k: string) => first.get(k) ?? null, setItem: (k: string, v: string) => { first.set(k, v); } };
+    expect(heard(once, [K]).setAside(once, [K])).toBe('ok');
     const name = [...first.keys()].find((k) => k !== K)!;
     const st = tight({ [K]: '{bad', [name]: 'other bytes' }, 5);
-    expect(createQueueKeyGuard().setAside(st, [K])).toBe(true);
+    expect(heard(st, [K]).setAside(st, [K])).toBe('ok');
     expect([st.getItem(name), st.getItem(`${name}.1`)]).toEqual(['other bytes', '{bad']);
   });
 });

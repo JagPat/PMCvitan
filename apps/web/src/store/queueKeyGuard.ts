@@ -192,6 +192,9 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
   /** per key, the bytes this tab's last landed write left there: bytes a write finds that are still these are this
    *  tab's own, not another tab's, and hold nothing (#1122 r1) */
   const ownRaw = new Map<string, string>();
+  /** U3c: per key, the bytes `heard` last reconciled it from, once its read again confirmed them: the only bytes the
+   *  person's tap copies aside (plan gap-check, gap 3). A read that throws leaves it as it was */
+  const heardAt = new Map<string, string | null>();
   /** the keys loaded since the last `forget`: the scope a load ran for (Codex 4345664679) */
   const loaded = new Set<string>();
   /** per key, the unsent occurrences of a scope this tab moved off that could be neither written there nor copied
@@ -524,7 +527,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
         try { s = snapshotOf(storage, key, scopesOf(key)); } catch { return null; }
         let now: Read;
         try { now = snapshotOf(storage, key, scopesOf(key)); } catch { if (loaded.has(key)) holdSeen(key); return null; }
-        if (sameRead(now, s)) return observe(storage, key, mine, s);
+        if (sameRead(now, s)) { heardAt.set(key, s.raw); return observe(storage, key, mine, s); }
       }
       if (loaded.has(key)) holdSeen(key);
       return null;
@@ -546,6 +549,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       unkept.clear();
       asideDone.clear();
       setAsideRaw.clear();
+      heardAt.clear();
       withheld.clear();
       loaded.clear();
       handed.clear();
@@ -664,19 +668,24 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     },
     /** The person's tap: copy every key's unreadable bytes aside and read each copy back (a copy of the same bytes
      *  already there is kept as it is); only when every copy succeeded are those exact bytes let be written over.
-     *  False when one could not be made: no key is marked, and the copies this tap made are removed, so a retry finds
-     *  the room it had (Codex 4346169602). */
-    setAside(storage: Store, keys: string[]): boolean {
+     *  'none' when one could not be made, or a read of a key threw (plan re-check, gap 2): no key is marked, and the
+     *  copies this tap made are removed, so a retry finds the room it had (Codex 4346169602). U3c: only the bytes `heard`
+     *  last reconciled the key from are copied; a key holding other bytes now is 'changed', with the same nothing kept
+     *  (plan gap-check, gap 3) */
+    setAside(storage: Store, keys: string[]): 'ok' | 'none' | 'changed' {
       const copied = new Map<string, string>();
       const made: string[] = [];
+      const stop = (why: 'none' | 'changed'): 'none' | 'changed' => { removeCopies(storage, made); return why; };
       for (const key of keys) {
-        const raw = storage.getItem(key);
+        let raw: string | null;
+        try { raw = storage.getItem(key); } catch { return stop('none'); }
         if (raw === null || readOf(raw, scopesOf(key)) === 'ok') continue;
-        if (!copyAside(storage, key, raw, (n) => made.push(n))) { removeCopies(storage, made); return false; }
+        if (!heardAt.has(key) || heardAt.get(key) !== raw) return stop('changed');
+        if (!copyAside(storage, key, raw, (n) => made.push(n))) return stop('none');
         copied.set(key, raw);
       }
       for (const [key, raw] of copied) setAsideRaw.set(key, raw);
-      return true;
+      return 'ok';
     },
     /** The writes of the person's Set aside tap, after `setAside` copied each key: all of them, or none (Codex
      *  4348114913). A write that does not land puts each key written before it back to the bytes it held, with its
