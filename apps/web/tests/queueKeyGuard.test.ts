@@ -346,6 +346,56 @@ describe('cross-tab drain (xtab-drain plan §3′): what another tab took from t
     expect(A.taken(K, ka)).toBe(false);
   });
 
+  /** this tab's write to the damaged key is refused; another tab, which loaded k-a before the damage, sets the key
+   *  aside, then sends k-a and drains it; this tab hears it */
+  const refusedThenTaken = (block: (k: string) => boolean) => {
+    const m = new Map<string, string>();
+    let blocking = true;
+    const st = {
+      getItem: (k: string) => m.get(k) ?? null,
+      setItem: (k: string, v: string) => { if (blocking && block(k)) throw new DOMException('full', 'QuotaExceededError'); m.set(k, v); },
+      removeItem: (k: string) => { m.delete(k); },
+    };
+    expect(createQueueKeyGuard().write(st, K, [a('k-a')])).toBe(true);
+    const mine = createQueueKeyGuard();
+    const [ka] = mine.load(st, K);
+    const other = createQueueKeyGuard();
+    const theirs = other.load(st, K);
+    m.set(K, '{damaged');
+    expect(mine.write(st, K, [ka])).toBe(false);
+    const refused = { copies: [...m.keys()].filter((k) => k.startsWith('vitan.unreadable.') || k.startsWith('vitan.made.')).length, notKept: mine.notKeptCount() };
+    blocking = false;
+    other.heard(st, K, theirs);
+    expect(other.setAside(st, [K])).toBe('ok');
+    expect(other.writeAll(st, [{ key: K, mine: theirs, takes: () => true }])).toBe('all');
+    expect(other.settled(st, K, theirs[0])).toBe(true);
+    expect(other.write(st, K, [])).toBe(true);
+    mine.heard(st, K, [ka]);
+    expect(mine.taken(K, ka)).toBe(true);
+    return { m, st, mine, refused };
+  };
+
+  it('forced probe (#1138 r1, Codex 4382389315): an act held stranded that another tab then takes is let go; a later load does not hand it back', () => {
+    const { st, mine, refused } = refusedThenTaken((k) => k.startsWith('vitan.unreadable.') || k.startsWith('vitan.made.'));
+    expect(refused.copies).toBe(0); // neither copied aside nor recorded: held stranded
+    mine.forget();
+    expect(mine.load(st, K)).toEqual([]);
+    expect(mine.strandedCount()).toBe(0);
+  });
+
+  it('forced probe (#1138 r1, Codex 4382389303): a copy aside this tab made of an act another tab then takes is removed', () => {
+    const { m, refused } = refusedThenTaken(() => false);
+    expect(refused.copies).toBeGreaterThan(0);
+    const holding = [...m.entries()].filter(([k, v]) => (k.startsWith('vitan.unreadable.') || k.startsWith('vitan.made.')) && v.includes('"k-a"'));
+    expect(holding).toEqual([]);
+  });
+
+  it('forced probe (#1138 r1, root-cause audit): an act this tab listed not kept that another tab then takes is no longer counted', () => {
+    const { mine, refused } = refusedThenTaken(() => false);
+    expect(refused.notKept).toBe(1);
+    expect(mine.notKeptCount()).toBe(0);
+  });
+
   it('forced probe (Stage 1 watch item): an act queued after the take with the same key is a new act: stored, not taken', () => {
     const st = storage();
     expect(createQueueKeyGuard().write(st, K, [a('k-a')])).toBe(true);

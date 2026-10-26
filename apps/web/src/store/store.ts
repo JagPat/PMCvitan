@@ -2491,14 +2491,112 @@ export const useStore = create<Store>()(
       const drain = Promise.resolve().then(() => { if (get().online) void get().flushOutbox(); });
       releaseDrains = Promise.all([releaseDrains, drain]).then(() => undefined);
     }, (key) => {
-      // cross-tab drain (xtab-drain plan §3′): acts another tab took from this key (sent, refused or discarded) leave
-      // memory by identity; a flush running now skips them too (`taken` below)
+      // cross-tab drain (xtab-drain plan §3″): acts another tab took from this key (sent, or refused for good) leave
+      // memory by name, at once, flush running or not: a running flush skips them by name and settles by identity
+      // (#1138 r1, root-cause audit in notes/site-visits/web-02-U3/xtab-drain/r1/fix.md)
       if (key !== outboxKey() && key !== siteVisitKeyOf(outboxKey())) return;
-      const inKey = (o: OutboxOp) => (isSiteVisitOp(o) ? siteVisitKeyOf(outboxKey()) : outboxKey()) === key;
-      // read outside the draft: an act is taken by its name, which the guard keeps for the stored object
-      const keep = get().outbox.filter((o) => !(inKey(o) && queueKeys.taken(key, o)));
-      if (keep.length !== get().outbox.length) set((st) => { st.outbox = keep; });
+      dropTaken();
     });
+    /** cross-tab drain: whether another tab took `o` from its key in the scope on show */
+    const takenNow = (o: OutboxOp): boolean => queueKeys.taken(isSiteVisitOp(o) ? siteVisitKeyOf(outboxKey()) : outboxKey(), o);
+    /** cross-tab drain, the one take path (#1138 r1): the taken acts leave the queue by name (read outside the draft:
+     *  an act is taken by its name, which the guard keeps for the stored object), with what the queue's acts derive
+     *  (the photo count, an offline submit's freeze), and the module reconciles a settled act asks for (Codex
+     *  4382389288). The guard has already let them go from its stranded, aside and not-kept sets */
+    const dropTaken = (): void => {
+      const gone = get().outbox.filter(takenNow);
+      if (gone.length === 0) return;
+      const keep = get().outbox.filter((o) => !takenNow(o));
+      set((st) => { st.outbox = keep; recountDailyLogPhotos(st); reconcileSubmission(st); });
+      const materials = gone.filter(isMaterialsOp).flatMap((o) => { const ck = coalesceKeyOf(o); return typeof ck === 'string' ? [ck] : []; });
+      reconcileModules(currentScope(), { materials: gone.some(isMaterialsOp) ? materials : null, labour: gone.some(isLabourOp), commercial: gone.some(isCommercialOp) });
+      if (gone.some((o) => o.t === 'uploadEvidence')) void reconcileEvidence();
+    };
+    /** The module reconciles an act that left the queue asks for: a flush's end (its sent, dropped and still-failing
+     *  acts), and an act another tab took (cross-tab drain r1, Codex 4382389288). `materials` names the coalesce keys
+     *  resolved (null: no materials act), `labour` and `commercial` whether one of theirs left */
+    const reconcileModules = (scope: ProjectScope, done: { materials: string[] | null; labour: boolean; commercial: boolean }): void => {
+      // Phase 3 Task 7 (correction 2/3) — the MATERIALS reconcile hook. A resolved (succeeded OR
+      // terminally-dropped) materials command's COALESCE key is cleared from `materialsPending` (unblock
+      // the button); a still-pending transient-failed op keeps its coalesceKey (stays disabled while it
+      // retries — no success toast, since consumeSnapshotResult only announces okMsg on an APPLIED
+      // snapshot). If ANY materials command was ATTEMPTED (incl. a transient/uncertain failure — finding
+      // 3), re-derive the materials TRUTH by reloading the bundle + every OPEN reservation plan (the
+      // server may have committed despite the lost response), scope-guarded so a switch mid-flush touches
+      // nothing here (the new scope owns empty state).
+      if (done.materials) {
+        const resolved = new Set(done.materials);
+        if (resolved.size > 0) set((s) => { s.materialsPending = s.materialsPending.filter((k) => !resolved.has(k)); });
+        if (scopeStillCurrent(scope) && get().capabilities.includes('materials')) {
+          get().loadMaterials();
+          for (const activityId of Object.keys(get().reservationPlans)) get().loadReservationPlan(activityId);
+        }
+      }
+      // Phase 4 Task 6 (§J) — the LABOUR reconcile hook. Codex round 8: a RESOLVED op's coalesce
+      // key is NOT cleared here — between this flush and the labour reload the screen still
+      // renders the OLD bundle (no committed allocation visible), so clearing the key in that
+      // gap re-enables the action and a second worker can be queued against demand the first
+      // command already filled. The keys stay in `labourPending` (buttons disabled, honest
+      // "…ing" labels) until `loadLabour()` APPLIES the fresh bundle, which rebuilds
+      // `labourPending` from the live outbox (a transient-failed op is still queued → its key
+      // survives; a resolved/dropped op is gone → its key clears WITH the new truth on screen).
+      if (done.labour) {
+        if (scopeStillCurrent(scope) && get().capabilities.includes('labour')) {
+          get().loadLabour();
+        }
+      }
+      // Phase 5 Task 7B-iii-a (§M) — the COMMERCIAL reconcile hook, cloned from labour rather
+      // than from materials, deliberately. Materials clears a resolved op's coalesce key HERE;
+      // labour's round 8 found that wrong and commercial inherits the correction: between this
+      // flush and the reload the screen still renders the OLD money position, so clearing the key
+      // in that gap re-enables the button while the pre-command figure is on screen — and a
+      // second set writes a second revision of a budget the first command already changed.
+      // The keys stay in `commercialPending` until `loadCommercial()` APPLIES the fresh bundle,
+      // which rebuilds the set from the live outbox (a transient-failed op is still queued so its
+      // key survives; a resolved one is gone so its key clears WITH the new truth on screen).
+      //
+      // `commercialAttempted` is true for a succeeded, dropped OR transient-failed op (PR #208
+      // finding 4): an uncertain response must still re-read the money, because the server may
+      // have committed despite losing the reply.
+      if (done.commercial) {
+        if (scopeStillCurrent(scope) && get().capabilities.includes('commercial')) {
+          get().loadCommercial();
+          // Codex M1 — 7B-iii-a's ops changed the MONEY POSITION, so reloading it was the whole
+          // reconcile. 7B-iii-b's ops change a CLAIM: a measurement, a correction, a lifecycle
+          // transition. Reloading only the money left `loadCommercial()` clearing
+          // `commercialPending` while the register on screen was still pre-command and the form
+          // still filled — so a second Measure sent a FRESH idempotency key and appended the same
+          // measurement twice, overstating measured work. The labour round-8 gap, on the resources
+          // this unit actually touches: refresh the claim list and every open claim too.
+          get().loadCommercialBills();
+          // …and the ADVANCES (7B-vi). Same lesson as the claim reads above, on the one resource
+          // no claim read covers: without this the advance key had no post-write read to settle
+          // it, so the button either stuck in "Working…" or — worse for an append-only row with
+          // no server ceiling — a pre-write read in flight cleared the key over a list that did
+          // not yet show the payment, and the operator could pay a second advance believing the
+          // first had not landed.
+          // …only when there is something to reconcile: the tab has the list open, OR an advance
+          // key is still pending and needs the read that settles it. A blanket re-read would fetch
+          // a resource nobody is looking at on every commercial write, and conditioning it on the
+          // OPEN tab alone would strand a key queued while the tab was closed.
+          if (get().commercialAdvancesLoad !== 'idle'
+            || get().commercialPending.some((k) => k.startsWith('com:advance:'))) {
+            get().loadCommercialAdvances();
+          }
+          for (const billId of new Set([
+            ...Object.keys(get().commercialClaims),
+            ...Object.keys(get().commercialClaimLoad),
+          ])) get().loadCommercialClaim(billId);
+          // …and every LINE register on screen: that is the read a measurement becomes visible in,
+          // and — since Q-a — the only read that may release its key, because it starts here,
+          // AFTER the write settled.
+          for (const lineId of new Set([
+            ...Object.keys(get().commercialLineRegisters),
+            ...Object.keys(get().commercialLineRegisterLoad),
+          ])) get().loadCommercialLineRegister(lineId);
+        }
+      }
+    };
     /** Every scope change (an auth result, a persona switch, a sign-out, and each load of a scope's queue) ends the old
      *  scope's queue-key memory and its strip list here, first, before any storage access: a storage that throws can
      *  then never leave the old scope's list on the next one (Codex 4351952392, the third such leak's root cause) */
@@ -6398,10 +6496,8 @@ export const useStore = create<Store>()(
       const lateAt = waited ? queued.findIndex((o) => !waited.has(o)) : -1;
       if (lateAt >= 0) outboxFlushQueued = true;
       const ops = lateAt >= 0 ? queued.slice(0, lateAt) : queued.slice();
-      // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
-      // take its own acts out of `ops` as it goes)
-      const taken = ops.length;
-      // the acts this flush took, as taken: a scope move writes each stored lane without them, by identity (a visit
+      // the acts this flush took, as taken (a refused site visit start may take its own acts out of `ops` as it goes):
+      // its end replaces them by identity, and a scope move writes each stored lane without them, by identity (a visit
       // photo's act is in neither stored lane, Codex 4321998480)
       const flushed = ops.slice();
       // the visits whose photo's row this flush could not read or update while sending it: held from then on, like the
@@ -6724,18 +6820,25 @@ export const useStore = create<Store>()(
         // aside (no storage to be had included) are held stranded for the old scope, never dropped (Codex 4345664670)
         let storage: Storage | null = null;
         try { storage = globalThis.localStorage ?? null; } catch { storage = null; }
-        await keepUnsentLocked(queueKeys, storage, flushKey, remaining.filter((o) => !isSiteVisitOp(o)), flushed.filter((o) => !isSiteVisitOp(o)), (l) => l, (o) => !isSiteVisitOp(o));
+        // an act another tab took while this flush ran is that tab's outcome: never kept for the scope left (#1138 r1,
+        // Codex 4382389296; the guard keeps what was taken across the scope move too)
+        const unsent = remaining.filter((o) => !queueKeys.taken(isSiteVisitOp(o) ? siteVisitKeyOf(flushKey) : flushKey, o));
+        await keepUnsentLocked(queueKeys, storage, flushKey, unsent.filter((o) => !isSiteVisitOp(o)), flushed.filter((o) => !isSiteVisitOp(o)), (l) => l, (o) => !isSiteVisitOp(o));
         // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
-        await keepUnsentLocked(queueKeys, storage, siteVisitKeyOf(flushKey), remaining.filter(isStoredVisitOp), flushed.filter(isStoredVisitOp), (l) => remapVisits(l).filter(isStoredVisitOp), isStoredVisitOp);
+        await keepUnsentLocked(queueKeys, storage, siteVisitKeyOf(flushKey), unsent.filter(isStoredVisitOp), flushed.filter(isStoredVisitOp), (l) => remapVisits(l).filter(isStoredVisitOp), isStoredVisitOp);
         return { ran: true, scopeMoved: true, succeededKeys, droppedKeys, pendingKeys };
       }
 
       // Preserve anything queued while we were awaiting (shouldn't happen once online, but
-      // never drop a write): the original ops were the outbox prefix, so slice past them.
-      const appended = remapVisits(get().outbox.slice(taken));
+      // never drop a write): every act in the queue now that this flush did not take, by identity, never by position.
+      // A take while it ran shortens the queue (#1138 r1, Codex 4382389280), and an act it left unsent that another
+      // tab took meanwhile is not kept
+      const inFlush = new Set(flushed);
+      const appended = remapVisits(get().outbox.filter((o) => !inFlush.has(o)));
+      const unsentHere = remaining.filter((o) => !takenNow(o));
       visitPhotoEpoch += 1; visitPhotoFlushes += 1; // a visit photo reconciliation read before this flush settled would re-queue a sent photo
       set((s) => {
-        s.outbox = [...remaining, ...appended];
+        s.outbox = [...unsentHere, ...appended];
         // a photo upload dropped for good (terminal rejection) stops counting on screen in the same update
         recountDailyLogPhotos(s);
         // under module ownership the command's own snapshot carries no daily-log slice, so the log
@@ -6807,86 +6910,7 @@ export const useStore = create<Store>()(
       // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved
       // to FAILED; an op kept alive by a failed dead-letter write stays covered
       void reconcileEvidence();
-      // Phase 3 Task 7 (correction 2/3) — the MATERIALS reconcile hook. A resolved (succeeded OR
-      // terminally-dropped) materials command's COALESCE key is cleared from `materialsPending` (unblock
-      // the button); a still-pending transient-failed op keeps its coalesceKey (stays disabled while it
-      // retries — no success toast, since consumeSnapshotResult only announces okMsg on an APPLIED
-      // snapshot). If ANY materials command was ATTEMPTED (incl. a transient/uncertain failure — finding
-      // 3), re-derive the materials TRUTH by reloading the bundle + every OPEN reservation plan (the
-      // server may have committed despite the lost response), scope-guarded so a switch mid-flush touches
-      // nothing here (the new scope owns empty state).
-      if (materialsAttempted) {
-        const resolved = new Set(resolvedMaterialsCoalesceKeys);
-        if (resolved.size > 0) set((s) => { s.materialsPending = s.materialsPending.filter((k) => !resolved.has(k)); });
-        if (scopeStillCurrent(flushScope) && get().capabilities.includes('materials')) {
-          get().loadMaterials();
-          for (const activityId of Object.keys(get().reservationPlans)) get().loadReservationPlan(activityId);
-        }
-      }
-      // Phase 4 Task 6 (§J) — the LABOUR reconcile hook. Codex round 8: a RESOLVED op's coalesce
-      // key is NOT cleared here — between this flush and the labour reload the screen still
-      // renders the OLD bundle (no committed allocation visible), so clearing the key in that
-      // gap re-enables the action and a second worker can be queued against demand the first
-      // command already filled. The keys stay in `labourPending` (buttons disabled, honest
-      // "…ing" labels) until `loadLabour()` APPLIES the fresh bundle, which rebuilds
-      // `labourPending` from the live outbox (a transient-failed op is still queued → its key
-      // survives; a resolved/dropped op is gone → its key clears WITH the new truth on screen).
-      if (labourAttempted) {
-        if (scopeStillCurrent(flushScope) && get().capabilities.includes('labour')) {
-          get().loadLabour();
-        }
-      }
-      // Phase 5 Task 7B-iii-a (§M) — the COMMERCIAL reconcile hook, cloned from labour rather
-      // than from materials, deliberately. Materials clears a resolved op's coalesce key HERE;
-      // labour's round 8 found that wrong and commercial inherits the correction: between this
-      // flush and the reload the screen still renders the OLD money position, so clearing the key
-      // in that gap re-enables the button while the pre-command figure is on screen — and a
-      // second set writes a second revision of a budget the first command already changed.
-      // The keys stay in `commercialPending` until `loadCommercial()` APPLIES the fresh bundle,
-      // which rebuilds the set from the live outbox (a transient-failed op is still queued so its
-      // key survives; a resolved one is gone so its key clears WITH the new truth on screen).
-      //
-      // `commercialAttempted` is true for a succeeded, dropped OR transient-failed op (PR #208
-      // finding 4): an uncertain response must still re-read the money, because the server may
-      // have committed despite losing the reply.
-      if (commercialAttempted) {
-        if (scopeStillCurrent(flushScope) && get().capabilities.includes('commercial')) {
-          get().loadCommercial();
-          // Codex M1 — 7B-iii-a's ops changed the MONEY POSITION, so reloading it was the whole
-          // reconcile. 7B-iii-b's ops change a CLAIM: a measurement, a correction, a lifecycle
-          // transition. Reloading only the money left `loadCommercial()` clearing
-          // `commercialPending` while the register on screen was still pre-command and the form
-          // still filled — so a second Measure sent a FRESH idempotency key and appended the same
-          // measurement twice, overstating measured work. The labour round-8 gap, on the resources
-          // this unit actually touches: refresh the claim list and every open claim too.
-          get().loadCommercialBills();
-          // …and the ADVANCES (7B-vi). Same lesson as the claim reads above, on the one resource
-          // no claim read covers: without this the advance key had no post-write read to settle
-          // it, so the button either stuck in "Working…" or — worse for an append-only row with
-          // no server ceiling — a pre-write read in flight cleared the key over a list that did
-          // not yet show the payment, and the operator could pay a second advance believing the
-          // first had not landed.
-          // …only when there is something to reconcile: the tab has the list open, OR an advance
-          // key is still pending and needs the read that settles it. A blanket re-read would fetch
-          // a resource nobody is looking at on every commercial write, and conditioning it on the
-          // OPEN tab alone would strand a key queued while the tab was closed.
-          if (get().commercialAdvancesLoad !== 'idle'
-            || get().commercialPending.some((k) => k.startsWith('com:advance:'))) {
-            get().loadCommercialAdvances();
-          }
-          for (const billId of new Set([
-            ...Object.keys(get().commercialClaims),
-            ...Object.keys(get().commercialClaimLoad),
-          ])) get().loadCommercialClaim(billId);
-          // …and every LINE register on screen: that is the read a measurement becomes visible in,
-          // and — since Q-a — the only read that may release its key, because it starts here,
-          // AFTER the write settled.
-          for (const lineId of new Set([
-            ...Object.keys(get().commercialLineRegisters),
-            ...Object.keys(get().commercialLineRegisterLoad),
-          ])) get().loadCommercialLineRegister(lineId);
-        }
-      }
+      reconcileModules(flushScope, { materials: materialsAttempted ? resolvedMaterialsCoalesceKeys : null, labour: labourAttempted, commercial: commercialAttempted });
       return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys };
       } finally {
         outboxFlushing = false;

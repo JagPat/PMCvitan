@@ -4,6 +4,7 @@ import { act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
 import { createQueueKeyGuard } from '@/store/queueKeyGuard';
+import { reserveCoalesceKey } from '@/lib/materialsKeys';
 import { queueWritten, releaseQueueLocks, storedQueue, unwatchFlushes, watchFlushes } from './queueWrites';
 
 /**
@@ -184,6 +185,122 @@ describe('cross-tab drain: another tab took the act', () => {
     await flushes.atRest();
     expect(sentWith(approveDecision, 'k-a')).toBe(0);
     expect(sentWith(approveDecision, 'k-first')).toBe(1);
+  });
+
+  /** this tab's flush is sending k-first (held at `gate`) when the other tab sends k-a and drains it; this tab hears it */
+  const takenMidFlush = async (gw: Record<string, unknown> = {}, second: OutboxOp = approve('k-a'), setup = () => {}, fails = false) => {
+    let entered!: () => void;
+    const inFlight = new Promise<void>((r) => { entered = r; });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const approveDecision = vi.fn(async (_d: string, _i: number, k: string) => {
+      if (k === 'k-first') { entered(); await gate; if (fails) throw new TypeError('Failed to fetch'); }
+      return null;
+    });
+    expect(createQueueKeyGuard().write(localStorage, key, [approve('k-first'), second])).toBe(true);
+    signedIn(null, null, { approveDecision, ...gw });
+    setup();
+    const other = createQueueKeyGuard();
+    const theirs = other.load(localStorage, key);
+    await flushes.atRest();
+    useStore.setState({ online: true });
+    const flushing = act(async () => { await s().flushOutbox(); });
+    await inFlight;
+    expect(other.settled(localStorage, key, theirs[1])).toBe(true);
+    expect(other.write(localStorage, key, [theirs[0]])).toBe(true);
+    hear();
+    return { approveDecision, release, flushing };
+  };
+
+  it('forced probe (#1138 r1, Codex 4382389280): an act queued while the flush sends, after another tab took a later act, is kept and sent', async () => {
+    const startActivity = vi.fn(async () => null);
+    const { approveDecision, release, flushing } = await takenMidFlush({ startActivity });
+    useStore.setState({ online: false }); // the connection drops: the new act is queued behind the running flush
+    s().startActivity('B-1');
+    await queueWritten();
+    release();
+    await flushing;
+    await flushes.atRest();
+    expect(madeHere().length).toBe(1);
+    expect(keysIn(localStorage.getItem(key))).toContain((madeHere()[0] as { idempotencyKey: string }).idempotencyKey);
+    await online();
+    expect(sentWith(approveDecision, 'k-a')).toBe(0);
+    expect(startActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it('forced probe (#1138 r1, Codex 4382389296): a project switch while the flush sends never keeps the taken act for the project left', async () => {
+    const { approveDecision, release, flushing } = await takenMidFlush({ switchProject: vi.fn(async () => ({ role: 'pmc', token: 't-2', projectId: 'p-2' })) });
+    await act(async () => { await s().switchProject('p-2'); });
+    expect(s().activeProjectId).toBe('p-2');
+    release();
+    await flushing;
+    await flushes.atRest();
+    expect(sentWith(approveDecision, 'k-a')).toBe(0);
+    expect(keysIn(localStorage.getItem(key))).not.toContain('k-a');
+    const kept = Object.keys(localStorage).filter((n) => n.startsWith(`vitan.unreadable.${key}`) || n.startsWith(`vitan.made.${key}.`)).map((n) => localStorage.getItem(n) ?? '');
+    expect(kept.filter((v) => v.includes('"k-a"'))).toEqual([]);
+  });
+
+  it('forced probe (#1138 r1, Codex 4382389288): a materials act another tab took frees its action: its pending key goes, and the materials are read again', async () => {
+    const materialReadiness = vi.fn(async () => ({ activities: [], shortages: [] }));
+    const mats = {
+      materialReadiness,
+      materialRequirements: vi.fn(async () => ({ requirements: [] })),
+      materialRequisitions: vi.fn(async () => ({ requisitions: [] })),
+      materialPurchaseOrders: vi.fn(async () => ({ purchaseOrders: [] })),
+      materialStock: vi.fn(async () => ({ lots: [] })),
+      materialIssues: vi.fn(async () => ({ issues: [] })),
+      reserveStock: vi.fn(async () => ({})),
+    };
+    signedIn(null, null, mats);
+    useStore.setState({ capabilities: ['materials'] });
+    s().reserveCandidate('ACT-1', 'LOT-1', 'yard-store', '10');
+    await queueWritten();
+    expect(s().materialsPending).toHaveLength(1);
+    const other = createQueueKeyGuard();
+    const theirs = other.load(localStorage, key);
+    expect(theirs.length).toBe(1);
+    expect(other.settled(localStorage, key, theirs[0])).toBe(true);
+    expect(other.write(localStorage, key, [])).toBe(true);
+    materialReadiness.mockClear();
+    hear();
+    expect(s().outbox).toEqual([]);
+    expect(s().materialsPending).toEqual([]);
+    expect(materialReadiness).toHaveBeenCalled();
+  });
+
+  it('forced probe (#1138 r1, Codex 4382389288): a materials act taken while the flush sends is reconciled at once, and the flush never sends it', async () => {
+    const materialReadiness = vi.fn(async () => ({ activities: [], shortages: [] }));
+    const reserveStock = vi.fn(async () => ({}));
+    const reserve = { t: 'reserveStock', input: { lotId: 'LOT-1', storeLocation: 'yard-store', activityId: 'ACT-1', qty: '10' }, idempotencyKey: 'k-r', coalesceKey: reserveCoalesceKey('ACT-1', 'LOT-1', 'yard-store') } as unknown as OutboxOp;
+    const { release, flushing } = await takenMidFlush({
+      materialReadiness,
+      materialRequirements: vi.fn(async () => ({ requirements: [] })),
+      materialRequisitions: vi.fn(async () => ({ requisitions: [] })),
+      materialPurchaseOrders: vi.fn(async () => ({ purchaseOrders: [] })),
+      materialStock: vi.fn(async () => ({ lots: [] })),
+      materialIssues: vi.fn(async () => ({ issues: [] })),
+      reserveStock,
+    }, reserve, () => { useStore.setState({ capabilities: ['materials'] }); expect(s().materialsPending).toHaveLength(1); });
+    const pending = s().materialsPending;
+    const read = materialReadiness.mock.calls.length;
+    release();
+    await flushing;
+    await flushes.atRest();
+    expect(pending).toEqual([]); // at the take, while the flush still sends k-first
+    expect(read).toBeGreaterThan(0);
+    expect(reserveStock).not.toHaveBeenCalled();
+    expect(s().materialsPending).toEqual([]);
+  });
+
+  it('forced probe (#1138 r1, root-cause audit): a flush that stops on a failed send never keeps the act another tab took meanwhile', async () => {
+    const { approveDecision, release, flushing } = await takenMidFlush({}, approve('k-a'), () => {}, true);
+    release();
+    await flushing;
+    await flushes.atRest();
+    expect(sentWith(approveDecision, 'k-a')).toBe(0);
+    expect(s().outbox.map((o) => (o as { idempotencyKey?: string }).idempotencyKey)).toEqual(['k-first']);
+    expect(keysIn(localStorage.getItem(key))).toEqual(['k-first']);
   });
 
   it('guard: the other tab stores its own act beside k-a; this tab sends k-a once and leaves k-other', async () => {
