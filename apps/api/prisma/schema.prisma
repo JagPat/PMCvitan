@@ -116,6 +116,11 @@ model Project {
   media                      Media[]
   // #482 site photos (20280117): the keys of this project's deleted photos, so a late copy of a send is not stored again
   mediaTombstones            MediaTombstone[]
+  // #1118 U1a (20280121): the Hub records this project holds: its link and link history, the Hub versions withdrawn,
+  // and the Hub blobs fetched. A list only because the link's key is (orgId, id); its primary key keeps it to one row.
+  drawingHubLinks            DrawingHubLink[]
+  hubVersionTombstones       HubVersionTombstone[]
+  hubFetchedBlobs            HubFetchedBlob[]
   pushSubs                   PushSubscription[]
   drawings                   Drawing[]
   phases                     Phase[]
@@ -982,22 +987,24 @@ model ProjectPartyVendorSource {
 // An Org/Account (an architecture practice, e.g. "Vitan Architecture") — owns
 // projects and the people who administer them. Multi-tenant foundation.
 model Org {
-  id                String             @id @default(cuid())
-  name              String
-  slug              String             @unique
-  createdAt         DateTime           @default(now())
+  id                 String              @id @default(cuid())
+  name               String
+  slug               String              @unique
+  createdAt          DateTime            @default(now())
   // #482 QA company lock (20280116): a QA-only company holds only QA accounts, and a QA account belongs only to
   // QA-only companies. Database triggers enforce both; an operator marks the QA company.
-  qaOnly            Boolean            @default(false)
-  projects          Project[]
-  members           OrgMembership[]
-  modules           TemplateModule[]
-  templates         ProjectTemplate[]
-  commandExecutions CommandExecution[]
-  vendors           Vendor[]
+  qaOnly             Boolean             @default(false)
+  projects           Project[]
+  members            OrgMembership[]
+  modules            TemplateModule[]
+  templates          ProjectTemplate[]
+  commandExecutions  CommandExecution[]
+  vendors            Vendor[]
   // Phase 6 unit 6.1a (§A) — the canonical external firms this org collaborates with.
-  externalParties   ExternalParty[]
-  promotedParties   ExternalParty[]    @relation("externalPartyPromotedTo")
+  externalParties    ExternalParty[]
+  promotedParties    ExternalParty[]     @relation("externalPartyPromotedTo")
+  // #1118 U1a (20280121): the Hub webhook deliveries this org already handled
+  hubWebhookReceipts HubWebhookReceipt[]
 }
 
 // Templates Slice 3 (docs/TEMPLATES.md): a named PRESET — an ordered selection of modules
@@ -1299,6 +1306,77 @@ model DrawingRevision {
   @@unique([projectId, id]) // composite identity — tenant-safe reference target (Task 3)
   @@unique([drawingId, rev]) // one Rev B per drawing — a duplicate label is a 409
   @@index([drawingId])
+}
+
+// #1118 U1a (20280121_hub_records): the Hub records. Each is written once and never changed: UPDATE, a direct DELETE and
+// TRUNCATE are refused by triggers ("<Model>_sealed", "<Model>_no_truncate"; Prisma cannot express them), and each goes
+// only with its project or org. Checks (raw SQL) keep every id present; see the migration's R1-R5.
+
+// one per (org, webhook-id) Hub delivered: what PMC did with it (check "HubWebhookReceipt_outcome_known")
+model HubWebhookReceipt {
+  org        Org      @relation(fields: [orgId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  orgId      String
+  webhookId  String
+  eventType  String
+  outcome    String // applied | refused | ignored
+  receivedAt DateTime @default(now())
+
+  @@id([orgId, webhookId])
+}
+
+// one per (project, Hub version) Hub withdrew; a withdrawn version never governs again
+model HubVersionTombstone {
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  projectId    String
+  hubVersionId String
+  hubFileId    String
+  versionSeq   Int?
+  withdrawnAt  DateTime @default(now())
+
+  @@id([projectId, hubVersionId])
+}
+
+// one per project ever linked to Hub; its org is the project's own (composite key to Project (orgId, id)). The Hub
+// project and the lifecycle are in its events.
+model DrawingHubLink {
+  project   Project               @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId String                @id
+  orgId     String
+  createdAt DateTime              @default(now())
+  createdBy String
+  events    DrawingHubLinkEvent[]
+}
+
+// the project's link history in order: event 1 links, links and unlinks alternate, and each event names the one before
+// it (checks "DrawingHubLinkEvent_chain", "_kind_alternates", "_hubProjectId_on_link"). The active link is the latest
+// event when it is a link; a project with no event is not linked.
+model DrawingHubLinkEvent {
+  link         DrawingHubLink        @relation(fields: [projectId], references: [projectId], onDelete: Cascade, onUpdate: NoAction)
+  projectId    String
+  seq          Int
+  prev         DrawingHubLinkEvent?  @relation("hubLinkEventChain", fields: [projectId, prevSeq], references: [projectId, seq], onDelete: NoAction, onUpdate: NoAction)
+  prevSeq      Int?
+  next         DrawingHubLinkEvent[] @relation("hubLinkEventChain")
+  kind         String // linked | unlinked
+  hubProjectId String? // the Hub project, on a link only
+  at           DateTime              @default(now())
+  by           String
+
+  @@id([projectId, seq])
+}
+
+// one per storage key a Hub fetch wrote, the ledger the sweep walks. The key starts with its project's Hub prefix
+// (check "HubFetchedBlob_storageKey_in_project"); a row is never changed ("HubFetchedBlob_sealed"), and the sweep's
+// DELETE is its one designed delete.
+model HubFetchedBlob {
+  id           String   @id @default(cuid())
+  storageKey   String   @unique
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  projectId    String
+  hubVersionId String
+  fetchedAt    DateTime @default(now())
+
+  @@index([projectId])
 }
 
 // WHO a revision was issued to — frozen at issue time (Phase 1 Task 3). The rows

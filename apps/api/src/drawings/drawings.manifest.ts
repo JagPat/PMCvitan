@@ -8,8 +8,9 @@ export const drawingsManifest: ModuleManifest = {
   id: 'drawings',
   title: 'Drawing Control',
   kind: 'domain',
-  ownsModels: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection'],
-  readEncapsulated: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection'],
+  // #1118 U1a (20280121) — the Hub records: webhook receipts, withdrawn versions, the link and its history, fetched blobs
+  ownsModels: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection', 'hubWebhookReceipt', 'hubVersionTombstone', 'drawingHubLink', 'drawingHubLinkEvent', 'hubFetchedBlob'],
+  readEncapsulated: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection', 'hubWebhookReceipt', 'hubVersionTombstone', 'drawingHubLink', 'drawingHubLinkEvent', 'hubFetchedBlob'],
   dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
   workflowParticipants: [],
   producesEvents: [
