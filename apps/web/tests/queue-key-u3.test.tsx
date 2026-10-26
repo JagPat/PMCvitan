@@ -438,5 +438,45 @@ describe('#1132 round 1', () => {
     expect(reloadAsks()).toEqual([]);
     expect(copiesOf(key)).toEqual([]);
   });
+  it('guard (first read throws): a readable key whose every read throws while heard reads it holds nothing', async () => {
+    const approveDecision = vi.fn(async () => null);
+    signedIn(JSON.stringify([approve('k-a')]), null, { approveDecision });
+    const realGet = Storage.prototype.getItem;
+    const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, n: string) {
+      if (n === key) throw new DOMException('gone', 'SecurityError');
+      return realGet.call(this, n);
+    });
+    act(() => { window.dispatchEvent(new StorageEvent('storage', { key, newValue: DAMAGED, storageArea: localStorage })); });
+    spy.mockRestore();
+    expect(s().queueUnreadable).toEqual([]);
+    await goOnline();
+    expect(approveDecision).toHaveBeenCalled();
+  });
+  it('guard (first read throws): a first read that throws once, damaged bytes behind it, lists and copies nothing', async () => {
+    signedIn(JSON.stringify([approve('k-a')]));
+    localStorage.setItem(key, DAMAGED);
+    const realGet = Storage.prototype.getItem;
+    let reads = 0;
+    const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, n: string) {
+      if (n === key && ++reads === 1) throw new DOMException('gone', 'SecurityError');
+      return realGet.call(this, n);
+    });
+    act(() => { window.dispatchEvent(new StorageEvent('storage', { key, newValue: DAMAGED, storageArea: localStorage })); });
+    spy.mockRestore();
+    expect(s().queueUnreadable).toEqual([]);
+    expect(copiesOf(key)).toEqual([]);
+  });
+  it('forced probe (load, R3): a made record holding two identical keyless acts beside unreadable bytes holding one loads the other', async () => {
+    localStorage.setItem(`vitan.made.${key}.1.a`, JSON.stringify([U, U]));
+    signedIn(JSON.stringify([U, { t: 'aKindFromANewerRelease', idempotencyKey: 'k-newer' }]));
+    // the record keeps it on this phone; the act the bytes do not cover is loaded to be sent
+    expect(s().outbox.filter((o) => o.t === U.t)).toHaveLength(1);
+  });
+  it('guard (load, R3): a keyed act the unreadable bytes hold covers it in every record', async () => {
+    localStorage.setItem(`vitan.made.${key}.1.a`, JSON.stringify([approve('k-a')]));
+    localStorage.setItem(`vitan.made.${key}.2.b`, JSON.stringify([approve('k-a')]));
+    signedIn(JSON.stringify([approve('k-a'), { t: 'aKindFromANewerRelease', idempotencyKey: 'k-newer' }]));
+    expect(s().outbox).toEqual([]);
+  });
 });
 

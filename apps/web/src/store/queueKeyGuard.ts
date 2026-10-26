@@ -35,14 +35,6 @@ type Store = Pick<Storage, 'getItem' | 'setItem'> & Partial<Pick<Storage, 'remov
 /** what the key holds, as this release reads it: 'ok', or why it cannot be read */
 export type KeyRead = 'ok' | 'newer' | 'damaged';
 const readOf = (raw: string | null, scopes: QueueScopes | undefined): KeyRead => { const r = readLedgerQueue(raw, scopes); return 'acts' in r ? 'ok' : r.unreadable; };
-/** the identities of the acts a key's bytes hold, read or not: an act already there is never copied aside again */
-function identsIn(raw: string | null): Set<string> {
-  try {
-    const now: unknown = JSON.parse(raw ?? '[]');
-    if (Array.isArray(now)) return new Set(now.filter((o) => o !== null && typeof o === 'object' && !Array.isArray(o)).map((o) => queueActIdent(o as OutboxOp)));
-  } catch { /* not a list: none */ }
-  return new Set();
-}
 /** how many acts of each identity a key's bytes hold, read or not */
 function identCounts(raw: string | null): Map<string, number> {
   const n = new Map<string, number>();
@@ -483,9 +475,12 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       loaded.add(key);
       const held = stranded.get(key) ?? [];
       // a key this release cannot read: its records' acts come back, but not one its bytes may hold (its occurrences
-      // cannot be named), and none is written over
+      // cannot be named), and none is written over. Each keyless act the bytes hold covers one record act (R3); a keyed
+      // act there covers every record act of its identity, all one act
+      const there = identCounts(s.raw);
+      const theirs = (o: OutboxOp): boolean => { const i = queueActIdent(o); const n = there.get(i) ?? 0; if (n === 0) return false; if (!unique(o)) there.set(i, n - 1); return true; };
       const snap: Snapshot = s.acts === null && s.raw !== null
-        ? { ...s, records: s.records.map((r) => ({ ...r, acts: r.acts.filter((o) => !identsIn(s.raw).has(queueActIdent(o))) })) }
+        ? { ...s, records: s.records.map((r) => ({ ...r, acts: r.acts.filter((o) => !theirs(o)) })) }
         : s;
       const all = owedOf(snap, held);
       const frame = all.frame;
