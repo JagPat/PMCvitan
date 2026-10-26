@@ -2501,8 +2501,8 @@ export const useStore = create<Store>()(
     const takenNow = (o: OutboxOp): boolean => queueKeys.taken(isSiteVisitOp(o) ? siteVisitKeyOf(outboxKey()) : outboxKey(), o);
     /** cross-tab drain, the one take path (#1138 r1): the taken acts leave the queue by name (read outside the draft:
      *  an act is taken by its name, which the guard keeps for the stored object), with what the queue's acts derive
-     *  (the photo count, an offline submit's freeze), and the module reconciles a settled act asks for (Codex
-     *  4382389288). The guard has already let them go from its stranded, aside and not-kept sets */
+     *  (the photo count, an offline submit's freeze), the module reconciles a settled act asks for (Codex 4382389288),
+     *  and a fresh read. The guard has already let them go from its stranded, aside, not-kept and waiting sets */
     const dropTaken = (): void => {
       const gone = get().outbox.filter(takenNow);
       if (gone.length === 0) return;
@@ -2511,6 +2511,9 @@ export const useStore = create<Store>()(
       const materials = gone.filter(isMaterialsOp).flatMap((o) => { const ck = coalesceKeyOf(o); return typeof ck === 'string' ? [ck] : []; });
       reconcileModules(currentScope(), { materials: gone.some(isMaterialsOp) ? materials : null, labour: gone.some(isLabourOp), commercial: gone.some(isCommercialOp) });
       if (gone.some((o) => o.t === 'uploadEvidence')) void reconcileEvidence();
+      // the other tab's send changed the server, not this tab's screen: a fresh read is asked, as a flush asks one for
+      // a command it sent (Stage 1 re-check of bfdffcd9, minor). Offline, the reconnect's own read brings it
+      if (get().online) scheduleReconcile(currentScope(), { kind: 'command', createdAfterSequence: snapshotSeq });
     };
     /** The module reconciles an act that left the queue asks for: a flush's end (its sent, dropped and still-failing
      *  acts), and an act another tab took (cross-tab drain r1, Codex 4382389288). `materials` names the coalesce keys
@@ -6821,7 +6824,7 @@ export const useStore = create<Store>()(
         let storage: Storage | null = null;
         try { storage = globalThis.localStorage ?? null; } catch { storage = null; }
         // an act another tab took while this flush ran is that tab's outcome: never kept for the scope left (#1138 r1,
-        // Codex 4382389296; the guard keeps what was taken across the scope move too)
+        // Codex 4382389296; the guard keeps the taken act objects taken across the scope move)
         const unsent = remaining.filter((o) => !queueKeys.taken(isSiteVisitOp(o) ? siteVisitKeyOf(flushKey) : flushKey, o));
         await keepUnsentLocked(queueKeys, storage, flushKey, unsent.filter((o) => !isSiteVisitOp(o)), flushed.filter((o) => !isSiteVisitOp(o)), (l) => l, (o) => !isSiteVisitOp(o));
         // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
@@ -6830,11 +6833,13 @@ export const useStore = create<Store>()(
       }
 
       // Preserve anything queued while we were awaiting (shouldn't happen once online, but
-      // never drop a write): every act in the queue now that this flush did not take, by identity, never by position.
+      // never drop a write): every act in the queue now that this flush did not take, by name, never by position.
       // A take while it ran shortens the queue (#1138 r1, Codex 4382389280), and an act it left unsent that another
-      // tab took meanwhile is not kept
-      const inFlush = new Set(flushed);
-      const appended = remapVisits(get().outbox.filter((o) => !inFlush.has(o)));
+      // tab took meanwhile is not kept. A reload of the queue while it ran gives its acts new objects with the names
+      // they had, so they are this flush's still, never kept beside its own (Stage 1 re-check of bfdffcd9, gap 1)
+      const nameIn = (o: OutboxOp): string | OutboxOp => queueKeys.nameOf(o) ?? o;
+      const inFlush = new Set(flushed.map(nameIn));
+      const appended = remapVisits(get().outbox.filter((o) => !inFlush.has(nameIn(o))));
       const unsentHere = remaining.filter((o) => !takenNow(o));
       visitPhotoEpoch += 1; visitPhotoFlushes += 1; // a visit photo reconciliation read before this flush settled would re-queue a sent photo
       set((s) => {

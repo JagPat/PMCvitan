@@ -348,7 +348,7 @@ describe('cross-tab drain (xtab-drain plan §3′): what another tab took from t
 
   /** this tab's write to the damaged key is refused; another tab, which loaded k-a before the damage, sets the key
    *  aside, then sends k-a and drains it; this tab hears it */
-  const refusedThenTaken = (block: (k: string) => boolean) => {
+  const refusedThenTaken = (block: (k: string) => boolean, byAsk = false) => {
     const m = new Map<string, string>();
     let blocking = true;
     const st = {
@@ -362,7 +362,8 @@ describe('cross-tab drain (xtab-drain plan §3′): what another tab took from t
     const other = createQueueKeyGuard();
     const theirs = other.load(st, K);
     m.set(K, '{damaged');
-    expect(mine.write(st, K, [ka])).toBe(false);
+    // a locked write asked now waits for its lock: its act, which the damaged key does not hold, counts while it waits
+    if (byAsk) mine.ask(st, K, [ka]); else expect(mine.write(st, K, [ka])).toBe(false);
     const refused = { copies: [...m.keys()].filter((k) => k.startsWith('vitan.unreadable.') || k.startsWith('vitan.made.')).length, notKept: mine.notKeptCount() };
     blocking = false;
     other.heard(st, K, theirs);
@@ -394,6 +395,14 @@ describe('cross-tab drain (xtab-drain plan §3′): what another tab took from t
     const { mine, refused } = refusedThenTaken(() => false);
     expect(refused.notKept).toBe(1);
     expect(mine.notKeptCount()).toBe(0);
+  });
+
+  it('forced probe (Stage 1 re-check of bfdffcd9, minor): an act of a locked write still waiting for its lock that another tab then takes is no longer counted', () => {
+    // its made record cannot be written (the store is full): the act is only counted while the write waits
+    const { mine, refused } = refusedThenTaken((k) => k.startsWith('vitan.made.'), true);
+    expect(refused.notKept).toBe(1);
+    expect(mine.notKeptCount()).toBe(0);
+    expect(mine.unsavedCount()).toBe(0);
   });
 
   it('forced probe (Stage 1 watch item): an act queued after the take with the same key is a new act: stored, not taken', () => {

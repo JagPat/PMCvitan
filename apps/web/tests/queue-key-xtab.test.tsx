@@ -212,6 +212,64 @@ describe('cross-tab drain: another tab took the act', () => {
     return { approveDecision, release, flushing };
   };
 
+  /** the key holds `acts`; this tab's flush sends them, held at k-first; another tab, which loaded them, takes the one
+   *  at `takeIdx` (none: -1) */
+  const heldAtFirst = async (acts: OutboxOp[], takeIdx: number) => {
+    let entered!: () => void;
+    const inFlight = new Promise<void>((r) => { entered = r; });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const approveDecision = vi.fn(async (_d: string, _i: number, k: string) => { if (k === 'k-first') { entered(); await gate; } return null; });
+    expect(createQueueKeyGuard().write(localStorage, key, acts)).toBe(true);
+    signedIn(null, null, { approveDecision });
+    const other = createQueueKeyGuard();
+    const theirs = other.load(localStorage, key);
+    await flushes.atRest();
+    useStore.setState({ online: true });
+    const flushing = act(async () => { await s().flushOutbox(); });
+    await inFlight;
+    if (takeIdx >= 0) {
+      expect(other.settled(localStorage, key, theirs[takeIdx])).toBe(true);
+      expect(other.write(localStorage, key, theirs.filter((_, i) => i !== takeIdx))).toBe(true);
+      hear();
+    }
+    return { approveDecision, release, flushing };
+  };
+
+  it('forced probe (Stage 1 re-check of bfdffcd9, gap 1): a reload of the queue while the flush sends: each act is sent once, and memory keeps none twice', async () => {
+    const { approveDecision, release, flushing } = await heldAtFirst([approve('k-first'), approve('k-b')], -1);
+    act(() => { s().hydrateOutbox(); }); // the same scope: a role-only change runs the sync effect again
+    release();
+    await flushing;
+    await flushes.atRest();
+    expect(s().outbox).toEqual([]);
+    await online();
+    expect(sentWith(approveDecision, 'k-first')).toBe(1);
+    expect(sentWith(approveDecision, 'k-b')).toBe(1);
+    expect(keysIn(localStorage.getItem(key))).toEqual([]);
+  });
+
+  it('forced probe (Stage 1 re-check of bfdffcd9, gap 1): an act another tab took stays taken for the running flush across a reload of the queue', async () => {
+    const { approveDecision, release, flushing } = await heldAtFirst([approve('k-first'), approve('k-a'), approve('k-b')], 1);
+    act(() => { s().hydrateOutbox(); });
+    release();
+    await flushing;
+    await flushes.atRest();
+    await online();
+    expect(sentWith(approveDecision, 'k-a')).toBe(0);
+    expect(sentWith(approveDecision, 'k-first')).toBe(1);
+    expect(sentWith(approveDecision, 'k-b')).toBe(1);
+    expect(keysIn(localStorage.getItem(key))).toEqual([]);
+  });
+
+  it('forced probe (Stage 1 re-check of bfdffcd9, minor): an act another tab sent asks this tab for a fresh read', async () => {
+    const { release, flushing } = await heldAtFirst([approve('k-first'), approve('k-a')], 1);
+    const asked = s().commandReconcilePending; // read while the flush still sends k-first: its own read is not asked yet
+    release();
+    await flushing;
+    expect(asked).toBe(true);
+  });
+
   it('forced probe (#1138 r1, Codex 4382389280): an act queued while the flush sends, after another tab took a later act, is kept and sent', async () => {
     const startActivity = vi.fn(async () => null);
     const { approveDecision, release, flushing } = await takenMidFlush({ startActivity });

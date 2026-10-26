@@ -197,9 +197,13 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
   const heardAt = new Map<string, string | null>();
   /** cross-tab drain (plan `xtab-drain/plan.md` §3′): per key, the occurrences another tab took (sent, refused or
    *  discarded): ones this tab knew in the key, which a later read of it, present, readable and in an exact frame, no
-   *  longer holds (R2). Never sent, written back or kept again by this tab; a load of the key ends them. `forget` keeps
-   *  them, as it keeps `known` and `sent`, for a late write of the scope left (#1138 r1, Codex 4382389296) */
+   *  longer holds (R2). Never sent, written back or kept again by this tab; a load of the key, or `forget`, ends them */
   const taken = new Map<string, Set<string>>();
+  /** the act objects memory held when another tab took their occurrence, and the key it took them from. A load of the
+   *  key or `forget` ends `taken` by name, but a flush or a late write that began before it still holds these objects:
+   *  they stay taken for it (#1138 r1, Codex 4382389296; Stage 1 re-check of bfdffcd9, gap 1). Weak: they go with their last holder, and a load gives new
+   *  objects, so an act stored again after the load is this tab's to send */
+  const takenActs = new WeakMap<OutboxOp, string>();
   /** the keys loaded since the last `forget`: the scope a load ran for (Codex 4345664679) */
   const loaded = new Set<string>();
   /** per key, the unsent occurrences of a scope this tab moved off that could be neither written there nor copied
@@ -268,6 +272,8 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     const by = takenBy(s);
     const gone = occs.filter((o) => was.has(o.oid) && by.has(o.oid)).map((o) => o.oid);
     if (gone.length === 0) return;
+    const goneHere = new Set(gone);
+    for (const o of occs) if (goneHere.has(o.oid)) takenActs.set(o.act, key);
     const into = setOf(taken, key);
     const before = into.size;
     for (const oid of gone) into.add(oid);
@@ -280,11 +286,16 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     if (missing) { for (const i of into) missing.delete(i); if (missing.size === 0) unkept.delete(key); }
     const made = madeAside.get(key);
     if (made) releaseAside(storage, key, new Set(made.flatMap((c) => c.oids).filter((i) => !into.has(i))));
+    // nor to count as a locked write's, still waiting for its lock: that write leaves it out (Stage 1 re-check of
+    // bfdffcd9, minor)
+    for (const w of waiting.values()) if (w.key === key) for (const i of into) w.oids.delete(i);
     onTaken(key);
   };
-  /** whether `o` is an occurrence another tab took from `key`: by its name only. A later act of the same identity is a
-   *  new occurrence, never named as a taken one (`oidOf`), so it is sent (Stage 1 gap-check of f9a9bc8, watch item) */
+  /** whether `o` is an occurrence another tab took from `key`: by its name only, or, after a load of the key ended the
+   *  names, as the very object memory held at the take (`takenActs`). A later act of the same identity is a new
+   *  occurrence, never named as a taken one (`oidOf`), so it is sent (Stage 1 gap-check of f9a9bc8, watch item) */
   const isTaken = (key: string, o: OutboxOp): boolean => {
+    if (takenActs.get(o) === key) return true;
     const oid = oids.get(o);
     return oid !== undefined && (taken.get(key)?.has(oid) ?? false);
   };
@@ -582,6 +593,11 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
      *  found by its identity */
     /** cross-tab drain: whether another tab took `o` from `key` (sent, refused or discarded it): it is never sent */
     taken: isTaken,
+    /** `o`'s occurrence name, if this tab named it: a load names the act it reads again as memory's copy was named, so
+     *  a flush settles its acts by name, never by object or position (Stage 1 re-check of bfdffcd9, gap 1) */
+    nameOf(o: OutboxOp): string | undefined {
+      return oids.get(o);
+    },
     withholds(key: string, o: OutboxOp): boolean {
       const w = withheld.get(key);
       if (!w) return false;
@@ -598,12 +614,14 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       asideDone.clear();
       setAsideRaw.clear();
       heardAt.clear();
+      taken.clear();
       withheld.clear();
       loaded.clear();
       handed.clear();
-      // `known`, `sent` and `taken` stay, by key: a write of the scope left that runs late (it waited for its lock) still
-      // knows which stored occurrences this tab held and sent, so it never keeps one as another tab's (B2f-1), and which
-      // another tab took, so it never writes one back (#1138 r1, Codex 4382389296). A load sets them
+      // `known` and `sent` stay, by key: a write of the scope left that runs late (it waited for its lock) still knows
+      // which stored occurrences this tab held and sent, so it never keeps one as another tab's (B2f-1). A load sets them.
+      // What another tab took stays taken for that write as the objects it holds (`takenActs`; #1138 r1, Codex
+      // 4382389296)
     },
     /** whether every one of `keys` was loaded since the last `forget`: memory holds their scope's acts */
     holds(keys: string[]): boolean {
