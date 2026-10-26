@@ -2474,7 +2474,11 @@ export const useStore = create<Store>()(
     /** WEB-02 step A: both queue keys are read and written only through `queueKeys`, which never writes a key this
      *  release cannot read; each read of this scope's keys lists such a key in the strip */
     const strip = queueStrip({ get, set, scope: () => [outboxKey(), siteVisitKeyOf(outboxKey())], keys: () => queueKeys, writes: () => queueWrites() });
-    const queueKeys = createQueueKeyGuard(strip.noteRead, (key) => queueKeyScopes.get(key));
+    // a queue-key hold let go (the key heard readable or cleared, or written) resumes sending, as a kept photo put back
+    // does: once, after the write or event that let it go, and a flush running then runs again (#1132 r2, 4374538874)
+    const queueKeys = createQueueKeyGuard(strip.noteRead, (key) => queueKeyScopes.get(key), () => {
+      void Promise.resolve().then(() => { if (get().online) void get().flushOutbox(); });
+    });
     /** Every scope change (an auth result, a persona switch, a sign-out, and each load of a scope's queue) ends the old
      *  scope's queue-key memory and its strip list here, first, before any storage access: a storage that throws can
      *  then never leave the old scope's list on the next one (Codex 4351952392, the third such leak's root cause) */

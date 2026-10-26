@@ -480,3 +480,94 @@ describe('#1132 round 1', () => {
   });
 });
 
+describe('#1132 round 2', () => {
+  /** an entry this release cannot read that keeps a valid act's idempotency key (no decisionId, no optionIndex) */
+  const malformed = (k: string) => JSON.stringify([{ t: 'approve', idempotencyKey: k }]);
+  /** the microtasks a release's flush runs in, settled (a signal count, not a clock) */
+  const settle = async () => { for (let n = 0; n < 20; n += 1) await act(async () => { await Promise.resolve(); }); };
+  it('forced probe (4374538867, heard): another tab writes unreadable bytes whose malformed entry keeps k-a: the valid k-a is counted and copied aside', async () => {
+    signedIn(JSON.stringify([approve('k-a')]));
+    otherTabWrites(key, malformed('k-a'));
+    expect(s().queueUnreadable.map((u) => u.key)).toEqual([key]);
+    expect(reloadAsks()).toEqual(['1 updates aren’t saved on this phone and will be lost. Continue?']);
+    expect(copiesOf(key)).toEqual([JSON.stringify([approve('k-a')])]);
+  });
+  it('guard (4374538867, heard): the same with the malformed entry keeping another key (k-z)', async () => {
+    signedIn(JSON.stringify([approve('k-a')]));
+    otherTabWrites(key, malformed('k-z'));
+    expect(s().queueUnreadable.map((u) => u.key)).toEqual([key]);
+    expect(reloadAsks()).toEqual(['1 updates aren’t saved on this phone and will be lost. Continue?']);
+    expect(copiesOf(key)).toEqual([JSON.stringify([approve('k-a')])]);
+  });
+  it('forced probe (4374538867, write): this tab’s own write finds such bytes (no event): the valid k-a is counted and copied aside', async () => {
+    signedIn(JSON.stringify([approve('k-a')]));
+    localStorage.setItem(key, malformed('k-a'));
+    s().startActivity('B-1');
+    await queueWritten();
+    expect(s().queueUnreadable.map((u) => u.key)).toEqual([key]);
+    expect(reloadAsks()).toEqual(['2 updates aren’t saved on this phone and will be lost. Continue?']);
+    expect(copiesOf(key).some((c) => (c ?? '').includes('"decisionId":"d-1"'))).toBe(true);
+  });
+  it('guard (4374538867, write): the same with the malformed entry keeping k-z', async () => {
+    signedIn(JSON.stringify([approve('k-a')]));
+    localStorage.setItem(key, malformed('k-z'));
+    s().startActivity('B-1');
+    await queueWritten();
+    expect(s().queueUnreadable.map((u) => u.key)).toEqual([key]);
+    expect(reloadAsks()).toEqual(['2 updates aren’t saved on this phone and will be lost. Continue?']);
+    expect(copiesOf(key).some((c) => (c ?? '').includes('"decisionId":"d-1"'))).toBe(true);
+  });
+  it('forced probe (4374538874, heard): online, a withheld act whose key another tab repairs is sent with no further command', async () => {
+    const approveDecision = vi.fn(async () => null);
+    signedIn(JSON.stringify([approve('k-a')]), null, { approveDecision });
+    otherTabWrites(key, DAMAGED);
+    await goOnline();
+    expect(approveDecision).not.toHaveBeenCalled(); // held: precondition
+    otherTabWrites(key, JSON.stringify([approve('k-a')]));
+    await settle();
+    expect(approveDecision).toHaveBeenCalled();
+  });
+  it('guard (4374538874, heard): after the repair an explicit flush sends it (it is sendable)', async () => {
+    const approveDecision = vi.fn(async () => null);
+    signedIn(JSON.stringify([approve('k-a')]), null, { approveDecision });
+    otherTabWrites(key, DAMAGED);
+    await goOnline();
+    expect(approveDecision).not.toHaveBeenCalled();
+    otherTabWrites(key, JSON.stringify([approve('k-a')]));
+    await act(async () => { await s().flushOutbox(); });
+    expect(approveDecision).toHaveBeenCalled();
+  });
+  it('forced probe (4374538874, persist): a hold the flush’s own end write lets go is followed by a send with no further command', async () => {
+    const approveDecision = vi.fn(async () => null);
+    signedIn(JSON.stringify([approve('k-a')]), null, { approveDecision });
+    otherTabWrites(key, DAMAGED);
+    localStorage.setItem(key, JSON.stringify([approve('k-a')])); // repaired, its event not yet delivered
+    await goOnline();
+    await settle();
+    expect(approveDecision).toHaveBeenCalled();
+  });
+  it('guard (4374538874, persist): the resumed flush sends the act once and empties the queue; nothing runs again', async () => {
+    const approveDecision = vi.fn(async () => null);
+    signedIn(JSON.stringify([approve('k-a')]), null, { approveDecision });
+    otherTabWrites(key, DAMAGED);
+    localStorage.setItem(key, JSON.stringify([approve('k-a')]));
+    await goOnline();
+    await settle();
+    await settle();
+    expect(approveDecision).toHaveBeenCalledTimes(1);
+    expect(s().outbox).toEqual([]);
+    expect(s()._outboxFlushing()).toBe(false);
+  });
+  it('forced probe (4374538867, load): a made record’s act beside unreadable bytes whose malformed entry keeps its key is loaded', async () => {
+    localStorage.setItem(`vitan.made.${key}.1.a`, JSON.stringify([approve('k-a')]));
+    signedIn(malformed('k-a'));
+    expect(s().outbox.map((o) => (o as { idempotencyKey?: string }).idempotencyKey)).toEqual(['k-a']);
+  });
+  it('guard (4374538867, equal entry): an entry holding the act with its fields in another order still covers it', async () => {
+    signedIn(JSON.stringify([approve('k-a')]));
+    otherTabWrites(key, JSON.stringify([{ idempotencyKey: 'k-a', optionIndex: 0, decisionId: 'd-1', t: 'approve' }, { t: 'aKindFromANewerRelease', idempotencyKey: 'k-newer' }]));
+    expect(reloadAsks()).toEqual([]);
+    expect(copiesOf(key)).toEqual([]);
+  });
+});
+

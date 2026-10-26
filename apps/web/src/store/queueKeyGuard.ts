@@ -35,12 +35,17 @@ type Store = Pick<Storage, 'getItem' | 'setItem'> & Partial<Pick<Storage, 'remov
 /** what the key holds, as this release reads it: 'ok', or why it cannot be read */
 export type KeyRead = 'ok' | 'newer' | 'damaged';
 const readOf = (raw: string | null, scopes: QueueScopes | undefined): KeyRead => { const r = readLedgerQueue(raw, scopes); return 'acts' in r ? 'ok' : r.unreadable; };
-/** how many acts of each identity a key's bytes hold, read or not */
-function identCounts(raw: string | null): Map<string, number> {
+/** an act's bytes with every object's keys in order: two entries holding the same act read the same, whichever
+ *  release wrote them (a release never reshapes an outbox kind) */
+const canon = (o: unknown): string => JSON.stringify(o, (_k, v: unknown) => (v !== null && typeof v === 'object' && !Array.isArray(v)
+  ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, (v as Record<string, unknown>)[k]])) : v));
+/** how many entries equal to each act a key's bytes hold, read or not: only an entry that is the act itself covers
+ *  it, never one that merely keeps its key (#1132 r2, 4374538867) */
+function entryCounts(raw: string | null): Map<string, number> {
   const n = new Map<string, number>();
   try {
     const now: unknown = JSON.parse(raw ?? '[]');
-    if (Array.isArray(now)) for (const o of now) if (o !== null && typeof o === 'object' && !Array.isArray(o)) { const i = queueActIdent(o as OutboxOp); n.set(i, (n.get(i) ?? 0) + 1); }
+    if (Array.isArray(now)) for (const o of now) if (o !== null && typeof o === 'object' && !Array.isArray(o)) { const c = canon(o); n.set(c, (n.get(c) ?? 0) + 1); }
   } catch { /* not a list: none */ }
   return n;
 }
@@ -156,7 +161,7 @@ export type QueueWrite = { key: string; mine: OutboxOp[]; takes: (o: OutboxOp) =
 
 /** `scopesOf`: the user scopes each key's acts may name (`QueueScopes`), as the store derived them with the key's name.
  *  A key it names none for reads a scope-bearing act as damaged */
-export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: string | null) => void = () => {}, scopesOf: (key: string) => QueueScopes | undefined = () => undefined) {
+export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: string | null) => void = () => {}, scopesOf: (key: string) => QueueScopes | undefined = () => undefined, onRelease: (key: string) => void = () => {}) {
   /** each act object this tab holds, and its occurrence id: given at the load that read it, at the record that kept
    *  it, or at its first write (a new act). The store keeps a queued act as the same object until the flush removes it
    *  (`notes/site-visits/web-02-L2b/identity-map.md`); an act it re-creates has a key, and is found by it (`oidOf`) */
@@ -181,6 +186,9 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
   /** per key, the occurrences this tab last saw in it, held from sending once another tab made the key unreadable: that
    *  tab's bytes may hold them (Codex 4353751507). Let go once the key is loaded, written, or heard readable again */
   const withheld = new Map<string, Set<string>>();
+  /** a hold let go by a landed write or a heard read: what it held may go now, so the store is told (#1132 r2,
+   *  4374538874) */
+  const letGo = (key: string): void => { const had = (withheld.get(key)?.size ?? 0) > 0; withheld.delete(key); if (had) onRelease(key); };
   /** per key, the bytes this tab's last landed write left there: bytes a write finds that are still these are this
    *  tab's own, not another tab's, and hold nothing (#1122 r1) */
   const ownRaw = new Map<string, string>();
@@ -367,13 +375,13 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
   const frameOids = (s: Snapshot): string[] => frameOf(s).occs.map((o) => o.oid);
   /** `mine`'s occurrences the key does not hold: the ones a refused write lists not kept and copies aside. As at
    *  22f5560 only the key counts, so an act a made record also keeps is still copied (Codex 4353751499). A key this
-   *  release cannot read is counted by the identities its bytes hold (its occurrences cannot be named) */
+   *  release cannot read is counted by the entries its bytes hold equal to an act (its occurrences cannot be named) */
   const notOnPhone = (s: Read, mine: Occ[]): Occ[] => {
     if (s.acts === null) {
-      // each act the bytes hold covers one occurrence: two identical keyless acts there once are one kept, one not
-      // (#1132 r1, 4374102398)
-      const there = identCounts(s.raw);
-      return mine.filter((o) => { const i = queueActIdent(o.act); const n = there.get(i) ?? 0; if (n === 0) return true; there.set(i, n - 1); return false; });
+      // each entry equal to an act covers one occurrence: two identical keyless acts there once are one kept, one not
+      // (#1132 r1, 4374102398); an entry that only keeps the act's key covers none (#1132 r2, 4374538867)
+      const there = entryCounts(s.raw);
+      return mine.filter((o) => { const c = canon(o.act); const n = there.get(c) ?? 0; if (n === 0) return true; there.set(c, n - 1); return false; });
     }
     const there = new Set(frameOids(s));
     return mine.filter((o) => !there.has(o.oid));
@@ -426,7 +434,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     const was = sent.get(key);
     if (was) { for (const oid of [...was]) if (!held.has(oid)) was.delete(oid); if (was.size === 0) sent.delete(key); }
     unkept.delete(key);
-    withheld.delete(key);
+    letGo(key);
   };
 
   /** a key found unreadable: the occurrences this tab last saw in it are held from sending, as another tab's bytes may
@@ -446,9 +454,9 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     const occs = occsOf(key, mine);
     if (raw === null) {
       known.delete(key);
-      withheld.delete(key);
+      letGo(key);
     } else if (readAs === 'ok') {
-      withheld.delete(key);
+      letGo(key);
       // what the key holds again is kept again: an act listed not kept that it holds is no longer counted (4370036886)
       const un = unkept.get(key);
       if (un && un.size > 0) {
@@ -475,10 +483,10 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       loaded.add(key);
       const held = stranded.get(key) ?? [];
       // a key this release cannot read: its records' acts come back, but not one its bytes may hold (its occurrences
-      // cannot be named), and none is written over. Each keyless act the bytes hold covers one record act (R3); a keyed
-      // act there covers every record act of its identity, all one act
-      const there = identCounts(s.raw);
-      const theirs = (o: OutboxOp): boolean => { const i = queueActIdent(o); const n = there.get(i) ?? 0; if (n === 0) return false; if (!unique(o)) there.set(i, n - 1); return true; };
+      // cannot be named), and none is written over. Only an entry equal to the act covers it (4374538867): a keyless one
+      // covers one record act (R3), a keyed one every equal record act, all one act
+      const there = entryCounts(s.raw);
+      const theirs = (o: OutboxOp): boolean => { const c = canon(o); const n = there.get(c) ?? 0; if (n === 0) return false; if (!unique(o)) there.set(c, n - 1); return true; };
       const snap: Snapshot = s.acts === null && s.raw !== null
         ? { ...s, records: s.records.map((r) => ({ ...r, acts: r.acts.filter((o) => !theirs(o)) })) }
         : s;
