@@ -1149,6 +1149,37 @@ describe('U3c', () => {
     }
   }
 
+  // #1136 r1 (Codex 4380084840; Stage 1's rule): every key the person tapped for is checked by identity once the tap
+  // holds its locks. Another tab repairs it, clears it or rewrites it while the tap waits on that tab's held lock: the
+  // tap writes nothing to it, copies nothing of it, and what that tab stored stays as it stored it
+  const OTHER = JSON.stringify([approve('k-other')]);
+  const REWRITTEN = '{damaged by another tab';
+  for (const [how, bytes] of [['repairs', OTHER], ['clears', null], ['rewrites', REWRITTEN]] as const) {
+    it(`forced probe (#1136 r1, 4380084840): another tab ${how} a listed key while the tap waits: nothing of this tab’s is written there`, async () => {
+      const approveDecision = vi.fn(async () => null);
+      signedIn(JSON.stringify([approve('k-a')]), LANE_DAMAGED, { approveDecision });
+      otherTabWrites(key, DAMAGED); // another tab damages the key this tab loaded k-a from: k-a is withheld
+      expect(s().queueUnreadable.map((u) => u.key).sort()).toEqual([key, lane].sort());
+      await tapBehind(key, () => { if (bytes === null) localStorage.removeItem(key); else localStorage.setItem(key, bytes); });
+      expect(localStorage.getItem(key)).toBe(bytes);
+      expect(localStorage.getItem(lane)).toBe(LANE_DAMAGED);
+      expect([copiesOf(key).filter((c) => c === bytes), copiesOf(lane)]).toEqual([[], []]);
+      expect(s().queueSetAsideFailed).toBe(false);
+    });
+  }
+
+  it('guard (#1136 r1, 4380084840): a listed key drained while another scope key turns damaged stops the tap: the list holds as many keys, not the same ones', async () => {
+    signedIn(JSON.stringify([approve('k-a')]));
+    otherTabWrites(key, DAMAGED);
+    expect(s().queueUnreadable.map((u) => u.key)).toEqual([key]);
+    await tapBehind(key, () => { localStorage.setItem(key, '[]'); localStorage.setItem(lane, LANE_DAMAGED); });
+    expect(keysIn(localStorage.getItem(key))).toEqual([]);
+    expect(localStorage.getItem(lane)).toBe(LANE_DAMAGED);
+    expect(copiesOf(lane)).toEqual([]);
+    expect(s().queueUnreadable.map((u) => u.key)).toEqual([lane]);
+    expect(s().queueSetAsideFailed).toBe(false);
+  });
+
   /** an act this release's own reader rejects (a negative option index): this tab's own write leaves bytes it reads
    *  as damaged, as `site-visits-photos-offline.test.tsx` does with a visit start's id */
   const selfRejected = { t: 'approve', decisionId: 'd-1', optionIndex: -1, idempotencyKey: 'k-self' } as OutboxOp;

@@ -140,6 +140,15 @@ describe('queueKeyGuard: a key this release cannot read', () => {
     expect(st.getItem(K)).toBe('{newer');
   });
 
+  it('#1136 r1: a key holding other bytes than the person tapped for is changed, even when heard reconciled them: nothing is copied', () => {
+    const st = storage({ [K]: '{bad', [`${K}x`]: '{bad2' });
+    const q = heard(st, [K, `${K}x`]);
+    st.writes.length = 0;
+    expect(q.setAside(st, [`${K}x`, K], new Map([[K, '{bad'], [`${K}x`, '{tapped for']]))).toBe('changed');
+    expect(st.writes).toEqual([]);
+    expect(q.setAside(st, [K, `${K}x`], new Map([[K, '{bad'], [`${K}x`, '{bad2']]))).toBe('ok');
+  });
+
   it('U3c: a Set aside whose read of a later key throws removes the copies it made, and says none', () => {
     const M = 'vitan.outbox.u.q';
     const m = new Map([[K, '{bad'], [M, '{bad2']]);
@@ -160,7 +169,7 @@ describe('queueKeyGuard: a key this release cannot read', () => {
 
   it('a Set aside of a key that reads is nothing to do', () => {
     const st = storage({ [K]: JSON.stringify([a('x')]) });
-    const q = createQueueKeyGuard();
+    const q = heard(st, [K]);
     expect(q.setAside(st, [K])).toBe('ok');
     expect(st.writes).toEqual([]);
   });

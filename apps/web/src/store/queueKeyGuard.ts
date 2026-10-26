@@ -671,16 +671,21 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
      *  'none' when one could not be made, or a read of a key threw (plan re-check, gap 2): no key is marked, and the
      *  copies this tap made are removed, so a retry finds the room it had (Codex 4346169602). U3c: only the bytes `heard`
      *  last reconciled the key from are copied; a key holding other bytes now is 'changed', with the same nothing kept
-     *  (plan gap-check, gap 3) */
-    setAside(storage: Store, keys: string[]): 'ok' | 'none' | 'changed' {
+     *  (plan gap-check, gap 3). `tapped`: the bytes each key held when the person tapped; a key holding other bytes now
+     *  (readable, absent or rewritten) is 'changed' too, and the whole tap stops (#1136 r1) */
+    setAside(storage: Store, keys: string[], tapped?: ReadonlyMap<string, string | null>): 'ok' | 'none' | 'changed' {
       const copied = new Map<string, string>();
       const made: string[] = [];
       const stop = (why: 'none' | 'changed'): 'none' | 'changed' => { removeCopies(storage, made); return why; };
       for (const key of keys) {
         let raw: string | null;
         try { raw = storage.getItem(key); } catch { return stop('none'); }
-        if (raw === null || readOf(raw, scopesOf(key)) === 'ok') continue;
+        // each key by identity, before anything is skipped: its bytes now are the bytes `heard` reconciled and, for the
+        // person's tap, the bytes it was tapped for. A key made readable, cleared or rewritten meanwhile is 'changed'
+        // (#1136 r1, Codex 4380084840: a drained key was skipped here, then written back over by `writeAll`)
         if (!heardAt.has(key) || heardAt.get(key) !== raw) return stop('changed');
+        if (tapped && tapped.get(key) !== raw) return stop('changed');
+        if (raw === null || readOf(raw, scopesOf(key)) === 'ok') continue;
         if (!copyAside(storage, key, raw, (n) => made.push(n))) return stop('none');
         copied.set(key, raw);
       }
