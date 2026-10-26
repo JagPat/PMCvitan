@@ -838,10 +838,10 @@ export interface AppActions {
   record: (label: string) => void;
   toggleOnline: () => void;
   /** Replay the durable outbox in order. `okMsg` (write-ahead command path) announces the command's
-   *  success on a clean flush instead of the batch "N synced" summary. Resolves a structured
+   *  success instead of the batch "N synced" summary. Resolves a structured
    *  `OutboxFlushResult` so a caller can confirm ITS OWN ops by key (queue absence ≠ success — a
-   *  terminal 4xx also removes the op). `act` is the command's act: a call made while another flush runs leaves its
-   *  `okMsg` to the flush that sends that act (#1133). */
+   *  terminal 4xx also removes the op). `act` is the command's act: its `okMsg` waits for the flush that sends that act,
+   *  this one or a later one, whichever call it came with (#1133). */
   flushOutbox: (opts?: { okMsg?: string | (() => string); act?: OutboxOp }) => Promise<OutboxFlushResult>;
   /** Site Visits SV1-c unit 2 (#792, F53): put one site-visit act in the durable outbox and send it (write-ahead,
    *  as the Daily Log does); `offlineMsg` is what the viewer is told when the app is offline. False without the server. */
@@ -887,6 +887,9 @@ export interface AppActions {
    *  still running when it ends: a test waits for it to settle before the next begins, or the next test's flushes are
    *  coalesced into it. */
   _outboxFlushing: () => boolean;
+  /** Tests only: settles once every queue-key release so far has asked its flush (or found the app offline). A test waits
+   *  on it, the flushes and the queue's locks, never on a count of turns or a clock. */
+  _queueReleased: () => Promise<void>;
   /** adopt the session this tab saved before a reload, if one is still valid; true when one was adopted */
   restoreSession: () => boolean;
   /** Site Visits SV1-c (#792) — the gateway a screen that keeps its own state (the Site Visits screen) sends
@@ -1618,9 +1621,10 @@ export const useStore = create<Store>()(
     // but serializing keeps ordering and avoids redundant sends.
     let outboxFlushing = false;
     let outboxFlushQueued = false;
-    /** #1133 (Codex 4374997251): the commands whose own flush call came while another flush ran, each with its act and
-     *  success line. The running flush says the line of one whose act it sent; any other goes to the queued rerun */
-    let joinedOk: { okMsg: string | (() => string); act: OutboxOp }[] = [];
+    /** #1133 (Codex 4374997251, #1134 r1 4376641813): each command's success line, by its act's idempotency key and the
+     *  queue it is in, from its flush call until a flush settles that act: the flush the server accepts it in says the
+     *  line, one that refuses it for good drops it, and one that leaves it queued (held, offline, a failed send) keeps it */
+    let okWaiting: { okMsg: string | (() => string); key: string; queue: string }[] = [];
     const scopeCoordinators = new Map<string, ScopeCoordinator>();
     const scopeKey = (scope: ProjectScope): string => `${scope.projectId}::${scope.generation}`;
     /** Drop coordinators for scopes we've LEFT that have no pull in flight — a scope
@@ -2475,13 +2479,17 @@ export const useStore = create<Store>()(
      *  release before it, which replays every `siteVisit…` act it finds and has no case for a photo, never meets one,
      *  and this lane is stored exactly as before (Codex 4320122193, 4320404449, 4320404441). */
     const isStoredVisitOp = (o: OutboxOp): boolean => isSiteVisitOp(o) && o.t !== 'siteVisitAddFile';
+    /** the release drains asked so far, settled once each has asked its flush or found the app offline (tests wait on it,
+     *  `_queueReleased`, #1134 r1 4376641821) */
+    let releaseDrains: Promise<void> = Promise.resolve();
     /** WEB-02 step A: both queue keys are read and written only through `queueKeys`, which never writes a key this
      *  release cannot read; each read of this scope's keys lists such a key in the strip */
     const strip = queueStrip({ get, set, scope: () => [outboxKey(), siteVisitKeyOf(outboxKey())], keys: () => queueKeys, writes: () => queueWrites() });
     // a queue-key hold let go (the key heard readable or cleared, or written) resumes sending, as a kept photo put back
     // does: once, after the write or event that let it go, and a flush running then runs again (#1132 r2, 4374538874)
     const queueKeys = createQueueKeyGuard(strip.noteRead, (key) => queueKeyScopes.get(key), () => {
-      void Promise.resolve().then(() => { if (get().online) void get().flushOutbox(); });
+      const drain = Promise.resolve().then(() => { if (get().online) void get().flushOutbox(); });
+      releaseDrains = Promise.all([releaseDrains, drain]).then(() => undefined);
     });
     /** Every scope change (an auth result, a persona switch, a sign-out, and each load of a scope's queue) ends the old
      *  scope's queue-key memory and its strip list here, first, before any storage access: a storage that throws can
@@ -3150,6 +3158,7 @@ export const useStore = create<Store>()(
       gateway = g;
     },
     _outboxFlushing: () => outboxFlushing,
+    _queueReleased: () => releaseDrains,
     restoreSession: () => {
       // #482 6227430525 — a reload adopts the session this tab saved, through the one adoption path, so a
       // reload lands back where the person was instead of on the sign-in screen. Never under dev auth.
@@ -6308,14 +6317,12 @@ export const useStore = create<Store>()(
       // `ran:false`/empty so a caller confirming its own ops never mistakes "not run" for "succeeded".
       const notRun = (): OutboxFlushResult => ({ ran: false, scopeMoved: false, succeededKeys: [], droppedKeys: [], pendingKeys: [] });
       if (!gateway) return notRun();
+      const okKey = opts?.act && 'idempotencyKey' in opts.act ? opts.act.idempotencyKey : undefined;
+      if (opts?.okMsg && okKey && !okWaiting.some((w) => w.key === okKey)) okWaiting.push({ okMsg: opts.okMsg, key: okKey, queue: outboxKey() });
       // finding 1 — serialize flushes: a write-ahead command fires a flush per command, so one may be
       // in flight already. Coalesce (mark + return); the in-flight flush re-runs once after it settles,
       // so a command persisted mid-flush is still sent. Idempotency keys make an overlap harmless.
-      if (outboxFlushing) {
-        outboxFlushQueued = true;
-        if (opts?.okMsg && opts.act) joinedOk.push({ okMsg: opts.okMsg, act: opts.act });
-        return notRun();
-      }
+      if (outboxFlushing) { outboxFlushQueued = true; return notRun(); }
       outboxFlushing = true;
       try {
       // SV2: every kept visit photo's act is put back first, from the phone's own record of it, so a close can never
@@ -6744,17 +6751,30 @@ export const useStore = create<Store>()(
       // finding 1 — a write-ahead command passes its own success toast (`okMsg`); the reconcile
       // announces it on `applied`. In that case suppress the batch "N synced" line below (the okMsg
       // already reported success), but still surface the error parts (dropped / still-pending).
-      // a command's line is said only by the flush the server accepted its act in: its own call's, or one it joined
-      // (#1133). An act refused for good leaves the queue too, and says the refused line instead
+      // a command's line is said only by the flush the server accepted its act in, whichever call it came with (#1133).
+      // An act refused for good leaves the queue too, and says the refused line instead. A line whose act is still in this
+      // queue waits for a later flush (#1134 r1 4376641813); one whose act left it, sent or refused, is done
       const succeeded = new Set(succeededKeys);
-      const sentHere = (act: OutboxOp): boolean => { const k = keyOf(act); return k !== undefined && succeeded.has(k); };
-      const joined = joinedOk.filter((j) => sentHere(j.act));
-      joinedOk = joinedOk.filter((j) => !joined.includes(j));
-      const okMsg = (opts?.okMsg && (!opts.act || sentHere(opts.act)) ? opts.okMsg : undefined) || joined.at(-1)?.okMsg;
+      const stillQueued = new Set(get().outbox.flatMap((o) => keyOf(o) ?? []));
+      const said = okWaiting.filter((w) => succeeded.has(w.key));
+      okWaiting = okWaiting.filter((w) => w.queue !== flushKey || stillQueued.has(w.key));
+      const okMsg = (opts?.okMsg && !okKey ? opts.okMsg : undefined) || said.at(-1)?.okMsg;
       const flushOk = typeof okMsg === 'function' ? okMsg() : okMsg;
+      const parts: string[] = [];
+      const lang = get().lang;
+      if (synced > 0 && !okMsg) parts.push(SYNC.synced(synced, lang));
+      if (dropped > 0) parts.push(SYNC.dropped(dropped, lang));
+      if (remaining.length > 0) parts.push(SYNC.pending(remaining.length, lang));
+      // the chain refusals carry the server's words, so they are not folded into the count, but they are said in the same
+      // line: the command's line and everything else this flush did are one line, so none hides another (#1134 r1
+      // 4376641802, Stage 1 re-check of 62c8d1e)
+      const rest = [...(parts.length ? [SYNC.join(parts, lang)] : []), ...chainRefusals].join(' ');
+      let toldWith: string | undefined;
       if (lastSnap && flushLease) {
         // a stale snapshot is handled as a superseded one is: the command's word is said, and a reconcile asked after it
-        consumeSnapshotResult(lastSnapStale ? 'superseded' : acceptSnapshot(lastSnap, flushLease), flushOk, flushLease.scope);
+        const result = lastSnapStale ? 'superseded' : acceptSnapshot(lastSnap, flushLease);
+        if (flushOk && rest && (result === 'applied' || result === 'superseded')) toldWith = flushOk;
+        consumeSnapshotResult(result, toldWith ? undefined : flushOk, flushLease.scope);
       } else if (flushLease && pullSuperseded) {
         // (a flush whose project changed has returned above: the scope here is still the flush's)
         void requestFreshSnapshot(flushLease.scope);
@@ -6763,14 +6783,7 @@ export const useStore = create<Store>()(
       // the count's "updating" and takes the photo out of the log, and one that fails shows the Retry
       if (photoSettledGone && flushLease) scheduleReconcile(flushLease.scope, { kind: 'command', createdAfterSequence: snapshotSeq });
 
-      const parts: string[] = [];
-      const lang = get().lang;
-      if (synced > 0 && !okMsg) parts.push(SYNC.synced(synced, lang));
-      if (dropped > 0) parts.push(SYNC.dropped(dropped, lang));
-      if (remaining.length > 0) parts.push(SYNC.pending(remaining.length, lang));
-      if (parts.length && endHere()) get().flash(SYNC.join(parts, lang));
-      // the chain refusals carry the server's words, so they are not folded into the count above
-      if (chainRefusals.length && endHere()) get().flash(chainRefusals.join(' '));
+      if (rest && endHere()) get().flash(toldWith ? `${toldWith} ${rest}` : rest);
       // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved
       // to FAILED; an op kept alive by a failed dead-letter write stays covered
       void reconcileEvidence();
@@ -6862,17 +6875,13 @@ export const useStore = create<Store>()(
           visitPhotoRecheck = false;
           void reconcileVisitPhotos();
         }
-        // a command persisted DURING this flush was not replayed here — flush it now (plain, no okMsg,
-        // so its success shows via the batch summary). Bounded: the rerun fires at most once per settle.
+        // a command persisted DURING this flush was not replayed here — flush it now (plain: a command's line still
+        // waiting is said by the flush that sends its act, #1133). Bounded: the rerun fires at most once per settle.
         // It runs on an empty queue too: a visit photo kept meanwhile whose act this flush let go (its visit's
         // start was refused) has it put back there and settled (SV2, Codex 4321084743)
         if (outboxFlushQueued) {
           outboxFlushQueued = false;
-          // a command that joined and whose act is still queued has its line said by the rerun that sends it (#1133)
-          const queued = new Set(get().outbox);
-          const carried = joinedOk.filter((j) => queued.has(j.act)).at(-1);
-          joinedOk = [];
-          if (get().online) void get().flushOutbox(carried && { okMsg: carried.okMsg, act: carried.act });
+          if (get().online) void get().flushOutbox();
         }
       }
     },
