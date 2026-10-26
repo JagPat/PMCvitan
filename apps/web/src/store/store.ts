@@ -841,8 +841,8 @@ export interface AppActions {
    *  success instead of the batch "N synced" summary. Resolves a structured
    *  `OutboxFlushResult` so a caller can confirm ITS OWN ops by key (queue absence ≠ success — a
    *  terminal 4xx also removes the op). `act` is the command's act: its `okMsg` waits for the flush that sends that act,
-   *  this one or a later one, whichever call it came with (#1133). */
-  flushOutbox: (opts?: { okMsg?: string | (() => string); act?: OutboxOp }) => Promise<OutboxFlushResult>;
+   *  this one or a later one, whichever call it came with (#1133); a line always comes with its act (#1134 r2). */
+  flushOutbox: (opts?: { okMsg: string | (() => string); act: OutboxOp }) => Promise<OutboxFlushResult>;
   /** Site Visits SV1-c unit 2 (#792, F53): put one site-visit act in the durable outbox and send it (write-ahead,
    *  as the Daily Log does); `offlineMsg` is what the viewer is told when the app is offline. False without the server. */
   queueSiteVisitAct: (op: OutboxOp, offlineMsg: string) => boolean;
@@ -6317,7 +6317,8 @@ export const useStore = create<Store>()(
       // `ran:false`/empty so a caller confirming its own ops never mistakes "not run" for "succeeded".
       const notRun = (): OutboxFlushResult => ({ ran: false, scopeMoved: false, succeededKeys: [], droppedKeys: [], pendingKeys: [] });
       if (!gateway) return notRun();
-      const okKey = opts?.act && 'idempotencyKey' in opts.act ? opts.act.idempotencyKey : undefined;
+      // a site visit act's word is the Site Visits screen's, never a line here, and it is not in the batch count either
+      const okKey = opts?.act && !isSiteVisitOp(opts.act) && 'idempotencyKey' in opts.act ? opts.act.idempotencyKey : undefined;
       if (opts?.okMsg && okKey && !okWaiting.some((w) => w.key === okKey)) okWaiting.push({ okMsg: opts.okMsg, key: okKey, queue: outboxKey() });
       // finding 1 — serialize flushes: a write-ahead command fires a flush per command, so one may be
       // in flight already. Coalesce (mark + return); the in-flight flush re-runs once after it settles,
@@ -6758,11 +6759,19 @@ export const useStore = create<Store>()(
       const stillQueued = new Set(get().outbox.flatMap((o) => keyOf(o) ?? []));
       const said = okWaiting.filter((w) => succeeded.has(w.key));
       okWaiting = okWaiting.filter((w) => w.queue !== flushKey || stillQueued.has(w.key));
-      const okMsg = (opts?.okMsg && !okKey ? opts.okMsg : undefined) || said.at(-1)?.okMsg;
-      const flushOk = typeof okMsg === 'function' ? okMsg() : okMsg;
+      // #1134 r2 (4377928188, root-cause audit in notes/site-visits/web-02-U3/u3b/r2/fix.md): a flush sends 0..N commands'
+      // acts, each with its own outcome. Each command whose act this flush sent says its line once, in the order sent, in
+      // this flush's one line; past two, the first is said and the rest are counted. The count covers every sent act
+      // without a line (every waiting act was counted as sent: no site visit act waits for a line)
+      const sentOrder = (k: string) => succeededKeys.indexOf(k);
+      // (every outbox act is keyed, so a line comes only with its act: `okWaiting`)
+      const lined = said.sort((a, b) => sentOrder(a.key) - sentOrder(b.key)).map((w) => w.okMsg);
+      const told = lined.length > 2 ? lined.slice(0, 1) : lined;
+      const flushOk = told.map((m) => (typeof m === 'function' ? m() : m)).join(' ') || undefined;
+      const unlined = synced - told.length;
       const parts: string[] = [];
       const lang = get().lang;
-      if (synced > 0 && !okMsg) parts.push(SYNC.synced(synced, lang));
+      if (unlined > 0) parts.push(SYNC.synced(unlined, lang));
       if (dropped > 0) parts.push(SYNC.dropped(dropped, lang));
       if (remaining.length > 0) parts.push(SYNC.pending(remaining.length, lang));
       // the chain refusals carry the server's words, so they are not folded into the count, but they are said in the same

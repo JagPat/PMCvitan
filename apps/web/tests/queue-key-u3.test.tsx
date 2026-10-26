@@ -628,6 +628,8 @@ describe('U3b', () => {
   const STARTED = 'New daily log started — crew carried over at zero.';
   const DISCARDED = '1 could not be applied and was discarded.';
   const PENDING = '1 still pending — will retry when you reconnect.';
+  /** a command's line with the plain act this flush also sent (k-a, which has no line), counted (#1134 r2) */
+  const WITH_SYNCED = `${STARTED} 1 offline update synced.`;
   const refused = () => Object.assign(new Error('409'), { status: 409, serverMessage: 'Refused' });
   const unavailable = () => Object.assign(new Error('503'), { status: 503 });
   /** the daily log command's own flush call (made once its write has run) */
@@ -660,7 +662,7 @@ describe('U3b', () => {
     expect(gw.approveDecision).toHaveBeenCalledTimes(1);
     expect(gw.startDailyLog).toHaveBeenCalledTimes(1);
     expect(s().outbox).toEqual([]);
-    expect(s().toast).toBe(STARTED);
+    expect(s().toast).toBe(WITH_SYNCED);
   });
   it('guard (4374997251): the same command with no hold says its own success line', async () => {
     const gw = { snapshot: vi.fn(async () => snap()), approveDecision: vi.fn(async () => snap()), startDailyLog: vi.fn(async () => snap()) };
@@ -670,7 +672,7 @@ describe('U3b', () => {
     await flushes.asked(command);
     await flushes.atRest();
     expect(s().outbox).toEqual([]);
-    expect(s().toast).toBe(STARTED);
+    expect(s().toast).toBe(WITH_SYNCED);
   });
   it('guard (4374997251): once a command has flushed, a hold let go by another tab still resumes sending', async () => {
     const gw = { snapshot: vi.fn(async () => snap()), approveDecision: vi.fn(async () => snap()), startDailyLog: vi.fn(async () => snap()) };
@@ -709,7 +711,7 @@ describe('U3b', () => {
     await flushes.atRest();
     expect(gw.approveDecision).toHaveBeenCalledTimes(1);
     expect(gw.startDailyLog).toHaveBeenCalledTimes(1);
-    expect(s().toast).toBe(STARTED);
+    expect(s().toast).toBe(WITH_SYNCED);
   });
   it('forced probe (4374997251, rerun): a command asked while a flush is sending says its line from the flush that sends it', async () => {
     let go!: () => void;
@@ -837,6 +839,96 @@ describe('U3b', () => {
     expect(gw.startDailyLog).toHaveBeenCalledTimes(1);
     expect(s().toast).toBe(`${STARTED} Countersign d-1 refused — Refused.`);
     expect(said.filter((m) => m.includes(STARTED))).toEqual([`${STARTED} Countersign d-1 refused — Refused.`]);
+  });
+  it('forced probe (4377928188): two commands whose acts one flush sends each say their line, in one line', async () => {
+    const gw = { snapshot: vi.fn(async () => snap()), startDailyLog: vi.fn(async () => snap()), addSiteMaterial: vi.fn(async () => snap()) };
+    signedIn(null, null, gw);
+    const other = holdQueueLock(key); // another tab holds the queue lock: both commands' writes wait behind it
+    await other.has;
+    useStore.setState({ online: true });
+    const said = lines();
+    s().startDailyLog();
+    s().addSiteMaterial({ name: 'Cement', qty: '10 bags' });
+    other.release();
+    await flushes.asked(command);
+    await flushes.asked((o) => o?.act?.t === 'addSiteMaterial');
+    await flushes.atRest();
+    expect(gw.startDailyLog).toHaveBeenCalledTimes(1);
+    expect(gw.addSiteMaterial).toHaveBeenCalledTimes(1);
+    expect(s().outbox).toEqual([]);
+    expect(said).toEqual([`${STARTED} Material recorded: Cement.`]);
+  });
+  describe('4377928188 (root-cause audit): each flush says one line: every sent command’s line once, in send order, then the count of every act without a line', () => {
+    const M = 'Material recorded: Cement.';
+    const SYNCED = '1 offline update synced';
+    const D1 = '1 could not be applied and was discarded';
+    const D2 = '2 could not be applied and were discarded';
+    const P1 = '1 still pending — will retry when you reconnect';
+    const P2 = '2 still pending — will retry when you reconnect';
+    type Outcome = 'sent' | 'refused' | 'pending';
+    // each case: how many commands, what the server does with their acts, whose flush sends them; then every line said.
+    // The queue also holds k-a, a plain act with no line, which the server accepts. `own`: the first command's own flush
+    // call takes the queue (k-a and every command; a second command's call joins it). `joined`: a flush already sending
+    // k-a when the commands ask; their calls join it, and its rerun sends them
+    const cases: [number, Outcome, 'own' | 'joined', string[]][] = [
+      [0, 'sent', 'own', [`${SYNCED}.`]],
+      [1, 'sent', 'own', [`${STARTED} ${SYNCED}.`]],
+      [2, 'sent', 'own', [`${STARTED} ${M} ${SYNCED}.`]],
+      [3, 'sent', 'own', [`${STARTED} 3 offline updates synced.`]],
+      [1, 'refused', 'own', [`${SYNCED}; ${D1}.`]],
+      [2, 'refused', 'own', [`${SYNCED}; ${D2}.`]],
+      [1, 'pending', 'own', [`${SYNCED}; ${P1}.`]],
+      [2, 'pending', 'own', [`${SYNCED}; ${P2}.`, `${P2}.`]],
+      [1, 'sent', 'joined', [`${SYNCED}.`, STARTED]],
+      [2, 'sent', 'joined', [`${SYNCED}.`, `${STARTED} ${M}`]],
+      [1, 'refused', 'joined', [`${SYNCED}.`, `${D1}.`]],
+      [2, 'refused', 'joined', [`${SYNCED}.`, `${D2}.`]],
+      [1, 'pending', 'joined', [`${SYNCED}.`, `${P1}.`]],
+      [2, 'pending', 'joined', [`${SYNCED}.`, `${P2}.`]],
+    ];
+    it.each(cases)('forced probe: %i command(s), %s, %s flush', async (n, outcome, mode, expected) => {
+      let go: () => void = () => {};
+      const gate = new Promise<void>((r) => { go = r; });
+      let reached: () => void = () => {};
+      const sending = new Promise<void>((r) => { reached = r; });
+      const answer = async () => {
+        if (outcome === 'refused') throw refused();
+        if (outcome === 'pending') throw unavailable();
+        return snap();
+      };
+      const gw = {
+        snapshot: vi.fn(async () => snap()),
+        approveDecision: vi.fn(async () => { reached(); if (mode === 'joined') await gate; return snap(); }),
+        startDailyLog: vi.fn(answer),
+        addSiteMaterial: vi.fn(answer),
+      };
+      signedIn(JSON.stringify([approve('k-a')]), null, gw);
+      useStore.setState({ online: true });
+      const said = lines();
+      const commands = [
+        () => s().startDailyLog(),
+        () => s().addSiteMaterial({ name: 'Cement', qty: '10 bags' }),
+        () => s().addSiteMaterial({ name: 'Sand', qty: '2 tonnes' }),
+      ].slice(0, n);
+      if (n === 0) {
+        await act(async () => { await s().flushOutbox(); });
+      } else if (mode === 'own') {
+        const other = holdQueueLock(key); // every command's write waits behind it, so one flush takes them all
+        await other.has;
+        for (const c of commands) c();
+        other.release();
+      } else {
+        void s().flushOutbox();
+        await sending; // the flush is sending k-a
+        for (const c of commands) c();
+      }
+      const kinds = ['startDailyLog', 'addSiteMaterial', 'addSiteMaterial'].slice(0, n);
+      for (const [i, t] of kinds.entries()) await flushes.asked((o) => o?.act?.t === t, kinds.slice(0, i + 1).filter((k) => k === t).length);
+      const rest = flushes.atRest();
+      go();
+      await act(async () => { await rest; });
+      expect(said).toEqual(expected);
+    });
   });
   it('guard (4376641802): a command sent alone says its line alone', async () => {
     signedIn(null, null, { snapshot: vi.fn(async () => snap()), startDailyLog: vi.fn(async () => snap()) });
