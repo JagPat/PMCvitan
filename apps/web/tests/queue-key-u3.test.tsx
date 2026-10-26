@@ -485,6 +485,13 @@ describe('#1132 round 2', () => {
   const malformed = (k: string) => JSON.stringify([{ t: 'approve', idempotencyKey: k }]);
   /** the microtasks a release's flush runs in, settled (a signal count, not a clock) */
   const settle = async () => { for (let n = 0; n < 20; n += 1) await act(async () => { await Promise.resolve(); }); };
+  /** counts the flushes asked from here on (each asked flush, run or coalesced) */
+  const countFlushes = () => {
+    const real = s().flushOutbox;
+    const calls = { n: 0 };
+    useStore.setState({ flushOutbox: (async (...a: Parameters<typeof real>) => { calls.n += 1; return real(...a); }) as typeof real });
+    return calls;
+  };
   it('forced probe (4374538867, heard): another tab writes unreadable bytes whose malformed entry keeps k-a: the valid k-a is counted and copied aside', async () => {
     signedIn(JSON.stringify([approve('k-a')]));
     otherTabWrites(key, malformed('k-a'));
@@ -568,6 +575,56 @@ describe('#1132 round 2', () => {
     otherTabWrites(key, JSON.stringify([{ idempotencyKey: 'k-a', optionIndex: 0, decisionId: 'd-1', t: 'approve' }, { t: 'aKindFromANewerRelease', idempotencyKey: 'k-newer' }]));
     expect(reloadAsks()).toEqual([]);
     expect(copiesOf(key)).toEqual([]);
+  });
+  it('guard (4374538874, ends): one release with nothing to send runs one flush, then nothing more', async () => {
+    signedIn(JSON.stringify([approve('k-a')]));
+    otherTabWrites(key, DAMAGED);
+    useStore.setState({ outbox: [] }); // memory let the act go; the hold remains
+    useStore.setState({ online: true });
+    const calls = countFlushes();
+    otherTabWrites(key, '[]');
+    await settle(); await settle();
+    const after = calls.n;
+    await settle(); await settle();
+    expect(after).toBe(1);
+    expect(calls.n).toBe(1);
+    expect(s()._outboxFlushing()).toBe(false);
+  });
+  it('guard (4374538874, running flush): a release during a running flush reruns it once, which sends the released act', async () => {
+    let unblock: () => void = () => {};
+    const blocked = new Promise<void>((r) => { unblock = r; });
+    const approveDecision = vi.fn(async () => { await blocked; return null; });
+    const endSiteVisit = vi.fn(async () => null);
+    signedIn(JSON.stringify([approve('k-a')]), JSON.stringify([end('k-v')]), { approveDecision, endSiteVisit });
+    otherTabWrites(lane, DAMAGED);
+    useStore.setState({ online: true });
+    const calls = countFlushes();
+    let first: Promise<unknown> = Promise.resolve();
+    act(() => { first = s().flushOutbox(); });
+    await settle();
+    expect(approveDecision).toHaveBeenCalledTimes(1); // the flush is running, waiting on the gateway
+    expect(endSiteVisit).not.toHaveBeenCalled();
+    otherTabWrites(lane, JSON.stringify([end('k-v')]));
+    await settle();
+    unblock();
+    await act(async () => { await first; });
+    await settle(); await settle();
+    const after = calls.n;
+    await settle(); await settle();
+    expect(endSiteVisit).toHaveBeenCalledTimes(1);
+    expect(calls.n).toBe(after);
+    expect(after).toBeLessThanOrEqual(3);
+    expect(s()._outboxFlushing()).toBe(false);
+  });
+  it('guard (4374538874, offline): a release while offline runs no flush and sends nothing', async () => {
+    const approveDecision = vi.fn(async () => null);
+    signedIn(JSON.stringify([approve('k-a')]), null, { approveDecision });
+    otherTabWrites(key, DAMAGED);
+    const calls = countFlushes();
+    otherTabWrites(key, JSON.stringify([approve('k-a')]));
+    await settle(); await settle();
+    expect(calls.n).toBe(0);
+    expect(approveDecision).not.toHaveBeenCalled();
   });
 });
 
