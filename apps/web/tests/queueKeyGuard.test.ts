@@ -312,3 +312,113 @@ describe('#1085 r2 (Codex 4346169602): a Set aside that fails part way leaves no
     expect([st.getItem(name), st.getItem(`${name}.1`)]).toEqual(['other bytes', '{bad']);
   });
 });
+
+describe('cross-tab drain (xtab-drain plan §3′): what another tab took from the key', () => {
+  const ids = (st: ReturnType<typeof storage>) => st.keys(K);
+  it('forced probe: a write after another tab drained k-a keeps it out, and so does every write after it', () => {
+    const st = storage();
+    expect(createQueueKeyGuard().write(st, K, [a('k-a')])).toBe(true);
+    const mine = createQueueKeyGuard();
+    const other = createQueueKeyGuard();
+    const [ka] = mine.load(st, K); // memory's own act, as the store keeps it
+    expect(ka).toEqual(a('k-a'));
+    expect(other.load(st, K)).toEqual([a('k-a')]);
+    expect(other.write(st, K, [])).toBe(true); // it sent k-a
+    expect(mine.write(st, K, [ka, a('n1')])).toBe(true); // memory still holds k-a: no event heard yet
+    expect(ids(st)).toEqual(['n1']);
+    expect(mine.write(st, K, [ka, a('n1'), a('n2')])).toBe(true); // the write before moved on what the key holds
+    expect(ids(st)).toEqual(['n1', 'n2']);
+    expect(mine.taken(K, ka)).toBe(true);
+  });
+
+  it('forced probe (re-check r2, gap 1): another tab keeps this tab\'s act across two of its own writes', () => {
+    const st = storage();
+    const A = createQueueKeyGuard();
+    const B = createQueueKeyGuard();
+    A.load(st, K);
+    B.load(st, K);
+    const ka = a('k-a');
+    expect(A.write(st, K, [ka])).toBe(true);
+    expect(B.write(st, K, [a('k-b')])).toBe(true); // it carries k-a, never held it
+    expect(B.write(st, K, [a('k-b'), a('k-c')])).toBe(true);
+    expect(ids(st)).toEqual(['k-a', 'k-b', 'k-c']);
+    A.heard(st, K, [ka]);
+    expect(A.taken(K, ka)).toBe(false);
+  });
+
+  it('forced probe (Stage 1 watch item): an act queued after the take with the same key is a new act: stored, not taken', () => {
+    const st = storage();
+    expect(createQueueKeyGuard().write(st, K, [a('k-a')])).toBe(true);
+    const mine = createQueueKeyGuard();
+    const other = createQueueKeyGuard();
+    const [ka] = mine.load(st, K);
+    other.load(st, K);
+    expect(other.write(st, K, [])).toBe(true); // it sent k-a
+    expect(mine.write(st, K, [ka])).toBe(true);
+    expect(mine.taken(K, ka)).toBe(true);
+    const again = a('k-a'); // the store dropped k-a; this tab now queues an act with the same key
+    expect(mine.write(st, K, [again])).toBe(true);
+    expect(ids(st)).toEqual(['k-a']);
+    expect(mine.taken(K, again)).toBe(false);
+  });
+
+  it('forced probe (gap 1, R-a): a write over bytes its writer read in no exact frame takes nothing: k-a stays this tab\'s', () => {
+    const st = storage();
+    expect(createQueueKeyGuard().write(st, K, [a('k-a')])).toBe(true);
+    const mine = createQueueKeyGuard();
+    const [ka] = mine.load(st, K);
+    // a hand adds an act and keeps the write token: the key is read by the fallback, where k-a keeps its name
+    st.setItem(K, JSON.stringify([...JSON.parse(st.getItem(K)!), a('k-b')]));
+    const other = createQueueKeyGuard();
+    const theirs = other.load(st, K);
+    expect(theirs.length).toBe(2);
+    expect(other.settled(st, K, theirs[0])).toBe(true); // it sent k-a
+    expect(other.write(st, K, [theirs[1]])).toBe(true);
+    expect(mine.write(st, K, [ka])).toBe(true);
+    expect(mine.taken(K, ka)).toBe(false);
+  });
+
+  it('guard (R-a): bytes a hand wrote after a ledger write that dropped nothing take nothing, whatever the sidecar names', () => {
+    const st = storage();
+    expect(createQueueKeyGuard().write(st, K, [a('k-a')])).toBe(true);
+    const mine = createQueueKeyGuard();
+    const [ka] = mine.load(st, K);
+    const other = createQueueKeyGuard();
+    const theirs = other.load(st, K);
+    expect(other.write(st, K, [...theirs, a('k-other')])).toBe(true); // the sidecar's earlier side names k-a
+    st.setItem(K, JSON.stringify([a('k-other')])); // a hand writes bytes with no token
+    expect(mine.write(st, K, [ka])).toBe(true);
+    expect(mine.taken(K, ka)).toBe(false);
+  });
+
+  it('forced probe (Stage 1 gap-check, gap 1): a write over set-aside bytes takes nothing: k-a stays this tab\'s', () => {
+    const st = storage();
+    expect(createQueueKeyGuard().write(st, K, [a('k-a')])).toBe(true);
+    const mine = createQueueKeyGuard();
+    const [ka] = mine.load(st, K);
+    st.setItem(K, '{damaged');
+    const other = createQueueKeyGuard(); // opened after the damage: it never held k-a
+    expect(other.load(st, K)).toEqual([]);
+    other.heard(st, K, []);
+    expect(other.setAside(st, [K])).toBe('ok');
+    expect(other.writeAll(st, [{ key: K, mine: [a('k-other')], takes: () => true }])).toBe('all');
+    expect(mine.write(st, K, [ka])).toBe(true);
+    expect(mine.taken(K, ka)).toBe(false);
+    expect(ids(st)).toEqual(['k-other', 'k-a']);
+  });
+
+  it('guard: a load of the key ends what was taken: k-a stored there again is this tab\'s again', () => {
+    const st = storage();
+    expect(createQueueKeyGuard().write(st, K, [a('k-a')])).toBe(true);
+    const mine = createQueueKeyGuard();
+    const other = createQueueKeyGuard();
+    mine.load(st, K);
+    other.load(st, K);
+    expect(other.write(st, K, [])).toBe(true);
+    expect(mine.write(st, K, [a('k-a'), a('n1')])).toBe(true);
+    expect(createQueueKeyGuard().write(st, K, [a('k-a'), a('n1')])).toBe(true); // a third tab stores k-a again
+    expect(mine.load(st, K).map((o) => (o as { idempotencyKey: string }).idempotencyKey)).toEqual(['k-a', 'n1']);
+    expect(mine.write(st, K, [a('k-a'), a('n1')])).toBe(true);
+    expect(ids(st)).toEqual(['k-a', 'n1']);
+  });
+});

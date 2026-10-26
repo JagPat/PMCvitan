@@ -2490,6 +2490,14 @@ export const useStore = create<Store>()(
     const queueKeys = createQueueKeyGuard(strip.noteRead, (key) => queueKeyScopes.get(key), () => {
       const drain = Promise.resolve().then(() => { if (get().online) void get().flushOutbox(); });
       releaseDrains = Promise.all([releaseDrains, drain]).then(() => undefined);
+    }, (key) => {
+      // cross-tab drain (xtab-drain plan §3′): acts another tab took from this key (sent, refused or discarded) leave
+      // memory by identity; a flush running now skips them too (`taken` below)
+      if (key !== outboxKey() && key !== siteVisitKeyOf(outboxKey())) return;
+      const inKey = (o: OutboxOp) => (isSiteVisitOp(o) ? siteVisitKeyOf(outboxKey()) : outboxKey()) === key;
+      // read outside the draft: an act is taken by its name, which the guard keeps for the stored object
+      const keep = get().outbox.filter((o) => !(inKey(o) && queueKeys.taken(key, o)));
+      if (keep.length !== get().outbox.length) set((st) => { st.outbox = keep; });
     });
     /** Every scope change (an auth result, a persona switch, a sign-out, and each load of a scope's queue) ends the old
      *  scope's queue-key memory and its strip list here, first, before any storage access: a storage that throws can
@@ -6520,6 +6528,9 @@ export const useStore = create<Store>()(
         // so does every later act that may depend on it: the rest of its visit, or the rest of the general queue (a
         // later act sent alone would be refused for good and dropped: Stage 1 gap check of 3302f45, gap 1). It is asked
         // first, so an act the photo hold also holds still latches its visit (#1122 r2, 4370280911)
+        // cross-tab drain (xtab-drain plan §3′): an act another tab took from its key (sent, refused or discarded) is
+        // that tab's outcome: never sent again here, and it leaves this tab's memory with this flush
+        if (queueKeys.taken(isSiteVisitOp(ops[i]) ? siteVisitKeyOf(flushKey) : flushKey, ops[i])) continue;
         const withheldHere = withheldNow(ops[i]);
         const photoHeld = holds(ops[i]);
         // U3b (4370280911): a visit act the photo hold holds latches its visit for the rest of this flush, so Send anyway

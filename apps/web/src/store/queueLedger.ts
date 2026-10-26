@@ -22,7 +22,8 @@ import { queueActIdent } from '@/store/queueActIdent';
  * The rules (B1 plan R1–R6):
  * - R1: nothing here changes state. A write's effects are returned for the caller to apply once the write lands.
  * - R2: an occurrence is taken by another tab only when the key is present, readable, read in an exact frame and no
- *   longer holds it. An absent key was cleared: memory's occurrences go back in.
+ *   longer holds it, and the key's last write read it in the side it overwrote (`takenBy`). An absent key was cleared,
+ *   and a write over an absent or set-aside key took nothing: memory's occurrences go back in.
  * - R3: occurrences are matched by oid, never by count or position; counts remain only in the fallback below.
  * - R5: `evidence` names records and marks to remove only from a snapshot read back after the write, and keeps a mark
  *   while a record it may guard is there.
@@ -202,6 +203,20 @@ function legacySettled(s: Snapshot, all: Occ[]): Set<string> {
 }
 
 
+/** cross-tab drain (xtab-drain plan §3″, Stage 1 gap-check of f9a9bc8, gap 1): the occurrences the key's last write
+ *  provably took. Its writer read the side it overwrote exactly (`prev`, a side with its write's nonce) and the key,
+ *  read in that write's own side (`next`), no longer holds them. A write over an absent key, or over bytes the person
+ *  set aside, names no `prev` and took nothing; nor does a key read by its `prev` (the page closed before the key's
+ *  write) or not read exactly */
+export function takenBy(s: Snapshot): Set<string> {
+  const prev = s.sidecar?.prev;
+  if (s.raw === null || s.acts === null || !prev || !prev.nonce) return new Set();
+  const frame = frameOf(s);
+  if (!frame.exact || !frame.side || frame.side !== s.sidecar?.next) return new Set();
+  const inKey = new Set(frame.occs.map((o) => o.oid));
+  return new Set(prev.occ.map(([, oid]) => oid).filter((oid) => !inKey.has(oid)));
+}
+
 /** the occurrences an earlier release's marks settle, over the key and its records' beyond it */
 function settledByEarlier(s: Snapshot, frame: Frame): Set<string> {
   const inKey = new Set(frame.occs.map((o) => o.oid));
@@ -233,7 +248,10 @@ function beyondKey(s: Snapshot, frame: Frame, m: Memory): { head: Occ[]; tail: O
   // 4365534635: one loaded from a record was written back into the key)
   const legacy = settledByEarlier(s, frame);
   const front = m.front ?? new Set<string>();
-  const taken = (o: Occ) => s.raw !== null && frame.exact && m.known.has(o.oid) && !front.has(o.oid);
+  // taken by another tab only as the key's last write shows it (xtab-drain §3″): a write over an absent or set-aside key,
+  // or bytes not read exactly, took nothing, and memory's occurrence goes back in (Stage 1 gap-check of f9a9bc8, gap 1)
+  const by = takenBy(s);
+  const taken = (o: Occ) => by.has(o.oid) && m.known.has(o.oid) && !front.has(o.oid);
   const firstInKey = m.mine.findIndex((o) => inKey.has(o.oid));
   const head: Occ[] = [];
   const tail: Occ[] = [];
