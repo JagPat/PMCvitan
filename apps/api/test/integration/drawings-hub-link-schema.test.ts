@@ -1,0 +1,209 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { createTestApp, type TestApp } from './test-app';
+import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { DrawingsService } from '../../src/drawings/drawings.service';
+import type { AuthUser } from '../../src/common/auth';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
+
+/**
+ * #1118 U1 — the Hub drawing link schema (`20280121000000_drawings_hub_link`), against live PostgreSQL. It proves what
+ * the database holds on every writer (H1-H4 in the migration), that the file re-runs and changes nothing, and that a
+ * PMC issue and acknowledge still work with every Hub column NULL.
+ *
+ * Isolated automated-test fixtures only.
+ */
+const MIGRATION = join(__dirname, '../../prisma/migrations/20280121000000_drawings_hub_link/migration.sql');
+
+describe('#1118 U1 — the Hub drawing link schema (live PG)', () => {
+  let t: TestApp;
+  let f: TwoProjectFixture;
+  const run = randomUUID().slice(0, 8);
+  const own = `it-hub1-${run}`;
+
+  beforeAll(async () => {
+    t = await createTestApp();
+    f = await createTwoProjectFixture(t.prisma);
+    // a project of its own, so its drawings and its delete stay out of the fixture's projects
+    await t.prisma.project.create({ data: {
+      id: own, orgId: f.orgA.id, name: own, short: 'Hub', descriptor: '', stage: 'x', siteCode: 'HUB',
+      projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0,
+    } });
+  });
+
+  afterAll(async () => {
+    if (!t) return;
+    try {
+      await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DrawingsProjection'], { cascade: true });
+      const pids = { in: [own, f.projectA.id] };
+      await t.prisma.commandExecution.deleteMany({ where: { projectId: pids } });
+      await t.prisma.drawingAck.deleteMany({ where: { revision: { projectId: { in: [own, f.projectA.id] } } } });
+      await t.prisma.drawingRecipient.deleteMany({ where: { projectId: pids } });
+      await t.prisma.drawingRevision.deleteMany({ where: { projectId: pids } });
+      await t.prisma.drawing.deleteMany({ where: { projectId: pids } });
+      await t.prisma.auditLog.deleteMany({ where: { projectId: pids } });
+      await t.prisma.project.deleteMany({ where: { id: own } });
+    } finally {
+      await f?.cleanup();
+      await t.close();
+    }
+  });
+
+  const raw = (sql: string, ...values: unknown[]) => t.prisma.$executeRawUnsafe(sql, ...values);
+  const url = (process.env.DATABASE_URL ?? '').split('?')[0]!;
+  const replay = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url, '-f', MIGRATION], { stdio: 'pipe' });
+  let seq = 0;
+  const drawing = (over: { hubFileId?: string | null; projectId?: string } = {}) => t.prisma.drawing.create({ data: {
+    projectId: over.projectId ?? own, number: `H-${run}-${seq++}`, title: 'Hub sheet', discipline: 'architectural',
+    hubFileId: over.hubFileId ?? null, publishedAt: new Date(),
+  } });
+  const revision = (drawingId: string, rev: string, over: { hubVersionId?: string | null; hubVersionOrder?: number | null; projectId?: string } = {}) =>
+    t.prisma.drawingRevision.create({ data: {
+      drawingId, projectId: over.projectId ?? own, rev, status: 'for_review', mime: 'application/pdf', issuedBy: 'it', issuedAt: '26 Oct 2026',
+      hubVersionId: over.hubVersionId ?? null, hubVersionOrder: over.hubVersionOrder ?? null,
+    } });
+
+  it('H1: one drawing per Hub file and one revision per Hub version in a project, one revision per order on a drawing; NULLs never collide', async () => {
+    const a = await drawing({ hubFileId: `file-${run}` });
+    await expect(drawing({ hubFileId: `file-${run}` })).rejects.toThrow(/Drawing_hub_file_per_project|Unique constraint/);
+    // the same Hub file in another project is that project's own, and any number of PMC drawings carry none
+    await drawing({ hubFileId: `file-${run}`, projectId: f.projectA.id });
+    await drawing(); await drawing();
+
+    await revision(a.id, 'A', { hubVersionId: `ver-${run}-1`, hubVersionOrder: 1 });
+    const b = await drawing({ hubFileId: `file-${run}-b` });
+    await expect(revision(b.id, 'A', { hubVersionId: `ver-${run}-1`, hubVersionOrder: 1 })).rejects.toThrow(/DrawingRevision_hub_version_per_project|Unique constraint/);
+    await expect(revision(a.id, 'B', { hubVersionId: `ver-${run}-2`, hubVersionOrder: 1 })).rejects.toThrow(/Unique constraint/);
+    await revision(a.id, 'B', { hubVersionId: `ver-${run}-2`, hubVersionOrder: 2 });
+    // PMC revisions carry neither, as many as there are
+    const pmcDrawing = await drawing();
+    await revision(pmcDrawing.id, 'A'); await revision(pmcDrawing.id, 'B');
+
+    await t.prisma.drawingHubLink.create({ data: { projectId: own, orgId: f.orgA.id, hubProjectId: `hp-${run}`, linkedBy: 'it' } });
+    await expect(t.prisma.drawingHubLink.create({ data: { projectId: own, orgId: f.orgA.id, hubProjectId: `hp-${run}-2`, linkedBy: 'it' } })).rejects.toThrow(/Unique constraint/);
+    await t.prisma.hubWebhookReceipt.create({ data: { orgId: f.orgA.id, webhookId: `wh-${run}`, eventType: 'drawing.issued', outcome: 'refused' } });
+    await expect(t.prisma.hubWebhookReceipt.create({ data: { orgId: f.orgA.id, webhookId: `wh-${run}`, eventType: 'drawing.issued', outcome: 'applied' } })).rejects.toThrow(/Unique constraint/);
+    await t.prisma.hubWebhookReceipt.create({ data: { orgId: f.orgB.id, webhookId: `wh-${run}`, eventType: 'drawing.issued', outcome: 'ignored' } });
+    await t.prisma.hubVersionTombstone.create({ data: { projectId: own, hubVersionId: `ver-${run}-9`, hubFileId: `file-${run}`, versionSeq: 9 } });
+    await expect(t.prisma.hubVersionTombstone.create({ data: { projectId: own, hubVersionId: `ver-${run}-9`, hubFileId: `file-${run}` } })).rejects.toThrow(/Unique constraint/);
+    await t.prisma.hubFetchedBlob.create({ data: { storageKey: `${own}/drawings/hub/${run}`, projectId: own, hubVersionId: `ver-${run}-1` } });
+    await expect(t.prisma.hubFetchedBlob.create({ data: { storageKey: `${own}/drawings/hub/${run}`, projectId: own, hubVersionId: `ver-${run}-2` } })).rejects.toThrow(/Unique constraint/);
+  });
+
+  it('H2: a link\'s org is its project\'s org, every row names a project or org that exists, and each goes with its project', async () => {
+    await expect(raw(`INSERT INTO "DrawingHubLink" ("projectId", "orgId", "hubProjectId", "linkedBy") VALUES ($1, $2, 'hp', 'it')`, f.projectA.id, f.orgB.id))
+      .rejects.toThrow(/DrawingHubLink_orgId_projectId_fkey/);
+    await expect(raw(`INSERT INTO "HubWebhookReceipt" ("orgId", "webhookId", "eventType", "outcome") VALUES ('no-such-org', 'w', 'e', 'o')`))
+      .rejects.toThrow(/HubWebhookReceipt_orgId_fkey/);
+    await expect(raw(`INSERT INTO "HubVersionTombstone" ("projectId", "hubVersionId", "hubFileId") VALUES ('no-such-project', 'v', 'f')`))
+      .rejects.toThrow(/HubVersionTombstone_projectId_fkey/);
+    await expect(raw(`INSERT INTO "HubFetchedBlob" ("id", "storageKey", "projectId", "hubVersionId") VALUES ('b', 'k', 'no-such-project', 'v')`))
+      .rejects.toThrow(/HubFetchedBlob_projectId_fkey/);
+
+    const id = `it-hub1-gone-${run}`;
+    await t.prisma.project.create({ data: {
+      id, orgId: f.orgA.id, name: id, short: 'Gone', descriptor: '', stage: 'x', siteCode: 'G', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0,
+    } });
+    await t.prisma.drawingHubLink.create({ data: { projectId: id, orgId: f.orgA.id, hubProjectId: 'hp', linkedBy: 'it' } });
+    await t.prisma.hubVersionTombstone.create({ data: { projectId: id, hubVersionId: 'v', hubFileId: 'f' } });
+    await t.prisma.hubFetchedBlob.create({ data: { storageKey: `${id}/drawings/hub/x`, projectId: id, hubVersionId: 'v' } });
+    await raw(`DELETE FROM "Project" WHERE "id" = $1`, id);
+    expect(await t.prisma.drawingHubLink.count({ where: { projectId: id } })).toBe(0);
+    expect(await t.prisma.hubVersionTombstone.count({ where: { projectId: id } })).toBe(0);
+    expect(await t.prisma.hubFetchedBlob.count({ where: { projectId: id } })).toBe(0);
+  });
+
+  it('H3: a Hub id never changes once the row exists, a PMC drawing never becomes a Hub one, and other columns stay writable', async () => {
+    const pmcDrawing = await drawing();
+    await expect(raw(`UPDATE "Drawing" SET "hubFileId" = 'attach' WHERE "id" = $1`, pmcDrawing.id)).rejects.toThrow(/hubFileId is a Hub id/);
+    const hub = await drawing({ hubFileId: `file-${run}-h3` });
+    await expect(raw(`UPDATE "Drawing" SET "hubFileId" = 'other' WHERE "id" = $1`, hub.id)).rejects.toThrow(/hubFileId is a Hub id/);
+    await expect(raw(`UPDATE "Drawing" SET "hubFileId" = NULL WHERE "id" = $1`, hub.id)).rejects.toThrow(/hubFileId is a Hub id/);
+    // writing the same value, and every other column, is untouched
+    await raw(`UPDATE "Drawing" SET "hubFileId" = "hubFileId", "title" = 'Renamed', "zone" = 'Z1' WHERE "id" = $1`, hub.id);
+    expect((await t.prisma.drawing.findUniqueOrThrow({ where: { id: hub.id } })).title).toBe('Renamed');
+
+    const r = await revision(hub.id, 'A', { hubVersionId: `ver-${run}-h3`, hubVersionOrder: 3 });
+    await expect(raw(`UPDATE "DrawingRevision" SET "hubVersionId" = 'other' WHERE "id" = $1`, r.id)).rejects.toThrow(/hubVersionId is a Hub id/);
+    await expect(raw(`UPDATE "DrawingRevision" SET "hubVersionOrder" = 4 WHERE "id" = $1`, r.id)).rejects.toThrow(/hubVersionOrder is a Hub id/);
+    // a promotion or a supersede changes the status in place
+    await raw(`UPDATE "DrawingRevision" SET "status" = 'superseded' WHERE "id" = $1`, r.id);
+    const pr = await revision(pmcDrawing.id, 'A');
+    await expect(raw(`UPDATE "DrawingRevision" SET "hubVersionId" = 'attach' WHERE "id" = $1`, pr.id)).rejects.toThrow(/hubVersionId is a Hub id/);
+
+    await t.prisma.hubVersionTombstone.create({ data: { projectId: own, hubVersionId: `ver-${run}-t`, hubFileId: 'f', versionSeq: 5 } });
+    for (const set of [`"hubFileId" = 'g'`, `"versionSeq" = 6`, `"versionSeq" = NULL`, `"hubVersionId" = 'w'`]) {
+      await expect(raw(`UPDATE "HubVersionTombstone" SET ${set} WHERE "projectId" = $1 AND "hubVersionId" = $2`, own, `ver-${run}-t`), set).rejects.toThrow(/is a Hub id/);
+    }
+    await t.prisma.hubFetchedBlob.create({ data: { storageKey: `${own}/drawings/hub/h3-${run}`, projectId: own, hubVersionId: 'v' } });
+    for (const set of [`"id" = 'other'`, `"storageKey" = 'k2'`, `"hubVersionId" = 'w'`]) {
+      await expect(raw(`UPDATE "HubFetchedBlob" SET ${set} WHERE "storageKey" = $1`, `${own}/drawings/hub/h3-${run}`), set).rejects.toThrow(/is a Hub id/);
+    }
+
+    // the link stays writable: U7 unlinks and relinks through its one row
+    await raw(`UPDATE "DrawingHubLink" SET "unlinkedAt" = now(), "hubProjectId" = 'hp-relinked' WHERE "projectId" = $1`, own);
+  });
+
+  it('H4: a drawing\'s Hub governed order only rises', async () => {
+    const d = await drawing({ hubFileId: `file-${run}-h4` });
+    const mark = (v: number | null) => raw(`UPDATE "Drawing" SET "hubGovernedOrder" = $2 WHERE "id" = $1`, d.id, v);
+    await mark(5);
+    await mark(5);
+    await mark(7);
+    await expect(mark(6)).rejects.toThrow(/only rises/);
+    await expect(mark(null)).rejects.toThrow(/only rises/);
+    expect((await t.prisma.drawing.findUniqueOrThrow({ where: { id: d.id } })).hubGovernedOrder).toBe(7);
+  });
+
+  it('a PMC issue and acknowledge work as before, with every Hub column NULL', async () => {
+    const p = f.projectA.id;
+    const svc = t.app.get(DrawingsService);
+    const pmc = { sub: f.memberUser.id, role: 'pmc', projectId: p } as AuthUser;
+    const engineer = `it-hub1-eng-${run}`;
+    await t.prisma.user.create({ data: { id: engineer, projectId: p, role: 'engineer', name: 'Eng', email: `${engineer}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId: p, userId: engineer, role: 'engineer', status: 'active' } });
+    try {
+      const issued = await svc.issue(p, pmc, {
+        number: `P-${run}`, title: 'Plan', discipline: 'architectural', rev: 'A', status: 'for_construction',
+        mime: 'application/pdf', data: Buffer.from('%PDF-1.4 hub').toString('base64'), publish: true,
+      } as never);
+      const ack = await svc.acknowledge(p, issued.revisionId, { sub: engineer, role: 'engineer', projectId: p } as AuthUser);
+      expect(ack.ok).toBe(true);
+      const d = await t.prisma.drawing.findUniqueOrThrow({ where: { id: issued.drawingId } });
+      const r = await t.prisma.drawingRevision.findUniqueOrThrow({ where: { id: issued.revisionId } });
+      expect({ hubFileId: d.hubFileId, hubGovernedOrder: d.hubGovernedOrder, hubVersionId: r.hubVersionId, hubVersionOrder: r.hubVersionOrder })
+        .toEqual({ hubFileId: null, hubGovernedOrder: null, hubVersionId: null, hubVersionOrder: null });
+      expect(createHash('sha256').update(r.data ?? Buffer.alloc(0)).digest('hex')).toBe(createHash('sha256').update(Buffer.from('%PDF-1.4 hub')).digest('hex'));
+    } finally {
+      await t.prisma.drawingAck.deleteMany({ where: { userId: engineer } });
+      await t.prisma.drawingRecipient.deleteMany({ where: { userId: engineer } });
+      await t.prisma.membership.deleteMany({ where: { userId: engineer } });
+      await t.prisma.user.deleteMany({ where: { id: engineer } });
+    }
+  });
+
+  it('re-runs: a second and third run of the file leave the same uniques, keys, triggers and functions', async () => {
+    const shape = async () => t.prisma.$queryRawUnsafe<Array<{ kind: string; name: string; def: string }>>(`
+      SELECT 'index' AS kind, indexname AS name, indexdef AS def FROM pg_indexes
+       WHERE schemaname = 'public' AND tablename IN ('Drawing', 'DrawingRevision', 'DrawingHubLink', 'HubWebhookReceipt', 'HubVersionTombstone', 'HubFetchedBlob')
+      UNION ALL
+      SELECT 'constraint', conname, pg_get_constraintdef(oid) FROM pg_constraint
+       WHERE conrelid IN ('public."DrawingHubLink"'::regclass, 'public."HubWebhookReceipt"'::regclass, 'public."HubVersionTombstone"'::regclass, 'public."HubFetchedBlob"'::regclass)
+      UNION ALL
+      SELECT 'trigger', tgname, pg_get_triggerdef(oid) FROM pg_trigger
+       WHERE NOT tgisinternal AND tgname IN ('Drawing_hub_ids_immutable', 'Drawing_hub_mark_rises', 'DrawingRevision_hub_ids_immutable', 'HubVersionTombstone_ids_immutable', 'HubFetchedBlob_ids_immutable')
+      UNION ALL
+      SELECT 'function', p.proname, array_to_string(p.proconfig, ',') FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'public' AND p.proname IN ('drawings_hub_ids_immutable', 'drawings_hub_mark_rises')
+      ORDER BY 1, 2`);
+    const before = await shape();
+    expect(before.filter((r) => r.kind === 'trigger')).toHaveLength(5);
+    expect(before.filter((r) => r.kind === 'function').map((r) => r.def)).toEqual(['search_path=pg_catalog, public, pg_temp', 'search_path=pg_catalog, public, pg_temp']);
+    expect(before.find((r) => r.name === 'Drawing_hub_file_per_project')?.def).toMatch(/WHERE \("hubFileId" IS NOT NULL\)/);
+    replay();
+    replay();
+    expect(await shape()).toEqual(before);
+  });
+});

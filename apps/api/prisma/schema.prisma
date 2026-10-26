@@ -118,6 +118,11 @@ model Project {
   mediaTombstones            MediaTombstone[]
   pushSubs                   PushSubscription[]
   drawings                   Drawing[]
+  // #1118 U1 (20280121): the Hub project this project's drawings follow, the Hub versions withdrawn, and the Hub blobs fetched
+  // a list only because the key is (orgId, id); DrawingHubLink's primary key (projectId) keeps it to one row
+  drawingHubLinks            DrawingHubLink[]
+  hubVersionTombstones       HubVersionTombstone[]
+  hubFetchedBlobs            HubFetchedBlob[]
   phases                     Phase[]
   gateOverrides              GateOverride[]
   activityDependencies       ActivityDependency[]
@@ -982,22 +987,24 @@ model ProjectPartyVendorSource {
 // An Org/Account (an architecture practice, e.g. "Vitan Architecture") — owns
 // projects and the people who administer them. Multi-tenant foundation.
 model Org {
-  id                String             @id @default(cuid())
-  name              String
-  slug              String             @unique
-  createdAt         DateTime           @default(now())
+  id                 String              @id @default(cuid())
+  name               String
+  slug               String              @unique
+  createdAt          DateTime            @default(now())
   // #482 QA company lock (20280116): a QA-only company holds only QA accounts, and a QA account belongs only to
   // QA-only companies. Database triggers enforce both; an operator marks the QA company.
-  qaOnly            Boolean            @default(false)
-  projects          Project[]
-  members           OrgMembership[]
-  modules           TemplateModule[]
-  templates         ProjectTemplate[]
-  commandExecutions CommandExecution[]
-  vendors           Vendor[]
+  qaOnly             Boolean             @default(false)
+  projects           Project[]
+  members            OrgMembership[]
+  modules            TemplateModule[]
+  templates          ProjectTemplate[]
+  commandExecutions  CommandExecution[]
+  vendors            Vendor[]
   // Phase 6 unit 6.1a (§A) — the canonical external firms this org collaborates with.
-  externalParties   ExternalParty[]
-  promotedParties   ExternalParty[]    @relation("externalPartyPromotedTo")
+  externalParties    ExternalParty[]
+  promotedParties    ExternalParty[]     @relation("externalPartyPromotedTo")
+  // #1118 U1 (20280121): the Hub webhook deliveries this org already handled
+  hubWebhookReceipts HubWebhookReceipt[]
 }
 
 // Templates Slice 3 (docs/TEMPLATES.md): a named PRESET — an ordered selection of modules
@@ -1226,34 +1233,41 @@ model MediaTombstone {
 // DrawingRevision, the latest non-superseded one being "current". Files are held
 // by StorageService (S3/R2 or the DB dev stub), same as Media. Slice 1.
 model Drawing {
-  id          String            @id @default(cuid())
-  project     Project           @relation(fields: [projectId], references: [id])
-  projectId   String
-  number      String // e.g. "A-201"
-  title       String
-  discipline  String // architectural | structural | mep | other
-  zone        String?
+  id               String            @id @default(cuid())
+  project          Project           @relation(fields: [projectId], references: [id])
+  projectId        String
+  number           String // e.g. "A-201"
+  title            String
+  discipline       String // architectural | structural | mep | other
+  zone             String?
   // Project-owned references (composite FKs, same rationale as Media). The activity
   // link is severed by ActivitiesService.remove BEFORE the activity row is deleted.
-  activity    Activity?         @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  activityId  String? // the work this drawing governs (Slice 2 linkage)
-  decision    Decision?         @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  decisionId  String?
+  activity         Activity?         @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId       String? // the work this drawing governs (Slice 2 linkage)
+  decision         Decision?         @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  decisionId       String?
   // The place this drawing governs (zone/room/object). Filed at its natural level — a
   // floor plan on the zone, a joinery detail on the element — and inherited DOWN: a room
   // shows every drawing filed on it or any ancestor. A node delete keeps the drawing
   // (it becomes unfiled) — NodesService unlinks in-transaction; the composite FK makes
   // a cross-project filing impossible even on a direct write. Location spine.
-  node        ProjectNode?      @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  nodeId      String?
+  node             ProjectNode?      @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  nodeId           String?
   // Draft → Publish lifecycle (mirrors Decision). While `publishedAt` is null the drawing is
   // a private DRAFT: the snapshot delivers it only to its author, it never notifies the build
   // team, and it's absent from the register / Site Map. Publishing issues it. Both nullable/
   // additive; existing rows backfilled to createdAt so nothing becomes an invisible draft.
-  publishedAt DateTime?
-  authorId    String?
-  createdAt   DateTime          @default(now())
-  revisions   DrawingRevision[]
+  publishedAt      DateTime?
+  authorId         String?
+  createdAt        DateTime          @default(now())
+  // #1118 U1 (20280121): the Hub file this drawing follows (null for a PMC drawing). At most one drawing per Hub file
+  // in a project: the partial unique "Drawing_hub_file_per_project" (raw SQL; Prisma cannot express partial uniques).
+  // Never changed once the row exists (trigger "Drawing_hub_ids_immutable").
+  hubFileId        String?
+  // #1118 U1: the highest Hub order ever written for construction on this drawing (the plan's mark). It only rises
+  // (trigger "Drawing_hub_mark_rises").
+  hubGovernedOrder Int?
+  revisions        DrawingRevision[]
 
   @@unique([projectId, number])
   @@unique([projectId, id]) // composite identity — tenant-safe containment target (Phase 1 Task 3)
@@ -1293,12 +1307,72 @@ model DrawingRevision {
   // invents snapshots, and Task 6's readiness truth table treats the two differently.
   recipientsFrozenAt DateTime?
   createdAt          DateTime           @default(now())
+  // #1118 U1 (20280121): the Hub version this revision holds and its order (null for a PMC revision). At most one
+  // revision per Hub version in a project: the partial unique "DrawingRevision_hub_version_per_project" (raw SQL).
+  // Neither changes once the row exists (trigger "DrawingRevision_hub_ids_immutable").
+  hubVersionId       String?
+  hubVersionOrder    Int?
   acks               DrawingAck[]
   recipients         DrawingRecipient[]
 
   @@unique([projectId, id]) // composite identity — tenant-safe reference target (Task 3)
   @@unique([drawingId, rev]) // one Rev B per drawing — a duplicate label is a 409
+  @@unique([drawingId, hubVersionOrder]) // #1118 U1: one revision per Hub order on a drawing
   @@index([drawingId])
+}
+
+// #1118 U1 (20280121): the Hub drawing link. One row per linked project: the Hub project its drawings follow. The org is
+// the project's own (composite key to Project (orgId, id)). Unlinking stamps unlinkedAt and keeps the row; it goes only
+// with its project.
+model DrawingHubLink {
+  project      Project   @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade, onUpdate: Cascade)
+  projectId    String    @id
+  orgId        String
+  hubProjectId String
+  linkedAt     DateTime  @default(now())
+  linkedBy     String
+  unlinkedAt   DateTime?
+}
+
+// #1118 U1 (20280121): one row per Hub webhook delivery an org's endpoint handled, whatever PMC did with it (outcome), so a
+// replayed webhook-id is recognised. It goes with its org.
+model HubWebhookReceipt {
+  org        Org      @relation(fields: [orgId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  orgId      String
+  webhookId  String
+  eventType  String
+  outcome    String
+  receivedAt DateTime @default(now())
+
+  @@id([orgId, webhookId])
+}
+
+// #1118 U1 (20280121): one row per Hub version Hub withdrew in a project. A withdrawn version never governs again. Its
+// Hub columns never change (trigger "HubVersionTombstone_ids_immutable"); it goes with its project.
+model HubVersionTombstone {
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  projectId    String
+  hubVersionId String
+  hubFileId    String
+  versionSeq   Int?
+  withdrawnAt  DateTime @default(now())
+
+  @@id([projectId, hubVersionId])
+}
+
+// #1118 U1 (20280121): the ledger of storage keys a Hub fetch wrote, so the Hub blob sweep walks these rows and never
+// lists the bucket or touches a PMC upload. Keyed by id like every table holding a storageKey (project:inventory lists
+// stored files by id). Its id, key and version never change (trigger "HubFetchedBlob_ids_immutable"); it goes with its
+// project.
+model HubFetchedBlob {
+  id           String   @id @default(cuid())
+  storageKey   String   @unique
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  projectId    String
+  hubVersionId String
+  fetchedAt    DateTime @default(now())
+
+  @@index([projectId])
 }
 
 // WHO a revision was issued to — frozen at issue time (Phase 1 Task 3). The rows
