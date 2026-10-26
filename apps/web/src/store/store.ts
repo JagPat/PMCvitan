@@ -840,8 +840,9 @@ export interface AppActions {
   /** Replay the durable outbox in order. `okMsg` (write-ahead command path) announces the command's
    *  success on a clean flush instead of the batch "N synced" summary. Resolves a structured
    *  `OutboxFlushResult` so a caller can confirm ITS OWN ops by key (queue absence ≠ success — a
-   *  terminal 4xx also removes the op). */
-  flushOutbox: (opts?: { okMsg?: string | (() => string) }) => Promise<OutboxFlushResult>;
+   *  terminal 4xx also removes the op). `act` is the command's act: a call made while another flush runs leaves its
+   *  `okMsg` to the flush that sends that act (#1133). */
+  flushOutbox: (opts?: { okMsg?: string | (() => string); act?: OutboxOp }) => Promise<OutboxFlushResult>;
   /** Site Visits SV1-c unit 2 (#792, F53): put one site-visit act in the durable outbox and send it (write-ahead,
    *  as the Daily Log does); `offlineMsg` is what the viewer is told when the app is offline. False without the server. */
   queueSiteVisitAct: (op: OutboxOp, offlineMsg: string) => boolean;
@@ -1617,6 +1618,9 @@ export const useStore = create<Store>()(
     // but serializing keeps ordering and avoids redundant sends.
     let outboxFlushing = false;
     let outboxFlushQueued = false;
+    /** #1133 (Codex 4374997251): the commands whose own flush call came while another flush ran, each with its act and
+     *  success line. The running flush says the line of one whose act it sent; any other goes to the queued rerun */
+    let joinedOk: { okMsg: string | (() => string); act: OutboxOp }[] = [];
     const scopeCoordinators = new Map<string, ScopeCoordinator>();
     const scopeKey = (scope: ProjectScope): string => `${scope.projectId}::${scope.generation}`;
     /** Drop coordinators for scopes we've LEFT that have no pull in flight — a scope
@@ -2861,7 +2865,7 @@ export const useStore = create<Store>()(
       if (get().online) {
         // sent once its write has run; one that write could not store is said not saved, and sent from memory with its
         // ask's made record on this phone (#1113 r1 re-check: never held from the server)
-        void written.then(() => { if (!stillThere()) return; if (!stored()) get().flash(QW.notSavedYet[get().lang]); void get().flushOutbox({ okMsg }); });
+        void written.then(() => { if (!stillThere()) return; if (!stored()) get().flash(QW.notSavedYet[get().lang]); void get().flushOutbox({ okMsg, act: op }); });
       } else {
         void written.then(() => { if (stillThere()) get().flash(stored() ? (offlineMsg ?? label + ' — saved offline, will sync when you reconnect.') : QW.notSavedYet[get().lang]); });
       }
@@ -6307,7 +6311,11 @@ export const useStore = create<Store>()(
       // finding 1 — serialize flushes: a write-ahead command fires a flush per command, so one may be
       // in flight already. Coalesce (mark + return); the in-flight flush re-runs once after it settles,
       // so a command persisted mid-flush is still sent. Idempotency keys make an overlap harmless.
-      if (outboxFlushing) { outboxFlushQueued = true; return notRun(); }
+      if (outboxFlushing) {
+        outboxFlushQueued = true;
+        if (opts?.okMsg && opts.act) joinedOk.push({ okMsg: opts.okMsg, act: opts.act });
+        return notRun();
+      }
       outboxFlushing = true;
       try {
       // SV2: every kept visit photo's act is put back first, from the phone's own record of it, so a close can never
@@ -6505,7 +6513,13 @@ export const useStore = create<Store>()(
         // later act sent alone would be refused for good and dropped: Stage 1 gap check of 3302f45, gap 1). It is asked
         // first, so an act the photo hold also holds still latches its visit (#1122 r2, 4370280911)
         const withheldHere = withheldNow(ops[i]);
-        if (holds(ops[i]) || withheldHere) { heldVisits.push(ops[i]); continue; }
+        const photoHeld = holds(ops[i]);
+        // U3b (4370280911): a visit act the photo hold holds latches its visit for the rest of this flush, so Send anyway
+        // tapped during a later await sends none of its later acts ahead of it; it takes effect at the next flush. A
+        // photo's own act latches nothing: only its row sends it, and Send anyway is for the visit's other acts
+        const visitAct = ops[i];
+        if (photoHeld && isSiteVisitOp(visitAct) && visitAct.t !== 'siteVisitAddFile') withheldVisits.add(siteVisitOf(visitAct));
+        if (photoHeld || withheldHere) { heldVisits.push(ops[i]); continue; }
         const mat = isMaterialsOp(ops[i]);
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);
@@ -6730,7 +6744,14 @@ export const useStore = create<Store>()(
       // finding 1 — a write-ahead command passes its own success toast (`okMsg`); the reconcile
       // announces it on `applied`. In that case suppress the batch "N synced" line below (the okMsg
       // already reported success), but still surface the error parts (dropped / still-pending).
-      const flushOk = typeof opts?.okMsg === 'function' ? opts.okMsg() : opts?.okMsg;
+      // a command's line is said only by the flush the server accepted its act in: its own call's, or one it joined
+      // (#1133). An act refused for good leaves the queue too, and says the refused line instead
+      const succeeded = new Set(succeededKeys);
+      const sentHere = (act: OutboxOp): boolean => { const k = keyOf(act); return k !== undefined && succeeded.has(k); };
+      const joined = joinedOk.filter((j) => sentHere(j.act));
+      joinedOk = joinedOk.filter((j) => !joined.includes(j));
+      const okMsg = (opts?.okMsg && (!opts.act || sentHere(opts.act)) ? opts.okMsg : undefined) || joined.at(-1)?.okMsg;
+      const flushOk = typeof okMsg === 'function' ? okMsg() : okMsg;
       if (lastSnap && flushLease) {
         // a stale snapshot is handled as a superseded one is: the command's word is said, and a reconcile asked after it
         consumeSnapshotResult(lastSnapStale ? 'superseded' : acceptSnapshot(lastSnap, flushLease), flushOk, flushLease.scope);
@@ -6744,7 +6765,7 @@ export const useStore = create<Store>()(
 
       const parts: string[] = [];
       const lang = get().lang;
-      if (synced > 0 && !opts?.okMsg) parts.push(SYNC.synced(synced, lang));
+      if (synced > 0 && !okMsg) parts.push(SYNC.synced(synced, lang));
       if (dropped > 0) parts.push(SYNC.dropped(dropped, lang));
       if (remaining.length > 0) parts.push(SYNC.pending(remaining.length, lang));
       if (parts.length && endHere()) get().flash(SYNC.join(parts, lang));
@@ -6847,7 +6868,11 @@ export const useStore = create<Store>()(
         // start was refused) has it put back there and settled (SV2, Codex 4321084743)
         if (outboxFlushQueued) {
           outboxFlushQueued = false;
-          if (get().online) void get().flushOutbox();
+          // a command that joined and whose act is still queued has its line said by the rerun that sends it (#1133)
+          const queued = new Set(get().outbox);
+          const carried = joinedOk.filter((j) => queued.has(j.act)).at(-1);
+          joinedOk = [];
+          if (get().online) void get().flushOutbox(carried && { okMsg: carried.okMsg, act: carried.act });
         }
       }
     },
