@@ -1,11 +1,11 @@
 import 'fake-indexeddb/auto';
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
 import { createQueueKeyGuard } from '@/store/queueKeyGuard';
 import { visitPhotoScope } from '@/data/visitPhotoStore';
-import { queueWritten, releaseQueueLocks, storedQueue } from './queueWrites';
+import { holdQueueLock, queueLockAsked, queueWritten, releaseQueueLocks, storedQueue, unwatchFlushes, watchFlushes } from './queueWrites';
 
 /**
  * WEB-02 U3a (plan `notes/site-visits/web-02-U3/r2/plan.md`, replacing #1122): what this tab holds when another tab
@@ -16,8 +16,8 @@ import { queueWritten, releaseQueueLocks, storedQueue } from './queueWrites';
  * - Codex 4358186342 (#1099 r1): a key another tab cleared was read as nothing to lose: Reload asked nothing.
  * - Codex 4370036882, 4370036886, 4370036888 (#1122 r1) and 4370280895 (#1122 r2): every read of a key's bytes
  *   reconciles from one snapshot, confirmed by a read again of the key, its sidecar and its marks.
- * Each probe waits on the queue's locks, a storage event or the gateway's calls, never a clock; acts are found by
- * their identity, never their place.
+ * Each probe waits on the queue's locks, a storage event, the store's flush calls or the gateway's calls, never a
+ * clock or a count of turns (#1134 r1, Codex 4376641821); acts are found by their identity, never their place.
  */
 const USER = 'u-pmc';
 const P = 'p-1';
@@ -65,8 +65,13 @@ const refusing = (refused: (name: string) => boolean) => {
 };
 const goOnline = async () => { useStore.setState({ online: true }); await act(async () => { await s().flushOutbox(); }); };
 
-afterEach(() => {
+/** every flush the store asks in a row; each row ends once they have all settled, so none runs into the next row */
+let flushes: ReturnType<typeof watchFlushes>;
+beforeEach(() => { flushes = watchFlushes(); });
+afterEach(async () => {
   releaseQueueLocks();
+  await flushes.atRest();
+  unwatchFlushes();
   s().completeSignOut();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -483,15 +488,6 @@ describe('#1132 round 1', () => {
 describe('#1132 round 2', () => {
   /** an entry this release cannot read that keeps a valid act's idempotency key (no decisionId, no optionIndex) */
   const malformed = (k: string) => JSON.stringify([{ t: 'approve', idempotencyKey: k }]);
-  /** the microtasks a release's flush runs in, settled (a signal count, not a clock) */
-  const settle = async () => { for (let n = 0; n < 20; n += 1) await act(async () => { await Promise.resolve(); }); };
-  /** counts the flushes asked from here on (each asked flush, run or coalesced) */
-  const countFlushes = () => {
-    const real = s().flushOutbox;
-    const calls = { n: 0 };
-    useStore.setState({ flushOutbox: (async (...a: Parameters<typeof real>) => { calls.n += 1; return real(...a); }) as typeof real });
-    return calls;
-  };
   it('forced probe (4374538867, heard): another tab writes unreadable bytes whose malformed entry keeps k-a: the valid k-a is counted and copied aside', async () => {
     signedIn(JSON.stringify([approve('k-a')]));
     otherTabWrites(key, malformed('k-a'));
@@ -531,7 +527,7 @@ describe('#1132 round 2', () => {
     await goOnline();
     expect(approveDecision).not.toHaveBeenCalled(); // held: precondition
     otherTabWrites(key, JSON.stringify([approve('k-a')]));
-    await settle();
+    await flushes.atRest();
     expect(approveDecision).toHaveBeenCalled();
   });
   it('guard (4374538874, heard): after the repair an explicit flush sends it (it is sendable)', async () => {
@@ -550,7 +546,7 @@ describe('#1132 round 2', () => {
     otherTabWrites(key, DAMAGED);
     localStorage.setItem(key, JSON.stringify([approve('k-a')])); // repaired, its event not yet delivered
     await goOnline();
-    await settle();
+    await flushes.atRest();
     expect(approveDecision).toHaveBeenCalled();
   });
   it('guard (4374538874, persist): the resumed flush sends the act once and empties the queue; nothing runs again', async () => {
@@ -559,8 +555,7 @@ describe('#1132 round 2', () => {
     otherTabWrites(key, DAMAGED);
     localStorage.setItem(key, JSON.stringify([approve('k-a')]));
     await goOnline();
-    await settle();
-    await settle();
+    await flushes.atRest();
     expect(approveDecision).toHaveBeenCalledTimes(1);
     expect(s().outbox).toEqual([]);
     expect(s()._outboxFlushing()).toBe(false);
@@ -581,50 +576,497 @@ describe('#1132 round 2', () => {
     otherTabWrites(key, DAMAGED);
     useStore.setState({ outbox: [] }); // memory let the act go; the hold remains
     useStore.setState({ online: true });
-    const calls = countFlushes();
+    const from = flushes.calls.length;
     otherTabWrites(key, '[]');
-    await settle(); await settle();
-    const after = calls.n;
-    await settle(); await settle();
-    expect(after).toBe(1);
-    expect(calls.n).toBe(1);
+    await flushes.atRest();
+    expect(flushes.calls.length - from).toBe(1);
     expect(s()._outboxFlushing()).toBe(false);
   });
   it('guard (4374538874, running flush): a release during a running flush reruns it once, which sends the released act', async () => {
     let unblock: () => void = () => {};
     const blocked = new Promise<void>((r) => { unblock = r; });
-    const approveDecision = vi.fn(async () => { await blocked; return null; });
+    let reached: () => void = () => {};
+    const sending = new Promise<void>((r) => { reached = r; });
+    const approveDecision = vi.fn(async () => { reached(); await blocked; return null; });
     const endSiteVisit = vi.fn(async () => null);
     signedIn(JSON.stringify([approve('k-a')]), JSON.stringify([end('k-v')]), { approveDecision, endSiteVisit });
     otherTabWrites(lane, DAMAGED);
     useStore.setState({ online: true });
-    const calls = countFlushes();
+    const from = flushes.calls.length;
     let first: Promise<unknown> = Promise.resolve();
     act(() => { first = s().flushOutbox(); });
-    await settle();
+    await sending;
     expect(approveDecision).toHaveBeenCalledTimes(1); // the flush is running, waiting on the gateway
     expect(endSiteVisit).not.toHaveBeenCalled();
     otherTabWrites(lane, JSON.stringify([end('k-v')]));
-    await settle();
+    await flushes.asked(undefined, from + 2); // the release's flush is asked while the first runs
     unblock();
     await act(async () => { await first; });
-    await settle(); await settle();
-    const after = calls.n;
-    await settle(); await settle();
+    await flushes.atRest();
     expect(endSiteVisit).toHaveBeenCalledTimes(1);
-    expect(calls.n).toBe(after);
-    expect(after).toBeLessThanOrEqual(3);
+    expect(flushes.calls.length - from).toBeLessThanOrEqual(3);
     expect(s()._outboxFlushing()).toBe(false);
   });
   it('guard (4374538874, offline): a release while offline runs no flush and sends nothing', async () => {
     const approveDecision = vi.fn(async () => null);
     signedIn(JSON.stringify([approve('k-a')]), null, { approveDecision });
     otherTabWrites(key, DAMAGED);
-    const calls = countFlushes();
+    const from = flushes.calls.length;
     otherTabWrites(key, JSON.stringify([approve('k-a')]));
-    await settle(); await settle();
-    expect(calls.n).toBe(0);
+    await flushes.atRest();
+    expect(flushes.calls.length - from).toBe(0);
     expect(approveDecision).not.toHaveBeenCalled();
+  });
+});
+
+describe('U3b', () => {
+  const VID = '0b9c8d7e-6f5a-4b3c-8d2e-1f0a9b8c7d6e';
+  const start = { t: 'siteVisitStart', idempotencyKey: 'k-s', visitor: { name: 'Priya Shah', role: 'pmc', placeName: null }, body: { id: VID, claimedAt: '2026-10-14T04:30:00.000Z' } } as unknown as OutboxOp;
+  const close = { t: 'siteVisitEnd', visitId: VID, claimedAt: '2026-10-14T05:30:00.000Z', idempotencyKey: 'k-e' } as OutboxOp;
+  const photo = { t: 'siteVisitAddFile', visitId: VID, scope: 'any', idempotencyKey: 'k-f', by: { name: 'Priya Shah', role: 'pmc' }, placeName: null, file: { id: 'c-1', mime: 'image/png' } } as unknown as OutboxOp;
+  const snap = () => ({ project: { id: P, name: 'P', short: 'P', descriptor: '', stage: '', siteCode: '', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 }, decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false, drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [] });
+  const STARTED = 'New daily log started — crew carried over at zero.';
+  const DISCARDED = '1 could not be applied and was discarded.';
+  const PENDING = '1 still pending — will retry when you reconnect.';
+  /** a command's line with the plain act this flush also sent (k-a, which has no line), counted (#1134 r2) */
+  const WITH_SYNCED = `${STARTED} 1 offline update synced.`;
+  const refused = () => Object.assign(new Error('409'), { status: 409, serverMessage: 'Refused' });
+  const unavailable = () => Object.assign(new Error('503'), { status: 503 });
+  /** the daily log command's own flush call (made once its write has run) */
+  const command = (o: Parameters<ReturnType<typeof s>['flushOutbox']>[0]) => o?.act?.t === 'startDailyLog';
+  /** a photo may be kept on the visit and the photo database cannot be read: the photo hold holds the visit */
+  const photoHold = () => {
+    localStorage.setItem(`vitan.visitPhotoHeld.${visitPhotoScope(s().sessionToken, USER)}.${P}.k-photo`, JSON.stringify([VID]));
+    vi.spyOn(indexedDB, 'open').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError'); });
+  };
+  const order = (...fns: ReturnType<typeof vi.fn>[]) => fns.map((f) => f.mock.invocationCallOrder[0] ?? Infinity);
+  /** each line the store says from here on */
+  const lines = () => {
+    const said: string[] = [];
+    const flash = s().flash;
+    useStore.setState({ flash: (m: string) => { said.push(m); flash(m); } });
+    return said;
+  };
+  /** the command's act's gateway call: refused or failed as `fail` says, once each, then accepted */
+  const startDailyLogThat = (...fail: (() => Error)[]) => vi.fn(async () => { const f = fail.shift(); if (f) throw f(); return snap(); });
+
+  it('forced probe (4374997251, #1133): a command whose write lets go of a queue-key hold still says its own success line', async () => {
+    const gw = { snapshot: vi.fn(async () => snap()), approveDecision: vi.fn(async () => snap()), startDailyLog: vi.fn(async () => snap()) };
+    signedIn(JSON.stringify([approve('k-a')]), null, gw);
+    otherTabWrites(key, DAMAGED); // k-a is held
+    localStorage.setItem(key, JSON.stringify([approve('k-a')])); // repaired, its event not yet delivered
+    useStore.setState({ online: true });
+    s().startDailyLog(); // its write-ahead lands, which lets the hold go
+    await flushes.asked(command);
+    await flushes.atRest();
+    expect(gw.approveDecision).toHaveBeenCalledTimes(1);
+    expect(gw.startDailyLog).toHaveBeenCalledTimes(1);
+    expect(s().outbox).toEqual([]);
+    expect(s().toast).toBe(WITH_SYNCED);
+  });
+  it('guard (4374997251): the same command with no hold says its own success line', async () => {
+    const gw = { snapshot: vi.fn(async () => snap()), approveDecision: vi.fn(async () => snap()), startDailyLog: vi.fn(async () => snap()) };
+    signedIn(JSON.stringify([approve('k-a')]), null, gw);
+    useStore.setState({ online: true });
+    s().startDailyLog();
+    await flushes.asked(command);
+    await flushes.atRest();
+    expect(s().outbox).toEqual([]);
+    expect(s().toast).toBe(WITH_SYNCED);
+  });
+  it('guard (4374997251): once a command has flushed, a hold let go by another tab still resumes sending', async () => {
+    const gw = { snapshot: vi.fn(async () => snap()), approveDecision: vi.fn(async () => snap()), startDailyLog: vi.fn(async () => snap()) };
+    signedIn(null, null, gw);
+    useStore.setState({ online: true });
+    s().startDailyLog(); // a command asked and flushed: no command waits now
+    await flushes.asked(command);
+    await flushes.atRest();
+    expect(s().outbox).toEqual([]);
+    useStore.setState({ online: false });
+    localStorage.setItem(key, JSON.stringify([approve('k-a')]));
+    s().hydrateOutbox();
+    otherTabWrites(key, DAMAGED);
+    useStore.setState({ online: true });
+    otherTabWrites(key, JSON.stringify([approve('k-a')]));
+    await flushes.atRest();
+    expect(gw.approveDecision).toHaveBeenCalledTimes(1);
+    expect(s().outbox).toEqual([]);
+  });
+
+  it('forced probe (4374997251, heard): another tab lets go of a hold while a command’s write waits: the command still says its line', async () => {
+    const gw = { snapshot: vi.fn(async () => snap()), approveDecision: vi.fn(async () => snap()), startDailyLog: vi.fn(async () => snap()) };
+    signedIn(JSON.stringify([approve('k-a')]), null, gw);
+    otherTabWrites(key, DAMAGED); // k-a is held
+    const other = holdQueueLock(key); // another tab holds the queue lock: the command's write waits
+    await other.has;
+    useStore.setState({ online: true });
+    const waits = queueLockAsked(key);
+    s().startDailyLog();
+    await waits; // the command's write asks for the lock the other tab holds
+    const from = flushes.calls.length;
+    otherTabWrites(key, JSON.stringify([approve('k-a')])); // repaired and heard: the hold is let go
+    await flushes.asked(undefined, from + 1); // the release's flush
+    other.release();
+    await flushes.asked(command);
+    await flushes.atRest();
+    expect(gw.approveDecision).toHaveBeenCalledTimes(1);
+    expect(gw.startDailyLog).toHaveBeenCalledTimes(1);
+    expect(s().toast).toBe(WITH_SYNCED);
+  });
+  it('forced probe (4374997251, rerun): a command asked while a flush is sending says its line from the flush that sends it', async () => {
+    let go!: () => void;
+    const gate = new Promise<void>((r) => { go = r; });
+    let reached!: () => void;
+    const sending = new Promise<void>((r) => { reached = r; });
+    const gw = { snapshot: vi.fn(async () => snap()), approveDecision: vi.fn(async () => { reached(); await gate; return snap(); }), startDailyLog: vi.fn(async () => snap()) };
+    signedIn(JSON.stringify([approve('k-a')]), null, gw);
+    // each line said, with whether the command's act had been sent by then
+    const said: [string, number][] = [];
+    const flash = s().flash;
+    useStore.setState({ flash: (m: string) => { said.push([m, gw.startDailyLog.mock.calls.length]); flash(m); } });
+    useStore.setState({ online: true });
+    void s().flushOutbox();
+    await sending; // the flush is sending k-a
+    s().startDailyLog(); // its own flush call joins the running one, which took its queue before the command
+    await flushes.asked(command);
+    const rest = flushes.atRest(); // asked while the first flush runs: its rerun is asked during this wait
+    go();
+    await act(async () => { await rest; });
+    expect(gw.startDailyLog).toHaveBeenCalledTimes(1);
+    expect(s().outbox).toEqual([]);
+    expect(s().toast).toBe(STARTED);
+    // said once, and only by the flush that sent the command's act
+    expect(said.filter(([m]) => m === STARTED)).toEqual([[STARTED, 1]]);
+  });
+  it('forced probe (4374997251, refused, own flush): a command whose act the server refuses for good is not told it succeeded', async () => {
+    const gw = { snapshot: vi.fn(async () => snap()), approveDecision: vi.fn(async () => snap()), startDailyLog: startDailyLogThat(refused) };
+    signedIn(JSON.stringify([approve('k-a')]), null, gw);
+    useStore.setState({ online: true });
+    const said = lines();
+    s().startDailyLog();
+    await flushes.asked(command);
+    await flushes.atRest();
+    expect(gw.startDailyLog).toHaveBeenCalledTimes(1);
+    expect(s().outbox).toEqual([]); // k-a sent, the start dropped as refused
+    expect(said.some((m) => m.includes(STARTED))).toBe(false);
+  });
+  it('forced probe (4374997251, refused, joined): a command that joined a flush whose act the server refuses is not told it succeeded', async () => {
+    const gw = { snapshot: vi.fn(async () => snap()), approveDecision: vi.fn(async () => snap()), startDailyLog: startDailyLogThat(refused) };
+    signedIn(JSON.stringify([approve('k-a')]), null, gw);
+    otherTabWrites(key, DAMAGED);
+    localStorage.setItem(key, JSON.stringify([approve('k-a')]));
+    useStore.setState({ online: true });
+    const said = lines();
+    s().startDailyLog(); // its write lets the hold go: the release's flush runs first, and the command joins it
+    await flushes.asked(command);
+    await flushes.atRest();
+    expect(gw.startDailyLog).toHaveBeenCalledTimes(1);
+    expect(s().outbox).toEqual([]);
+    expect(said.some((m) => m.includes(STARTED))).toBe(false);
+  });
+  it('guard (4374997251, scope moved, Stage 1 G1): a hold let go in the new project while the old project’s command still waits resumes sending', async () => {
+    const approveDecision = vi.fn(async () => snap());
+    signedIn(null, null, { snapshot: vi.fn(async () => snap()), approveDecision, startDailyLog: vi.fn(async () => snap()) });
+    const other = holdQueueLock(key); // the command's write waits
+    await other.has;
+    useStore.setState({ online: true });
+    const waits = queueLockAsked(key);
+    s().startDailyLog();
+    await waits;
+    const key2 = `vitan.outbox.dev:${USER}.p-2`;
+    useStore.setState({ online: false });
+    localStorage.setItem(key2, JSON.stringify([approve('k-b')]));
+    useStore.setState({ activeProjectId: 'p-2', projectScopeGeneration: s().projectScopeGeneration + 1 });
+    act(() => s().hydrateOutbox());
+    otherTabWrites(key2, DAMAGED); // k-b is held
+    useStore.setState({ online: true });
+    const from = flushes.calls.length;
+    otherTabWrites(key2, JSON.stringify([approve('k-b')])); // repaired and heard: the hold is let go
+    await flushes.asked(undefined, from + 1); // the release's flush
+    other.release();
+    await flushes.atRest();
+    expect(approveDecision).toHaveBeenCalledTimes(1);
+  });
+
+  it('forced probe (4376641802, joined): a joined command sent beside an act refused for good says its line and the refusal, in one line', async () => {
+    const gw = { snapshot: vi.fn(async () => snap()), approveDecision: vi.fn(async () => { throw refused(); }), startDailyLog: vi.fn(async () => snap()) };
+    signedIn(JSON.stringify([approve('k-a')]), null, gw);
+    otherTabWrites(key, DAMAGED);
+    localStorage.setItem(key, JSON.stringify([approve('k-a')]));
+    useStore.setState({ online: true });
+    const said = lines();
+    s().startDailyLog(); // the release's flush sends k-a and the start; the command's call joins it
+    await flushes.asked(command);
+    await flushes.atRest();
+    expect(gw.startDailyLog).toHaveBeenCalledTimes(1);
+    expect(s().toast).toBe(`${STARTED} ${DISCARDED}`);
+    expect(said.filter((m) => m.includes(STARTED))).toEqual([`${STARTED} ${DISCARDED}`]);
+  });
+  it('forced probe (4376641802, own flush): a command sent beside an act refused for good says its line and the refusal, in one line', async () => {
+    const gw = { snapshot: vi.fn(async () => snap()), approveDecision: vi.fn(async () => { throw refused(); }), startDailyLog: vi.fn(async () => snap()) };
+    signedIn(JSON.stringify([approve('k-a')]), null, gw);
+    useStore.setState({ online: true });
+    const said = lines();
+    s().startDailyLog();
+    await flushes.asked(command);
+    await flushes.atRest();
+    expect(s().toast).toBe(`${STARTED} ${DISCARDED}`);
+    expect(said.filter((m) => m.includes(STARTED))).toEqual([`${STARTED} ${DISCARDED}`]);
+  });
+  it('forced probe (4376641802, pending): a command sent while a held visit’s act stays queued says its line and what is pending, in one line', async () => {
+    const gw = { snapshot: vi.fn(async () => snap()), startDailyLog: vi.fn(async () => snap()), startSiteVisit: vi.fn(async () => ({ id: VID })) };
+    signedIn(null, null, gw);
+    act(() => { s().queueSiteVisitAct(start, 'saved offline'); });
+    await queueWritten();
+    photoHold();
+    useStore.setState({ online: true });
+    s().startDailyLog();
+    await flushes.asked(command);
+    await flushes.atRest();
+    expect(gw.startSiteVisit).not.toHaveBeenCalled(); // held: precondition
+    expect(gw.startDailyLog).toHaveBeenCalledTimes(1);
+    expect(s().toast).toBe(`${STARTED} ${PENDING}`);
+  });
+  it('forced probe (4376641802, chain refusal, Stage 1 re-check of 62c8d1e): a command sent beside a countersign the server refuses says its line and the refusal, in one line', async () => {
+    const gw = { snapshot: vi.fn(async () => snap()), countersignDecision: vi.fn(async () => { throw refused(); }), startDailyLog: vi.fn(async () => snap()) };
+    signedIn(JSON.stringify([{ t: 'countersignDecision', decisionId: 'd-1', idempotencyKey: 'k-c' }]), null, gw);
+    useStore.setState({ online: true });
+    const said = lines();
+    s().startDailyLog();
+    await flushes.asked(command);
+    await flushes.atRest();
+    expect(gw.countersignDecision).toHaveBeenCalledTimes(1);
+    expect(gw.startDailyLog).toHaveBeenCalledTimes(1);
+    expect(s().toast).toBe(`${STARTED} Countersign d-1 refused — Refused.`);
+    expect(said.filter((m) => m.includes(STARTED))).toEqual([`${STARTED} Countersign d-1 refused — Refused.`]);
+  });
+  it('forced probe (4377928188): two commands whose acts one flush sends each say their line, in one line', async () => {
+    const gw = { snapshot: vi.fn(async () => snap()), startDailyLog: vi.fn(async () => snap()), addSiteMaterial: vi.fn(async () => snap()) };
+    signedIn(null, null, gw);
+    const other = holdQueueLock(key); // another tab holds the queue lock: both commands' writes wait behind it
+    await other.has;
+    useStore.setState({ online: true });
+    const said = lines();
+    s().startDailyLog();
+    s().addSiteMaterial({ name: 'Cement', qty: '10 bags' });
+    other.release();
+    await flushes.asked(command);
+    await flushes.asked((o) => o?.act?.t === 'addSiteMaterial');
+    await flushes.atRest();
+    expect(gw.startDailyLog).toHaveBeenCalledTimes(1);
+    expect(gw.addSiteMaterial).toHaveBeenCalledTimes(1);
+    expect(s().outbox).toEqual([]);
+    expect(said).toEqual([`${STARTED} Material recorded: Cement.`]);
+  });
+  describe('4377928188 (root-cause audit): each flush says one line: every sent command’s line once, in send order, then the count of every act without a line', () => {
+    const M = 'Material recorded: Cement.';
+    const SYNCED = '1 offline update synced';
+    const D1 = '1 could not be applied and was discarded';
+    const D2 = '2 could not be applied and were discarded';
+    const P1 = '1 still pending — will retry when you reconnect';
+    const P2 = '2 still pending — will retry when you reconnect';
+    type Outcome = 'sent' | 'refused' | 'pending';
+    // each case: how many commands, what the server does with their acts, whose flush sends them; then every line said.
+    // The queue also holds k-a, a plain act with no line, which the server accepts. `own`: the first command's own flush
+    // call takes the queue (k-a and every command; a second command's call joins it). `joined`: a flush already sending
+    // k-a when the commands ask; their calls join it, and its rerun sends them
+    const cases: [number, Outcome, 'own' | 'joined', string[]][] = [
+      [0, 'sent', 'own', [`${SYNCED}.`]],
+      [1, 'sent', 'own', [`${STARTED} ${SYNCED}.`]],
+      [2, 'sent', 'own', [`${STARTED} ${M} ${SYNCED}.`]],
+      [3, 'sent', 'own', [`${STARTED} 3 offline updates synced.`]],
+      [1, 'refused', 'own', [`${SYNCED}; ${D1}.`]],
+      [2, 'refused', 'own', [`${SYNCED}; ${D2}.`]],
+      [1, 'pending', 'own', [`${SYNCED}; ${P1}.`]],
+      [2, 'pending', 'own', [`${SYNCED}; ${P2}.`, `${P2}.`]],
+      [1, 'sent', 'joined', [`${SYNCED}.`, STARTED]],
+      [2, 'sent', 'joined', [`${SYNCED}.`, `${STARTED} ${M}`]],
+      [1, 'refused', 'joined', [`${SYNCED}.`, `${D1}.`]],
+      [2, 'refused', 'joined', [`${SYNCED}.`, `${D2}.`]],
+      [1, 'pending', 'joined', [`${SYNCED}.`, `${P1}.`]],
+      [2, 'pending', 'joined', [`${SYNCED}.`, `${P2}.`]],
+    ];
+    it.each(cases)('forced probe: %i command(s), %s, %s flush', async (n, outcome, mode, expected) => {
+      let go: () => void = () => {};
+      const gate = new Promise<void>((r) => { go = r; });
+      let reached: () => void = () => {};
+      const sending = new Promise<void>((r) => { reached = r; });
+      const answer = async () => {
+        if (outcome === 'refused') throw refused();
+        if (outcome === 'pending') throw unavailable();
+        return snap();
+      };
+      const gw = {
+        snapshot: vi.fn(async () => snap()),
+        approveDecision: vi.fn(async () => { reached(); if (mode === 'joined') await gate; return snap(); }),
+        startDailyLog: vi.fn(answer),
+        addSiteMaterial: vi.fn(answer),
+      };
+      signedIn(JSON.stringify([approve('k-a')]), null, gw);
+      useStore.setState({ online: true });
+      const said = lines();
+      const commands = [
+        () => s().startDailyLog(),
+        () => s().addSiteMaterial({ name: 'Cement', qty: '10 bags' }),
+        () => s().addSiteMaterial({ name: 'Sand', qty: '2 tonnes' }),
+      ].slice(0, n);
+      if (n === 0) {
+        await act(async () => { await s().flushOutbox(); });
+      } else if (mode === 'own') {
+        const other = holdQueueLock(key); // every command's write waits behind it, so one flush takes them all
+        await other.has;
+        for (const c of commands) c();
+        other.release();
+      } else {
+        void s().flushOutbox();
+        await sending; // the flush is sending k-a
+        for (const c of commands) c();
+      }
+      const kinds = ['startDailyLog', 'addSiteMaterial', 'addSiteMaterial'].slice(0, n);
+      for (const [i, t] of kinds.entries()) await flushes.asked((o) => o?.act?.t === t, kinds.slice(0, i + 1).filter((k) => k === t).length);
+      const rest = flushes.atRest();
+      go();
+      await act(async () => { await rest; });
+      expect(said).toEqual(expected);
+    });
+  });
+  it('guard (4376641802): a command sent alone says its line alone', async () => {
+    signedIn(null, null, { snapshot: vi.fn(async () => snap()), startDailyLog: vi.fn(async () => snap()) });
+    useStore.setState({ online: true });
+    const said = lines();
+    s().startDailyLog();
+    await flushes.asked(command);
+    await flushes.atRest();
+    expect(said).toEqual([STARTED]);
+  });
+
+  it('forced probe (4376641813, offline): a joined command whose flush ends offline says its line when the reconnect sends it', async () => {
+    let go!: () => void;
+    const gate = new Promise<void>((r) => { go = r; });
+    let reached!: () => void;
+    const sending = new Promise<void>((r) => { reached = r; });
+    const gw = { snapshot: vi.fn(async () => snap()), approveDecision: vi.fn(async () => { reached(); await gate; return snap(); }), startDailyLog: vi.fn(async () => snap()) };
+    signedIn(JSON.stringify([approve('k-a')]), null, gw);
+    useStore.setState({ online: true });
+    const first = s().flushOutbox();
+    await sending;
+    s().startDailyLog(); // joins the running flush, which took its queue before the command
+    await flushes.asked(command);
+    useStore.setState({ online: false }); // the connection drops: no rerun starts
+    go();
+    await act(async () => { await first; });
+    await flushes.atRest();
+    expect(gw.startDailyLog).not.toHaveBeenCalled(); // still queued: precondition
+    const said = lines();
+    await goOnline(); // the reconnect's plain flush sends it
+    await flushes.atRest();
+    expect(gw.startDailyLog).toHaveBeenCalledTimes(1);
+    expect(said).toEqual([STARTED]);
+  });
+  it('forced probe (4376641813, failed rerun): a joined command whose rerun fails to send says its line when a later flush sends it', async () => {
+    let go!: () => void;
+    const gate = new Promise<void>((r) => { go = r; });
+    let reached!: () => void;
+    const sending = new Promise<void>((r) => { reached = r; });
+    const gw = { snapshot: vi.fn(async () => snap()), approveDecision: vi.fn(async () => { reached(); await gate; return snap(); }), startDailyLog: startDailyLogThat(unavailable) };
+    signedIn(JSON.stringify([approve('k-a')]), null, gw);
+    useStore.setState({ online: true });
+    const first = s().flushOutbox();
+    await sending;
+    s().startDailyLog();
+    await flushes.asked(command);
+    go();
+    await act(async () => { await first; });
+    await flushes.atRest();
+    expect(gw.startDailyLog).toHaveBeenCalledTimes(1); // the rerun's send failed: precondition
+    expect(s().outbox.map((o) => o.t)).toEqual(['startDailyLog']);
+    const said = lines();
+    await act(async () => { await s().flushOutbox(); });
+    await flushes.atRest();
+    expect(gw.startDailyLog).toHaveBeenCalledTimes(2);
+    expect(said).toEqual([STARTED]);
+  });
+  it('forced probe (4376641813, own flush failed): a command whose own flush fails to send says its line when a later flush sends it', async () => {
+    const gw = { snapshot: vi.fn(async () => snap()), startDailyLog: startDailyLogThat(unavailable) };
+    signedIn(null, null, gw);
+    useStore.setState({ online: true });
+    s().startDailyLog();
+    await flushes.asked(command);
+    await flushes.atRest();
+    expect(s().outbox.map((o) => o.t)).toEqual(['startDailyLog']); // precondition
+    const said = lines();
+    await act(async () => { await s().flushOutbox(); });
+    await flushes.atRest();
+    expect(said).toEqual([STARTED]);
+  });
+  it('guard (4376641813): a kept line whose act is later refused for good is never said', async () => {
+    const gw = { snapshot: vi.fn(async () => snap()), startDailyLog: startDailyLogThat(unavailable, refused) };
+    signedIn(null, null, gw);
+    useStore.setState({ online: true });
+    s().startDailyLog();
+    await flushes.asked(command);
+    await flushes.atRest();
+    const said = lines();
+    await act(async () => { await s().flushOutbox(); });
+    await act(async () => { await s().flushOutbox(); });
+    await flushes.atRest();
+    expect(gw.startDailyLog).toHaveBeenCalledTimes(2);
+    expect(s().outbox).toEqual([]);
+    expect(said).toEqual([DISCARDED]);
+  });
+
+  it('forced probe (4370280911 control): Send anyway during an earlier await does not send the visit’s End ahead of its photo-held Start', async () => {
+    const startSiteVisit = vi.fn(async () => ({ id: VID }));
+    const endSiteVisit = vi.fn(async () => null);
+    // the person taps Send anyway for the visit while another act is on its way
+    const startActivity = vi.fn(async () => { s().sendSiteVisitAnyway(VID); return null; });
+    signedIn(null, null, { startSiteVisit, endSiteVisit, startActivity });
+    act(() => { s().queueSiteVisitAct(start, 'saved offline'); });
+    await queueWritten();
+    s().startActivity('B-1');
+    await queueWritten();
+    act(() => { s().queueSiteVisitAct(close, 'saved offline'); });
+    await queueWritten();
+    photoHold();
+    await goOnline();
+    expect(startActivity).toHaveBeenCalledTimes(1);
+    // the End is never sent ahead of its Start; Send anyway takes effect at the next flush (the tap's own, run once this
+    // one ends): the Start, then the End
+    await flushes.atRest();
+    const [startAt, endAt] = order(startSiteVisit, endSiteVisit);
+    expect(startAt).toBeLessThan(endAt);
+    expect(endAt).toBeLessThan(Infinity);
+  });
+  it('guard (4370280911): Send anyway before the flush sends the visit in that flush, the Start before the End', async () => {
+    const startSiteVisit = vi.fn(async () => ({ id: VID }));
+    const endSiteVisit = vi.fn(async () => null);
+    signedIn(null, null, { startSiteVisit, endSiteVisit, startActivity: vi.fn(async () => null) });
+    act(() => { s().queueSiteVisitAct(start, 'saved offline'); });
+    await queueWritten();
+    s().startActivity('B-1');
+    await queueWritten();
+    act(() => { s().queueSiteVisitAct(close, 'saved offline'); });
+    await queueWritten();
+    photoHold();
+    s().sendSiteVisitAnyway(VID);
+    await goOnline();
+    const [startAt, endAt] = order(startSiteVisit, endSiteVisit);
+    expect(startAt).toBeLessThan(endAt);
+    expect(endAt).toBeLessThan(Infinity);
+  });
+  it('guard (4370280911): a held photo’s own act latches nothing: after Send anyway the visit’s End still goes', async () => {
+    const startSiteVisit = vi.fn(async () => ({ id: VID }));
+    const endSiteVisit = vi.fn(async () => null);
+    const uploadMedia = vi.fn(async () => ({ id: 'm-1', url: '/media/m-1' }));
+    signedIn(null, null, { startSiteVisit, endSiteVisit, uploadMedia });
+    useStore.setState({ outbox: [start, photo, close] });
+    photoHold();
+    s().sendSiteVisitAnyway(VID);
+    await goOnline();
+    expect(uploadMedia).not.toHaveBeenCalled();
+    const [startAt, endAt] = order(startSiteVisit, endSiteVisit);
+    expect(startAt).toBeLessThan(endAt);
+    expect(endAt).toBeLessThan(Infinity);
   });
 });
 

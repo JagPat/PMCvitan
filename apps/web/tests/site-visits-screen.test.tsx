@@ -817,7 +817,7 @@ describe('the snapshot a flush with site visit acts takes (#908)', () => {
     const stop = useStore.subscribe((s, prev) => { if (s.notifications !== prev.notifications) seen.push(s.notifications.map((n) => n.id)); });
     try {
       useStore.setState({ outbox: [approveAct, endAct] });
-      await useStore.getState().flushOutbox({ okMsg: 'Approved.' });
+      await useStore.getState().flushOutbox({ okMsg: 'Approved.', act: approveAct });
       expect(gw.endSiteVisit).toHaveBeenCalledTimes(1);
       // the approval's own word is still said
       expect(useStore.getState().toast).toBe('Approved.');
@@ -843,7 +843,7 @@ describe('the snapshot a flush with site visit acts takes (#908)', () => {
     const stop = useStore.subscribe((s, prev) => { if (s.notifications !== prev.notifications) seen.push(s.notifications.map((n) => n.id)); });
     try {
       useStore.setState({ outbox: [approveAct, endAct] });
-      await useStore.getState().flushOutbox({ okMsg: 'Approved.' });
+      await useStore.getState().flushOutbox({ okMsg: 'Approved.', act: approveAct });
       expect(gw.endSiteVisit).toHaveBeenCalledTimes(1);
       await until((st) => ids(st).length > 0);
       expect(ids(useStore.getState())).toEqual(['visit ended']);
