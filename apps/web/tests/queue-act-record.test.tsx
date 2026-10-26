@@ -198,7 +198,9 @@ describe('#1101 round 1 (Codex review 5628535504)', () => {
     expect(named(`vitan.made.${key}.`)).toHaveLength(1);
     // the person's Set aside: both keys copied, the general key written, then the lane's write fails
     const g = createQueueKeyGuard();
-    expect(g.setAside(localStorage, [key, lane])).toBe(true);
+    // U3c: the tap re-reads each key through heard, with memory's acts for it, before Set aside copies it
+    g.heard(localStorage, key, [approve('k-1')]); g.heard(localStorage, lane);
+    expect(g.setAside(localStorage, [key, lane])).toBe('ok');
     copiesFailFor((k, v) => k === lane && v !== '{damaged too');
     expect(g.writeAll(localStorage, [{ key, mine: [approve('k-1')], takes: () => true }, { key: lane, mine: [], takes: () => true }])).toBe('none');
     vi.restoreAllMocks();
@@ -212,7 +214,8 @@ describe('#1101 round 1 (Codex review 5628535504)', () => {
     createQueueKeyGuard().write(localStorage, key, [approve('k-1')]);
     spy.mockRestore();
     const g = createQueueKeyGuard();
-    expect(g.setAside(localStorage, [key])).toBe(true);
+    g.heard(localStorage, key, [approve('k-1')]);
+    expect(g.setAside(localStorage, [key])).toBe('ok');
     expect(g.writeAll(localStorage, [{ key, mine: [approve('k-1')], takes: () => true }])).toBe('all');
     expect(named(`vitan.made.${key}.`)).toEqual([]);
   });
@@ -327,7 +330,8 @@ describe('#1101 round 2 (Codex 4360012661): a mark goes only once nothing it gua
     expect(g.write(localStorage, key, [approve('k-1')])).toBe(false);
     const heldIn = () => named(`vitan.unreadable.${key}.`).filter((n) => localStorage.getItem(n) === JSON.stringify([approve('k-1')]));
     expect(heldIn()).toHaveLength(1);
-    expect(g.setAside(localStorage, [key, lane])).toBe(true);
+    g.heard(localStorage, key, [approve('k-1')]); g.heard(localStorage, lane);
+    expect(g.setAside(localStorage, [key, lane])).toBe('ok');
     // the lane's write fails, and so would any new copy or record: the put-back key holds k-1 no more
     failing('setItem', (k) => k === lane || k.startsWith('vitan.unreadable.') || k.startsWith('vitan.made.'));
     expect(g.writeAll(localStorage, [{ key, mine: [approve('k-1')], takes: () => true }, { key: lane, mine: [], takes: () => true }])).toBe('none');
@@ -340,7 +344,8 @@ describe('#1101 round 2 (Codex 4360012661): a mark goes only once nothing it gua
     localStorage.setItem(key, '{damaged');
     const g = createQueueKeyGuard();
     g.write(localStorage, key, [approve('k-1')]);
-    expect(g.setAside(localStorage, [key])).toBe(true);
+    g.heard(localStorage, key, [approve('k-1')]);
+    expect(g.setAside(localStorage, [key])).toBe('ok');
     expect(g.writeAll(localStorage, [{ key, mine: [approve('k-1')], takes: () => true }])).toBe('all');
     expect(named(`vitan.unreadable.${key}.`).filter((n) => localStorage.getItem(n) === JSON.stringify([approve('k-1')]))).toEqual([]);
   });
