@@ -166,6 +166,10 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // #482 site photos — the deleted-photo record refuses TRUNCATE, and its key cascades from `Project`, so a reset that
   // truncates `Project` with CASCADE reaches it; the seal is bypassed here by name (#1018 r4325096705).
   { table: 'MediaTombstone', trigger: 'MediaTombstone_no_truncate' },
+  // #1118 U1 — the Hub webhook receipts and withdrawn-version records refuse TRUNCATE; their keys cascade from `Org` and
+  // `Project`, so a reset that truncates either with CASCADE reaches them, and the seals are bypassed here by name.
+  { table: 'HubWebhookReceipt', trigger: 'HubWebhookReceipt_no_truncate' },
+  { table: 'HubVersionTombstone', trigger: 'HubVersionTombstone_no_truncate' },
 ];
 
 /**

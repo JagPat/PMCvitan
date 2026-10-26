@@ -578,7 +578,7 @@ if echo "$out" | grep -q "P3005"; then
   # `platform_user_standing_apply`, which 20271220 installs. It is re-runnable.
   #
   # The Hub drawing link schema (#1118 U1, 20280121) is here because its three uniques on "Drawing"/"DrawingRevision" are
-  # partial or raw and its rules are triggers, which a db-push baseline does not have. It is guarded and re-runnable.
+  # partial or raw and its rules are triggers and checks, which a db-push baseline does not have. It is guarded and re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider

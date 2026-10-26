@@ -211,7 +211,7 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
       expect(r.unlinked.find((u) => u.table === table), table).toMatchObject({ unchanged: true });
     }
     expect(r.protected).toEqual([expect.objectContaining({ projectId: f.projectB.id, removed: [], keysUnchanged: true })]);
-    expect(r.triggers.disabled.map((d) => d.name)).toEqual(expect.arrayContaining(['DomainEvent_append_only', 'MediaTombstone_immutable', 'Media_tombstone_on_delete']));
+    expect(r.triggers.disabled.map((d) => d.name)).toEqual(expect.arrayContaining(['DomainEvent_append_only', 'MediaTombstone_immutable', 'Media_tombstone_on_delete', 'HubVersionTombstone_sealed']));
     expect(r.triggers.restored).toBe(true);
     expect(r.counts.Project.after).toBe(r.counts.Project.before - 1);
     expect(r.files).toEqual(expect.arrayContaining([expect.objectContaining({ table: 'Media', id: `it-rm-media-${run}` })]));

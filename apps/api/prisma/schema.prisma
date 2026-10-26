@@ -1262,10 +1262,10 @@ model Drawing {
   createdAt        DateTime          @default(now())
   // #1118 U1 (20280121): the Hub file this drawing follows (null for a PMC drawing). At most one drawing per Hub file
   // in a project: the partial unique "Drawing_hub_file_per_project" (raw SQL; Prisma cannot express partial uniques).
-  // Never changed once the row exists (trigger "Drawing_hub_ids_immutable").
+  // Never changed once the row exists (trigger "Drawing_hub_ids_immutable"); never blank (check "Drawing_hubFileId_present").
   hubFileId        String?
   // #1118 U1: the highest Hub order ever written for construction on this drawing (the plan's mark). It only rises
-  // (trigger "Drawing_hub_mark_rises").
+  // (trigger "Drawing_hub_mark_rises"), and is set only beside hubFileId (check "Drawing_hub_order_needs_file").
   hubGovernedOrder Int?
   revisions        DrawingRevision[]
 
@@ -1309,7 +1309,8 @@ model DrawingRevision {
   createdAt          DateTime           @default(now())
   // #1118 U1 (20280121): the Hub version this revision holds and its order (null for a PMC revision). At most one
   // revision per Hub version in a project: the partial unique "DrawingRevision_hub_version_per_project" (raw SQL).
-  // Neither changes once the row exists (trigger "DrawingRevision_hub_ids_immutable").
+  // Neither changes once the row exists (trigger "DrawingRevision_hub_ids_immutable"). The id is never blank and the order
+  // is set only beside it (checks "DrawingRevision_hubVersionId_present", "DrawingRevision_hub_order_needs_version").
   hubVersionId       String?
   hubVersionOrder    Int?
   acks               DrawingAck[]
@@ -1323,7 +1324,7 @@ model DrawingRevision {
 
 // #1118 U1 (20280121): the Hub drawing link. One row per linked project: the Hub project its drawings follow. The org is
 // the project's own (composite key to Project (orgId, id)). Unlinking stamps unlinkedAt and keeps the row; it goes only
-// with its project.
+// with its project. Checks: hubProjectId and linkedBy present, unlinkedAt never before linkedAt.
 model DrawingHubLink {
   project      Project   @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade, onUpdate: Cascade)
   projectId    String    @id
@@ -1335,7 +1336,9 @@ model DrawingHubLink {
 }
 
 // #1118 U1 (20280121): one row per Hub webhook delivery an org's endpoint handled, whatever PMC did with it (outcome), so a
-// replayed webhook-id is recognised. It goes with its org.
+// replayed webhook-id is recognised. A record: never changed or deleted on its own, never truncated (triggers
+// "HubWebhookReceipt_sealed", "HubWebhookReceipt_no_truncate"); it goes only with its org. Checks: ids present,
+// outcome one of applied | refused | ignored.
 model HubWebhookReceipt {
   org        Org      @relation(fields: [orgId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   orgId      String
@@ -1348,7 +1351,8 @@ model HubWebhookReceipt {
 }
 
 // #1118 U1 (20280121): one row per Hub version Hub withdrew in a project. A withdrawn version never governs again. Its
-// Hub columns never change (trigger "HubVersionTombstone_ids_immutable"); it goes with its project.
+// A record: never changed or deleted on its own, never truncated (triggers "HubVersionTombstone_sealed",
+// "HubVersionTombstone_no_truncate"); it goes only with its project. Checks: ids present.
 model HubVersionTombstone {
   project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   projectId    String
@@ -1362,8 +1366,8 @@ model HubVersionTombstone {
 
 // #1118 U1 (20280121): the ledger of storage keys a Hub fetch wrote, so the Hub blob sweep walks these rows and never
 // lists the bucket or touches a PMC upload. Keyed by id like every table holding a storageKey (project:inventory lists
-// stored files by id). Its id, key and version never change (trigger "HubFetchedBlob_ids_immutable"); it goes with its
-// project.
+// stored files by id). Its id, key, project and version never change (trigger "HubFetchedBlob_ids_immutable"); it goes
+// with its project. Checks: key and version present.
 model HubFetchedBlob {
   id           String   @id @default(cuid())
   storageKey   String   @unique

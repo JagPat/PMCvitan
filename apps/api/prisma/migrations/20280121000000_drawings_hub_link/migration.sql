@@ -29,28 +29,46 @@
 --       Each goes with its project (ON DELETE CASCADE), so `project:remove` and a project delete take them as they take
 --       a drawing; a receipt goes with its org.
 --   H3  A Hub id, once written, never changes: "Drawing"."hubFileId", "DrawingRevision"."hubVersionId" and
---       "hubVersionOrder", and every Hub column of a tombstone and of a ledger row. Setting one on an existing row that
---       had none is refused too: a PMC drawing is never turned into a Hub one (Q1). Rows are created with their ids.
+--       "hubVersionOrder", and every Hub column of a ledger row, its project included, so a fetched blob never moves to
+--       another project. Setting one on an existing row that had none is refused too: a PMC drawing is never turned into
+--       a Hub one (Q1). Rows are created with their ids. A tombstone is never changed at all (H6).
 --   H4  "Drawing"."hubGovernedOrder" only rises: NULL to a value, or a value to a larger one. It is never lowered or
 --       cleared, so the fact that a version once governed survives a later supersede or withdrawal (plan, re-check 6).
---   The link's own columns stay writable: U7 links, unlinks and relinks a project through that one row.
+--   H5  Every Hub row is well formed. Each required Hub id, the link's "linkedBy" and a receipt's "eventType" hold more
+--       than whitespace (the full ASCII set, E' \t\n\x0B\f\r', as "manualReason" does in 20270220), and so does a Hub id on
+--       "Drawing" or "DrawingRevision" once set. A receipt's outcome is 'applied', 'refused' or 'ignored'. A link is
+--       never unlinked before it was linked. An order is recorded only beside its id: "hubGovernedOrder" needs
+--       "hubFileId", and "hubVersionOrder" needs "hubVersionId".
+--   H6  A receipt and a tombstone are records: never changed and never removed on their own. Any UPDATE is refused, a
+--       direct DELETE (trigger depth 1) is refused, and TRUNCATE is refused (a statement-level seal). Each goes only with
+--       its org or project, through the key's ON DELETE CASCADE, which runs below depth 1, the rule "MediaTombstone"
+--       (20280117) uses. So a handled delivery is never handled again, and a withdrawn version never governs again.
+--       `project:remove` disables ON DELETE triggers on the tables it empties for its own run and puts them back, as for
+--       every other sealed table; the sanctioned reset lifts the two TRUNCATE seals by name ("TRUNCATE_SEALS" in
+--       prisma/sanctioned-reset.ts).
+--   The link's own columns stay writable within H5: U7 links, unlinks and relinks a project through that one row.
 --
 -- SAFE UNDER THE PREVIOUS RELEASE. Every new column is nullable with no default and every new table is unknown to the
 -- previous release, so its reads and inserts are unchanged and its rows carry NULLs, which no unique judges. The H3/H4
 -- triggers fire only on an UPDATE whose SET names a Hub column (UPDATE OF), which the previous release never writes, so
--- its issue, publish, refile, link and acknowledge writes never reach them. `project:remove` only deletes, and no
--- trigger here is on DELETE or TRUNCATE.
+-- its issue, publish, refile, link and acknowledge writes never reach them. The H5 checks judge only the new columns,
+-- which that release leaves NULL, and the new tables, which it never writes; the H6 seals are on the new tables only.
 --
 -- LOCKS WHILE IT RUNS. The file runs in one transaction, so every lock below is held until it commits. The new tables,
--- their keys and the two functions come first. Adding each key takes ShareRowExclusiveLock on "Project" or "Org", so
--- from then until commit, inserts, updates and deletes on those two tables wait; reads and row locks do not. The
--- statements on "Drawing" and "DrawingRevision" come last. ADD COLUMN (a catalog change, no rewrite) and DROP TRIGGER
--- take AccessExclusiveLock on each, so from then until commit every read and write of those two tables waits. The three
--- unique indexes are built inside that window, without CONCURRENTLY, which a transaction does not allow.
+-- their keys and checks, the four functions and the new tables' triggers come first. Adding each key takes
+-- ShareRowExclusiveLock on "Project" or "Org", so from then until commit, inserts, updates and deletes on those two
+-- tables wait; reads and row locks do not. Adding the new tables' checks takes AccessExclusiveLock on those four
+-- tables, which nothing else uses yet. The statements on "Drawing" and "DrawingRevision" come last. ADD COLUMN (a
+-- catalog change, no rewrite) and DROP TRIGGER take AccessExclusiveLock on each, so from then until commit every read
+-- and write of those two tables waits. The three unique indexes are built inside that window, without CONCURRENTLY,
+-- which a transaction does not allow, and the four checks on those tables are validated there too: a full read of each
+-- table, with no rewrite, under the locks above. Every check is dropped and added again whenever the file runs. An
+-- ordinary deploy runs it once; it runs again only when `scripts/migrate.sh` leaves it pending on a `db push` baseline
+-- (ALWAYS_EXECUTE).
 --
 -- NAMES. Every function has search_path pg_catalog, public, pg_temp and qualified names. Re-runnable, and on
--- `scripts/migrate.sh`'s ALWAYS_EXECUTE: a `db push` baseline models the tables and columns but not the partial uniques
--- or the triggers. Every statement is guarded or replaces itself.
+-- `scripts/migrate.sh`'s ALWAYS_EXECUTE: a `db push` baseline models the tables and columns but not the partial uniques,
+-- the checks or the triggers. Every statement is guarded or replaces itself.
 
 -- H1
 CREATE TABLE IF NOT EXISTS public."DrawingHubLink" (
@@ -118,6 +136,33 @@ BEGIN
   END LOOP;
 END $hub_keys$;
 
+-- H5. Each check is dropped and added again whenever the file runs, so what the table ends with is exactly this definition,
+-- validated against every row, whatever a `db push` baseline or an earlier run left under the name.
+ALTER TABLE public."DrawingHubLink"
+  DROP CONSTRAINT IF EXISTS "DrawingHubLink_hubProjectId_present",
+  ADD CONSTRAINT "DrawingHubLink_hubProjectId_present" CHECK (pg_catalog.btrim("hubProjectId", E' \t\n\x0B\f\r') <> ''),
+  DROP CONSTRAINT IF EXISTS "DrawingHubLink_linkedBy_present",
+  ADD CONSTRAINT "DrawingHubLink_linkedBy_present" CHECK (pg_catalog.btrim("linkedBy", E' \t\n\x0B\f\r') <> ''),
+  DROP CONSTRAINT IF EXISTS "DrawingHubLink_unlinked_after_linked",
+  ADD CONSTRAINT "DrawingHubLink_unlinked_after_linked" CHECK ("unlinkedAt" IS NULL OR "unlinkedAt" >= "linkedAt");
+ALTER TABLE public."HubWebhookReceipt"
+  DROP CONSTRAINT IF EXISTS "HubWebhookReceipt_webhookId_present",
+  ADD CONSTRAINT "HubWebhookReceipt_webhookId_present" CHECK (pg_catalog.btrim("webhookId", E' \t\n\x0B\f\r') <> ''),
+  DROP CONSTRAINT IF EXISTS "HubWebhookReceipt_eventType_present",
+  ADD CONSTRAINT "HubWebhookReceipt_eventType_present" CHECK (pg_catalog.btrim("eventType", E' \t\n\x0B\f\r') <> ''),
+  DROP CONSTRAINT IF EXISTS "HubWebhookReceipt_outcome_known",
+  ADD CONSTRAINT "HubWebhookReceipt_outcome_known" CHECK ("outcome" IN ('applied', 'refused', 'ignored'));
+ALTER TABLE public."HubVersionTombstone"
+  DROP CONSTRAINT IF EXISTS "HubVersionTombstone_hubVersionId_present",
+  ADD CONSTRAINT "HubVersionTombstone_hubVersionId_present" CHECK (pg_catalog.btrim("hubVersionId", E' \t\n\x0B\f\r') <> ''),
+  DROP CONSTRAINT IF EXISTS "HubVersionTombstone_hubFileId_present",
+  ADD CONSTRAINT "HubVersionTombstone_hubFileId_present" CHECK (pg_catalog.btrim("hubFileId", E' \t\n\x0B\f\r') <> '');
+ALTER TABLE public."HubFetchedBlob"
+  DROP CONSTRAINT IF EXISTS "HubFetchedBlob_storageKey_present",
+  ADD CONSTRAINT "HubFetchedBlob_storageKey_present" CHECK (pg_catalog.btrim("storageKey", E' \t\n\x0B\f\r') <> ''),
+  DROP CONSTRAINT IF EXISTS "HubFetchedBlob_hubVersionId_present",
+  ADD CONSTRAINT "HubFetchedBlob_hubVersionId_present" CHECK (pg_catalog.btrim("hubVersionId", E' \t\n\x0B\f\r') <> '');
+
 -- H3: the trigger's arguments name the columns that never change once the row exists.
 CREATE OR REPLACE FUNCTION public.drawings_hub_ids_immutable() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
@@ -135,15 +180,47 @@ BEGIN
   RETURN NEW;
 END $$;
 
-DROP TRIGGER IF EXISTS "HubVersionTombstone_ids_immutable" ON public."HubVersionTombstone";
-CREATE TRIGGER "HubVersionTombstone_ids_immutable"
-  BEFORE UPDATE OF "hubVersionId", "hubFileId", "versionSeq" ON public."HubVersionTombstone"
-  FOR EACH ROW EXECUTE FUNCTION public.drawings_hub_ids_immutable('hubVersionId', 'hubFileId', 'versionSeq');
-
 DROP TRIGGER IF EXISTS "HubFetchedBlob_ids_immutable" ON public."HubFetchedBlob";
 CREATE TRIGGER "HubFetchedBlob_ids_immutable"
-  BEFORE UPDATE OF "id", "storageKey", "hubVersionId" ON public."HubFetchedBlob"
-  FOR EACH ROW EXECUTE FUNCTION public.drawings_hub_ids_immutable('id', 'storageKey', 'hubVersionId');
+  BEFORE UPDATE OF "id", "storageKey", "projectId", "hubVersionId" ON public."HubFetchedBlob"
+  FOR EACH ROW EXECUTE FUNCTION public.drawings_hub_ids_immutable('id', 'storageKey', 'projectId', 'hubVersionId');
+
+-- H6: the trigger's argument names what the record goes with.
+CREATE OR REPLACE FUNCTION public.drawings_hub_record_sealed() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    RAISE EXCEPTION 'drawings: a % row is a record and is never changed', TG_TABLE_NAME;
+  END IF;
+  IF pg_catalog.pg_trigger_depth() = 1 THEN
+    RAISE EXCEPTION 'drawings: a % row is a record and is never deleted; it goes only with its %', TG_TABLE_NAME, TG_ARGV[0];
+  END IF;
+  RETURN OLD;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.drawings_hub_record_no_truncate() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  RAISE EXCEPTION 'drawings: % rows are records and are never truncated; each goes only with its %', TG_TABLE_NAME, TG_ARGV[0];
+END $$;
+
+DROP TRIGGER IF EXISTS "HubWebhookReceipt_sealed" ON public."HubWebhookReceipt";
+CREATE TRIGGER "HubWebhookReceipt_sealed"
+  BEFORE UPDATE OR DELETE ON public."HubWebhookReceipt"
+  FOR EACH ROW EXECUTE FUNCTION public.drawings_hub_record_sealed('org');
+DROP TRIGGER IF EXISTS "HubWebhookReceipt_no_truncate" ON public."HubWebhookReceipt";
+CREATE TRIGGER "HubWebhookReceipt_no_truncate"
+  BEFORE TRUNCATE ON public."HubWebhookReceipt"
+  FOR EACH STATEMENT EXECUTE FUNCTION public.drawings_hub_record_no_truncate('org');
+
+DROP TRIGGER IF EXISTS "HubVersionTombstone_sealed" ON public."HubVersionTombstone";
+CREATE TRIGGER "HubVersionTombstone_sealed"
+  BEFORE UPDATE OR DELETE ON public."HubVersionTombstone"
+  FOR EACH ROW EXECUTE FUNCTION public.drawings_hub_record_sealed('project');
+DROP TRIGGER IF EXISTS "HubVersionTombstone_no_truncate" ON public."HubVersionTombstone";
+CREATE TRIGGER "HubVersionTombstone_no_truncate"
+  BEFORE TRUNCATE ON public."HubVersionTombstone"
+  FOR EACH STATEMENT EXECUTE FUNCTION public.drawings_hub_record_no_truncate('project');
 
 -- H4
 CREATE OR REPLACE FUNCTION public.drawings_hub_mark_rises() RETURNS TRIGGER
@@ -171,6 +248,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS "DrawingRevision_hub_version_per_project"
 -- H1 (schema.prisma's @@unique([drawingId, hubVersionOrder]))
 CREATE UNIQUE INDEX IF NOT EXISTS "DrawingRevision_drawingId_hubVersionOrder_key"
   ON public."DrawingRevision" ("drawingId", "hubVersionOrder");
+
+-- H5 on "Drawing" and "DrawingRevision", dropped and added again as above (a full read of each table, under the lock
+-- ADD COLUMN already holds).
+ALTER TABLE public."Drawing"
+  DROP CONSTRAINT IF EXISTS "Drawing_hubFileId_present",
+  ADD CONSTRAINT "Drawing_hubFileId_present" CHECK ("hubFileId" IS NULL OR pg_catalog.btrim("hubFileId", E' \t\n\x0B\f\r') <> ''),
+  DROP CONSTRAINT IF EXISTS "Drawing_hub_order_needs_file",
+  ADD CONSTRAINT "Drawing_hub_order_needs_file" CHECK ("hubGovernedOrder" IS NULL OR "hubFileId" IS NOT NULL);
+ALTER TABLE public."DrawingRevision"
+  DROP CONSTRAINT IF EXISTS "DrawingRevision_hubVersionId_present",
+  ADD CONSTRAINT "DrawingRevision_hubVersionId_present" CHECK ("hubVersionId" IS NULL OR pg_catalog.btrim("hubVersionId", E' \t\n\x0B\f\r') <> ''),
+  DROP CONSTRAINT IF EXISTS "DrawingRevision_hub_order_needs_version",
+  ADD CONSTRAINT "DrawingRevision_hub_order_needs_version" CHECK ("hubVersionOrder" IS NULL OR "hubVersionId" IS NOT NULL);
 
 -- H3 and H4 on "Drawing" and "DrawingRevision".
 DROP TRIGGER IF EXISTS "Drawing_hub_ids_immutable" ON public."Drawing";

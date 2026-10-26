@@ -6,11 +6,11 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { DrawingsService } from '../../src/drawings/drawings.service';
 import type { AuthUser } from '../../src/common/auth';
-import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { sanctionedReset, TRUNCATE_SEALS } from '../../prisma/sanctioned-reset';
 
 /**
  * #1118 U1 — the Hub drawing link schema (`20280121000000_drawings_hub_link`), against live PostgreSQL. It proves what
- * the database holds on every writer (H1-H4 in the migration), that the file re-runs and changes nothing, and that a
+ * the database holds on every writer (H1-H6 in the migration), that the file re-runs and changes nothing, and that a
  * PMC issue and acknowledge still work with every Hub column NULL.
  *
  * Isolated automated-test fixtures only.
@@ -95,7 +95,7 @@ describe('#1118 U1 — the Hub drawing link schema (live PG)', () => {
   it('H2: a link\'s org is its project\'s org, every row names a project or org that exists, and each goes with its project', async () => {
     await expect(raw(`INSERT INTO "DrawingHubLink" ("projectId", "orgId", "hubProjectId", "linkedBy") VALUES ($1, $2, 'hp', 'it')`, f.projectA.id, f.orgB.id))
       .rejects.toThrow(/DrawingHubLink_orgId_projectId_fkey/);
-    await expect(raw(`INSERT INTO "HubWebhookReceipt" ("orgId", "webhookId", "eventType", "outcome") VALUES ('no-such-org', 'w', 'e', 'o')`))
+    await expect(raw(`INSERT INTO "HubWebhookReceipt" ("orgId", "webhookId", "eventType", "outcome") VALUES ('no-such-org', 'w', 'e', 'applied')`))
       .rejects.toThrow(/HubWebhookReceipt_orgId_fkey/);
     await expect(raw(`INSERT INTO "HubVersionTombstone" ("projectId", "hubVersionId", "hubFileId") VALUES ('no-such-project', 'v', 'f')`))
       .rejects.toThrow(/HubVersionTombstone_projectId_fkey/);
@@ -133,12 +133,9 @@ describe('#1118 U1 — the Hub drawing link schema (live PG)', () => {
     const pr = await revision(pmcDrawing.id, 'A');
     await expect(raw(`UPDATE "DrawingRevision" SET "hubVersionId" = 'attach' WHERE "id" = $1`, pr.id)).rejects.toThrow(/hubVersionId is a Hub id/);
 
-    await t.prisma.hubVersionTombstone.create({ data: { projectId: own, hubVersionId: `ver-${run}-t`, hubFileId: 'f', versionSeq: 5 } });
-    for (const set of [`"hubFileId" = 'g'`, `"versionSeq" = 6`, `"versionSeq" = NULL`, `"hubVersionId" = 'w'`]) {
-      await expect(raw(`UPDATE "HubVersionTombstone" SET ${set} WHERE "projectId" = $1 AND "hubVersionId" = $2`, own, `ver-${run}-t`), set).rejects.toThrow(/is a Hub id/);
-    }
     await t.prisma.hubFetchedBlob.create({ data: { storageKey: `${own}/drawings/hub/h3-${run}`, projectId: own, hubVersionId: 'v' } });
-    for (const set of [`"id" = 'other'`, `"storageKey" = 'k2'`, `"hubVersionId" = 'w'`]) {
+    // the project too, so a fetched blob is never counted against, or swept from, another project
+    for (const set of [`"id" = 'other'`, `"storageKey" = 'k2'`, `"hubVersionId" = 'w'`, `"projectId" = '${f.projectA.id}'`]) {
       await expect(raw(`UPDATE "HubFetchedBlob" SET ${set} WHERE "storageKey" = $1`, `${own}/drawings/hub/h3-${run}`), set).rejects.toThrow(/is a Hub id/);
     }
 
@@ -155,6 +152,119 @@ describe('#1118 U1 — the Hub drawing link schema (live PG)', () => {
     await expect(mark(6)).rejects.toThrow(/only rises/);
     await expect(mark(null)).rejects.toThrow(/only rises/);
     expect((await t.prisma.drawing.findUniqueOrThrow({ where: { id: d.id } })).hubGovernedOrder).toBe(7);
+  });
+
+  it('H5: every Hub row is well formed: ids hold more than whitespace, a known outcome, a link never unlinked before it was linked, an order only beside its id', async () => {
+    const blanks = ['', ' ', '\t', ' \n\r\f\v '];
+    for (const b of blanks) {
+      const why = JSON.stringify(b);
+      await expect(raw(`INSERT INTO "DrawingHubLink" ("projectId", "orgId", "hubProjectId", "linkedBy") VALUES ($1, $2, $3, 'it')`, f.projectA.id, f.orgA.id, b), why)
+        .rejects.toThrow(/DrawingHubLink_hubProjectId_present/);
+      await expect(raw(`INSERT INTO "DrawingHubLink" ("projectId", "orgId", "hubProjectId", "linkedBy") VALUES ($1, $2, 'hp', $3)`, f.projectA.id, f.orgA.id, b), why)
+        .rejects.toThrow(/DrawingHubLink_linkedBy_present/);
+      await expect(raw(`INSERT INTO "HubWebhookReceipt" ("orgId", "webhookId", "eventType", "outcome") VALUES ($1, $2, 'e', 'applied')`, f.orgA.id, b), why)
+        .rejects.toThrow(/HubWebhookReceipt_webhookId_present/);
+      await expect(raw(`INSERT INTO "HubWebhookReceipt" ("orgId", "webhookId", "eventType", "outcome") VALUES ($1, $2, $3, 'applied')`, f.orgA.id, `wh5-${run}`, b), why)
+        .rejects.toThrow(/HubWebhookReceipt_eventType_present/);
+      await expect(raw(`INSERT INTO "HubVersionTombstone" ("projectId", "hubVersionId", "hubFileId") VALUES ($1, $2, 'f')`, own, b), why)
+        .rejects.toThrow(/HubVersionTombstone_hubVersionId_present/);
+      await expect(raw(`INSERT INTO "HubVersionTombstone" ("projectId", "hubVersionId", "hubFileId") VALUES ($1, $2, $3)`, own, `ver5-${run}`, b), why)
+        .rejects.toThrow(/HubVersionTombstone_hubFileId_present/);
+      await expect(raw(`INSERT INTO "HubFetchedBlob" ("id", "storageKey", "projectId", "hubVersionId") VALUES ($1, $2, $3, 'v')`, `b5-${run}`, b, own), why)
+        .rejects.toThrow(/HubFetchedBlob_storageKey_present/);
+      await expect(raw(`INSERT INTO "HubFetchedBlob" ("id", "storageKey", "projectId", "hubVersionId") VALUES ($1, $2, $3, $4)`, `b5-${run}`, `${own}/k5`, own, b), why)
+        .rejects.toThrow(/HubFetchedBlob_hubVersionId_present/);
+      await expect(drawing({ hubFileId: b }), why).rejects.toThrow(/Drawing_hubFileId_present/);
+      const d = await drawing();
+      await expect(revision(d.id, 'A', { hubVersionId: b }), why).rejects.toThrow(/DrawingRevision_hubVersionId_present/);
+    }
+    for (const outcome of ['apply', 'Applied', 'done', '']) {
+      await expect(raw(`INSERT INTO "HubWebhookReceipt" ("orgId", "webhookId", "eventType", "outcome") VALUES ($1, $2, 'e', $3)`, f.orgA.id, `wh5o-${run}`, outcome), outcome)
+        .rejects.toThrow(/HubWebhookReceipt_outcome_known/);
+    }
+    await expect(raw(`INSERT INTO "DrawingHubLink" ("projectId", "orgId", "hubProjectId", "linkedBy", "linkedAt", "unlinkedAt")
+                      VALUES ($1, $2, 'hp', 'it', '2026-10-26 10:00', '2026-10-26 09:59')`, f.projectA.id, f.orgA.id)).rejects.toThrow(/DrawingHubLink_unlinked_after_linked/);
+    // U7's order: link, unlink, then relink, which moves linkedAt forward and clears unlinkedAt in the same UPDATE.
+    // A relink that moves linkedAt past the kept unlink time without clearing it is refused.
+    const linked = `it-hub1-link5-${run}`;
+    await t.prisma.project.create({ data: {
+      id: linked, orgId: f.orgA.id, name: linked, short: 'L', descriptor: '', stage: 'x', siteCode: 'L', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0,
+    } });
+    try {
+      await raw(`INSERT INTO "DrawingHubLink" ("projectId", "orgId", "hubProjectId", "linkedBy", "linkedAt") VALUES ($1, $2, 'hp', 'it', '2026-10-26 10:00')`, linked, f.orgA.id);
+      await raw(`UPDATE "DrawingHubLink" SET "unlinkedAt" = '2026-10-26 10:30' WHERE "projectId" = $1`, linked);
+      await expect(raw(`UPDATE "DrawingHubLink" SET "unlinkedAt" = '2026-10-26 09:59' WHERE "projectId" = $1`, linked)).rejects.toThrow(/DrawingHubLink_unlinked_after_linked/);
+      await expect(raw(`UPDATE "DrawingHubLink" SET "linkedAt" = '2026-10-26 11:00', "hubProjectId" = 'hp2', "linkedBy" = 'it2' WHERE "projectId" = $1`, linked))
+        .rejects.toThrow(/DrawingHubLink_unlinked_after_linked/);
+      await raw(`UPDATE "DrawingHubLink" SET "linkedAt" = '2026-10-26 11:00', "hubProjectId" = 'hp2', "linkedBy" = 'it2', "unlinkedAt" = NULL WHERE "projectId" = $1`, linked);
+      await raw(`UPDATE "DrawingHubLink" SET "unlinkedAt" = '2026-10-26 11:00' WHERE "projectId" = $1`, linked);
+    } finally {
+      await raw(`DELETE FROM "Project" WHERE "id" = $1`, linked);
+    }
+
+    // an order with no id identifies nothing, and H3 would keep the id from ever being added
+    const pmc = await drawing();
+    await expect(raw(`UPDATE "Drawing" SET "hubGovernedOrder" = 1 WHERE "id" = $1`, pmc.id)).rejects.toThrow(/Drawing_hub_order_needs_file/);
+    await expect(raw(`INSERT INTO "Drawing" ("id", "projectId", "number", "title", "discipline", "hubGovernedOrder") VALUES ($1, $2, $3, 'x', 'architectural', 1)`,
+      `d5-${run}`, own, `H5-${run}`)).rejects.toThrow(/Drawing_hub_order_needs_file/);
+    await expect(revision(pmc.id, 'A', { hubVersionOrder: 1 })).rejects.toThrow(/DrawingRevision_hub_order_needs_version/);
+    const hub = await drawing({ hubFileId: `file-${run}-h5` });
+    await raw(`UPDATE "Drawing" SET "hubGovernedOrder" = 1 WHERE "id" = $1`, hub.id);
+    await revision(hub.id, 'A', { hubVersionId: `ver-${run}-h5`, hubVersionOrder: 1 });
+  });
+
+  it('H6: a receipt and a tombstone are never changed, deleted or truncated on their own, and go with their org or project', async () => {
+    await t.prisma.hubVersionTombstone.create({ data: { projectId: own, hubVersionId: `ver-${run}-t`, hubFileId: 'f', versionSeq: 5 } });
+    for (const set of [`"hubFileId" = 'g'`, `"versionSeq" = 6`, `"versionSeq" = NULL`, `"hubVersionId" = 'w'`, `"projectId" = '${f.projectA.id}'`, `"withdrawnAt" = now()`]) {
+      await expect(raw(`UPDATE "HubVersionTombstone" SET ${set} WHERE "projectId" = $1 AND "hubVersionId" = $2`, own, `ver-${run}-t`), set).rejects.toThrow(/is a record and is never changed/);
+    }
+    await expect(raw(`DELETE FROM "HubVersionTombstone" WHERE "projectId" = $1`, own)).rejects.toThrow(/never deleted; it goes only with its project/);
+    await t.prisma.hubWebhookReceipt.create({ data: { orgId: f.orgA.id, webhookId: `wh6-${run}`, eventType: 'drawing.issued', outcome: 'applied' } });
+    for (const set of [`"outcome" = 'refused'`, `"eventType" = 'x'`, `"webhookId" = 'w'`, `"orgId" = '${f.orgB.id}'`, `"receivedAt" = now()`]) {
+      await expect(raw(`UPDATE "HubWebhookReceipt" SET ${set} WHERE "orgId" = $1 AND "webhookId" = $2`, f.orgA.id, `wh6-${run}`), set).rejects.toThrow(/is a record and is never changed/);
+    }
+    await expect(raw(`DELETE FROM "HubWebhookReceipt" WHERE "orgId" = $1`, f.orgA.id)).rejects.toThrow(/never deleted; it goes only with its org/);
+    expect(await t.prisma.hubVersionTombstone.count({ where: { projectId: own, hubVersionId: `ver-${run}-t` } })).toBe(1);
+    expect(await t.prisma.hubWebhookReceipt.count({ where: { orgId: f.orgA.id, webhookId: `wh6-${run}` } })).toBe(1);
+    // the allowed write paths: U5 writes each receipt once and a tombstone only if absent, by INSERT … ON CONFLICT DO NOTHING
+    expect(await raw(`INSERT INTO "HubWebhookReceipt" ("orgId", "webhookId", "eventType", "outcome") VALUES ($1, $2, 'drawing.issued', 'refused')
+                      ON CONFLICT ("orgId", "webhookId") DO NOTHING`, f.orgA.id, `wh6-${run}`)).toBe(0);
+    expect(await raw(`INSERT INTO "HubWebhookReceipt" ("orgId", "webhookId", "eventType", "outcome") VALUES ($1, $2, 'drawing.issued', 'applied')
+                      ON CONFLICT ("orgId", "webhookId") DO NOTHING`, f.orgA.id, `wh6b-${run}`)).toBe(1);
+    expect(await raw(`INSERT INTO "HubVersionTombstone" ("projectId", "hubVersionId", "hubFileId", "versionSeq") VALUES ($1, $2, 'g', 7)
+                      ON CONFLICT ("projectId", "hubVersionId") DO NOTHING`, own, `ver-${run}-t`)).toBe(0);
+    expect(await raw(`INSERT INTO "HubVersionTombstone" ("projectId", "hubVersionId", "hubFileId", "versionSeq") VALUES ($1, $2, 'g', 7)
+                      ON CONFLICT ("projectId", "hubVersionId") DO NOTHING`, own, `ver-${run}-t2`)).toBe(1);
+    expect((await t.prisma.hubWebhookReceipt.findUniqueOrThrow({ where: { orgId_webhookId: { orgId: f.orgA.id, webhookId: `wh6-${run}` } } })).outcome).toBe('applied');
+    expect((await t.prisma.hubVersionTombstone.findUniqueOrThrow({ where: { projectId_hubVersionId: { projectId: own, hubVersionId: `ver-${run}-t` } } })).versionSeq).toBe(5);
+    // the ledger is not sealed: the sweep (U5s) deletes a row per blob it removes
+    await t.prisma.hubFetchedBlob.create({ data: { storageKey: `${own}/drawings/hub/h6-${run}`, projectId: own, hubVersionId: 'v' } });
+    expect(await raw(`DELETE FROM "HubFetchedBlob" WHERE "storageKey" = $1`, `${own}/drawings/hub/h6-${run}`)).toBe(1);
+
+    for (const [table, owner] of [['HubWebhookReceipt', 'org'], ['HubVersionTombstone', 'project']] as const) {
+      await expect(raw(`TRUNCATE TABLE "${table}"`), table).rejects.toThrow(new RegExp(`never truncated; each goes only with its ${owner}`));
+    }
+
+    // the org's own delete takes its receipts (the project cascade is H2's)
+    const org = `it-hub1-org6-${run}`;
+    await t.prisma.org.create({ data: { id: org, name: org, slug: org } });
+    await t.prisma.hubWebhookReceipt.create({ data: { orgId: org, webhookId: `wh6-${run}`, eventType: 'drawing.issued', outcome: 'ignored' } });
+    await raw(`DELETE FROM "Org" WHERE "id" = $1`, org);
+    expect(await t.prisma.hubWebhookReceipt.count({ where: { orgId: org } })).toBe(0);
+
+    // every statement seal on the two tables is registered for the sanctioned reset, which empties them and puts the seals back
+    for (const table of ['HubWebhookReceipt', 'HubVersionTombstone']) {
+      const seals = await t.prisma.$queryRawUnsafe<Array<{ name: string; enabled: string }>>(
+        `SELECT tgname::text AS name, tgenabled::text AS enabled FROM pg_trigger WHERE tgrelid = $1::regclass AND NOT tgisinternal AND (tgtype & 32) <> 0`, `"${table}"`);
+      expect(seals.map((x) => x.name)).toEqual([`${table}_no_truncate`]);
+      expect(TRUNCATE_SEALS).toContainEqual({ table, trigger: `${table}_no_truncate` });
+    }
+    await sanctionedReset(t.prisma, ['HubWebhookReceipt', 'HubVersionTombstone']);
+    expect(await t.prisma.hubWebhookReceipt.count()).toBe(0);
+    expect(await t.prisma.hubVersionTombstone.count()).toBe(0);
+    const states = await t.prisma.$queryRawUnsafe<Array<{ enabled: string }>>(
+      `SELECT tgenabled::text AS enabled FROM pg_trigger WHERE tgname IN ('HubWebhookReceipt_no_truncate', 'HubVersionTombstone_no_truncate')`);
+    expect(states.map((x) => x.enabled)).toEqual(['O', 'O']);
   });
 
   it('a PMC issue and acknowledge work as before, with every Hub column NULL', async () => {
@@ -191,16 +301,19 @@ describe('#1118 U1 — the Hub drawing link schema (live PG)', () => {
       UNION ALL
       SELECT 'constraint', conname, pg_get_constraintdef(oid) FROM pg_constraint
        WHERE conrelid IN ('public."DrawingHubLink"'::regclass, 'public."HubWebhookReceipt"'::regclass, 'public."HubVersionTombstone"'::regclass, 'public."HubFetchedBlob"'::regclass)
+          OR (conrelid IN ('public."Drawing"'::regclass, 'public."DrawingRevision"'::regclass) AND conname LIKE '%hub%')
       UNION ALL
       SELECT 'trigger', tgname, pg_get_triggerdef(oid) FROM pg_trigger
-       WHERE NOT tgisinternal AND tgname IN ('Drawing_hub_ids_immutable', 'Drawing_hub_mark_rises', 'DrawingRevision_hub_ids_immutable', 'HubVersionTombstone_ids_immutable', 'HubFetchedBlob_ids_immutable')
+       WHERE NOT tgisinternal AND tgname IN ('Drawing_hub_ids_immutable', 'Drawing_hub_mark_rises', 'DrawingRevision_hub_ids_immutable', 'HubFetchedBlob_ids_immutable',
+                                             'HubWebhookReceipt_sealed', 'HubWebhookReceipt_no_truncate', 'HubVersionTombstone_sealed', 'HubVersionTombstone_no_truncate')
       UNION ALL
       SELECT 'function', p.proname, array_to_string(p.proconfig, ',') FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-       WHERE n.nspname = 'public' AND p.proname IN ('drawings_hub_ids_immutable', 'drawings_hub_mark_rises')
+       WHERE n.nspname = 'public' AND p.proname IN ('drawings_hub_ids_immutable', 'drawings_hub_mark_rises', 'drawings_hub_record_sealed', 'drawings_hub_record_no_truncate')
       ORDER BY 1, 2`);
     const before = await shape();
-    expect(before.filter((r) => r.kind === 'trigger')).toHaveLength(5);
-    expect(before.filter((r) => r.kind === 'function').map((r) => r.def)).toEqual(['search_path=pg_catalog, public, pg_temp', 'search_path=pg_catalog, public, pg_temp']);
+    expect(before.filter((r) => r.kind === 'trigger')).toHaveLength(8);
+    expect(before.filter((r) => r.kind === 'constraint' && r.def.startsWith('CHECK'))).toHaveLength(14);
+    expect(before.filter((r) => r.kind === 'function').map((r) => r.def)).toEqual(Array(4).fill('search_path=pg_catalog, public, pg_temp'));
     expect(before.find((r) => r.name === 'Drawing_hub_file_per_project')?.def).toMatch(/WHERE \("hubFileId" IS NOT NULL\)/);
     replay();
     replay();
