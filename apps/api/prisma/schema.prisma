@@ -1259,9 +1259,17 @@ model Drawing {
   authorId    String?
   createdAt   DateTime          @default(now())
   revisions   DrawingRevision[]
+  // #1118 U1b (20280122000000): 'pmc' (PMC's own) or 'hub' (from Hub), fixed when the row is written
+  // ("Drawing_source_known", "Drawing_source_fixed"). A 'hub' drawing commits only with its HubDrawing (deferred
+  // constraint trigger "Drawing_hub_record"). Each revision's source is its drawing's: a raw-SQL key
+  // "DrawingRevision_projectId_drawingId_source_fkey" to the (projectId, id, source) unique below, cascading as
+  // "revisions" does, kept out of this schema so a nested `revisions: { create }` stays a plain one-relation create.
+  source      String            @default("pmc")
+  hub         HubDrawing[] // at most one (its primary key); only on a 'hub' drawing
 
   @@unique([projectId, number])
   @@unique([projectId, id]) // composite identity — tenant-safe containment target (Phase 1 Task 3)
+  @@unique([projectId, id, source]) // #1118 U1b: the target of the source keys
   @@index([projectId])
   @@index([nodeId])
 }
@@ -1300,8 +1308,14 @@ model DrawingRevision {
   createdAt          DateTime           @default(now())
   acks               DrawingAck[]
   recipients         DrawingRecipient[]
+  // #1118 U1b (20280122000000): 'pmc' or 'hub', always its drawing's (see Drawing.source) and fixed when written
+  // ("DrawingRevision_source_known", "DrawingRevision_source_fixed"). A 'hub' revision commits only with its HubRevision
+  // (deferred constraint trigger "DrawingRevision_hub_record").
+  source             String             @default("pmc")
+  hub                HubRevision[] // at most one (its primary key); only on a 'hub' revision
 
   @@unique([projectId, id]) // composite identity — tenant-safe reference target (Task 3)
+  @@unique([projectId, drawingId, id, source]) // #1118 U1b: HubRevision's key target
   @@unique([drawingId, rev]) // one Rev B per drawing — a duplicate label is a 409
   @@index([drawingId])
 }
@@ -1356,6 +1370,59 @@ model DrawingHubLinkEvent {
 
   @@id([projectId, seq])
   @@index([byUserId])
+}
+
+// #1118 U1b (20280122000000_hub_drawing_identity): the Hub records of a Hub drawing, its versions and its governing
+// marks. Each row is written once and never changed: UPDATE, a direct DELETE and TRUNCATE are refused by triggers
+// ("<Model>_sealed", "<Model>_no_truncate"), and each goes only with its project, through `project:remove`. Every key is
+// RESTRICT both ways, so a Hub drawing or revision is never deleted while its record exists and no key ever moves.
+// Prisma cannot express the checks or the triggers (raw SQL); see the migration's I1-I7.
+
+// one per Hub drawing: the Hub file it follows (one drawing per Hub file in a project) and the Hub project it came from.
+// Its source is fixed at 'hub' ("HubDrawing_source_hub"), so it belongs only to a 'hub' drawing.
+model HubDrawing {
+  drawing      Drawing       @relation(fields: [projectId, drawingId, source], references: [projectId, id, source], onDelete: Restrict, onUpdate: Restrict)
+  projectId    String
+  drawingId    String
+  source       String        @default("hub")
+  hubFileId    String
+  hubProjectId String
+  revisions    HubRevision[]
+
+  @@id([projectId, drawingId])
+  @@unique([projectId, hubFileId])
+}
+
+// one per Hub revision: the Hub version it holds (one revision per version in a project) and that version's order on
+// its file (one revision per order on a drawing). It belongs to a Hub drawing and to a 'hub' revision of that drawing.
+model HubRevision {
+  drawing         HubDrawing         @relation(fields: [projectId, drawingId], references: [projectId, drawingId], onDelete: Restrict, onUpdate: Restrict)
+  revision        DrawingRevision    @relation(fields: [projectId, drawingId, revisionId, source], references: [projectId, drawingId, id, source], onDelete: Restrict, onUpdate: Restrict)
+  projectId       String
+  drawingId       String
+  revisionId      String
+  source          String             @default("hub")
+  hubVersionId    String
+  hubVersionOrder Int
+  marks           HubGoverningMark[]
+
+  @@id([projectId, revisionId])
+  @@unique([projectId, hubVersionId])
+  @@unique([projectId, drawingId, hubVersionOrder])
+  // what a webhook receipt names (U1a-1): the mark it claims is this version's own
+  @@unique([projectId, hubVersionId, drawingId, hubVersionOrder], map: "HubRevision_version_drawing_order_key") // the default name is past 63 characters
+}
+
+// one per Hub version written for construction on a drawing, naming that version by its order. The drawing's mark is
+// the highest order; a mark is never removed while its drawing exists, so the mark only rises.
+model HubGoverningMark {
+  revision  HubRevision @relation(fields: [projectId, drawingId, order], references: [projectId, drawingId, hubVersionOrder], onDelete: Restrict, onUpdate: Restrict)
+  projectId String
+  drawingId String
+  order     Int
+  at        DateTime    @default(now())
+
+  @@id([projectId, drawingId, order])
 }
 
 // WHO a revision was issued to — frozen at issue time (Phase 1 Task 3). The rows
