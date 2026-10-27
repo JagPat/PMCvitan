@@ -116,7 +116,9 @@ model Project {
   media                      Media[]
   // #482 site photos (20280117): the keys of this project's deleted photos, so a late copy of a send is not stored again
   mediaTombstones            MediaTombstone[]
-  // #1118 U1a-2 (20280121100000): the project's Hub link and its history. A list only because the link's key is
+  // #1118 U1a-3 (20280121200000): the Hub blobs fetched into storage for this project, the ledger the sweep walks
+  hubFetchedBlobs            HubFetchedBlob[]
+  // #1118 U1a-2 (20280121300000): the project's Hub link and its history. A list only because the link's key is
   // (orgId, id); its primary key keeps it to one row.
   drawingHubLinks            DrawingHubLink[]
   pushSubs                   PushSubscription[]
@@ -1304,7 +1306,24 @@ model DrawingRevision {
   @@index([drawingId])
 }
 
-// #1118 U1a-2 (20280121100000_hub_link): a project's Hub link and its history. Each row is written once and never
+// #1118 U1a-3 (20280121200000_hub_fetched_blob): one per storage key a Hub fetch wrote, the ledger the sweep walks. Its
+// id and Hub version hold more than whitespace ("HubFetchedBlob_id_present", "_hubVersionId_present"), and its key is
+// exactly "<projectId>/hub/<uuid>.<ext>", what StorageService.keyFor(projectId, 'hub', mime) makes, with no '/' in the
+// project id ("HubFetchedBlob_storageKey_shape"), so no native drawing or media key is ever one. A row is never changed
+// ("HubFetchedBlob_sealed") or truncated ("HubFetchedBlob_no_truncate"); the sweep's DELETE is its one designed delete.
+// Prisma cannot express the checks or the triggers (raw SQL); see the migration's B1-B5.
+model HubFetchedBlob {
+  id           String   @id @default(cuid())
+  storageKey   String   @unique
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  projectId    String
+  hubVersionId String
+  fetchedAt    DateTime @default(now())
+
+  @@index([projectId])
+}
+
+// #1118 U1a-2 (20280121300000_hub_link): a project's Hub link and its history. Each row is written once and never
 // changed: UPDATE, a direct DELETE and TRUNCATE are refused by triggers ("<Model>_sealed", "<Model>_no_truncate"), and each
 // goes only with its project. A link commits only with its event 1 (deferred constraint trigger
 // "DrawingHubLink_first_event"). Prisma cannot express the triggers or the checks (raw SQL); see the migration's L1-L6.

@@ -42,6 +42,9 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     commit: false,
     ...over,
   });
+  // the ledger's key shape, "<projectId>/hub/<uuid>.<ext>" (HubFetchedBlob_storageKey_shape)
+  const hubBlobUuid = randomUUID();
+  const hubBlobKey = (): string => `${f.projectA.id}/hub/${hubBlobUuid}.pdf`;
   const projectExists = async (id: string): Promise<boolean> => (await t.prisma.project.count({ where: { id } })) === 1;
 
   beforeAll(async () => {
@@ -52,6 +55,8 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     await t.prisma.media.create({ data: { id: `it-rm-media-${run}`, projectId: a, kind: 'progress', mime: 'image/png', data: Buffer.from('abc'), sizeBytes: 3, uploadedBy: 'pmc', clientKey: `it-rm-media-key-${run}` } });
     // a deleted photo's record (#482): sealed against a direct DELETE, so the removal has to take it as it does events
     await t.prisma.mediaTombstone.create({ data: { projectId: a, clientKey: `it-rm-key-${run}` } });
+    // a fetched Hub blob's ledger row (#1118 U1a-3) goes with the project, and inventory lists its file
+    await t.prisma.hubFetchedBlob.create({ data: { storageKey: hubBlobKey(), projectId: a, hubVersionId: `it-rm-ver-${run}` } });
     // the Hub link and its history (#1118 U1a-2) go with the project; both are sealed against a direct DELETE, and a link
     // commits only with its event 1, so the link and its events are one transaction
     await t.prisma.org.create({ data: { id: hubOrgId, name: hubOrgId, slug: hubOrgId } });
@@ -206,7 +211,7 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     expect(r.failures).toEqual([]);
     expect(r).toMatchObject({ ok: true, mode: 'dry-run', outcome: 'rolled back' });
     for (const table of ['Project', 'ProjectNode', 'CrewRow', 'DailyLog', 'Media', 'MediaTombstone', 'DomainEvent', 'OutboxDelivery', 'ProcessedEvent',
-      'DrawingHubLink', 'DrawingHubLinkEvent']) {
+      'HubFetchedBlob', 'DrawingHubLink', 'DrawingHubLinkEvent']) {
       expect(r.removed[table], table).toEqual(o.inventory.keys[table]);
     }
     expect(Object.keys(r.added)).toEqual([]);
@@ -230,6 +235,7 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     expect(r.triggers.restored).toBe(true);
     expect(r.counts.Project.after).toBe(r.counts.Project.before - 1);
     expect(r.files).toEqual(expect.arrayContaining([expect.objectContaining({ table: 'Media', id: `it-rm-media-${run}` })]));
+    expect(r.files).toEqual(expect.arrayContaining([expect.objectContaining({ table: 'HubFetchedBlob', storageKey: hubBlobKey() })]));
     // rolled back: the project, its event and the user's home are as they were
     expect(await projectExists(f.projectA.id)).toBe(true);
     expect(await t.prisma.domainEvent.count({ where: { eventId } })).toBe(1);
@@ -249,6 +255,7 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     expect(await t.prisma.processedEvent.count({ where: { id: receipt } })).toBe(0);
     expect(await t.prisma.crewRow.count({ where: { dailyLogId: logId } })).toBe(0);
     expect(await t.prisma.mediaTombstone.count({ where: { projectId: f.projectA.id } })).toBe(0);
+    expect(await t.prisma.hubFetchedBlob.count({ where: { projectId: f.projectA.id } })).toBe(0);
     expect(await t.prisma.drawingHubLink.count({ where: { projectId: f.projectA.id } })).toBe(0);
     expect(await t.prisma.drawingHubLinkEvent.count({ where: { projectId: f.projectA.id } })).toBe(0);
     const qa = await t.prisma.user.findUniqueOrThrow({ where: { id: qaId } });

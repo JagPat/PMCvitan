@@ -9,7 +9,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset, TRUNCATE_SEALS } from '../../prisma/sanctioned-reset';
 
 /**
- * #1118 U1a-2 — a project's Hub link and its history (`20280121100000_hub_link`), against live PostgreSQL. It proves what
+ * #1118 U1a-2 — a project's Hub link and its history (`20280121300000_hub_link`), against live PostgreSQL. It proves what
  * the database holds on every writer (L1-L6 in the migration): the keys, the owners, that both are sealed and go only
  * with their project, that the history is a chain by its keys and checks alone, that a link commits only with its event 1,
  * and that the file re-runs and changes nothing.
@@ -21,7 +21,7 @@ import { sanctionedReset, TRUNCATE_SEALS } from '../../prisma/sanctioned-reset';
  *
  * Isolated automated-test fixtures only.
  */
-const MIGRATION = join(__dirname, '../../prisma/migrations/20280121100000_hub_link/migration.sql');
+const MIGRATION = join(__dirname, '../../prisma/migrations/20280121300000_hub_link/migration.sql');
 const SEALED = ['DrawingHubLink', 'DrawingHubLinkEvent'] as const;
 
 describe('#1118 U1a-2 — the Hub link and its history (live PG)', () => {

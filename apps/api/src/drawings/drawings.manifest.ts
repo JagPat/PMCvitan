@@ -8,9 +8,10 @@ export const drawingsManifest: ModuleManifest = {
   id: 'drawings',
   title: 'Drawing Control',
   kind: 'domain',
-  // #1118 U1a-2 (20280121100000) — the Hub link and its history
-  ownsModels: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection', 'drawingHubLink', 'drawingHubLinkEvent'],
-  readEncapsulated: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection', 'drawingHubLink', 'drawingHubLinkEvent'],
+  // #1118 U1a-3 (20280121200000) — the Hub fetched-blob ledger
+  // #1118 U1a-2 (20280121300000) — the Hub link and its history
+  ownsModels: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection', 'hubFetchedBlob', 'drawingHubLink', 'drawingHubLinkEvent'],
+  readEncapsulated: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection', 'hubFetchedBlob', 'drawingHubLink', 'drawingHubLinkEvent'],
   dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
   workflowParticipants: [],
   producesEvents: [
