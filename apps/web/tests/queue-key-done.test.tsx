@@ -2,17 +2,23 @@ import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
-import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
+import { siteVisitListeners, type ApiGateway, type OutboxOp, type SiteVisitEvent } from '@/data/apiGateway';
 import { createQueueKeyGuard } from '@/store/queueKeyGuard';
 import { ledgerTag, sidecarName } from '@/store/queueLedger';
 import { queueActIdent } from '@/store/queueActIdent';
 import { dailyLogCommandInFlight } from '@/store/dailyLogPending';
+/** each clamped wait the store arms, recorded so a row can end one by hand (a signal, never a clock) */
+const timers = vi.hoisted(() => ({ armed: [] as { ms: number; fn: () => void }[] }));
+vi.mock('@/lib/clampedTimer', async (orig) => {
+  const real = await orig<typeof import('@/lib/clampedTimer')>();
+  return { ...real, setClampedTimeout: (fn: () => void, ms: number) => { timers.armed.push({ ms, fn }); return real.setClampedTimeout(fn, ms); } };
+});
 import { queueWritten, releaseQueueLocks, storedQueue, unwatchFlushes, watchFlushes } from './queueWrites';
 
 /**
  * xtab-drain redesign U2 (`notes/site-visits/web-02-U3/xtab-drain/redesign/plan.md` rev 3 §2.1, §2.2, §3 U2): a done
  * fact `vitan.done.<lane key>.<tag>` is written when this phone has the server's answer for an act with a key or a
- * photo's client key (sent, or refused for good), and the flush asks it before each send. A done act is not sent; it
+ * photo's client key that the server accepted, and the flush asks it before each send. A done act is not sent; it
  * leaves through the flush's own settle effects. Facts are kept to a per-person budget and always give way to a queue
  * write. Absence is never evidence: a key that no longer holds an act, with no fact, sends it.
  * The other tab is a second queue key guard on the same storage. Rows wait on storage events, queue locks and the
@@ -35,15 +41,17 @@ const start = { t: 'siteVisitStart', idempotencyKey: 'k-s', visitor: { name: 'Pr
 const keysIn = (raw: string | null) => storedQueue<{ idempotencyKey?: string; t?: string }>(raw).map((o) => o.idempotencyKey ?? o.t);
 const snap = (dailyLog: unknown = null) => ({ project: { id: P, name: 'P', short: 'P', descriptor: '', stage: '', siteCode: '', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 }, decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false, drawings: [], phases: [], dailyLog, notifications: [], companies: [], nodes: [], photos: [], materials: [] });
 const facts = () => Object.keys(localStorage).filter((n) => n.startsWith('vitan.done.'));
-const factOf = (name: string) => JSON.parse(localStorage.getItem(name) ?? 'null') as { i: string; n: number; r?: 1 } | null;
+const factOf = (name: string) => JSON.parse(localStorage.getItem(name) ?? 'null') as { i: string; n: number } | null;
 /** the fact's name and how it reads, spelled out here (plan rev 3 §2.1), so the rows run against a base without them */
 const doneName = (k: string, o: OutboxOp) => `vitan.done.${k}.${ledgerTag(queueActIdent(o))}`;
-const doneOf = (_st: Storage, k: string, o: OutboxOp): 'sent' | 'refused' | null => {
+const isDone = (_st: Storage, k: string, o: OutboxOp): boolean => {
   const f = factOf(doneName(k, o));
-  return f && f.i === queueActIdent(o) && !queueActIdent(o).startsWith('json:') ? (f.r === 1 ? 'refused' : 'sent') : null;
+  return !!f && f.i === queueActIdent(o) && !queueActIdent(o).startsWith('json:');
 };
 const DONE_CAP = 1000;
-const DONE_REFUSALS = 500;
+/** the server's refusal for good, as the gateway reads it */
+const refused = () => Object.assign(new Error('409'), { status: 409, serverMessage: 'Refused' });
+const snapOf = (notices: string[]) => ({ ...snap(), notifications: notices.map((id) => ({ id, text: id, time: '', read: false })) });
 const sentWith = (fn: ReturnType<typeof vi.fn>, k: string) => fn.mock.calls.filter((c) => JSON.stringify(c).includes(k)).length;
 
 function signedIn(general: string | null, visits: string | null = null, gw: Record<string, unknown> = {}) {
@@ -131,15 +139,16 @@ describe('the flush settles an act another tab has the server\'s answer for (xta
     });
   }
 
-  it('forced probe F6: another tab refused k-a for good and drained; this tab does not send it', async () => {
-    const approveDecision = vi.fn(async () => null);
+  it('forced probe F6 (r1, 4384591505): another tab refused k-a for good and drained; this tab sends it once, and the server\'s refusal leaves it', async () => {
+    const approveDecision = vi.fn(async () => { throw refused(); });
     const { other } = await begin({ approveDecision }, 'none');
     expect(other.settled(localStorage, key, approve('k-a'), true)).toBe(true);
     expect(other.write(localStorage, key, [])).toBe(true);
     hear();
     await online();
-    expect(sentWith(approveDecision, 'k-a')).toBe(0);
+    expect(sentWith(approveDecision, 'k-a')).toBe(1);
     expect(s().outbox).toEqual([]);
+    expect(keysIn(localStorage.getItem(key))).toEqual([]);
   });
 
   it('forced probe T3b (Stage 1, 30963a9a): another tab loads this tab\'s own new act, sends it and drains; this tab does not send it', async () => {
@@ -320,10 +329,135 @@ describe('the flush settles an act another tab has the server\'s answer for (xta
     await queueWritten();
     expect(factOf(doneName(key, approve('k-a')))?.i).toBe('k:k-a');
   });
+  // r1 (Stage 1 ruling on #1142 round 1): an act another tab sent leaves through the same success effects as one this
+  // tab sends (`afterSent`); a refusal, and an act whose success reads the server's answer, are sent again
+  it('forced probe (r1, 4384591499): a review decision another tab sent asks for the decider\'s brief again', async () => {
+    const review = { t: 'decideReview', inspectionId: 'i-1', approve: true, rejectedItemIds: [], idempotencyKey: 'k-r' } as unknown as OutboxOp;
+    const getBrief = vi.fn(async () => ({ projects: [] }));
+    const decideReview = vi.fn(async () => snap());
+    const { other } = await begin({ getBrief, decideReview }, 'none', [review]);
+    s().loadBrief();
+    await flushes.atRest();
+    expect(getBrief).toHaveBeenCalledTimes(1);
+    expect(other.settled(localStorage, key, review)).toBe(true);
+    expect(other.write(localStorage, key, [])).toBe(true);
+    hear();
+    await online();
+    expect(decideReview).not.toHaveBeenCalled();
+    expect(getBrief).toHaveBeenCalledTimes(2);
+  });
+
+  it('forced probe (r1, 4384591505): a countersign another tab saw refused is sent again, and the refusal is said in the server\'s words', async () => {
+    const chain = { t: 'countersignDecision', decisionId: 'd-1', idempotencyKey: 'k-c' } as unknown as OutboxOp;
+    const countersignDecision = vi.fn(async () => { throw refused(); });
+    const { other } = await begin({ countersignDecision }, 'none', [chain]);
+    expect(other.settled(localStorage, key, chain, true)).toBe(true);
+    expect(other.write(localStorage, key, [])).toBe(true);
+    hear();
+    await online();
+    expect(countersignDecision).toHaveBeenCalledTimes(1);
+    expect(s().toast).toBe('Countersign d-1 refused — Refused.');
+    expect(s().outbox).toEqual([]);
+  });
+
+  it('forced probe (r1, 4384591507): a visit act another tab sent, after an act this flush sent, keeps that act\'s earlier snapshot off screen and asks for one after it', async () => {
+    const approveDecision = vi.fn(async () => snapOf(['approved']));
+    const snapshot = vi.fn(async () => snapOf(['visit ended']));
+    const endSiteVisit = vi.fn(async () => null);
+    expect(createQueueKeyGuard().write(localStorage, key, [approve('k-first')])).toBe(true);
+    expect(createQueueKeyGuard().write(localStorage, lane, [end('k-v')])).toBe(true);
+    signedIn(null, null, { approveDecision, snapshot, endSiteVisit });
+    useStore.setState({ projectLoadState: 'ready' });
+    expect(s().outbox.map((o) => o.t)).toEqual(['approve', 'siteVisitEnd']);
+    const other = createQueueKeyGuard();
+    const theirs = other.load(localStorage, lane);
+    expect(other.settled(localStorage, lane, theirs[0])).toBe(true);
+    expect(other.write(localStorage, lane, [])).toBe(true);
+    hear(lane);
+    const seen: (string | undefined)[][] = [];
+    const stop = useStore.subscribe((st, prev) => { if (st.notifications !== prev.notifications) seen.push(st.notifications.map((n) => n.id)); });
+    try {
+      await online();
+      expect(sentWith(approveDecision, 'k-first')).toBe(1);
+      expect(endSiteVisit).not.toHaveBeenCalled();
+      expect(snapshot).toHaveBeenCalled();
+      expect(seen).toEqual([['visit ended']]);
+    } finally {
+      stop();
+    }
+  });
+
+  it('forced probe (r1, 4384591508): a visit act another tab sent starts the visit photo retry\'s wait over', async () => {
+    const endSiteVisit = vi.fn(async (_v: string, _c: string, k: string) => { if (k === 'k-e1') throw new TypeError('Failed to fetch'); return null; });
+    expect(createQueueKeyGuard().write(localStorage, lane, [end('k-e1'), end('k-e2')])).toBe(true);
+    signedIn(null, null, { endSiteVisit });
+    const other = createQueueKeyGuard();
+    const theirs = other.load(localStorage, lane);
+    expect(other.settled(localStorage, lane, theirs[1])).toBe(true);
+    expect(other.write(localStorage, lane, [theirs[0]])).toBe(true);
+    hear(lane);
+    timers.armed.length = 0;
+    await online();
+    // the first send's answer was lost: the retry waits 5 seconds, and the wait after it would be longer
+    expect(sentWith(endSiteVisit, 'k-e1')).toBe(1);
+    expect(sentWith(endSiteVisit, 'k-e2')).toBe(0);
+    const first = timers.armed.filter((t) => t.ms === 5000);
+    expect(first.length).toBeGreaterThan(0);
+    timers.armed.length = 0;
+    act(() => { for (const t of first) t.fn(); });
+    await flushes.atRest();
+    expect(sentWith(endSiteVisit, 'k-e1')).toBe(2);
+    const waits = timers.armed.map((t) => t.ms);
+    expect(waits).toContain(5000);
+    expect(waits).not.toContain(10000);
+  });
+
+  it('forced probe (r1 gap-check of a6a03e1f, C7): a visit act another tab sent tells the Site Visits screen to read again, as this tab\'s own send tells it the answer', async () => {
+    const endSiteVisit = vi.fn(async () => ({ id: VID }));
+    for (const done of [false, true]) {
+      localStorage.clear();
+      expect(createQueueKeyGuard().write(localStorage, lane, [end(done ? 'k-v2' : 'k-v1')])).toBe(true);
+      signedIn(null, null, { endSiteVisit });
+      if (done) {
+        const other = createQueueKeyGuard();
+        const theirs = other.load(localStorage, lane);
+        expect(other.settled(localStorage, lane, theirs[0])).toBe(true);
+        expect(other.write(localStorage, lane, [])).toBe(true);
+        hear(lane);
+      }
+      const told: SiteVisitEvent[] = [];
+      const l = (e: SiteVisitEvent) => { told.push(e); };
+      siteVisitListeners.add(l);
+      try {
+        await online();
+      } finally {
+        siteVisitListeners.delete(l);
+      }
+      expect(s().outbox).toEqual([]);
+      expect(sentWith(endSiteVisit, 'k-v2')).toBe(0);
+      expect({ done, kinds: told.map((e) => e.kind) }).toEqual({ done, kinds: [done ? 'retry' : 'answer'] });
+      await flushes.atRest();
+      s().completeSignOut();
+    }
+  });
+
+  it('forced probe (r1 audit): a site photo another tab sent is sent again, so the server\'s 410 takes its local copy off this phone at once', async () => {
+    const media = { t: 'uploadMedia', input: { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-gone', dailyLogId: 'log-1' } } as unknown as OutboxOp;
+    const uploadMedia = vi.fn(async () => { throw Object.assign(new Error('/media 410'), { status: 410, serverMessage: 'This photo was deleted' }); });
+    const { other } = await begin({ uploadMedia }, 'none', [media]);
+    useStore.setState({ dailyLog: { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 1, photoCount: 1, myPhotoKeys: ['k-gone'], crew: [], materials: [], photos: [{ id: 'local-1', url: 'data:image/png;base64,AAAA', clientKey: 'k-gone' }] } } as never);
+    expect(other.settled(localStorage, key, media)).toBe(true);
+    expect(other.write(localStorage, key, [])).toBe(true);
+    hear();
+    await online();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(s().dailyLog?.photos.map((p) => p.id)).toEqual([]);
+    expect(s().outbox).toEqual([]);
+  });
 });
 
 describe('done facts are written beside the mark, and kept to the person\'s budget (U2)', () => {
-  const seed = (k: string, n: number, refused = false, tag = `t${n}`) => localStorage.setItem(`vitan.done.${k}.${tag}`, JSON.stringify(refused ? { i: `k:${tag}`, n, r: 1 } : { i: `k:${tag}`, n }));
+  const seed = (k: string, n: number, tag = `t${n}`) => localStorage.setItem(`vitan.done.${k}.${tag}`, JSON.stringify({ i: `k:${tag}`, n }));
   /** this tab sends k-new and drains: its fact is written, and the release pass prunes */
   const sendOne = () => {
     const A = createQueueKeyGuard();
@@ -342,36 +476,23 @@ describe('done facts are written beside the mark, and kept to the person\'s budg
     A.load(localStorage, key);
     expect(A.settled(localStorage, key, approve('k-a'))).toBe(true);
     expect(factOf(doneName(key, approve('k-a')))).toEqual({ i: 'k:k-a', n: 8 });
-    expect(A.settled(localStorage, key, approve('k-b'), true)).toBe(true);
-    expect(factOf(doneName(key, approve('k-b')))).toEqual({ i: 'k:k-b', n: 9, r: 1 });
-    expect(doneOf(localStorage, key, approve('k-b'))).toBe('refused');
+    expect(A.settled(localStorage, key, approve('k-b'))).toBe(true);
+    expect(factOf(doneName(key, approve('k-b')))).toEqual({ i: 'k:k-b', n: 9 });
   });
 
-  it('forced probe (prune boundary): at the cap, one more fact prunes exactly the oldest success fact; an older refusal outlives newer successes', () => {
-    seed(key, 1, true);
-    for (let n = 2; n <= DONE_CAP; n += 1) seed(n % 2 ? key : lane, n);
+  it('forced probe (prune boundary): at the cap, one more fact prunes exactly the oldest fact, in either lane', () => {
+    for (let n = 1; n <= DONE_CAP; n += 1) seed(n % 2 ? key : lane, n);
     expect(mine()).toHaveLength(DONE_CAP);
     sendOne();
     expect(mine()).toHaveLength(DONE_CAP);
-    expect(localStorage.getItem(`vitan.done.${lane}.t2`)).toBeNull();
-    expect(localStorage.getItem(`vitan.done.${key}.t1`)).not.toBeNull();
-    expect(localStorage.getItem(`vitan.done.${key}.t3`)).not.toBeNull();
+    expect(localStorage.getItem(`vitan.done.${key}.t1`)).toBeNull();
+    expect(localStorage.getItem(`vitan.done.${lane}.t2`)).not.toBeNull();
     expect(factOf(doneName(key, approve('k-new')))?.n).toBe(DONE_CAP + 1);
-  });
-
-  it('forced probe (prune boundary): refusal facts past half the cap go, oldest first, before any success fact', () => {
-    for (let n = 1; n <= DONE_REFUSALS + 3; n += 1) seed(key, n, true);
-    seed(key, 900);
-    sendOne();
-    const left = mine().map((n) => factOf(n)!);
-    expect(left.filter((f) => f.r === 1)).toHaveLength(DONE_REFUSALS);
-    expect(left.filter((f) => f.r === 1).map((f) => f.n).sort((a, b) => a - b)[0]).toBe(4);
-    expect(localStorage.getItem(`vitan.done.${key}.t900`)).not.toBeNull();
   });
 
   it('guard (prune boundary): another person\'s facts, and other names, are never pruned', () => {
     seed(otherPerson, 0);
-    seed('vitan.siteVisitQueue.dev:u-other.p-2', 0, true);
+    seed('vitan.siteVisitQueue.dev:u-other.p-2', 0);
     localStorage.setItem(`vitan.done.vitan.outbox.dev:${USER}x.${P}.t0`, JSON.stringify({ i: 'k:x', n: 0 }));
     localStorage.setItem(`vitan.settled.${otherPerson}.t.o1`, 'k:x');
     localStorage.setItem(`vitan.made.${otherPerson}.1.n.t`, '[]');
@@ -400,11 +521,9 @@ describe('done facts always give way to a queue write (U2, gap 2)', () => {
     expect(facts()).toEqual([]);
   });
 
-  const seedFacts = (successes: number, refusals: number) => {
-    for (let n = 1; n <= successes; n += 1) localStorage.setItem(`vitan.done.${otherPerson}.s${n}`, JSON.stringify({ i: `k:s${n}`, n }));
-    for (let n = 1; n <= refusals; n += 1) localStorage.setItem(`vitan.done.${key}.r${n}`, JSON.stringify({ i: `k:r${n}`, n, r: 1 }));
+  const seedFacts = (count: number) => {
+    for (let n = 1; n <= count; n += 1) localStorage.setItem(`vitan.done.${n % 2 ? otherPerson : key}.s${n}`, JSON.stringify({ i: `k:s${n}`, n }));
   };
-  const refusalsLeft = () => facts().filter((n) => factOf(n)?.r === 1).length;
   /** this tab queues an act offline; its write must land in the key */
   const queueOne = async () => {
     signedIn(null);
@@ -414,23 +533,15 @@ describe('done facts always give way to a queue write (U2, gap 2)', () => {
     expect(storedQueue<{ t: string }>(localStorage.getItem(key)).map((o) => o.t)).toEqual(['startActivity']);
   };
 
-  it('forced probe (give-way): a queue key write that meets a full store removes success facts and keeps the act; refusal facts stay', async () => {
-    seedFacts(3, 2);
-    storeFull((n) => n === key && facts().some((f) => factOf(f)?.r !== 1));
-    await queueOne();
-    expect(refusalsLeft()).toBe(2);
-    expect(facts()).toHaveLength(2);
-  });
-
-  it('forced probe (not enough): removing success facts is not enough, so refusal facts go too, and the write lands', async () => {
-    seedFacts(2, 2);
+  it('forced probe (give-way): a queue key write that meets a full store removes every fact, any person\'s, and keeps the act', async () => {
+    seedFacts(4);
     storeFull((n) => n === key && facts().length > 0);
     await queueOne();
     expect(facts()).toEqual([]);
   });
 
   it('forced probe (sidecar): a sidecar write that meets a full store gives way the same way', async () => {
-    seedFacts(2, 0);
+    seedFacts(2);
     storeFull((n) => n === sidecarName(key) && facts().length > 0);
     await queueOne();
     expect(facts()).toEqual([]);
@@ -441,7 +552,7 @@ describe('done facts always give way to a queue write (U2, gap 2)', () => {
     [1014, () => Object.assign(new Error('full'), { name: 'NS_ERROR_DOM_QUOTA_REACHED', code: 1014 })],
   ] as const) {
     it(`forced probe (any code): a write that throws code ${code} gives way`, async () => {
-      seedFacts(2, 0);
+      seedFacts(2);
       storeFull((n) => n === key && facts().length > 0, err);
       await queueOne();
       expect(facts()).toEqual([]);
@@ -450,6 +561,19 @@ describe('done facts always give way to a queue write (U2, gap 2)', () => {
 });
 
 describe('guards: no fact, no skip (U2)', () => {
+  it('guard (r1 gap-check of a6a03e1f, gap 2): a final refusal writes no fact, so another tab holding the act still sends it', async () => {
+    const approveDecision = vi.fn(async () => { throw refused(); });
+    expect(createQueueKeyGuard().write(localStorage, key, [approve('k-a')])).toBe(true);
+    signedIn(null, null, { approveDecision });
+    const other = createQueueKeyGuard();
+    expect(other.load(localStorage, key)).toHaveLength(1);
+    await online();
+    expect(sentWith(approveDecision, 'k-a')).toBe(1);
+    expect(s().outbox).toEqual([]);
+    expect(facts()).toEqual([]);
+    expect(isDone(localStorage, key, approve('k-a'))).toBe(false);
+  });
+
   it('guard (Stage 1 U2 gap 1, C3): another person\'s fact for the same key never stops this person\'s act', async () => {
     const approveDecision = vi.fn(async () => null);
     const B = createQueueKeyGuard();
@@ -585,7 +709,7 @@ describe('guards: no fact, no skip (U2)', () => {
     signedIn(null, null, { startSiteVisit });
     await online();
     expect(startSiteVisit).toHaveBeenCalledTimes(1);
-    expect(doneOf(localStorage, lane, start)).toBeNull();
+    expect(isDone(localStorage, lane, start)).toBe(false);
     expect(s().outbox.map((o) => o.t)).toEqual(['siteVisitStart']);
     await act(async () => { await s().flushOutbox(); });
     await flushes.atRest();
@@ -612,6 +736,6 @@ describe('guards: no fact, no skip (U2)', () => {
     other.load(localStorage, key);
     other.settled(localStorage, key, evidence, true);
     expect(facts()).toEqual([]);
-    expect(doneOf(localStorage, key, { ...evidence })).toBeNull();
+    expect(isDone(localStorage, key, { ...evidence })).toBe(false);
   });
 });

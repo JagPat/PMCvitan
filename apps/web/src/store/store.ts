@@ -91,7 +91,7 @@ import {
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
 } from './projectCreateHold';
 import { createQueueKeyGuard, queueActIdent, type QueueWrite } from '@/store/queueKeyGuard';
-import { doneOf } from '@/store/queueLedger';
+import { isDone } from '@/store/queueLedger';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
@@ -6501,36 +6501,54 @@ export const useStore = create<Store>()(
       try { markStore = globalThis.localStorage ?? null; } catch { markStore = null; }
       const laneOf = (o: OutboxOp): string => (isSiteVisitOp(o) ? siteVisitKeyOf(flushKey) : flushKey);
       const settle = (o: OutboxOp, refused = false): void => { queueKeys.settled(markStore, laneOf(o), o, refused); };
-      // xtab-drain redesign U2 (plan rev 3 §2.2): an act whose done fact this phone keeps (another tab's flush had the
-      // server's answer for it) is not sent. It leaves through this flush's own settle effects, as if this tab had sent
-      // it, but with no snapshot: the reconcile it owes is asked for once the flush is done (`doneElsewhere`), and a
-      // daily-log start or send keeps the log read-only until that read lands. A refusal leaves as a refused act does
-      let doneElsewhere = false;
-      let dailyLogDoneElsewhere = false;
-      /** the bounded clears of the kept photos of starts settled here, waited for once the queue is settled */
-      const doneWaits: Promise<unknown>[] = [];
-      const settleDone = (o: OutboxOp): boolean => {
-        // a visit photo's row is its own done record, read before any send (`replayOutboxOp`), and its fact is written
-        // only once the row is filed or failed: its replay sends nothing again, and tells the screen what the row holds
-        if (o.t === 'siteVisitAddFile') return false;
-        const done = markStore ? doneOf(markStore, laneOf(o), o) : null;
-        // a visit act refused for good is sent again: its refusal is answered again with the server's words, and its
-        // path moves or marks the visit's acts and kept photos (a photo kept after the refusal has its start put back)
-        if (done === null || (done === 'refused' && isSiteVisitOp(o))) return false;
-        settle(o, done === 'refused');
-        const k = keyOf(o);
-        if (done === 'refused') { dropped += 1; if (k) droppedKeys.push(k); }
-        else {
-          if (k) succeededKeys.push(k);
-          if (!isSiteVisitOp(o)) synced += 1;
-          if (o.t === 'startDailyLog' || o.t === 'submitDailyLog') { dailyLogCommitted = o.t === 'startDailyLog' ? 'start' : 'send'; dailyLogDoneElsewhere = true; }
-          // SV2: its kept photos stop carrying a start that was sent, as this tab's own send does
-          if (o.t === 'siteVisitStart') doneWaits.push(withinWait(() => clearVisitPhotoStart(visitPhotoScope(flushToken, flushedBy), flushGateway.project, o.body.id)).catch(() => retryVisitPhotos()));
-        }
-        if (!isSiteVisitOp(o)) doneElsewhere = true;
+      /** An act the server accepted, by this flush's send or, with no snapshot, by another tab's (its done fact): every
+       *  effect of the success that does not read the server's answer, one function for both (xtab-drain U2 r1 root
+       *  cause: a copy of these effects drifted, 4384591499/4384591507/4384591508). The 410 of an upload is read only by
+       *  the send's own answer, so an upload is never settled by its fact. The start's photo clear is returned to wait on */
+      const afterSent = (o: OutboxOp, snap: ApiSnapshot | null): Promise<unknown> | null => {
+        settle(o);
+        if (snap) { lastSnap = snap; lastSnapStale = false; } else if (lastSnap && isSiteVisitOp(o)) lastSnapStale = true;
+        // an evidence send settled with its refresh failed (its bytes are gone, so it is never sent again): the pull it
+        // owes is asked for once the flush is done, as a 410's is (#482)
+        if (!snap && o.t === 'uploadEvidence') photoSettledGone = true;
+        // a site visit's answer shows on its own screen, so it is not counted in the "synced" line; one that went
+        // through starts the visit photo retry's wait over
+        if (!isSiteVisitOp(o)) synced += 1;
+        else visitPhotoRetryMs = VISIT_PHOTO_WAIT_MS;
+        if (o.t === 'decideReview') refreshBriefAfterReview(flushedBy);
+        if (o.t === 'startDailyLog') dailyLogCommitted = 'start';
+        else if (o.t === 'submitDailyLog') dailyLogCommitted = 'send';
+        const k = keyOf(o); if (k) succeededKeys.push(k);
         if (isMaterialsOp(o)) { materialsAttempted = true; const ck = coalesceKeyOf(o); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
         if (isLabourOp(o)) { labourAttempted = true; const ck = coalesceKeyOf(o); if (ck) resolvedLabourCoalesceKeys.push(ck); }
         if (isCommercialOp(o)) { commercialAttempted = true; commercialWritesSettled += 1; }
+        // SV2: a visit started: its kept photos stop carrying the start, so it is not put back and sent again. Not
+        // written (the phone's database failed): the start may be sent again ahead of them, and the server answers
+        // that replay with the same visit, so nothing is lost or doubled. Bounded, as every write of the rows in a
+        // flush is: one that fails or never answers keeps the rows' start, lets the flush go on, and is made again by
+        // the next flush (Codex 4324453897)
+        return o.t === 'siteVisitStart'
+          ? withinWait(() => clearVisitPhotoStart(visitPhotoScope(flushToken, flushedBy), flushGateway.project, o.body.id)).catch(() => retryVisitPhotos())
+          : null;
+      };
+      // xtab-drain redesign U2 (plan rev 3 §2.2): an act another tab's flush sent (its done fact) is not sent. It leaves
+      // through `afterSent`, as if this tab had sent it, with no snapshot: the read after it is asked for once the flush
+      // is done (`doneElsewhere`; a visit act's screen reads again, `visitDoneElsewhere`), and a daily-log start or send
+      // keeps the log read-only until that read lands. Only a success has a fact (r1, 4384591505): a refusal is sent
+      // again, so its path runs here with the server's words, and so is an act whose success reads the server's answer
+      // (a visit photo's row, an upload's 410)
+      let doneElsewhere = false;
+      let dailyLogDoneElsewhere = false;
+      let visitDoneElsewhere = false;
+      /** the bounded clears of the kept photos of starts settled here, waited for once the queue is settled */
+      const doneWaits: Promise<unknown>[] = [];
+      const settleDone = (o: OutboxOp): boolean => {
+        if (o.t === 'siteVisitAddFile' || o.t === 'uploadMedia') return false;
+        if (!markStore || !isDone(markStore, laneOf(o), o)) return false;
+        const clear = afterSent(o, null);
+        if (clear) doneWaits.push(clear);
+        if (o.t === 'startDailyLog' || o.t === 'submitDailyLog') dailyLogDoneElsewhere = true;
+        if (isSiteVisitOp(o)) visitDoneElsewhere = true; else doneElsewhere = true;
         return true;
       };
       const withheldVisits = new Set<string>();
@@ -6571,11 +6589,7 @@ export const useStore = create<Store>()(
           let photoGone = false;
           let goneEvidence: { url: string; inspectionId?: string; inspectionItemId?: string } | undefined;
           const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation, (local) => { photoGone = true; goneEvidence = local; });
-          settle(ops[i]);
-          if (snap) { lastSnap = snap; lastSnapStale = false; } else if (lastSnap && isSiteVisitOp(ops[i])) lastSnapStale = true;
-          // an evidence send settled with its refresh failed (its bytes are gone, so it is never sent again): the pull it
-          // owes is asked for once the flush is done, as a 410's is (#482)
-          if (!snap && ops[i].t === 'uploadEvidence') photoSettledGone = true;
+          const startCleared = afterSent(ops[i], snap);
           // #482: a photo settled by the server's 410 is settled as a delete is (settleDeleted). Its local copies leave at
           // once, matched by the send's own key: one an earlier pull recorded is never shown past the server's word (Codex
           // 4340333337), and a pull begun before this answer, which may still hold it, is superseded. The day's count on
@@ -6609,27 +6623,7 @@ export const useStore = create<Store>()(
               });
             }
           }
-          // a site visit's answer shows on its own screen, so it is not counted in the "synced" line; one that went
-          // through starts the visit photo retry's wait over
-          if (!isSiteVisitOp(ops[i])) synced += 1;
-          else visitPhotoRetryMs = VISIT_PHOTO_WAIT_MS;
-          if (ops[i].t === 'decideReview') refreshBriefAfterReview(flushedBy);
-          // SV2: a visit started: its kept photos stop carrying the start, so it is not put back and sent again. Not
-          // written (the phone's database failed): the start may be sent again ahead of them, and the server answers
-          // that replay with the same visit, so nothing is lost or doubled
-          const started = ops[i];
-          // Bounded, as every write of the rows in a flush is: one that fails or never answers keeps the rows' start,
-          // lets the flush go on, and is made again by the next flush (Codex 4324453897)
-          if (started.t === 'siteVisitStart') {
-            await withinWait(() => clearVisitPhotoStart(visitPhotoScope(flushToken, flushedBy), flushGateway.project, started.body.id))
-              .catch(() => retryVisitPhotos());
-          }
-          if (ops[i].t === 'startDailyLog') dailyLogCommitted = 'start';
-          else if (ops[i].t === 'submitDailyLog') dailyLogCommitted = 'send';
-          const k = keyOf(ops[i]); if (k) succeededKeys.push(k);
-          if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
-          if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
-          if (com) { commercialAttempted = true; commercialWritesSettled += 1; }
+          if (startCleared) await startCleared;
         } catch (err) {
           // the photo's own row could not be read or updated in time: not the server's answer. The act and its visit's
           // later acts are held, the rest of the queue goes on, and the flush is tried again
@@ -6832,6 +6826,9 @@ export const useStore = create<Store>()(
       if (photoSettledGone && flushLease) scheduleReconcile(flushLease.scope, { kind: 'command', createdAfterSequence: snapshotSeq });
       // U2: an act another tab sent brought no snapshot here; the read after it is owed, as a 410's is
       if (doneElsewhere && flushLease) scheduleReconcile(flushLease.scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+      // ...and a visit act another tab sent brought this tab's Site Visits screen no answer: it reads again, as the photo
+      // retry has it do, so it never falls back to the visit as it was before the act (r1 gap-check of a6a03e1f, C7)
+      if (visitDoneElsewhere && scopeStillCurrent(flushScope)) tellSiteVisits({ kind: 'retry', project: flushGateway.project, generation: flushScope.generation });
 
       if (rest && endHere()) get().flash(toldWith ? `${toldWith} ${rest}` : rest);
       // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved

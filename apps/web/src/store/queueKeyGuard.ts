@@ -114,39 +114,34 @@ function put(storage: Store, name: string, value: string, giving = false): boole
 }
 /** xtab-drain redesign U2 (plan rev 3 §2.1): done facts always give way to a write of a queue key, its sidecar or a made
  *  record. A write that throws, whatever the error (a full store is code 22 in Chrome, 1014 in Firefox), is made again
- *  once every success fact on this phone is gone, any person's, and again once every refusal fact is gone too: the act
- *  is kept, never the fact. A pass with no fact to remove is not tried again; the write's own error is the answer */
+ *  once every done fact on this phone is gone, any person's: the act is kept, never the fact. With no fact to remove it
+ *  is not tried again; the write's own error is the answer */
 function setGiving(storage: Store, name: string, value: string): void {
   try {
     storage.setItem(name, value);
   } catch (err) {
-    for (const refusals of [false, true]) {
-      if (dropFacts(storage, refusals) === 0) continue;
+    if (dropFacts(storage) > 0) {
       try { storage.setItem(name, value); return; } catch { /* still no room */ }
     }
     throw err;
   }
 }
-/** remove every done fact on this phone of one kind (refusals, or the rest), best effort; how many went */
-function dropFacts(storage: Store, refusals: boolean): number {
+/** remove every done fact on this phone, best effort; how many went */
+function dropFacts(storage: Store): number {
   let n = 0;
-  for (const name of namesUnder(storage, 'vitan.done.')) {
-    let fact = null;
-    try { fact = readDone(storage.getItem(name)); } catch { /* unreadable: not a refusal */ }
-    if ((fact?.r === 1) === refusals && remove(storage, name)) n += 1;
-  }
+  for (const name of namesUnder(storage, 'vitan.done.')) if (remove(storage, name)) n += 1;
   return n;
 }
 /** Write `act`'s done fact under `key`, numbered one past the person's newest. A fact of the same identity already there
  *  stands (it keeps its place in the budget). False when it is not there now: a full store never stops the drain */
-function putDone(storage: Store, key: string, act: OutboxOp, refused: boolean): boolean {
+function putDone(storage: Store, key: string, act: OutboxOp): boolean {
   const name = doneName(key, act);
   const ident = queueActIdent(act);
   try {
     if (readDone(storage.getItem(name))?.i === ident) return true;
     let n = 0;
     for (const p of donePrefixes(key)) for (const f of namesUnder(storage, p)) n = Math.max(n, readDone(storage.getItem(f))?.n ?? 0);
-    return put(storage, name, JSON.stringify(refused ? { i: ident, n: n + 1, r: 1 } : { i: ident, n: n + 1 }));
+    return put(storage, name, JSON.stringify({ i: ident, n: n + 1 }));
   } catch {
     return false;
   }
@@ -257,7 +252,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
   /** per key, the copies a refused write of this tab made of occurrences memory held (Codex 4356145036) */
   const madeAside = new Map<string, { name: string; raw: string; oids: string[] }[]>();
   /** U2: per key, the done facts `settled` could not write (by name), written again at the key's next landed write */
-  const factsDue = new Map<string, Map<string, { act: OutboxOp; refused: boolean }>>();
+  const factsDue = new Map<string, Map<string, OutboxOp>>();
   const setOf = <T,>(m: Map<string, Set<T>>, key: string): Set<T> => {
     let s = m.get(key);
     if (!s) m.set(key, (s = new Set()));
@@ -360,7 +355,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
    *  its occurrences held stranded here, counted and sent (“saved on this phone” only after a real write) */
   const release = (storage: Store, key: string, plan: Pick<WritePlan, 'legacySpent' | 'sent'>): void => {
     // U2: a done fact that could not be written is written again now, and the person's facts are kept to their budget
-    for (const [name, f] of factsDue.get(key) ?? []) if (putDone(storage, key, f.act, f.refused)) factsDue.get(key)?.delete(name);
+    for (const [name, act] of factsDue.get(key) ?? []) if (putDone(storage, key, act)) factsDue.get(key)?.delete(name);
     pruneDone(storage, key);
     const tokenNow = (): string | null => {
       try { const v: unknown = JSON.parse(storage.getItem(key) ?? '[]'); return Array.isArray(v) ? tokenOf(v).token : null; } catch { return null; }
@@ -655,10 +650,10 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       }
     },
     /** step B1a: an act of `key` the server now has (sent) or refused for good (`refused`), marked so, by its occurrence,
-     *  before the flush goes on: a load before the key is written without it does not take it again. U2: an identity no
-     *  other act shares also gets its done fact, synchronously and with no lock, so a tab still holding it never sends it
-     *  again; one that cannot be written is written again at the key's next landed write. False when the mark could not
-     *  be made */
+     *  before the flush goes on: a load before the key is written without it does not take it again. U2: a sent act whose
+     *  identity no other act shares also gets its done fact, synchronously and with no lock, so a tab still holding it
+     *  never sends it again; one that cannot be written is written again at the key's next landed write. A refusal gets
+     *  none (round 1): a tab holding the act sends it, and says the server's words. False when the mark could not be made */
     settled(storage: Store | null, key: string, o: OutboxOp, refused = false): boolean {
       let read: Read | null = null;
       try { if (storage) read = snapshotOf(storage, key, scopesOf(key)); } catch { read = null; }
@@ -674,10 +669,10 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       for (const id of new Set([oid, ...ids])) setOf(sent, key).add(id);
       if (!storage) return false;
       const marked = ids.every((id) => put(storage, markName(key, o, id), ident));
-      if (unique(o) && !putDone(storage, key, o, refused)) {
+      if (!refused && unique(o) && !putDone(storage, key, o)) {
         let due = factsDue.get(key);
         if (!due) factsDue.set(key, (due = new Map()));
-        due.set(doneName(key, o), { act: o, refused });
+        due.set(doneName(key, o), o);
       }
       return marked;
     },
