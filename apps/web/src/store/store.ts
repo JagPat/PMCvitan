@@ -107,7 +107,7 @@ import { COMMERCIAL_OP_PERMISSION, advanceCoalesceKey, budgetCoalesceKey, costHe
 import { checkinClock, todayCivil } from '@/lib/civilDate';
 import { hasStamp, type CaptureStamp } from '@/lib/captureStamp';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
-import { emitGuideOutcome, guideRunToken } from '@/guide/outcomes';
+import { emitGuideOutcome, guideRunToken, recordGuidedPhotoPick } from '@/guide/outcomes';
 import { saveSession, clearSession, loadSession } from '@/lib/sessionPersist';
 import { readDeviceLang } from '@/lib/langPreference';
 
@@ -2551,9 +2551,13 @@ export const useStore = create<Store>()(
     /** an offline act is said saved only once the locked write of its own key holds it (Codex 4344812898, 4344270659,
      *  4367242052); its write is tracked as a write-ahead's is, so no flush sends it first (Codex 4367242045). The line
      *  is shown only while the scope, person and key it was made in still hold (#1099 r3, Codex 4360928308) */
-    const flashSaved = (msg: string, acts: OutboxOp[]): void => {
+    const flashSaved = (msg: string, acts: OutboxOp[], onWritten?: (stored: boolean) => void): void => {
       const stillThere = madeHere();
-      void writeAhead(acts).then(() => { if (stillThere()) get().flash(storedNow(acts) ? msg : QW.notSavedYet[get().lang]); });
+      void writeAhead(acts).then(() => {
+        const stored = storedNow(acts);
+        onWritten?.(stored);
+        if (stillThere()) get().flash(stored ? msg : QW.notSavedYet[get().lang]);
+      });
     };
     /** the scope, person and key an act is made in: a write that returns after any of them moved says nothing and starts
      *  nothing there (#1099 r2, Codex 4358855946) */
@@ -6099,6 +6103,8 @@ export const useStore = create<Store>()(
         // after its first attempt committed but its reply was lost is the same photo, not a second one.
         const clientKey = newIdempotencyKey();
         const pickSeq = ++photoPickSeq;
+        // #482 in-app guide: a live refresh that shows this photo before the upload's answer also finishes the guide
+        recordGuidedPhotoPick(guideRun, clientKey);
         const input = {
           kind: 'progress' as const, mime, data: base64, clientKey, ...stamped,
           ...(nodeId ? { nodeId } : {}), ...(dailyLogId ? { dailyLogId } : {}),
@@ -6120,9 +6126,9 @@ export const useStore = create<Store>()(
             }
           });
           persistDailyLogDraft();
-          // queued to send, as an offline submit is: the guide's step is done (the act's own line says if it is kept)
-          emitGuideOutcome('site-photo-added', null, guideRun);
-          flashSaved(DLT.photoOffline[get().lang], [upload]); // the photo's bytes live only in this act: said once it is written
+          // the photo's bytes live only in this act: said once it is written, and the guide's step is done only then (one
+          // not kept on this phone is lost on a reload, so the guide stays to be tried again)
+          flashSaved(DLT.photoOffline[get().lang], [upload], (stored) => emitGuideOutcome(stored ? 'site-photo-added' : 'site-photo-add-failed', null, guideRun));
           return;
         }
         // raw-DTO reconcile: pin the reply to the scope that uploaded it — a late

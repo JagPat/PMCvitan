@@ -1,6 +1,7 @@
 import type { Role, ScreenKey } from '@vitan/shared';
 import type { GuideTip } from './words';
-import type { GuideOutcome } from './outcomes';
+import { guidedPhotoPicksOf, type GuideOutcome } from './outcomes';
+import { useGuideState } from './guideState';
 import { useStore } from '@/store/store';
 
 /**
@@ -93,12 +94,13 @@ export const GUIDES: readonly Guide[] = [
   },
   {
     // a site photo: the Dashboard's "Add site photo" opens the phone's camera or gallery. The step ends only when the
-    // store has the photo (sent, or kept on this phone to send), so a cancelled picker leaves the tip where it is.
+    // store has the photo (sent, kept on this phone to send, or on record from a live refresh before the upload's own
+    // answer), so a cancelled picker leaves the tip where it is.
     id: 'add-site-photo',
     roles: ['pmc', 'engineer'],
     screen: 'dashboard',
     steps: [
-      { target: 'add-site-photo', tip: 'photoAdd', until: 'outcome', outcome: { ok: 'site-photo-added', failed: 'site-photo-add-failed' } },
+      { target: 'add-site-photo', tip: 'photoAdd', until: 'outcome', outcome: { ok: 'site-photo-added', failed: 'site-photo-add-failed' }, settled: guidedPhotoOnRecord },
     ],
   },
 ];
@@ -110,6 +112,16 @@ function checklistSubmitted(key: string | null): boolean {
   const s = useStore.getState();
   const open = s.openChecklists.some((c) => c.id === id) || (s.checklist?.id === id && !s.checklist.submitted);
   return !open;
+}
+
+/** A photo picked under this run of the guide is in the project's photos (the viewer's own photos carry their upload key). */
+function guidedPhotoOnRecord(): boolean {
+  const run = useGuideState.getState().run;
+  if (!run) return false;
+  const picks = guidedPhotoPicksOf(run.id);
+  if (picks.size === 0) return false;
+  const s = useStore.getState();
+  return [...s.photos, ...s.myDeletablePhotos].some((p) => p.clientKey !== undefined && picks.has(p.clientKey));
 }
 
 /** The guides this role can be shown on this screen, in order. */

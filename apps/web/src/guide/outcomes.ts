@@ -28,7 +28,23 @@ let currentRun = 0;
 
 export function beginGuideRun(): number {
   currentRun += 1;
+  // a photo picked under an earlier run is not this run's
+  guidedPhotoPicks.clear();
   return currentRun;
+}
+
+/** The upload keys of the photos picked under each guide run, so the photo guide can see one of them on record even when
+ *  its upload's own answer never comes back (a live refresh brought it first). */
+const guidedPhotoPicks = new Map<number, Set<string>>();
+
+export function recordGuidedPhotoPick(run: number, clientKey: string): void {
+  const keys = guidedPhotoPicks.get(run) ?? new Set<string>();
+  keys.add(clientKey);
+  guidedPhotoPicks.set(run, keys);
+}
+
+export function guidedPhotoPicksOf(run: number): ReadonlySet<string> {
+  return guidedPhotoPicks.get(run) ?? new Set<string>();
 }
 
 export function guideRunToken(): number {

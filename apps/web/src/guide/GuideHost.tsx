@@ -34,10 +34,7 @@ function replayOffer(ready: readonly Guide[], done: ReadonlySet<string>, lastSta
   return ready[(last + 1) % ready.length] ?? null;
 }
 
-/** the control a target stands for: itself, or the one button inside a wrapper target (Add site photo's wrapper holds
- *  its hidden file input and the button), so a greyed-out button is not pressable however it is marked */
-const controlOf = (el: Element): Element => (el.matches('button, input, select, textarea') ? el : el.querySelector('button') ?? el);
-const enabled = (el: HTMLElement | null): el is HTMLElement => el !== null && !(controlOf(el) as HTMLButtonElement).disabled;
+const enabled = (el: HTMLElement | null): el is HTMLElement => el !== null && !(el as HTMLButtonElement).disabled;
 
 function sameBox(a: Box | null, b: Box | null): boolean {
   return a === b || (!!a && !!b && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height && a.dialog === b.dialog && a.vw === b.vw && a.vh === b.vh);
@@ -203,7 +200,7 @@ export function GuideHost() {
       // an action that can fail waits for the store's report (this runs before the control's own
       // handler, so even a report made at once, as in demo mode, finds the wait in place)
       if (current.until === 'outcome') {
-        if (!(controlOf(pressed) as HTMLButtonElement).disabled) g.setWait(true);
+        if (!(pressed as HTMLButtonElement).disabled) g.setWait(true);
         return;
       }
       completeStep(key, g, pressed.getAttribute('data-guide-key'));

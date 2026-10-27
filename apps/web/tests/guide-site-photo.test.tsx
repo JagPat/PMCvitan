@@ -177,9 +177,61 @@ describe('the "add a site photo" guide', () => {
     press(view.getByTestId('add-site-photo'));
     pick(view);
     expect(useStore.getState().outbox.some((op) => op.t === 'uploadMedia')).toBe(true);
+    // done once the queue's write holds it on this phone
+    await vi.waitFor(() => expect(done()).toContain('add-site-photo'));
     tick();
     expect(tip()).toBeNull();
+  });
+
+  it('a photo that could not be kept on this phone does not finish it: lost on a reload, the guide stays to try again', async () => {
+    const { useStore, view } = await dashboard('pmc', { online: false });
+    act(() => { useStore.getState()._setGateway({ uploadMedia: vi.fn() } as never); });
+    stubFileReader('data:image/jpeg;base64,AAAA');
+    const real = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith('vitan.outbox.')) throw new DOMException('full', 'QuotaExceededError');
+      return real.call(this, k, v);
+    });
+    tick();
+    press(view.getByTestId('add-site-photo'));
+    const { useGuideState } = await import('@/guide/guideState');
+    expect(useGuideState.getState().run?.waiting).toBe(true);
+    pick(view);
+    // the write's answer ends the wait without finishing the guide
+    await vi.waitFor(() => expect(useGuideState.getState().run?.waiting).toBe(false));
+    expect(done()).not.toContain('add-site-photo');
+    tick();
+    expect(tip()?.getAttribute('data-guide-id')).toBe('add-site-photo');
+  });
+
+  it('a live refresh that shows the photo before the upload answers finishes it', async () => {
+    const { useStore, view } = await dashboard('engineer');
+    const uploadMedia = vi.fn((_input: { clientKey: string }) => new Promise(() => {}));
+    act(() => { useStore.getState()._setGateway({ uploadMedia, snapshot: vi.fn(() => new Promise(() => {})) } as never); });
+    stubFileReader('data:image/jpeg;base64,AAAA');
+    tick();
+    press(view.getByTestId('add-site-photo'));
+    pick(view);
+    tick(2000);
+    expect(done()).not.toContain('add-site-photo');
+    const { clientKey } = uploadMedia.mock.calls[0]![0];
+    // another photo on record (someone else's, no key of this pick) is not this one
+    act(() => { useStore.setState({ photos: [{ id: 'other', url: 'http://api.test/o.jpg', kind: 'progress' }] } as never); });
+    tick();
+    expect(done()).not.toContain('add-site-photo');
+    act(() => { useStore.setState({ photos: [{ id: 'mine', url: 'http://api.test/m.jpg', kind: 'progress', clientKey }] } as never); });
+    tick();
     expect(done()).toContain('add-site-photo');
+    expect(tip()).toBeNull();
+  });
+
+  it('points at the button itself, not the row around it', async () => {
+    await dashboard('engineer');
+    tick();
+    expect(tip()?.getAttribute('data-guide-id')).toBe('add-site-photo');
+    const target = document.querySelector('[data-guide="add-site-photo"]')!;
+    expect(target.tagName).toBe('BUTTON');
+    expect(target.getAttribute('data-testid')).toBe('add-site-photo');
   });
 
   it('a late reply to a photo added before a replay does not finish the replay', async () => {
