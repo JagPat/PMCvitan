@@ -173,6 +173,12 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // that truncates it with CASCADE reaches them, and the seals are bypassed here by name.
   { table: 'DrawingHubLink', trigger: 'DrawingHubLink_no_truncate' },
   { table: 'DrawingHubLinkEvent', trigger: 'DrawingHubLinkEvent_no_truncate' },
+  // #1118 U1b — a Hub drawing's, revision's and mark's records refuse TRUNCATE; they hang off "Drawing" and
+  // "DrawingRevision" by RESTRICT keys, so only a reset that names them (or truncates with CASCADE) reaches them, and the
+  // seals are bypassed here by name.
+  { table: 'HubDrawing', trigger: 'HubDrawing_no_truncate' },
+  { table: 'HubRevision', trigger: 'HubRevision_no_truncate' },
+  { table: 'HubGoverningMark', trigger: 'HubGoverningMark_no_truncate' },
 ];
 
 /**
