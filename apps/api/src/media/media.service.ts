@@ -454,7 +454,8 @@ export class MediaService {
     // citing evidence that no longer existed. Now a rejected delete touches neither the row nor the
     // object, and by the time we get here the database no longer references the object at all, so
     // failing to clean it up is a harmless orphan — never a reason to fail a committed delete.
-    if (row.storageKey) await this.storage.remove(row.storageKey).catch(() => {});
+    // #995 — a video's still frame goes with it, on the same terms.
+    for (const key of [row.storageKey, row.posterStorageKey]) if (key) await this.storage.remove(key).catch(() => {});
     await this.dispatcher.dispatchCommitted(events);
     return { dailyLogId: row.kind === 'progress' ? row.dailyLogId : null };
   }
