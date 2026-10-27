@@ -10,6 +10,10 @@ const MIME_EXT: Record<string, string> = {
   'image/webp': 'webp',
   'image/heic': 'heic',
   'image/gif': 'gif',
+  // Stage 1 voice notes
+  'audio/webm': 'webm',
+  'audio/mp4': 'm4a',
+  'audio/ogg': 'ogg',
   // documents (drawings register): PDF for the field, DWG as the CAD source
   'application/pdf': 'pdf',
   'image/vnd.dwg': 'dwg',
