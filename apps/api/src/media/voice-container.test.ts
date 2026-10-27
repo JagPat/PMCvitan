@@ -9,7 +9,7 @@ import {
   mp4Timed, oggTimed, webmClusterAt, webmInfo, webmTimed, withGranule, OPUS_PRE_SKIP,
   audioEntryFields, audioSpecificConfig, descriptor, dinf, dOps, DOPS_BODY, esds, mvhd, sampleEntry, stsc,
 } from '../../test/unit-support/voice-files';
-import { webmOf, oggWithTags, opusTags, plainMp4, fragmentedMp4, grow, MB } from '../../test/unit-support/voice-files';
+import { webmOf, oggWithTags, opusTags, plainMp4, fragmentedMp4, grow, MB, safariWebm } from '../../test/unit-support/voice-files';
 
 /**
  * Stage 1 voice (#482, Codex P2s on #1010): only an audio-only recording, with sound in it, in the container its type
@@ -1712,5 +1712,75 @@ describe('parser follow-ups from #1025 (#1097, #1141, #1154)', () => {
       expect(webm(file(undefined, block)), `lacing ${i + 1}`).toBe(true); // FlagLacing defaults to 1
     }
     expect(webm(file(0, simpleBlock()))).toBe(true); // an unlaced block on such a track
+  });
+});
+
+describe('Safari\'s WebM: an iPhone voice note (refused on the live site, 27 Oct)', () => {
+  const webm = (b: Buffer) => isAudioOnlyRecording('audio/webm', b);
+  const CUES = Buffer.from([0x1c, 0x53, 0xbb, 0x6b]);
+  /** the same note with its Cues element replaced by these bytes (nothing, to drop it) */
+  const withCues = (b: Buffer, cues: Buffer) => Buffer.concat([b.subarray(0, b.lastIndexOf(CUES)), cues]);
+  /** where each Cluster starts, from the Segment's data (the EBML header, the Segment's ID and its 8-byte size before it) */
+  const clusterAt = (b: Buffer, n = 0) => {
+    const data = b.indexOf(Buffer.from([0x18, 0x53, 0x80, 0x67])) + 12;
+    let at = b.indexOf(Buffer.from([0x1f, 0x43, 0xb6, 0x75]));
+    for (let i = 0; i < n; i++) at = b.indexOf(Buffer.from([0x1f, 0x43, 0xb6, 0x75]), at + 1);
+    return at - data;
+  };
+  const u = (n: number) => {
+    const out: number[] = [];
+    for (let v = n; v > 0 || out.length === 0; v = Math.floor(v / 256)) out.unshift(v % 256);
+    return Buffer.from(out);
+  };
+  const point = (o: { time?: Buffer | null; track?: number | null; cluster?: number | null; extra?: Buffer[]; pointExtra?: Buffer[] }) =>
+    ebml(0xbb, Buffer.concat([...(o.time === null ? [] : [ebml(0xb3, o.time ?? u(0))]), ...(o.pointExtra ?? []),
+      ebml(0xb7, Buffer.concat([...(o.track === null ? [] : [ebml(0xf7, u(o.track ?? 1))]), ...(o.cluster === null ? [] : [ebml(0xf1, u(o.cluster ?? 0))]), ...(o.extra ?? [])]))]));
+  const cues = (...points: Buffer[]) => ebml(0x1c53bb6b, Buffer.concat(points));
+
+  it('passes the shape Safari\'s recorder writes, Cues after the Clusters, at its own length', () => {
+    // 14 s of 20 ms packets, as the note on the live site: on e50a1cf it was refused for its Cues
+    const note = safariWebm(700);
+    expect(webm(note)).toBe(true);
+    expect(readVoiceRecording('audio/webm', note)).toEqual({ seconds: 14, durationSec: 14 });
+    // past 30 s Safari starts a second Cluster, and a CuePoint for it
+    const long = safariWebm(2000);
+    expect(readVoiceRecording('audio/webm', long)).toEqual({ seconds: 40, durationSec: 40 });
+    // and without its Cues it is Chrome's shape, which passes as before
+    expect(webm(withCues(note, Buffer.alloc(0)))).toBe(true);
+  });
+
+  it('reads the Cues whole: one, on the track, each point at a Cluster\'s start, only the fields a cue has', () => {
+    const note = safariWebm(700);
+    const at = clusterAt(note);
+    expect(webm(withCues(note, cues(point({ cluster: at }))))).toBe(true);
+    expect(webm(withCues(note, cues(point({ cluster: at, extra: [ebml(0xf0, u(4)), ebml(0x5378, u(2)), ebml(0xb2, u(20))] }))))).toBe(true);
+    const long = safariWebm(2000);
+    expect(webm(withCues(long, cues(point({ cluster: clusterAt(long) }), point({ time: u(30_000), cluster: clusterAt(long, 1) }))))).toBe(true);
+    for (const [why, bad] of [
+      ['two Cues', Buffer.concat([cues(point({ cluster: at })), cues(point({ cluster: at }))])],
+      ['no CuePoint', cues()],
+      ['a cue at no Cluster\'s start', cues(point({ cluster: at + 1 }))],
+      ['a cue on another track', cues(point({ track: 2, cluster: at }))],
+      ['a cue with no time', cues(point({ time: null, cluster: at }))],
+      ['a cue with no track', cues(point({ track: null, cluster: at }))],
+      ['a cue with no Cluster', cues(point({ cluster: null }))],
+      ['a cue with no positions', cues(ebml(0xbb, ebml(0xb3, u(0))))],
+      ['two positions in a cue', cues(point({ cluster: at, pointExtra: [ebml(0xb7, Buffer.concat([ebml(0xf7, u(1)), ebml(0xf1, u(at))]))] }))],
+      ['a CueReference', cues(point({ cluster: at, extra: [ebml(0xdb, ebml(0x96, u(0)))] }))],
+      ['a CueCodecState', cues(point({ cluster: at, extra: [ebml(0xea, u(0))] }))],
+      ['an unknown element in Cues', cues(point({ cluster: at }), ebml(0xbf, u(0)))],
+      ['a CueTime of 9 bytes', cues(point({ time: Buffer.alloc(9), cluster: at }))],
+    ] as const) {
+      expect(webm(withCues(note, bad)), why).toBe(false);
+    }
+    // Cues before the Tracks name the track it points at
+    const segment = note.indexOf(Buffer.from([0x18, 0x53, 0x80, 0x67])) + 12;
+    const ahead = cues(point({ cluster: at })).length; // the Cues moves the Cluster on by its own length
+    const early = Buffer.concat([note.subarray(0, segment), cues(point({ cluster: at + ahead })), note.subarray(segment, note.lastIndexOf(CUES))]);
+    expect(cues(point({ cluster: at + ahead })).length).toBe(ahead);
+    expect(webm(early)).toBe(false);
+    // SeekHead and Tags are still refused
+    expect(webm(Buffer.concat([note, ebml(0x114d9b74, Buffer.alloc(0))]))).toBe(false);
+    expect(webm(Buffer.concat([note, ebml(0x1254c367, Buffer.alloc(0))]))).toBe(false);
   });
 });

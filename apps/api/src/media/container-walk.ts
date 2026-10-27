@@ -95,12 +95,13 @@ const VOID = 0xec;
 /**
  * What an element holds, so every one is read by its type (#1013 replacement review): an unsigned or signed integer of
  * at most 8 bytes, a float of 0, 4 or 8 bytes, a text of at most 64 bytes (a codec or document type, at most 16), a
- * SegmentUUID of exactly 16 bytes, a date of exactly 8; a container, a block or the OpusHead, each read by its caller;
+ * SegmentUUID of exactly 16 bytes, a date of exactly 8; a container (one that may repeat, a CuePoint, is an `entry`), a
+ * block or the OpusHead, each read by its caller;
  * or Void, padding no player reads, counted against the file's padding cap. CRC-32 is refused everywhere (Chrome
  * writes none, and an unverified checksum is bytes passed over unread). Each element appears once in its parent, but
- * Void, blocks and BlockGroups.
+ * Void, blocks, BlockGroups and entries.
  */
-type Kind = 'uint' | 'int' | 'float' | 'text' | 'code' | 'uuid' | 'date' | 'master' | 'block' | 'group' | 'opushead' | 'void';
+type Kind = 'uint' | 'int' | 'float' | 'text' | 'code' | 'uuid' | 'date' | 'master' | 'entry' | 'block' | 'group' | 'opushead' | 'void';
 /** the longest text element read, and the longest codec or document type (A_OPUS, webm) */
 const TEXT_MAX = 64;
 const CODE_MAX = 16;
@@ -127,6 +128,22 @@ const TRACK_ENTRY_CHILDREN = new Map<number, Kind>([
 ]);
 /** SamplingFrequency, Channels, BitDepth, OutputSamplingFrequency */
 const AUDIO_CHILDREN = new Map<number, Kind>([[0xb5, 'float'], [0x9f, 'uint'], [0x6264, 'uint'], [0x78b5, 'float'], [VOID, 'void']]);
+/**
+ * Cues, the seek index Safari's recorder (WebKit, libwebm in file mode) writes after the Clusters (#482: an iPhone's
+ * voice note was refused for it): CuePoints, each a CueTime and one CueTrackPositions of CueTrack, CueClusterPosition,
+ * and at most CueRelativePosition, CueDuration and CueBlockNumber; no CueCodecState or CueReference
+ */
+const CUES = 0x1c53bb6b;
+const CUE_POINT = 0xbb;
+const CUE_TIME = 0xb3;
+const CUE_TRACK_POSITIONS = 0xb7;
+const CUE_TRACK = 0xf7;
+const CUE_CLUSTER_POSITION = 0xf1;
+const CUES_CHILDREN = new Map<number, Kind>([[CUE_POINT, 'entry'], [VOID, 'void']]);
+const CUE_POINT_CHILDREN = new Map<number, Kind>([[CUE_TIME, 'uint'], [CUE_TRACK_POSITIONS, 'master'], [VOID, 'void']]);
+const CUE_TRACK_POSITIONS_CHILDREN = new Map<number, Kind>([
+  [CUE_TRACK, 'uint'], [CUE_CLUSTER_POSITION, 'uint'], [0xf0, 'uint'], [0xb2, 'uint'], [0x5378, 'uint'], [VOID, 'void'],
+]);
 /** Timestamp, Position, PrevSize, SimpleBlock, BlockGroup; no SilentTracks or EncryptedBlock */
 const CLUSTER_CHILDREN = new Map<number, Kind>([
   [0xe7, 'uint'], [0xa7, 'uint'], [0xab, 'uint'], [SIMPLE_BLOCK, 'block'], [BLOCK_GROUP, 'group'], [VOID, 'void'],
@@ -185,7 +202,7 @@ function readElement(b: Buffer, at: number, end: number, steps: Walk, allowUnkno
 function checkChild(b: Buffer, e: Element, allowed: Map<number, Kind>, seen: Set<number>, walk: Walk): Kind {
   const kind = allowed.get(e.id);
   if (kind === undefined) fail();
-  if (kind !== 'void' && kind !== 'block' && kind !== 'group') {
+  if (kind !== 'void' && kind !== 'block' && kind !== 'group' && kind !== 'entry') {
     if (seen.has(e.id)) fail();
     seen.add(e.id);
   }
@@ -826,7 +843,8 @@ function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: numbe
 export type { Walk, Kind, Element, Box, MediaRanges, SampleRanges };
 export {
   MAX_STEPS, MAX_PADDING, padding, charge, Malformed, fail, OPUS_RATE, opusPacketSamples, isOpusHead, EBML_HEADER,
-  DOC_TYPE, SEGMENT, INFO, TRACKS, TRACK_ENTRY, TRACK_NUMBER, TRACK_TYPE, CODEC_ID, AUDIO, CLUSTER, SIMPLE_BLOCK,
+  DOC_TYPE, SEGMENT, INFO, TRACKS, CUES, CUE_POINT, CUE_TIME, CUE_TRACK_POSITIONS, CUE_TRACK, CUE_CLUSTER_POSITION,
+  CUES_CHILDREN, CUE_POINT_CHILDREN, CUE_TRACK_POSITIONS_CHILDREN, TRACK_ENTRY, TRACK_NUMBER, TRACK_TYPE, CODEC_ID, AUDIO, CLUSTER, SIMPLE_BLOCK,
   BLOCK_GROUP, BLOCK, VOID, TEXT_MAX, CODE_MAX, EBML_HEADER_CHILDREN, SEGMENT_CHILDREN, INFO_CHILDREN,
   TRACKS_CHILDREN, TRACK_ENTRY_CHILDREN, AUDIO_CHILDREN, CLUSTER_CHILDREN, BLOCK_GROUP_CHILDREN, TIMESTAMP_SCALE,
   DURATION, CLUSTER_TIMESTAMP, FLAG_ENABLED, FLAG_DEFAULT, FLAG_FORCED, FLAG_LACING, CODEC_PRIVATE, DEFAULT_DURATION,

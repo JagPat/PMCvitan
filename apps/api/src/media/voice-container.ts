@@ -9,8 +9,9 @@
  * read whole by its type, to its last byte: nothing but padding (WebM Void, MP4 free, skip and wide, at most 4 KiB in
  * all) is passed over unread. The rules, with the test pinning each, are in the PR's "Parser rules":
  *  - WebM: an EBML header whose children are known and whose one DocType is "webm", then one Segment and nothing
- *    after it. The Segment holds only Info, Tracks, Cluster and Void (Chrome writes no SeekHead, Cues, Tags or
- *    CRC-32, and each of those is refused); exactly one Info and one Tracks, at Segment level and before any Cluster,
+ *    after it. The Segment holds only Info, Tracks, Cluster, Void and one Cues (Chrome writes no SeekHead, Tags or
+ *    CRC-32, and each of those is refused; Safari writes Cues after its Clusters: CuePoints read whole, each with a
+ *    CueTime and one CueTrackPositions on the track, at a Cluster's start); exactly one Info and one Tracks, at Segment level and before any Cluster,
  *    with exactly one TrackEntry: an audio track (TrackType 2) coded A_OPUS, whose fields and Audio fields are known
  *    ones, each once and read by its type (integers of at most 8 bytes, floats of 0, 4 or 8, texts of at most 64 bytes,
  *    a codec or document type of at most 16, SegmentUUID 16 and DateUTC 8, as in every other element), enabled and default (FlagEnabled and FlagDefault 1 when written, FlagForced and FlagLacing 0 or 1, and no laced
@@ -62,7 +63,8 @@
 
 import {
   AUDIO, AUDIO_CHILDREN, BLOCK, BLOCK_DURATION, BLOCK_GROUP, BLOCK_GROUP_CHILDREN, CLUSTER, CLUSTER_CHILDREN,
-  CLUSTER_TIMESTAMP, DOC_TYPE, DURATION, EBML_HEADER, EBML_HEADER_CHILDREN, HANDLER_NAME_MAX, INFO, INFO_CHILDREN,
+  CLUSTER_TIMESTAMP, CUES, CUES_CHILDREN, CUE_CLUSTER_POSITION, CUE_POINT_CHILDREN, CUE_TIME, CUE_TRACK,
+  CUE_TRACK_POSITIONS, CUE_TRACK_POSITIONS_CHILDREN, DOC_TYPE, DURATION, EBML_HEADER, EBML_HEADER_CHILDREN, HANDLER_NAME_MAX, INFO, INFO_CHILDREN,
   MAX_MEDIA_BOXES, MAX_SAMPLES, MAX_STEPS, MDHD, MEHD, MFHD, MP4_BRANDS, MP4_CHILDREN, MP4_COMPATIBLE_ONLY, MVHD,
   Malformed, OPUS_RATE, SEGMENT, SEGMENT_CHILDREN, SIMPLE_BLOCK, SMHD, TFDT, TFHD_FLAGS, TIMESTAMP_SCALE, TKHD,
   TKHD_FLAGS, TRACKS, TRACKS_CHILDREN, TRACK_ENTRY, TRACK_ENTRY_CHILDREN, TRACK_TYPE, TREX, VOID, aacRate,
@@ -109,6 +111,9 @@ export function isAudioOnlyRecording(mime: string, bytes: Buffer): boolean {
 
 // ── WebM (EBML) ──────────────────────────────────────────────────────────────────────────────
 
+/** a voice note's Segment children: what Chrome writes, and the Cues Safari writes after its Clusters (#482) */
+const VOICE_SEGMENT_CHILDREN = new Set([...SEGMENT_CHILDREN, CUES]);
+
 /**
  * The number of the one track a Tracks element lists, which must be Opus audio, the one codec a browser records voice
  * in WebM, with only known fields; else a refusal.
@@ -149,7 +154,7 @@ function walkCluster(b: Buffer, cluster: Element, track: { number: number; frame
     if (cluster.unknownSize) {
       const id = vint(b, at, end, true).value;
       if (!CLUSTER_CHILDREN.has(id)) {
-        if (SEGMENT_CHILDREN.has(id)) return { next: at, sound, last, samples };
+        if (VOICE_SEGMENT_CHILDREN.has(id)) return { next: at, sound, last, samples };
         fail();
       }
     }
@@ -205,11 +210,14 @@ function webmSeconds(b: Buffer): number | null {
   let duration = 0; // Info's Duration, in ticks
   let last = 0; // where the latest block ends, in seconds
   let samples = 0; // Opus samples in every frame
+  const clusters = new Set<number>(); // where each Cluster starts, from the Segment's data
+  let cued: number[] | undefined; // the Clusters the one Cues points at
   for (let at = segment.dataStart; at < segment.dataEnd;) {
     const id = vint(b, at, segment.dataEnd, true).value;
     const e = readElement(b, at, segment.dataEnd, steps, id === CLUSTER);
-    if (!SEGMENT_CHILDREN.has(e.id)) return null;
+    if (!VOICE_SEGMENT_CHILDREN.has(e.id)) return null;
     if (e.id === CLUSTER) {
+      clusters.add(at - segment.dataStart);
       // blocks before the track table that names their track, or before the Info that times them (Chrome writes Info
       // first)
       if (track === undefined || !info) return null;
@@ -223,6 +231,25 @@ function webmSeconds(b: Buffer): number | null {
     if (e.id === TRACKS) {
       if (track !== undefined) return null; // one track table
       track = audioTrack(b, e, steps);
+    } else if (e.id === CUES) {
+      // the seek index: read whole, each point on the one track and at a Cluster's start (checked at the end); it
+      // times nothing, so it is not in the length
+      if (cued !== undefined || track === undefined) return null;
+      cued = [];
+      for (const point of elements(b, e.dataStart, e.dataEnd, steps, CUES_CHILDREN)) {
+        if (point.id === VOID) continue;
+        const fields = new Map<number, Element>();
+        for (const f of elements(b, point.dataStart, point.dataEnd, steps, CUE_POINT_CHILDREN)) fields.set(f.id, f);
+        const positions = fields.get(CUE_TRACK_POSITIONS);
+        if (!fields.has(CUE_TIME) || !positions) return null;
+        const place = new Map<number, Element>();
+        for (const f of elements(b, positions.dataStart, positions.dataEnd, steps, CUE_TRACK_POSITIONS_CHILDREN)) place.set(f.id, f);
+        const cueTrack = place.get(CUE_TRACK);
+        const cluster = place.get(CUE_CLUSTER_POSITION);
+        if (!cueTrack || !cluster || uintOf(b, cueTrack) !== track.number) return null;
+        cued.push(uintOf(b, cluster));
+      }
+      if (cued.length === 0) return null;
     } else if (e.id === INFO) {
       if (info) return null; // one Info
       info = true;
@@ -237,6 +264,7 @@ function webmSeconds(b: Buffer): number | null {
     at = e.dataEnd;
   }
   if (track === undefined || !sound) return null;
+  if (cued && !cued.every((p) => clusters.has(p))) return null; // a cue at no Cluster's start
   return Math.max((duration * scale) / 1e9, last, samples / OPUS_RATE);
 }
 
