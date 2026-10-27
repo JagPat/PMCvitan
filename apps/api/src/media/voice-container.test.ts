@@ -1664,6 +1664,60 @@ describe('parser follow-ups from #1025 (#1097, #1141, #1154)', () => {
     expect(mp4(stated(2047))).toBe(true);
   });
 
+  it('Codex P1 on #1165: frames decoded one after another carry across runs, so splitting them among runs changes nothing', () => {
+    // Codex's example: 2,000 AAC frames whose durations are 0, at tfdt 100 s, each in a run of its own; on 674070b
+    // each run started again at 100 s and the file read 100.02 s
+    const runs = (count: number) => fragmentedMp4({
+      table: [stsd('mp4a'), stts(0), stsc(0), stsz([]), stco(0, 0)],
+      traf: (off) => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000 * 100)), trun([4], off),
+        ...Array.from({ length: count - 1 }, () => fullBox('trun', 0, 0x000200, [be(1), be(4)]))],
+      mdatBytes: 4 * count,
+    });
+    expect(mp4(runs(2000))).toBe(true);
+    expect(recordingSeconds('audio/mp4', runs(2000))).toBeCloseTo(100 + (2000 * 1024) / 48_000, 6);
+    expect(recordingSeconds('audio/mp4', runs(2000))).toBeCloseTo(recordingSeconds('audio/mp4', zeroTimed(2000, 100))!, 6);
+    // and moov's own frames come first: a fragment at tfdt 0 after two moov frames starts where they end
+    const after = Buffer.concat([laidOut((o) => Buffer.concat([ftyp('iso5'), box('moov', [mvhd(), trak('soun', 1, [4, 4], o, 0), box('mvex', trex(1))])])), mdat(8)]);
+    expect(recordingSeconds('audio/mp4', after)).toBeCloseTo(2048 / 48_000, 6);
+  });
+
+  it('Codex P2 on #1165: the media edit selects some decoded sound, not a gap between fragments', () => {
+    // one AAC frame at 0 s and one at 60 s (tfdt), and a 5 s edit of the media from `at` seconds (0: to the end)
+    const gapped = (at: number, seconds = 5) => {
+      const entry = Buffer.alloc(12);
+      entry.writeUInt32BE(seconds * 1000);
+      entry.writeInt32BE(48_000 * at, 4);
+      entry.writeInt16BE(1, 8);
+      const edts = box('edts', fullBox('elst', 0, 0, [be(1), entry]));
+      const frag = (n: number, t: number) => fragment(n, (o) => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000 * t)), trun([4], o)]);
+      return Buffer.concat([ftyp('iso5'), box('moov', [mvhd(0, 1000), trak('soun', 1, [], 0, 0, [edts]), box('mvex', trex(1))]),
+        frag(1, 0), mdat(4), frag(2, 60), mdat(4)]);
+    };
+    expect(mp4(gapped(0))).toBe(true);
+    expect(mp4(gapped(60))).toBe(true);
+    expect(mp4(gapped(57))).toBe(true); // 57 to 62 s reaches the frame at 60 s
+    // Codex's example: 30 to 35 s holds no frame; on 674070b it passed (30 < 60.02)
+    expect(mp4(gapped(30))).toBe(false);
+    expect(mp4(gapped(55))).toBe(false); // 55 to 60 s ends where the frame at 60 s begins
+    expect(mp4(gapped(61))).toBe(false); // past the last frame
+    // an edit of duration 0 runs to the end of the media, so from 30 s it reaches the frame at 60 s
+    expect(mp4(gapped(30, 0))).toBe(true);
+    // moov's frames come first: 100 of them decode to 2.13 s, so a run of 100 more at tfdt 1 s plays from 2.13 s to
+    // 4.27 s, and an edit from 3.2 s to 4 s selects it (read from 1 s, the run would end at 3.13 s and the edit pass none)
+    const entry = Buffer.alloc(12);
+    entry.writeUInt32BE(800);
+    entry.writeInt32BE(48_000 * 3.2, 4);
+    entry.writeInt16BE(1, 8);
+    const edts = box('edts', fullBox('elst', 0, 0, [be(1), entry]));
+    const hundred = Array.from({ length: 100 }, () => 4);
+    const carried = Buffer.concat([
+      laidOut((o) => Buffer.concat([ftyp('iso5'), box('moov', [mvhd(0, 1000), trak('soun', 1, hundred, o, 0, [edts]), box('mvex', trex(1))])])), mdat(400),
+      fragment(1, (o) => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000)), trun(hundred, o)]), mdat(400),
+    ]);
+    expect(mp4(carried)).toBe(true);
+    expect(recordingSeconds('audio/mp4', carried)).toBeCloseTo((200 * 1024) / 48_000, 6);
+  });
+
   it('#1141: a fragment marked duration-is-empty holding a run, and #1154: track_ID 0, are refused (landed in #1158)', () => {
     // pinned by "Codex round 1 on #1158" and "Codex round 2 on #1158" above; listed here so each follow-up has its test
     const empty = Buffer.from(fragmentedMp4());
@@ -1752,6 +1806,8 @@ describe('Safari\'s WebM: an iPhone voice note (refused on the live site, 27 Oct
   it('reads the Cues whole: one, on the track, each point at a Cluster\'s start, only the fields a cue has', () => {
     const note = safariWebm(700);
     const at = clusterAt(note);
+    // a cue times nothing: a CueTime of 2^56 ms leaves the note at its own 14 s
+    expect(recordingSeconds('audio/webm', withCues(note, cues(point({ time: Buffer.from([1, 0, 0, 0, 0, 0, 0, 0]), cluster: at }))))).toBe(14);
     expect(webm(withCues(note, cues(point({ cluster: at }))))).toBe(true);
     expect(webm(withCues(note, cues(point({ cluster: at, extra: [ebml(0xf0, u(4)), ebml(0x5378, u(2)), ebml(0xb2, u(20))] }))))).toBe(true);
     const long = safariWebm(2000);
