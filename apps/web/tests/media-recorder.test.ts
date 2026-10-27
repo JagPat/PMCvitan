@@ -142,7 +142,7 @@ describe('Stage 1 voice notes: the shared recorder', () => {
     expect((await r.stop()).ms).toBe(12_000);
   });
 
-  it('runs a recording the browser ended to when its microphone ended, never past the cap', async () => {
+  it('runs a recording the browser ended to when its microphone ended, and with no word of that to its stop event', async () => {
     stopTakes = 900;
     const mic = Object.assign(new EventTarget(), { stop: vi.fn() });
     tracks = [mic as unknown as Track];
@@ -155,13 +155,46 @@ describe('Stage 1 voice notes: the shared recorder', () => {
     FakeRecorder.last!.stop();
     await vi.runAllTimersAsync();
     expect(ended).toMatchObject({ cause: 'ended', rec: { ms: 50_000 } });
-    // no word from the microphone, and the stop event comes after the cap would have stopped it: at most the cap
+    // no word from the microphone: to the stop event, 0.9 s after the recorder stopped, so longer, never shorter
     tracks = [{ stop: vi.fn() }];
     const s = await startRecording('audio', 'audio/webm', 119_500);
     vi.advanceTimersByTime(119_400);
     FakeRecorder.last!.stop();
     await vi.runAllTimersAsync();
-    expect((await s.stop()).ms).toBe(119_500);
+    expect((await s.stop()).ms).toBe(120_300);
+  });
+
+  describe('in a hidden tab, where the cap’s timer can run late', () => {
+    // the phone's clock runs on to 125 s while the cap's timer has not yet run
+    let t = 0;
+    beforeEach(() => { t = 0; vi.spyOn(performance, 'now').mockImplementation(() => t); });
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    it('keeps the full length of a recording the browser ended past the cap, with its microphone’s end', async () => {
+      const mic = Object.assign(new EventTarget(), { stop: vi.fn() });
+      tracks = [mic as unknown as Track];
+      const r = await startRecording('audio', 'audio/webm', 119_500);
+      t = 125_000;
+      mic.dispatchEvent(new Event('ended'));
+      t = 125_200;
+      FakeRecorder.last!.stop();
+      expect((await r.ended).rec.ms).toBe(125_000);
+    });
+
+    it('and without it', async () => {
+      const r = await startRecording('audio', 'audio/webm', 119_500);
+      t = 125_000;
+      FakeRecorder.last!.stop();
+      expect((await r.ended).rec.ms).toBe(125_000);
+    });
+
+    it('and of one the late cap stopped, to when it stopped it', async () => {
+      const r = await startRecording('audio', 'audio/webm', 119_500);
+      t = 125_000;
+      vi.advanceTimersByTime(119_500);
+      t = 125_300;
+      expect((await r.ended)).toMatchObject({ cause: 'cap', rec: { ms: 125_000 } });
+    });
   });
 
   it('keeps nothing when cancelled, and lets the microphone go', async () => {

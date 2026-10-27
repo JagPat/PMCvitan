@@ -119,8 +119,9 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
   // when the stop was asked for (Stop, Cancel or the cap): the recording's length runs to there, not to the stop event,
   // which comes once the recorder has written its last data
   let stoppedAt: number | null = null;
-  // and a recording the browser ended by itself runs to when its microphone (or camera) ended, never to its later stop
-  // event; nor past the cap, which would have stopped it had it still been recording
+  // and a recording the browser ended by itself runs to when its microphone (or camera) ended; with no word of that,
+  // to its stop event, which can only make it longer than it was, so a note near the limit is refused, never kept long
+  // (a hidden tab can run the cap's timer late, so a recording the browser ended may truly be past the cap)
   let endedAt: number | null = null;
   // (a track's own end: the device went away, or the phone took it; never our own release, which ends no track this way)
   stream.getTracks().forEach((t) => t.addEventListener?.('ended', () => { endedAt ??= clock(); }, { once: true }));
@@ -136,7 +137,7 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
       release();
       const written = recorder.mimeType || type;
       const mime = baseType(written);
-      const rec = { blob: new Blob(chunks, { type: mime }), mime, type: written, ms: began === null ? 0 : Math.max(0, stoppedAt !== null ? stoppedAt - began : Math.min(maxMs, (endedAt ?? clock()) - began)) };
+      const rec = { blob: new Blob(chunks, { type: mime }), mime, type: written, ms: began === null ? 0 : Math.max(0, (stoppedAt ?? endedAt ?? clock()) - began) };
       resolve(rec);
       // stopped by its cap, or by the browser itself: said, so the screen does not go on showing a recording
       if (!cancelled && (byCap || !asked)) resolveEnded({ rec, cause: byCap ? 'cap' : 'ended' });

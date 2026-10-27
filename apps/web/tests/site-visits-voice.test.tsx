@@ -309,6 +309,23 @@ describe('Stage 1 voice notes on a visit', () => {
     expect((uploadMedia.mock.calls[0] as unknown as [Record<string, unknown>])[0]).toMatchObject({ siteVisit: { note: 'Written while recording' } });
   });
 
+  it('refuses a recording the browser ended past two minutes in a hidden tab, where the cap’s timer had not yet run', async () => {
+    withRecorder();
+    const mic = Object.assign(new EventTarget(), { stop: vi.fn() });
+    tracks = [mic as unknown as { stop: ReturnType<typeof vi.fn> }];
+    const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
+    const card = screen.getByTestId('sv-visit-v-1');
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Record voice note' })); });
+    now += 125_000;
+    mic.dispatchEvent(new Event('ended'));
+    await act(async () => { FakeRecorder.last!.stop(); });
+    await settled();
+    expect(screen.getByRole('alert').textContent).toBe('This recording ran past two minutes and was not added. Record a shorter note.');
+    expect(uploadMedia).not.toHaveBeenCalled();
+    expect(useStore.getState().outbox).toHaveLength(0);
+  });
+
   it('keeps nothing when the screen is left after Stop but before the recording has finished', async () => {
     withRecorder();
     holdStop = true;
@@ -401,6 +418,24 @@ describe('Stage 1 voice notes on a visit', () => {
     const audio = row.querySelector('audio')!;
     expect(audio.hidden).toBe(false);
     expect(audio.hasAttribute('controls')).toBe(true);
+    expect(row.textContent).not.toContain('could not be played');
+  });
+
+  it('does not say a note failed for an error before its file has come', async () => {
+    let answer: (v: unknown) => void = () => {};
+    vi.stubGlobal('fetch', vi.fn(() => new Promise((done) => { answer = done; })));
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:voice-1'), revokeObjectURL: vi.fn() }));
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => Promise.resolve());
+    await mount('client', 'u-client', fakeGateway([visit({ status: 'ended', files: [voiceFile()] })]));
+    const row = screen.getByTestId('sv-file-m-v');
+    await act(async () => { fireEvent.click(within(row).getByRole('button', { name: 'Play: Slab level is off' })); });
+    // the moment of silence played on the tap errs while the file is still coming: not the file
+    await act(async () => { fireEvent.error(row.querySelector('audio')!); });
+    expect(row.textContent).not.toContain('could not be played');
+    await act(async () => { answer({ ok: true, blob: async () => new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/webm' }) }); });
+    await settled();
+    expect(row.querySelector('audio')!.hidden).toBe(false);
+    expect(row.querySelector('audio')!.getAttribute('src')).toBe('blob:voice-1');
     expect(row.textContent).not.toContain('could not be played');
   });
 
