@@ -19,6 +19,9 @@ export interface GuideRun {
    * stepping back while the request is still on its way would guide the person into sending it twice.
    */
   waiting: boolean;
+  /** this run pressed the current step's control: what the store later shows done is this run's own act only then.
+   *  Kept after a failure report (the request may still have landed), cleared on a new step */
+  pressed: boolean;
 }
 
 interface GuideState {
@@ -39,9 +42,9 @@ export const useGuideState = create<GuideState>()((set) => ({
   run: null,
   offer: null,
   lastStarted: null,
-  start: (guide) => set({ run: { guide, id: beginGuideRun(), step: 0, key: null, waiting: false }, lastStarted: guide.id }),
-  setStep: (step, key) => set((s) => (s.run ? { run: { ...s.run, step, key: key === undefined ? s.run.key : key, waiting: false } } : s)),
+  start: (guide) => set({ run: { guide, id: beginGuideRun(), step: 0, key: null, waiting: false, pressed: false }, lastStarted: guide.id }),
+  setStep: (step, key) => set((s) => (s.run ? { run: { ...s.run, step, key: key === undefined ? s.run.key : key, waiting: false, pressed: false } } : s)),
   stop: () => set({ run: null }),
-  setWait: (waiting) => set((s) => (s.run ? { run: { ...s.run, waiting } } : s)),
+  setWait: (waiting) => set((s) => (s.run ? { run: { ...s.run, waiting, pressed: s.run.pressed || waiting } } : s)),
   setOffer: (offer) => set((s) => (s.offer === offer ? s : { offer })),
 }));

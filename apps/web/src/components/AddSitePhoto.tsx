@@ -19,7 +19,7 @@ export function AddSitePhoto() {
   if (!can('media.upload', role)) return null;
 
   return (
-    <div data-guide="add-site-photo" style={{ marginBottom: 12 }}>
+    <div style={{ marginBottom: 12 }}>
       {/* No `capture`: on Android it forces the camera and hides the gallery. The stamp comes from
           the photo's own EXIF (lib/exif.ts), so a gallery pick is stamped just as honestly. */}
       <input
@@ -45,6 +45,8 @@ export function AddSitePhoto() {
         onClick={() => fileRef.current?.click()}
         disabled={sending}
         data-testid="add-site-photo"
+        // #482 in-app guide: the button itself, so the coach mark fits it and a greyed-out button is not pointed at
+        data-guide="add-site-photo"
         style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', minHeight: 44, borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
       >
         <Camera size={14} /> {L.add[lang]}

@@ -20,12 +20,13 @@ import { isPlaceHiddenFrom, previewPublishedProjectNode, resolvePublishedProject
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
-import { VOICE_NOTE_MAX_SEC, VOICE_NOTE_SEC_TOLERANCE, type CreateMediaInput } from '../contracts';
+import { VIDEO_CLIP_MAX_SEC, VOICE_NOTE_MAX_SEC, VOICE_NOTE_SEC_TOLERANCE, type CreateMediaInput } from '../contracts';
 import { SITE_PHOTO_DELETE_WINDOW_MS, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { readVoiceRecording } from './voice-container';
+import { readVideoClip } from './video-container';
 
 export interface UploadedMedia {
   id: string;
@@ -173,6 +174,12 @@ export class MediaService {
         throw new BadRequestException('A voice note is added on a site visit');
       }
     }
+    // #995 — so is a video clip, on the same terms
+    if (input.mime.startsWith('video/')) {
+      if (!isSiteVisitFile(input) || input.sourceMediaId !== undefined) {
+        throw new BadRequestException('A video is added on a site visit');
+      }
+    }
     if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input) && !isSiteVisitFile(input)) {
       throw new ForbiddenException('Your role may add a site photo, not evidence linked to a record');
     }
@@ -207,6 +214,17 @@ export class MediaService {
       if (durationSec > VOICE_NOTE_MAX_SEC) throw new BadRequestException('A voice note is at most two minutes long');
       if (input.durationSec !== undefined && Math.abs(input.durationSec - recording.seconds) > VOICE_NOTE_SEC_TOLERANCE) {
         throw new BadRequestException('This voice note is not as long as its upload says');
+      }
+    }
+    // #995 — a video clip is read on the same terms, once its adder may add to the visit: a video with a picture in it
+    // in the container its type names, its length the file's own, rounded, at most a minute
+    if (input.mime.startsWith('video/')) {
+      const clip = readVideoClip(input.mime, Buffer.from(input.data, 'base64'));
+      if (!clip) throw new BadRequestException('This file is not the video its type says');
+      durationSec = clip.durationSec;
+      if (durationSec > VIDEO_CLIP_MAX_SEC) throw new BadRequestException('A video is at most a minute long');
+      if (input.durationSec !== undefined && Math.abs(input.durationSec - clip.seconds) > VOICE_NOTE_SEC_TOLERANCE) {
+        throw new BadRequestException('This video is not as long as its upload says');
       }
     }
     const source = visit && input.sourceMediaId ? await this.markupSource(this.prisma, projectId, visit.visitId, input.sourceMediaId) : null;
