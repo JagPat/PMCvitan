@@ -1,6 +1,7 @@
 import type { Role, ScreenKey } from '@vitan/shared';
 import type { GuideTip } from './words';
-import type { GuideOutcome } from './outcomes';
+import { guidedPhotoPicksOf, type GuideOutcome } from './outcomes';
+import { useGuideState } from './guideState';
 import { useStore } from '@/store/store';
 
 /**
@@ -27,13 +28,17 @@ export interface GuideStep {
   /**
    * For `until: 'outcome'`: the store's report that the pressed action succeeded (`ok`) or did not
    * (`failed`). Between the press and the report the guide waits instead of stepping back, because the
-   * control may leave the screen while the request is on its way; a failure ends that wait.
+   * control may leave the screen while the request is on its way; a failure ends that wait. `held` is the
+   * report that the action went through but may not last (an offline photo the phone could not keep, still
+   * sent from memory while Vitan stays open): the run ends unfinished, so it is offered again later and does
+   * not invite a second try that would send the same thing twice.
    */
-  outcome?: { ok: GuideOutcome; failed: GuideOutcome };
+  outcome?: { ok: GuideOutcome; failed: GuideOutcome; held?: GuideOutcome };
   /**
    * For `until: 'outcome'`: true when the store already shows the pressed action done, however that
    * became known (a live refresh can show a checklist submitted before the request's own answer comes
-   * back, and that answer is then dropped). Checked only while the guide is waiting after the press.
+   * back, and that answer is then dropped). Checked on every look at the step, also after the request reported a
+   * failure (its answer can be lost after the server took it), so it only says true for this run's own action.
    */
   settled?: (key: string | null) => boolean;
   /** point at the control carrying the same `data-guide-key` as the one pressed in an earlier step
@@ -91,6 +96,17 @@ export const GUIDES: readonly Guide[] = [
       { target: 'publish-decision', tip: 'decisionPublish', until: 'outcome', outcome: { ok: 'decision-published', failed: 'decision-publish-failed' } },
     ],
   },
+  {
+    // a site photo: the Dashboard's "Add site photo" opens the phone's camera or gallery. The step ends only when the
+    // store has the photo (sent, kept on this phone to send, or on record from a live refresh before the upload's own
+    // answer), so a cancelled picker leaves the tip where it is.
+    id: 'add-site-photo',
+    roles: ['pmc', 'engineer'],
+    screen: 'dashboard',
+    steps: [
+      { target: 'add-site-photo', tip: 'photoAdd', until: 'outcome', outcome: { ok: 'site-photo-added', failed: 'site-photo-add-failed', held: 'site-photo-not-kept' }, settled: guidedPhotoOnRecord },
+    ],
+  },
 ];
 
 /** The run's key is `<checklist id>:<item>`: that checklist is submitted once it is no longer out on site. */
@@ -100,6 +116,16 @@ function checklistSubmitted(key: string | null): boolean {
   const s = useStore.getState();
   const open = s.openChecklists.some((c) => c.id === id) || (s.checklist?.id === id && !s.checklist.submitted);
   return !open;
+}
+
+/** A photo picked under this run of the guide is in the project's photos (the viewer's own photos carry their upload key). */
+function guidedPhotoOnRecord(): boolean {
+  const run = useGuideState.getState().run;
+  if (!run) return false;
+  const picks = guidedPhotoPicksOf(run.id);
+  if (picks.size === 0) return false;
+  const s = useStore.getState();
+  return [...s.photos, ...s.myDeletablePhotos].some((p) => p.clientKey !== undefined && picks.has(p.clientKey));
 }
 
 /** The guides this role can be shown on this screen, in order. */
