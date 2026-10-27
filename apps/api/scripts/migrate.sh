@@ -590,6 +590,9 @@ if echo "$out" | grep -q "P3005"; then
   # Hub's delivery receipts and withdrawn versions (#1118 U1a-1, 20280123000000) are here because their rules are
   # checks, triggers, generated columns, a partial unique and deferrable binding keys, which a db-push baseline does not
   # have. The file is guarded and re-runnable.
+  #
+  # Voice-note transcripts (#1177 VT1, 20280124000000) are here because their rules are a check and two triggers, which a
+  # db-push baseline does not have. The file is guarded and re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -636,7 +639,8 @@ if echo "$out" | grep -q "P3005"; then
 20280121200000_hub_fetched_blob
 20280121300000_hub_link
 20280122000000_hub_drawing_identity
-20280123000000_hub_receipts"
+20280123000000_hub_receipts
+20280124000000_voice_transcript"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
