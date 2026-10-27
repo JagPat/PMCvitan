@@ -6,7 +6,7 @@ import { warmImports } from './warm-imports';
 import { settled, startWork } from './site-visit-work';
 import { queueWritten, storedQueue } from './queueWrites';
 
-await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/data/sitePhotoStore'));
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/data/sitePhotoStore'), () => import('@/store/queueLedger'));
 
 /**
  * #917 — a site photo sent online is kept on this phone before its upload, so an upload whose answer is lost is sent
