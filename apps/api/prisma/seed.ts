@@ -138,7 +138,11 @@ async function main(): Promise<void> {
     // Phase 6 unit 4c-iii moved this wipe from `deleteMany()` to the sanctioned reset because the
     // consultation preservation seal refused a direct DELETE; unit 4c-v retired that seal. The
     // table stays in the reset list — one wipe path for every table, seal or no seal.
-    'ProjectCapability'
+    'ProjectCapability',
+    // #1118 U1a-2 — a Hub link event names the user who acted through a NO ACTION key, so it goes before the users;
+    // it refuses row DELETE, so it is cleared here, its TRUNCATE seal bypassed by name. The link it hangs off goes
+    // with its project below.
+    'DrawingHubLinkEvent'
   ] as const;
   await sanctionedReset(prisma, RESET_TABLES);
   await prisma.gateOverride.deleteMany();

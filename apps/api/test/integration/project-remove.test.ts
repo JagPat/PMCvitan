@@ -47,6 +47,13 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     await t.prisma.media.create({ data: { id: `it-rm-media-${run}`, projectId: a, kind: 'progress', mime: 'image/png', data: Buffer.from('abc'), sizeBytes: 3, uploadedBy: 'pmc', clientKey: `it-rm-media-key-${run}` } });
     // a deleted photo's record (#482): sealed against a direct DELETE, so the removal has to take it as it does events
     await t.prisma.mediaTombstone.create({ data: { projectId: a, clientKey: `it-rm-key-${run}` } });
+    // the Hub link and its history (#1118 U1a-2) go with the project; both are sealed against a direct DELETE, and a link
+    // commits only with its event 1, so the link and its events are one transaction
+    await t.prisma.$transaction([
+      t.prisma.drawingHubLink.create({ data: { projectId: a, orgId: f.orgA.id } }),
+      t.prisma.drawingHubLinkEvent.create({ data: { projectId: a, seq: 1, kind: 'linked', hubProjectId: `it-rm-hp-${run}`, byUserId: f.memberUser.id } }),
+      t.prisma.drawingHubLinkEvent.create({ data: { projectId: a, seq: 2, prevSeq: 1, kind: 'unlinked', byUserId: f.memberUser.id } }),
+    ]);
     await t.prisma.dailyLog.create({ data: { id: logId, projectId: a, date: '01 Jun 2026', logDate: new Date('2026-06-01') } });
     await t.prisma.crewRow.create({ data: { dailyLogId: logId, trade: 'Mason', count: 4, order: 0 } });
     // an append-only event of the project and a consumer's receipt for it, held with no foreign key
@@ -181,7 +188,8 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     const r = await removeProject(t.prisma, o);
     expect(r.failures).toEqual([]);
     expect(r).toMatchObject({ ok: true, mode: 'dry-run', outcome: 'rolled back' });
-    for (const table of ['Project', 'ProjectNode', 'CrewRow', 'DailyLog', 'Media', 'MediaTombstone', 'DomainEvent', 'OutboxDelivery', 'ProcessedEvent']) {
+    for (const table of ['Project', 'ProjectNode', 'CrewRow', 'DailyLog', 'Media', 'MediaTombstone', 'DomainEvent', 'OutboxDelivery', 'ProcessedEvent',
+      'DrawingHubLink', 'DrawingHubLinkEvent']) {
       expect(r.removed[table], table).toEqual(o.inventory.keys[table]);
     }
     expect(Object.keys(r.added)).toEqual([]);
@@ -200,7 +208,8 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
       expect(r.unlinked.find((u) => u.table === table), table).toMatchObject({ unchanged: true });
     }
     expect(r.protected).toEqual([expect.objectContaining({ projectId: f.projectB.id, removed: [], keysUnchanged: true })]);
-    expect(r.triggers.disabled.map((d) => d.name)).toEqual(expect.arrayContaining(['DomainEvent_append_only', 'MediaTombstone_immutable', 'Media_tombstone_on_delete']));
+    expect(r.triggers.disabled.map((d) => d.name)).toEqual(expect.arrayContaining(['DomainEvent_append_only', 'MediaTombstone_immutable', 'Media_tombstone_on_delete',
+      'DrawingHubLink_sealed', 'DrawingHubLinkEvent_sealed']));
     expect(r.triggers.restored).toBe(true);
     expect(r.counts.Project.after).toBe(r.counts.Project.before - 1);
     expect(r.files).toEqual(expect.arrayContaining([expect.objectContaining({ table: 'Media', id: `it-rm-media-${run}` })]));
@@ -223,6 +232,8 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     expect(await t.prisma.processedEvent.count({ where: { id: receipt } })).toBe(0);
     expect(await t.prisma.crewRow.count({ where: { dailyLogId: logId } })).toBe(0);
     expect(await t.prisma.mediaTombstone.count({ where: { projectId: f.projectA.id } })).toBe(0);
+    expect(await t.prisma.drawingHubLink.count({ where: { projectId: f.projectA.id } })).toBe(0);
+    expect(await t.prisma.drawingHubLinkEvent.count({ where: { projectId: f.projectA.id } })).toBe(0);
     const qa = await t.prisma.user.findUniqueOrThrow({ where: { id: qaId } });
     expect({ projectId: qa.projectId, lastProjectId: qa.lastProjectId }).toEqual({ projectId: f.projectB.id, lastProjectId: f.projectB.id });
     const staff = await t.prisma.user.findUniqueOrThrow({ where: { id: staffId } });
