@@ -102,6 +102,56 @@ export const sidecarName = (key: string): string => `vitan.occ.${key}`;
 export const markName = (key: string, act: OutboxOp, oid: string): string => `vitan.settled.${key}.${identTag(act)}.o${oid}`;
 /** the oid of the `n`-th act of the made record `name` */
 export const recordOid = (key: string, name: string, n: number): string => `r:${name.slice(`vitan.made.${key}.`.length)}#${n}`;
+/**
+ * xtab-drain redesign U2 (`notes/site-visits/web-02-U3/xtab-drain/redesign/plan.md` rev 3 §2.1): a done fact, the server's
+ * answer for an act (sent, or refused for good) kept on this phone under its lane key, so a tab that still holds the act
+ * asks it before sending. Only an identity no other act shares has one: two acts with no key and the same bytes are two
+ * acts, and the second must still be sent. Its value is `{"i": identity, "n": order, "r": 1 for a refusal}`, `n` one more
+ * than the person's newest. A fact is evidence only of itself: a key that no longer holds an act never makes it done.
+ */
+export type DoneFact = { i: string; n: number; r?: 1 };
+export const doneName = (key: string, act: OutboxOp): string => `vitan.done.${key}.${identTag(act)}`;
+/** a fact's bytes read, or null: a fact this release cannot read is none */
+export function readDone(raw: string | null): DoneFact | null {
+  try {
+    const v: unknown = JSON.parse(raw ?? 'null');
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) return null;
+    const f = v as { i?: unknown; n?: unknown; r?: unknown };
+    if (typeof f.i !== 'string' || typeof f.n !== 'number' || !Number.isFinite(f.n) || (f.r !== undefined && f.r !== 1)) return null;
+    return f.r === 1 ? { i: f.i, n: f.n, r: 1 } : { i: f.i, n: f.n };
+  } catch { return null; }
+}
+/** the server's answer for `act` under its lane key, as this phone keeps it: one read and an identity compare. A read that
+ *  throws answers none, which fails toward a repeat the server bounds, never toward a loss */
+export function doneOf(storage: Pick<Storage, 'getItem'>, key: string, act: OutboxOp): 'sent' | 'refused' | null {
+  if (!unique(act)) return null;
+  let f: DoneFact | null;
+  try { f = readDone(storage.getItem(doneName(key, act))); } catch { return null; }
+  if (f === null || f.i !== queueActIdent(act)) return null;
+  return f.r === 1 ? 'refused' : 'sent';
+}
+export const isDone = (storage: Pick<Storage, 'getItem'>, key: string, act: OutboxOp): boolean => doneOf(storage, key, act) !== null;
+/** the person's fact prefixes, both lanes of every project, from one of their queue keys; `<sub>` holds no dot, so each
+ *  prefix is exact. None for a key of no person */
+export function donePrefixes(key: string): string[] {
+  const m = /^vitan\.(?:outbox|siteVisitQueue)\.([^.]+)\./.exec(key);
+  return m ? [`vitan.done.vitan.outbox.${m[1]}.`, `vitan.done.vitan.siteVisitQueue.${m[1]}.`] : [];
+}
+/** the per-person budget, about 300 KB at the cap. Refusal facts are at most half of it, and go last */
+export const DONE_CAP = 1000;
+export const DONE_REFUSALS = 500;
+/** which of the person's facts (`facts`: each name, and its value read or null) go so they fit the budget: refusals past
+ *  their half first, oldest first, then the oldest success facts (an unreadable one before any); a tie goes by name */
+export function doneToPrune(facts: { name: string; fact: DoneFact | null }[]): string[] {
+  type F = { name: string; fact: DoneFact | null };
+  const order = (a: F, b: F) => (a.fact?.n ?? -Infinity) - (b.fact?.n ?? -Infinity) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  const refusals = facts.filter((f) => f.fact?.r === 1).sort(order);
+  const successes = facts.filter((f) => f.fact?.r !== 1).sort(order);
+  const out = refusals.slice(0, Math.max(0, refusals.length - DONE_REFUSALS));
+  const kept = refusals.length - out.length;
+  out.push(...successes.slice(0, Math.max(0, successes.length + kept - DONE_CAP)));
+  return out.map((f) => f.name);
+}
 /** A new made record's bytes: its acts after a write token with the record's nonce (#1116 r1, Codex 4368074449). Every
  *  release with made records (B1a on, after step A1) reads them as `unreadable: 'newer'`, so it loads none of their acts
  *  and never saves them again in a record of its own (4366320607); its `releaseMade` keeps the record and every mark;

@@ -2,8 +2,8 @@ import type { OutboxOp } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { queueActIdent } from '@/store/queueActIdent';
 import {
-  decodeSidecar, encodeSidecar, evidenceOf, frameOf, ledgerTag, markName, owedOf, planWrite, readMarkName, recordBytes, recordName,
-  recordOid, sidecarName, tokenOf,
+  decodeSidecar, doneName, donePrefixes, doneToPrune, encodeSidecar, evidenceOf, frameOf, ledgerTag, markName, owedOf, planWrite,
+  readDone, readMarkName, recordBytes, recordName, recordOid, sidecarName, tokenOf,
   type Memory, type Occ, type Snapshot, type WritePlan,
 } from '@/store/queueLedger';
 
@@ -103,14 +103,62 @@ function remove(storage: Store, name: string): boolean {
     return false; // left: a record or mark is never a loss
   }
 }
-/** set `name` to `value` and read it back */
-function put(storage: Store, name: string, value: string): boolean {
+/** set `name` to `value` and read it back; `giving`: a write of the queue's own bytes, which done facts give way to */
+function put(storage: Store, name: string, value: string, giving = false): boolean {
   try {
-    storage.setItem(name, value);
+    if (giving) setGiving(storage, name, value); else storage.setItem(name, value);
     return storage.getItem(name) === value;
   } catch {
     return false;
   }
+}
+/** xtab-drain redesign U2 (plan rev 3 §2.1): done facts always give way to a write of a queue key, its sidecar or a made
+ *  record. A write that throws, whatever the error (a full store is code 22 in Chrome, 1014 in Firefox), is made again
+ *  once every success fact on this phone is gone, any person's, and again once every refusal fact is gone too: the act
+ *  is kept, never the fact. A pass with no fact to remove is not tried again; the write's own error is the answer */
+function setGiving(storage: Store, name: string, value: string): void {
+  try {
+    storage.setItem(name, value);
+  } catch (err) {
+    for (const refusals of [false, true]) {
+      if (dropFacts(storage, refusals) === 0) continue;
+      try { storage.setItem(name, value); return; } catch { /* still no room */ }
+    }
+    throw err;
+  }
+}
+/** remove every done fact on this phone of one kind (refusals, or the rest), best effort; how many went */
+function dropFacts(storage: Store, refusals: boolean): number {
+  let n = 0;
+  for (const name of namesUnder(storage, 'vitan.done.')) {
+    let fact = null;
+    try { fact = readDone(storage.getItem(name)); } catch { /* unreadable: not a refusal */ }
+    if ((fact?.r === 1) === refusals && remove(storage, name)) n += 1;
+  }
+  return n;
+}
+/** Write `act`'s done fact under `key`, numbered one past the person's newest. A fact of the same identity already there
+ *  stands (it keeps its place in the budget). False when it is not there now: a full store never stops the drain */
+function putDone(storage: Store, key: string, act: OutboxOp, refused: boolean): boolean {
+  const name = doneName(key, act);
+  const ident = queueActIdent(act);
+  try {
+    if (readDone(storage.getItem(name))?.i === ident) return true;
+    let n = 0;
+    for (const p of donePrefixes(key)) for (const f of namesUnder(storage, p)) n = Math.max(n, readDone(storage.getItem(f))?.n ?? 0);
+    return put(storage, name, JSON.stringify(refused ? { i: ident, n: n + 1, r: 1 } : { i: ident, n: n + 1 }));
+  } catch {
+    return false;
+  }
+}
+/** the person's facts over the budget go (`doneToPrune`): only names under their own exact prefixes */
+function pruneDone(storage: Store, key: string): void {
+  const facts = donePrefixes(key).flatMap((p) => namesUnder(storage, p)).map((name) => {
+    let fact = null;
+    try { fact = readDone(storage.getItem(name)); } catch { /* unreadable */ }
+    return { name, fact };
+  });
+  for (const name of doneToPrune(facts)) remove(storage, name);
 }
 const newNonce = (): string => Array.from(globalThis.crypto.getRandomValues(new Uint32Array(4)), (n) => n.toString(16).padStart(8, '0')).join('');
 /** an identity no other act shares: an idempotency key, or a photo's client key */
@@ -208,6 +256,8 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
   const handed = new Set<string>();
   /** per key, the copies a refused write of this tab made of occurrences memory held (Codex 4356145036) */
   const madeAside = new Map<string, { name: string; raw: string; oids: string[] }[]>();
+  /** U2: per key, the done facts `settled` could not write (by name), written again at the key's next landed write */
+  const factsDue = new Map<string, Map<string, { act: OutboxOp; refused: boolean }>>();
   const setOf = <T,>(m: Map<string, Set<T>>, key: string): Set<T> => {
     let s = m.get(key);
     if (!s) m.set(key, (s = new Set()));
@@ -286,7 +336,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     const nonce = newNonce();
     const raw = recordBytes(fresh.map((o) => o.act), nonce);
     const name = recordName(key, namesUnder(storage, `vitan.made.${key}.`), raw, nonce);
-    if (!put(storage, name, raw)) return false;
+    if (!put(storage, name, raw, true)) return false;
     fresh.forEach((o, n) => {
       const oid = recordOid(key, name, n);
       oids.set(o.act, oid);
@@ -309,6 +359,9 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
    *  changed (another writer since) puts every removed name back, byte for byte; a record that cannot be put back keeps
    *  its occurrences held stranded here, counted and sent (“saved on this phone” only after a real write) */
   const release = (storage: Store, key: string, plan: Pick<WritePlan, 'legacySpent' | 'sent'>): void => {
+    // U2: a done fact that could not be written is written again now, and the person's facts are kept to their budget
+    for (const [name, f] of factsDue.get(key) ?? []) if (putDone(storage, key, f.act, f.refused)) factsDue.get(key)?.delete(name);
+    pruneDone(storage, key);
     const tokenNow = (): string | null => {
       try { const v: unknown = JSON.parse(storage.getItem(key) ?? '[]'); return Array.isArray(v) ? tokenOf(v).token : null; } catch { return null; }
     };
@@ -338,7 +391,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       if (remove(storage, name)) removed.push({ name, raw, occs: rec.acts.map((act, n) => ({ oid: recordOid(key, name, n), act })) });
     }
     if (tokenNow() !== s.token) {
-      for (const r of removed) if (!put(storage, r.name, r.raw)) { strand(key, r.occs); for (const o of r.occs) setOf(unkept, key).add(o.oid); }
+      for (const r of removed) if (!put(storage, r.name, r.raw, true)) { strand(key, r.occs); for (const o of r.occs) setOf(unkept, key).add(o.oid); }
       return;
     }
     const s2 = snapshotOf(storage, key, scopesOf(key));
@@ -415,16 +468,17 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
   };
 
   /** Write `plan` (plan r3 v4): the sidecar with its next side pending, the key (when its bytes change), then the
-   *  committed sidecar. True once the key holds `plan.raw`: a pending side carrying the key's token names it too */
+   *  committed sidecar. True once the key holds `plan.raw`: a pending side carrying the key's token names it too. Each
+   *  write is one done facts give way to (U2) */
   const apply = (storage: Store, key: string, plan: WritePlan, raw: string | null): boolean => {
     try {
-      storage.setItem(sidecarName(key), encodeSidecar(plan.sidecar));
-      if (raw !== plan.raw) storage.setItem(key, plan.raw);
+      setGiving(storage, sidecarName(key), encodeSidecar(plan.sidecar));
+      if (raw !== plan.raw) setGiving(storage, key, plan.raw);
       if (storage.getItem(key) !== plan.raw) return false;
     } catch {
       try { return storage.getItem(key) === plan.raw; } catch { return false; }
     }
-    put(storage, sidecarName(key), encodeSidecar(plan.commit));
+    put(storage, sidecarName(key), encodeSidecar(plan.commit), true);
     return true;
   };
   /** a landed write's memory: the key holds `next`. `known` becomes the occurrences of `next` memory (`mine`) holds:
@@ -600,10 +654,12 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
         return false;
       }
     },
-    /** step B1a: an act of `key` the server now has (sent) or refused for good, marked so, by its occurrence, before
-     *  the flush goes on: a load before the key is written without it does not take it again. False when the mark could
-     *  not be made */
-    settled(storage: Store | null, key: string, o: OutboxOp): boolean {
+    /** step B1a: an act of `key` the server now has (sent) or refused for good (`refused`), marked so, by its occurrence,
+     *  before the flush goes on: a load before the key is written without it does not take it again. U2: an identity no
+     *  other act shares also gets its done fact, synchronously and with no lock, so a tab still holding it never sends it
+     *  again; one that cannot be written is written again at the key's next landed write. False when the mark could not
+     *  be made */
+    settled(storage: Store | null, key: string, o: OutboxOp, refused = false): boolean {
       let read: Read | null = null;
       try { if (storage) read = snapshotOf(storage, key, scopesOf(key)); } catch { read = null; }
       const frame = read ? frameOf(read).occs : [];
@@ -617,7 +673,13 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       const ids = there.length > 0 ? there : [oid];
       for (const id of new Set([oid, ...ids])) setOf(sent, key).add(id);
       if (!storage) return false;
-      return ids.every((id) => put(storage, markName(key, o, id), ident));
+      const marked = ids.every((id) => put(storage, markName(key, o, id), ident));
+      if (unique(o) && !putDone(storage, key, o, refused)) {
+        let due = factsDue.get(key);
+        if (!due) factsDue.set(key, (due = new Map()));
+        due.set(doneName(key, o), { act: o, refused });
+      }
+      return marked;
     },
     /** how many occurrences are held stranded, over every key */
     strandedCount(): number {

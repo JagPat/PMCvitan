@@ -91,6 +91,7 @@ import {
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
 } from './projectCreateHold';
 import { createQueueKeyGuard, queueActIdent, type QueueWrite } from '@/store/queueKeyGuard';
+import { doneOf } from '@/store/queueLedger';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
@@ -2121,7 +2122,8 @@ export const useStore = create<Store>()(
       // a committed daily-log command is reflected once a pull that BEGAN after it carries the
       // daily-log module read — success shows the new log, failure the read's own error state
       const after = get().dailyLogReconcileAfter;
-      if (after !== null && dailyLogResult !== undefined && lease.sequence > after) {
+      // (a send another tab made sets it under snapshot reads too: the snapshot carries the log, U2)
+      if (after !== null && (dailyLogResult !== undefined || dailyLogReadMode() === 'snapshot') && lease.sequence > after) {
         set((s) => { s.dailyLogReconcileAfter = null; s.dailyLogReconcileKind = null; });
       }
       // #482 site photos — the day's photo count after a delete is the server's, read by a pull that began after the
@@ -6497,7 +6499,40 @@ export const useStore = create<Store>()(
       // closed before this flush writes its key without it never sends it again
       let markStore: Storage | null = null;
       try { markStore = globalThis.localStorage ?? null; } catch { markStore = null; }
-      const settle = (o: OutboxOp): void => { queueKeys.settled(markStore, isSiteVisitOp(o) ? siteVisitKeyOf(flushKey) : flushKey, o); };
+      const laneOf = (o: OutboxOp): string => (isSiteVisitOp(o) ? siteVisitKeyOf(flushKey) : flushKey);
+      const settle = (o: OutboxOp, refused = false): void => { queueKeys.settled(markStore, laneOf(o), o, refused); };
+      // xtab-drain redesign U2 (plan rev 3 §2.2): an act whose done fact this phone keeps (another tab's flush had the
+      // server's answer for it) is not sent. It leaves through this flush's own settle effects, as if this tab had sent
+      // it, but with no snapshot: the reconcile it owes is asked for once the flush is done (`doneElsewhere`), and a
+      // daily-log start or send keeps the log read-only until that read lands. A refusal leaves as a refused act does
+      let doneElsewhere = false;
+      let dailyLogDoneElsewhere = false;
+      /** the bounded clears of the kept photos of starts settled here, waited for once the queue is settled */
+      const doneWaits: Promise<unknown>[] = [];
+      const settleDone = (o: OutboxOp): boolean => {
+        // a visit photo's row is its own done record, read before any send (`replayOutboxOp`), and its fact is written
+        // only once the row is filed or failed: its replay sends nothing again, and tells the screen what the row holds
+        if (o.t === 'siteVisitAddFile') return false;
+        const done = markStore ? doneOf(markStore, laneOf(o), o) : null;
+        // a visit act refused for good is sent again: its refusal is answered again with the server's words, and its
+        // path moves or marks the visit's acts and kept photos (a photo kept after the refusal has its start put back)
+        if (done === null || (done === 'refused' && isSiteVisitOp(o))) return false;
+        settle(o, done === 'refused');
+        const k = keyOf(o);
+        if (done === 'refused') { dropped += 1; if (k) droppedKeys.push(k); }
+        else {
+          if (k) succeededKeys.push(k);
+          if (!isSiteVisitOp(o)) synced += 1;
+          if (o.t === 'startDailyLog' || o.t === 'submitDailyLog') { dailyLogCommitted = o.t === 'startDailyLog' ? 'start' : 'send'; dailyLogDoneElsewhere = true; }
+          // SV2: its kept photos stop carrying a start that was sent, as this tab's own send does
+          if (o.t === 'siteVisitStart') doneWaits.push(withinWait(() => clearVisitPhotoStart(visitPhotoScope(flushToken, flushedBy), flushGateway.project, o.body.id)).catch(() => retryVisitPhotos()));
+        }
+        if (!isSiteVisitOp(o)) doneElsewhere = true;
+        if (isMaterialsOp(o)) { materialsAttempted = true; const ck = coalesceKeyOf(o); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
+        if (isLabourOp(o)) { labourAttempted = true; const ck = coalesceKeyOf(o); if (ck) resolvedLabourCoalesceKeys.push(ck); }
+        if (isCommercialOp(o)) { commercialAttempted = true; commercialWritesSettled += 1; }
+        return true;
+      };
       const withheldVisits = new Set<string>();
       let generalWithheld = false;
       const withheldNow = (op: OutboxOp): boolean => {
@@ -6528,6 +6563,7 @@ export const useStore = create<Store>()(
         const visitAct = ops[i];
         if (photoHeld && isSiteVisitOp(visitAct) && visitAct.t !== 'siteVisitAddFile') withheldVisits.add(siteVisitOf(visitAct));
         if (photoHeld || withheldHere) { heldVisits.push(ops[i]); continue; }
+        if (settleDone(ops[i])) continue;
         const mat = isMaterialsOp(ops[i]);
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);
@@ -6651,7 +6687,7 @@ export const useStore = create<Store>()(
                 } else {
                   // not sent, and kept with the server's words, so the screen says which photos and why
                   ops.splice(i + 1, rest.length, ...rest.filter((o) => !onIt.includes(o)));
-                  for (const o of onIt) { settle(o); const k = keyOf(o); if (k) droppedKeys.push(k); }
+                  for (const o of onIt) { settle(o, true); const k = keyOf(o); if (k) droppedKeys.push(k); }
                 }
                 visitMoves.push([op.body.id, open?.id ?? null]);
               }
@@ -6662,7 +6698,7 @@ export const useStore = create<Store>()(
             } else {
               dropped += 1; // server will never accept this one — discard and keep going
             }
-            settle(ops[i]);
+            settle(ops[i], true);
             const k = keyOf(ops[i]); if (k) droppedKeys.push(k);
             if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
             if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
@@ -6701,7 +6737,10 @@ export const useStore = create<Store>()(
         if (heldAfter.length > 0) set({ siteVisitsHeld: { project: keptFor, generation: flushScope.generation, visits: heldAfter } });
       }
       // the held site visit acts came before the stop, so they stay ahead of everything after it, in order
-      const remaining = [...heldVisits, ...(stoppedAt >= 0 ? ops.slice(stoppedAt) : [])];
+      // U2: an act left for later whose done fact is here now leaves, so it is neither pending nor counted
+      const unsent = [...heldVisits, ...(stoppedAt >= 0 ? ops.slice(stoppedAt) : [])];
+      const remaining = scopeMoved ? unsent : unsent.filter((o) => !settleDone(o));
+      await Promise.all(doneWaits);
       const pendingKeys = remaining.map(keyOf).filter((k): k is string => !!k);
       if (scopeMoved) {
         // The in-memory outbox now belongs to the NEW scope (hydrateOutbox swapped
@@ -6730,7 +6769,7 @@ export const useStore = create<Store>()(
         // under module ownership the command's own snapshot carries no daily-log slice, so the log
         // on screen predates the committed start/submit until the reconcile's module read lands —
         // flag it in the SAME update that drops the op, leaving no window to act on the stale log
-        if (dailyLogCommitted && dailyLogReadMode() === 'moduleQuery') {
+        if (dailyLogCommitted && (dailyLogReadMode() === 'moduleQuery' || dailyLogDoneElsewhere)) {
           s.dailyLogReconcileAfter = snapshotSeq;
           s.dailyLogReconcileKind = dailyLogCommitted;
         }
@@ -6791,6 +6830,8 @@ export const useStore = create<Store>()(
       // ...asked for here, as the 404 path's reconcile is (settleDeleted): it begins after the 410's answer, so it clears
       // the count's "updating" and takes the photo out of the log, and one that fails shows the Retry
       if (photoSettledGone && flushLease) scheduleReconcile(flushLease.scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+      // U2: an act another tab sent brought no snapshot here; the read after it is owed, as a 410's is
+      if (doneElsewhere && flushLease) scheduleReconcile(flushLease.scope, { kind: 'command', createdAfterSequence: snapshotSeq });
 
       if (rest && endHere()) get().flash(toldWith ? `${toldWith} ${rest}` : rest);
       // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved
