@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
@@ -40,7 +42,18 @@ describe('#1118 U1a — the Hub records (live PG)', () => {
 
   const raw = (sql: string, ...values: unknown[]) => t.prisma.$executeRawUnsafe(sql, ...values);
   const url = (process.env.DATABASE_URL ?? '').split('?')[0]!;
-  const replay = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url, '-f', MIGRATION], { stdio: 'pipe' });
+  const replay = (file = MIGRATION) => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url, '-f', file], { stdio: 'pipe' });
+  const gate = () => { let open!: () => void; const p = new Promise<void>((r) => { open = r; }); return { p, open }; };
+  /** Subscribe at once (Prisma is lazy) and never reject. */
+  const settle = <T>(p: PromiseLike<T>) => Promise.resolve(p).then((v) => ({ ok: true as const, v }), (e: unknown) => ({ ok: false as const, e: String(e) }));
+  const until = async (probe: () => Promise<boolean>, what: string, ms = 20_000): Promise<void> => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (await probe()) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error(`barrier not reached: ${what}`);
+  };
   // a project of its own per test, so its records and its delete stay out of the fixture's projects
   const project = async (tag: string, orgId = f.orgA.id) => {
     const id = `it-hubr-${tag}-${run}`;
@@ -50,7 +63,7 @@ describe('#1118 U1a — the Hub records (live PG)', () => {
     made.push(id);
     return id;
   };
-  const link = (projectId: string, orgId = f.orgA.id) => raw(`INSERT INTO "DrawingHubLink" ("projectId", "orgId", "createdBy") VALUES ($1, $2, 'it')`, projectId, orgId);
+  const link = (projectId: string, orgId = f.orgA.id) => raw(`INSERT INTO "DrawingHubLink" ("projectId", "orgId") VALUES ($1, $2)`, projectId, orgId);
   const event = (projectId: string, seq: number, prevSeq: number | null, kind: string, hubProjectId: string | null, by = 'it') =>
     raw(`INSERT INTO "DrawingHubLinkEvent" ("projectId", "seq", "prevSeq", "kind", "hubProjectId", "by") VALUES ($1, $2, $3, $4, $5, $6)`, projectId, seq, prevSeq, kind, hubProjectId, by);
 
@@ -90,8 +103,8 @@ describe('#1118 U1a — the Hub records (live PG)', () => {
     await t.prisma.hubFetchedBlob.create({ data: { storageKey: `${p}/drawings/hub/r3`, projectId: p, hubVersionId: 'v' } });
 
     const updates: Array<[string, string, unknown[]]> = [
-      ['DrawingHubLink', `"createdBy" = 'x'`, [p]], ['DrawingHubLink', `"createdAt" = now()`, [p]],
       ['DrawingHubLink', `"projectId" = '${other}'`, [p]], ['DrawingHubLink', `"orgId" = '${f.orgB.id}'`, [p]],
+      ['DrawingHubLink', `"orgId" = "orgId"`, [p]],
       ['DrawingHubLinkEvent', `"hubProjectId" = 'hp2'`, [p]], ['DrawingHubLinkEvent', `"by" = 'x'`, [p]], ['DrawingHubLinkEvent', `"at" = now()`, [p]],
       ['DrawingHubLinkEvent', `"seq" = 3, "prevSeq" = 2`, [p]], ['DrawingHubLinkEvent', `"projectId" = '${other}'`, [p]],
       ['HubVersionTombstone', `"hubFileId" = 'g'`, [p]], ['HubVersionTombstone', `"versionSeq" = NULL`, [p]], ['HubVersionTombstone', `"projectId" = '${other}'`, [p]],
@@ -174,9 +187,38 @@ describe('#1118 U1a — the Hub records (live PG)', () => {
     await expect(event(p, 2, 1, 'paused', null)).rejects.toThrow(/DrawingHubLinkEvent_(kind_alternates|hubProjectId_on_link)/);
     // U7's order: link, unlink, then relink (to another Hub project too); each is its own attributed record
     await event(p, 2, 1, 'unlinked', null, 'it-unlink');
-    await event(p, 3, 2, 'linked', 'hp-b', 'it-relink');
-    // two writers racing for the next event: the key lets one win
-    await expect(event(p, 3, 2, 'linked', 'hp-c')).rejects.toThrow(/23505/);
+    // two writers that read the same head race for the next event: both insert event 3 from it, the second waits on
+    // the first's key entry, and when the first commits the second is refused; exactly one event 3 stands
+    const readA = gate(), readB = gate(), insertedA = gate(), commitA = gate();
+    let pidA = 0;
+    const head = async (tx: Pick<typeof t.prisma, '$queryRawUnsafe'>) =>
+      Number((await tx.$queryRawUnsafe<Array<{ head: number }>>(`SELECT max("seq")::int AS head FROM "DrawingHubLinkEvent" WHERE "projectId" = $1`, p))[0]!.head);
+    const next = `INSERT INTO "DrawingHubLinkEvent" ("projectId", "seq", "prevSeq", "kind", "hubProjectId", "by") VALUES ($1, $2, $3, 'linked', $4, $5)`;
+    const txOptions = { maxWait: 10_000, timeout: 30_000 };
+    const a = settle(t.prisma.$transaction(async (tx) => {
+      pidA = Number((await tx.$queryRawUnsafe<Array<{ pid: number }>>('SELECT pg_backend_pid() AS pid'))[0]!.pid);
+      const h = await head(tx);
+      readA.open();
+      await readB.p;
+      await tx.$executeRawUnsafe(next, p, h + 1, h, 'hp-b', 'it-relink');
+      insertedA.open();
+      await commitA.p;
+    }, txOptions));
+    const b = settle(t.prisma.$transaction(async (tx) => {
+      await readA.p;
+      const h = await head(tx);
+      readB.open();
+      await insertedA.p;
+      await tx.$executeRawUnsafe(next, p, h + 1, h, 'hp-c', 'it-relink-b');
+    }, txOptions));
+    await insertedA.p;
+    await until(async () => (await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      'SELECT count(*)::bigint AS n FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))', pidA))[0]!.n > 0n, 'the second writer waits on the first');
+    commitA.open();
+    const [ra, rb] = await Promise.all([a, b]);
+    expect(ra).toEqual({ ok: true, v: undefined });
+    expect(rb.ok).toBe(false);
+    expect(rb.ok ? '' : rb.e).toMatch(/23505/);
     const history = await t.prisma.drawingHubLinkEvent.findMany({ where: { projectId: p }, orderBy: { seq: 'asc' } });
     expect(history.map((e) => [e.seq, e.prevSeq, e.kind, e.hubProjectId, e.by])).toEqual([
       [1, null, 'linked', 'hp-a', 'it'], [2, 1, 'unlinked', null, 'it-unlink'], [3, 2, 'linked', 'hp-b', 'it-relink'],
@@ -195,8 +237,8 @@ describe('#1118 U1a — the Hub records (live PG)', () => {
     const q = await project('r5q');
     for (const b of ['', ' ', '\t', ' \n\r\f\v ']) {
       const why = JSON.stringify(b);
-      await expect(raw(`INSERT INTO "DrawingHubLink" ("projectId", "orgId", "createdBy") VALUES ($1, $2, $3)`, p, f.orgA.id, b), why)
-        .rejects.toThrow(/DrawingHubLink_createdBy_present/);
+      await expect(raw(`INSERT INTO "HubFetchedBlob" ("id", "storageKey", "projectId", "hubVersionId") VALUES ($1, $2, $3, 'v')`, b, `${p}/drawings/hub/i`, p), why)
+        .rejects.toThrow(/HubFetchedBlob_id_present/);
       await expect(raw(`INSERT INTO "HubWebhookReceipt" ("orgId", "webhookId", "eventType", "outcome") VALUES ($1, $2, 'e', 'applied')`, f.orgA.id, b), why)
         .rejects.toThrow(/HubWebhookReceipt_webhookId_present/);
       await expect(raw(`INSERT INTO "HubWebhookReceipt" ("orgId", "webhookId", "eventType", "outcome") VALUES ($1, $2, $3, 'applied')`, f.orgA.id, `wh5-${run}`, b), why)
@@ -263,6 +305,19 @@ describe('#1118 U1a — the Hub records (live PG)', () => {
     expect(before.filter((r) => r.kind === 'function').map((r) => r.def)).toEqual(Array(2).fill('search_path=pg_catalog, public, pg_temp'));
     replay();
     replay();
+    expect(await shape()).toEqual(before);
+    // one transaction: a run that fails at its last statement leaves nothing of itself, its dropped triggers and
+    // checks included
+    const dir = mkdtempSync(join(tmpdir(), 'hub-records-'));
+    try {
+      const sql = readFileSync(MIGRATION, 'utf8');
+      expect(sql.trimEnd().endsWith('\nCOMMIT;')).toBe(true);
+      const failing = join(dir, 'failing.sql');
+      writeFileSync(failing, sql.replace(/\nCOMMIT;\s*$/, '\nSELECT 1 / 0;\nCOMMIT;\n'));
+      expect(() => replay(failing)).toThrow(/division by zero/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
     expect(await shape()).toEqual(before);
   });
 });

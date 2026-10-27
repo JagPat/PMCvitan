@@ -1337,13 +1337,11 @@ model HubVersionTombstone {
 }
 
 // one per project ever linked to Hub; its org is the project's own (composite key to Project (orgId, id)). The Hub
-// project and the lifecycle are in its events.
+// project, the lifecycle and who linked or unlinked it, when, are in its events alone.
 model DrawingHubLink {
   project   Project               @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade, onUpdate: NoAction)
   projectId String                @id
   orgId     String
-  createdAt DateTime              @default(now())
-  createdBy String
   events    DrawingHubLinkEvent[]
 }
 
@@ -1365,8 +1363,8 @@ model DrawingHubLinkEvent {
   @@id([projectId, seq])
 }
 
-// one per storage key a Hub fetch wrote, the ledger the sweep walks. The key starts with its project's Hub prefix
-// (check "HubFetchedBlob_storageKey_in_project"); a row is never changed ("HubFetchedBlob_sealed"), and the sweep's
+// one per storage key a Hub fetch wrote, the ledger the sweep walks. Its id holds more than whitespace
+// ("HubFetchedBlob_id_present") and the key starts with its project's Hub prefix (check "HubFetchedBlob_storageKey_in_project"); a row is never changed ("HubFetchedBlob_sealed"), and the sweep's
 // DELETE is its one designed delete.
 model HubFetchedBlob {
   id           String   @id @default(cuid())

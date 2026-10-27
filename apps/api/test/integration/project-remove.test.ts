@@ -49,7 +49,7 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     await t.prisma.mediaTombstone.create({ data: { projectId: a, clientKey: `it-rm-key-${run}` } });
     // the Hub records (#1118 U1a): the link and its history, a withdrawn version and a fetched blob go with the project
     // (the link, its events and the tombstone are sealed against a direct DELETE); the org's webhook receipt does not
-    await t.prisma.drawingHubLink.create({ data: { projectId: a, orgId: f.orgA.id, createdBy: 'it' } });
+    await t.prisma.drawingHubLink.create({ data: { projectId: a, orgId: f.orgA.id } });
     await t.prisma.drawingHubLinkEvent.create({ data: { projectId: a, seq: 1, kind: 'linked', hubProjectId: `it-rm-hp-${run}`, by: 'it' } });
     await t.prisma.drawingHubLinkEvent.create({ data: { projectId: a, seq: 2, prevSeq: 1, kind: 'unlinked', by: 'it' } });
     await t.prisma.hubVersionTombstone.create({ data: { projectId: a, hubVersionId: `it-rm-ver-${run}`, hubFileId: `it-rm-file-${run}`, versionSeq: 0 } });

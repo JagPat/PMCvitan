@@ -10,8 +10,9 @@
 -- WHAT.
 --   "HubWebhookReceipt"    one per (org, webhook-id) Hub delivered, with its event type and what PMC did with it.
 --   "HubVersionTombstone"  one per (project, Hub version) Hub withdrew, with its file and, when Hub sent one, its order.
---   "DrawingHubLink"       one per project that has ever been linked to Hub: its org (the project's own) and who first
---                          linked it, when. It names no Hub project and holds no lifecycle.
+--   "DrawingHubLink"       one per project that has ever been linked to Hub, with its org (the project's own). It names
+--                          no Hub project, holds no lifecycle and records no one: who linked or unlinked the project,
+--                          and when, is its events' alone (event 1 is the first link), so there is one answer.
 --   "DrawingHubLinkEvent"  the project's link history, one row per link or unlink, in order. Event 1 is a link; links and
 --                          unlinks alternate; each link names the Hub project. The active link is the latest event when
 --                          it is a link. A project with no event is not linked (fail closed).
@@ -36,7 +37,7 @@
 --       a NULL "prevSeq" on a later event is refused rather than passing as unknown, and the key then always applies), odd events are links and even events unlinks,
 --       a link names a Hub project and an unlink names none. So the history is never rewritten, has no gap, and never
 --       holds two links or two unlinks in a row.
---   R5  Well formed: every required id, "createdBy", an event's "by" and a receipt's "eventType" hold more than whitespace
+--   R5  Well formed: every required id (a ledger row's "id" too), an event's "by" and a receipt's "eventType" hold more than whitespace
 --       (the full ASCII set, E' \t\n\x0B\f\r', as "manualReason" does in 20270220); a receipt's outcome is 'applied',
 --       'refused' or 'ignored'; a ledger key starts with its own project's Hub prefix, "projectId" || '/drawings/hub/'
 --       (`starts_with`, which has no wildcards), and names something after it.
@@ -44,13 +45,19 @@
 -- SAFE UNDER THE PREVIOUS RELEASE. Every table here is new, so the previous release never reads or writes one; no
 -- existing table, column, index or trigger changes.
 --
--- LOCKS WHILE IT RUNS. The file runs in one transaction, so every lock is held until it commits. Adding each key to
+-- ONE TRANSACTION. The file is BEGIN ... COMMIT itself, so it is all-or-nothing under Prisma and under `psql -f` alike:
+-- a failure anywhere leaves nothing of it, and a replay's DROP TRIGGER and its CREATE TRIGGER commit together, so no
+-- writer ever sees a record table without its seal.
+--
+-- LOCKS WHILE IT RUNS. Every lock is held until the file commits. Adding each key to
 -- "Project" or "Org" takes ShareRowExclusiveLock on that table, so from then until commit inserts, updates and deletes
 -- on those two tables wait; reads and row locks do not. Everything else is on the new tables, which nothing uses yet.
 --
 -- NAMES. Both functions have search_path pg_catalog, public, pg_temp and qualified names. Re-runnable, and on
 -- `scripts/migrate.sh`'s ALWAYS_EXECUTE: a `db push` baseline models the tables and keys but not the checks or the
 -- triggers. Every statement is guarded or replaces itself.
+
+BEGIN;
 
 -- R1
 CREATE TABLE IF NOT EXISTS public."HubWebhookReceipt" (
@@ -74,8 +81,6 @@ CREATE TABLE IF NOT EXISTS public."HubVersionTombstone" (
 CREATE TABLE IF NOT EXISTS public."DrawingHubLink" (
   "projectId" TEXT NOT NULL,
   "orgId" TEXT NOT NULL,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  "createdBy" TEXT NOT NULL,
   CONSTRAINT "DrawingHubLink_pkey" PRIMARY KEY ("projectId")
 );
 
@@ -146,9 +151,6 @@ ALTER TABLE public."HubVersionTombstone"
   ADD CONSTRAINT "HubVersionTombstone_hubVersionId_present" CHECK (pg_catalog.btrim("hubVersionId", E' \t\n\x0B\f\r') <> ''),
   DROP CONSTRAINT IF EXISTS "HubVersionTombstone_hubFileId_present",
   ADD CONSTRAINT "HubVersionTombstone_hubFileId_present" CHECK (pg_catalog.btrim("hubFileId", E' \t\n\x0B\f\r') <> '');
-ALTER TABLE public."DrawingHubLink"
-  DROP CONSTRAINT IF EXISTS "DrawingHubLink_createdBy_present",
-  ADD CONSTRAINT "DrawingHubLink_createdBy_present" CHECK (pg_catalog.btrim("createdBy", E' \t\n\x0B\f\r') <> '');
 ALTER TABLE public."DrawingHubLinkEvent"
   DROP CONSTRAINT IF EXISTS "DrawingHubLinkEvent_chain",
   ADD CONSTRAINT "DrawingHubLinkEvent_chain" CHECK ("seq" >= 1 AND "prevSeq" IS NOT DISTINCT FROM NULLIF("seq" - 1, 0)),
@@ -161,6 +163,8 @@ ALTER TABLE public."DrawingHubLinkEvent"
   DROP CONSTRAINT IF EXISTS "DrawingHubLinkEvent_by_present",
   ADD CONSTRAINT "DrawingHubLinkEvent_by_present" CHECK (pg_catalog.btrim("by", E' \t\n\x0B\f\r') <> '');
 ALTER TABLE public."HubFetchedBlob"
+  DROP CONSTRAINT IF EXISTS "HubFetchedBlob_id_present",
+  ADD CONSTRAINT "HubFetchedBlob_id_present" CHECK (pg_catalog.btrim("id", E' \t\n\x0B\f\r') <> ''),
   DROP CONSTRAINT IF EXISTS "HubFetchedBlob_storageKey_in_project",
   ADD CONSTRAINT "HubFetchedBlob_storageKey_in_project" CHECK (
     pg_catalog.starts_with("storageKey", "projectId" || '/drawings/hub/')
@@ -228,3 +232,5 @@ DROP TRIGGER IF EXISTS "HubFetchedBlob_sealed" ON public."HubFetchedBlob";
 CREATE TRIGGER "HubFetchedBlob_sealed"
   BEFORE UPDATE ON public."HubFetchedBlob"
   FOR EACH ROW EXECUTE FUNCTION public.drawings_hub_record_sealed('project');
+
+COMMIT;
