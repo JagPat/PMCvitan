@@ -9,12 +9,13 @@
  * read whole by its type, to its last byte: nothing but padding (WebM Void, MP4 free, skip and wide, at most 4 KiB in
  * all) is passed over unread. The rules, with the test pinning each, are in the PR's "Parser rules":
  *  - WebM: an EBML header whose children are known and whose one DocType is "webm", then one Segment and nothing
- *    after it. The Segment holds only Info, Tracks, Cluster and Void (Chrome writes no SeekHead, Cues, Tags or
- *    CRC-32, and each of those is refused); exactly one Info and one Tracks, at Segment level and before any Cluster,
+ *    after it. The Segment holds only Info, Tracks, Cluster, Void and one Cues (Chrome writes no SeekHead, Tags or
+ *    CRC-32, and each of those is refused; Safari writes Cues after its Clusters: CuePoints read whole, each with a
+ *    CueTime and one CueTrackPositions on the track, at a Cluster's start); exactly one Info and one Tracks, at Segment level and before any Cluster,
  *    with exactly one TrackEntry: an audio track (TrackType 2) coded A_OPUS, whose fields and Audio fields are known
  *    ones, each once and read by its type (integers of at most 8 bytes, floats of 0, 4 or 8, texts of at most 64 bytes,
- *    a codec or document type of at most 16, SegmentUUID 16 and DateUTC 8, as in every other element), enabled and default (FlagEnabled and FlagDefault 1 when written, FlagForced and FlagLacing 0 or 1), whose
- *    CodecPrivate is a valid OpusHead. A Cluster holds only Timestamp, Position, PrevSize, SimpleBlock, BlockGroup
+ *    a codec or document type of at most 16, SegmentUUID 16 and DateUTC 8, as in every other element), enabled and default (FlagEnabled and FlagDefault 1 when written, FlagForced and FlagLacing 0 or 1, and no laced
+ *    block when FlagLacing is 0), whose CodecPrivate is a valid OpusHead. A Cluster holds only Timestamp, Position, PrevSize, SimpleBlock, BlockGroup
  *    (Block, BlockDuration, ReferenceBlock, DiscardPadding) and Void; every block is on that track, and every block's
  *    frames, after any lace table, each hold at least one byte, each laced frame counted against the walk's cap. Only
  *    the Segment and a Cluster may be of unknown size, as Chrome writes them; an unknown-size Cluster ends where a
@@ -22,7 +23,8 @@
  *  - Ogg: whole pages to the last byte, each with the capture pattern, version 0, only the defined flags and a
  *    matching CRC; one logical stream, whose first page alone is its beginning-of-stream page and holds exactly its
  *    OpusHead (exactly 19 bytes, version 0.x, mapping family 0 with one or two channels); pages in sequence, continued
- *    exactly when a packet runs on, none after its last; OpusTags next, read whole (at most 4 KiB and 64 `key=value`
+ *    exactly when a packet runs on, numbered from 0, none after its last, and a granule position of -1 on every page
+ *    that finishes no packet; OpusTags next, read whole (at most 4 KiB and 64 `key=value`
  *    comments, no METADATA_BLOCK_PICTURE, nothing after the comments) and the last packet on its page; then an audio
  *    packet of at least one byte; and no packet left open at the file's end.
  *    Vorbis, in Ogg or WebM, is refused: no browser records it.
@@ -32,10 +34,10 @@
  *    one esds of AAC-LC (a listed sample-rate index matching the entry's nonzero rate, one or two channels, 1,024
  *    samples a frame) or one `Opus` entry with one 11-byte dOps (version 0, family 0, one or two channels), which every
  *    stsc run, tfhd and trex names (index 1); an edit list only as one elst of one or two entries at rate 1, at most an
- *    empty edit first and exactly one edit of the media; every container's children from its own allow-list, each
+ *    empty edit first and exactly one edit of the media, starting before the sound ends; every container's children from its own allow-list, each
  *    table at most once (no udta, meta, iods, sgpd, sbgp, sidx, mfra, stss or elng); every table and full box ending
  *    exactly at its last field for its version (0, or 1 where the box defines it), with only the flags it defines
- *    (none, but tkhd's four track flags, tfhd's and trun's field flags and url's self-contained 1), the handler name at most 64 bytes
+ *    (none, but tkhd's four track flags, tfhd's and trun's field flags, never a non-zero trun composition offset, and url's self-contained 1), the handler name at most 64 bytes
  *    ending at its one zero byte, the data reference at most one zero byte; fragments only when moov's mvex has the
  *    track's trex; and the audio samples (stsz/stsc/stco or co64, and each fragment's runs for that track, from its
  *    base with the tfhd and trex defaults) add up to at least one byte, every chunk or run of them inside an mdat's
@@ -46,7 +48,7 @@
  *    their TOC bytes time them, or its BlockDuration, or DefaultDuration a frame); Ogg the last granule position (less
  *    the pre-skip); MP4 mvhd, mdhd, the edit list (its empty edit's delay before the media) and the media timeline's
  *    end (moov's stts durations, then each fragment's trun durations from its tfdt start, or from where the one before
- *    ended, each sample as presented); and for every
+ *    ended, and each run's frames as decoded from where the run sits, a run with none moving nothing); and for every
  *    container the frames themselves (each Opus packet's length from its TOC byte, 1,024 samples per AAC frame at the
  *    esds rate). A file whose length cannot be read (an MP4 with no media timescale, an edit list with no movie
  *    timescale, an Ogg ending on a page with no granule) is refused, as is anything unfinished at the file's end (an
@@ -61,7 +63,8 @@
 
 import {
   AUDIO, AUDIO_CHILDREN, BLOCK, BLOCK_DURATION, BLOCK_GROUP, BLOCK_GROUP_CHILDREN, CLUSTER, CLUSTER_CHILDREN,
-  CLUSTER_TIMESTAMP, DOC_TYPE, DURATION, EBML_HEADER, EBML_HEADER_CHILDREN, HANDLER_NAME_MAX, INFO, INFO_CHILDREN,
+  CLUSTER_TIMESTAMP, CUES, CUES_CHILDREN, CUE_CLUSTER_POSITION, CUE_POINT_CHILDREN, CUE_TIME, CUE_TRACK,
+  CUE_TRACK_POSITIONS, CUE_TRACK_POSITIONS_CHILDREN, DOC_TYPE, DURATION, EBML_HEADER, EBML_HEADER_CHILDREN, HANDLER_NAME_MAX, INFO, INFO_CHILDREN,
   MAX_MEDIA_BOXES, MAX_SAMPLES, MAX_STEPS, MDHD, MEHD, MFHD, MP4_BRANDS, MP4_CHILDREN, MP4_COMPATIBLE_ONLY, MVHD,
   Malformed, OPUS_RATE, SEGMENT, SEGMENT_CHILDREN, SIMPLE_BLOCK, SMHD, TFDT, TFHD_FLAGS, TIMESTAMP_SCALE, TKHD,
   TKHD_FLAGS, TRACKS, TRACKS_CHILDREN, TRACK_ENTRY, TRACK_ENTRY_CHILDREN, TRACK_TYPE, TREX, VOID, aacRate,
@@ -108,12 +111,15 @@ export function isAudioOnlyRecording(mime: string, bytes: Buffer): boolean {
 
 // ── WebM (EBML) ──────────────────────────────────────────────────────────────────────────────
 
+/** a voice note's Segment children: what Chrome writes, and the Cues Safari writes after its Clusters (#482) */
+const VOICE_SEGMENT_CHILDREN = new Set([...SEGMENT_CHILDREN, CUES]);
+
 /**
  * The number of the one track a Tracks element lists, which must be Opus audio, the one codec a browser records voice
  * in WebM, with only known fields; else a refusal.
  */
-function audioTrack(b: Buffer, tracks: Element, steps: Walk): { number: number; frameNs: number } {
-  let found: { number: number; frameNs: number } | undefined;
+function audioTrack(b: Buffer, tracks: Element, steps: Walk): { number: number; frameNs: number; lacing: boolean } {
+  let found: { number: number; frameNs: number; lacing: boolean } | undefined;
   for (const entry of elements(b, tracks.dataStart, tracks.dataEnd, steps, TRACKS_CHILDREN)) {
     if (entry.id !== TRACK_ENTRY) continue;
     if (found !== undefined) fail(); // one track: a second, of any type, is refused
@@ -136,7 +142,7 @@ function audioTrack(b: Buffer, tracks: Element, steps: Walk): { number: number; 
  * before any block. Returns where the Segment walk resumes, whether a block held sound, where its latest block ends
  * (in seconds, `scale` nanoseconds a tick), and the Opus samples its frames hold.
  */
-function walkCluster(b: Buffer, cluster: Element, track: { number: number; frameNs: number }, scale: number, steps: Walk): { next: number; sound: boolean; last: number; samples: number } {
+function walkCluster(b: Buffer, cluster: Element, track: { number: number; frameNs: number; lacing: boolean }, scale: number, steps: Walk): { next: number; sound: boolean; last: number; samples: number } {
   const end = cluster.dataEnd;
   let sound = false;
   let last = 0;
@@ -148,7 +154,7 @@ function walkCluster(b: Buffer, cluster: Element, track: { number: number; frame
     if (cluster.unknownSize) {
       const id = vint(b, at, end, true).value;
       if (!CLUSTER_CHILDREN.has(id)) {
-        if (SEGMENT_CHILDREN.has(id)) return { next: at, sound, last, samples };
+        if (VOICE_SEGMENT_CHILDREN.has(id)) return { next: at, sound, last, samples };
         fail();
       }
     }
@@ -169,6 +175,7 @@ function walkCluster(b: Buffer, cluster: Element, track: { number: number; frame
       if (base === undefined) fail(); // a block's time is relative to its Cluster's Timestamp, which comes first
       const r = blockTrack(b, block.dataStart, block.dataEnd, steps);
       if (r.track !== track.number) fail(); // a block on a track the file does not list
+      if (r.laced && !track.lacing) fail(); // a laced block on a track whose FlagLacing 0 says none is (#1154)
       sound = true; // every frame of it holds at least one byte
       let held = 0; // the Opus samples the block's frames hold, every laced frame of it
       for (const f of r.frames) held += opusPacketSamples(b, f.at, f.size);
@@ -196,18 +203,21 @@ function webmSeconds(b: Buffer): number | null {
   // one Segment, and nothing after it
   const segment = readElement(b, header.dataEnd, b.length, steps, true);
   if (segment.id !== SEGMENT || segment.dataEnd !== b.length) return null;
-  let track: { number: number; frameNs: number } | undefined; // the one audio track, from the one Segment-level Tracks
+  let track: { number: number; frameNs: number; lacing: boolean } | undefined; // the one audio track, from the one Segment-level Tracks
   let sound = false;
   let info = false;
   let scale = 1_000_000; // nanoseconds per tick, TimestampScale's default
   let duration = 0; // Info's Duration, in ticks
   let last = 0; // where the latest block ends, in seconds
   let samples = 0; // Opus samples in every frame
+  const clusters = new Set<number>(); // where each Cluster starts, from the Segment's data
+  let cued: number[] | undefined; // the Clusters the one Cues points at
   for (let at = segment.dataStart; at < segment.dataEnd;) {
     const id = vint(b, at, segment.dataEnd, true).value;
     const e = readElement(b, at, segment.dataEnd, steps, id === CLUSTER);
-    if (!SEGMENT_CHILDREN.has(e.id)) return null;
+    if (!VOICE_SEGMENT_CHILDREN.has(e.id)) return null;
     if (e.id === CLUSTER) {
+      clusters.add(at - segment.dataStart);
       // blocks before the track table that names their track, or before the Info that times them (Chrome writes Info
       // first)
       if (track === undefined || !info) return null;
@@ -221,6 +231,25 @@ function webmSeconds(b: Buffer): number | null {
     if (e.id === TRACKS) {
       if (track !== undefined) return null; // one track table
       track = audioTrack(b, e, steps);
+    } else if (e.id === CUES) {
+      // the seek index: read whole, each point on the one track and at a Cluster's start (checked at the end); it
+      // times nothing, so it is not in the length
+      if (cued !== undefined || track === undefined) return null;
+      cued = [];
+      for (const point of elements(b, e.dataStart, e.dataEnd, steps, CUES_CHILDREN)) {
+        if (point.id === VOID) continue;
+        const fields = new Map<number, Element>();
+        for (const f of elements(b, point.dataStart, point.dataEnd, steps, CUE_POINT_CHILDREN)) fields.set(f.id, f);
+        const positions = fields.get(CUE_TRACK_POSITIONS);
+        if (!fields.has(CUE_TIME) || !positions) return null;
+        const place = new Map<number, Element>();
+        for (const f of elements(b, positions.dataStart, positions.dataEnd, steps, CUE_TRACK_POSITIONS_CHILDREN)) place.set(f.id, f);
+        const cueTrack = place.get(CUE_TRACK);
+        const cluster = place.get(CUE_CLUSTER_POSITION);
+        if (!cueTrack || !cluster || uintOf(b, cueTrack) !== track.number) return null;
+        cued.push(uintOf(b, cluster));
+      }
+      if (cued.length === 0) return null;
     } else if (e.id === INFO) {
       if (info) return null; // one Info
       info = true;
@@ -235,6 +264,7 @@ function webmSeconds(b: Buffer): number | null {
     at = e.dataEnd;
   }
   if (track === undefined || !sound) return null;
+  if (cued && !cued.every((p) => clusters.has(p))) return null; // a cue at no Cluster's start
   return Math.max((duration * scale) / 1e9, last, samples / OPUS_RATE);
 }
 
@@ -345,8 +375,9 @@ function oggSeconds(b: Buffer): number | null {
     if (first !== ((flags & 0x02) !== 0)) return null;
     if (first) serial = pageSerial;
     if (pageSerial !== serial || ended) return null;
-    // in sequence, none missing, and continued exactly when the page before left a packet open
-    if (!first && sequence !== next) return null;
+    // in sequence from 0 (#1154: the first page's is 0, as every Ogg writer numbers them), none missing, and continued
+    // exactly when the page before left a packet open
+    if (sequence !== (first ? 0 : next)) return null;
     next = sequence + 1;
     if (((flags & 0x01) !== 0) !== open) return null;
     // the lacing values split the page into packets; a packet ends at a value under 255 and may run across pages
@@ -381,6 +412,9 @@ function oggSeconds(b: Buffer): number | null {
       head = Buffer.alloc(0);
       length = 0;
     }
+    // a page that finishes no packet has no granule position to give: -1 (RFC 3533 §6), so an empty or continuing page
+    // never sets the length (#1154)
+    if (completed === 0 && pageGranule !== -1n) return null;
     if (segments > 0) open = b[at + 27 + segments - 1] === 255;
     // the beginning-of-stream page holds exactly the identification header
     if (first && (completed !== 1 || open)) return null;
@@ -471,6 +505,13 @@ function mp4Seconds(b: Buffer): number | null {
   // and the plain sum of every sample duration, as a player that ignores tfdt plays them: a tfdt that goes back makes
   // runs overlap on the timeline, and the length is never less than this sum either
   let summed = table.ticks;
+  // and where the frames end as decoded, in seconds: moov's from 0, then each fragment run's from where it sits, and
+  // never before the frames decoded ahead of it end, since a decoder plays them one after another (#1097: AAC or Opus
+  // frames whose durations the file gives as 0, placed 100 s in, play past 100 s, in one run or split among many)
+  const tableHeard = opus ? opusSamples / OPUS_RATE : (table.count * 1024) / aacRate;
+  let heard = tableHeard;
+  // each stretch of sound as decoded, [from, to) in seconds, for the edit list's check
+  const sounds: Array<[number, number]> = table.count > 0 ? [[0, tableHeard]] : [];
   // the track's fragment defaults: needed before any fragment counts (Codex P2 on #1013 round 3)
   let trex: { duration: number; size: number } | undefined;
   // mehd's fragment_duration: the whole fragmented movie's length, in the movie timescale (ISO 14496-12 §8.8.2),
@@ -530,6 +571,10 @@ function mp4Seconds(b: Buffer): number | null {
       for (const trun of tr.get('trun') ?? []) {
         // the samples left under the cap bound this run's count before any of its samples is read (#1025 audit)
         const run = trunRun(b, trun, defaults, MAX_SAMPLES - frames);
+        // a sound track's frames are presented in the order they decode: AAC and Opus have no frame reordering, so a run
+        // presenting a frame at any other time is refused, as moov's ctts is; offsets that are all 0 change nothing
+        // (Codex P2 on #1165 round 2)
+        if (run.shifted) return null;
         frames += run.count;
         // a run starts at its data_offset from the base, else right after the previous run
         if (run.dataOffset !== undefined) cursor = base + run.dataOffset;
@@ -538,28 +583,47 @@ function mp4Seconds(b: Buffer): number | null {
           if (!inMedia(media, cursor, run.bytes)) fail();
           ranges.push({ at: cursor, bytes: run.bytes });
         }
+        const before = opusSamples;
         for (let i = 0, p = cursor; i < run.count; p += run.sizeOf(i), i++) sample(p, run.sizeOf(i));
         bytes += run.bytes;
         const runStart = timeline;
+        // the run's frames play one after another from its start, no earlier than the frames before it end (Codex P1 on
+        // #1165: 2,000 zero-duration runs of one frame at 100 s end at 142.67 s, as one run of 2,000 does); a run with no
+        // frames holds no sound, so it moves nothing (Codex P2 on #1165 round 2)
+        const decoded = opus ? (opusSamples - before) / OPUS_RATE : (run.count * 1024) / aacRate;
+        if (decoded > 0) {
+          const from = Math.max(runStart / mdhd.scale, heard);
+          heard = from + decoded;
+          sounds.push([from, heard]);
+        }
         timeline += run.ticks;
         summed += run.ticks;
         if (!Number.isSafeInteger(timeline) || !Number.isSafeInteger(summed)) fail();
-        // a sample's composition offset places it later (or, at version 1, earlier) than its decode time: the length
-        // counts where the run's latest sample ends as presented (ISO 14496-12 §8.6.1.1)
-        ticks = Math.max(ticks, timeline, runStart + run.reach);
+        ticks = Math.max(ticks, timeline);
         cursor += run.bytes;
       }
       previousEnd = cursor;
     }
   }
   if (bytes === 0 || !tilesMedia(media, ranges)) return null;
+  // where the frames' sound ends as decoded: each run's from where it sits, and all of them from 0
+  const decoded = Math.max(heard, opus ? opusSamples / OPUS_RATE : (frames * 1024) / aacRate);
+  // the media edit plays some of the sound: the media it selects, from its media_time for its duration (to the end
+  // when its duration is 0), overlaps a stretch of decoded frames (#1141: an edit at or past the last sample plays
+  // none of it; Codex P2 on #1165: nor does one inside a gap between fragments). Durations the file states past its
+  // frames are silence, so they never count as sound here
+  if (edits) {
+    const start = edits.start / mdhd.scale;
+    const end = edits.edit > 0 ? start + edits.edit / movie.scale : Infinity;
+    if (!sounds.some(([from, to]) => from < end && to > start)) return null;
+  }
   // the length: the longest of the movie header, mehd's movie length and, after any empty edit's delay, the media edit,
-  // the media header, the sample durations (the timeline's furthest end, and their plain sum) and what the frames hold
+  // the media header, the sample durations (the timeline's furthest end, and their plain sum) and the decoded frames
   const played = Math.max(
     edits ? edits.edit / movie.scale : 0,
     mdhd.duration !== null ? mdhd.duration / mdhd.scale : 0,
     Math.max(ticks, summed) / mdhd.scale,
-    opus ? opusSamples / OPUS_RATE : (frames * 1024) / aacRate,
+    decoded,
   );
   return Math.max(
     movie.scale > 0 && movie.duration !== null ? movie.duration / movie.scale : 0,
