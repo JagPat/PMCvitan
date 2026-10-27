@@ -66,11 +66,14 @@ export function HelpSheet({ onClose }: { onClose: () => void }) {
   const show = (guide: Guide) => {
     onClose();
     useGuideState.getState().request(guide);
-    if (guide.screen !== useStore.getState().screen) setScreen(guide.screen);
+    // also on the screen already open: a nav visit starts at the screen's list, never at a record left open
+    // (a checklist that is not there shows no Fail button to point at)
+    setScreen(guide.screen);
   };
   const tipsAgain = () => {
-    clearGuidesDone(langPreferenceKey(userId, role));
-    useGuideState.getState().tipsAgain();
+    const key = langPreferenceKey(userId, role);
+    clearGuidesDone(key);
+    useGuideState.getState().tipsAgain(key);
     onClose();
     useStore.getState().flash(HELP_WORDS.tipsAgainDone[lang]);
   };

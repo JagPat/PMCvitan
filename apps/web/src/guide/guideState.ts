@@ -44,7 +44,11 @@ interface GuideState {
   request: (guide: Guide | null) => void;
   /** bumped when the person asks for the first-time tips again: the overlay allows a new automatic start */
   tipsEpoch: number;
-  tipsAgain: () => void;
+  /** the guide key those tips were reset for: a sign-in still settling can move the person to another key,
+   *  and the overlay then resets that one too (see `GuideHost`) */
+  tipsResetKey: string | null;
+  tipsAgain: (key: string) => void;
+  clearTipsReset: () => void;
 }
 
 export const useGuideState = create<GuideState>()((set) => ({
@@ -60,5 +64,7 @@ export const useGuideState = create<GuideState>()((set) => ({
   // a new request ends whatever runs now: the person asked for this one
   request: (requested) => set(requested ? { requested, run: null } : { requested }),
   tipsEpoch: 0,
-  tipsAgain: () => set((s) => ({ tipsEpoch: s.tipsEpoch + 1 })),
+  tipsResetKey: null,
+  tipsAgain: (key) => set((s) => ({ tipsEpoch: s.tipsEpoch + 1, tipsResetKey: key })),
+  clearTipsReset: () => set({ tipsResetKey: null }),
 }));

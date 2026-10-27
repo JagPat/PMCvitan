@@ -4,7 +4,7 @@ import { useStore } from '@/store/store';
 import { langPreferenceKey } from '@/lib/langPreference';
 import { projectDataUsable } from '@/store/projectScope';
 import { guidesFor, type Guide } from './guides';
-import { readGuidesDone, markGuideDone } from './guideDone';
+import { readGuidesDone, markGuideDone, clearGuidesDone } from './guideDone';
 import { useGuideState } from './guideState';
 import { findGuideTarget, findStepTarget, guideKeyMatches, GUIDE_ARRIVE_MS, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
 import { subscribeGuideOutcome } from './outcomes';
@@ -94,6 +94,16 @@ export function GuideHost() {
   }, [screen]);
   useEffect(() => () => useGuideState.getState().request(null), [key]);
 
+  // "first-time tips again" pressed before a dev-auth sign-in settled reset the persona's key; once the
+  // signed-in key arrives it is the same person, so it is reset too. Any other change of person drops it.
+  useEffect(() => {
+    const g = useGuideState.getState();
+    const from = g.tipsResetKey;
+    if (from === null || from === key) return;
+    if (from.startsWith('persona:') && key.startsWith('user:')) clearGuidesDone(key);
+    g.clearTipsReset();
+  }, [key]);
+
   useEffect(() => {
     if (!ready) {
       useGuideState.getState().setOffer(null);
@@ -114,7 +124,11 @@ export function GuideHost() {
         // read from the store, not this effect's `screen`: Help asks and then moves to the guide's screen in one
         // press, and a tick queued by that ask runs before this effect is rebuilt for the new screen
         const asked = g.requested;
-        if (asked && asked.screen === useStore.getState().screen) {
+        // asked for under another role (a project switch can change it): never point this role at that task
+        if (asked && !asked.roles.includes(useStore.getState().role)) {
+          arrive.current = null;
+          g.request(null);
+        } else if (asked && asked.screen === useStore.getState().screen) {
           if (startable(asked)) {
             arrive.current = null;
             autoUsed.current = true;

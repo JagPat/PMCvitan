@@ -183,6 +183,57 @@ describe('"Show me how" from anywhere', () => {
   });
 });
 
+describe('"Show me how": record focus, role and identity (Codex round 1)', () => {
+  it('on its own screen it leaves a record left open, so the screen shows what the guide points at', async () => {
+    const { useStore, GuideHost, HelpButton, useGuideState } = await setup('engineer', 'engineer-check');
+    act(() => useStore.setState({ routeItem: 'INSP-gone' }));
+    render(<><GuideHost /><HelpButton /></>);
+    press(byTestId('help-open')!);
+    press(byTestId('help-guide-raise-issue-engineer')!);
+    expect(useStore.getState().screen).toBe('engineer-check');
+    expect(useStore.getState().routeItem).toBeNull();
+    expect(useGuideState.getState().requested?.id).toBe('raise-issue-engineer');
+  });
+
+  it('drops a guide asked for under a role the person no longer has here', async () => {
+    const { useStore, GuideHost, HelpButton, useGuideState } = await setup('pmc', 'decision-log');
+    const { CreateControl } = await import('@/layout/CreateControl');
+    render(<><GuideHost /><HelpButton /><CreateControl /></>);
+    act(() => useStore.setState({ projectLoadState: 'loading' }));
+    press(byTestId('help-open')!);
+    press(byTestId('help-guide-record-decision-pmc')!);
+    // the project switch lands: the person is the engineer here, who also has a + on the Dashboard
+    act(() => useStore.setState({ role: 'engineer', projectLoadState: 'ready' }));
+    tick();
+    tick();
+    expect(useGuideState.getState().requested).toBeNull();
+    expect(tip()?.getAttribute('data-guide-id')).not.toBe('record-decision-pmc');
+  });
+
+  it('tips reset before a dev sign-in settles also reset the signed-in key it settles to', async () => {
+    const userKey = 'vitan.guide.done.v1:user:u-9';
+    localStorage.setItem(userKey, JSON.stringify(['raise-issue-pmc', 'record-decision-pmc', 'add-site-photo']));
+    const { useStore, GuideHost, HelpButton } = await setup('pmc', 'decision-log');
+    act(() => useStore.setState({ sessionUserId: null }));
+    render(<><GuideHost /><HelpButton /></>);
+    press(byTestId('help-open')!);
+    press(byTestId('help-tips-again')!);
+    act(() => useStore.setState({ sessionUserId: 'u-9' }));
+    expect(localStorage.getItem(userKey)).toBeNull();
+  });
+
+  it('a different person signing in keeps their own finished guides', async () => {
+    const otherKey = 'vitan.guide.done.v1:user:u-2';
+    localStorage.setItem(otherKey, JSON.stringify(['raise-issue-pmc']));
+    const { useStore, GuideHost, HelpButton } = await setup('pmc', 'decision-log');
+    render(<><GuideHost /><HelpButton /></>);
+    press(byTestId('help-open')!);
+    press(byTestId('help-tips-again')!);
+    act(() => useStore.setState({ sessionUserId: 'u-2' }));
+    expect(localStorage.getItem(otherKey)).toBe(JSON.stringify(['raise-issue-pmc']));
+  });
+});
+
 describe('the first-time tips again', () => {
   it('forgets which guides this person finished, and the screen offers its first guide by itself again', async () => {
     localStorage.setItem(DONE_KEY, JSON.stringify(['raise-issue-pmc', 'record-decision-pmc', 'add-site-photo']));
