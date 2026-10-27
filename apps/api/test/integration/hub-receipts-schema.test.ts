@@ -304,6 +304,25 @@ describe('#1118 U1a-1 — Hub delivery receipts bound to the fact their delivery
     expect(await t.prisma.hubWebhookReceipt.count({ where: { webhookId: `w-${run}` } })).toBe(0);
   });
 
+  it('W5: the records go with their project or org: a delete cascades past the seal', async () => {
+    const run = randomUUID().slice(0, 8);
+    // a project with no drawings, holding an applied withdrawal and its tombstone, beside a refused receipt of its org
+    const p = await project('cas');
+    const r = await nextId();
+    await t.prisma.$transaction([receipt({ id: r, webhookId: `wa-${run}`, eventType: 'drawing.superseded', outcome: 'applied', p, v: `v-${run}`, fact: 'tombstone' }), tombstone(p, `v-${run}`, r)]);
+    await receipt({ webhookId: `wo-${run}`, eventType: 'drawing.issued', outcome: 'refused' });
+    await raw(`DELETE FROM "Project" WHERE "id" = $1`, p);
+    expect(await receipts(`wa-${run}`)).toEqual([]);
+    expect(await t.prisma.hubVersionTombstone.count({ where: { projectId: p } })).toBe(0);
+    expect(await receipts(`wo-${run}`)).toEqual([{ outcome: 'refused' }]);
+    // an org with no project and one refused receipt
+    const o = `it-hubr-org-${run}`;
+    await t.prisma.org.create({ data: { id: o, name: o, slug: o } });
+    await receipt({ org: o, webhookId: `we-${run}`, eventType: 'drawing.issued', outcome: 'refused' });
+    await raw(`DELETE FROM "Org" WHERE "id" = $1`, o);
+    expect(await receipts(`we-${run}`)).toEqual([]);
+  });
+
   it('W5: the sanctioned reset lifts the two TRUNCATE seals by name and puts them back', async () => {
     const run = randomUUID().slice(0, 8);
     for (const table of SEALED) {
