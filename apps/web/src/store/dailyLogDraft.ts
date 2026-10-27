@@ -41,6 +41,9 @@ export type DailyLogDraft = {
   crewRows?: Record<string, { trade: string; count: number }>;
   /** progress photos taken for this log on this device, beyond what the server holds */
   photosAdded?: number;
+  /** #917 (#1167): the site photos among `photosAdded` that are only queued here (their answer was lost), by key. One the
+   *  server refuses for good, or whose row is gone, takes its photo back out of `photosAdded`, after a reload too */
+  queuedPhotoKeys?: string[];
   /** the engineer answered every crew question for this log (a no-crew day is an answer, not a gap) */
   crewConfirmed?: boolean;
 };
@@ -123,6 +126,8 @@ export function adoptLegacyDraft(
   if (Object.keys(crewRows).length) out.crewRows = crewRows;
   const photos = (legacy!.photosAdded ?? 0) + (mine?.photosAdded ?? 0);
   if (photos) out.photosAdded = photos;
+  const queued = [...new Set([...(legacy!.queuedPhotoKeys ?? []), ...(mine?.queuedPhotoKeys ?? [])])];
+  if (queued.length) out.queuedPhotoKeys = queued;
   if (mine?.crewConfirmed ?? legacy!.crewConfirmed) out.crewConfirmed = true;
   return out;
 }
@@ -148,6 +153,7 @@ export function legacyDraftExtras(legacy: DailyLogDraft, current: DailyLogDraft 
   });
   if (Object.keys(rows).length) out.crewRows = rows;
   if (legacy.photosAdded) out.photosAdded = legacy.photosAdded;
+  if (legacy.queuedPhotoKeys?.length) out.queuedPhotoKeys = legacy.queuedPhotoKeys;
   return out;
 }
 
@@ -225,5 +231,9 @@ export function parseDailyLogDraft(raw: unknown): DailyLogDraft | null {
     draft.crewRows = rows;
   }
   if (d.crewConfirmed === true) draft.crewConfirmed = true;
+  if (Array.isArray(d.queuedPhotoKeys)) {
+    const keys = d.queuedPhotoKeys.filter((k): k is string => typeof k === 'string' && k.length > 0);
+    if (keys.length) draft.queuedPhotoKeys = [...new Set(keys)];
+  }
   return draft;
 }

@@ -316,4 +316,157 @@ describe('the site photo retry (#917, #1161)', () => {
     expect(new Set(uploadMedia.mock.calls.map((c) => (c[0] as { clientKey: string }).clientKey)).size).toBe(1);
     expect(arms.slice(0, 6).map((a) => a.ms)).toEqual([5000, 10000, 20000, 40000, 60000, 60000]);
   });
+
+  it('once nothing is kept or queued, the next lost answer waits 5 s again, not the last wait (#1167, Codex 4392115375)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const rows = await rowsOf();
+    await rows.putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-up' });
+    const busy = () => Object.assign(new Error('busy'), { status: 503 });
+    const uploadMedia = vi.fn().mockRejectedValueOnce(busy()).mockRejectedValueOnce(busy()).mockResolvedValueOnce({ id: 'm-up', url: '/media/m-up' }).mockRejectedValue(new TypeError('Failed to fetch'));
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.setState({ outbox: [{ t: 'uploadSitePhoto', scope: ROWS, clientKey: 'k-up' }] } as never);
+    await A.getState().flushOutbox();
+    for (let n = 1; n <= 2; n++) { await armed(n); await settled(); arms[n - 1]!.fn(); await settled(); }
+    expect(A.getState().outbox).toEqual([]);
+    expect(arms.map((a) => a.ms)).toEqual([5000, 10000]);
+    // the rows are read again with nothing left: back offline and online
+    A.getState().toggleOnline();
+    A.getState().toggleOnline();
+    await settled();
+    A.getState().addProgressPhoto(PNG);
+    await armed(3);
+    A.setState({ online: false } as never);
+    expect(arms[2]!.ms).toBe(5000);
+  });
+
+  it('a read of the rows made while a direct send was out is not applied once the send has settled: a sent photo is never queued again (#1170, Codex 4393007605)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const sent = deferred<void>();
+    const reply = deferred<{ id: string; url: string }>();
+    const uploadMedia = vi.fn(() => { sent.resolve(); return reply.promise; });
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.getState().addProgressPhoto(PNG);
+    await sent.promise;
+    // the next read of which rows are being sent waits until the test lets it go
+    const query = navigator.locks.query.bind(navigator.locks);
+    const gate = deferred<void>();
+    const asked = deferred<void>();
+    vi.spyOn(navigator.locks, 'query').mockImplementationOnce(async () => { asked.resolve(); await gate.promise; return query(); });
+    A.getState().toggleOnline();
+    A.getState().toggleOnline();
+    await asked.promise;
+    // its list of rows is read in full (the photo's row still holds its bytes)
+    await settled();
+    // the send is answered and settles (its row marked sent, its lock let go) while that read is out
+    reply.resolve({ id: 'm-once', url: '/media/m-once' });
+    await until(A, (s) => s.photoUploadsSending.length === 0);
+    await settled();
+    expect(await heldSiteLocks()).toEqual([]);
+    // offline when the read comes back, so what it leaves stays on show: no op and no kept copy for a sent photo
+    A.setState({ online: false } as never);
+    gate.resolve();
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().sitePhotosKept).toEqual([]);
+  });
+
+  it('a lock seen with no row behind it (its row written after the rows were read) is read again, and that row is sent once its tab closes (#1238)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const rows = await rowsOf();
+    const uploadMedia = vi.fn().mockResolvedValue({ id: 'm-late', url: '/media/m-late' });
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    // another tab's send holds its row's lock, and its row is not written yet when this tab reads the rows
+    const other = holdRowLock('k-late');
+    await other.has;
+    A.getState().hydrateOutbox();
+    await armed(1);
+    await settled();
+    expect(uploadMedia).not.toHaveBeenCalled();
+    expect(A.getState().outbox).toEqual([]);
+    // its row lands, and that tab closes before its answer: the row is full and no tab is sending it
+    await rows.putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-late' });
+    other.release();
+    await settled();
+    expect(await heldSiteLocks()).toEqual([]);
+    arms[0]!.fn();
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(A.getState().outbox).toEqual([]);
+  });
+
+  it('a retry armed before a project switch that fails is armed again for the project it is back in (#1201, Codex 4398157334)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const rows = await rowsOf();
+    await rows.putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-sw' });
+    const uploadMedia = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch')).mockResolvedValue({ id: 'm-sw', url: '/media/m-sw' });
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), switchProject: vi.fn().mockRejectedValue(new Error('403')), project: 'villa-b' } as never);
+    A.setState({ outbox: [{ t: 'uploadSitePhoto', scope: ROWS, clientKey: 'k-sw' }] } as never);
+    await A.getState().flushOutbox();
+    await armed(1);
+    await settled();
+    expect(await A.getState().switchProject('villa-c')).toBe(false);
+    expect(A.getState().activeProjectId).toBe('villa-b');
+    // the retry armed before the switch belongs to the scope the switch left: it sends nothing
+    arms[0]!.fn();
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    // armed again for the project this tab is back in, and the queued photo is sent on it
+    await armed(2);
+    arms[1]!.fn();
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(2);
+    expect(A.getState().outbox).toEqual([]);
+  });
+
+  it('a row kept after the scope moved, for the scope that is current again, is read again (no unrelated trigger needed) (#1201, Stage 1 gap-check)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const first = vi.fn();
+    A.getState()._setGateway({ uploadMedia: first, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    const request = navigator.locks.request.bind(navigator.locks) as (...a: unknown[]) => Promise<unknown>;
+    const gate = deferred<void>();
+    const asked = deferred<void>();
+    vi.spyOn(navigator.locks, 'request').mockImplementationOnce((async (...args: unknown[]) => { asked.resolve(); await gate.promise; return request(...args); }) as never);
+    A.getState().addProgressPhoto(PNG);
+    await asked.promise;
+    const next = vi.fn().mockResolvedValue({ id: 'm-back', url: '/media/m-back' });
+    A.setState({ projectScopeGeneration: 2 } as never);
+    A.getState()._setGateway({ uploadMedia: next, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    // that scope's load reads the rows while the photo's lock is still being taken: nothing to read yet
+    A.getState().hydrateOutbox();
+    await settled();
+    expect(arms).toHaveLength(0);
+    gate.resolve();
+    await until(A, (s) => s.toast === 'Photo saved offline — will upload when signal returns.');
+    await settled();
+    // read again once its lock is let go, and sent on the scope it belongs to
+    for (const a of [...arms]) { a.fn(); await settled(); }
+    expect(first).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('a lock with no row behind it is read again on the bounded backoff only while the lock lives, then stops (#1238, Stage 1 gap-check)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const uploadMedia = vi.fn();
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    const other = holdRowLock('k-never');
+    await other.has;
+    A.getState().hydrateOutbox();
+    for (let n = 1; n <= 7; n++) { await armed(n); await settled(); arms[n - 1]!.fn(); await settled(); }
+    await armed(8);
+    expect(arms.map((a) => a.ms)).toEqual([5000, 10000, 20000, 40000, 60000, 60000, 60000, 60000]);
+    // the lock goes with no row ever written: the next read finds nothing and arms nothing more
+    other.release();
+    await settled();
+    arms[7]!.fn();
+    await settled();
+    expect(arms).toHaveLength(8);
+    expect(uploadMedia).not.toHaveBeenCalled();
+  });
 });
