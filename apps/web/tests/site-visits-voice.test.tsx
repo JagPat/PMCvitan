@@ -257,6 +257,29 @@ describe('Stage 1 voice notes on a visit', () => {
     expect(useStore.getState().outbox).toHaveLength(0);
   });
 
+  it('refuses a note whose recorder names a codec the server does not read only once it stops, before it is kept', async () => {
+    // a recorder may name its real codec only after it starts: it says Opus while recording, PCM once stopped
+    let stopped = false;
+    class Late extends FakeRecorder {
+      constructor(stream: unknown, options: { mimeType: string }) {
+        super(stream, options);
+        Object.defineProperty(this, 'mimeType', { configurable: true, get: () => (stopped ? 'audio/webm;codecs=pcm' : 'audio/webm;codecs=opus'), set: () => {} });
+      }
+      stop() { stopped = true; super.stop(); }
+    }
+    withRecorder();
+    vi.stubGlobal('MediaRecorder', Late);
+    const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
+    await record(screen.getByTestId('sv-visit-v-1'), 5_000);
+    await settled();
+    expect(screen.getByRole('alert').textContent).toBe(
+      'This browser records voice in a format Vitan cannot send. Try another browser, such as Chrome or Safari.',
+    );
+    expect(uploadMedia).not.toHaveBeenCalled();
+    expect(useStore.getState().outbox).toHaveLength(0);
+  });
+
   it('records and sends a note when the screen runs under StrictMode, as the app does', async () => {
     withRecorder();
     const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
