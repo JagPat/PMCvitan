@@ -44,9 +44,8 @@ shared by every PR on that commit, so only that commit's trailer releases it —
 
 This repository currently enables only the Claude correction wake integration.
 Codex supports GitHub task mentions such as `@codex fix the CI failures` through its
-[GitHub integration](https://learn.chatgpt.com/docs/third-party/github); independent
-reviewer provenance, account permissions and acceptance of watchdog-generated
-mentions must be verified before enabling that implementation route here.
+[GitHub integration](https://learn.chatgpt.com/docs/third-party/github); independent reviewer provenance, account
+permissions and acceptance of watchdog-generated mentions must be verified before enabling that implementation route here.
 
 When opening or resuming a task-bearing autonomous PR, keep STATUS's `open_pr` and
 `task_state` coherent. Never start the next task while STATUS keeps this task open.
@@ -72,6 +71,12 @@ thread with a concrete counterexample; no label or gate state reads a dispute, a
 finding blocks until a new head answers it, the cap defers it, or the owner rules. Review machinery
 is frozen: no new controller, watchdog or lease feature outside a requested maintenance PR.
 
+Risk tiers (owner, 2026-10-27). A low-risk unit changes only docs, copy/i18n strings, or tests (adding or tightening, never removing or skipping
+one), and touches no other production code, migration, schema, workflow or review-gate script. It needs the author's
+self-review, required CI and exact-head Codex only: no separate pre-push gap-check and no whole-file audit. For any unit, a push that only merges
+`main` cleanly and changes no line of the PR's own diff needs required CI only, not a fresh pre-push re-check. Every other unit keeps the full
+path. No tier skips required CI, exact-head review, the round cap, the third-head stop, or the rule that a finding closes only on evidence or a fix.
+
 Keep one concern per PR; a cited issue is one `Work-Item: #N` head-commit trailer (syntax checked fail-closed; citing stays optional), verified a local non-PR issue when the head is approved and recorded in that approval's `codex-current-head` success token (a reused approval needs its writing run's receipt artifact; every write is mirrored to `codex-current-head/wi`). A standard unit is at most 20 files and 1,500 changed
 lines; `<!-- review-size: trivial -->` only classifies a unit and never skips CI or Codex review. Larger units need `<!-- review-size: justified-large -->` and all six invariant
 rows with concrete risk and verification evidence. Numeric limits are review aids,
@@ -90,11 +95,9 @@ concrete boundary using `<!-- migration-scope: inseparable -->`. Do not add unre
 
 ## Review and merge evidence
 
-Every PR starts draft. Keep the authoring session subscribed for corrections.
-The trusted controller admits only open same-repository PRs targeting the configured
-base. Required CI precedes review; it marks the CI-green draft ready to invoke Codex
-on the exact current head. A current-head finding fails `codex-current-head` and
-returns the same PR to draft. Read all findings and reproduce/fix them as one batch.
+Every PR starts draft. Keep the authoring session subscribed for corrections. The trusted controller admits only open same-repository PRs targeting
+the configured base. Required CI precedes review; it marks the CI-green draft ready to invoke Codex on the exact current head. A current-head finding
+fails `codex-current-head` and returns the same PR to draft. Read all findings and reproduce/fix them as one batch.
 
 Missing, stale or timed-out review evidence cannot authorize merge. Every push
 invalidates prior clearance. The controller accepts only the configured Codex actor
@@ -102,15 +105,11 @@ and current review cycle. It checks the newest valid CI evidence, including base
 retargets and cancelled attempts, and revalidates before merge. Product coverage can
 be reused for metadata edits only when the common CI-evidence rules permit it.
 
-The two invocation attempts and timeout budgets bound a workflow run; they do not
-limit correction heads or require a replacement. After required CI and independent
-review pass on the exact current head, the system completes the exact-SHA squash
-merge automatically, or queues GitHub auto-merge behind branch protection.
-No per-commit human or Board authorization, authorization comment, or approver
-allow-list is required. This user decision of 2026-09-14 supersedes the proposed
-Board-held merge rule. Drafts, changed heads/bases and failed or missing required
-gates still prevent completion. The implementer cannot supply independent review
-clearance; it must come from the configured review integration.
+The two invocation attempts and timeout budgets bound a workflow run; they do not limit correction heads or require a replacement. After required CI
+and independent review pass on the exact current head, the system completes the exact-SHA squash merge automatically, or queues GitHub auto-merge
+behind branch protection. No per-commit human or Board authorization, authorization comment, or approver allow-list is required. This user decision of
+2026-09-14 supersedes the proposed Board-held merge rule. Drafts, changed heads/bases and failed or missing required gates still prevent completion.
+The implementer cannot supply independent review clearance; it must come from the configured review integration.
 
 No routine human technical approval substitutes for CI or independent review.
 The production-drain exception previously retained here — clearing
