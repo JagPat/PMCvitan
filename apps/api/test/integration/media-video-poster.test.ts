@@ -185,6 +185,45 @@ describe('#995 V1b — a video clip\'s still frame (live PG)', () => {
     expect(remove.mock.calls.map((c) => c[0])).toEqual(putKeys());
   });
 
+  it('a project archived, or a membership ended, while the bytes were stored refuses the frame (403) and removes the object', async () => {
+    for (const [change, undo] of [
+      [(id: string) => t.prisma.$executeRaw`UPDATE "Project" SET "archivedAt" = now() WHERE id = ${id}`,
+        (id: string) => t.prisma.$executeRaw`UPDATE "Project" SET "archivedAt" = NULL WHERE id = ${id}`],
+      [(id: string) => t.prisma.$executeRaw`UPDATE "Membership" SET status = 'removed' WHERE "projectId" = ${id} AND "userId" = ${f.memberUser.id}`,
+        (id: string) => t.prisma.$executeRaw`UPDATE "Membership" SET status = 'active' WHERE "projectId" = ${id} AND "userId" = ${f.memberUser.id}`],
+    ] as const) {
+      const { id } = await clip();
+      put.mockClear();
+      remove.mockClear();
+      put.mockImplementation(async (key: string, _bytes: Buffer, mime: string) => {
+        if (mime === 'image/jpeg') await change(f.projectA.id);
+        return { url: `https://bucket.test/${key}` };
+      });
+      try {
+        const res = await poster(id);
+        expect(res.status, res.text).toBe(403);
+      } finally {
+        await undo(f.projectA.id);
+      }
+      expect(await row(id)).toEqual({ posterStorageKey: null });
+      expect(putKeys()).toHaveLength(1);
+      expect(remove.mock.calls.map((c) => c[0])).toEqual(putKeys());
+    }
+  });
+
+  it('a PUT that fails may still have stored the object: it is removed, and nothing is set', async () => {
+    const { id } = await clip();
+    put.mockImplementation(async (key: string, _bytes: Buffer, mime: string) => {
+      if (mime === 'image/jpeg') throw new Error('the bucket\'s reply was lost');
+      return { url: `https://bucket.test/${key}` };
+    });
+    expect((await poster(id)).status).toBe(500);
+    const keys = put.mock.calls.filter((c) => c[2] === 'image/jpeg').map((c) => c[0]);
+    expect(keys).toHaveLength(1);
+    expect(remove.mock.calls.map((c) => c[0])).toEqual(keys);
+    expect(await row(id)).toEqual({ posterStorageKey: null });
+  });
+
   it('only the member who recorded the clip may add its frame: another member is refused before anything is stored', async () => {
     const { id } = await clip();
     const res = await poster(id, engineerToken);

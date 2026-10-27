@@ -1,5 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, GoneException, Injectable, NotFoundException } from '@nestjs/common';
 import { lockStandingAnchors } from '../common/standing-anchor';
+import { lockProjectReadiness } from '../common/readiness-lock';
+import { lockActorStanding, resolveActorEnvelope } from '../platform/actor-envelope';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from './storage.service';
@@ -450,8 +452,8 @@ export class MediaService {
    *
    * Authority before bytes, as for an upload: the caller and the clip are asked first, outside any transaction (a cheap
    * early no), then the bytes are read whole and stored, and then the clip's row is locked and every question asked
-   * again; that answer decides. An object that no row took is removed, but only once a fresh read proves no row
-   * references it.
+   * again, with the adder's standing and the project's state, under a visit file act's locks; that answer decides. An
+   * object that no row took, or whose PUT failed, is removed, but only once a fresh read proves no row references it.
    *
    * No event: a new event type is a new external-effect catalog generation, which is a migration of its own. A still
    * frame adds no file to its visit, and other viewers see it on their next read of the visit's files.
@@ -468,13 +470,22 @@ export class MediaService {
     // the dev stub keeps a file's bytes in its row, and a clip's row has room for one file only
     if (!this.storage.configured) throw new ConflictException('This server has no file storage for a still frame');
     const key = this.storage.keyFor(projectId, 'visit', 'image/jpeg');
-    await this.storage.put(key, bytes, 'image/jpeg');
+    const actor = await resolveActor(this.prisma, user);
     let stored: string;
     try {
+      // inside the cleanup: a PUT whose reply was lost may still have stored the object
+      await this.storage.put(key, bytes, 'image/jpeg');
       stored = await this.prisma.$transaction(async (tx) => {
+        // a visit file act's order (Codex P1 on #1166): the project's readiness key first, so a removal or an archive
+        // is wholly before or after this; then the clip's row; then the adder's standing, as a visit file's link takes it
+        await lockProjectReadiness(tx, projectId);
         const [row] = await tx.$queryRaw<PosterTarget[]>(Prisma.sql`
           SELECT "projectId", kind, mime, "uploadedBy", "posterStorageKey" FROM "Media" WHERE id = ${mediaId} FOR NO KEY UPDATE`);
         assertMayAddPoster(row, projectId, user);
+        await lockActorStanding(tx, projectId, user.sub);
+        const [state] = await tx.$queryRaw<Array<{ operable: boolean }>>(Prisma.sql`SELECT phase6_project_operable(${projectId}) AS "operable"`);
+        if (state?.operable !== true) throw new ForbiddenException('Project is unavailable');
+        if (!(await resolveActorEnvelope(tx, projectId, actor))) throw new ForbiddenException('Your role on this project has changed; sign in again');
         if (row.posterStorageKey !== null) return row.posterStorageKey;
         await tx.media.update({ where: { id: mediaId }, data: { posterStorageKey: key } });
         return key;

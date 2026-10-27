@@ -242,6 +242,15 @@ describe('readJpegStill — the scan', () => {
     expect(readJpegStill(Buffer.concat([build(parts(big), Buffer.alloc(0)), Buffer.from([0x12, 0xff])]))).toBeNull();
   });
 
+  it('refuses a scan with no coded data (Codex P2 on #1166)', () => {
+    expect(readJpegStill(scan((p) => void (p.scan = Buffer.alloc(0))))).toBeNull();
+    const two = edited((ps) => {
+      sof(ps).marker = 0xc2;
+      return [...ps, { ...sos(ps), scan: Buffer.alloc(0) }];
+    });
+    expect(readJpegStill(two)).toBeNull();
+  });
+
   it('refuses a marker the walk does not name inside the entropy data', () => {
     expect(readJpegStill(scan((p) => void (p.scan = Buffer.concat([p.scan!, Buffer.from([0xff, 0xfe, 0, 4, 1, 2])]))))).toBeNull();
   });

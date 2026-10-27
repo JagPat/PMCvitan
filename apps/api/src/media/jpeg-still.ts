@@ -11,7 +11,7 @@
  *    height each from 1 to {@link POSTER_MAX_SIDE}, and its length exactly its fields'. It comes before the first SOS.
  *  - Each SOS: at least one component, each one of the SOF's and none twice (so no more than the SOF has), its
  *    length exactly its fields'. Its entropy
- *    data runs to the next marker that is not a stuffed byte or a restart marker. A baseline frame has one scan.
+ *    data, at least one byte, runs to the next marker that is not a stuffed byte or a restart marker. A baseline frame has one scan.
  *  - EOI ends the file: no byte after it, and at least one scan before it.
  * Refused: APP1 (Exif, XMP: a phone's location or camera), every other APPn, COM, DNL, DHP, EXP, JPG, arithmetic,
  * lossless and hierarchical frames, a multi-chunk ICC profile, fill bytes, and anything past EOI.
@@ -121,6 +121,8 @@ function walk(b: Buffer): JpegStill {
         }
         scans++;
         at = entropyEnd(b, end);
+        // a scan with no coded data draws nothing (Codex P2 on #1166)
+        if (at === end) fail();
         continue;
       }
       default:
