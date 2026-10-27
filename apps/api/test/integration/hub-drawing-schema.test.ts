@@ -23,6 +23,8 @@ import { sanctionedReset, TRUNCATE_SEALS } from '../../prisma/sanctioned-reset';
  */
 const MIGRATION = join(__dirname, '../../prisma/migrations/20280122000000_hub_drawing_identity/migration.sql');
 const RECORDS = ['HubGoverningMark', 'HubRevision', 'HubDrawing'] as const;
+// what the reset clears with them: U1a-1's receipts and tombstones reference the revision and mark records (20280123000000)
+const RESET = [...RECORDS, 'HubWebhookReceipt', 'HubVersionTombstone'] as const;
 
 describe('#1118 U1b — a drawing\'s source and its Hub records (live PG)', () => {
   let t: TestApp;
@@ -38,7 +40,7 @@ describe('#1118 U1b — a drawing\'s source and its Hub records (live PG)', () =
   afterAll(async () => {
     if (!t) return;
     try {
-      await sanctionedReset(t.prisma, [...RECORDS]);
+      await sanctionedReset(t.prisma, [...RESET]);
       for (const id of made) {
         await raw(`DELETE FROM "Drawing" WHERE "projectId" = $1`, id);
         await raw(`DELETE FROM "Project" WHERE "id" = $1`, id);
@@ -288,7 +290,7 @@ describe('#1118 U1b — a drawing\'s source and its Hub records (live PG)', () =
       `SELECT indexname AS name, indexdef AS def FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'HubRevision' ORDER BY 1`);
     expect(keys.map((k) => k.name).sort()).toEqual([
       'HubRevision_pkey', 'HubRevision_projectId_drawingId_hubVersionOrder_key', 'HubRevision_version_drawing_order_key',
-      'HubRevision_projectId_hubVersionId_key'].sort());
+      'HubRevision_projectId_hubVersionId_key', 'HubRevision_source_key' /* U1a-1's, 20280123000000 */].sort());
     expect(keys.find((k) => k.name === 'HubRevision_version_drawing_order_key')?.def)
       .toMatch(/UNIQUE INDEX .* \("projectId", "hubVersionId", "drawingId", "hubVersionOrder"\)/);
   });
@@ -338,7 +340,7 @@ describe('#1118 U1b — a drawing\'s source and its Hub records (live PG)', () =
     }
     const p = await project('rs');
     await hub(p, `h-${run}`);
-    await sanctionedReset(t.prisma, [...RECORDS]);
+    await sanctionedReset(t.prisma, [...RESET]);
     for (const table of RECORDS) {
       expect(await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(`SELECT count(*) AS n FROM "${table}"`), table).toEqual([{ n: 0n }]);
     }
