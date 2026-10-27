@@ -1,0 +1,207 @@
+/**
+ * Stage 1 voice notes (Jagrut, 19 Oct 2026): recording on the phone, for a visit file. Kind-agnostic, so a video clip
+ * records the same way: the type is chosen before recording from what this browser's recorder says it writes (a
+ * recording never fails at upload for its type), the recording stops itself at its cap, and every track is let go
+ * when it ends. Nothing here keeps or sends a file: the caller hands the finished blob to the visit-file outbox.
+ */
+
+export type RecordKind = 'audio' | 'video';
+
+/** The recorder types tried, best first: WebM (Opus), which Chromium and Firefox write; MP4, which iPhones write (AAC);
+ *  Ogg (Opus). The upload names only the base type (`VOICE_NOTE_MIMES`), so a `;codecs=` parameter is asked for and
+ *  checked here, then stripped. */
+export const RECORD_TYPES: Record<RecordKind, readonly string[]> = {
+  audio: ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/ogg'],
+  // the video web unit (V2) fills this in with what its server unit takes; until then video is never offered
+  video: [],
+};
+
+/** The base types the upload takes for each kind, each with the codecs the server's reader takes in it (the #1025
+ *  allow-list: Opus in WebM and Ogg, AAC-LC or Opus in MP4). A recorder that reports anything else is not used. */
+export const UPLOAD_CODECS: Record<RecordKind, Readonly<Record<string, readonly string[]>>> = {
+  audio: { 'audio/webm': ['opus'], 'audio/ogg': ['opus'], 'audio/mp4': ['mp4a.40.2', 'opus'] },
+  video: {},
+};
+
+/** Whether the upload takes a file of `kind` written as `type`: its base type is one the upload takes, and every codec
+ *  it names (when it names any: a recorder may give the base type alone) is one the server reads in that type. */
+export function acceptedType(kind: RecordKind, type: string): boolean {
+  const codecs = UPLOAD_CODECS[kind][baseType(type)];
+  if (!codecs) return false;
+  const named = /;\s*codecs\s*=\s*"?([^";]*)"?/i.exec(type)?.[1];
+  if (named === undefined) return true;
+  const list = named.split(',').map((c) => c.trim().toLowerCase());
+  return list.length > 0 && list.every((c) => codecs.includes(c));
+}
+
+/** `type` without its parameters, lower-cased: `audio/webm;codecs=opus` is `audio/webm`. */
+export function baseType(type: string): string {
+  return type.split(';')[0].trim().toLowerCase();
+}
+
+/** The first type this browser's recorder says it can write for `kind`, or null when it can write none (or has no
+ *  recorder): recording is then not offered. */
+export function pickRecordType(kind: RecordKind): string | null {
+  const Recorder = (globalThis as { MediaRecorder?: typeof MediaRecorder }).MediaRecorder;
+  if (typeof Recorder?.isTypeSupported !== 'function') return null;
+  if (!(globalThis as { navigator?: Navigator }).navigator?.mediaDevices?.getUserMedia) return null;
+  return RECORD_TYPES[kind].find((t) => acceptedType(kind, t) && Recorder.isTypeSupported(t)) ?? null;
+}
+
+/** A finished recording: its bytes, the base type they were written in (`type`: as the recorder named it, codecs and
+ *  all), and how long the recorder ran. */
+export interface Recorded {
+  blob: Blob;
+  mime: string;
+  type: string;
+  ms: number;
+}
+
+/** Why a recording could not start: the person (or the browser for the site) said no to the microphone or camera; this
+ *  phone has none the browser can use, or no recorder for the chosen type; or the recorder writes a format the upload
+ *  does not take. */
+export type RecordFailure = 'denied' | 'unavailable' | 'format';
+export class RecordError extends Error {
+  readonly reason: RecordFailure;
+  constructor(reason: RecordFailure) {
+    super(reason);
+    this.name = 'RecordError';
+    this.reason = reason;
+  }
+}
+
+export interface Recording {
+  /** Stop and take what was recorded. When the cap stopped it already, this is that recording. */
+  stop(): Promise<Recorded>;
+  /** Stop and keep nothing. */
+  cancel(): void;
+  /** Settles once when the recording stopped without Stop or Cancel: at its cap (`cap`), or because the browser ended it
+   *  (`ended`: the microphone went away, the phone took it for a call). It carries that recording, which is then also
+   *  what `stop` returns. */
+  ended: Promise<{ rec: Recorded; cause: 'cap' | 'ended' }>;
+}
+
+/** What a kind may ask of the recorder beyond its type: its bit rates (a video clip keeps a minute inside the upload's
+ *  size), and which devices it records from (video may record picture only when the microphone is refused). */
+export interface RecordOptions {
+  bits?: { audioBitsPerSecond?: number; videoBitsPerSecond?: number };
+  media?: MediaStreamConstraints;
+}
+
+/**
+ * Start recording `kind` in `type` (from `pickRecordType`). It stops itself after `maxMs`. The recording is one blob,
+ * written when it stops (no timeslice), so a container's own header and index are whole. It records from the phone's
+ * own devices (`getUserMedia`), never a drawn stream. A recorder that writes a type the upload does not take for `kind`
+ * (whatever it was asked for) is stopped at once and reported as a format refusal, so such a file is never kept. The
+ * microphone (and camera) are let go as soon as it stops or is cancelled.
+ */
+export async function startRecording(kind: RecordKind, type: string, maxMs: number, options: RecordOptions = {}): Promise<Recording> {
+  const Recorder = (globalThis as { MediaRecorder?: typeof MediaRecorder }).MediaRecorder;
+  const devices = (globalThis as { navigator?: Navigator }).navigator?.mediaDevices;
+  if (!Recorder || !devices?.getUserMedia) throw new RecordError('unavailable');
+  let stream: MediaStream;
+  try {
+    stream = await devices.getUserMedia(options.media ?? (kind === 'audio' ? { audio: true } : { audio: true, video: true }));
+  } catch (err) {
+    const name = (err as { name?: string } | null)?.name;
+    throw new RecordError(name === 'NotAllowedError' || name === 'SecurityError' ? 'denied' : 'unavailable');
+  }
+  const release = () => stream.getTracks().forEach((t) => t.stop());
+  let recorder: MediaRecorder;
+  try {
+    recorder = new Recorder(stream, { mimeType: type, ...options.bits });
+  } catch {
+    release();
+    throw new RecordError('unavailable');
+  }
+  const chunks: Blob[] = [];
+  let began: number | null = null;
+  // when the stop was asked for (Stop, Cancel or the cap): the recording's length runs to there, not to the stop event,
+  // which comes once the recorder has written its last data
+  let stoppedAt: number | null = null;
+  // and a recording the browser ended by itself runs to when its microphone (or camera) ended; with no word of that,
+  // to its stop event, which can only make it longer than it was, so a note near the limit is refused, never kept long
+  // (a hidden tab can run the cap's timer late, so a recording the browser ended may truly be past the cap)
+  let endedAt: number | null = null;
+  // (a track's own end: the device went away, or the phone took it; never our own release, which ends no track this way)
+  stream.getTracks().forEach((t) => t.addEventListener?.('ended', () => { endedAt ??= clock(); }, { once: true }));
+  let asked = false;
+  let byCap = false;
+  let cancelled = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+  // the type the recorder actually writes, which may name codecs the request did not: the upload takes its base type
+  const done = new Promise<Recorded>((resolve) => {
+    recorder.onstop = () => {
+      if (timer) clearTimeout(timer);
+      release();
+      const written = recorder.mimeType || type;
+      const mime = baseType(written);
+      const rec = { blob: new Blob(chunks, { type: mime }), mime, type: written, ms: began === null ? 0 : Math.max(0, (stoppedAt ?? endedAt ?? clock()) - began) };
+      resolve(rec);
+      // stopped by its cap, or by the browser itself: said, so the screen does not go on showing a recording
+      if (!cancelled && (byCap || !asked)) resolveEnded({ rec, cause: byCap ? 'cap' : 'ended' });
+    };
+  });
+  let resolveEnded: (r: { rec: Recorded; cause: 'cap' | 'ended' }) => void = () => {};
+  const ended = new Promise<{ rec: Recorded; cause: 'cap' | 'ended' }>((resolve) => { resolveEnded = resolve; });
+  const halt = () => {
+    if (recorder.state === 'inactive') return;
+    asked = true;
+    stoppedAt ??= clock();
+    recorder.stop();
+  };
+  try {
+    recorder.start();
+  } catch {
+    release();
+    throw new RecordError('unavailable');
+  }
+  // the type it writes, codecs and all, as it says once started: one the upload does not take is never recorded on
+  if (!acceptedType(kind, recorder.mimeType || type)) {
+    cancelled = true;
+    recorder.onstop = null;
+    recorder.ondataavailable = null;
+    if (recorder.state !== 'inactive') recorder.stop();
+    release();
+    throw new RecordError('format');
+  }
+  began = clock();
+  timer = setTimeout(() => {
+    if (recorder.state === 'inactive' || asked) return;
+    byCap = true;
+    halt();
+  }, maxMs);
+  return {
+    stop: () => { halt(); return done; },
+    // the last data the recorder hands over as it stops is dropped too
+    cancel: () => { cancelled = true; recorder.ondataavailable = null; chunks.length = 0; halt(); },
+    ended,
+  };
+}
+
+/** A clock that only runs forward: a recording's length is never moved by the phone's time of day being changed or
+ *  corrected while it records. */
+function clock(): number {
+  return typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
+}
+
+/** `blob`'s bytes as base64, with no `data:` prefix. */
+export function blobBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('read failed'));
+    reader.onload = () => {
+      const url = typeof reader.result === 'string' ? reader.result : '';
+      const comma = url.indexOf(',');
+      resolve(comma >= 0 ? url.slice(comma + 1) : '');
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** `ms` as `m:ss`, for a recording's running time. */
+export function clockText(ms: number): string {
+  const s = Math.floor(Math.max(0, ms) / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
