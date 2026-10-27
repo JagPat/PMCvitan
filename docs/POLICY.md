@@ -71,10 +71,11 @@ thread with a concrete counterexample; no label or gate state reads a dispute, a
 finding blocks until a new head answers it, the cap defers it, or the owner rules. Review machinery
 is frozen: no new controller, watchdog or lease feature outside a requested maintenance PR.
 
-Risk tiers (owner, 2026-10-27). A low-risk unit changes only docs, copy/i18n strings, or tests (adding or tightening, never removing or skipping
-one), and touches no other production code, migration, schema, workflow or review-gate script. It needs the author's
-self-review, required CI and exact-head Codex only: no separate pre-push gap-check and no whole-file audit. For any unit, a push that only merges
-`main` cleanly and changes no line of the PR's own diff needs required CI only, not a fresh pre-push re-check. Every other unit keeps the full
+Risk tiers (owner, 2026-10-27). A low-risk unit is standard or trivial in size, changes only prose docs that no script or test reads (never
+STATUS.md, RUNBOOK.md or docs/rollout/), copy/i18n strings, or tests (adding or tightening, never removing or skipping one), and touches no
+other production code, migration, schema, workflow or review-gate script. It needs the author's self-review, required CI and exact-head Codex
+only: no separate pre-push gap-check and no whole-file audit. For any unit, a push that only merges `main` cleanly and changes no line of the
+PR's own diff skips the author's fresh pre-push re-check; it still needs required CI and exact-head Codex. Every other unit keeps the full
 path. No tier skips required CI, exact-head review, the round cap, the third-head stop, or the rule that a finding closes only on evidence or a fix.
 
 Keep one concern per PR; a cited issue is one `Work-Item: #N` head-commit trailer (syntax checked fail-closed; citing stays optional), verified a local non-PR issue when the head is approved and recorded in that approval's `codex-current-head` success token (a reused approval needs its writing run's receipt artifact; every write is mirrored to `codex-current-head/wi`). A standard unit is at most 20 files and 1,500 changed
