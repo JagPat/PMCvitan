@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const MIME_EXT: Record<string, string> = {
@@ -108,6 +108,22 @@ export class StorageService {
     if (!this.configured) return null;
     const cmd = new GetObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key });
     return getSignedUrl(this.s3(), cmd, { expiresIn });
+  }
+
+  /**
+   * The stored type of an object a client uploaded through a presigned PUT (S3 mode), so the server checks the
+   * object itself before recording it, whatever URL it came through (#995 nosniff: an upload URL minted before
+   * the PUT's type was signed let the uploader choose it). Null when there is no such object, or no bucket.
+   */
+  async storedType(key: string): Promise<string | null> {
+    if (!this.configured) return null;
+    try {
+      const head = await this.s3().send(new HeadObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key }));
+      return head.ContentType ?? null;
+    } catch (err) {
+      if ((err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 404) return null;
+      throw err;
+    }
   }
 
   /** Delete a stored object (S3 mode). Dev stub keeps bytes in the DB row, so no-op here. */

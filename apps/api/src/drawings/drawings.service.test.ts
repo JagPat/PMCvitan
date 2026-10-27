@@ -185,6 +185,7 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
     publicUrl: vi.fn((k: string) => `https://cdn.vitan.in/${k}`),
     presignPut: vi.fn(async () => (storagePutUrl ? { uploadUrl: 'https://cdn.vitan.in/upload?sig=x', url: storagePutUrl } : null)),
     remove: vi.fn(async () => {}),
+    storedType: vi.fn(async (_key: string): Promise<string | null> => 'application/pdf'),
   };
   const dispatcher = { dispatchCommitted: vi.fn() };
   const snapshot = { build: vi.fn(async () => ({ ok: true })) };
@@ -262,6 +263,19 @@ describe('DrawingsService.issue', () => {
     expect(rev.storageKey).toBe('ambli/drawings/big.pdf');
     expect(rev.url).toBeNull(); // private delivery: never persist the public bucket url
     expect(rev.data).toBeNull();
+  });
+
+  it('refuses a presigned storageKey whose stored object is missing or of another type (#995 nosniff)', async () => {
+    for (const stored of [null, 'text/html', 'application/octet-stream']) {
+      const { svc, draws, storage } = make();
+      storage.storedType.mockResolvedValueOnce(stored);
+      await expect(
+        svc.issue('ambli', drawUser, { ...base, data: undefined as never, storageKey: 'ambli/drawings/big.pdf', sizeBytes: 9_000_000 }),
+        String(stored),
+      ).rejects.toThrow(/not of the type given/);
+      expect(storage.storedType).toHaveBeenCalledWith('ambli/drawings/big.pdf');
+      expect(draws).toHaveLength(0);
+    }
   });
 
   it('rejects a storageKey that belongs to another project (cross-project drawing read)', async () => {

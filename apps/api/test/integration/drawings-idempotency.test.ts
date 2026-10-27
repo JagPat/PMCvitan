@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { ConflictException } from '@nestjs/common';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { DrawingsService } from '../../src/drawings/drawings.service';
+import { StorageService } from '../../src/media/storage.service';
 import type { AuthUser } from '../../src/common/auth';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -38,6 +39,7 @@ describe('Phase 2 Task 10 — drawing commands are idempotent (live PG)', () => 
     await t?.close();
   });
   afterEach(async () => {
+    vi.restoreAllMocks();
     const pids = { startsWith: 'it-dwidem-' };
     // DomainEvent is append-only (DELETE is trigger-blocked); TRUNCATE the event/outbox/projection
     // tables wholesale (test-only), then delete the disposable project rows.
@@ -112,6 +114,8 @@ describe('Phase 2 Task 10 — drawing commands are idempotent (live PG)', () => 
     const storageKey = `${p}/drawings/fixture.pdf`; // must belong to the project (the service enforces the prefix)
     const digestA = sha256Hex(Buffer.from('the original large file bytes'));
     const digestB = sha256Hex(Buffer.from('a DIFFERENT large file uploaded to the same key'));
+    // the bucket holds the object as the type the issue gives (the service checks it before recording the key)
+    vi.spyOn(t.app.get(StorageService), 'storedType').mockResolvedValue('application/pdf');
     const presign = (contentSha256: string) => ({ number: 'A-900', title: 'Big Plan', discipline: 'architectural' as const, rev: 'A', status: 'for_construction' as const, mime: 'application/pdf', storageKey, sizeBytes: 5_000_000, contentSha256, publish: true });
     const first = await svc.issue(p, pmc(p), presign(digestA), 'k-presign');
     // a retry reusing the SAME key + SAME storageKey + SAME digest replays the original success

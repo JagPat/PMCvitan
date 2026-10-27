@@ -93,3 +93,28 @@ describe('StorageService.presignPut', () => {
     expect(url.searchParams.get('X-Amz-SignedHeaders')!.split(';')).toContain('content-type');
   });
 });
+
+describe('StorageService.storedType', () => {
+  it('dev stub (no provider): null, and does not touch S3', async () => {
+    const s = new StorageService();
+    const send = vi.fn();
+    s._setClient({ send } as unknown as S3Client);
+    expect(await s.storedType('ambli/drawings/x.pdf')).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('S3 mode: the object\'s stored type; null when there is no such object; any other failure is thrown', async () => {
+    configureS3();
+    const s = new StorageService();
+    const send = vi.fn().mockResolvedValueOnce({ ContentType: 'text/html' });
+    s._setClient({ send } as unknown as S3Client);
+    expect(await s.storedType('ambli/drawings/x.pdf')).toBe('text/html');
+    const command = send.mock.calls[0][0] as { constructor: { name: string }; input: { Bucket?: string; Key?: string } };
+    expect(command.constructor.name).toBe('HeadObjectCommand');
+    expect(command.input).toEqual({ Bucket: 'vitan-media', Key: 'ambli/drawings/x.pdf' });
+    send.mockRejectedValueOnce(Object.assign(new Error('NotFound'), { $metadata: { httpStatusCode: 404 } }));
+    expect(await s.storedType('ambli/drawings/gone.pdf')).toBeNull();
+    send.mockRejectedValueOnce(Object.assign(new Error('AccessDenied'), { $metadata: { httpStatusCode: 403 } }));
+    await expect(s.storedType('ambli/drawings/x.pdf')).rejects.toThrow('AccessDenied');
+  });
+});

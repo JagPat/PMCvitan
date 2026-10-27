@@ -138,6 +138,11 @@ export class DrawingsService {
       if (!input.storageKey.startsWith(`${projectId}/drawings/`)) {
         throw new BadRequestException('storageKey does not belong to this project');
       }
+      // The object itself must hold the type the revision records: an upload URL minted before the PUT's
+      // type was signed let the uploader choose it (text/html included), and the bucket serves what it stored.
+      if ((await this.storage.storedType(input.storageKey)) !== input.mime) {
+        throw new BadRequestException('The uploaded file was not found, or is not of the type given');
+      }
       key = input.storageKey;
       data = null;
       sizeBytes = input.sizeBytes ?? 0;
