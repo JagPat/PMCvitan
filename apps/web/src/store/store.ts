@@ -216,6 +216,9 @@ export interface OutboxFlushResult {
   succeededKeys: string[];
   droppedKeys: string[];
   pendingKeys: string[];
+  /** What this flush had to say, held for a caller that says its own acts' word (`ownWord`): the other commands' lines,
+   *  then the counts and refusals. Set only on that caller's own run, in the scope it ran in (#1134 residual) */
+  word?: string;
 }
 
 /** The read slices a committed command's reconcile can be owed for (live bug 1b). */
@@ -842,8 +845,13 @@ export interface AppActions {
    *  success instead of the batch "N synced" summary. Resolves a structured
    *  `OutboxFlushResult` so a caller can confirm ITS OWN ops by key (queue absence ≠ success — a
    *  terminal 4xx also removes the op). `act` is the command's act: its `okMsg` waits for the flush that sends that act,
-   *  this one or a later one, whichever call it came with (#1133); a line always comes with its act (#1134 r2). */
-  flushOutbox: (opts?: { okMsg: string | (() => string); act: OutboxOp }) => Promise<OutboxFlushResult>;
+   *  this one or a later one, whichever call it came with (#1133); a line always comes with its act (#1134 r2).
+   *  `ownWord` lists acts whose word is the caller's: when this call runs the flush, those acts are left out of its counts
+   *  and the flush says nothing itself, handing back the rest of its line (`word`) for the caller's one flash. A caller that
+   *  cannot say it when the flush ends (`saysNow` false: another of its requests is still out) has the flush say it then,
+   *  in the flush's own scope, as any flush does. */
+  flushOutbox: (opts?: { okMsg: string | (() => string); act: OutboxOp; ownWord?: never; saysNow?: never }
+    | { ownWord: string[]; saysNow?: () => boolean; okMsg?: never; act?: never }) => Promise<OutboxFlushResult>;
   /** Site Visits SV1-c unit 2 (#792, F53): put one site-visit act in the durable outbox and send it (write-ahead,
    *  as the Daily Log does); `offlineMsg` is what the viewer is told when the app is offline. False without the server. */
   queueSiteVisitAct: (op: OutboxOp, offlineMsg: string) => boolean;
@@ -4243,7 +4251,8 @@ export const useStore = create<Store>()(
       const dwgIds = get().drawings.filter((d) => d.draft).map((d) => d.id);
       const total = decIds.length + dwgIds.length;
       if (total === 0) return;
-      const done = () => get().flash(`Published ${total} draft${total === 1 ? '' : 's'} — the team has been notified.`);
+      const doneMsg = `Published ${total} draft${total === 1 ? '' : 's'} — the team has been notified.`;
+      const done = () => get().flash(doneMsg);
       // API mode: decisions publish directly (preserved); DRAWINGS are write-ahead + drained by the flush.
       if (gateway) {
         // Task 10 correction (C3) — when drawing drafts are in the batch, don't publish from a register
@@ -4264,6 +4273,7 @@ export const useStore = create<Store>()(
         // is confirmed only when every targeted key is reported succeeded by the flush.
         const drawingKeys = dwgIds.map(() => newIdempotencyKey());
         let flushDone: Promise<OutboxFlushResult | undefined> = Promise.resolve(undefined);
+        let decisionsOut = decIds.length > 0;
         if (dwgIds.length > 0) {
           set((s) => {
             dwgIds.forEach((id, i) => {
@@ -4274,7 +4284,8 @@ export const useStore = create<Store>()(
           });
           // no flush sends these while their locked write is still running (`aheadWrites`)
           void writeAhead(get().outbox.filter((o) => o.t === 'publishDrawing' && drawingKeys.includes((o as { idempotencyKey?: string }).idempotencyKey ?? '')));
-          if (get().online) flushDone = get().flushOutbox();
+          // the flush's word waits for the publish's only while no decision publish is still out (#1134 residual, gap-check Q4)
+          if (get().online) flushDone = get().flushOutbox({ ownWord: drawingKeys, saysNow: () => !decisionsOut });
         }
         void (async () => {
           // Decisions: the existing direct publish + reconcile (behavior preserved). Drawings are handled
@@ -4294,6 +4305,7 @@ export const useStore = create<Store>()(
             } catch {
               decOk = false;
             }
+            decisionsOut = false;
           }
           // Let the drawing flush finish draining before judging success.
           const flushRes = await flushDone.catch(() => undefined);
@@ -4305,22 +4317,25 @@ export const useStore = create<Store>()(
           const targeted = new Set(drawingKeys);
           const droppedMine = flushRes ? flushRes.droppedKeys.filter((k) => targeted.has(k)) : [];
           const dwgPending = get().outbox.some((o) => o.t === 'publishDrawing' && targeted.has(o.idempotencyKey));
+          // the flush that sent these said nothing itself: its word (other commands' lines, its counts) follows the
+          // publish's own in one flash, so neither replaces the other (#1134 residual)
+          const say = (msg: string) => get().flash(flushRes?.word ? `${msg} ${flushRes.word}` : msg);
           if (droppedMine.length > 0) {
             // A terminal rejection is NEVER overwritten by "Published N": report the honest (partial) failure.
             const n = droppedMine.length;
-            get().flash(n === dwgIds.length
+            say(n === dwgIds.length
               ? `${n === 1 ? 'The drawing draft was' : `All ${n} drawing drafts were`} rejected and not published — please review and try again.`
               : `${n} drawing draft${n === 1 ? '' : 's'} ${n === 1 ? 'was' : 'were'} rejected and not published — the rest went through. Please review and retry.`);
           } else if (!decOk) {
-            get().flash('Could not publish every draft — some may still be drafts. Please try again.');
+            say('Could not publish every draft — some may still be drafts. Please try again.');
           } else if (dwgPending) {
             // NEVER claim complete success while a targeted drawing op is still queued (offline, transient).
-            get().flash(get().online
+            say(get().online
               ? 'Publishing… drawing drafts are still syncing and will finish shortly.'
               : 'Saved — drawing drafts will publish when you reconnect.');
           } else {
             // decisions OK AND every targeted drawing op confirmed succeeded (or there were no drawings).
-            done();
+            say(doneMsg);
           }
         })();
         return;
@@ -6320,6 +6335,7 @@ export const useStore = create<Store>()(
       const notRun = (): OutboxFlushResult => ({ ran: false, scopeMoved: false, succeededKeys: [], droppedKeys: [], pendingKeys: [] });
       if (!gateway) return notRun();
       // a site visit act's word is the Site Visits screen's, never a line here, and it is not in the batch count either
+      const own = opts?.ownWord ? new Set(opts.ownWord) : null;
       const okKey = opts?.act && !isSiteVisitOp(opts.act) && 'idempotencyKey' in opts.act ? opts.act.idempotencyKey : undefined;
       if (opts?.okMsg && okKey && !okWaiting.some((w) => w.key === okKey)) okWaiting.push({ okMsg: opts.okMsg, key: okKey, queue: outboxKey() });
       // finding 1 — serialize flushes: a write-ahead command fires a flush per command, so one may be
@@ -6801,21 +6817,27 @@ export const useStore = create<Store>()(
       const lined = said.sort((a, b) => sentOrder(a.key) - sentOrder(b.key)).map((w) => w.okMsg);
       const told = lined.length > 2 ? lined.slice(0, 1) : lined;
       const flushOk = told.map((m) => (typeof m === 'function' ? m() : m)).join(' ') || undefined;
-      const unlined = synced - told.length;
+      // the caller that says its own acts' word has them in none of the counts (#1134 residual: the drawing publish)
+      const ownOf = (keys: string[]) => (own ? keys.filter((k) => own.has(k)).length : 0);
+      const unlined = synced - told.length - ownOf(succeededKeys);
+      const unsaid = dropped - ownOf(droppedKeys);
+      const waiting = remaining.length - ownOf(pendingKeys);
       const parts: string[] = [];
       const lang = get().lang;
       if (unlined > 0) parts.push(SYNC.synced(unlined, lang));
-      if (dropped > 0) parts.push(SYNC.dropped(dropped, lang));
-      if (remaining.length > 0) parts.push(SYNC.pending(remaining.length, lang));
+      if (unsaid > 0) parts.push(SYNC.dropped(unsaid, lang));
+      if (waiting > 0) parts.push(SYNC.pending(waiting, lang));
       // the chain refusals carry the server's words, so they are not folded into the count, but they are said in the same
       // line: the command's line and everything else this flush did are one line, so none hides another (#1134 r1
       // 4376641802, Stage 1 re-check of 62c8d1e)
       const rest = [...(parts.length ? [SYNC.join(parts, lang)] : []), ...chainRefusals].join(' ');
+      // the caller says this flush's word with its own only if it can say it now; otherwise the flush says it, as main did
+      const handing = !!own && (opts?.saysNow?.() ?? true);
       let toldWith: string | undefined;
       if (lastSnap && flushLease) {
         // a stale snapshot is handled as a superseded one is: the command's word is said, and a reconcile asked after it
         const result = lastSnapStale ? 'superseded' : acceptSnapshot(lastSnap, flushLease);
-        if (flushOk && rest && (result === 'applied' || result === 'superseded')) toldWith = flushOk;
+        if (flushOk && (rest || handing) && (result === 'applied' || result === 'superseded')) toldWith = flushOk;
         consumeSnapshotResult(result, toldWith ? undefined : flushOk, flushLease.scope);
       } else if (flushLease && pullSuperseded) {
         // (a flush whose project changed has returned above: the scope here is still the flush's)
@@ -6830,7 +6852,9 @@ export const useStore = create<Store>()(
       // retry has it do, so it never falls back to the visit as it was before the act (r1 gap-check of a6a03e1f, C7)
       if (visitDoneElsewhere && scopeStillCurrent(flushScope)) tellSiteVisits({ kind: 'retry', project: flushGateway.project, generation: flushScope.generation });
 
-      if (rest && endHere()) get().flash(toldWith ? `${toldWith} ${rest}` : rest);
+      // one flash per flush: a caller that says its own acts' word says this flush's with it, in one line
+      const handBack = handing && endHere() ? [toldWith, rest].filter(Boolean).join(' ') || undefined : undefined;
+      if (!handing && rest && endHere()) get().flash(toldWith ? `${toldWith} ${rest}` : rest);
       // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved
       // to FAILED; an op kept alive by a failed dead-letter write stays covered
       void reconcileEvidence();
@@ -6914,7 +6938,7 @@ export const useStore = create<Store>()(
           ])) get().loadCommercialLineRegister(lineId);
         }
       }
-      return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys };
+      return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys, word: handBack };
       } finally {
         outboxFlushing = false;
         // a visit photo reconciliation this flush overtook reads again now, against the settled queue (SV2)
