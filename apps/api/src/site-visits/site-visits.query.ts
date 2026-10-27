@@ -51,7 +51,7 @@ export interface SiteVisitFileDto {
   clientKey: string | null;
   /** When the device took it, if it said. */
   takenAt: string | null;
-  /** A voice note's length in whole seconds; null for a photo (#482). */
+  /** A voice note's or a video clip's length in whole seconds; null for a photo (#482, #995). */
   durationSec: number | null;
   /** A marked-up copy's original, a file on the same visit (M3); null for a photo as taken. */
   sourceMediaId: string | null;

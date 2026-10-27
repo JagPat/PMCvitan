@@ -336,33 +336,47 @@ function audioTrack(b: Buffer, tracks: Element, steps: Walk): { number: number; 
       seen.set(field.id, field); // each field once (checked by the walk)
       if (field.id === AUDIO) for (const _ of elements(b, field.dataStart, field.dataEnd, steps, AUDIO_CHILDREN));
     }
-    const number = seen.get(TRACK_NUMBER);
-    const type = seen.get(TRACK_TYPE);
-    const codec = seen.get(CODEC_ID);
-    if (!number || !type || !codec) fail();
-    if (uintOf(b, type!) !== 2) fail(); // audio
-    // Opus only: Vorbis's length would come from its headers alone, and no browser records it
-    if (codeOf(b, codec!) !== 'A_OPUS') fail();
-    // the one track is one a player plays (Codex P2 on #1013 round 3): enabled and default when the flags are
-    // written (both default to 1), and the other flags are booleans
-    const flag = (id: number, allowed: number[]) => {
-      const f = seen.get(id);
-      if (f && !allowed.includes(uintOf(b, f))) fail();
-    };
-    flag(FLAG_ENABLED, [1]);
-    flag(FLAG_DEFAULT, [1]);
-    flag(FLAG_FORCED, [0, 1]);
-    flag(FLAG_LACING, [0, 1]);
-    // an Opus track's CodecPrivate is its OpusHead, which Matroska requires and Chrome writes
-    const head = seen.get(CODEC_PRIVATE);
-    if (!head || !isOpusHead(b, head.dataStart, head.dataEnd - head.dataStart)) fail();
-    // DefaultDuration: what the file says each frame lasts, in nanoseconds (0 when not written)
-    const each = seen.get(DEFAULT_DURATION);
-    found = { number: uintOf(b, number!), frameNs: each ? uintOf(b, each) : 0 };
-    if (found.number < 1) fail();
+    if (uintOf(b, seen.get(TRACK_TYPE) ?? fail()) !== 2) fail(); // audio
+    found = opusTrack(b, seen);
   }
   if (found === undefined) fail();
   return found!;
+}
+
+/**
+ * An audio TrackEntry's fields, each read once by the walk (`seen`, by ID): the track a player plays, Opus with its
+ * OpusHead. Returns its number and DefaultDuration. Also read for a video clip's sound track (#995).
+ */
+function opusTrack(b: Buffer, seen: Map<number, Element>): { number: number; frameNs: number } {
+  const number = seen.get(TRACK_NUMBER);
+  const codec = seen.get(CODEC_ID);
+  if (!number || !codec) fail();
+  // Opus only: Vorbis's length would come from its headers alone, and no browser records it
+  if (codeOf(b, codec!) !== 'A_OPUS') fail();
+  trackFlags(b, seen);
+  // an Opus track's CodecPrivate is its OpusHead, which Matroska requires and Chrome writes
+  const head = seen.get(CODEC_PRIVATE);
+  if (!head || !isOpusHead(b, head.dataStart, head.dataEnd - head.dataStart)) fail();
+  // DefaultDuration: what the file says each frame lasts, in nanoseconds (0 when not written)
+  const each = seen.get(DEFAULT_DURATION);
+  const found = { number: uintOf(b, number!), frameNs: each ? uintOf(b, each) : 0 };
+  if (found.number < 1) fail();
+  return found;
+}
+
+/**
+ * The track is one a player plays (Codex P2 on #1013 round 3): enabled and default when the flags are written (both
+ * default to 1), and the other flags are booleans.
+ */
+function trackFlags(b: Buffer, seen: Map<number, Element>): void {
+  const flag = (id: number, allowed: number[]) => {
+    const f = seen.get(id);
+    if (f && !allowed.includes(uintOf(b, f))) fail();
+  };
+  flag(FLAG_ENABLED, [1]);
+  flag(FLAG_DEFAULT, [1]);
+  flag(FLAG_FORCED, [0, 1]);
+  flag(FLAG_LACING, [0, 1]);
 }
 
 /**
@@ -774,12 +788,13 @@ const MP4_CHILDREN: Record<string, Set<string>> = {
 const MP4_AUDIO_ENTRIES = new Set(['mp4a', 'Opus']);
 
 /**
- * A container's children by type, every one named in its allow-list; a type in `once` that appears twice fails.
+ * A container's children by type, every one named in its allow-list (`lists`: a video clip's are its own, #995); a type
+ * in `once` that appears twice fails.
  */
-function children(b: Buffer, start: number, end: number, container: string, steps: Walk, once: string[] = []): Map<string, Box[]> {
+function children(b: Buffer, start: number, end: number, container: string, steps: Walk, once: string[] = [], lists = MP4_CHILDREN): Map<string, Box[]> {
   const out = new Map<string, Box[]>();
   for (const x of boxes(b, start, end, steps)) {
-    if (!MP4_CHILDREN[container]!.has(x.type)) fail();
+    if (!lists[container]!.has(x.type)) fail();
     if (isPadding(x.type)) padding(steps, x.end - x.dataStart);
     const list = out.get(x.type) ?? [];
     list.push(x);
@@ -1339,3 +1354,19 @@ function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: numbe
   }
   return { count, dataOffset, bytes, ticks, reach, sizeOf };
 }
+
+/**
+ * The parts a video clip's check reads with (#995, `video-container.ts`): the same walks, caps and allow-lists, so a
+ * clip's sound and its structures are read exactly as a voice note's are.
+ */
+export type { Walk, Kind, Element, Box, MediaRanges, SampleRanges };
+export {
+  MAX_SAMPLES, MAX_MEDIA_BOXES, Malformed, fail, padding, charge, OPUS_RATE, opusPacketSamples,
+  EBML_HEADER, DOC_TYPE, SEGMENT, INFO, TRACKS, TRACK_ENTRY, TRACK_NUMBER, TRACK_TYPE, CODEC_ID, AUDIO, CLUSTER, SIMPLE_BLOCK,
+  BLOCK_GROUP, BLOCK, VOID, TIMESTAMP_SCALE, DURATION, CLUSTER_TIMESTAMP, BLOCK_DURATION, DEFAULT_DURATION,
+  EBML_HEADER_CHILDREN, SEGMENT_CHILDREN, INFO_CHILDREN, TRACKS_CHILDREN, TRACK_ENTRY_CHILDREN, AUDIO_CHILDREN, CLUSTER_CHILDREN,
+  BLOCK_GROUP_CHILDREN, vint, readElement, checkChild, elements, codeOf, uintOf, floatOf, opusTrack, trackFlags, blockTrack,
+  boxes, u64, PADDING, isPadding, MP4_CHILDREN, children, only, tilesMedia, inMedia, child, fullBoxHead, exactBox,
+  MVHD, TKHD, MDHD, MEHD, TFDT, SMHD, MFHD, TREX, TKHD_FLAGS, HANDLER_NAME_MAX, trackId, sampleTable, selfContained,
+  TFHD_FLAGS, audioSampleEntry, editList, MP4_BRANDS, timeHeader, trunRun,
+};
