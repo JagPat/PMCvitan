@@ -121,6 +121,9 @@ model Project {
   // #1118 U1a-2 (20280121300000): the project's Hub link and its history. A list only because the link's key is
   // (orgId, id); its primary key keeps it to one row.
   drawingHubLinks            DrawingHubLink[]
+  // #1118 U1a-1 (20280123000000): the Hub deliveries judged for this project, and the Hub versions withdrawn in it
+  hubWebhookReceipts         HubWebhookReceipt[]
+  hubVersionTombstones       HubVersionTombstone[]
   pushSubs                   PushSubscription[]
   drawings                   Drawing[]
   phases                     Phase[]
@@ -987,13 +990,13 @@ model ProjectPartyVendorSource {
 // An Org/Account (an architecture practice, e.g. "Vitan Architecture") — owns
 // projects and the people who administer them. Multi-tenant foundation.
 model Org {
-  id                String             @id @default(cuid())
+  id                String              @id @default(cuid())
   name              String
-  slug              String             @unique
-  createdAt         DateTime           @default(now())
+  slug              String              @unique
+  createdAt         DateTime            @default(now())
   // #482 QA company lock (20280116): a QA-only company holds only QA accounts, and a QA account belongs only to
   // QA-only companies. Database triggers enforce both; an operator marks the QA company.
-  qaOnly            Boolean            @default(false)
+  qaOnly            Boolean             @default(false)
   projects          Project[]
   members           OrgMembership[]
   modules           TemplateModule[]
@@ -1002,7 +1005,9 @@ model Org {
   vendors           Vendor[]
   // Phase 6 unit 6.1a (§A) — the canonical external firms this org collaborates with.
   externalParties   ExternalParty[]
-  promotedParties   ExternalParty[]    @relation("externalPartyPromotedTo")
+  promotedParties   ExternalParty[]     @relation("externalPartyPromotedTo")
+  // #1118 U1a-1 (20280123000000): every judgement of a Hub delivery to this org
+  hubReceipts       HubWebhookReceipt[]
 }
 
 // Templates Slice 3 (docs/TEMPLATES.md): a named PRESET — an ordered selection of modules
@@ -1404,6 +1409,8 @@ model HubRevision {
   source          String             @default("hub")
   hubVersionId    String
   hubVersionOrder Int
+  // #1118 U1a-1 (20280123000000): the applied receipt of the delivery that wrote this row, NULL for a re-sync's
+  sourceReceiptId BigInt?
   marks           HubGoverningMark[]
 
   @@id([projectId, revisionId])
@@ -1411,18 +1418,65 @@ model HubRevision {
   @@unique([projectId, drawingId, hubVersionOrder])
   // what a webhook receipt names (U1a-1): the mark it claims is this version's own
   @@unique([projectId, hubVersionId, drawingId, hubVersionOrder], map: "HubRevision_version_drawing_order_key") // the default name is past 63 characters
+  @@unique([projectId, hubVersionId, sourceReceiptId], map: "HubRevision_source_key") // #1118 U1a-1: a receipt's key target
 }
 
 // one per Hub version written for construction on a drawing, naming that version by its order. The drawing's mark is
 // the highest order; a mark is never removed while its drawing exists, so the mark only rises.
 model HubGoverningMark {
-  revision  HubRevision @relation(fields: [projectId, drawingId, order], references: [projectId, drawingId, hubVersionOrder], onDelete: Restrict, onUpdate: Restrict)
-  projectId String
-  drawingId String
-  order     Int
-  at        DateTime    @default(now())
+  revision        HubRevision @relation(fields: [projectId, drawingId, order], references: [projectId, drawingId, hubVersionOrder], onDelete: Restrict, onUpdate: Restrict)
+  projectId       String
+  drawingId       String
+  order           Int
+  at              DateTime    @default(now())
+  // #1118 U1a-1 (20280123000000): the applied receipt of the delivery that wrote this row, NULL for a re-sync's
+  sourceReceiptId BigInt?
 
   @@id([projectId, drawingId, order])
+  @@unique([projectId, drawingId, order, sourceReceiptId], map: "HubGoverningMark_source_key") // #1118 U1a-1: a receipt's key target
+}
+
+// #1118 U1a-1 (20280123000000_hub_receipts): Hub's webhook deliveries and the versions Hub withdrew. Each row is written
+// once and never changed: UPDATE, a direct DELETE and TRUNCATE are refused by triggers ("<Model>_sealed",
+// "<Model>_no_truncate"), and each goes only with its project or org. Prisma cannot express the checks, the triggers, the
+// partial unique "HubWebhookReceipt_one_applied" (one applied receipt per delivery), the receipt's three generated
+// columns ("tombstoneVersionId", "revisionVersionId", "writtenVersionId", left out here: no writer sets them) or the
+// deferrable keys that bind an applied receipt and the fact its delivery wrote to each other; see the migration's W1-W6.
+
+// one row per judgement of a Hub delivery. Applied exactly when it names a project, a Hub version and the fact it wrote
+// ('tombstone', 'revision' or 'mark', with the mark's drawing and order); at most one applied row per (org, webhookId).
+model HubWebhookReceipt {
+  id            BigInt   @id @default(autoincrement())
+  org           Org      @relation(fields: [orgId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  orgId         String
+  webhookId     String
+  eventType     String
+  outcome       String
+  receivedAt    DateTime @default(now())
+  project       Project? @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId     String?
+  hubVersionId  String?
+  appliedFact   String?
+  markDrawingId String?
+  markOrder     Int?
+
+  @@index([orgId, webhookId])
+  @@index([orgId, projectId])
+}
+
+// one per (project, Hub version) Hub withdrew, with its file and, when Hub sent one, its order. Its source is the
+// applied receipt of the delivery that wrote it, NULL for a re-sync's.
+model HubVersionTombstone {
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  projectId       String
+  hubVersionId    String
+  hubFileId       String
+  versionSeq      Int?
+  withdrawnAt     DateTime @default(now())
+  sourceReceiptId BigInt?
+
+  @@id([projectId, hubVersionId])
+  @@unique([projectId, hubVersionId, sourceReceiptId], map: "HubVersionTombstone_source_key") // a receipt's key target
 }
 
 // WHO a revision was issued to — frozen at issue time (Phase 1 Task 3). The rows

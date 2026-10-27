@@ -179,6 +179,10 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   { table: 'HubDrawing', trigger: 'HubDrawing_no_truncate' },
   { table: 'HubRevision', trigger: 'HubRevision_no_truncate' },
   { table: 'HubGoverningMark', trigger: 'HubGoverningMark_no_truncate' },
+  // #1118 U1a-1 — Hub's delivery receipts and the versions Hub withdrew refuse TRUNCATE; each goes with its project or
+  // org, so only a reset that names them (or truncates with CASCADE) reaches them, and the seals are bypassed here by name.
+  { table: 'HubWebhookReceipt', trigger: 'HubWebhookReceipt_no_truncate' },
+  { table: 'HubVersionTombstone', trigger: 'HubVersionTombstone_no_truncate' },
 ];
 
 /**
