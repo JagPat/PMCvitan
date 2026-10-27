@@ -286,4 +286,34 @@ describe('the site photo retry (#917, #1161)', () => {
     expect(uploadMedia).toHaveBeenCalledTimes(2);
     expect(A.getState().outbox).toEqual([]);
   });
+
+  it('a replay that keeps failing for now backs off 5 s to a minute, one upload each time (Stage 1 r5, P14a)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const rows = await rowsOf();
+    await rows.putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-p14' });
+    const uploadMedia = vi.fn().mockRejectedValue(Object.assign(new Error('busy'), { status: 503 }));
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.setState({ outbox: [{ t: 'uploadSitePhoto', scope: ROWS, clientKey: 'k-p14' }] } as never);
+    await A.getState().flushOutbox();
+    for (let n = 1; n <= 6; n++) { await armed(n); await settled(); arms[n - 1]!.fn(); await settled(); }
+    await armed(7);
+    A.setState({ online: false } as never);
+    expect(uploadMedia).toHaveBeenCalledTimes(7);
+    expect(arms.slice(0, 7).map((a) => a.ms)).toEqual([5000, 10000, 20000, 40000, 60000, 60000, 60000]);
+  });
+
+  it('a lost answer whose replays keep losing theirs backs off 5 s to a minute, under the same key (Stage 1 r5, P14b)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const uploadMedia = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.getState().addProgressPhoto(PNG);
+    for (let n = 1; n <= 5; n++) { await armed(n); await settled(); arms[n - 1]!.fn(); await settled(); }
+    await armed(6);
+    A.setState({ online: false } as never);
+    expect(uploadMedia).toHaveBeenCalledTimes(6);
+    expect(new Set(uploadMedia.mock.calls.map((c) => (c[0] as { clientKey: string }).clientKey)).size).toBe(1);
+    expect(arms.slice(0, 6).map((a) => a.ms)).toEqual([5000, 10000, 20000, 40000, 60000, 60000]);
+  });
 });

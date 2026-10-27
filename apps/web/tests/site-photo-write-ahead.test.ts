@@ -930,6 +930,18 @@ describe('Codex round 1 on #1161: a site photo is settled only once its row says
     expect(await rows.getSitePhotoRow('someone-else', 'villa-c', 'k-bytes')).toMatchObject({ input: { data: 'AAAA' } });
   });
 
+  it('a marker written exactly at the cut-off is kept; only older ones go (4391469530, Stage 1 r5 P17)', async () => {
+    const rows = await rowsOf();
+    const before = Date.now();
+    const clock = vi.spyOn(Date, 'now');
+    clock.mockReturnValue(before - 1); await rows.markSitePhotoSent(ROWS, 'villa-b', 'k-older');
+    clock.mockReturnValue(before); await rows.markSitePhotoSent(ROWS, 'villa-b', 'k-edge');
+    clock.mockRestore();
+    await rows.dropSentMarkers(before);
+    expect(await rows.getSitePhotoRow(ROWS, 'villa-b', 'k-older')).toBeNull();
+    expect(await rows.getSitePhotoRow(ROWS, 'villa-b', 'k-edge')).not.toBeNull();
+  });
+
   it('a direct send the server took whose row could not be marked stays this tab\'s: no flush sends it again (4389428586)', async () => {
     const A = await tab();
     startWork(A as never);
