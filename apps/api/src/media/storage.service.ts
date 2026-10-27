@@ -14,6 +14,9 @@ const MIME_EXT: Record<string, string> = {
   'audio/webm': 'webm',
   'audio/mp4': 'm4a',
   'audio/ogg': 'ogg',
+  // video clips on site visits (#995)
+  'video/webm': 'webm',
+  'video/mp4': 'mp4',
   // documents (drawings register): PDF for the field, DWG as the CAD source
   'application/pdf': 'pdf',
   'image/vnd.dwg': 'dwg',

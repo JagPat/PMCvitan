@@ -1,4 +1,4 @@
-import type { Lang } from '@vitan/shared';
+import { sitePhotoLabels, type Lang } from '@vitan/shared';
 
 /**
  * #482 — the guide's words, one short line per step, in English, Hindi and Gujarati. No long text:
@@ -52,13 +52,19 @@ export const GUIDE_TIPS = {
     hi: 'शीर्षक, जगह और विकल्प भरें, फिर यहाँ दबाएँ।',
     gu: 'શીર્ષક, જગ્યા અને વિકલ્પો ભરો, પછી અહીં દબાવો.',
   },
+  photoAdd: {
+    en: 'Tap here to add a photo of the site: take one or pick one from your phone.',
+    hi: 'साइट की फ़ोटो जोड़ने के लिए यहाँ दबाएँ: नई खींचें या फ़ोन से चुनें।',
+    gu: 'સાઇટનો ફોટો ઉમેરવા અહીં દબાવો: નવો પાડો અથવા ફોનમાંથી પસંદ કરો.',
+  },
 } satisfies Record<string, Words>;
 
 export type GuideTip = keyof typeof GUIDE_TIPS;
 
 /**
  * #482 — the one line an empty screen shows under its "nothing here yet", naming the button on that
- * screen that starts the work. The button is marked +, so the line points at the + in every language.
+ * screen that starts the work. Most such buttons are marked +, so those lines point at the + in every language; the
+ * photo line names its button by the button's own label, so the two never drift apart.
  */
 export const EMPTY_HINTS = {
   checklist: {
@@ -70,6 +76,11 @@ export const EMPTY_HINTS = {
     en: 'To put choices to the client, tap + Issue decision above.',
     hi: 'क्लाइंट से कुछ चुनवाना है? ऊपर + वाला बटन दबाएँ।',
     gu: 'ક્લાયન્ટ પાસે કંઈ પસંદ કરાવવું છે? ઉપર + વાળું બટન દબાવો.',
+  },
+  photo: {
+    en: `To add the first photo of the site, tap ${sitePhotoLabels.add.en} above.`,
+    hi: `साइट की पहली फ़ोटो जोड़नी है? ऊपर "${sitePhotoLabels.add.hi}" दबाएँ।`,
+    gu: `સાઇટનો પહેલો ફોટો ઉમેરવો છે? ઉપર "${sitePhotoLabels.add.gu}" દબાવો.`,
   },
 } satisfies Record<string, Words>;
 

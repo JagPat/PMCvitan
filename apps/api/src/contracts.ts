@@ -218,6 +218,11 @@ export const VOICE_NOTE_MAX_SEC = 120;
 // the length a voice note is stored with is read from the file; a length the client also sends must agree with it to
 // within this many seconds (a recorder's timer and its container can differ by a frame or a rounding)
 export const VOICE_NOTE_SEC_TOLERANCE = 2;
+// Stage 1 video on site visits (#995): a clip of up to a minute on a site visit. Android browsers record WebM (VP8 or
+// VP9), iPhones and Chrome's MP4 recorder MP4 (H.264 or VP9); sound is optional. The recorder keeps a minute inside the
+// cap above (about 1 Mbps). Its length is read from the file as a voice note's is, with the same tolerance.
+export const VIDEO_CLIP_MIMES = ['video/webm', 'video/mp4'] as const;
+export const VIDEO_CLIP_MAX_SEC = 60;
 // Site Visits #792 SV2 — a file added on a site visit: the visit, and what the adder saw (a note, a rating), both
 // optional. Such a file is its own kind, 'visit', so it stays inside its visit: every photo list (the Site Map, the
 // Dashboard, the daily log) reads the kinds it shows, and none of them reads 'visit'.
@@ -229,10 +234,10 @@ const mediaSiteVisitSchema = z.object({
 }).strict();
 export const createMediaSchema = z.object({
   kind: z.enum(['progress', 'inspection', 'decision', 'attendance', 'material', 'visit']),
-  mime: z.enum([...RASTER_IMAGE_MIMES, ...VOICE_NOTE_MIMES]),
+  mime: z.enum([...RASTER_IMAGE_MIMES, ...VOICE_NOTE_MIMES, ...VIDEO_CLIP_MIMES]),
   data: z.string().min(1).max(MAX_MEDIA_BASE64, 'file too large'),
-  // a voice note's length in whole seconds as the recorder counted it, optional: the length stored is read from the
-  // file, and this, when sent, must agree with it; a photo has none (the database holds the same rule)
+  // a voice note's or a video clip's length in whole seconds as the recorder counted it, optional: the length stored is
+  // read from the file, and this, when sent, must agree with it; a photo has none (the database holds the same rule)
   durationSec: z.number().int().min(1).max(VOICE_NOTE_MAX_SEC).optional(),
   decisionId: z.string().optional(),
   dailyLogId: z.string().optional(),
@@ -254,8 +259,11 @@ export const createMediaSchema = z.object({
 }).refine((m) => (m.kind === 'visit') === (m.siteVisit !== undefined), {
   message: "a file on a site visit has kind 'visit' and names its visit; no other upload names one",
   path: ['siteVisit'],
-}).refine((m) => m.mime.startsWith('audio/') || m.durationSec === undefined, {
+}).refine((m) => m.mime.startsWith('audio/') || m.mime.startsWith('video/') || m.durationSec === undefined, {
   message: 'a photo has no length',
+  path: ['durationSec'],
+}).refine((m) => !m.mime.startsWith('video/') || m.durationSec === undefined || m.durationSec <= VIDEO_CLIP_MAX_SEC, {
+  message: 'a video clip is at most a minute long',
   path: ['durationSec'],
 });
 export type CreateMediaInput = z.infer<typeof createMediaSchema>;

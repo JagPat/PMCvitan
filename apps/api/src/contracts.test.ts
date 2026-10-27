@@ -44,8 +44,30 @@ describe('createMediaSchema — Stage 1 voice notes', () => {
   });
 
   it('refuses other audio types, and a type with a codecs parameter', () => {
-    for (const mime of ['audio/mpeg', 'audio/wav', 'audio/webm;codecs=opus', 'video/webm']) {
+    for (const mime of ['audio/mpeg', 'audio/wav', 'audio/webm;codecs=opus']) {
       expect(createMediaSchema.safeParse({ ...visit, mime, durationSec: 5 }).success).toBe(false);
+    }
+  });
+});
+
+describe('createMediaSchema — Stage 1 video clips (#995)', () => {
+  const visit = { kind: 'visit' as const, data: 'AAAA', siteVisit: { visitId: '00000000-0000-4000-8000-000000000001' } };
+
+  it('accepts WebM and MP4 with or without a length of 1 to 60 seconds, and refuses a longer one', () => {
+    for (const mime of ['video/webm', 'video/mp4']) {
+      expect(createMediaSchema.safeParse({ ...visit, mime }).success).toBe(true);
+      expect(createMediaSchema.safeParse({ ...visit, mime, durationSec: 1 }).success).toBe(true);
+      expect(createMediaSchema.safeParse({ ...visit, mime, durationSec: 60 }).success).toBe(true);
+      expect(createMediaSchema.safeParse({ ...visit, mime, durationSec: 61 }).success).toBe(false);
+      expect(createMediaSchema.safeParse({ ...visit, mime, durationSec: 0 }).success).toBe(false);
+    }
+    // a voice note keeps its two minutes
+    expect(createMediaSchema.safeParse({ ...visit, mime: 'audio/webm', durationSec: 90 }).success).toBe(true);
+  });
+
+  it('refuses other video types, and a type with a codecs parameter', () => {
+    for (const mime of ['video/quicktime', 'video/x-matroska', 'video/3gpp', 'video/webm;codecs=vp8,opus', 'video/mp4;codecs=avc1']) {
+      expect(createMediaSchema.safeParse({ ...visit, mime }).success).toBe(false);
     }
   });
 });
