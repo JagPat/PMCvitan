@@ -711,7 +711,7 @@ describe('two tabs of one person on one project (#917)', () => {
 async function holdDatabase(): Promise<{ release: () => Promise<void>; readAsked: Promise<void>; writeAsked: Promise<void> }> {
   const db = await new Promise<IDBDatabase>((done, fail) => {
     const req = indexedDB.open('vitan-site-photos', 1);
-    req.onupgradeneeded = () => { req.result.createObjectStore('photos', { keyPath: 'key' }); };
+    req.onupgradeneeded = () => { req.result.createObjectStore('photos', { keyPath: 'key' }).createIndex('sentAt', 'sentAt'); };
     req.onsuccess = () => done(req.result);
     req.onerror = () => fail(req.error);
   });
@@ -904,6 +904,30 @@ describe('Codex round 1 on #1161: a site photo is settled only once its row says
     const saved = Object.keys(localStorage).filter((k) => k.startsWith('vitan.dailyLogDraft.') && !k.includes('.legacy.'));
     expect(saved).toHaveLength(1);
     expect((JSON.parse(localStorage.getItem(saved[0]!)!) as { photosAdded?: number }).photosAdded ?? 0).toBe(0);
+  });
+
+  it('a replay the server took leaves no copy of the photo\'s bytes in memory (4391469504)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    A.getState()._setGateway({ uploadMedia: vi.fn().mockRejectedValue(lost()), snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.getState().addProgressPhoto(PNG);
+    await until(A, (s) => s.toast === SAVED);
+    expect(A.getState().sitePhotosKept).toHaveLength(1);
+    A.getState()._setGateway({ uploadMedia: vi.fn().mockResolvedValue({ id: 'm-r2', url: '/media/m-r2' }), snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    await A.getState().flushOutbox();
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().sitePhotosKept).toEqual([]);
+  });
+
+  it('old markers are dropped without reading any row that keeps a photo\'s bytes (4391469530)', async () => {
+    const rows = await rowsOf();
+    await rows.putSitePhotoRow('someone-else', 'villa-c', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-bytes' });
+    await rows.markSitePhotoSent(ROWS, 'villa-b', 'k-old');
+    const walked = vi.spyOn(IDBObjectStore.prototype, 'openCursor');
+    await rows.dropSentMarkers(Date.now() + 1);
+    expect(walked).not.toHaveBeenCalled();
+    expect(await rows.getSitePhotoRow(ROWS, 'villa-b', 'k-old')).toBeNull();
+    expect(await rows.getSitePhotoRow('someone-else', 'villa-c', 'k-bytes')).toMatchObject({ input: { data: 'AAAA' } });
   });
 
   it('a direct send the server took whose row could not be marked stays this tab\'s: no flush sends it again (4389428586)', async () => {

@@ -52,6 +52,7 @@ export type SitePhotoEntry = SitePhotoRow | SitePhotoSent;
 export const isSitePhotoSent = (e: SitePhotoEntry): e is SitePhotoSent => 'sentAt' in e;
 
 const DB_NAME = 'vitan-site-photos';
+const SENT_AT = 'sentAt';
 const STORE = 'photos';
 
 /** How long a call waits on the phone's record of a site photo before it is treated as failed. */
@@ -113,7 +114,10 @@ function openDb(): Promise<IDBDatabase> {
     }
     const req = indexedDB.open(DB_NAME, 1);
     req.onupgradeneeded = () => {
-      if (!req.result.objectStoreNames.contains(STORE)) req.result.createObjectStore(STORE, { keyPath: 'key' });
+      // markers are indexed by when they were made, so dropping old ones never reads a row that keeps a photo's bytes
+      // (those carry no `sentAt`, so they are not in the index) (Codex 4391469530)
+      const store = req.result.objectStoreNames.contains(STORE) ? req.transaction!.objectStore(STORE) : req.result.createObjectStore(STORE, { keyPath: 'key' });
+      if (!store.indexNames.contains(SENT_AT)) store.createIndex(SENT_AT, 'sentAt');
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error('indexedDB open failed'));
@@ -187,14 +191,15 @@ export function listSitePhotoRows(userScope: string, projectId: string): Promise
     .then((rows) => (rows ?? []).sort((a, b) => at(a) - at(b))));
 }
 
-/** Every "sent" marker older than `before`, whoever and wherever it was for, is deleted. */
+/** Every "sent" or "refused" marker older than `before`, whoever and wherever it was for, is deleted. Walks the markers'
+ *  own index only: a row that keeps a photo's bytes is never read here. */
 export function dropSentMarkers(before: number): Promise<void> {
   return bounded((run) => tx(run, 'readwrite', (s) => {
-    const cursor = s.openCursor();
+    const cursor = s.index(SENT_AT).openCursor(IDBKeyRange.upperBound(before, true));
     cursor.onsuccess = () => {
       const c = cursor.result;
       if (!c) return;
-      if (isSitePhotoSent(c.value as SitePhotoEntry) && (c.value as SitePhotoSent).sentAt < before) c.delete();
+      c.delete();
       c.continue();
     };
   }).then(() => undefined));

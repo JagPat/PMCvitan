@@ -6365,6 +6365,9 @@ export const useStore = create<Store>()(
                 // kept on this phone, as a stored offline pick is: the guide's step is done
                 emitGuideOutcome('site-photo-added', null, guideRun);
                 get().flash(DLT.photoOffline[get().lang]);
+                // sent again from its row on the site photo retry, not left for an unrelated write while the app
+                // stays online (Codex 4391469520)
+                retrySitePhotos();
                 return;
               }
               letRowGo();
@@ -6376,7 +6379,9 @@ export const useStore = create<Store>()(
               void rowGone.then((done) => {
                 const letGo = (): void => { sitePhotoSendsDirect.delete(clientKey); release(); };
                 const make = rowChange;
-                if (done || !make) { letGo(); return; }
+                // a row never written needs no change: the one try made is enough, and a phone whose database is failing
+                // is not asked again for the tab's life (Codex 4391469488)
+                if (done || !make || !saved) { letGo(); return; }
                 sitePhotoRowChanges.set(clientKey, () => make().then(() => { sitePhotoRowChanges.delete(clientKey); letGo(); }, () => {}));
                 retrySitePhotos();
               });
@@ -6723,6 +6728,8 @@ export const useStore = create<Store>()(
         // so is a site photo's: settled by its answer, its queued copy leaves the Dashboard, and the server's must come
         // back (Codex 4389428615)
         if (!snap && (o.t === 'uploadEvidence' || o.t === 'uploadSitePhoto')) photoSettledGone = true;
+        // a site photo settled leaves the copy of its bytes this tab showed while it was queued (Codex 4391469504)
+        if (o.t === 'uploadSitePhoto') { const key = o.clientKey; set((s) => { s.sitePhotosKept = s.sitePhotosKept.filter((k) => k.clientKey !== key); recountDailyLogPhotos(s); }); }
         // a site visit's answer shows on its own screen, so it is not counted in the "synced" line; one that went
         // through starts the visit photo retry's wait over
         if (!isSiteVisitOp(o)) synced += 1;
@@ -6946,6 +6953,8 @@ export const useStore = create<Store>()(
           // SV2: a visit act (a photo above all) is not left for a reconnect that may never come while the socket
           // stays up: no answer, a busy or failing server is tried again, after the server's own wait when it gives
           // one (Codex 4321558432)
+          // #917: a site photo's replay that failed for now is tried again the same way (Codex 4391469520)
+          if (ops[i].t === 'uploadSitePhoto' && get().online) retrySitePhotos();
           if (isSiteVisitOp(ops[i]) && get().online) {
             const after = (err as { retryAfter?: unknown } | null)?.retryAfter;
             retryVisitPhotos(typeof after === 'number' && Number.isFinite(after) && after > 0 ? Math.min(after * 1000, VISIT_PHOTO_RETRY_AFTER_MAX_MS) : 0);

@@ -237,4 +237,53 @@ describe('the site photo retry (#917, #1161)', () => {
     expect(await heldSiteLocks()).toEqual([]);
     expect(uploadMedia).toHaveBeenCalledTimes(1);
   });
+
+  it('a direct send whose row was never kept lets it go after one try: a failing database is not asked again (4391469488)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    // the phone's database refuses every write: the photo is sent with no row kept
+    const writes = failingWrites();
+    writes.on = true;
+    const uploadMedia = vi.fn().mockRejectedValue(Object.assign(new Error('too large'), { status: 413 }));
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.getState().addProgressPhoto(PNG);
+    await until(A, (s) => s.toast === 'Could not upload the photo — please try again.');
+    await settled();
+    expect(arms).toEqual([]);
+    expect(await heldSiteLocks()).toEqual([]);
+  });
+
+  it('a lost answer while the app stays online is sent again on the retry, with nothing else to send (4391469520)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const uploadMedia = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch')).mockResolvedValue({ id: 'm-l', url: '/media/m-l' });
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.getState().addProgressPhoto(PNG);
+    await armed(1);
+    await settled();
+    expect(A.getState().outbox).toHaveLength(1);
+    arms[0]!.fn();
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(2);
+    expect(uploadMedia.mock.calls[1]![0]).toEqual(uploadMedia.mock.calls[0]![0]);
+    expect(A.getState().outbox).toEqual([]);
+  });
+
+  it('a replay that fails for now is tried again on the retry (4391469520)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const rows = await rowsOf();
+    await rows.putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-503' });
+    const uploadMedia = vi.fn().mockRejectedValueOnce(Object.assign(new Error('busy'), { status: 503 })).mockResolvedValue({ id: 'm-503', url: '/media/m-503' });
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.setState({ outbox: [{ t: 'uploadSitePhoto', scope: ROWS, clientKey: 'k-503' }] } as never);
+    await A.getState().flushOutbox();
+    await armed(1);
+    await settled();
+    expect(A.getState().outbox).toHaveLength(1);
+    arms[0]!.fn();
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(2);
+    expect(A.getState().outbox).toEqual([]);
+  });
 });
