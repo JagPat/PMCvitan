@@ -9,7 +9,7 @@ import {
   mp4Timed, oggTimed, webmClusterAt, webmInfo, webmTimed, withGranule, OPUS_PRE_SKIP,
   audioEntryFields, audioSpecificConfig, descriptor, dinf, dOps, DOPS_BODY, esds, mvhd, sampleEntry, stsc,
 } from '../../test/unit-support/voice-files';
-import { webmOf, oggWithTags, opusTags, plainMp4, fragmentedMp4, grow, MB } from '../../test/unit-support/voice-files';
+import { webmOf, oggWithTags, opusTags, plainMp4, fragmentedMp4, grow, MB, safariWebm } from '../../test/unit-support/voice-files';
 
 /**
  * Stage 1 voice (#482, Codex P2s on #1010): only an audio-only recording, with sound in it, in the container its type
@@ -89,6 +89,7 @@ describe('isAudioOnlyRecording', () => {
     const first = oggPage(0, 1, 2, big.subarray(0, 510)); // two 255s: the packet continues on the next page
     const lacing = first[26]!;
     first[26] = lacing - 1; // drop the closing 0-lace, so the packet runs on
+    first.writeBigInt64LE(-1n, 6); // and the page, finishing no packet now, has no granule (#1154)
     const cut = oggSeal(Buffer.concat([first.subarray(0, 27 + lacing - 1), first.subarray(27 + lacing)]));
     const rest = oggPage(0x05, 1, 3, big.subarray(510));
     expect(ogg(Buffer.concat([oggPage(0x02, 1, 0, OPUS_HEAD), oggPage(0, 1, 1, OPUS_TAGS), cut, rest]))).toBe(true);
@@ -1404,37 +1405,33 @@ describe('Codex round 1 on #1025', () => {
   it('Ogg pages are capped at 100,000: a page completes no packet when it holds none, so pages are capped on their own', () => {
     const pages = (n: number) => {
       const out = [oggPage(0x02, 1, 0, OPUS_HEAD), oggPage(0x00, 1, 1, OPUS_TAGS), oggPage(0x00, 1, 2, AUDIO_PACKET)];
-      for (let i = 0; i < n; i++) out.push(oggPage(i === n - 1 ? 0x04 : 0x00, 1, 3 + i, []));
+      // the last page ends the stream with a packet, so the file ends on a page with a granule (#1154)
+      for (let i = 0; i < n; i++) out.push(i === n - 1 ? oggPage(0x04, 1, 3 + i, AUDIO_PACKET) : oggPage(0x00, 1, 3 + i, []));
       return Buffer.concat(out);
     };
-    // with the three pages before them, 99,996 empty pages make 99,999, the most a walk reads to its end; 99,997 make
-    // 100,000, and the walk stops at its cap before the end
+    // with the three pages before them, 99,995 empty pages and the last make 99,999, the most a walk reads to its end;
+    // one more empty page makes 100,000, and the walk stops at its cap before the end
     expect(ogg(pages(99_996))).toBe(true);
     expect(ogg(pages(99_997))).toBe(false);
   });
 
-  it('pre-existing, same class as tfdt: a trun sample\'s composition offset counts in the length, at version 0 and 1', () => {
-    // two 1 s samples, the second presented 600 s after its decode time (CT = DT + offset, ISO 14496-12 §8.6.1.1): a
-    // player shows it ten minutes in, so the file is 602 s and the upload refuses it; 442d7d1 read 2 s
+  it('pre-existing, same class as tfdt: a trun with a non-zero composition offset is refused, at version 0 and 1', () => {
+    // two 1 s samples, the second presented 600 s after its decode time (CT = DT + offset, ISO 14496-12 §8.6.1.1): 442d7d1
+    // read 2 s; this round read 602 s. A sound track presents its frames in decode order, so since Codex round 2 on
+    // #1165 a run presenting any frame at another time is refused
     const offsets = (version: 0 | 1, shifts: [number, number]) => fragmentedMp4({ traf: (off) => [tfhd(1),
       fullBox('trun', version, 0x000b01, [be(2, off), be(48_000, 4, shifts[0] >>> 0, 48_000, 4, shifts[1] >>> 0)])] });
     for (const version of [0, 1] as const) {
-      const late = offsets(version, [0, 48_000 * 600]);
-      expect(mp4(late)).toBe(true);
-      expect(recordingSeconds('audio/mp4', late)).toBeCloseTo(602, 6); // the shifted sample's own second counts
-      expect(readVoiceRecording('audio/mp4', late)!.durationSec).toBeGreaterThan(120);
-      // offsets of 0 read the durations, as before
+      for (const shifts of [[0, 48_000 * 600], [48_000 * 600, 0], [0, 2 ** 31], [0, -24_000]] as Array<[number, number]>) {
+        expect(mp4(offsets(version, shifts))).toBe(false);
+        expect(readVoiceRecording('audio/mp4', offsets(version, shifts))).toBeNull();
+      }
+      // offsets that are all 0 present every frame at its decode time: the run reads as it does without them
       expect(recordingSeconds('audio/mp4', offsets(version, [0, 0]))).toBeCloseTo(2, 6);
     }
-    // a negative offset (version 1) presents a sample earlier; it cannot shorten the file below its durations
-    expect(recordingSeconds('audio/mp4', offsets(1, [0, -24_000]))).toBeCloseTo(2, 6);
-    // at version 0 the offset is unsigned: 2^31 ticks is over 44,000 s, never a negative shift
-    expect(recordingSeconds('audio/mp4', offsets(0, [0, 2 ** 31]))).toBeGreaterThan(44_000);
-    // a run tfdt places 600 s in, with a negative offset on its last sample: the length is still where the timeline
-    // reaches, 602 s, not where the shifted sample is presented
-    const placed = fragmentedMp4({ traf: (off) => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000 * 600)),
-      fullBox('trun', 1, 0x000b01, [be(2, off), be(48_000, 4, 0, 48_000, 4, -24_000 >>> 0)])] });
-    expect(recordingSeconds('audio/mp4', placed)).toBeCloseTo(602, 6);
+    // the same run without the offsets column reads its durations
+    const plain = fragmentedMp4({ traf: (off) => [tfhd(1), fullBox('trun', 0, 0x000301, [be(2, off), be(48_000, 4, 48_000, 4)])] });
+    expect(recordingSeconds('audio/mp4', plain)).toBeCloseTo(2, 6);
   });
 
   it('audit: a trun past the samples left is refused before any of its sample fields is read', () => {
@@ -1579,5 +1576,293 @@ describe('Codex round 2 on #1025: the length is where the last decodable sample 
     const ends = pages.map((_, i) => Buffer.concat(pages.slice(0, i + 1)).length);
     expect(cuts('audio/ogg', o, 1)).toEqual([{ at: ends[2], seconds: 0.04 }, { at: ends[3], seconds: 0.08 }]);
     expect(seconds('audio/ogg', o)).toBeCloseTo(0.12, 6);
+  });
+});
+
+describe('parser follow-ups from #1025 (#1097, #1141, #1154)', () => {
+  const webm = (b: Buffer) => isAudioOnlyRecording('audio/webm', b);
+  const mp4 = (b: Buffer) => isAudioOnlyRecording('audio/mp4', b);
+  const ogg = (b: Buffer) => isAudioOnlyRecording('audio/ogg', b);
+  /** big-endian 32-bit words */
+  const be = (...values: number[]) => {
+    const out = Buffer.alloc(4 * values.length);
+    values.forEach((v, i) => out.writeUInt32BE(v, 4 * i));
+    return out;
+  };
+  /** a fragmented MP4 of `count` 4-byte samples whose durations the file gives as 0 (trex's default), its run placed
+   *  `at` seconds into the 48 kHz media timeline by tfdt, with a sample `shift` ticks late, in AAC or Opus */
+  const zeroTimed = (count: number, at: number, o: { opus?: boolean; shift?: number } = {}) => fragmentedMp4({
+    table: [stsd(o.opus ? 'Opus' : 'mp4a'), stts(0), stsc(0), stsz([]), stco(0, 0)],
+    traf: (off) => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000 * at)), o.shift === undefined ? trun(Array.from({ length: count }, () => 4), off)
+      : fullBox('trun', 1, 0x000a01, [be(count, off), be(...Array.from({ length: count }, (_, i) => [4, i === 0 ? o.shift! : 0]).flat())])],
+    mdatBytes: 4 * count,
+  });
+
+  it('#1097: a fragment run\'s frames end where they play from the run\'s place, not only as a file-wide total', () => {
+    // Codex's example: 2,000 AAC frames whose durations are 0, placed 100 s in, play to 142.67 s and are refused over
+    // the caller's 120 s cap; on main they read max(100, 42.67) = 100 s
+    const codex = zeroTimed(2000, 100);
+    expect(mp4(codex)).toBe(true);
+    expect(recordingSeconds('audio/mp4', codex)).toBeCloseTo(100 + (2000 * 1024) / 48_000, 6);
+    expect(readVoiceRecording('audio/mp4', codex)!.durationSec).toBe(143);
+    // Opus the same way, each packet timed by its TOC byte
+    const opusAt0 = recordingSeconds('audio/mp4', zeroTimed(2000, 0, { opus: true }))!;
+    expect(opusAt0).toBeGreaterThan(0);
+    expect(recordingSeconds('audio/mp4', zeroTimed(2000, 100, { opus: true }))).toBeCloseTo(100 + opusAt0, 6);
+    // a run at 0 reads its frames, as before
+    expect(recordingSeconds('audio/mp4', zeroTimed(2000, 0))).toBeCloseTo((2000 * 1024) / 48_000, 6);
+  });
+
+  it('#1141: the media edit starts before the track\'s last sample ends, so it plays some sound', () => {
+    // two AAC frames, 2,048 ticks of a 48 kHz track (stts 1,024 each)
+    const edited = (version: 0 | 1, mediaTime: number | bigint) => {
+      const entry = Buffer.alloc(version === 1 ? 20 : 12);
+      if (version === 1) {
+        entry.writeBigUInt64BE(5000n);
+        entry.writeBigInt64BE(BigInt(mediaTime), 8);
+        entry.writeInt16BE(1, 16);
+      } else {
+        entry.writeUInt32BE(5000);
+        entry.writeInt32BE(Number(mediaTime), 4);
+        entry.writeInt16BE(1, 8);
+      }
+      const edts = box('edts', fullBox('elst', version, 0, [be(1), entry]));
+      return Buffer.concat([laidOut((o) => Buffer.concat([ftyp(), box('moov', [mvhd(0, 1000), trak('soun', 1, [4, 4], o, 0, [edts])])])), mdat(8)]);
+    };
+    for (const version of [0, 1] as const) {
+      expect(mp4(edited(version, 0))).toBe(true);
+      expect(mp4(edited(version, 2047))).toBe(true); // its last tick is sound
+      // Codex's example: an edit starting where the track ends shows none of it (on main, accepted as 5 s)
+      expect(mp4(edited(version, 2048)), `version ${version}`).toBe(false);
+      expect(mp4(edited(version, 48_000)), `version ${version}`).toBe(false);
+    }
+    // a 64-bit media time past what a number holds exactly is refused, not rounded
+    expect(mp4(edited(1, 2n ** 60n))).toBe(false);
+    // durations the file states past its frames are silence: two AAC frames whose stts says 30 s each, with the edit
+    // at 50 s, start past every frame and are refused (Stage 1 gap-check: read as 60 s of silence when the bound took
+    // the stated durations); at 0 they pass
+    const stated = (mediaTime: number) => {
+      const entry = Buffer.alloc(12);
+      entry.writeUInt32BE(5000);
+      entry.writeInt32BE(mediaTime, 4);
+      entry.writeInt16BE(1, 8);
+      const edts = box('edts', fullBox('elst', 0, 0, [be(1), entry]));
+      return Buffer.concat([
+        laidOut((o) => Buffer.concat([ftyp(), box('moov', [mvhd(0, 1000), box('trak', [tkhd(1), edts, box('mdia', [mdhd(), hdlr('soun'),
+          box('minf', [fullBox('smhd', 0, 0, be(0)), dinf(), box('stbl', [stsd('mp4a'), stts(2, 48_000 * 30), stsc(2), stsz([4, 4]), stco(2, o)])])])])])])),
+        mdat(8)]);
+    };
+    expect(mp4(stated(0))).toBe(true);
+    expect(mp4(stated(48_000 * 50))).toBe(false);
+    expect(mp4(stated(2047))).toBe(true);
+  });
+
+  it('Codex P1 on #1165: frames decoded one after another carry across runs, so splitting them among runs changes nothing', () => {
+    // Codex's example: 2,000 AAC frames whose durations are 0, at tfdt 100 s, each in a run of its own; on 674070b
+    // each run started again at 100 s and the file read 100.02 s
+    const runs = (count: number) => fragmentedMp4({
+      table: [stsd('mp4a'), stts(0), stsc(0), stsz([]), stco(0, 0)],
+      traf: (off) => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000 * 100)), trun([4], off),
+        ...Array.from({ length: count - 1 }, () => fullBox('trun', 0, 0x000200, [be(1), be(4)]))],
+      mdatBytes: 4 * count,
+    });
+    expect(mp4(runs(2000))).toBe(true);
+    expect(recordingSeconds('audio/mp4', runs(2000))).toBeCloseTo(100 + (2000 * 1024) / 48_000, 6);
+    expect(recordingSeconds('audio/mp4', runs(2000))).toBeCloseTo(recordingSeconds('audio/mp4', zeroTimed(2000, 100))!, 6);
+    // and moov's own frames come first: a fragment at tfdt 0 after two moov frames starts where they end
+    const after = Buffer.concat([laidOut((o) => Buffer.concat([ftyp('iso5'), box('moov', [mvhd(), trak('soun', 1, [4, 4], o, 0), box('mvex', trex(1))])])), mdat(8)]);
+    expect(recordingSeconds('audio/mp4', after)).toBeCloseTo(2048 / 48_000, 6);
+  });
+
+  it('Codex P2 on #1165: the media edit selects some decoded sound, not a gap between fragments', () => {
+    // one AAC frame at 0 s and one at 60 s (tfdt), and a 5 s edit of the media from `at` seconds (0: to the end)
+    const gapped = (at: number, seconds = 5) => {
+      const entry = Buffer.alloc(12);
+      entry.writeUInt32BE(seconds * 1000);
+      entry.writeInt32BE(48_000 * at, 4);
+      entry.writeInt16BE(1, 8);
+      const edts = box('edts', fullBox('elst', 0, 0, [be(1), entry]));
+      const frag = (n: number, t: number) => fragment(n, (o) => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000 * t)), trun([4], o)]);
+      return Buffer.concat([ftyp('iso5'), box('moov', [mvhd(0, 1000), trak('soun', 1, [], 0, 0, [edts]), box('mvex', trex(1))]),
+        frag(1, 0), mdat(4), frag(2, 60), mdat(4)]);
+    };
+    expect(mp4(gapped(0))).toBe(true);
+    expect(mp4(gapped(60))).toBe(true);
+    expect(mp4(gapped(57))).toBe(true); // 57 to 62 s reaches the frame at 60 s
+    // Codex's example: 30 to 35 s holds no frame; on 674070b it passed (30 < 60.02)
+    expect(mp4(gapped(30))).toBe(false);
+    expect(mp4(gapped(55))).toBe(false); // 55 to 60 s ends where the frame at 60 s begins
+    expect(mp4(gapped(61))).toBe(false); // past the last frame
+    // an edit of duration 0 runs to the end of the media, so from 30 s it reaches the frame at 60 s
+    expect(mp4(gapped(30, 0))).toBe(true);
+    // moov's frames come first: 100 of them decode to 2.13 s, so a run of 100 more at tfdt 1 s plays from 2.13 s to
+    // 4.27 s, and an edit from 3.2 s to 4 s selects it (read from 1 s, the run would end at 3.13 s and the edit pass none)
+    const entry = Buffer.alloc(12);
+    entry.writeUInt32BE(800);
+    entry.writeInt32BE(48_000 * 3.2, 4);
+    entry.writeInt16BE(1, 8);
+    const edts = box('edts', fullBox('elst', 0, 0, [be(1), entry]));
+    const hundred = Array.from({ length: 100 }, () => 4);
+    const carried = Buffer.concat([
+      laidOut((o) => Buffer.concat([ftyp('iso5'), box('moov', [mvhd(0, 1000), trak('soun', 1, hundred, o, 0, [edts]), box('mvex', trex(1))])])), mdat(400),
+      fragment(1, (o) => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000)), trun(hundred, o)]), mdat(400),
+    ]);
+    expect(mp4(carried)).toBe(true);
+    expect(recordingSeconds('audio/mp4', carried)).toBeCloseTo((200 * 1024) / 48_000, 6);
+  });
+
+  it('Codex P2 on #1165 round 2: a run with no frames moves nothing; a run with a non-zero composition offset is refused', () => {
+    // an empty run at tfdt 60 s, then 100 AAC frames at tfdt 1 s, and an edit of the media from 1 s to 2 s: on 90eff85
+    // the empty run moved the decoded end to 60 s, so the frames were placed at 60 s and the edit refused
+    const entry = Buffer.alloc(12);
+    entry.writeUInt32BE(1000);
+    entry.writeInt32BE(48_000, 4);
+    entry.writeInt16BE(1, 8);
+    const edts = box('edts', fullBox('elst', 0, 0, [be(1), entry]));
+    const hundred = Array.from({ length: 100 }, () => 4);
+    const emptyFirst = (count: number) => Buffer.concat([
+      ftyp('iso5'), box('moov', [mvhd(0, 1000), trak('soun', 1, [], 0, 0, [edts]), box('mvex', trex(1))]),
+      fragment(1, () => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000 * 60)), fullBox('trun', 0, 0, be(0))]),
+      fragment(2, (o) => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000)), trun(hundred.slice(0, count), o)]), mdat(4 * count),
+    ]);
+    expect(mp4(emptyFirst(100))).toBe(true);
+    // the length still counts the timeline tfdt states, 60 s, as before this PR: a stated length is never shortened
+    expect(recordingSeconds('audio/mp4', emptyFirst(100))).toBeCloseTo(60, 6);
+    // Codex's example of offsets: two zero-duration frames, the first presented 60 s late; on 90eff85 the run was read as
+    // one stretch at 60 s. AAC and Opus frames have no presentation order of their own, so the offset is refused
+    expect(mp4(zeroTimed(2, 0, { shift: 48_000 * 60 }))).toBe(false);
+    expect(mp4(zeroTimed(2, 0, { shift: 1, opus: true }))).toBe(false);
+    // the offsets column with every offset 0 changes nothing: it reads as the same run without it, in AAC and Opus
+    for (const opus of [false, true]) {
+      expect(mp4(zeroTimed(2, 0, { shift: 0, opus }))).toBe(true);
+      expect(recordingSeconds('audio/mp4', zeroTimed(2, 0, { shift: 0, opus }))).toBeCloseTo(recordingSeconds('audio/mp4', zeroTimed(2, 0, { opus }))!, 6);
+    }
+    // moov's ctts, the offsets of a non-fragmented track, is refused as before (stbl's allow-list never named it)
+    const table = (extra: Buffer[]) => Buffer.concat([laidOut((o) => Buffer.concat([ftyp(), box('moov', [mvhd(),
+      trakAround('soun', 1, [stsd('mp4a'), stts(2), stsc(2), stsz([4, 4]), stco(2, o), ...extra])])])), mdat(8)]);
+    expect(mp4(table([fullBox('ctts', 0, 0, be(1, 2, 0))]))).toBe(false);
+    expect(mp4(table([]))).toBe(true);
+  });
+
+  it('#1141: a fragment marked duration-is-empty holding a run, and #1154: track_ID 0, are refused (landed in #1158)', () => {
+    // pinned by "Codex round 1 on #1158" and "Codex round 2 on #1158" above; listed here so each follow-up has its test
+    const empty = Buffer.from(fragmentedMp4());
+    empty[empty.indexOf(Buffer.from('tfhd')) + 5]! |= 0x01;
+    expect(mp4(empty)).toBe(false);
+    const zero = Buffer.from(plainMp4());
+    zero.writeUInt32BE(0, zero.indexOf(Buffer.from('tkhd')) + 4 + 12);
+    expect(mp4(zero)).toBe(false);
+  });
+
+  it('#1154: an Ogg page that finishes no packet carries granule -1', () => {
+    const heads = [oggPage(0x02, 1, 0, OPUS_HEAD), oggPage(0, 1, 1, OPUS_TAGS)];
+    // Codex's example: valid audio, then an empty end-of-stream page with a granule of its own, read as 600 s on main
+    const audio = oggPage(0, 1, 2, [AUDIO_PACKET, AUDIO_PACKET]);
+    expect(ogg(Buffer.concat([...heads, audio, withGranule(oggPage(0x04, 1, 3, []), BigInt(OPUS_PRE_SKIP + 48_000 * 600))]))).toBe(false);
+    // an empty page with -1 cannot end the file either (no granule), but mid-stream it passes, and with a granule it is refused
+    const last = oggPage(0x04, 1, 4, AUDIO_PACKET);
+    expect(ogg(Buffer.concat([...heads, audio, oggPage(0, 1, 3, []), last]))).toBe(true);
+    expect(ogg(Buffer.concat([...heads, audio, withGranule(oggPage(0, 1, 3, []), 0n), last]))).toBe(false);
+    // a page whose one packet runs on to the next finishes none on it: -1 passes, a granule is refused
+    const big = Buffer.alloc(300, 9);
+    const runs = oggPageRaw(0, 1, 3, [255], big.subarray(0, 255));
+    const ends = oggPageRaw(0x05, 1, 4, [45], big.subarray(255));
+    expect(ogg(Buffer.concat([...heads, audio, runs, ends]))).toBe(true);
+    expect(ogg(Buffer.concat([...heads, audio, withGranule(runs, 0n), ends]))).toBe(false);
+  });
+
+  it('#1154: the first Ogg page is page 0', () => {
+    expect(ogg(Buffer.concat([oggPage(0x02, 1, 0, OPUS_HEAD), oggPage(0, 1, 1, OPUS_TAGS), oggPage(0x04, 1, 2, AUDIO_PACKET)]))).toBe(true);
+    // on main, a stream numbered from 5 passed
+    expect(ogg(Buffer.concat([oggPage(0x02, 1, 5, OPUS_HEAD), oggPage(0, 1, 6, OPUS_TAGS), oggPage(0x04, 1, 7, AUDIO_PACKET)]))).toBe(false);
+    expect(ogg(Buffer.concat([oggPage(0x02, 1, 1, OPUS_HEAD), oggPage(0, 1, 2, OPUS_TAGS), oggPage(0x04, 1, 3, AUDIO_PACKET)]))).toBe(false);
+  });
+
+  it('#1154: a WebM track with FlagLacing 0 holds no laced block', () => {
+    const track = (lacing?: number) => ebml(WEBM.trackEntry, Buffer.concat([ebml(WEBM.trackNumber, Buffer.from([1])), ebml(WEBM.trackType, Buffer.from([2])),
+      ebml(WEBM.codecId, 'A_OPUS'), ebml(WEBM.codecPrivate, OPUS_HEAD), ...(lacing === undefined ? [] : [ebml(0x9c, Buffer.from([lacing]))])]));
+    const file = (lacing: number | undefined, block: Buffer) => Buffer.concat([webmHeader(),
+      ebml(WEBM.segment, Buffer.concat([webmInfo(), ebml(WEBM.tracks, track(lacing)), webmCluster([simpleBlock(), block])]), true)]);
+    const six = Buffer.from([0xfc, 1, 2, 0xfc, 4, 5]);
+    const laced = [lacedBlock(1, 1, 2, Buffer.from([3]), six), lacedBlock(1, 2, 2, Buffer.alloc(0), six), lacedBlock(1, 3, 2, Buffer.from([0x83]), six)];
+    for (const [i, block] of laced.entries()) {
+      // on main each passed with FlagLacing 0
+      expect(webm(file(0, block)), `lacing ${i + 1}`).toBe(false);
+      expect(webm(file(1, block)), `lacing ${i + 1}`).toBe(true);
+      expect(webm(file(undefined, block)), `lacing ${i + 1}`).toBe(true); // FlagLacing defaults to 1
+    }
+    expect(webm(file(0, simpleBlock()))).toBe(true); // an unlaced block on such a track
+  });
+});
+
+describe('Safari\'s WebM: an iPhone voice note (refused on the live site, 27 Oct)', () => {
+  const webm = (b: Buffer) => isAudioOnlyRecording('audio/webm', b);
+  const CUES = Buffer.from([0x1c, 0x53, 0xbb, 0x6b]);
+  /** the same note with its Cues element replaced by these bytes (nothing, to drop it) */
+  const withCues = (b: Buffer, cues: Buffer) => Buffer.concat([b.subarray(0, b.lastIndexOf(CUES)), cues]);
+  /** where each Cluster starts, from the Segment's data (the EBML header, the Segment's ID and its 8-byte size before it) */
+  const clusterAt = (b: Buffer, n = 0) => {
+    const data = b.indexOf(Buffer.from([0x18, 0x53, 0x80, 0x67])) + 12;
+    let at = b.indexOf(Buffer.from([0x1f, 0x43, 0xb6, 0x75]));
+    for (let i = 0; i < n; i++) at = b.indexOf(Buffer.from([0x1f, 0x43, 0xb6, 0x75]), at + 1);
+    return at - data;
+  };
+  const u = (n: number) => {
+    const out: number[] = [];
+    for (let v = n; v > 0 || out.length === 0; v = Math.floor(v / 256)) out.unshift(v % 256);
+    return Buffer.from(out);
+  };
+  const point = (o: { time?: Buffer | null; track?: number | null; cluster?: number | null; extra?: Buffer[]; pointExtra?: Buffer[] }) =>
+    ebml(0xbb, Buffer.concat([...(o.time === null ? [] : [ebml(0xb3, o.time ?? u(0))]), ...(o.pointExtra ?? []),
+      ebml(0xb7, Buffer.concat([...(o.track === null ? [] : [ebml(0xf7, u(o.track ?? 1))]), ...(o.cluster === null ? [] : [ebml(0xf1, u(o.cluster ?? 0))]), ...(o.extra ?? [])]))]));
+  const cues = (...points: Buffer[]) => ebml(0x1c53bb6b, Buffer.concat(points));
+
+  it('passes the shape Safari\'s recorder writes, Cues after the Clusters, at its own length', () => {
+    // 14 s of 20 ms packets, as the note on the live site: on e50a1cf it was refused for its Cues
+    const note = safariWebm(700);
+    expect(webm(note)).toBe(true);
+    expect(readVoiceRecording('audio/webm', note)).toEqual({ seconds: 14, durationSec: 14 });
+    // past 30 s Safari starts a second Cluster, and a CuePoint for it
+    const long = safariWebm(2000);
+    expect(readVoiceRecording('audio/webm', long)).toEqual({ seconds: 40, durationSec: 40 });
+    // and without its Cues it is Chrome's shape, which passes as before
+    expect(webm(withCues(note, Buffer.alloc(0)))).toBe(true);
+  });
+
+  it('reads the Cues whole: one, on the track, each point at a Cluster\'s start, only the fields a cue has', () => {
+    const note = safariWebm(700);
+    const at = clusterAt(note);
+    // a cue times nothing: a CueTime of 2^56 ms leaves the note at its own 14 s
+    expect(recordingSeconds('audio/webm', withCues(note, cues(point({ time: Buffer.from([1, 0, 0, 0, 0, 0, 0, 0]), cluster: at }))))).toBe(14);
+    expect(webm(withCues(note, cues(point({ cluster: at }))))).toBe(true);
+    expect(webm(withCues(note, cues(point({ cluster: at, extra: [ebml(0xf0, u(4)), ebml(0x5378, u(2)), ebml(0xb2, u(20))] }))))).toBe(true);
+    const long = safariWebm(2000);
+    expect(webm(withCues(long, cues(point({ cluster: clusterAt(long) }), point({ time: u(30_000), cluster: clusterAt(long, 1) }))))).toBe(true);
+    for (const [why, bad] of [
+      ['two Cues', Buffer.concat([cues(point({ cluster: at })), cues(point({ cluster: at }))])],
+      ['no CuePoint', cues()],
+      ['a cue at no Cluster\'s start', cues(point({ cluster: at + 1 }))],
+      ['a cue on another track', cues(point({ track: 2, cluster: at }))],
+      ['a cue with no time', cues(point({ time: null, cluster: at }))],
+      ['a cue with no track', cues(point({ track: null, cluster: at }))],
+      ['a cue with no Cluster', cues(point({ cluster: null }))],
+      ['a cue with no positions', cues(ebml(0xbb, ebml(0xb3, u(0))))],
+      ['two positions in a cue', cues(point({ cluster: at, pointExtra: [ebml(0xb7, Buffer.concat([ebml(0xf7, u(1)), ebml(0xf1, u(at))]))] }))],
+      ['a CueReference', cues(point({ cluster: at, extra: [ebml(0xdb, ebml(0x96, u(0)))] }))],
+      ['a CueCodecState', cues(point({ cluster: at, extra: [ebml(0xea, u(0))] }))],
+      ['an unknown element in Cues', cues(point({ cluster: at }), ebml(0xbf, u(0)))],
+      ['a CueTime of 9 bytes', cues(point({ time: Buffer.alloc(9), cluster: at }))],
+    ] as const) {
+      expect(webm(withCues(note, bad)), why).toBe(false);
+    }
+    // Cues before the Tracks name the track it points at
+    const segment = note.indexOf(Buffer.from([0x18, 0x53, 0x80, 0x67])) + 12;
+    const ahead = cues(point({ cluster: at })).length; // the Cues moves the Cluster on by its own length
+    const early = Buffer.concat([note.subarray(0, segment), cues(point({ cluster: at + ahead })), note.subarray(segment, note.lastIndexOf(CUES))]);
+    expect(cues(point({ cluster: at + ahead })).length).toBe(ahead);
+    expect(webm(early)).toBe(false);
+    // SeekHead and Tags are still refused
+    expect(webm(Buffer.concat([note, ebml(0x114d9b74, Buffer.alloc(0))]))).toBe(false);
+    expect(webm(Buffer.concat([note, ebml(0x1254c367, Buffer.alloc(0))]))).toBe(false);
   });
 });

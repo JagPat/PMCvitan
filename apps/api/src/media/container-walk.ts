@@ -95,12 +95,13 @@ const VOID = 0xec;
 /**
  * What an element holds, so every one is read by its type (#1013 replacement review): an unsigned or signed integer of
  * at most 8 bytes, a float of 0, 4 or 8 bytes, a text of at most 64 bytes (a codec or document type, at most 16), a
- * SegmentUUID of exactly 16 bytes, a date of exactly 8; a container, a block or the OpusHead, each read by its caller;
+ * SegmentUUID of exactly 16 bytes, a date of exactly 8; a container (one that may repeat, a CuePoint, is an `entry`), a
+ * block or the OpusHead, each read by its caller;
  * or Void, padding no player reads, counted against the file's padding cap. CRC-32 is refused everywhere (Chrome
  * writes none, and an unverified checksum is bytes passed over unread). Each element appears once in its parent, but
- * Void, blocks and BlockGroups.
+ * Void, blocks, BlockGroups and entries.
  */
-type Kind = 'uint' | 'int' | 'float' | 'text' | 'code' | 'uuid' | 'date' | 'master' | 'block' | 'group' | 'opushead' | 'void';
+type Kind = 'uint' | 'int' | 'float' | 'text' | 'code' | 'uuid' | 'date' | 'master' | 'entry' | 'block' | 'group' | 'opushead' | 'void';
 /** the longest text element read, and the longest codec or document type (A_OPUS, webm) */
 const TEXT_MAX = 64;
 const CODE_MAX = 16;
@@ -127,6 +128,22 @@ const TRACK_ENTRY_CHILDREN = new Map<number, Kind>([
 ]);
 /** SamplingFrequency, Channels, BitDepth, OutputSamplingFrequency */
 const AUDIO_CHILDREN = new Map<number, Kind>([[0xb5, 'float'], [0x9f, 'uint'], [0x6264, 'uint'], [0x78b5, 'float'], [VOID, 'void']]);
+/**
+ * Cues, the seek index Safari's recorder (WebKit, libwebm in file mode) writes after the Clusters (#482: an iPhone's
+ * voice note was refused for it): CuePoints, each a CueTime and one CueTrackPositions of CueTrack, CueClusterPosition,
+ * and at most CueRelativePosition, CueDuration and CueBlockNumber; no CueCodecState or CueReference
+ */
+const CUES = 0x1c53bb6b;
+const CUE_POINT = 0xbb;
+const CUE_TIME = 0xb3;
+const CUE_TRACK_POSITIONS = 0xb7;
+const CUE_TRACK = 0xf7;
+const CUE_CLUSTER_POSITION = 0xf1;
+const CUES_CHILDREN = new Map<number, Kind>([[CUE_POINT, 'entry'], [VOID, 'void']]);
+const CUE_POINT_CHILDREN = new Map<number, Kind>([[CUE_TIME, 'uint'], [CUE_TRACK_POSITIONS, 'master'], [VOID, 'void']]);
+const CUE_TRACK_POSITIONS_CHILDREN = new Map<number, Kind>([
+  [CUE_TRACK, 'uint'], [CUE_CLUSTER_POSITION, 'uint'], [0xf0, 'uint'], [0xb2, 'uint'], [0x5378, 'uint'], [VOID, 'void'],
+]);
 /** Timestamp, Position, PrevSize, SimpleBlock, BlockGroup; no SilentTracks or EncryptedBlock */
 const CLUSTER_CHILDREN = new Map<number, Kind>([
   [0xe7, 'uint'], [0xa7, 'uint'], [0xab, 'uint'], [SIMPLE_BLOCK, 'block'], [BLOCK_GROUP, 'group'], [VOID, 'void'],
@@ -185,7 +202,7 @@ function readElement(b: Buffer, at: number, end: number, steps: Walk, allowUnkno
 function checkChild(b: Buffer, e: Element, allowed: Map<number, Kind>, seen: Set<number>, walk: Walk): Kind {
   const kind = allowed.get(e.id);
   if (kind === undefined) fail();
-  if (kind !== 'void' && kind !== 'block' && kind !== 'group') {
+  if (kind !== 'void' && kind !== 'block' && kind !== 'group' && kind !== 'entry') {
     if (seen.has(e.id)) fail();
     seen.add(e.id);
   }
@@ -235,30 +252,32 @@ function uintOf(b: Buffer, e: Element): number {
 
 /**
  * An audio TrackEntry's fields, each read once by the walk (`seen`, by ID): the track a player plays, Opus with its
- * OpusHead. Returns its number and DefaultDuration. Also read for a video clip's sound track (#995).
+ * OpusHead. Returns its number, DefaultDuration and whether its blocks may be laced. Also read for a video clip's sound
+ * track (#995).
  */
-function opusTrack(b: Buffer, seen: Map<number, Element>): { number: number; frameNs: number } {
+function opusTrack(b: Buffer, seen: Map<number, Element>): { number: number; frameNs: number; lacing: boolean } {
   const number = seen.get(TRACK_NUMBER);
   const codec = seen.get(CODEC_ID);
   if (!number || !codec) fail();
   // Opus only: Vorbis's length would come from its headers alone, and no browser records it
   if (codeOf(b, codec!) !== 'A_OPUS') fail();
-  trackFlags(b, seen);
+  const { lacing } = trackFlags(b, seen);
   // an Opus track's CodecPrivate is its OpusHead, which Matroska requires and Chrome writes
   const head = seen.get(CODEC_PRIVATE);
   if (!head || !isOpusHead(b, head.dataStart, head.dataEnd - head.dataStart)) fail();
   // DefaultDuration: what the file says each frame lasts, in nanoseconds (0 when not written)
   const each = seen.get(DEFAULT_DURATION);
-  const found = { number: uintOf(b, number!), frameNs: each ? uintOf(b, each) : 0 };
+  const found = { number: uintOf(b, number!), frameNs: each ? uintOf(b, each) : 0, lacing };
   if (found.number < 1) fail();
   return found;
 }
 
 /**
  * The track is one a player plays (Codex P2 on #1013 round 3): enabled and default when the flags are written (both
- * default to 1), and the other flags are booleans.
+ * default to 1), and the other flags are booleans. Returns FlagLacing (1 when not written): a track that sets it to 0
+ * says none of its blocks is laced (#1154).
  */
-function trackFlags(b: Buffer, seen: Map<number, Element>): void {
+function trackFlags(b: Buffer, seen: Map<number, Element>): { lacing: boolean } {
   const flag = (id: number, allowed: number[]) => {
     const f = seen.get(id);
     if (f && !allowed.includes(uintOf(b, f))) fail();
@@ -267,6 +286,8 @@ function trackFlags(b: Buffer, seen: Map<number, Element>): void {
   flag(FLAG_DEFAULT, [1]);
   flag(FLAG_FORCED, [0, 1]);
   flag(FLAG_LACING, [0, 1]);
+  const lacing = seen.get(FLAG_LACING);
+  return { lacing: !lacing || uintOf(b, lacing) === 1 };
 }
 
 /**
@@ -279,7 +300,7 @@ function trackFlags(b: Buffer, seen: Map<number, Element>): void {
  * for by the block element's own step), and every frame holds at least one byte (Codex P2 on #1025): an empty one
  * refuses the file.
  */
-function blockTrack(b: Buffer, start: number, end: number, steps: Walk): { track: number; timecode: number; frames: Array<{ at: number; size: number }> } {
+function blockTrack(b: Buffer, start: number, end: number, steps: Walk): { track: number; timecode: number; laced: boolean; frames: Array<{ at: number; size: number }> } {
   const track = vint(b, start, end, false);
   if (track.unknown) fail();
   const flagsAt = start + track.length + 2;
@@ -335,7 +356,7 @@ function blockTrack(b: Buffer, start: number, end: number, steps: Walk): { track
     frames.push({ at, size });
     at += size;
   }
-  return { track: track.value, timecode, frames };
+  return { track: track.value, timecode, laced: lacing !== 0, frames };
 }
 
 /** A float element of 0, 4 or 8 bytes; it must be a finite number, not below 0. */
@@ -719,9 +740,10 @@ function audioSampleEntry(b: Buffer, stsd: Box, steps: Walk): { opus: boolean; r
 /**
  * A track's edit list, when it has one (#1013 replacement review): exactly one elst of one or two entries, each at
  * rate 1, at most one empty edit (media_time -1) and only first, and exactly one edit of the media, so no edit plays
- * the media twice. Returns the empty edit's delay and the media edit's duration, in movie ticks.
+ * the media twice. Returns the empty edit's delay and the media edit's duration, in movie ticks, and where in the media
+ * the edit starts (its media_time), in media ticks (#1141).
  */
-function editList(b: Buffer, edts: Box, steps: Walk): { delay: number; edit: number } {
+function editList(b: Buffer, edts: Box, steps: Walk): { delay: number; edit: number; start: number } {
   const elst = only(children(b, edts.dataStart, edts.end, 'edts', steps, ['elst']), 'elst');
   const { version, flags } = fullBoxHead(b, elst);
   if (version > 1 || flags !== 0 || elst.dataStart + 8 > elst.end) fail();
@@ -730,6 +752,7 @@ function editList(b: Buffer, edts: Box, steps: Walk): { delay: number; edit: num
   if (count < 1 || count > 2 || elst.dataStart + 8 + width * count !== elst.end) fail();
   let delay = 0;
   let edit: number | undefined;
+  let start = 0;
   for (let i = 0; i < count; i++) {
     const at = elst.dataStart + 8 + width * i;
     const duration = version === 1 ? u64(b, at) : b.readUInt32BE(at);
@@ -740,11 +763,12 @@ function editList(b: Buffer, edts: Box, steps: Walk): { delay: number; edit: num
       if (i !== 0 || count !== 2) fail(); // an empty edit only before the media
       delay = duration;
     } else {
-      if (mediaTime < 0n || edit !== undefined) fail(); // one edit of the media
+      if (mediaTime < 0n || mediaTime > BigInt(Number.MAX_SAFE_INTEGER) || edit !== undefined) fail(); // one edit of the media
       edit = duration;
+      start = Number(mediaTime);
     }
   }
-  return { delay, edit: edit! };
+  return { delay, edit: edit!, start };
 }
 
 /**
@@ -774,10 +798,11 @@ function timeHeader(b: Buffer, box: Box, sizes: number[]): { scale: number; dura
 
 /**
  * One trun: its sample count, its data_offset if it gives one (signed), its bytes and ticks with the defaults applied,
- * where its latest sample ends as presented (after its composition offset), and each sample's size. A count above `left` (the samples the file may still list) is refused before any sample is
+ * where its latest sample ends as presented (after its composition offset), whether any sample has a non-zero composition offset,
+ * and each sample's size. A count above `left` (the samples the file may still list) is refused before any sample is
  * read: with default sizes and durations a run's samples take no bytes of their own.
  */
-function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: number }, left: number): { count: number; dataOffset: number | undefined; bytes: number; ticks: number; reach: number; sizeOf: (i: number) => number } {
+function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: number }, left: number): { count: number; dataOffset: number | undefined; bytes: number; ticks: number; reach: number; shifted: boolean; sizeOf: (i: number) => number } {
   const { version, flags } = fullBoxHead(b, trun);
   if (version > 1 || flags & ~TRUN_FLAGS) fail(); // version 1 differs only in signed composition offsets
   let at = trun.dataStart + 4;
@@ -804,19 +829,22 @@ function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: numbe
   let bytes = 0;
   let ticks = 0;
   let reach = 0; // where the run's latest sample ends as presented, from the run's start
+  let shifted = false; // a sample presented other than at its decode time
   for (let i = 0; i < count; i++) {
     bytes += sizeOf(i);
     const duration = durationOf(i);
     reach = Math.max(reach, ticks + shiftOf(i) + duration);
+    if (shiftOf(i) !== 0) shifted = true;
     ticks += duration;
   }
-  return { count, dataOffset, bytes, ticks, reach, sizeOf };
+  return { count, dataOffset, bytes, ticks, reach, shifted, sizeOf };
 }
 
 export type { Walk, Kind, Element, Box, MediaRanges, SampleRanges };
 export {
   MAX_STEPS, MAX_PADDING, padding, charge, Malformed, fail, OPUS_RATE, opusPacketSamples, isOpusHead, EBML_HEADER,
-  DOC_TYPE, SEGMENT, INFO, TRACKS, TRACK_ENTRY, TRACK_NUMBER, TRACK_TYPE, CODEC_ID, AUDIO, CLUSTER, SIMPLE_BLOCK,
+  DOC_TYPE, SEGMENT, INFO, TRACKS, CUES, CUE_POINT, CUE_TIME, CUE_TRACK_POSITIONS, CUE_TRACK, CUE_CLUSTER_POSITION,
+  CUES_CHILDREN, CUE_POINT_CHILDREN, CUE_TRACK_POSITIONS_CHILDREN, TRACK_ENTRY, TRACK_NUMBER, TRACK_TYPE, CODEC_ID, AUDIO, CLUSTER, SIMPLE_BLOCK,
   BLOCK_GROUP, BLOCK, VOID, TEXT_MAX, CODE_MAX, EBML_HEADER_CHILDREN, SEGMENT_CHILDREN, INFO_CHILDREN,
   TRACKS_CHILDREN, TRACK_ENTRY_CHILDREN, AUDIO_CHILDREN, CLUSTER_CHILDREN, BLOCK_GROUP_CHILDREN, TIMESTAMP_SCALE,
   DURATION, CLUSTER_TIMESTAMP, FLAG_ENABLED, FLAG_DEFAULT, FLAG_FORCED, FLAG_LACING, CODEC_PRIVATE, DEFAULT_DURATION,
