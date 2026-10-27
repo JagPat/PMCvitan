@@ -100,6 +100,8 @@ beforeEach(() => {
   holdStop = false;
   release = null;
   vi.spyOn(Date, 'now').mockImplementation(() => now);
+  // a recording's length is on the phone's forward-only clock
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
   tracks = [{ stop: vi.fn() }];
   getUserMedia.mockClear();
   getUserMedia.mockImplementation(async () => ({ getTracks: () => tracks }));
@@ -376,6 +378,32 @@ describe('Stage 1 voice notes on a visit', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:voice-1');
   });
 
+  it('starts the player on the Play tap itself, then plays the file once fetched, and leaves its controls when the browser still will not', async () => {
+    let answer: (v: unknown) => void = () => {};
+    vi.stubGlobal('fetch', vi.fn(() => new Promise((done) => { answer = done; })));
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:voice-1'), revokeObjectURL: vi.fn() }));
+    const played: string[] = [];
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(function (this: HTMLMediaElement) {
+      played.push(this.getAttribute('src') ?? '');
+      // an iPhone that still refuses once the tap has passed
+      return played.length > 1 ? Promise.reject(new DOMException('no', 'NotAllowedError')) : Promise.resolve();
+    });
+    await mount('client', 'u-client', fakeGateway([visit({ status: 'ended', files: [voiceFile()] })]));
+    const row = screen.getByTestId('sv-file-m-v');
+    await act(async () => { fireEvent.click(within(row).getByRole('button', { name: 'Play: Slab level is off' })); });
+    // in the tap, before the file has come
+    expect(played).toHaveLength(1);
+    expect(played[0]).toMatch(/^data:audio\/wav;base64,/);
+    await act(async () => { answer({ ok: true, blob: async () => new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/webm' }) }); });
+    await settled();
+    expect(played).toEqual([played[0], 'blob:voice-1']);
+    // refused: the player stays, with its controls, and nothing says it failed
+    const audio = row.querySelector('audio')!;
+    expect(audio.hidden).toBe(false);
+    expect(audio.hasAttribute('controls')).toBe(true);
+    expect(row.textContent).not.toContain('could not be played');
+  });
+
   it('says a note could not be played and offers to try again', async () => {
     const fetchSpy = vi.fn(async () => ({ ok: false, status: 403, blob: async () => new Blob([]) }));
     vi.stubGlobal('fetch', fetchSpy);
@@ -395,7 +423,7 @@ describe('Stage 1 voice notes on a visit', () => {
     await act(async () => { fireEvent.click(within(row).getByRole('button', { name: 'Play: Slab level is off' })); });
     await settled();
     await act(async () => { fireEvent.error(row.querySelector('audio')!); });
-    expect(row.querySelector('audio')).toBeNull();
+    expect(row.querySelector('audio')!.hidden).toBe(true);
     expect(row.textContent).toContain('This voice note could not be played.');
     expect(within(row).getByRole('button', { name: 'Try again' })).toBeTruthy();
   });

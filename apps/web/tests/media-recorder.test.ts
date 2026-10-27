@@ -133,6 +133,37 @@ describe('Stage 1 voice notes: the shared recorder', () => {
     expect((await stopped).ms).toBe(10_000);
   });
 
+  it('is as long as it ran on a clock the phone’s time of day does not move', async () => {
+    const r = await startRecording('audio', 'audio/webm', 119_500);
+    vi.advanceTimersByTime(10_000);
+    // the phone's time is corrected forward an hour while it records
+    vi.setSystemTime(Date.now() + 3_600_000);
+    vi.advanceTimersByTime(2_000);
+    expect((await r.stop()).ms).toBe(12_000);
+  });
+
+  it('runs a recording the browser ended to when its microphone ended, never past the cap', async () => {
+    stopTakes = 900;
+    const mic = Object.assign(new EventTarget(), { stop: vi.fn() });
+    tracks = [mic as unknown as Track];
+    const r = await startRecording('audio', 'audio/webm', 119_500);
+    let ended: { rec: { ms: number }; cause: string } | null = null;
+    void r.ended.then((x) => { ended = x; });
+    vi.advanceTimersByTime(50_000);
+    mic.dispatchEvent(new Event('ended'));
+    vi.advanceTimersByTime(300);
+    FakeRecorder.last!.stop();
+    await vi.runAllTimersAsync();
+    expect(ended).toMatchObject({ cause: 'ended', rec: { ms: 50_000 } });
+    // no word from the microphone, and the stop event comes after the cap would have stopped it: at most the cap
+    tracks = [{ stop: vi.fn() }];
+    const s = await startRecording('audio', 'audio/webm', 119_500);
+    vi.advanceTimersByTime(119_400);
+    FakeRecorder.last!.stop();
+    await vi.runAllTimersAsync();
+    expect((await s.stop()).ms).toBe(119_500);
+  });
+
   it('keeps nothing when cancelled, and lets the microphone go', async () => {
     const r = await startRecording('audio', 'audio/webm', 119_500);
     let ended = false;

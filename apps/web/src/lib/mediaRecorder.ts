@@ -119,6 +119,11 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
   // when the stop was asked for (Stop, Cancel or the cap): the recording's length runs to there, not to the stop event,
   // which comes once the recorder has written its last data
   let stoppedAt: number | null = null;
+  // and a recording the browser ended by itself runs to when its microphone (or camera) ended, never to its later stop
+  // event; nor past the cap, which would have stopped it had it still been recording
+  let endedAt: number | null = null;
+  // (a track's own end: the device went away, or the phone took it; never our own release, which ends no track this way)
+  stream.getTracks().forEach((t) => t.addEventListener?.('ended', () => { endedAt ??= clock(); }, { once: true }));
   let asked = false;
   let byCap = false;
   let cancelled = false;
@@ -131,7 +136,7 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
       release();
       const written = recorder.mimeType || type;
       const mime = baseType(written);
-      const rec = { blob: new Blob(chunks, { type: mime }), mime, type: written, ms: began === null ? 0 : Math.max(0, (stoppedAt ?? Date.now()) - began) };
+      const rec = { blob: new Blob(chunks, { type: mime }), mime, type: written, ms: began === null ? 0 : Math.max(0, stoppedAt !== null ? stoppedAt - began : Math.min(maxMs, (endedAt ?? clock()) - began)) };
       resolve(rec);
       // stopped by its cap, or by the browser itself: said, so the screen does not go on showing a recording
       if (!cancelled && (byCap || !asked)) resolveEnded({ rec, cause: byCap ? 'cap' : 'ended' });
@@ -142,7 +147,7 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
   const halt = () => {
     if (recorder.state === 'inactive') return;
     asked = true;
-    stoppedAt ??= Date.now();
+    stoppedAt ??= clock();
     recorder.stop();
   };
   try {
@@ -160,7 +165,7 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
     release();
     throw new RecordError('format');
   }
-  began = Date.now();
+  began = clock();
   timer = setTimeout(() => {
     if (recorder.state === 'inactive' || asked) return;
     byCap = true;
@@ -172,6 +177,12 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
     cancel: () => { cancelled = true; recorder.ondataavailable = null; chunks.length = 0; halt(); },
     ended,
   };
+}
+
+/** A clock that only runs forward: a recording's length is never moved by the phone's time of day being changed or
+ *  corrected while it records. */
+function clock(): number {
+  return typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
 }
 
 /** `blob`'s bytes as base64, with no `data:` prefix. */
