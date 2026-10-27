@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { baseType, clockText, pickRecordType, RecordError, startRecording } from '@/lib/mediaRecorder';
+import { acceptedType, baseType, clockText, pickRecordType, RecordError, startRecording } from '@/lib/mediaRecorder';
 
 /**
  * Stage 1 voice notes: the shared recorder (voice now, video clips in V2). The type is picked before recording from
@@ -121,9 +121,31 @@ describe('Stage 1 voice notes: the shared recorder', () => {
 
   it('stops a recorder that writes a type the upload does not take, before anything is kept', async () => {
     writes = 'audio/x-matroska;codecs=opus';
-    await expect(startRecording('audio', 'audio/webm', 1_000)).rejects.toMatchObject({ reason: 'unavailable' });
+    await expect(startRecording('audio', 'audio/webm', 1_000)).rejects.toMatchObject({ reason: 'format' });
     expect(FakeRecorder.last!.state).toBe('inactive');
     expect(tracks[0].stop).toHaveBeenCalled();
+    // the base type the upload takes, with a codec the server does not read in it: stopped the same way
+    tracks = [{ stop: vi.fn() }];
+    writes = 'audio/webm;codecs=pcm';
+    await expect(startRecording('audio', 'audio/webm', 1_000)).rejects.toMatchObject({ reason: 'format' });
+    expect(FakeRecorder.last!.state).toBe('inactive');
+    expect(tracks[0].stop).toHaveBeenCalled();
+  });
+
+  it('takes a type only with the codecs the server reads in it', () => {
+    expect(acceptedType('audio', 'audio/webm')).toBe(true);
+    expect(acceptedType('audio', 'audio/webm;codecs=opus')).toBe(true);
+    expect(acceptedType('audio', 'audio/webm; codecs="opus"')).toBe(true);
+    expect(acceptedType('audio', 'audio/webm;codecs=pcm')).toBe(false);
+    expect(acceptedType('audio', 'audio/webm;codecs=vorbis')).toBe(false);
+    expect(acceptedType('audio', 'audio/mp4;codecs=mp4a.40.2')).toBe(true);
+    expect(acceptedType('audio', 'audio/mp4;codecs=opus')).toBe(true);
+    expect(acceptedType('audio', 'audio/mp4;codecs=mp4a.40.5')).toBe(false);
+    expect(acceptedType('audio', 'audio/ogg;codecs=opus')).toBe(true);
+    expect(acceptedType('audio', 'audio/ogg;codecs=vorbis')).toBe(false);
+    expect(acceptedType('audio', 'audio/ogg;codecs=opus,vorbis')).toBe(false);
+    expect(acceptedType('audio', 'audio/wav')).toBe(false);
+    expect(acceptedType('video', 'video/webm')).toBe(false);
   });
 
   it('passes a kind’s bit rates and devices to the recorder', async () => {

@@ -1,4 +1,5 @@
 import 'fake-indexeddb/auto';
+import { StrictMode } from 'react';
 import { describe, it, expect, afterEach, beforeEach, onTestFinished, vi } from 'vitest';
 import { render, cleanup, fireEvent, act, screen, within } from '@testing-library/react';
 import type { Lang, ProjectMember, ProjectNode, Role } from '@vitan/shared';
@@ -49,17 +50,20 @@ const fakeGateway = (list: SiteVisit[], over: Fake = {}): Fake => ({
   ...over,
 });
 
-async function mount(role: Role, me: string, gw: Fake, lang: Lang = 'en', outbox: OutboxOp[] = []) {
+async function mount(role: Role, me: string, gw: Fake, lang: Lang = 'en', outbox: OutboxOp[] = [], strict = false) {
   useStore.setState({ ...getInitialState(), outbox, role, lang, sessionUserId: me, nodes: NODES, members: MEMBERS, loadTeam: async () => true });
   (gw as { project?: string }).project = useStore.getState().activeProjectId;
   useStore.getState()._setGateway(tracked(gw) as unknown as ApiGateway);
-  const view = render(<SiteVisitsScreen />);
+  // the app itself runs under StrictMode (main.tsx), which mounts, unmounts and mounts again
+  const view = render(strict ? <StrictMode><SiteVisitsScreen /></StrictMode> : <SiteVisitsScreen />);
   await act(async () => {});
   return view;
 }
 
-// a recorder that writes WebM (Opus), as Android browsers do; the running time is the test's own clock
+// a recorder that writes WebM (Opus), as Android browsers do (or `writes`, when a test says); the running time is the
+// test's own clock
 let now = 0;
+let writes: string | null = null;
 let tracks: Array<{ stop: ReturnType<typeof vi.fn> }> = [];
 const getUserMedia = vi.fn(async () => ({ getTracks: () => tracks }));
 class FakeRecorder {
@@ -68,7 +72,7 @@ class FakeRecorder {
   mimeType: string;
   ondataavailable: ((e: { data: Blob }) => void) | null = null;
   onstop: (() => void) | null = null;
-  constructor(_stream: unknown, options: { mimeType: string }) { this.mimeType = options.mimeType; }
+  constructor(_stream: unknown, options: { mimeType: string }) { this.mimeType = writes ?? options.mimeType; }
   start() { this.state = 'recording'; }
   stop() {
     this.state = 'inactive';
@@ -85,6 +89,7 @@ beforeEach(() => {
   expect(useStore.getState()._outboxFlushing()).toBe(false);
   onTestFinished(startWork(useStore));
   now = 0;
+  writes = null;
   vi.spyOn(Date, 'now').mockImplementation(() => now);
   tracks = [{ stop: vi.fn() }];
   getUserMedia.mockClear();
@@ -102,11 +107,13 @@ afterEach(async () => {
   await new Promise((done) => { const q = indexedDB.deleteDatabase('vitan-visit-photos'); q.onsuccess = q.onerror = q.onblocked = () => done(null); });
 });
 
-async function record(card: HTMLElement, ms: number) {
-  await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Record voice note' })); });
+async function record(card: HTMLElement, ms: number, names = { record: 'Record voice note', stop: 'Stop and add' }) {
+  await act(async () => { fireEvent.click(within(card).getByRole('button', { name: names.record })); });
   now += ms;
-  await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Stop and add' })); });
+  await act(async () => { fireEvent.click(within(card).getByRole('button', { name: names.stop })); });
 }
+const HINDI = { record: 'वॉइस नोट रिकॉर्ड करें', stop: 'रोकें और जोड़ें' };
+const refusal = (status: number, serverMessage: string) => Object.assign(new Error(String(status)), { status, serverMessage });
 
 describe('Stage 1 voice notes on a visit', () => {
   it('offers recording to the visitor and anyone present while the visit is not closed, only where the browser can record', async () => {
@@ -217,7 +224,64 @@ describe('Stage 1 voice notes on a visit', () => {
     await mount('consultant', CONSULTANT, fakeGateway([visit()]), 'hi');
     const card = screen.getByTestId('sv-visit-v-1');
     await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'वॉइस नोट रिकॉर्ड करें' })); });
-    expect(within(card).getByRole('status').textContent).toContain('माइक्रोफ़ोन');
+    expect(within(card).getByRole('status').textContent).toBe(
+      'वॉइस नोट के लिए माइक्रोफ़ोन चाहिए। ब्राउज़र सेटिंग में इस साइट के लिए माइक्रोफ़ोन की अनुमति दें, फिर से कोशिश करें।',
+    );
+  });
+
+  it('does not keep a recording that ran two minutes or more, though the cap should have stopped it', async () => {
+    withRecorder();
+    const uploadMedia = vi.fn();
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
+    await record(screen.getByTestId('sv-visit-v-1'), 125_000);
+    await settled();
+    expect(screen.getByRole('alert').textContent).toBe('This recording ran past two minutes and was not added. Record a shorter note.');
+    expect(uploadMedia).not.toHaveBeenCalled();
+    expect(useStore.getState().outbox).toHaveLength(0);
+  });
+
+  it('stops a recorder that writes a codec the server does not read, says so, and keeps nothing', async () => {
+    withRecorder();
+    writes = 'audio/webm;codecs=pcm';
+    const uploadMedia = vi.fn();
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }), 'gu');
+    const card = screen.getByTestId('sv-visit-v-1');
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'વૉઇસ નોટ રેકોર્ડ કરો' })); });
+    expect(within(card).getByRole('status').textContent).toBe(
+      'આ બ્રાઉઝર અવાજ એવા ફોર્મેટમાં રેકોર્ડ કરે છે જે Vitan મોકલી શકતું નથી. બીજું બ્રાઉઝર અજમાવો, જેમ કે Chrome અથવા Safari.',
+    );
+    expect(tracks[0].stop).toHaveBeenCalled();
+    expect(within(card).queryByTestId('sv-recording-v-1')).toBeNull();
+    await settled();
+    expect(uploadMedia).not.toHaveBeenCalled();
+    expect(useStore.getState().outbox).toHaveLength(0);
+  });
+
+  it('records and sends a note when the screen runs under StrictMode, as the app does', async () => {
+    withRecorder();
+    const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }), 'en', [], true);
+    const card = screen.getByTestId('sv-visit-v-1');
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Record voice note' })); });
+    // the recording is running, not cancelled by the first, StrictMode-only unmount
+    expect(within(card).getByTestId('sv-recording-v-1')).toBeTruthy();
+    expect(tracks[0].stop).not.toHaveBeenCalled();
+    now += 2_000;
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Stop and add' })); });
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(tracks[0].stop).toHaveBeenCalled();
+  });
+
+  it('gives a server’s refusal of a voice note in the person’s language', async () => {
+    withRecorder();
+    const uploadMedia = vi.fn().mockRejectedValue(refusal(400, 'A voice note is at most two minutes long'));
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }), 'hi');
+    await record(screen.getByTestId('sv-visit-v-1'), 5_000, HINDI);
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('sv-not-sent').textContent).toContain('वॉइस नोट ज़्यादा से ज़्यादा दो मिनट का होता है');
+    expect(screen.getByRole('alert').textContent).toContain('वॉइस नोट ज़्यादा से ज़्यादा दो मिनट का होता है');
   });
 
   it('plays a stored note from the phone’s own copy of the file, fetched without credentials on Play', async () => {

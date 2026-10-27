@@ -14,9 +14,9 @@ import { setClampedTimeout } from './clampedTimer';
 import { captureStamp } from './captureStamp';
 import { photoDecodes } from './photoDecodes';
 import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto';
-import { blobBase64, type Recorded } from './mediaRecorder';
+import { acceptedType, blobBase64, type Recorded } from './mediaRecorder';
 import { VOICE_NOTE_MIMES } from '@/data/queueContracts';
-import { SV } from './siteVisitWords';
+import { refusalWords, SV } from './siteVisitWords';
 
 /**
  * Site Visits SV1-c (#792, QA item 6): the screen's own state. The visits are read a page at a time from the
@@ -92,9 +92,12 @@ function deviceLocation(): Promise<{ lat: number; lng: number; accuracyM: number
   });
 }
 
-/** What a refusal tells the viewer: the server's own reason in English (its gist in Hindi and Gujarati). */
+/** What a refusal tells the viewer: the server's own reason in English (its gist in Hindi and Gujarati, with the reason
+ *  too when it is a voice refusal those languages have words for). */
 function refusedText(message: string | null, lang: Lang): string {
-  return lang === 'en' && message ? `${SV.refused.en} ${message}` : SV.refused[lang];
+  if (!message) return SV.refused[lang];
+  const words = refusalWords(message, lang);
+  return lang === 'en' || words !== message ? `${SV.refused[lang]} ${words}` : SV.refused[lang];
 }
 
 /** A chosen file's bytes as a data URL; null when the browser could not read it. */
@@ -220,6 +223,9 @@ export const VOICE_MAX_MS = 119_500;
 /** and one shorter than this is not kept: the server refuses under half a second, and a tap that recorded nothing is
  *  no note */
 export const VOICE_MIN_MS = 1_000;
+/** and one that ran this long or longer is not kept either: the recorder's cap should have stopped it, so a recording
+ *  past it (a recorder that ignored its timer) is refused here before it is kept, never at the server */
+export const VOICE_LIMIT_MS = 120_000;
 
 /** What the person is told when a visit file is not kept on the phone, in the words of what it is. */
 type KeepWords = Record<'noStorage' | 'notKept' | 'maybeNotKept', (typeof SV)[keyof typeof SV]>;
@@ -828,7 +834,7 @@ export function useSiteVisits() {
     /** Stage 1 voice notes: a recording on the visit, with the same optional note, rating and place as a photo, from the
      *  same people while the visit is not closed (the server asks again). It goes the way a photo goes: kept on the
      *  phone with the one act that sends it, then queued, so it waits through no signal, a reload and a sign-in. Only
-     *  a type the upload takes, at least a second long and within the upload's size, is kept. Its length is not sent:
+     *  a type the upload takes (its codecs too), at least a second and under two minutes long and within the upload's size, is kept. Its length is not sent:
      *  the server reads it from the file and stores that. */
     addVoice: async (visitId: string, rec: Recorded, extra: { note?: string; rating?: SiteVisitRating; nodeId?: string; placeName?: string | null }): Promise<boolean> => {
       const state = useStore.getState();
@@ -839,8 +845,10 @@ export function useSiteVisits() {
       setError(null);
       setNotice(null);
       try {
-        if (!(VOICE_NOTE_MIMES as readonly string[]).includes(rec.mime)) { say(SV.voiceUnreadable); return false; }
+        // the base type and the codecs the recorder named: both must be ones the server reads
+        if (!(VOICE_NOTE_MIMES as readonly string[]).includes(rec.mime) || !acceptedType('audio', rec.type)) { say(SV.voiceFormat); return false; }
         if (rec.ms < VOICE_MIN_MS || rec.blob.size === 0) { say(SV.voiceTooShort); return false; }
+        if (rec.ms >= VOICE_LIMIT_MS) { say(SV.voiceTooLong); return false; }
         const data = await blobBase64(rec.blob).catch(() => null);
         if (!data) { say(SV.voiceUnreadable); return false; }
         if (data.length > MAX_PHOTO_BASE64) { say(SV.voiceTooBig); return false; }

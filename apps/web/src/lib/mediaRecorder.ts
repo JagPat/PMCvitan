@@ -7,19 +7,32 @@
 
 export type RecordKind = 'audio' | 'video';
 
-/** The recorder types tried, best first. Android browsers record WebM (Opus), iPhones MP4 (AAC), Firefox Ogg; the
- *  server takes the base types (`VOICE_NOTE_MIMES`), so a `;codecs=` parameter is asked for here and stripped below. */
+/** The recorder types tried, best first: WebM (Opus), which Chromium and Firefox write; MP4, which iPhones write (AAC);
+ *  Ogg (Opus). The upload names only the base type (`VOICE_NOTE_MIMES`), so a `;codecs=` parameter is asked for and
+ *  checked here, then stripped. */
 export const RECORD_TYPES: Record<RecordKind, readonly string[]> = {
   audio: ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/ogg'],
   // the video web unit (V2) fills this in with what its server unit takes; until then video is never offered
   video: [],
 };
 
-/** The base types the upload takes for each kind: a recorder that reports anything else is not used. */
-export const UPLOAD_TYPES: Record<RecordKind, readonly string[]> = {
-  audio: ['audio/webm', 'audio/mp4', 'audio/ogg'],
-  video: [],
+/** The base types the upload takes for each kind, each with the codecs the server's reader takes in it (the #1025
+ *  allow-list: Opus in WebM and Ogg, AAC-LC or Opus in MP4). A recorder that reports anything else is not used. */
+export const UPLOAD_CODECS: Record<RecordKind, Readonly<Record<string, readonly string[]>>> = {
+  audio: { 'audio/webm': ['opus'], 'audio/ogg': ['opus'], 'audio/mp4': ['mp4a.40.2', 'opus'] },
+  video: {},
 };
+
+/** Whether the upload takes a file of `kind` written as `type`: its base type is one the upload takes, and every codec
+ *  it names (when it names any: a recorder may give the base type alone) is one the server reads in that type. */
+export function acceptedType(kind: RecordKind, type: string): boolean {
+  const codecs = UPLOAD_CODECS[kind][baseType(type)];
+  if (!codecs) return false;
+  const named = /;\s*codecs\s*=\s*"?([^";]*)"?/i.exec(type)?.[1];
+  if (named === undefined) return true;
+  const list = named.split(',').map((c) => c.trim().toLowerCase());
+  return list.length > 0 && list.every((c) => codecs.includes(c));
+}
 
 /** `type` without its parameters, lower-cased: `audio/webm;codecs=opus` is `audio/webm`. */
 export function baseType(type: string): string {
@@ -32,21 +45,25 @@ export function pickRecordType(kind: RecordKind): string | null {
   const Recorder = (globalThis as { MediaRecorder?: typeof MediaRecorder }).MediaRecorder;
   if (typeof Recorder?.isTypeSupported !== 'function') return null;
   if (!(globalThis as { navigator?: Navigator }).navigator?.mediaDevices?.getUserMedia) return null;
-  return RECORD_TYPES[kind].find((t) => UPLOAD_TYPES[kind].includes(baseType(t)) && Recorder.isTypeSupported(t)) ?? null;
+  return RECORD_TYPES[kind].find((t) => acceptedType(kind, t) && Recorder.isTypeSupported(t)) ?? null;
 }
 
-/** A finished recording: its bytes, the base type they were written in, and how long the recorder ran. */
+/** A finished recording: its bytes, the base type they were written in (`type`: as the recorder named it, codecs and
+ *  all), and how long the recorder ran. */
 export interface Recorded {
   blob: Blob;
   mime: string;
+  type: string;
   ms: number;
 }
 
-/** Why a recording could not start: the person (or the browser for the site) said no to the microphone or camera, or
- *  this phone has none the browser can use, or no recorder for the chosen type. */
+/** Why a recording could not start: the person (or the browser for the site) said no to the microphone or camera; this
+ *  phone has none the browser can use, or no recorder for the chosen type; or the recorder writes a format the upload
+ *  does not take. */
+export type RecordFailure = 'denied' | 'unavailable' | 'format';
 export class RecordError extends Error {
-  readonly reason: 'denied' | 'unavailable';
-  constructor(reason: 'denied' | 'unavailable') {
+  readonly reason: RecordFailure;
+  constructor(reason: RecordFailure) {
     super(reason);
     this.name = 'RecordError';
     this.reason = reason;
@@ -105,8 +122,9 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
     recorder.onstop = () => {
       if (timer) clearTimeout(timer);
       release();
-      const mime = baseType(recorder.mimeType || type);
-      resolve({ blob: new Blob(chunks, { type: mime }), mime, ms: began === null ? 0 : Math.max(0, Date.now() - began) });
+      const written = recorder.mimeType || type;
+      const mime = baseType(written);
+      resolve({ blob: new Blob(chunks, { type: mime }), mime, type: written, ms: began === null ? 0 : Math.max(0, Date.now() - began) });
     };
   });
   let resolveCapped: (r: Recorded) => void = () => {};
@@ -118,14 +136,14 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
     release();
     throw new RecordError('unavailable');
   }
-  // the type it writes, as it says once started: one the upload does not take is never recorded on
-  if (!UPLOAD_TYPES[kind].includes(baseType(recorder.mimeType || type))) {
+  // the type it writes, codecs and all, as it says once started: one the upload does not take is never recorded on
+  if (!acceptedType(kind, recorder.mimeType || type)) {
     cancelled = true;
     recorder.onstop = null;
     recorder.ondataavailable = null;
     if (recorder.state !== 'inactive') recorder.stop();
     release();
-    throw new RecordError('unavailable');
+    throw new RecordError('format');
   }
   began = Date.now();
   timer = setTimeout(() => {

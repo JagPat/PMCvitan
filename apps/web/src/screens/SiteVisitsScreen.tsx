@@ -9,7 +9,7 @@ import { trailOf } from '@/lib/locationTree';
 import { mayAddPhoto, useSiteVisits, VOICE_MAX_MS } from '@/lib/useSiteVisits';
 import { clockText, pickRecordType, RecordError, startRecording, type Recorded, type Recording } from '@/lib/mediaRecorder';
 import { UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
-import { SV, visitTime } from '@/lib/siteVisitWords';
+import { refusalWords, SV, visitTime } from '@/lib/siteVisitWords';
 import { stampText } from '@/lib/captureStamp';
 import { resolveMediaUrl, type SiteVisit, type SiteVisitRating } from '@/data/apiGateway';
 import styles from './SiteVisitsScreen.module.css';
@@ -110,7 +110,7 @@ export function SiteVisitsScreen() {
                   {p.copy && <div className={styles.meta}>{SV.markupCopy[lang]}</div>}
                   {p.note && <div>{p.note}</div>}
                   {p.placeName && <div className={styles.meta}>{p.placeName}</div>}
-                  <div className={styles.meta}>{/* the server's own words, in every language (Codex 4320122189) */}{p.reason ? `${SV.refused[lang]} ${p.reason}` : SV.refused[lang]}</div>
+                  <div className={styles.meta}>{/* the server's own words, in every language (Codex 4320122189); a voice refusal in the viewer's */}{p.reason ? `${SV.refused[lang]} ${refusalWords(p.reason, lang)}` : SV.refused[lang]}</div>
                   <Button variant="light" onClick={() => sv.dismiss(p.key)}>{SV.dismiss[lang]}</Button>
                 </div>
               </li>
@@ -447,7 +447,11 @@ function VoiceRecorder({ visitId, lang, busy, onRecorded }: {
   const [said, setSaid] = useState<string | null>(null);
   const run = useRef<Recording | null>(null);
   const alive = useRef(true);
-  useEffect(() => () => { alive.current = false; run.current?.cancel(); run.current = null; }, []);
+  // set again on each mount: StrictMode runs the cleanup once before the real mount (as ProjectSwitcher does)
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; run.current?.cancel(); run.current = null; };
+  }, []);
   // the running time, for the person only: the recording's own cap stops it
   useEffect(() => {
     if (phase !== 'recording') return;
@@ -476,7 +480,8 @@ function VoiceRecorder({ visitId, lang, busy, onRecorded }: {
     } catch (err) {
       if (!alive.current) return;
       setPhase('idle');
-      setSaid(err instanceof RecordError && err.reason === 'denied' ? SV.voiceDenied[lang] : SV.voiceUnavailable[lang]);
+      const reason = err instanceof RecordError ? err.reason : 'unavailable';
+      setSaid(reason === 'denied' ? SV.voiceDenied[lang] : reason === 'format' ? SV.voiceFormat[lang] : SV.voiceUnavailable[lang]);
     }
   };
   const stop = async () => {

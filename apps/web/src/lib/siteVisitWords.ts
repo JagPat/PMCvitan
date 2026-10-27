@@ -152,6 +152,16 @@ export const SV = {
     hi: 'यह रिकॉर्डिंग जोड़ने के लिए बहुत छोटी थी। कम से कम एक सेकंड रिकॉर्ड करें।',
     gu: 'આ રેકોર્ડિંગ ઉમેરવા માટે બહુ ટૂંકું હતું. ઓછામાં ઓછી એક સેકન્ડ રેકોર્ડ કરો.',
   },
+  voiceTooLong: {
+    en: 'This recording ran past two minutes and was not added. Record a shorter note.',
+    hi: 'यह रिकॉर्डिंग दो मिनट से लंबी थी और जोड़ी नहीं गई। छोटा नोट रिकॉर्ड करें।',
+    gu: 'આ રેકોર્ડિંગ બે મિનિટથી લાંબું હતું અને ઉમેરાયું નથી. નાની નોટ રેકોર્ડ કરો.',
+  },
+  voiceFormat: {
+    en: 'This browser records voice in a format Vitan cannot send. Try another browser, such as Chrome or Safari.',
+    hi: 'यह ब्राउज़र आवाज़ ऐसे फ़ॉर्मेट में रिकॉर्ड करता है जिसे Vitan भेज नहीं सकता। कोई दूसरा ब्राउज़र आज़माएँ, जैसे Chrome या Safari।',
+    gu: 'આ બ્રાઉઝર અવાજ એવા ફોર્મેટમાં રેકોર્ડ કરે છે જે Vitan મોકલી શકતું નથી. બીજું બ્રાઉઝર અજમાવો, જેમ કે Chrome અથવા Safari.',
+  },
   voiceUnreadable: {
     en: 'This recording could not be read. Record it again.',
     hi: 'यह रिकॉर्डिंग पढ़ी नहीं जा सकी। फिर से रिकॉर्ड करें।',
@@ -209,6 +219,37 @@ export const SV = {
     gu: 'આ નિશાનવાળી નકલ મોકલવા માટે બહુ મોટી છે.',
   },
 } satisfies Record<string, Words>;
+
+/** Stage 1 voice notes: the server's refusals of a voice note it reads (#1025, media.service.ts), in each language. The
+ *  English is the server's own words, so a refusal reads the same whichever language the reason came through. */
+const VOICE_REFUSALS: Record<string, Words> = {
+  'This file is not the voice recording its type says': {
+    en: 'This file is not the voice recording its type says',
+    hi: 'यह फ़ाइल वैसी वॉइस रिकॉर्डिंग नहीं है जैसी इसका प्रकार बताता है',
+    gu: 'આ ફાઇલ તેના પ્રકાર મુજબની વૉઇસ રેકોર્ડિંગ નથી',
+  },
+  'A voice note is at most two minutes long': {
+    en: 'A voice note is at most two minutes long',
+    hi: 'वॉइस नोट ज़्यादा से ज़्यादा दो मिनट का होता है',
+    gu: 'વૉઇસ નોટ વધુમાં વધુ બે મિનિટની હોય છે',
+  },
+  'This voice note is not as long as its upload says': {
+    en: 'This voice note is not as long as its upload says',
+    hi: 'यह वॉइस नोट उतना लंबा नहीं है जितना इसके अपलोड में बताया गया है',
+    gu: 'આ વૉઇસ નોટ તેના અપલોડમાં કહ્યા જેટલી લાંબી નથી',
+  },
+  'A voice note is added on a site visit': {
+    en: 'A voice note is added on a site visit',
+    hi: 'वॉइस नोट साइट विज़िट पर ही जोड़ा जाता है',
+    gu: 'વૉઇસ નોટ સાઇટ મુલાકાત પર જ ઉમેરાય છે',
+  },
+};
+
+/** A server's reason for refusing a visit file, in the viewer's language when it is one of the voice refusals above;
+ *  any other reason is shown in the server's own words. */
+export function refusalWords(reason: string, lang: Lang): string {
+  return VOICE_REFUSALS[reason.trim()]?.[lang] ?? reason;
+}
 
 /** A server time as the viewer reads it, in India's time: "14 Oct, 15:30" in the viewer's language. */
 export function visitTime(iso: string, lang: Lang): string {
