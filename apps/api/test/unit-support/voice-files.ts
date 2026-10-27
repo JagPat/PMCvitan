@@ -32,6 +32,48 @@ export const ebml = (id: number, payload: Buffer | string, unknown = false): Buf
 };
 const uint = (n: number) => Buffer.from([n]);
 
+/** an unsigned integer in as few bytes as it needs, as libwebm writes one */
+const uintMin = (n: number) => {
+  const out: number[] = [];
+  for (let v = n; v > 0 || out.length === 0; v = Math.floor(v / 256)) out.unshift(v % 256);
+  return Buffer.from(out);
+};
+/**
+ * A voice note as Safari's MediaRecorder writes WebM (iOS 18.4 and later): WebKit's MediaRecorderPrivateWriterWebM
+ * drives libwebm's mkvmuxer in file mode with Cues on, a writer that cannot seek, and "WebKit" as muxing and writing
+ * app. So: the EBML header (DocTypeVersion 4), a Segment of unknown size, Info with TimecodeScale and the two apps (no
+ * Duration, which only a seekable writer fills in), Tracks with one Opus track (TrackUID, Audio with SamplingFrequency
+ * as a 4-byte float, Channels and BitDepth 32, OpusHead version 1), Clusters of unknown size every 30 s of SimpleBlocks,
+ * then Cues: one CuePoint for each Cluster, at its first frame. `frames` 20 ms Opus packets.
+ */
+export const safariWebm = (frames: number, packet: Buffer = Buffer.from([0xfc, 0xff, 0xfe, 1, 2, 3])): Buffer => {
+  const header = ebml(WEBM.header, Buffer.concat([ebml(0x4286, uint(1)), ebml(0x42f7, uint(1)), ebml(0x42f2, uint(4)), ebml(0x42f3, uint(8)),
+    ebml(WEBM.docType, 'webm'), ebml(0x4287, uint(4)), ebml(0x4285, uint(2))]));
+  const info = ebml(WEBM.info, Buffer.concat([ebml(0x2ad7b1, uintMin(1_000_000)), ebml(0x4d80, 'WebKit'), ebml(0x5741, 'WebKit')]));
+  const rate = Buffer.alloc(4);
+  rate.writeFloatBE(48_000);
+  const tracks = ebml(WEBM.tracks, ebml(WEBM.trackEntry, Buffer.concat([ebml(WEBM.trackNumber, uint(1)), ebml(0x73c5, Buffer.from([0x2a, 0x91, 0x07, 0x3c, 0x5e, 0x11, 0x42])),
+    ebml(WEBM.trackType, uint(2)), ebml(WEBM.codecId, 'A_OPUS'), ebml(WEBM.codecPrivate, OPUS_HEAD),
+    ebml(0xe1, Buffer.concat([ebml(0xb5, rate), ebml(0x9f, uint(1)), ebml(0x6264, uint(32))]))])));
+  const head = Buffer.concat([info, tracks]);
+  const clusters: Buffer[] = [];
+  const cues: Buffer[] = [];
+  let offset = head.length; // from the Segment's data
+  for (let first = 0; first < frames; first += 1500) {
+    const ms = first * 20;
+    const blocks = Array.from({ length: Math.min(1500, frames - first) }, (_, i) => {
+      const rel = Buffer.alloc(2);
+      rel.writeInt16BE(i * 20);
+      return ebml(WEBM.simpleBlock, Buffer.concat([Buffer.from([0x81]), rel, Buffer.from([0x80]), packet]));
+    });
+    const cluster = ebml(WEBM.cluster, Buffer.concat([ebml(WEBM.timestamp, uintMin(ms)), ...blocks]), true);
+    cues.push(ebml(0xbb, Buffer.concat([ebml(0xb3, uintMin(ms)), ebml(0xb7, Buffer.concat([ebml(0xf7, uint(1)), ebml(0xf1, uintMin(offset))]))])));
+    clusters.push(cluster);
+    offset += cluster.length;
+  }
+  return Buffer.concat([header, ebml(WEBM.segment, Buffer.concat([head, ...clusters, ebml(0x1c53bb6b, Buffer.concat(cues))]), true)]);
+};
+
 export const WEBM = { header: 0x1a45dfa3, docType: 0x4282, segment: 0x18538067, info: 0x1549a966, tracks: 0x1654ae6b, trackEntry: 0xae, trackNumber: 0xd7, trackType: 0x83, codecId: 0x86, cluster: 0x1f43b675, timestamp: 0xe7, simpleBlock: 0xa3, blockGroup: 0xa0, block: 0xa1, void: 0xec, codecPrivate: 0x63a2 } as const;
 
 export const webmHeader = (docType = 'webm') =>
@@ -114,6 +156,7 @@ export const oggPage = (headerType: number, serial: number, sequence: number, pa
   head.writeUInt32LE(serial, 14);
   head.writeUInt32LE(sequence, 18);
   head[26] = lacing.length;
+  if (!lacing.some((v) => v < 255)) head.writeBigInt64LE(-1n, 6); // a page that finishes no packet has no granule
   return oggSeal(Buffer.concat([head, Buffer.from(lacing), ...packets]));
 };
 /** one Ogg page with the lacing values given as they are, so a packet can be left open (a last value of 255); sealed */
@@ -124,6 +167,7 @@ export const oggPageRaw = (headerType: number, serial: number, sequence: number,
   head.writeUInt32LE(serial, 14);
   head.writeUInt32LE(sequence, 18);
   head[26] = lacing.length;
+  if (!lacing.some((v) => v < 255)) head.writeBigInt64LE(-1n, 6); // a page that finishes no packet has no granule
   return oggSeal(Buffer.concat([head, Buffer.from(lacing), data]));
 };
 export const OPUS_TAGS = Buffer.concat([Buffer.from('OpusTags', 'latin1'), Buffer.from([7, 0, 0, 0]), Buffer.from('Mozilla', 'latin1'), Buffer.alloc(4)]);
