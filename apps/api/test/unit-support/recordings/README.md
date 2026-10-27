@@ -32,3 +32,43 @@ This Chromium build does not record AAC (`audio/mp4;codecs=mp4a.40.2` is unsuppo
 
 There are no Firefox (Ogg) or iOS Safari (fragmented MP4, AAC) recordings here. The voice web unit must add real
 recordings from both browsers, and prove the parser accepts them, before any client uploads voice notes.
+
+# Video recordings from a real browser
+
+Stage 1 video on site visits (#995). Real camera recordings, written by Chromium's MediaRecorder. The parser tests in
+`src/media/video-container.test.ts` and the upload tests in `test/integration/media-video-visit.test.ts` read them.
+
+| File | Recorder | Type asked for | Type Chromium named | Length |
+| --- | --- | --- | --- | --- |
+| `chromium-153-vp8-opus.webm` | Chromium 153.0.8010.12, headless, Linux | `video/webm;codecs=vp8,opus` | the same | 2 s |
+| `chromium-153-vp9.webm` | Chromium 153.0.8010.12, headless, Linux | `video/webm;codecs=vp9` | the same | 2 s |
+| `chromium-153-avc1-opus.mp4` | Chromium 153.0.8010.12, headless, Linux | `video/mp4;codecs=avc1.42E01E,opus` | `video/mp4;codecs=avc1.420015,opus` | 2 s |
+| `chromium-153-vp9-opus.mp4` | Chromium 153.0.8010.12, headless, Linux | `video/mp4` | `video/mp4;codecs=vp9,opus` | 2 s |
+| `chromium-153-h264-opus.mkv` | Chromium 153.0.8010.12, headless, Linux | `video/webm;codecs=h264,opus` | `video/x-matroska;codecs=avc1,opus` | 2 s |
+
+The last one is a refusal case: Chromium writes H.264 in Matroska (DocType `matroska`), not WebM, so `video/webm`
+refuses it. The video web unit asks for VP8 or VP9 in WebM.
+
+## How they were recorded
+
+As the voice recordings above, with the fake camera (a moving test pattern) at 320 × 240 and, for the ones with
+sound, the fake microphone:
+
+```js
+const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 }, audio: withSound });
+const rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 1_000_000, audioBitsPerSecond: 64_000 });
+const parts = [];
+rec.ondataavailable = (e) => parts.push(e.data);
+rec.start(1000);
+await new Promise((r) => setTimeout(r, 2000));
+rec.stop(); // the file is new Blob(parts) once onstop fires
+```
+
+A canvas stream (`canvas.captureStream()`) records differently: Chromium gives its picture an alpha channel and writes
+WebM BlockAdditions, which the parser refuses. A camera never has one.
+
+## What these recordings do not cover
+
+There is no Firefox (WebM) or iOS Safari (MP4, H.264 with AAC) clip here, so those shapes are proven on hand-built
+fixtures only. The video web unit must add real recordings from both, and prove the parser accepts them, before any
+client uploads video.
