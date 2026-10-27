@@ -427,13 +427,15 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     put(storage, sidecarName(key), encodeSidecar(plan.commit));
     return true;
   };
-  /** a landed write's memory: the key holds `next`. A settled occurrence memory (`mine`) still holds stays settled
-   *  here until memory lets it go (a write-ahead during the flush, before its end write: L2b gap check 2), so no later
-   *  write puts it back once its mark has gone */
+  /** a landed write's memory: the key holds `next`. `known` becomes the occurrences of `next` memory (`mine`) holds:
+   *  another tab's act the write only carried was never this tab's, so a later write never drops it as one this tab
+   *  held and let go (xtab-drain redesign U1). A settled occurrence memory still holds stays settled here until memory
+   *  lets it go (a write-ahead during the flush, before its end write: L2b gap check 2), so no later write puts it back
+   *  once its mark has gone */
   const landed = (key: string, next: Occ[], mine: Occ[], raw: string): void => {
-    known.set(key, new Map(next.map((o) => [o.oid, o.act])));
-    ownRaw.set(key, raw);
     const held = new Set(mine.map((o) => o.oid));
+    known.set(key, new Map(next.filter((o) => held.has(o.oid)).map((o) => [o.oid, o.act])));
+    ownRaw.set(key, raw);
     const was = sent.get(key);
     if (was) { for (const oid of [...was]) if (!held.has(oid)) was.delete(oid); if (was.size === 0) sent.delete(key); }
     unkept.delete(key);
