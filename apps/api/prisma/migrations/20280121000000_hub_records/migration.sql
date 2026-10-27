@@ -58,13 +58,18 @@
 --
 -- LOCKS WHILE IT RUNS. Every lock is held until the file commits. Adding each key to
 -- "Project", "Org" or "User" takes ShareRowExclusiveLock on that table, so from then until commit inserts, updates and
--- deletes on those three tables wait; reads and row locks do not. Everything else is on the new tables, which nothing uses yet.
+-- deletes on those three tables wait; reads and row locks do not. No lock is waited for longer than 15 s
+-- (lock_timeout, set for this transaction only). Everything else is on the new tables, which nothing uses yet.
 --
 -- NAMES. Both functions have search_path pg_catalog, public, pg_temp and qualified names. Re-runnable, and on
 -- `scripts/migrate.sh`'s ALWAYS_EXECUTE: a `db push` baseline models the tables and keys but not the checks or the
 -- triggers. Every statement is guarded or replaces itself.
 
 BEGIN;
+
+-- A writer holding "Project", "Org" or "User" open would make a key's lock wait without end, with every later write to
+-- that table queued behind it; 15 s bounds the wait, and on expiry the whole file rolls back and can be run again.
+SELECT pg_catalog.set_config('lock_timeout', '15s', true);
 
 -- R1
 CREATE TABLE IF NOT EXISTS public."HubWebhookReceipt" (
