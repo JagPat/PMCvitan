@@ -141,12 +141,14 @@ async function main(urls) {
   });
   const total = results.reduce((n, r) => n + reportedFiles(r.report).ran.length, 0);
   console.log(`${total} of ${files.length} integration files ran across ${shards.length} shards in ${Math.round((Date.now() - started) / 1000)}s`);
-  if (failed || total !== files.length) process.exit(1);
+  // #1147's red job: `process.exit` drops what is still queued for a piped stdout, which on a runner
+  // was every shard's output after the second, so set the exit code and let the output drain
+  if (failed || total !== files.length) process.exitCode = 1;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   main(process.argv.slice(2)).catch((error) => {
     console.error(error);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }

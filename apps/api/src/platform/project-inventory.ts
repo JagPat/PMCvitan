@@ -22,8 +22,8 @@ import { rowKeySql, writeJsonAtomically } from './db-snapshot';
  *   - coverage: every other table is named in `unlinked` with its row count, for review by hand.
  *
  * For the project it gives: its own `Project` row and, per table, the sorted keys of its rows; the
- * users whose home or last project it is; and every stored file (any table with a `storageKey`
- * column) with where its bytes live. Every key is text PostgreSQL produced; nothing is parsed as a
+ * users whose home or last project it is; and every stored file (any column named `storageKey`, or
+ * `<what>StorageKey` such as a video's still frame `posterStorageKey`, #995) with where its bytes live. Every key is text PostgreSQL produced; nothing is parsed as a
  * number. What a delete would meet (triggers, cascades) belongs to the delete design, not to this
  * list.
  *
@@ -48,6 +48,8 @@ export interface ProjectPath {
 export interface StoredFile {
   table: string;
   id: string;
+  /** the column naming the file: `storageKey`, or another `*StorageKey` column such as `posterStorageKey` */
+  column: string;
   storageKey: string | null;
   url: string | null;
   bytesInDatabase: boolean;
@@ -70,7 +72,8 @@ export interface ProjectInventory {
   counts: Record<string, number>;
   /** users whose home project (`User.projectId`) or last-used project (`User.lastProjectId`) is the target */
   userPointers: Array<{ key: string; id: string; email: string; projectId: string; lastProjectId: string | null }>;
-  /** the project's stored files: every row with a `storageKey` column, and where its bytes live */
+  /** the project's stored files: every row with a `storageKey` column, every non-null `*StorageKey` (a video's
+   *  still frame), and where its bytes live */
   files: StoredFile[];
   /** every table no path reaches, with its row count: listed for no project, so reviewed by hand */
   unlinked: Array<{ table: string; rows: number }>;
@@ -90,6 +93,9 @@ const LOGICAL_REFS: Catalog['edges'] = [
   { child: '_t4d_tx_transition', columns: ['decisionId'], parent: 'Decision', parentColumns: ['id'] },
   { child: 'ProcessedEvent', columns: ['eventId'], parent: 'DomainEvent', parentColumns: ['eventId'] },
 ];
+
+/** A column that names a file in object storage: `storageKey`, or `<what>StorageKey` (#995: `Media.posterStorageKey`). */
+const isStorageKeyColumn = (column: string): boolean => column === 'storageKey' || column.endsWith('StorageKey');
 
 type Tx = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 
@@ -261,14 +267,23 @@ export async function collectInventory(tx: Tx, id: SnapshotIdentity, projectId: 
       WHERE u."projectId" = $1 OR u."lastProjectId" = $1 ORDER BY u.email`, projectId);
 
   const files: StoredFile[] = [];
-  for (const path of paths.filter((p) => cat.columnsOf.get(p.table)?.has('storageKey'))) {
-    const cols = cat.columnsOf.get(path.table)!;
-    const bytes = cat.byteColumns.get(path.table) ?? [];
-    const url = cols.has('url') ? 't."url"' : 'NULL';
-    const inDb = bytes.length ? bytes.map((b) => `t.${q(b)} IS NOT NULL`).join(' OR ') : 'false';
-    files.push(...await tx.$queryRawUnsafe<StoredFile[]>(
-      `SELECT ${lit(path.table)} AS "table", t.id::text AS id, t."storageKey", ${url} AS url, (${inDb}) AS "bytesInDatabase"
-         FROM ${q(path.table)} t WHERE ${projectOf(path, 't', paths)} = $1 ORDER BY t.id`, projectId));
+  for (const path of paths) {
+    const cols = cat.columnsOf.get(path.table) ?? new Set<string>();
+    if (cols.has('storageKey')) {
+      const bytes = cat.byteColumns.get(path.table) ?? [];
+      const url = cols.has('url') ? 't."url"' : 'NULL';
+      const inDb = bytes.length ? bytes.map((b) => `t.${q(b)} IS NOT NULL`).join(' OR ') : 'false';
+      files.push(...await tx.$queryRawUnsafe<StoredFile[]>(
+        `SELECT ${lit(path.table)} AS "table", t.id::text AS id, 'storageKey' AS "column", t."storageKey", ${url} AS url, (${inDb}) AS "bytesInDatabase"
+           FROM ${q(path.table)} t WHERE ${projectOf(path, 't', paths)} = $1 ORDER BY t.id`, projectId));
+    }
+    // #995 — a second file a row names, such as a video's still frame: listed only where the row has one, and its bytes
+    // are always in object storage
+    for (const column of [...cols].filter((c) => c !== 'storageKey' && isStorageKeyColumn(c)).sort(byCodeUnit)) {
+      files.push(...await tx.$queryRawUnsafe<StoredFile[]>(
+        `SELECT ${lit(path.table)} AS "table", t.id::text AS id, ${lit(column)} AS "column", t.${q(column)}::text AS "storageKey", NULL AS url, false AS "bytesInDatabase"
+           FROM ${q(path.table)} t WHERE ${projectOf(path, 't', paths)} = $1 AND t.${q(column)} IS NOT NULL ORDER BY t.id`, projectId));
+    }
   }
 
   const reached = new Set(['Project', ...paths.map((p) => p.table)]);
