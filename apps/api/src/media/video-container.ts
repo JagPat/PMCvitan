@@ -111,8 +111,8 @@ const COLOUR_CHILDREN = new Map<number, Kind>([
 ]);
 
 interface ClipTrack { number: number; frameNs: number; sound: boolean }
-/** every picture block's start, in seconds, and the latest start of a block that says how long it lasts and of one that does not */
-interface Pictures { starts: number[]; timed: number; untimed: number }
+/** every picture block's start, in seconds, and the latest start of a block that does not say how long it lasts */
+interface Pictures { starts: number[]; untimed: number }
 
 /**
  * A clip's tracks, by number: exactly one picture track (VP8 or VP9) and at most one sound track (Opus, read as a voice
@@ -218,7 +218,6 @@ function walkCluster(b: Buffer, cluster: Element, tracks: Map<number, ClipTrack>
         pictures.starts.push(start);
         // a picture block with no BlockDuration and no DefaultDuration says where it starts, not where it ends
         if (ticks === 0 && track!.frameNs === 0) pictures.untimed = Math.max(pictures.untimed, start);
-        else pictures.timed = Math.max(pictures.timed, start);
       }
       last = Math.max(last, start + Math.max(held / OPUS_RATE, (ticks * scale) / 1e9, (r.frames.length * track!.frameNs) / 1e9));
     }
@@ -248,7 +247,7 @@ function webmSeconds(b: Buffer): number | null {
   let last = 0; // where the latest block ends, in seconds
   let samples = 0; // Opus samples in every sound frame
   const frames = { n: 0 }; // frames of both tracks, capped together
-  const pictures: Pictures = { starts: [], timed: -1, untimed: -1 };
+  const pictures: Pictures = { starts: [], untimed: -1 };
   for (let at = segment.dataStart; at < segment.dataEnd;) {
     const id = vint(b, at, segment.dataEnd, true).value;
     const e = readElement(b, at, segment.dataEnd, steps, id === CLUSTER);
@@ -281,10 +280,10 @@ function webmSeconds(b: Buffer): number | null {
   }
   // a clip has a picture: a file whose only blocks are sound is a voice note, not a video
   if (tracks === undefined || !picture) return null;
-  // Chromium writes no durations for picture blocks. When the latest picture block is one of those and Info's Duration
-  // does not reach past its start, its frame is held for the longest interval between picture blocks, so a frame cannot
-  // start inside the minute and play on past it; with no interval to go by, the clip's end is unknown and it is refused
-  if (pictures.untimed > pictures.timed && (duration * scale) / 1e9 <= pictures.untimed) {
+  // Chromium writes no durations for picture blocks. Every one of those is held for the longest interval between picture
+  // blocks, whatever else starts with it or after it, unless Info's Duration reaches past the latest one's start; so no
+  // frame can start inside the minute and play on past it. With no interval to go by, the end is unknown: refused
+  if (pictures.untimed >= 0 && (duration * scale) / 1e9 <= pictures.untimed) {
     const starts = pictures.starts.sort((x, y) => x - y);
     let interval = 0;
     for (let i = 1; i < starts.length; i++) interval = Math.max(interval, starts[i]! - starts[i - 1]!);
