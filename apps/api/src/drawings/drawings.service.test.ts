@@ -271,6 +271,18 @@ describe('DrawingsService.issue', () => {
     ).rejects.toThrow(/does not belong to this project/);
   });
 
+  it('rejects every Hub-ledger key (#1118 U1a-3): a Hub blob is never a native revision, so the sweep never deletes one', async () => {
+    // the ledger's key is exactly "<projectId>/hub/<uuid>.<ext>" with no '/' in the project id (HubFetchedBlob_storageKey_shape)
+    const { svc } = make();
+    const uuid = '3f2a9c1e-5b7d-4e2f-8a6c-0d1e2f3a4b5c';
+    for (const storageKey of [`ambli/hub/${uuid}.pdf`, `ambli/hub/${uuid}.bin`, `villa/hub/${uuid}.pdf`]) {
+      await expect(
+        svc.issue('ambli', drawUser, { ...base, data: undefined as never, storageKey, sizeBytes: 100 }),
+        storageKey,
+      ).rejects.toThrow(/does not belong to this project/);
+    }
+  });
+
   it('S3 mode drops the bytes and stores no public url; dev stub keeps the bytes', async () => {
     const s3 = make('https://cdn.vitan.in/ambli/drawings/x.pdf');
     await s3.svc.issue('ambli', drawUser, base);
