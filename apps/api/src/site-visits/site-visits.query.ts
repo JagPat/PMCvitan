@@ -51,6 +51,8 @@ export interface SiteVisitFileDto {
   clientKey: string | null;
   /** When the device took it, if it said. */
   takenAt: string | null;
+  /** A voice note's length in whole seconds; null for a photo (#482). */
+  durationSec: number | null;
   /** A marked-up copy's original, a file on the same visit (M3); null for a photo as taken. */
   sourceMediaId: string | null;
   note: string | null;
@@ -100,7 +102,7 @@ type Row = Prisma.SiteVisitGetPayload<{ include: typeof withChildren }>;
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 
 /** What the media module says about a visit's file (`MediaQueryService.fileFacts`). */
-type FileFacts = Map<string, { mime: string; takenAt: string | null; clientKey: string | null; sourceMediaId: string | null }>;
+type FileFacts = Map<string, { mime: string; takenAt: string | null; clientKey: string | null; durationSec: number | null; sourceMediaId: string | null }>;
 
 export function toSiteVisitDto(v: Row, fileUrl: (mediaId: string) => string, facts: FileFacts): SiteVisitDto {
   const device = v.locationKind === 'device' && v.locLat !== null && v.locLng !== null && v.locAccuracyM !== null && v.locAt !== null;
@@ -134,7 +136,8 @@ export function toSiteVisitDto(v: Row, fileUrl: (mediaId: string) => string, fac
     // a linked file always exists (the link is frozen and the file's delete is refused); the fallback is only types
     files: v.media.map((f) => ({
       mediaId: f.mediaId, url: fileUrl(f.mediaId), mime: facts.get(f.mediaId)?.mime ?? '', clientKey: facts.get(f.mediaId)?.clientKey ?? null,
-      takenAt: facts.get(f.mediaId)?.takenAt ?? null, sourceMediaId: facts.get(f.mediaId)?.sourceMediaId ?? null,
+      takenAt: facts.get(f.mediaId)?.takenAt ?? null, durationSec: facts.get(f.mediaId)?.durationSec ?? null,
+      sourceMediaId: facts.get(f.mediaId)?.sourceMediaId ?? null,
       note: f.note, rating: f.rating, place: f.placeName !== '' ? { nodeId: f.nodeId, name: f.placeName } : null,
       addedById: f.addedById, addedByName: f.addedByName, addedByRole: f.addedByRole, addedAt: f.addedAt.toISOString(),
     })),
