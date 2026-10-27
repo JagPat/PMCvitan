@@ -1,6 +1,20 @@
-import { describe, it, expect } from 'vitest';
-import { createHmac, randomBytes } from 'node:crypto';
+import { describe, it, expect, vi } from 'vitest';
+import { createServer, request, type IncomingHttpHeaders } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { verifyHubSignature, HUB_SIGNATURE_TOLERANCE_SECONDS, HUB_SIGNATURE_HEADER_MAX, HUB_WEBHOOK_ID_MAX, type HubSignatureInput } from './hub-signature';
+
+// Spies over the real functions, so a test can count the HMACs and comparisons one check makes.
+vi.mock('node:crypto', async (original) => {
+  const real = await original<typeof import('node:crypto')>();
+  return { ...real, createHmac: vi.fn(real.createHmac), timingSafeEqual: vi.fn(real.timingSafeEqual) };
+});
+const counted = (input: HubSignatureInput) => {
+  vi.mocked(createHmac).mockClear();
+  vi.mocked(timingSafeEqual).mockClear();
+  const verdict = verifyHubSignature(input);
+  return { verdict, hmacs: vi.mocked(createHmac).mock.calls.length, compares: vi.mocked(timingSafeEqual).mock.calls.length };
+};
 
 // The Standard Webhooks specification's published test vector (a public example secret, not a Hub secret).
 const SPEC = {
@@ -80,22 +94,94 @@ describe('#1118 U2 — Hub webhook signature (Standard Webhooks v1)', () => {
     expect(verifyHubSignature(spec({ signature: `v1,${SPEC.signature.slice(3, -2)}` }))).toEqual({ ok: false, reason: 'no_match' });
   });
 
-  it('refuses missing, repeated and malformed headers before any HMAC', () => {
+  it('refuses missing and malformed headers, and a stale or future timestamp, before any HMAC', () => {
+    const refused = (over: Partial<HubSignatureInput>, reason: string, label: string) =>
+      expect(counted(spec(over)), label).toEqual({ verdict: { ok: false, reason }, hmacs: 0, compares: 0 });
     for (const over of [{ id: undefined }, { timestamp: undefined }, { signature: undefined }, { id: '' }, { timestamp: '' }, { signature: '' },
-      { id: [SPEC.id, SPEC.id] }, { timestamp: [SPEC.timestamp] }, { signature: [SPEC.signature] }] as Partial<HubSignatureInput>[]) {
-      expect(verifyHubSignature(spec(over)), JSON.stringify(over)).toEqual({ ok: false, reason: 'missing_header' });
-    }
-    for (const id of ['msg.1', 'msg 1', 'msg\t1', 'msg_é', 'x'.repeat(HUB_WEBHOOK_ID_MAX + 1)]) {
-      expect(verifyHubSignature(spec({ id })), id).toEqual({ ok: false, reason: 'malformed_id' });
-    }
+      { id: [] }, { timestamp: [] }, { signature: [] }] as Partial<HubSignatureInput>[]) refused(over, 'missing_header', JSON.stringify(over));
+    for (const id of ['msg.1', 'msg 1', 'msg\t1', 'msg_é', 'x'.repeat(HUB_WEBHOOK_ID_MAX + 1)]) refused({ id }, 'malformed_id', id);
     expect(verifyHubSignature(spec({ id: 'x'.repeat(HUB_WEBHOOK_ID_MAX) })).ok).toBe(false);
-    for (const timestamp of ['-1614265330', '1614265330.5', '1e9', ' 1614265330', '0x60374f72', '1'.repeat(13)]) {
-      expect(verifyHubSignature(spec({ timestamp })), timestamp).toEqual({ ok: false, reason: 'malformed_timestamp' });
-    }
-    for (const signature of ['g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE=', 'v1', 'v1,', ',abc', `${SPEC.signature} ${'v1,A'.repeat(600)}`]) {
-      expect(verifyHubSignature(spec({ signature })), signature.slice(0, 20)).toEqual({ ok: false, reason: 'malformed_signature' });
-    }
+    for (const timestamp of ['-1614265330', '1614265330.5', '1e9', ' 1614265330', '0x60374f72', '1'.repeat(13)]) refused({ timestamp }, 'malformed_timestamp', timestamp);
+    refused({ now: at(T + 301) }, 'stale', 'stale');
+    refused({ now: at(T - 301) }, 'future', 'future');
+    for (const signature of ['g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE=', 'v1', 'v1,', ',abc', `${SPEC.signature} ${'v1,A'.repeat(600)}`,
+      // entries are separated by single spaces only; a tab makes one malformed entry
+      `v1,${'A'.repeat(43)}=\t${SPEC.signature}`]) refused({ signature }, 'malformed_signature', signature.slice(0, 20));
     expect(`${SPEC.signature} ${'v1,A'.repeat(600)}`.length).toBeGreaterThan(HUB_SIGNATURE_HEADER_MAX);
+    // a list with no v1 entry has nothing to compare
+    refused({ signature: `v2,${SPEC.signature.slice(3)}` }, 'no_match', 'no v1');
+    // an unpadded v1 entry is not 32 bytes of base64, so it never counts
+    refused({ signature: `v1,${SPEC.signature.slice(3, -1)}` }, 'no_match', 'unpadded');
+  });
+
+  it('compares every v1 entry with every secret, with no early exit, whether or not one matches', () => {
+    const [a, b] = [randomBytes(32), randomBytes(32)];
+    const other = sign(randomBytes(32), SPEC.id, SPEC.timestamp, SPEC.body);
+    const skipped = `v1a,${'A'.repeat(86)}==`;
+    // the first entry matches the first secret, and every pair is still compared
+    expect(counted(spec({ signature: `${SPEC.signature} ${other} ${skipped}`, secrets: [SPEC.secret, a, b] })))
+      .toEqual({ verdict: { ok: true }, hmacs: 3, compares: 6 });
+    expect(counted(spec({ signature: `${other} ${SPEC.signature}`, secrets: [a, b, SPEC.secret] })))
+      .toEqual({ verdict: { ok: true }, hmacs: 3, compares: 6 });
+    expect(counted(spec({ signature: `${other} ${other} ${other}`, secrets: [a, b] })))
+      .toEqual({ verdict: { ok: false, reason: 'no_match' }, hmacs: 2, compares: 6 });
+    // each comparison is of two 32-byte buffers
+    for (const [x, y] of vi.mocked(timingSafeEqual).mock.calls) expect([(x as Buffer).length, (y as Buffer).length]).toEqual([32, 32]);
+  });
+
+  it('refuses a repeated header, as an array or joined with ", ", before any HMAC', () => {
+    const repeated = (over: Partial<HubSignatureInput>, label: string) =>
+      expect(counted(spec(over)), label).toEqual({ verdict: { ok: false, reason: 'repeated_header' }, hmacs: 0, compares: 0 });
+    const bad = sign(randomBytes(32), SPEC.id, SPEC.timestamp, SPEC.body);
+    repeated({ id: [SPEC.id, SPEC.id] }, 'id array');
+    repeated({ timestamp: [SPEC.timestamp, SPEC.timestamp] }, 'timestamp array');
+    repeated({ signature: [bad, SPEC.signature] }, 'signature array');
+    repeated({ signature: [SPEC.signature, bad] }, 'signature array, valid first');
+    repeated({ id: `${SPEC.id}, ${SPEC.id}` }, 'id joined');
+    repeated({ timestamp: `${SPEC.timestamp}, ${SPEC.timestamp}` }, 'timestamp joined');
+    repeated({ signature: `${bad}, ${SPEC.signature}` }, 'signature joined, valid last');
+    repeated({ signature: `${SPEC.signature}, ${bad}` }, 'signature joined, valid first');
+    // one value in an array is that value
+    expect(verifyHubSignature(spec({ id: [SPEC.id], timestamp: [SPEC.timestamp], signature: [SPEC.signature] }))).toEqual({ ok: true });
+  });
+
+  it('over a real HTTP request: once passes, and each header sent twice is refused, from req.headers and req.headersDistinct', async () => {
+    const bad = sign(randomBytes(32), SPEC.id, SPEC.timestamp, SPEC.body);
+    const seen: Array<{ headers: IncomingHttpHeaders; distinct: Record<string, string[]>; body: Buffer }> = [];
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        seen.push({ headers: req.headers, distinct: req.headersDistinct as Record<string, string[]>, body: Buffer.concat(chunks) });
+        res.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+    const send = (headers: Record<string, string | string[]>) => new Promise<void>((resolve, reject) => {
+      const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/', headers: { 'content-type': 'application/json', ...headers } }, (res) => {
+        res.resume();
+        res.on('end', resolve);
+      });
+      req.on('error', reject);
+      req.end(SPEC.body);
+    });
+    const once = { 'webhook-id': SPEC.id, 'webhook-timestamp': SPEC.timestamp, 'webhook-signature': SPEC.signature };
+    try {
+      await send(once);
+      await send({ ...once, 'webhook-id': [SPEC.id, SPEC.id] });
+      await send({ ...once, 'webhook-timestamp': [SPEC.timestamp, SPEC.timestamp] });
+      await send({ ...once, 'webhook-signature': [bad, SPEC.signature] });
+      await send({ ...once, 'webhook-signature': [SPEC.signature, bad] });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    const verdicts = seen.map(({ headers, distinct, body }) => [
+      verifyHubSignature({ id: headers['webhook-id'], timestamp: headers['webhook-timestamp'], signature: headers['webhook-signature'], body, secrets: [SPEC.secret], now: at(T) }),
+      verifyHubSignature({ id: distinct['webhook-id'], timestamp: distinct['webhook-timestamp'], signature: distinct['webhook-signature'], body, secrets: [SPEC.secret], now: at(T) }),
+    ]);
+    const refused = { ok: false, reason: 'repeated_header' };
+    expect(verdicts).toEqual([[{ ok: true }, { ok: true }], [refused, refused], [refused, refused], [refused, refused], [refused, refused]]);
   });
 
   it('a verdict carries a reason only, never a header value, signature or secret', () => {

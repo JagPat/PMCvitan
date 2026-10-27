@@ -11,6 +11,11 @@
  * within {@link HUB_SIGNATURE_TOLERANCE_SECONDS} of `now`, either side, so a captured delivery can't be replayed
  * later. A webhook-id may not contain `.`, so the id and the timestamp can only be split one way.
  *
+ * A header sent more than once is refused, whichever way the caller reads headers: `req.headersDistinct` gives an
+ * array (one element is fine), and `req.headers` joins repeats with `", "`, which no real value holds (a signature
+ * list is space-separated, base64 has no comma, and an id or a timestamp has no space). The id rules (visible ASCII,
+ * no `.`, at most 256) are stricter than the specification and wait on Hub's confirmation (`1118-plan.md` §4).
+ *
  * The verdict names a reason for logs and tests; it never carries a header value, a signature or a secret.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
@@ -21,7 +26,7 @@ export const HUB_SIGNATURE_HEADER_MAX = 2048;
 export const HUB_WEBHOOK_ID_MAX = 256;
 
 export type HubSignatureInput = {
-  /** the raw `webhook-id`, `webhook-timestamp` and `webhook-signature` headers; a repeated header arrives as an array */
+  /** the `webhook-id`, `webhook-timestamp` and `webhook-signature` headers, from `req.headersDistinct` or `req.headers` */
   id: string | string[] | undefined;
   timestamp: string | string[] | undefined;
   signature: string | string[] | undefined;
@@ -31,19 +36,24 @@ export type HubSignatureInput = {
   now: Date;
 };
 
-export type HubSignatureRefusal = 'missing_header' | 'malformed_id' | 'malformed_timestamp' | 'stale' | 'future' | 'malformed_signature' | 'no_match';
+export type HubSignatureRefusal = 'missing_header' | 'repeated_header' | 'malformed_id' | 'malformed_timestamp' | 'stale' | 'future' | 'malformed_signature' | 'no_match';
 export type HubSignatureVerdict = { ok: true } | { ok: false; reason: HubSignatureRefusal };
 
 const ID = /^[\x21-\x2d\x2f-\x7e]+$/; // visible ASCII except '.'
 const TIMESTAMP = /^[0-9]{1,12}$/;
 const ENTRY = /^v1,([A-Za-z0-9+/]{43}=)$/; // 32 bytes of HMAC-SHA256 in base64
 
-const one = (header: string | string[] | undefined): string | undefined => (typeof header === 'string' ? header : undefined);
+/** a header's one value; `null` when it was sent more than once */
+const one = (header: string | string[] | undefined): string | null | undefined => {
+  if (!Array.isArray(header)) return header;
+  return header.length > 1 ? null : header[0];
+};
 
 export function verifyHubSignature(input: HubSignatureInput): HubSignatureVerdict {
   const id = one(input.id);
   const timestamp = one(input.timestamp);
   const signature = one(input.signature);
+  if ([id, timestamp, signature].some((value) => value === null || value?.includes(', '))) return { ok: false, reason: 'repeated_header' };
   if (!id || !timestamp || !signature) return { ok: false, reason: 'missing_header' };
   if (id.length > HUB_WEBHOOK_ID_MAX || !ID.test(id)) return { ok: false, reason: 'malformed_id' };
   if (!TIMESTAMP.test(timestamp)) return { ok: false, reason: 'malformed_timestamp' };

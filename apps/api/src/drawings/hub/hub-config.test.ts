@@ -52,7 +52,10 @@ describe('#1118 U2 — Hub configuration (closed unless all four HUB_* are set a
   it('HUB_BASE_URL is an https origin only: no path, query, fragment or credentials', () => {
     for (const url of ['hub.example.test', 'ftp://hub.example.test', 'http://hub.example.test', 'https://hub.example.test/api', 'https://hub.example.test/api/v2/',
       'https://hub.example.test?x=1', 'https://hub.example.test/?', 'https://hub.example.test#', 'https://user:pw@hub.example.test', 'https://user@hub.example.test',
-      'https://', 'not a url']) {
+      'https://', 'not a url',
+      // forms the URL parser forgives, refused because the origin is not written as itself
+      'https://@hub.example.test', 'https://:@hub.example.test', 'https://hub.example.test/.', 'https://hub.example.test/a/..', 'https://hub.example.test/%2e',
+      'https://hub.exam\tple.test', 'https:hub.example.test', 'https:/hub.example.test', 'https:\\\\hub.example.test', 'https://hub.example.test:443', 'https://hub.example.test//']) {
       expect(faults(full({ HUB_BASE_URL: url })), url).toEqual([{ name: 'HUB_BASE_URL', problem: 'malformed' }]);
     }
     expect(readHubConfig(full({ HUB_BASE_URL: 'https://hub.example.test:8443' }))).toMatchObject({ open: true, config: { baseUrl: 'https://hub.example.test:8443' } });
@@ -74,6 +77,10 @@ describe('#1118 U2 — Hub configuration (closed unless all four HUB_* are set a
     const [a, b] = [key(), key(64)];
     for (const list of [`${whsec(a)},${whsec(b)}`, `${whsec(a)} ${whsec(b)}`, ` ${whsec(a)} ,\n ${whsec(b)} `, `${whsec(a)},,${whsec(b)},`]) {
       expect(readHubConfig(full({ HUB_WEBHOOK_SECRET: list })), list).toMatchObject({ open: true, config: { webhookSecrets: [a, b] } });
+    }
+    // separators alone are no secrets at all, and stay closed
+    for (const list of [',,,', ' , ', ',']) {
+      expect(faults(full({ HUB_WEBHOOK_SECRET: list })), list).toEqual([{ name: 'HUB_WEBHOOK_SECRET', problem: 'malformed' }]);
     }
     // a repeated secret is kept once
     expect(readHubConfig(full({ HUB_WEBHOOK_SECRET: `${whsec(a)},${whsec(a)}` }))).toMatchObject({ open: true, config: { webhookSecrets: [a] } });

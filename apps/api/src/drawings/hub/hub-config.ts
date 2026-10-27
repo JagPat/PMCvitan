@@ -54,9 +54,10 @@ function baseUrl(raw: string): string | null {
   }
   const local = url.protocol === 'http:' && !isProduction() && LOOPBACK.has(url.hostname);
   if (url.protocol !== 'https:' && !local) return null;
-  if (url.username || url.password || url.search || url.hash || url.pathname !== '/') return null;
-  // `new URL` accepts a trailing `?` or `#` with nothing after it and drops it from `search`/`hash`
-  if (/[?#]/.test(raw)) return null;
+  // the value must be the origin written out as itself (an IDN in punycode, an optional trailing `/`). That refuses
+  // credentials, a path, a query or a fragment, and also what `new URL` forgives: a bare `?` or `#`, `https:host`,
+  // `https://@host`, dot segments, a tab in the host, a default port
+  if (raw.replace(/\/$/, '').toLowerCase() !== url.origin) return null;
   return url.origin;
 }
 
