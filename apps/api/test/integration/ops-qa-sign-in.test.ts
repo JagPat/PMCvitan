@@ -456,6 +456,7 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
     const started = async (sql: string, args: unknown[], tag: string) => {
       let done = false;
       const write = t.prisma.$executeRawUnsafe(sql, ...args).then((n) => { done = true; return n; });
+      write.catch(() => {}); // a refusal is read by `landed` below, never left unhandled
       for (let i = 0; !done; i++) {
         const [{ c }] = await t.prisma.$queryRawUnsafe<Array<{ c: number }>>(
           `SELECT COUNT(*)::int AS c FROM pg_stat_activity
@@ -464,16 +465,33 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
         if (i >= 400) throw new Error(`${tag} neither committed nor waited`);
         await new Promise((r) => setTimeout(r, 25));
       }
-      return { write, committedFirst: done };
+      return { write, committedFirst: done, sql, args };
+    };
+    /**
+     * #1144 — a waiting direct write can be woken before the sign-in's advisory locks are released: PostgreSQL's
+     * `ProcReleaseLocks` releases the regular locks first, then the advisory ones. So the write's standing seal can
+     * still find the readiness key held in that window, and it then fails closed, as designed for a direct writer,
+     * with exactly this refusal. The sign-in has committed by now, so the direct writer's one retry must land.
+     */
+    const landed = async (w: { write: Promise<unknown>; sql: string; args: unknown[] }): Promise<boolean> => {
+      const refusal = await w.write.then(() => null, (e: unknown) => String(e));
+      if (refusal === null) return false;
+      expect(refusal, 'a refusal other than the seal failing closed').toMatch(/the project readiness key is held elsewhere/);
+      await t.prisma.$executeRawUnsafe(w.sql, ...w.args);
+      return true;
     };
     const arrivals = [
       {
         why: 'a new membership',
+        // the removal's statement began before the new row committed, so it never sees it: the arrival stands
+        ends: 'active',
         arrive: () => started(`/* phantom-arrive */ INSERT INTO "Membership" ("id", "projectId", "userId", "role", "status") VALUES ($1, $2, $3, 'engineer', 'active')`,
           [`it-m-phantom-${run}`, ids.phantomProject, ids.phantom], 'phantom-arrive'),
       },
       {
         why: 'a removed membership brought back',
+        // the removal waits on the arrival's row and applies after it: the membership is taken away again
+        ends: 'removed',
         before: () => t.prisma.membership.create({ data: { id: `it-m-phantom-${run}`, projectId: ids.phantomProject, userId: ids.phantom, role: 'engineer', status: 'removed' } }),
         arrive: () => started(`/* phantom-arrive */ UPDATE "Membership" SET "status" = 'active' WHERE "id" = $1`, [`it-m-phantom-${run}`], 'phantom-arrive'),
       },
@@ -508,8 +526,12 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
       expect.soft(arrival!.committedFirst, `${a.why} committed inside the sign-in`).toBe(false);
       expect.soft(await audited()).toBe(before + 1);
       // the arrival goes through once the sign-in commits; the removal does too where the row already existed (a new row is invisible to it, so it changes nothing)
-      await arrival!.write;
-      await leaving!.write;
+      const arrivalRetried = await landed(arrival!);
+      await landed(leaving!);
+      // a refused arrival rolled back, so the queued removal may already have run over the still-removed row; replay it
+      // after the retried arrival so the order stays arrival, then removal, where the removal sees the row
+      if (arrivalRetried && a.ends === 'removed') await t.prisma.$executeRawUnsafe(leaving!.sql, ...leaving!.args);
+      expect((await t.prisma.membership.findUnique({ where: { id: `it-m-phantom-${run}` } }))?.status, `${a.why}: where the arm ends`).toBe(a.ends);
     }
   });
 
