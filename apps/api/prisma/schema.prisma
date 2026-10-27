@@ -116,6 +116,11 @@ model Project {
   media                      Media[]
   // #482 site photos (20280117): the keys of this project's deleted photos, so a late copy of a send is not stored again
   mediaTombstones            MediaTombstone[]
+  // #1118 U1a-3 (20280121200000): the Hub blobs fetched into storage for this project, the ledger the sweep walks
+  hubFetchedBlobs            HubFetchedBlob[]
+  // #1118 U1a-2 (20280121300000): the project's Hub link and its history. A list only because the link's key is
+  // (orgId, id); its primary key keeps it to one row.
+  drawingHubLinks            DrawingHubLink[]
   pushSubs                   PushSubscription[]
   drawings                   Drawing[]
   phases                     Phase[]
@@ -1301,6 +1306,58 @@ model DrawingRevision {
   @@index([drawingId])
 }
 
+// #1118 U1a-3 (20280121200000_hub_fetched_blob): one per storage key a Hub fetch wrote, the ledger the sweep walks. Its
+// id and Hub version hold more than whitespace ("HubFetchedBlob_id_present", "_hubVersionId_present"), and its key is
+// exactly "<projectId>/hub/<uuid>.<ext>", what StorageService.keyFor(projectId, 'hub', mime) makes, with no '/' in the
+// project id ("HubFetchedBlob_storageKey_shape"), so no native drawing or media key is ever one. A row is never changed
+// ("HubFetchedBlob_sealed") or truncated ("HubFetchedBlob_no_truncate"); the sweep's DELETE is its one designed delete.
+// Prisma cannot express the checks or the triggers (raw SQL); see the migration's B1-B5.
+model HubFetchedBlob {
+  id           String   @id @default(cuid())
+  storageKey   String   @unique
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  projectId    String
+  hubVersionId String
+  fetchedAt    DateTime @default(now())
+
+  @@index([projectId])
+}
+
+// #1118 U1a-2 (20280121300000_hub_link): a project's Hub link and its history. Each row is written once and never
+// changed: UPDATE, a direct DELETE and TRUNCATE are refused by triggers ("<Model>_sealed", "<Model>_no_truncate"), and each
+// goes only with its project. A link commits only with its event 1 (deferred constraint trigger
+// "DrawingHubLink_first_event"). Prisma cannot express the triggers or the checks (raw SQL); see the migration's L1-L6.
+
+// one per project ever linked to Hub; its org is the project's own (composite key to Project (orgId, id)). The Hub
+// project, the lifecycle and who linked or unlinked it, when, are in its events alone.
+model DrawingHubLink {
+  project   Project               @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId String                @id
+  orgId     String
+  events    DrawingHubLinkEvent[]
+}
+
+// the project's link history in order: event 1 links, links and unlinks alternate, and each event names the one before
+// it (checks "DrawingHubLinkEvent_chain", "_kind_alternates", "_hubProjectId_on_link"). The active link is the latest
+// event when it is a link.
+model DrawingHubLinkEvent {
+  link         DrawingHubLink        @relation(fields: [projectId], references: [projectId], onDelete: Cascade, onUpdate: NoAction)
+  projectId    String
+  seq          Int
+  prev         DrawingHubLinkEvent?  @relation("hubLinkEventChain", fields: [projectId, prevSeq], references: [projectId, seq], onDelete: NoAction, onUpdate: NoAction)
+  prevSeq      Int?
+  next         DrawingHubLinkEvent[] @relation("hubLinkEventChain")
+  kind         String // linked | unlinked
+  hubProjectId String? // the Hub project, on a link only
+  at           DateTime              @default(now())
+  // the user who linked or unlinked (NO ACTION, as every actor key); whether they may is the linking command's check
+  by           User                  @relation("hubLinkEventsBy", fields: [byUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  byUserId     String
+
+  @@id([projectId, seq])
+  @@index([byUserId])
+}
+
 // WHO a revision was issued to — frozen at issue time (Phase 1 Task 3). The rows
 // snapshot the project's ACTIVE engineer/contractor members at the moment of issue;
 // membership churn never rewrites them (readiness derives recipients ∩ currently-
@@ -1441,6 +1498,7 @@ model User {
   paymentsRecorded             Payment[]                      @relation("paymentsRecorded")
   paymentsReversed             PaymentReversal[]              @relation("paymentsReversed")
   advancesPaid                 VendorAdvance[]                @relation("advancesPaid")
+  hubLinkEvents                DrawingHubLinkEvent[]          @relation("hubLinkEventsBy")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It

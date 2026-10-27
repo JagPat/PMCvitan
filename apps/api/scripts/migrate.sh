@@ -576,6 +576,12 @@ if echo "$out" | grep -q "P3005"; then
   #
   # The standing projection's readiness refusal (20280120) is here for the same reason: it replaces
   # `platform_user_standing_apply`, which 20271220 installs. It is re-runnable.
+  #
+  # The Hub fetched-blob ledger (#1118 U1a-3, 20280121200000) is here because its rules are checks and triggers, which a
+  # db-push baseline does not have. The file is guarded and re-runnable.
+  #
+  # The Hub link and its history (#1118 U1a-2, 20280121300000) are here because their rules are checks and triggers,
+  # which a db-push baseline does not have. The file is guarded and re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -618,7 +624,9 @@ if echo "$out" | grep -q "P3005"; then
 20280117000000_media_tombstone
 20280118000000_media_tombstone_guard
 20280119000000_org_authority_role_change_in_place
-20280120000000_standing_projection_readiness"
+20280120000000_standing_projection_readiness
+20280121200000_hub_fetched_blob
+20280121300000_hub_link"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
