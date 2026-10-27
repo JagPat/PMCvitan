@@ -7,7 +7,9 @@ import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset, TRUNCATE_SEALS } from '../../prisma/sanctioned-reset';
+import { z } from 'zod';
 import { StorageService } from '../../src/media/storage.service';
+import { createMediaSchema } from '../../src/contracts';
 
 /**
  * #1118 U1a-3 — the Hub fetched-blob ledger (`20280121200000_hub_fetched_blob`), against live PostgreSQL. It proves what
@@ -134,8 +136,11 @@ describe('#1118 U1a-3 — the Hub fetched-blob ledger (live PG)', () => {
     await expect(insert(`b4k5-${run}`, hubKey(k5), k5)).rejects.toThrow(/HubFetchedBlob_storageKey_shape/);
 
     // disjoint: every key the app makes for a native drawing or a photo is refused, for every mime keyFor knows
-    // the media kinds are createMediaSchema's `kind` enum (src/contracts.ts)
-    const kinds = ['drawings', 'progress', 'inspection', 'decision', 'attendance', 'material', 'visit'];
+    // the media kinds are read from createMediaSchema's `kind` enum (under its refine layers), so a new kind is probed too
+    let media: z.ZodTypeAny = createMediaSchema;
+    while (media instanceof z.ZodEffects) media = media.innerType();
+    const kinds = ['drawings', ...(media as z.AnyZodObject).shape.kind.options as string[]];
+    expect(kinds).toEqual(['drawings', 'progress', 'inspection', 'decision', 'attendance', 'material', 'visit']);
     for (const kind of kinds) {
       for (const mime of ['application/pdf', 'image/jpeg', 'image/png', 'image/vnd.dwg', 'audio/webm', 'audio/mp4', 'application/x-unknown']) {
         const key = storage.keyFor(p, kind, mime);
