@@ -25,13 +25,15 @@ export const mediaManifest: ModuleManifest = {
   workflowParticipants: ['activities', 'commercial', 'inspections', 'inventory', 'labour', 'site-visits'],
   producesEvents: ['media.uploaded', 'media.refiled', 'media.removed'],
   consumesEvents: [],
-  commands: ['media.create', 'media.setNode', 'media.remove'],
+  // #995 V1b — a video clip's still frame, added by the phone that recorded it
+  commands: ['media.create', 'media.setNode', 'media.remove', 'media.addPoster'],
   // U3a — the PMC brief's progress-photo count (MediaQueryService), so orgs never reads `Media` directly
   // #792 SV2 — a site visit's file list reads each file's type and taken time here (MediaQueryService.fileFacts)
   queries: ['media.progressPhotoCountSince', 'media.fileFacts'],
   routes: [
     'POST /projects/:projectId/media',
     'PATCH /projects/:projectId/media/:mediaId/node',
+    'POST /projects/:projectId/media/:mediaId/poster',
     'DELETE /media/:id',
   ],
   // #482 (Board, 14 Oct 2026) — every member uploads a plain site photo and deletes their own within the hour;

@@ -72,3 +72,41 @@ WebM BlockAdditions, which the parser refuses. A camera never has one.
 There is no Firefox (WebM) or iOS Safari (MP4, H.264 with AAC) clip here, so those shapes are proven on hand-built
 fixtures only. The video web unit must add real recordings from both, and prove the parser accepts them, before any
 client uploads video.
+
+# Still frames from a real browser
+
+#995 V1b. A clip's still frame is a JPEG the phone draws on a canvas. These were written by Chromium's canvas encoder.
+The reader's tests in `src/media/jpeg-still.test.ts` and the poster tests in
+`test/integration/media-video-poster.test.ts` read them.
+
+| File | Encoder | Size | Quality |
+| --- | --- | --- | --- |
+| `chromium-153-still-640x360.jpg` | Chromium 153.0.8010.12, headless, Linux | 640 × 360 | 0.8 |
+| `chromium-153-still-1x1.jpg` | Chromium 153.0.8010.12, headless, Linux | 1 × 1 | 0.8 |
+
+## How they were drawn
+
+A gradient and a word were drawn on a canvas of that size, then:
+
+```js
+const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.8));
+```
+
+Chromium writes SOI, a JFIF APP0, a single-chunk ICC profile in APP2, two DQT, a baseline SOF0, four DHT, one scan
+and EOI. It writes no Exif.
+
+## Progressive and restart stills
+
+A browser's canvas writes neither, but the reader admits both, so three small stills from another real encoder pin
+that it reads them as the format has them: Pillow 12.3.0 (libjpeg-turbo), quality 80, a 48 × 32 gradient.
+
+| File | Written with | Shape |
+| --- | --- | --- |
+| `pillow-12.3-progressive-48x32.jpg` | `progressive=True` | SOF2, ten scans, a DHT before most of them |
+| `pillow-12.3-restart-48x32.jpg` | `restart_marker_blocks=1` | SOF0, a DRI, one scan with restart markers |
+| `pillow-12.3-restart-progressive-48x32.jpg` | `progressive=True, restart_marker_rows=1` | SOF2, a DRI before most scans |
+
+## What these stills do not cover
+
+There is no Firefox or iOS Safari still here. The video web unit must add real ones from both, and prove the reader
+accepts them, before any client sends a still frame.

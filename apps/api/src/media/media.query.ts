@@ -20,13 +20,14 @@ export class MediaQueryService {
    *  uploading device's key for it (so that phone can tell its queued copy from the stored file; nobody else's key
    *  is sent, as the snapshot's photos: Codex 4324453890), by id. A marked-up copy also names the photo it was drawn
    *  on (M3), which is on the same visit, so every reader of the visit has it too. */
-  async fileFacts(projectId: string, ids: string[], viewerId: string): Promise<Map<string, { mime: string; takenAt: string | null; clientKey: string | null; durationSec: number | null; sourceMediaId: string | null }>> {
+  async fileFacts(projectId: string, ids: string[], viewerId: string): Promise<Map<string, { mime: string; takenAt: string | null; clientKey: string | null; durationSec: number | null; sourceMediaId: string | null; poster: boolean }>> {
     if (ids.length === 0) return new Map();
     const rows = await this.prisma.media.findMany({
-      where: { projectId, id: { in: ids } }, select: { id: true, mime: true, takenAt: true, clientKey: true, uploadedBy: true, durationSec: true, sourceMediaId: true },
+      where: { projectId, id: { in: ids } }, select: { id: true, mime: true, takenAt: true, clientKey: true, uploadedBy: true, durationSec: true, sourceMediaId: true, posterStorageKey: true },
     });
     return new Map(rows.map((r) => [r.id, {
       mime: r.mime, takenAt: r.takenAt, clientKey: r.uploadedBy === viewerId ? r.clientKey : null, durationSec: r.durationSec, sourceMediaId: r.sourceMediaId,
+      poster: r.posterStorageKey !== null,
     }]));
   }
 }
