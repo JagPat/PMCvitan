@@ -430,7 +430,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   'orgs/companies.controller.ts': ['Post()', "Patch(':companyId')", "Delete(':companyId')"],
   // Phase 4 Task 3 (§H) — the orgs-owned WorkerDevice binding route
   'orgs/worker-devices.controller.ts': ["Post('worker-devices/:deviceId/bind')"],
-  'media/media.controller.ts': ["Post('projects/:projectId/media')", "Patch('projects/:projectId/media/:mediaId/node')", "Delete('media/:id')"],
+  'media/media.controller.ts': ["Post('projects/:projectId/media')", "Patch('projects/:projectId/media/:mediaId/node')", "Post('projects/:projectId/media/:mediaId/poster')", "Delete('media/:id')"],
   'inspections/inspections.controller.ts': ['Post()', "Post(':inspectionId/submit')", "Post(':inspectionId/decide')"],
   'activities/phases.controller.ts': ['Post()', "Delete(':phaseId')"],
   'activities/requirements.controller.ts': ['Post()', "Post(':requirementId/revise')", "Post(':requirementId/cancel')"],
@@ -644,12 +644,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only; +1 #1118 U3 Hub webhook deliveries)', () => {
+    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only; +1 #995 V1b a video clip\'s still frame; +1 #1118 U3 Hub webhook deliveries)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(189);
+      expect(total).toBe(190);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(189);
+      expect(live).toBe(190);
     });
   });
 

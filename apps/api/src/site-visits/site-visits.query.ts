@@ -55,6 +55,9 @@ export interface SiteVisitFileDto {
   durationSec: number | null;
   /** A marked-up copy's original, a file on the same visit (M3); null for a photo as taken. */
   sourceMediaId: string | null;
+  /** A video clip's still frame, a short-lived signed path like `url`, once the recording phone has sent one; null
+   *  otherwise (#995 V1b). */
+  posterUrl: string | null;
   note: string | null;
   rating: 'fine' | 'concern' | 'action_needed' | null;
   /** The place the file showed when it was added, with the name it had then; `nodeId` is null once that place was
@@ -102,9 +105,9 @@ type Row = Prisma.SiteVisitGetPayload<{ include: typeof withChildren }>;
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 
 /** What the media module says about a visit's file (`MediaQueryService.fileFacts`). */
-type FileFacts = Map<string, { mime: string; takenAt: string | null; clientKey: string | null; durationSec: number | null; sourceMediaId: string | null }>;
+type FileFacts = Map<string, { mime: string; takenAt: string | null; clientKey: string | null; durationSec: number | null; sourceMediaId: string | null; poster: boolean }>;
 
-export function toSiteVisitDto(v: Row, fileUrl: (mediaId: string) => string, facts: FileFacts): SiteVisitDto {
+export function toSiteVisitDto(v: Row, fileUrl: (mediaId: string) => string, facts: FileFacts, posterUrl: (mediaId: string) => string): SiteVisitDto {
   const device = v.locationKind === 'device' && v.locLat !== null && v.locLng !== null && v.locAccuracyM !== null && v.locAt !== null;
   return {
     id: v.id,
@@ -137,7 +140,7 @@ export function toSiteVisitDto(v: Row, fileUrl: (mediaId: string) => string, fac
     files: v.media.map((f) => ({
       mediaId: f.mediaId, url: fileUrl(f.mediaId), mime: facts.get(f.mediaId)?.mime ?? '', clientKey: facts.get(f.mediaId)?.clientKey ?? null,
       takenAt: facts.get(f.mediaId)?.takenAt ?? null, durationSec: facts.get(f.mediaId)?.durationSec ?? null,
-      sourceMediaId: facts.get(f.mediaId)?.sourceMediaId ?? null,
+      sourceMediaId: facts.get(f.mediaId)?.sourceMediaId ?? null, posterUrl: facts.get(f.mediaId)?.poster ? posterUrl(f.mediaId) : null,
       note: f.note, rating: f.rating, place: f.placeName !== '' ? { nodeId: f.nodeId, name: f.placeName } : null,
       addedById: f.addedById, addedByName: f.addedByName, addedByRole: f.addedByRole, addedAt: f.addedAt.toISOString(),
     })),
@@ -158,7 +161,7 @@ export class SiteVisitsQueryService {
   /** `viewerId` is who reads: each file's upload key goes only to its own uploader (Codex 4324453890). */
   private async toDtos(projectId: string, rows: Row[], viewerId: string): Promise<SiteVisitDto[]> {
     const facts = await this.media.fileFacts(projectId, rows.flatMap((r) => r.media.map((f) => f.mediaId)), viewerId);
-    return rows.map((row) => toSiteVisitDto(row, (id) => this.signed.mediaPath(id), facts));
+    return rows.map((row) => toSiteVisitDto(row, (id) => this.signed.mediaPath(id), facts, (id) => this.signed.posterPath(id)));
   }
 
   /**
