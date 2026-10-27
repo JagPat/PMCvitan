@@ -6,6 +6,7 @@ import { EMPTY_HINTS, type EmptyHintTask } from './words';
 const ACTION: Record<EmptyHintTask, PolicyAction> = {
   checklist: 'inspection.create',
   decision: 'decision.create',
+  photo: 'media.upload',
 };
 
 /**

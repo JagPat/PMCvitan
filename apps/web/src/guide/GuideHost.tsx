@@ -119,9 +119,11 @@ export function GuideHost() {
         setBox((prev) => (sameBox(prev, next) ? prev : next));
       };
       // a pressed action the store has since confirmed some other way (a live refresh that showed the
-      // checklist submitted before the request's own answer arrived) is done
+      // checklist submitted before the request's own answer arrived) is done, also after that answer said it failed:
+      // the request can fail on the way back after the server took it, and the store's record wins over the reply.
+      // Only after this run pressed the control: another tab's submit is not this run's act
       const settled = guide.steps[step]!.settled;
-      if (g.run.waiting && settled?.(runKey)) {
+      if (g.run.pressed && settled?.(runKey)) {
         completeStep(key, g, null);
         return;
       }
@@ -222,7 +224,10 @@ export function GuideHost() {
         if (current.until !== 'outcome' || !current.outcome) return;
         // a keyed step follows one record: another checklist's submit is not this guide's
         if (current.keyed && !guideKeyMatches(outcomeKey, g.run.key)) return;
-        if (outcome === current.outcome.ok) completeStep(key, g, null);
+        // a failure report never undoes what the store already shows done (a refresh that showed it first)
+        const notOk = outcome === current.outcome.failed || outcome === current.outcome.held;
+        if (outcome === current.outcome.ok || (notOk && g.run.pressed && current.settled?.(g.run.key))) completeStep(key, g, null);
+        else if (outcome === current.outcome.held) g.stop();
         else if (outcome === current.outcome.failed) g.setWait(false);
       }),
     [key],
