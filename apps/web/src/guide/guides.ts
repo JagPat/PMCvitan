@@ -34,7 +34,8 @@ export interface GuideStep {
   /**
    * For `until: 'outcome'`: true when the store already shows the pressed action done, however that
    * became known (a live refresh can show a checklist submitted before the request's own answer comes
-   * back, and that answer is then dropped). Checked only while the guide is waiting after the press.
+   * back, and that answer is then dropped). Checked on every look at the step, also after the request reported a
+   * failure (its answer can be lost after the server took it), so it only says true for this run's own action.
    */
   settled?: (key: string | null) => boolean;
   /** point at the control carrying the same `data-guide-key` as the one pressed in an earlier step

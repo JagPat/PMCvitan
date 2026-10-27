@@ -225,6 +225,35 @@ describe('the "add a site photo" guide', () => {
     expect(tip()).toBeNull();
   });
 
+  it.each(['before', 'after'] as const)('a photo a live refresh shows %s its upload reports a failure still finishes it', async (when) => {
+    const { useStore, view } = await dashboard('engineer');
+    let fail!: (e: Error) => void;
+    const uploadMedia = vi.fn((_input: { clientKey: string }) => new Promise((_res, rej) => { fail = rej; }));
+    act(() => { useStore.getState()._setGateway({ uploadMedia, snapshot: vi.fn(() => new Promise(() => {})) } as never); });
+    stubFileReader('data:image/jpeg;base64,AAAA');
+    tick();
+    press(view.getByTestId('add-site-photo'));
+    pick(view);
+    const { clientKey } = uploadMedia.mock.calls[0]![0];
+    const record = () => useStore.setState({ photos: [{ id: 'mine', url: 'http://api.test/m.jpg', kind: 'progress', clientKey }] } as never);
+    const showIt = () => act(record);
+    // the server took the photo but its answer was lost on the way back; 'before': the refresh lands in the same moment,
+    // with no look at the guide in between (its next poll comes after the failure)
+    await act(async () => {
+      if (when === 'before') record();
+      fail(new Error('connection reset'));
+    });
+    await flush();
+    if (when === 'after') {
+      tick();
+      expect(done()).not.toContain('add-site-photo');
+      showIt();
+    }
+    tick();
+    expect(done()).toContain('add-site-photo');
+    expect(tip()).toBeNull();
+  });
+
   it('points at the button itself, not the row around it', async () => {
     await dashboard('engineer');
     tick();
