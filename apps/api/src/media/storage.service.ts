@@ -53,6 +53,9 @@ export class StorageService {
       endpoint: process.env.S3_ENDPOINT,
       region: process.env.S3_REGION || 'auto',
       forcePathStyle: true,
+      // Checksums only where S3 requires one (#1175). The SDK's default adds a CRC32 to every PutObject, and on a
+      // presigned PUT it is the CRC32 of an empty body (signing has no bytes), which a real upload never matches.
+      requestChecksumCalculation: 'WHEN_REQUIRED',
       credentials: {
         accessKeyId: process.env.S3_ACCESS_KEY_ID!,
         secretAccessKey: process.env.S3_SECRET_ACCESS_KEY!,

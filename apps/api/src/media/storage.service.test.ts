@@ -92,6 +92,14 @@ describe('StorageService.presignPut', () => {
     const url = new URL((await s.presignPut('ambli/drawings/x.pdf', 'application/pdf'))!.uploadUrl);
     expect(url.searchParams.get('X-Amz-SignedHeaders')!.split(';')).toContain('content-type');
   });
+
+  it('S3 mode: the upload link carries no checksum, so the real bytes are not checked against an empty body (#1175)', async () => {
+    configureS3();
+    const s = new StorageService();
+    const url = new URL((await s.presignPut('ambli/drawings/typed/x.pdf', 'application/pdf'))!.uploadUrl);
+    const names = [...url.searchParams.keys()].map((k) => k.toLowerCase());
+    expect(names.filter((k) => k.includes('checksum'))).toEqual([]);
+  });
 });
 
 describe('StorageService.storedType', () => {
