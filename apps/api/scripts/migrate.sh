@@ -582,6 +582,10 @@ if echo "$out" | grep -q "P3005"; then
   #
   # The Hub link and its history (#1118 U1a-2, 20280121300000) are here because their rules are checks and triggers,
   # which a db-push baseline does not have. The file is guarded and re-runnable.
+  #
+  # A drawing's source and its Hub records (#1118 U1b, 20280122000000) are here because their rules are checks,
+  # triggers and the revision's raw source key, which a db-push baseline does not have. The file is guarded and
+  # re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -626,7 +630,8 @@ if echo "$out" | grep -q "P3005"; then
 20280119000000_org_authority_role_change_in_place
 20280120000000_standing_projection_readiness
 20280121200000_hub_fetched_blob
-20280121300000_hub_link"
+20280121300000_hub_link
+20280122000000_hub_drawing_identity"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
