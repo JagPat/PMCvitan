@@ -15,7 +15,7 @@ import { collectInventory, readCatalog, type ProjectInventory, type SnapshotIden
  *   2. snapshot every table (`snapshotTables`) and the protected projects' inventories;
  *   3. move those users' home project, clear `lastProjectId` where it names the target, switch off
  *      the DELETE triggers of the tables being emptied, delete exactly the listed keys child-first,
- *      switch the triggers back on as they were, and fire every deferred constraint now;
+ *      fire every deferred constraint now, and switch the triggers back on as they were;
  *   4. snapshot again and check (`checkRemoval`): removed keys equal the list, the only changed
  *      rows are those users, nothing was added, no protected project lost or changed a row, and
  *      every trigger in the schema is as it was;
@@ -375,9 +375,11 @@ export async function removeProject(prisma: PrismaClient, opts: RemovalOptions):
         if (blocked.length === pending.length) throw new Error(`no table could be emptied, rows outside the list still reference them: ${blocked.join(', ')}. ${lastError}`);
         pending = blocked;
       }
-      for (const t of disabled) await tx.$executeRawUnsafe(`ALTER TABLE ${q(t.table)} ${enableClause(t.enabled)} ${q(t.name)}`);
-      // deferred constraints check now, inside the run, so a dry run meets them too
+      // deferred constraints check now, inside the run, so a dry run meets them too. Before the triggers go back on: a
+      // deferred key's check still queued on a table makes ALTER TABLE on it fail (55006), and a delete through one
+      // queues one (#1118 U1a-1's receipt and fact keys)
       await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
+      for (const t of disabled) await tx.$executeRawUnsafe(`ALTER TABLE ${q(t.table)} ${enableClause(t.enabled)} ${q(t.name)}`);
 
       // 4. after, and the checks
       const after = await snapshotTables(tx);
