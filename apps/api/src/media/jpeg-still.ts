@@ -8,16 +8,20 @@
  *  - SOI first, then only APP0 (the 14-byte JFIF header with no thumbnail, at most once), APP2 (a single-chunk ICC profile, chunk 1 of 1, at most once),
  *    DQT, DHT, DRI (exactly 4 bytes), exactly one SOF0 or SOF2, and SOS, each segment's length inside the file.
  *  - Each DQT: whole 8-bit tables numbered 0 to 3. Each DHT: whole tables of class DC or AC numbered 0 to 3, each with
- *    1 to 256 codes. Both fill their segment exactly.
- *  - The SOF: 8-bit, 1 or 3 components with distinct ids, sampling factors 1 to 4 and a table 0 to 3, a width and a
+ *    1 to 256 codes whose lengths a Huffman code can hold (none all one bits), and symbols the 8-bit processes code
+ *    (DC 0 to 11, AC sizes 0 to 10). Both fill their segment exactly.
+ *  - The SOF: 8-bit, 1 or 3 components with distinct ids, sampling factors 1 to 4 that divide the frame's largest, and a table 0 to 3, a width and a
  *    height each from 1 to {@link POSTER_MAX_SIDE}, and its length exactly its fields'. It comes before the first SOS.
  *  - Each SOS: at least one component, each one of the SOF's and none twice (so no more than the SOF has), table
- *    selectors 0 to 3, its length exactly its fields'. A baseline frame has one scan, of the whole band (Ss 0, Se 63,
- *    Ah 0, Al 0); a progressive scan keeps Ss ≤ Se ≤ 63 and Ah, Al ≤ 13, with DC alone in a DC scan and one component
- *    in an AC scan. Every table the scan decodes with is defined before it.
+ *    selectors 0 to 3, its length exactly its fields'. A baseline frame has one scan, of every component and the whole
+ *    band (Ss 0, Se 63, Ah 0, Al 0); a progressive scan keeps Ss ≤ Se ≤ 63 and Ah, Al ≤ 13, with DC alone in a DC scan
+ *    and one component in an AC scan, and follows its components' history: DC first, each coefficient's first scan
+ *    once, each refinement one bit. An interleaved scan's MCU holds at most 10 blocks. Every table the scan decodes
+ *    with is defined before it.
  *  - A scan's entropy data runs to the next marker that is not a stuffed byte or, only after a nonzero DRI, a restart
  *    marker, and holds at least one coded byte.
- *  - EOI ends the file: no byte after it, and at least one scan before it.
+ *  - EOI ends the file: no byte after it, and at least one scan before it; a progressive frame has sent every
+ *    component's DC.
  * Refused: APP1 (Exif, XMP: a phone's location or camera), every other APPn, COM, DNL, DHP, EXP, JPG, arithmetic,
  * lossless and hierarchical frames, a multi-chunk ICC profile, fill bytes, and anything past EOI.
  */
@@ -60,8 +64,15 @@ interface Frame {
   width: number;
   height: number;
   progressive: boolean;
-  /** each component's id and its quantization table */
-  components: { id: number; tq: number }[];
+  /** each component's id, sampling factors and quantization table */
+  components: { id: number; h: number; v: number; tq: number }[];
+}
+
+/** A progressive frame's history per component: the DC's last precision bit (Al), and each AC coefficient's, or null
+ *  before its first scan. */
+interface Progress {
+  dc: number | null;
+  ac: (number | null)[];
 }
 
 function walk(b: Buffer): JpegStill {
@@ -75,11 +86,14 @@ function walk(b: Buffer): JpegStill {
   const quant = new Set<number>();
   const dc = new Set<number>();
   const ac = new Set<number>();
+  const progress = new Map<number, Progress>();
   for (;;) {
     if (at + 2 > b.length || b[at] !== 0xff) fail();
     const marker = b[at + 1]!;
     if (marker === EOI) {
       if (at + 2 !== b.length || !frame || scans === 0) fail();
+      // a progressive frame sends every component's DC, as a baseline frame's one scan codes every component
+      if (frame!.progressive && [...progress.values()].some((p) => p.dc === null)) fail();
       return { width: frame!.width, height: frame!.height };
     }
     if (at + 4 > b.length) fail();
@@ -117,8 +131,18 @@ function walk(b: Buffer): JpegStill {
           const th = body[i]! & 0x0f;
           if (tc > 1 || th > 3) fail();
           let total = 0;
-          for (let k = 1; k <= 16; k++) total += body[i + k]!;
+          // the codes are assigned in order, as T.81 C.2 does: each length's must fit, and no code is all one bits
+          let code = 0;
+          for (let k = 1; k <= 16; k++) {
+            total += body[i + k]!;
+            code += body[i + k]!;
+            if (code >= 1 << k) fail();
+            code <<= 1;
+          }
           if (total < 1 || total > 256 || i + 17 + total > body.length) fail();
+          // each symbol a category the 8-bit processes code: a DC difference of 0 to 11 bits; an AC run with 1 to 10
+          // bits, or a size of 0 (end of band, an end-of-band run, or a run of 16 zeros)
+          for (const symbol of body.subarray(i + 17, i + 17 + total)) if (tc === 0 ? symbol > 11 : (symbol & 0x0f) > 10) fail();
           (tc === 0 ? dc : ac).add(th);
           i += 17 + total;
         }
@@ -142,9 +166,14 @@ function walk(b: Buffer): JpegStill {
           const v = body[7 + 3 * i]! & 0x0f;
           const tq = body[8 + 3 * i]!;
           if (components.some((c) => c.id === id) || h < 1 || h > 4 || v < 1 || v > 4 || tq > 3) fail();
-          components.push({ id, tq });
+          components.push({ id, h, v, tq });
         }
+        // each component's sampling divides the frame's largest, as every decoder needs: no fractional chroma
+        const mh = Math.max(...components.map((c) => c.h));
+        const mv = Math.max(...components.map((c) => c.v));
+        if (components.some((c) => mh % c.h !== 0 || mv % c.v !== 0)) fail();
         frame = { width, height, components, progressive: marker === SOF2 };
+        for (const c of components) progress.set(c.id, { dc: null, ac: new Array<number | null>(64).fill(null) });
         break;
       }
       case SOS: {
@@ -158,7 +187,8 @@ function walk(b: Buffer): JpegStill {
         if (frame!.progressive) {
           // a DC scan (Ss 0) codes DC alone; an AC scan codes one component's band
           if (ss > se || se > 63 || ah > 13 || al > 13 || (ss === 0 && se !== 0) || (ss > 0 && count !== 1)) fail();
-        } else if (ss !== 0 || se !== 63 || ah !== 0 || al !== 0) fail();
+        } else if (ss !== 0 || se !== 63 || ah !== 0 || al !== 0 || count !== frame!.components.length) fail();
+        // a baseline frame's one scan codes every component (Codex P2 on #1166)
         const seen: number[] = [];
         for (let i = 0; i < count; i++) {
           const id = body[1 + 2 * i]!;
@@ -171,7 +201,11 @@ function walk(b: Buffer): JpegStill {
           if (ss === 0 && ah === 0 && !dc.has(td)) fail();
           if (se > 0 && !ac.has(ta)) fail();
           seen.push(id);
+          if (frame!.progressive) advance(progress.get(id)!, ss, se, ah, al);
         }
+        // an interleaved scan's MCU holds at most 10 blocks (T.81 B.2.3)
+        const blocks = frame!.components.filter((c) => seen.includes(c.id)).reduce((n, c) => n + c.h * c.v, 0);
+        if (count > 1 && blocks > 10) fail();
         scans++;
         at = entropyEnd(b, end, restartInterval > 0);
         continue;
@@ -180,6 +214,24 @@ function walk(b: Buffer): JpegStill {
         fail();
     }
     at = end;
+  }
+}
+
+/**
+ * A progressive scan, held to its component's history (T.81 G.1.1.1): DC's first scan before any other of the
+ * component's; a first scan of a coefficient only once; a refinement only of what was sent, one bit at a time
+ * (Ah the last Al, Al one less).
+ */
+function advance(p: Progress, ss: number, se: number, ah: number, al: number): void {
+  if (ss === 0) {
+    if (ah === 0 ? p.dc !== null : p.dc !== ah || al !== ah - 1) fail();
+    p.dc = al;
+    return;
+  }
+  if (p.dc === null) fail();
+  for (let k = ss; k <= se; k++) {
+    if (ah === 0 ? p.ac[k] !== null : p.ac[k] !== ah || al !== ah - 1) fail();
+    p.ac[k] = al;
   }
 }
 
