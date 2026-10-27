@@ -88,11 +88,13 @@ export class StorageService {
    * the file's bytes straight to the bucket, bypassing the API's request-body
    * limit (large drawings, Slice 3). Returns null when no bucket is configured, so
    * the caller falls back to the base64 body path (the current dev-stub default).
+   * The signature covers Content-Type, so the object is stored as the type the server allowed and
+   * the bucket serves it as that type, never as one the uploader chose, such as a page (#995 nosniff).
    */
   async presignPut(key: string, mime: string, expiresIn = 900): Promise<{ uploadUrl: string; url: string } | null> {
     if (!this.configured) return null;
     const cmd = new PutObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key, ContentType: mime });
-    const uploadUrl = await getSignedUrl(this.s3(), cmd, { expiresIn });
+    const uploadUrl = await getSignedUrl(this.s3(), cmd, { expiresIn, signableHeaders: new Set(['content-type']) });
     return { uploadUrl, url: this.publicUrl(key) };
   }
 

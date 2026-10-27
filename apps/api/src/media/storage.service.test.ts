@@ -85,4 +85,11 @@ describe('StorageService.presignPut', () => {
     expect(out?.uploadUrl).toContain('ambli/drawings/x.pdf');
     expect(out?.uploadUrl).toMatch(/X-Amz-Signature=/);
   });
+
+  it('S3 mode: the upload is signed for the checked type, so the object is stored as that type (#995 nosniff)', async () => {
+    configureS3();
+    const s = new StorageService();
+    const url = new URL((await s.presignPut('ambli/drawings/x.pdf', 'application/pdf'))!.uploadUrl);
+    expect(url.searchParams.get('X-Amz-SignedHeaders')!.split(';')).toContain('content-type');
+  });
 });

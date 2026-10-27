@@ -104,6 +104,7 @@ export class DrawingsController {
   @Public()
   @Get('drawings/rev/:id')
   async serve(@Param('id') id: string, @Query('t') token: string | undefined, @Res() res: Response): Promise<void> {
+    res.setHeader('X-Content-Type-Options', 'nosniff'); // as for media: the file is its checked type, never a page
     if (!this.signed.verify('drawing', id, token)) throw new ForbiddenException('Invalid or expired file link');
     const out = await this.drawings.fetchRevision(id);
     if (!out) throw new NotFoundException('Drawing revision not found');
