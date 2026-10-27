@@ -1817,9 +1817,9 @@ describe('Site Visits SV2: every write of a kept photo is bounded (#792, #1017 r
     await settled();
     expect(uploadMedia).toHaveBeenCalledTimes(1);
     expect(useStore.getState().outbox).toHaveLength(0);
-    // and the start the rows still carried was sent again under its own key (the server answers that replay with the
-    // same visit) and cleared
-    expect(startSiteVisit.mock.calls.map((c) => c[1])).toEqual(['k-s', 'k-s']);
+    // and the start the rows still carried is not sent again: the phone keeps the server's answer for its key (its done
+    // fact, xtab-drain redesign U2), so it is settled here as sent, and cleared from the rows
+    expect(startSiteVisit.mock.calls.map((c) => c[1])).toEqual(['k-s']);
     expect((await rows()).map((r) => [r.state, r.start])).toEqual([['filed', null]]);
   });
 });
