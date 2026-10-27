@@ -262,7 +262,14 @@ describe('U3b — the brief in the store', () => {
     useStore.setState({ sessionToken: token('u-pmc'), sessionUserId: 'u-pmc' });
     return useStore;
   }
-  const flush = () => new Promise((r) => setTimeout(r, 0));
+  /** The `i`th reply `mock` gave the store (a read or a decision) has landed, and the store's own handler for it has run:
+   *  the store chained that handler on this very promise before the test could, so it runs first. A refused reply
+   *  counts as landed too. */
+  const landed = async (mock: { mock: { results: Array<{ value: unknown }> } }, i: number) => {
+    const reply = mock.mock.results[i]?.value as Promise<unknown> | undefined;
+    if (!reply) throw new Error(`no call ${i} was made`);
+    await reply.then(() => {}, () => {});
+  };
 
   it('loadBrief keeps the reply for the session that asked, and drops it after sign-out', async () => {
     const useStore = await store();
@@ -271,7 +278,7 @@ describe('U3b — the brief in the store', () => {
     const gw = { getBrief: vi.fn().mockReturnValueOnce(Promise.resolve(reply)).mockReturnValueOnce(new Promise((r) => { release = r; })) };
     useStore.getState()._setGateway(gw as never);
     useStore.getState().loadBrief();
-    await flush();
+    await landed(gw.getBrief, 0);
     expect(useStore.getState().brief).toEqual(reply);
     expect(useStore.getState().briefAt).toBeGreaterThan(0); // stamped, so the screen can judge its age
 
@@ -281,7 +288,7 @@ describe('U3b — the brief in the store', () => {
     expect(useStore.getState().brief).toBeNull();
     expect(useStore.getState().briefAt).toBeNull();
     release(reply);
-    await flush();
+    await landed(gw.getBrief, 1);
     expect(useStore.getState().brief).toBeNull();
   });
 
@@ -332,7 +339,7 @@ describe('U3b — the brief in the store', () => {
     useStore.getState()._setGateway(gw as never);
     useStore.setState({ online: true, activeProjectId: 'ambli' });
     useStore.getState().loadBrief();
-    await flush();
+    await landed(gw.getBrief, 0);
     expect(useStore.getState().brief?.projects[0].reviewsWaiting).toBe(1);
     useStore.getState().loadBrief(); // a poll still in flight when the PMC decides
 
@@ -340,16 +347,16 @@ describe('U3b — the brief in the store', () => {
     expect(gw.decideReview).toHaveBeenCalled();
     expect(useStore.getState().briefAt).not.toBeNull(); // nothing changes until the server commits
     commit({ projectId: 'ambli', decisions: [] });
-    await flush();
+    await landed(gw.decideReview, 0);
     // committed: the brief that still names the review is no longer fresh, and it is asked again
     expect(useStore.getState().briefAt).toBeNull();
     expect(gw.getBrief).toHaveBeenCalledTimes(3);
 
     answerBefore(before); // the poll asked before the decision lands late — it is superseded
-    await flush();
+    await landed(gw.getBrief, 1);
     expect(useStore.getState().briefAt).toBeNull();
     answerAfter(after);
-    await flush();
+    await landed(gw.getBrief, 2);
     expect(useStore.getState().brief?.projects[0].reviewsWaiting).toBe(0);
     expect(useStore.getState().briefAt).toBeGreaterThan(0);
   });
@@ -375,15 +382,15 @@ describe('U3b — the brief in the store', () => {
 
     useStore.getState().approveInspection();
     commit({ projectId: 'ambli', decisions: [] });
-    await flush();
+    await landed(gw.decideReview, 0);
     expect(gw.getBrief).toHaveBeenCalledTimes(2); // asked again once the decision committed
 
     answerFirst(before); // asked before the decision, lands after it: never shown
-    await flush();
+    await landed(gw.getBrief, 0);
     expect(useStore.getState().brief).toBeNull();
     expect(useStore.getState().briefAt).toBeNull();
     answerAfter(after);
-    await flush();
+    await landed(gw.getBrief, 1);
     expect(useStore.getState().brief?.projects[0].reviewsWaiting).toBe(0);
   });
 
@@ -398,12 +405,12 @@ describe('U3b — the brief in the store', () => {
     useStore.getState()._setGateway(gw as never);
     useStore.setState({ online: true, activeProjectId: 'ambli' });
     useStore.getState().loadBrief();
-    await flush();
+    await landed(gw.getBrief, 0);
     useStore.getState().toggleReject(0);
     useStore.getState().sendReinspection();
     expect(gw.decideReview).toHaveBeenCalledWith(expect.any(String), false, expect.any(Array), expect.any(String));
     commit({ projectId: 'ambli', decisions: [] });
-    await flush();
+    await landed(gw.decideReview, 0);
     expect(gw.getBrief).toHaveBeenCalledTimes(2);
   });
 
@@ -419,7 +426,7 @@ describe('U3b — the brief in the store', () => {
     useStore.setState({ online: true, activeProjectId: 'ambli' });
     useStore.getState().approveInspection();
     commit({ projectId: 'ambli', decisions: [] });
-    await flush();
+    await landed(gw.decideReview, 0);
     expect(gw.getBrief).not.toHaveBeenCalled();
   });
 
@@ -435,13 +442,13 @@ describe('U3b — the brief in the store', () => {
     useStore.getState()._setGateway(gw as never);
     useStore.setState({ online: true, activeProjectId: 'ambli' });
     useStore.getState().loadBrief();
-    await flush();
+    await landed(gw.getBrief, 0);
     useStore.getState().approveInspection(); // decided by u-pmc…
     // …who signs out; another PMC signs in and has their own fresh brief before the reply lands
     useStore.setState({ sessionToken: token('u-other'), sessionUserId: 'u-other', brief: theirs, briefAt: Date.now() });
     const calls = gw.getBrief.mock.calls.length;
     commit({ projectId: 'ambli', decisions: [] });
-    await flush();
+    await landed(gw.decideReview, 0);
     expect(useStore.getState().brief).toEqual(theirs);
     expect(useStore.getState().briefAt).not.toBeNull();
     expect(gw.getBrief).toHaveBeenCalledTimes(calls);
@@ -458,12 +465,12 @@ describe('U3b — the brief in the store', () => {
     useStore.getState()._setGateway(gw as never);
     useStore.setState({ online: true, activeProjectId: 'ambli' });
     useStore.getState().loadBrief();
-    await flush();
+    await landed(gw.getBrief, 0);
     useStore.getState().approveInspection();
     // a switch issues a new project-scoped token for the SAME person; their brief spans both projects
     useStore.setState({ sessionToken: `${token('u-pmc')}2`, activeProjectId: 'bopal' });
     commit({ projectId: 'ambli', decisions: [] });
-    await flush();
+    await landed(gw.decideReview, 0);
     expect(gw.getBrief).toHaveBeenCalledTimes(2);
   });
 
@@ -516,7 +523,6 @@ describe('#799 — a switch asked to open one record lands on it', () => {
 });
 
 describe('U3b — the brief is read once the signed-in gateway is installed (#697 review round 1)', () => {
-  const flushAll = async () => { for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0)); };
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
@@ -533,14 +539,26 @@ describe('U3b — the brief is read once the signed-in gateway is installed (#69
     }) as never);
     const { useStore, getInitialState } = await import('@/store/store');
     const { useApiSync } = await import('@/data/useApiSync');
-    const { renderHook } = await import('@testing-library/react');
+    const { renderHook, act } = await import('@testing-library/react');
+    // the signal: the sign-in's setup asks for the shell straight after the point where a PMC's brief is read
+    let shellAsked!: () => void;
+    const setUp = new Promise<void>((done) => { shellAsked = done; });
     useStore.setState({
       ...getInitialState(),
       role, sessionToken: token('u-pmc'), sessionUserId: 'u-pmc', activeProjectId: 'ambli',
-      requestFreshSnapshot: vi.fn(), hydrateOutbox: vi.fn(), loadOrgData: vi.fn(), loadPortfolio: vi.fn(), loadShell: vi.fn(),
+      requestFreshSnapshot: vi.fn(), hydrateOutbox: vi.fn(), loadOrgData: vi.fn(), loadPortfolio: vi.fn(), loadShell: vi.fn(() => shellAsked()),
     } as never);
     renderHook(() => useApiSync());
-    await flushAll();
+    await act(async () => { await setUp; });
+    // a PMC's brief has landed in the store: the read the setup asked for, answered
+    if (role === 'pmc') {
+      await act(async () => {
+        await new Promise<void>((done) => {
+          if (useStore.getState().brief) done();
+          const stop = useStore.subscribe((st) => { if (st.brief) { stop(); done(); } });
+        });
+      });
+    }
     return { useStore, calls };
   }
 
