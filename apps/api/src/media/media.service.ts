@@ -20,13 +20,14 @@ import { isPlaceHiddenFrom, previewPublishedProjectNode, resolvePublishedProject
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
-import { VIDEO_CLIP_MAX_SEC, VOICE_NOTE_MAX_SEC, VOICE_NOTE_SEC_TOLERANCE, type CreateMediaInput } from '../contracts';
-import { SITE_PHOTO_DELETE_WINDOW_MS, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
+import { VIDEO_CLIP_MAX_SEC, VOICE_NOTE_MAX_SEC, VOICE_NOTE_SEC_TOLERANCE, type AddPosterInput, type CreateMediaInput } from '../contracts';
+import { MEDIA_NOT_FOUND_MESSAGE, SITE_PHOTO_DELETE_WINDOW_MS, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { readVoiceRecording } from './voice-container';
 import { readVideoClip } from './video-container';
+import { readJpegStill } from './jpeg-still';
 
 export interface UploadedMedia {
   id: string;
@@ -79,6 +80,17 @@ function isSendKeyConflict(e: Prisma.PrismaClientKnownRequestError): boolean {
   const target = (e.meta as { target?: unknown } | undefined)?.target;
   if (Array.isArray(target)) return target.length === 2 && target.includes('projectId') && target.includes('clientKey');
   return target === 'Media_projectId_clientKey_key';
+}
+
+/** #995 V1b — what a still frame's request must read of its clip, early and again under the clip's row lock. */
+type PosterTarget = { projectId: string; kind: string; mime: string; uploadedBy: string; posterStorageKey: string | null };
+
+/** #995 V1b — a still frame goes only on a video clip on a site visit, and only from the member who recorded it: a clip
+ *  in another project is answered as if it did not exist. */
+function assertMayAddPoster(row: PosterTarget | null | undefined, projectId: string, user: AuthUser): asserts row is PosterTarget {
+  if (!row || row.projectId !== projectId) throw new NotFoundException(MEDIA_NOT_FOUND_MESSAGE);
+  if (row.uploadedBy !== user.sub) throw new ForbiddenException('Only the person who recorded this video may add its still frame');
+  if (row.kind !== 'visit' || !row.mime.startsWith('video/')) throw new BadRequestException('A still frame is added only to a video on a site visit');
 }
 
 export type MediaBytes = { mime: string; bytes: Buffer };
@@ -429,6 +441,67 @@ export class MediaService {
     }
     if (row.url) return { redirect: row.url }; // legacy public row (back-compat)
     return null;
+  }
+
+  /**
+   * #995 V1b — give a video clip its still frame: a JPEG the recording phone draws from the clip. The first one stays:
+   * a replay, or any later frame, is answered with the stored one's link and stores nothing new, so the request is
+   * idempotent by the clip's identity alone. The clip is complete without one.
+   *
+   * Authority before bytes, as for an upload: the caller and the clip are asked first, outside any transaction (a cheap
+   * early no), then the bytes are read whole and stored, and then the clip's row is locked and every question asked
+   * again; that answer decides. An object that no row took is removed, but only once a fresh read proves no row
+   * references it.
+   *
+   * No event: a new event type is a new external-effect catalog generation, which is a migration of its own. A still
+   * frame adds no file to its visit, and other viewers see it on their next read of the visit's files.
+   */
+  async addPoster(projectId: string, mediaId: string, user: AuthUser, input: AddPosterInput): Promise<{ id: string; posterUrl: string }> {
+    const answer = { id: mediaId, posterUrl: this.signed.posterPath(mediaId) };
+    const select = { projectId: true, kind: true, mime: true, uploadedBy: true, posterStorageKey: true } as const;
+    const early = await this.prisma.media.findUnique({ where: { id: mediaId }, select });
+    assertMayAddPoster(early, projectId, user);
+    const bytes = Buffer.from(input.data, 'base64');
+    if (!readJpegStill(bytes)) throw new BadRequestException('This file is not a still frame the app can show');
+    // a replay after a lost reply, or a later frame: the stored one stands, and nothing is stored
+    if (early.posterStorageKey !== null) return answer;
+    // the dev stub keeps a file's bytes in its row, and a clip's row has room for one file only
+    if (!this.storage.configured) throw new ConflictException('This server has no file storage for a still frame');
+    const key = this.storage.keyFor(projectId, 'visit', 'image/jpeg');
+    await this.storage.put(key, bytes, 'image/jpeg');
+    let stored: string;
+    try {
+      stored = await this.prisma.$transaction(async (tx) => {
+        const [row] = await tx.$queryRaw<PosterTarget[]>(Prisma.sql`
+          SELECT "projectId", kind, mime, "uploadedBy", "posterStorageKey" FROM "Media" WHERE id = ${mediaId} FOR NO KEY UPDATE`);
+        assertMayAddPoster(row, projectId, user);
+        if (row.posterStorageKey !== null) return row.posterStorageKey;
+        await tx.media.update({ where: { id: mediaId }, data: { posterStorageKey: key } });
+        return key;
+      });
+    } catch (e) {
+      await this.removePosterIfUnreferenced(projectId, key);
+      throw e;
+    }
+    if (stored !== key) await this.removePosterIfUnreferenced(projectId, key);
+    return answer;
+  }
+
+  /** {@link removeIfUnreferenced} for a still frame's object: removed only once a fresh read proves no clip names it. */
+  private async removePosterIfUnreferenced(projectId: string, key: string): Promise<void> {
+    const persisted = await this.prisma.media
+      .findFirst({ where: { projectId, posterStorageKey: key }, select: { id: true } })
+      .catch(() => ({ id: 'unknown' }) as { id: string });
+    if (!persisted) await this.storage.remove(key).catch(() => {});
+  }
+
+  /** #995 V1b — a clip's still frame for its serve endpoint (which has verified the frame's own token): a presigned
+   *  private-bucket GET, or null when the clip has none. */
+  async fetchPoster(id: string): Promise<MediaRedirect | null> {
+    const row = await this.prisma.media.findUnique({ where: { id }, select: { posterStorageKey: true } });
+    if (!row?.posterStorageKey) return null;
+    const signed = await this.storage.presignGet(row.posterStorageKey);
+    return signed ? { redirect: signed } : null;
   }
 
   /**

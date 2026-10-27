@@ -2,7 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { resolveJwtSecret } from '../config';
 
-export type FileKind = 'media' | 'drawing';
+// #995 V1b — a video's still frame has its own kind, so a clip's token never opens its still frame, nor the reverse
+export type FileKind = 'media' | 'drawing' | 'poster';
 
 const DEFAULT_TTL_SEC = 3600; // 60 min — a leaked file URL dies quickly; snapshots refetch tokens
 
@@ -58,6 +59,11 @@ export class SignedUrlService {
   /** Relative, token-carrying path the frontend resolves against the API base. */
   mediaPath(id: string): string {
     return `/media/${id}?t=${this.sign('media', id)}`;
+  }
+
+  /** A video's still frame, by its clip's id (#995 V1b). */
+  posterPath(id: string): string {
+    return `/media/${id}/poster?t=${this.sign('poster', id)}`;
   }
 
   drawingPath(id: string): string {

@@ -72,3 +72,30 @@ WebM BlockAdditions, which the parser refuses. A camera never has one.
 There is no Firefox (WebM) or iOS Safari (MP4, H.264 with AAC) clip here, so those shapes are proven on hand-built
 fixtures only. The video web unit must add real recordings from both, and prove the parser accepts them, before any
 client uploads video.
+
+# Still frames from a real browser
+
+#995 V1b. A clip's still frame is a JPEG the phone draws on a canvas. These were written by Chromium's canvas encoder.
+The reader's tests in `src/media/jpeg-still.test.ts` and the poster tests in
+`test/integration/media-video-poster.test.ts` read them.
+
+| File | Encoder | Size | Quality |
+| --- | --- | --- | --- |
+| `chromium-153-still-640x360.jpg` | Chromium 153.0.8010.12, headless, Linux | 640 × 360 | 0.8 |
+| `chromium-153-still-1x1.jpg` | Chromium 153.0.8010.12, headless, Linux | 1 × 1 | 0.8 |
+
+## How they were drawn
+
+A gradient and a word were drawn on a canvas of that size, then:
+
+```js
+const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.8));
+```
+
+Chromium writes SOI, a JFIF APP0, a single-chunk ICC profile in APP2, two DQT, a baseline SOF0, four DHT, one scan
+and EOI. It writes no Exif.
+
+## What these stills do not cover
+
+There is no Firefox or iOS Safari still here. The video web unit must add real ones from both, and prove the reader
+accepts them, before any client sends a still frame.
