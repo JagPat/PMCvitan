@@ -159,6 +159,9 @@ const OUTBOX_OP_KINDS: Record<OutboxOp['t'], Check> = {
     }),
   }),
   uploadEvidence: act({ scope: str, clientKey }),
+  // #917: never stored (its row in IndexedDB is its record, and the op is rebuilt from it), so no key holds one; read
+  // as its type is, should one ever be met
+  uploadSitePhoto: act({ scope: str, clientKey }),
 };
 
 type ServerSchema = { safeParse: (v: unknown) => { success: boolean } };
@@ -243,6 +246,8 @@ const SERVER_CONTRACT_OF: Record<OutboxOp['t'], { schema: SchemaName; body: (v: 
   uploadMedia: { schema: 'createMediaSchema', body: inputBody },
   // its bytes and fields come from the evidence row in IndexedDB, not from the stored act
   uploadEvidence: null,
+  // its upload comes from the site photo row in IndexedDB (#917), and the act is never stored
+  uploadSitePhoto: null,
 };
 
 /** Bodies a released build queued whose shape today's contract refuses, each read by the contract of the release that

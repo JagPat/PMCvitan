@@ -71,7 +71,8 @@ import {
   ROLE_POLICY,
 } from '@vitan/shared';
 import { routableScreensFor, screensFor } from '@/lib/screens';
-import { deleteWaitsForUpload } from '@/lib/queuedSitePhotos';
+import { deleteWaitsForUpload, uploadQueued, type KeptSitePhoto } from '@/lib/queuedSitePhotos';
+import { deleteSitePhotoRow, dropSentMarkers, holdSitePhotoLock, isSitePhotoSent, listSitePhotoRows, markSitePhotoSent, putSitePhotoRow, sitePhotosLocked, SITE_PHOTO_SENT_KEEP_MS, sitePhotoStorageAvailable, SitePhotoBusy, SitePhotoUnreadable, type SitePhotoRow } from '@/data/sitePhotoStore';
 import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
 import { type DailyLogDraft, adoptLegacyDraft, dailyLogKey, draftAppliesTo, draftHoldsWork, legacyDraftExtras, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
@@ -95,7 +96,7 @@ import { isDone } from '@/store/queueLedger';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isMediaNotFound, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isMediaNotFound, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { clearVisitPhotoStart, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
@@ -411,6 +412,9 @@ export interface AppState {
   /** #482 site photos — a delete took a photo out of a full window: its count stays a floor until a snapshot rebuilds
    *  the window (Codex 4337661439) */
   photosWindowShort: boolean;
+  /** #917 — this project's site photos whose online send lost its answer, read from their rows on this phone (their
+   *  outbox ops carry the key only), so the Dashboard shows them as queued; rebuilt from the rows at each flush */
+  sitePhotosKept: KeptSitePhoto[];
   materials: Material[]; // all deliveries across the project, with their place (Site Map)
   placedInspections: PlacedInspection[]; // inspections on the tree for the Site Map (pmc/engineer only)
   phases: Phase[]; // project phases with rollups (Orgs Slice 3)
@@ -1452,6 +1456,7 @@ export function getInitialState(): AppState {
     photos: structuredClone(SEED_PHOTOS), // placed site photos for the demo Site Map
     myDeletablePhotos: [],
     photosWindowShort: false,
+    sitePhotosKept: [],
     materials: structuredClone(SEED_MATERIALS), // placed deliveries for the demo Site Map
     placedInspections: structuredClone(SEED_PLACED_INSPECTIONS), // placed inspections for the demo Site Map
     phases: structuredClone(SEED_PHASES),
@@ -1832,6 +1837,8 @@ export const useStore = create<Store>()(
       const mine = new Set<string>();
       for (const o of s.outbox) {
         if (o.t === 'uploadMedia' && o.input.dailyLogId === log.id && o.input.clientKey && !held.has(o.input.clientKey)) mine.add(o.input.clientKey);
+        // #917: queued by its key, its log read from its row on this phone
+        if (o.t === 'uploadSitePhoto' && !held.has(o.clientKey) && s.sitePhotosKept.some((k) => k.clientKey === o.clientKey && k.dailyLogId === log.id)) mine.add(o.clientKey);
       }
       for (const u of s.photoUploadsInFlight) if (u.dailyLogId === log.id && !held.has(u.clientKey)) mine.add(u.clientKey);
       log.progress = log.photoCount + mine.size;
@@ -2483,12 +2490,52 @@ export const useStore = create<Store>()(
       if (s.dailyLog) s.dailyLog.photos = s.dailyLog.photos.filter((p) => p.id !== photoId);
       forgetMedia(s, photoId);
     };
+    // #917: the keys of this tab's online site photo sends not yet answered. A flush does not give their rows an op:
+    // the send itself queues one if its answer is lost
+    const sitePhotoSendsDirect = new Set<string>();
+    /** What the Dashboard and the day's count need of a kept site photo: never its whole upload. */
+    const keptFrom = (input: UploadMediaInput & { clientKey: string }): KeptSitePhoto => ({
+      clientKey: input.clientKey, mime: input.mime, data: input.data,
+      ...(input.takenAt ? { takenAt: input.takenAt } : {}), ...(input.nodeId ? { nodeId: input.nodeId } : {}),
+      ...(input.dailyLogId ? { dailyLogId: input.dailyLogId } : {}),
+    });
+    /** #917: the rows are the site photo queue's only record (its ops are never stored). Give every row of the queue on
+     *  show its op, except one a tab is sending now (this tab's direct send, or any tab holding its lock: that send
+     *  queues its own op if its answer is lost) and a "sent" marker, and show as queued every row this tab holds an op
+     *  for, one another tab is sending included. Run on every load and at every flush. Bounded: a phone that does not
+     *  answer rebuilds nothing, and the next flush reads again. A read for a queue no longer on show changes nothing.
+     *  Markers past their keep are dropped here, for every person and project. */
+    const reconcileSitePhotos = (): void => {
+      if (!gateway || !sitePhotoStorageAvailable()) return;
+      const readScope = currentScope();
+      const readKey = outboxKey();
+      const rowScope = visitPhotoScope(get().sessionToken, get().sessionUserId);
+      const project = gateway.project;
+      void dropSentMarkers(Date.now() - SITE_PHOTO_SENT_KEEP_MS).catch(() => {});
+      void Promise.all([listSitePhotoRows(rowScope, project), sitePhotosLocked(rowScope, project)]).then(([rows, locked]) => {
+        if (!scopeStillCurrent(readScope) || outboxKey() !== readKey) return;
+        const full = rows.filter((r): r is SitePhotoRow => !isSitePhotoSent(r));
+        // a row a tab is sending now gets no op here; one this tab already queues stays on show while another tab sends it
+        const missing = full.filter((r) => !sitePhotoSendsDirect.has(r.clientKey) && !locked.has(r.clientKey) && !uploadQueued(get().outbox, r.clientKey));
+        if (missing.length === 0 && full.length === 0 && get().sitePhotosKept.length === 0) return;
+        set((s) => {
+          for (const r of missing) s.outbox.push({ t: 'uploadSitePhoto', scope: rowScope, clientKey: r.clientKey });
+          s.sitePhotosKept = full.filter((r) => s.outbox.some((o) => o.t === 'uploadSitePhoto' && o.clientKey === r.clientKey)).map((r) => keptFrom(r.input));
+          recountDailyLogPhotos(s);
+        });
+        // (its op is never stored: the row is already its record on this phone)
+        if (missing.length > 0 && get().online) void get().flushOutbox();
+      }, () => {});
+    };
     const siteVisitKeyOf = (key: string): string => key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
     /** SV2 (#792): a visit photo's act is never stored here. Its one record is its `visitPhotoStore` row (act, bytes,
      *  and the start it waits on), and the act is rebuilt from that row on every load (`reconcileVisitPhotos`). So a
      *  release before it, which replays every `siteVisit…` act it finds and has no case for a photo, never meets one,
      *  and this lane is stored exactly as before (Codex 4320122193, 4320404449, 4320404441). */
     const isStoredVisitOp = (o: OutboxOp): boolean => isSiteVisitOp(o) && o.t !== 'siteVisitAddFile';
+    /** #917: a site photo's op is never stored either: its row is its record, and the op is rebuilt from it on every load
+     *  and flush (`reconcileSitePhotos`). So no release, one before #917 or one that knows no such kind, ever reads one. */
+    const isStoredGenericOp = (o: OutboxOp): boolean => !isSiteVisitOp(o) && o.t !== 'uploadSitePhoto';
     /** the release drains asked so far, settled once each has asked its flush or found the app offline (tests wait on it,
      *  `_queueReleased`, #1134 r1 4376641821) */
     let releaseDrains: Promise<void> = Promise.resolve();
@@ -2511,7 +2558,7 @@ export const useStore = create<Store>()(
     };
     /** each stored key's write from memory: the general queue, then the visit lane */
     const queueWrites = (): QueueWrite[] => [
-      { key: outboxKey(), mine: get().outbox.filter((o) => !isSiteVisitOp(o)), takes: (o) => !isSiteVisitOp(o) },
+      { key: outboxKey(), mine: get().outbox.filter(isStoredGenericOp), takes: isStoredGenericOp },
       { key: siteVisitKeyOf(outboxKey()), mine: get().outbox.filter(isStoredVisitOp), takes: isStoredVisitOp },
     ];
     /** the new acts no write has yet stored in their key. A flush sends none while its write is still running (#1099 r1,
@@ -6148,63 +6195,121 @@ export const useStore = create<Store>()(
         };
         // sent from this tab and not yet answered: its photo offers no Delete until the answer (Codex 4322715807)
         set((s) => { s.photoUploadsSending.push(clientKey); });
-        gateway
-          .uploadMedia(input)
-          .then((res) => {
-            if (!scopeStillCurrent(scope)) { set((s) => settle(s, true)); return; }
-            set((s) => {
-              settle(s, true);
-              // deleted here before this answer came (a pull had already listed it): it is not listed again
-              if (deletedPhotoIds.has(res.id)) return;
-              // #482 site photos: the photo list (the Dashboard's and the Site Map's) shows it at once, newest first.
-              // A refresh that landed before this reply may already hold it, in the list, the log, or only one of
-              // them when the log's read failed; each gets it once.
-              // its pick order is recorded even when a refresh already brought it in, so an earlier pick whose reply
-              // comes after still goes in behind it (#984)
-              photoPickedAt.set(res.id, pickSeq);
-              if (!s.photos.some((p) => p.id === res.id) && !s.myDeletablePhotos.some((p) => p.id === res.id)) {
-                // after any photo this device picked later whose reply came back first
-                const at = s.photos.findIndex((p) => (photoPickedAt.get(p.id) ?? 0) < pickSeq);
-                s.photos.splice(at < 0 ? s.photos.length : at, 0, { id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(nodeId ? { nodeId } : {}),
-                  // who and when (#482): this viewer, at the time the server recorded it. No role yet: the role the
-                  // viewer acts in can come through the org rather than a project membership, and the next snapshot
-                  // says the project role, so nothing is claimed here that the server would not say.
-                  ...(s.userName ? { by: s.userName } : {}), ...(res.at ? { at: res.at } : {}),
-                  // no Delete yet: whether it is the viewer's to delete (the log it went on may be sent by now) is the
-                  // server's to say, on the refresh asked for below (Codex 4317884803)
-                });
-                // the snapshot's window is the newest SNAPSHOT_SITE_PHOTO_LIMIT photos, and a new one keeps it exactly that
-                // size (Codex 4322976249). One it drops that the viewer may still delete in their hour moves to their own
-                // list, as the server would send it (Codex 4322459282); a photo deleted here, or one whose upload is
-                // still on its way, is never moved there
-                if (s.photos.length > SNAPSHOT_SITE_PHOTO_LIMIT) {
-                  const now = Date.now();
-                  const kept = s.photos.slice(SNAPSHOT_SITE_PHOTO_LIMIT).filter((p) => p.deletableUntil !== undefined && sitePhotoDeletable(p, now)
-                    && !deletedPhotoIds.has(p.id) && !(p.clientKey && s.photoUploadsSending.includes(p.clientKey)));
-                  s.photos.length = SNAPSHOT_SITE_PHOTO_LIMIT;
-                  s.myDeletablePhotos = [...kept, ...s.myDeletablePhotos.filter((p) => !kept.some((k) => k.id === p.id))];
+        // #917: the upload is kept on this phone before it is sent, so an answer that is lost is sent again from the row
+        // under this same key, and the server stores one photo. A flush does not give the row its op while this tab's
+        // send is unanswered. A write that fails or passes its bound is no row: the send goes ahead as before
+        const sendGateway = gateway;
+        const rowScope = visitPhotoScope(get().sessionToken, get().sessionUserId);
+        const rowProject = sendGateway.project;
+        sitePhotoSendsDirect.add(clientKey);
+        const send = (saved: boolean, release: () => void): void => {
+          // refused, or sent with no row kept: the row goes (a row that landed after its bound would send a photo the
+          // person was told to pick again). Taken: the row becomes a "sent" marker, so a copy of its op another tab holds
+          // settles quietly. Either runs after the put it follows. The send stays this tab's, and its lock held, until
+          // that has settled, so no flush in any tab reads the row in between and sends a photo the server already answered
+          let rowGone: Promise<void> = Promise.resolve();
+          const letRowGo = (): void => { rowGone = deleteSitePhotoRow(rowScope, rowProject, clientKey).catch(() => {}); };
+          const rowSent = (): void => {
+            rowGone = (sitePhotoStorageAvailable() ? markSitePhotoSent(rowScope, rowProject, clientKey) : Promise.resolve()).catch(() => {});
+          };
+          void sendGateway
+            .uploadMedia(input)
+            .then((res) => {
+              rowSent();
+              if (!scopeStillCurrent(scope)) { set((s) => settle(s, true)); return; }
+              set((s) => {
+                settle(s, true);
+                // deleted here before this answer came (a pull had already listed it): it is not listed again
+                if (deletedPhotoIds.has(res.id)) return;
+                // #482 site photos: the photo list (the Dashboard's and the Site Map's) shows it at once, newest first.
+                // A refresh that landed before this reply may already hold it, in the list, the log, or only one of
+                // them when the log's read failed; each gets it once.
+                // its pick order is recorded even when a refresh already brought it in, so an earlier pick whose reply
+                // comes after still goes in behind it (#984)
+                photoPickedAt.set(res.id, pickSeq);
+                if (!s.photos.some((p) => p.id === res.id) && !s.myDeletablePhotos.some((p) => p.id === res.id)) {
+                  // after any photo this device picked later whose reply came back first
+                  const at = s.photos.findIndex((p) => (photoPickedAt.get(p.id) ?? 0) < pickSeq);
+                  s.photos.splice(at < 0 ? s.photos.length : at, 0, { id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(nodeId ? { nodeId } : {}),
+                    // who and when (#482): this viewer, at the time the server recorded it. No role yet: the role the
+                    // viewer acts in can come through the org rather than a project membership, and the next snapshot
+                    // says the project role, so nothing is claimed here that the server would not say.
+                    ...(s.userName ? { by: s.userName } : {}), ...(res.at ? { at: res.at } : {}),
+                    // no Delete yet: whether it is the viewer's to delete (the log it went on may be sent by now) is the
+                    // server's to say, on the refresh asked for below (Codex 4317884803)
+                  });
+                  // the snapshot's window is the newest SNAPSHOT_SITE_PHOTO_LIMIT photos, and a new one keeps it exactly that
+                  // size (Codex 4322976249). One it drops that the viewer may still delete in their hour moves to their own
+                  // list, as the server would send it (Codex 4322459282); a photo deleted here, or one whose upload is
+                  // still on its way, is never moved there
+                  if (s.photos.length > SNAPSHOT_SITE_PHOTO_LIMIT) {
+                    const now = Date.now();
+                    const kept = s.photos.slice(SNAPSHOT_SITE_PHOTO_LIMIT).filter((p) => p.deletableUntil !== undefined && sitePhotoDeletable(p, now)
+                      && !deletedPhotoIds.has(p.id) && !(p.clientKey && s.photoUploadsSending.includes(p.clientKey)));
+                    s.photos.length = SNAPSHOT_SITE_PHOTO_LIMIT;
+                    s.myDeletablePhotos = [...kept, ...s.myDeletablePhotos.filter((p) => !kept.some((k) => k.id === p.id))];
+                  }
                 }
+                // another log on screen now: the server holds the photo on its own log, and the next snapshot shows it
+                const log = onPickedLog(s);
+                if (!log || log.photos.some((p) => p.id === res.id)) return;
+                log.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
+                if (log.photoCount === undefined) log.progress += 1;
+                recordDraftPhoto(s);
+              });
+              persistDailyLogDraft();
+              // #482 site photos: the snapshot says until when the new photo is the viewer's to delete
+              void requestFreshSnapshot(scope);
+              // say what the photo actually carried, not what the feature is called
+              get().flash(
+                hasStamp(stamped) ? DLT.photoUploadedStamped[get().lang] : DLT.photoUploaded[get().lang],
+              );
+            }, (err: unknown) => {
+              // the upload's own answer only: a fault in handling a yes is never taken for a lost answer
+              // #917: no answer, and the photo is kept on this phone: it is queued by its key, shown and counted from the
+              // phone as an offline pick is, and sent again from its row. For a project no longer on screen the row stays,
+              // and that project's next flush gives it its op; the person is told it is kept all the same
+              if (saved && !isTerminalOutboxError(err)) {
+                if (!scopeStillCurrent(scope)) {
+                  set((s) => settle(s, false));
+                  get().flash(DLT.photoOffline[get().lang]);
+                  return;
+                }
+                set((s) => {
+                  s.outbox.push({ t: 'uploadSitePhoto', scope: rowScope, clientKey });
+                  s.syncQueue.push('Progress photo');
+                  s.sitePhotosKept.push(keptFrom(input));
+                  // counted from now on as queued, by its row's log, until the server's count holds it or the queue lets
+                  // it go (settle recounts)
+                  settle(s, false);
+                  const log = onPickedLog(s);
+                  if (log) {
+                    log.photos.unshift({ url: dataUrl, clientKey });
+                    if (log.photoCount === undefined) log.progress += 1;
+                    recordDraftPhoto(s);
+                  }
+                });
+                // (its op is never stored: the row is its record on this phone, written before the send)
+                persistDailyLogDraft();
+                get().flash(DLT.photoOffline[get().lang]);
+                return;
               }
-              // another log on screen now: the server holds the photo on its own log, and the next snapshot shows it
-              const log = onPickedLog(s);
-              if (!log || log.photos.some((p) => p.id === res.id)) return;
-              log.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
-              if (log.photoCount === undefined) log.progress += 1;
-              recordDraftPhoto(s);
+              letRowGo();
+              set((s) => settle(s, false));
+              get().flash(DLT.photoUploadFailed[get().lang]);
+            })
+            .finally(() => {
+              void rowGone.then(() => { sitePhotoSendsDirect.delete(clientKey); release(); });
+              set((s) => { s.photoUploadsSending = s.photoUploadsSending.filter((k) => k !== clientKey); });
             });
-            persistDailyLogDraft();
-            // #482 site photos: the snapshot says until when the new photo is the viewer's to delete
-            void requestFreshSnapshot(scope);
-            // say what the photo actually carried, not what the feature is called
-            get().flash(
-              hasStamp(stamped) ? DLT.photoUploadedStamped[get().lang] : DLT.photoUploaded[get().lang],
-            );
-          })
-          .catch(() => {
-            set((s) => settle(s, false));
-            get().flash(DLT.photoUploadFailed[get().lang]);
-          })
-          .finally(() => { set((s) => { s.photoUploadsSending = s.photoUploadsSending.filter((k) => k !== clientKey); }); });
+        };
+        // with no database on this phone there is nothing to wait for: sent at once, as before. Otherwise the row's lock is
+        // taken first, so no other tab gives the row an op while this send is out
+        if (!sitePhotoStorageAvailable()) send(false, () => {});
+        else {
+          void holdSitePhotoLock(rowScope, rowProject, clientKey).then((release) =>
+            putSitePhotoRow(rowScope, rowProject, input).then(() => send(true, release), () => send(false, release)));
+        }
         return;
       }
       // local demo: keep the data URL as the image source; also place it on the tree
@@ -6384,6 +6489,10 @@ export const useStore = create<Store>()(
       }
       // not read: a photo may be waiting whether or not any act is queued, so this is tried again (Codex 4321558423)
       if (holdVisits) retryVisitPhotos();
+      // #917: every site photo kept on this phone has its op (rebuilt when the page closed during the send), and the rows
+      // are what the Dashboard shows as queued. Read beside this flush, never ahead of it: an op rebuilt here is sent by
+      // the flush it asks for
+      reconcileSitePhotos();
       // step B2f-1 (#1113 r2 root cause, Codex 4367436925): this flush sends only the acts queued before it waits for
       // their writes, and only once each of those writes has run: the writes running now, then one later attempt for an
       // act none of them stored, sent from memory if that does not store it either (its ask's made record on this phone,
@@ -6516,7 +6625,9 @@ export const useStore = create<Store>()(
       let markStore: Storage | null = null;
       try { markStore = globalThis.localStorage ?? null; } catch { markStore = null; }
       const laneOf = (o: OutboxOp): string => (isSiteVisitOp(o) ? siteVisitKeyOf(flushKey) : flushKey);
-      const settle = (o: OutboxOp, refused = false): void => { queueKeys.settled(markStore, laneOf(o), o, refused); };
+      // a site photo's op is in no key: its row's marker is its record, so it leaves no settled mark here (a mark named
+      // for an act no key holds would outlive a tab closed before the end write tidies it, #917 gap-check)
+      const settle = (o: OutboxOp, refused = false): void => { if (o.t !== 'uploadSitePhoto') queueKeys.settled(markStore, laneOf(o), o, refused); };
       /** An act the server accepted, by this flush's send or, with no snapshot, by another tab's (its done fact): every
        *  effect of the success that does not read the server's answer, one function for both (xtab-drain U2 r1 root
        *  cause: a copy of these effects drifted, 4384591499/4384591507/4384591508). The 410 of an upload is read only by
@@ -6616,11 +6727,11 @@ export const useStore = create<Store>()(
           const settledUpload = ops[i];
           if (photoGone) {
             photoSettledGone = true;
-            const goneKey = settledUpload.t === 'uploadMedia' ? settledUpload.input.clientKey : settledUpload.t === 'uploadEvidence' ? settledUpload.clientKey : undefined;
+            const goneKey = settledUpload.t === 'uploadMedia' ? settledUpload.input.clientKey : settledUpload.t === 'uploadEvidence' || settledUpload.t === 'uploadSitePhoto' ? settledUpload.clientKey : undefined;
             if (scopeStillCurrent(flushScope) && get().sessionToken === flushToken) {
               beginSnapshotLease(flushScope);
               set((s) => {
-                if (settledUpload.t === 'uploadMedia' && settledUpload.input.kind === 'progress' && s.dailyLog) s.dailyLogPhotoCountAfter = snapshotSeq;
+                if (((settledUpload.t === 'uploadMedia' && settledUpload.input.kind === 'progress') || settledUpload.t === 'uploadSitePhoto') && s.dailyLog) s.dailyLogPhotoCountAfter = snapshotSeq;
                 const ids = goneKey ? [...s.photos, ...s.myDeletablePhotos].filter((p) => p.clientKey === goneKey).map((p) => p.id) : [];
                 for (const id of ids) dropDeletedPhoto(s, id);
                 // and the copies this device showed while the send was queued: a site photo's data URL in the log's gallery
@@ -6650,6 +6761,15 @@ export const useStore = create<Store>()(
             retryVisitPhotos();
             continue;
           }
+          // #917: a site photo's row could not be read or removed in time, or another tab is sending it: kept, and sent (or
+          // settled by that tab's marker) at the next flush; the rest of the queue goes on
+          if ((err instanceof SitePhotoUnreadable || err instanceof SitePhotoBusy) && unread.t === 'uploadSitePhoto') {
+            heldVisits.push(unread);
+            continue;
+          }
+          // #917: no row left for it: a "sent" or "refused" marker past its keep, or the site's data cleared. Nothing is
+          // left to send: dropped quietly, counted neither as sent nor as discarded
+          if (err instanceof SitePhotoGone && unread.t === 'uploadSitePhoto') continue;
           if (isTerminalOutboxError(err)) {
             const op = ops[i];
             if (isCountersignChainOp(op)) {
@@ -6762,7 +6882,7 @@ export const useStore = create<Store>()(
         // aside (no storage to be had included) are held stranded for the old scope, never dropped (Codex 4345664670)
         let storage: Storage | null = null;
         try { storage = globalThis.localStorage ?? null; } catch { storage = null; }
-        await keepUnsentLocked(queueKeys, storage, flushKey, remaining.filter((o) => !isSiteVisitOp(o)), flushed.filter((o) => !isSiteVisitOp(o)), (l) => l, (o) => !isSiteVisitOp(o));
+        await keepUnsentLocked(queueKeys, storage, flushKey, remaining.filter(isStoredGenericOp), flushed.filter(isStoredGenericOp), (l) => l, isStoredGenericOp);
         // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
         await keepUnsentLocked(queueKeys, storage, siteVisitKeyOf(flushKey), remaining.filter(isStoredVisitOp), flushed.filter(isStoredVisitOp), (l) => remapVisits(l).filter(isStoredVisitOp), isStoredVisitOp);
         return { ran: true, scopeMoved: true, succeededKeys, droppedKeys, pendingKeys };
@@ -7051,7 +7171,7 @@ export const useStore = create<Store>()(
           } catch {
             visitOps = [];
           }
-          const ops = [...photosNorm.ops.filter((o) => !isSiteVisitOp(o)), ...visitOps];
+          const ops = [...photosNorm.ops.filter(isStoredGenericOp), ...visitOps];
           // #669 — the engineer's unsent daily-log work for THIS scope comes back with its queue, so a
           // reload (or a return to this project) keeps the day where they left it; the next apply lays
           // it over the server's log (or drops it if that log has moved on). Malformed → none.
@@ -7131,6 +7251,8 @@ export const useStore = create<Store>()(
       void reconcileEvidence();
       // and the same for queued visit photos (SV2)
       void reconcileVisitPhotos();
+      // and for site photos whose answer was lost (#917): their ops are never stored, so they come back from their rows
+      reconcileSitePhotos();
     },
 
     // ---- team access / login ----

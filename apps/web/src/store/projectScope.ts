@@ -24,6 +24,7 @@ import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import type { AllocateLabourInput, Phase6_4dRollout } from '../data/apiGateway';
+import type { KeptSitePhoto } from '@/lib/queuedSitePhotos';
 
 /** #704 — one unsettled location create: the `Idempotency-Key` every send of it carries, how many of
  *  those sends are still out, whether any of them failed (an unknown outcome, so a retry must replay
@@ -113,6 +114,9 @@ export interface ProjectDataState {
   photosWindowShort: boolean;
   /** #482 site photos — the viewer's own photos still in their delete hour past the newest window (the snapshot's list) */
   myDeletablePhotos: Photo[];
+  /** #917 — this project's site photos whose online send lost its answer, read from their rows on this phone (their
+   *  outbox ops carry the key only), so the Dashboard shows them as queued; rebuilt from the rows at each flush */
+  sitePhotosKept: KeptSitePhoto[];
   materials: Material[];
   placedInspections: PlacedInspection[];
   phases: Phase[];
@@ -225,6 +229,7 @@ export function emptyProjectData(): ProjectDataState {
     photos: [],
     photosWindowShort: false,
     myDeletablePhotos: [],
+    sitePhotosKept: [],
     materials: [],
     placedInspections: [],
     phases: [],
