@@ -162,6 +162,10 @@ describe('readVideoClip — WebM', () => {
     // Info's Duration past the latest picture's start gives the end; one that does not reach it does not
     expect(webm(clipWebm({ info: webmInfo(31_000), clusters: [webmClusterAt(30_000, [pictureBlock()])] }))).toBe(31);
     expect(webm(clipWebm({ info: webmInfo(30_000), clusters: [webmClusterAt(30_000, [pictureBlock()])] }))).toBeNull();
+    // Codex round 3 on #1158: an untimed block held as long even when a short timed block starts with it, or after it
+    const short = ebml(WEBM.blockGroup, Buffer.concat([ebml(WEBM.block, Buffer.concat([Buffer.from([0x81, 0, 0, 0x80]), Buffer.from([1, 2, 3])])), ebml(CLIP_WEBM.blockDuration, Buffer.from([1]))]));
+    expect(webm(clipWebm({ clusters: [webmClusterAt(59_400, [pictureBlock()]), webmClusterAt(60_400, [pictureBlock(), short])] }))).toBeCloseTo(61.4, 6);
+    expect(webm(clipWebm({ clusters: [webmClusterAt(59_400, [pictureBlock()]), webmClusterAt(60_400, [pictureBlock()]), webmClusterAt(60_401, [short])] }))).toBeCloseTo(61.4, 6);
     // a timed latest picture block needs no interval: its DefaultDuration ends it
     const timed = pictureTrack(1, 'V_VP8', [videoElement(), ebml(CLIP_WEBM.defaultDuration, u32(40_000_000))]);
     expect(webm(clipWebm({ tracks: [timed, soundTrack()], clusters: [webmClusterAt(30_000, [pictureBlock()])] }))).toBeCloseTo(30.04, 6);
