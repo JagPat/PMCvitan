@@ -362,9 +362,12 @@ describe('#1118 U3 — Hub webhook receiver (live PG)', () => {
     expect((await receipts(applied)).map((x) => x.outcome)).toEqual(['applied']);
   });
 
-  it('waits for a link change in flight: an unlink committing during the judgement is what it sees (barrier, no sleep)', async () => {
+  // an unlink in flight, with or without its writer locking the link row first: the event insert alone takes KEY SHARE
+  // on that row through its foreign key, which the delivery's FOR UPDATE waits for
+  it.each([['locking the link row first', true], ['inserting only the event', false]] as const)(
+    'waits for a link change in flight (%s): an unlink committing during the judgement is what it sees (barrier, no sleep)', async (_, lockFirst) => {
     open();
-    const p = await project('race');
+    const p = await project(lockFirst ? 'race' : 'race-bare');
     await link(p, '42');
     let pid = 0;
     let locked!: () => void;
@@ -373,7 +376,7 @@ describe('#1118 U3 — Hub webhook receiver (live PG)', () => {
     const releaseP = new Promise<void>((resolve) => { release = resolve; });
     const unlink = t.prisma.$transaction(async (tx) => {
       pid = Number((await tx.$queryRawUnsafe<Array<{ pid: number }>>('SELECT pg_backend_pid() AS pid'))[0]!.pid);
-      await tx.$queryRawUnsafe(`SELECT 1 FROM "DrawingHubLink" WHERE "projectId" = $1 FOR UPDATE`, p);
+      if (lockFirst) await tx.$queryRawUnsafe(`SELECT 1 FROM "DrawingHubLink" WHERE "projectId" = $1 FOR UPDATE`, p);
       await tx.$executeRawUnsafe(unlinkSql, p, actor);
       locked();
       await releaseP;

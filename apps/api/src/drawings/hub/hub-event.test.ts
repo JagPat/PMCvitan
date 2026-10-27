@@ -31,6 +31,8 @@ describe('#1118 U3 readHubEvent', () => {
     expect(read({ type: 'webhook.test', data: { message: 'hi' } })).toEqual({ kind: 'ignored', type: 'webhook.test', why: 'not_subscribed' });
     expect(read(issued({}, 'drawing.created'))).toEqual({ kind: 'ignored', type: 'drawing.created', why: 'not_subscribed' });
     expect(read(issued({ toStage: null }, 'drawing.status_changed'))).toEqual({ kind: 'ignored', type: 'drawing.status_changed', why: 'work_in_progress' });
+    // only an explicit null is work in progress: a status change with no toStage at all is malformed
+    expect(read(issued({ toStage: undefined }, 'drawing.status_changed'))).toEqual({ kind: 'malformed', type: 'drawing.status_changed', versionId: 'v-9031' });
     // a review stage is not work in progress
     expect(read(issued({ toStage: 'SHARED' }, 'drawing.status_changed'))).toMatchObject({ kind: 'event', type: 'drawing.status_changed' });
   });

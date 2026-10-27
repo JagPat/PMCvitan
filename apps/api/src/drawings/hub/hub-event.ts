@@ -6,7 +6,7 @@
  * other apps, `data.project.links` = `[{ "app": "pmc", "externalId": "<PMC project id>", "url" }]` ("Site apps").
  *
  * PMC subscribes to {@link HUB_SUBSCRIBED_EVENTS}. Anything else Hub sends (a `webhook.test`, an office-wide event) is
- * ignored. A `drawing.status_changed` into work in progress has no stage (`toStage` null) and is ignored too: work in
+ * ignored. A `drawing.status_changed` into work in progress has no stage (`toStage` null, which Hub always sends) and is ignored too: work in
  * progress never reaches the site. What the reader can't make sense of is refused; the receiver records both and answers
  * 2xx, so Hub doesn't retry a delivery that would read the same way every time.
  */
@@ -60,12 +60,13 @@ export function readHubEvent(body: Buffer): HubEventReading {
   const malformed = { kind: 'malformed', type: subscribed, versionId } as const;
   if (data.versionId !== undefined && data.versionId !== null && versionId === null) return malformed;
 
+  // Hub always sends `toStage`: null is work in progress, and a missing one is malformed (it may be a governing change)
   const stage = data.toStage;
-  if (stage !== null && stage !== undefined && !(HUB_STAGES as readonly unknown[]).includes(stage)) return malformed;
-  if (stage === null || stage === undefined) {
+  if (stage === null) {
     if (subscribed === 'drawing.status_changed') return { kind: 'ignored', type, why: 'work_in_progress' };
     return malformed;
   }
+  if (!(HUB_STAGES as readonly unknown[]).includes(stage)) return malformed;
 
   const project = data.project;
   if (!isObject(project)) return malformed;

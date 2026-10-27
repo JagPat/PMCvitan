@@ -45,8 +45,10 @@ export type HubDelivery = {
  *     judged again, so a refused or ignored delivery can still be applied by a later release (C2).
  *  4. The event is read: unreadable or malformed is refused; an unsubscribed type or work in progress is ignored.
  *  5. The project resolves only through its active link: the link of the PMC project Hub names (`links[app=pmc]`), in
- *     the Hub org, whose latest event is `linked` to the Hub project the event is about. The link row is read FOR SHARE,
- *     so a link or unlink in flight (its writer holds the row FOR UPDATE) finishes first and the judgement sees it.
+ *     the Hub org, whose latest event is `linked` to the Hub project the event is about. The link row is read FOR UPDATE:
+ *     a link event's insert takes KEY SHARE on that row through its foreign key, which only FOR UPDATE conflicts with, so
+ *     a link or unlink in flight finishes first and the judgement sees it, and none can be added until the judgement
+ *     commits, whether or not its writer locked the link row first. Nothing else is locked, so no lock order is crossed.
  *  6. Resolved: `accepted`, written by U5. Until then it answers 503 and writes nothing.
  *
  * A refused delivery is recorded with no project and audited; an ignored one is recorded only. Neither the audit row nor
@@ -99,7 +101,7 @@ export class HubReceiverService {
 
       const projectId = event.pmcProjectIds[0]!;
       const link = await tx.$queryRaw<Array<{ projectId: string }>>`
-        SELECT "projectId" FROM "DrawingHubLink" WHERE "projectId" = ${projectId} AND "orgId" = ${orgId} FOR SHARE`;
+        SELECT "projectId" FROM "DrawingHubLink" WHERE "projectId" = ${projectId} AND "orgId" = ${orgId} FOR UPDATE`;
       if (link.length === 0) return record('refused', event.type, event.versionId, 'not_linked');
       const latest = await tx.drawingHubLinkEvent.findFirst({
         where: { projectId },
