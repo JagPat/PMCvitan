@@ -166,6 +166,9 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // #482 site photos — the deleted-photo record refuses TRUNCATE, and its key cascades from `Project`, so a reset that
   // truncates `Project` with CASCADE reaches it; the seal is bypassed here by name (#1018 r4325096705).
   { table: 'MediaTombstone', trigger: 'MediaTombstone_no_truncate' },
+  // #1118 U1a-3 — the Hub fetched-blob ledger refuses TRUNCATE (its row DELETE is the sweep's); its key cascades from
+  // `Project`, so a reset that truncates it with CASCADE reaches it, and the seal is bypassed here by name.
+  { table: 'HubFetchedBlob', trigger: 'HubFetchedBlob_no_truncate' },
 ];
 
 /**
