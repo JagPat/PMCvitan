@@ -140,9 +140,9 @@ async function main(): Promise<void> {
     // table stays in the reset list — one wipe path for every table, seal or no seal.
     'ProjectCapability',
     // #1118 U1a-2 — a Hub link event names the user who acted through a NO ACTION key, so it goes before the users;
-    // it refuses row DELETE, so it is cleared here, its TRUNCATE seal bypassed by name. The link it hangs off goes
-    // with its project below.
-    'DrawingHubLinkEvent'
+    // it refuses row DELETE, so it is cleared here, its TRUNCATE seal bypassed by name. The link goes in the same
+    // statement: this reset commits on its own, and a link left behind without its events could never be written again.
+    'DrawingHubLinkEvent', 'DrawingHubLink'
   ] as const;
   await sanctionedReset(prisma, RESET_TABLES);
   await prisma.gateOverride.deleteMany();
