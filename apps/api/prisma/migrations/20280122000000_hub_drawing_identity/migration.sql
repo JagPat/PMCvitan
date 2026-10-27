@@ -240,7 +240,8 @@ CREATE TRIGGER "HubGoverningMark_no_truncate"
   FOR EACH STATEMENT EXECUTE FUNCTION public.drawings_hub_record_no_truncate('project');
 
 -- I3: at commit, a 'hub' drawing still there has its record. Reads only this module's tables. A row inserted and deleted
--- in the same transaction is gone by commit and needs none.
+-- in the same transaction is gone by commit and needs none. A row's id changed after its insert is checked under its
+-- final id: the update queues its own check (an id already behind a record cannot change: its keys restrict).
 CREATE OR REPLACE FUNCTION public.drawings_hub_drawing_has_record() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
@@ -267,12 +268,12 @@ END $$;
 
 DROP TRIGGER IF EXISTS "Drawing_hub_record" ON public."Drawing";
 CREATE CONSTRAINT TRIGGER "Drawing_hub_record"
-  AFTER INSERT ON public."Drawing"
+  AFTER INSERT OR UPDATE OF "id" ON public."Drawing"
   DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW WHEN (NEW."source" = 'hub') EXECUTE FUNCTION public.drawings_hub_drawing_has_record();
 DROP TRIGGER IF EXISTS "DrawingRevision_hub_record" ON public."DrawingRevision";
 CREATE CONSTRAINT TRIGGER "DrawingRevision_hub_record"
-  AFTER INSERT ON public."DrawingRevision"
+  AFTER INSERT OR UPDATE OF "id" ON public."DrawingRevision"
   DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW WHEN (NEW."source" = 'hub') EXECUTE FUNCTION public.drawings_hub_revision_has_record();
 

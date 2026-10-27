@@ -209,6 +209,17 @@ describe('#1118 U1b — a drawing\'s source and its Hub records (live PG)', () =
     await t.prisma.$transaction([revision(p, `h-${run}`, `h2-${run}`, 'hub'), hubRevision(p, `h-${run}`, `h2-${run}`, 2), raw(`SET CONSTRAINTS ALL IMMEDIATE`)]);
     // a Hub drawing inserted and deleted in one transaction needs no record
     await t.prisma.$transaction([drawing(p, `gone-${run}`, 'hub'), raw(`DELETE FROM "Drawing" WHERE "id" = $1`, `gone-${run}`)]);
+    // a Hub drawing or revision whose id changes before commit is checked under the id it commits with
+    await expect(t.prisma.$transaction([drawing(p, `a-${run}`, 'hub'), raw(`UPDATE "Drawing" SET "id" = $1 WHERE "id" = $2`, `b-${run}`, `a-${run}`)]))
+      .rejects.toThrow(drawingRecord);
+    await expect(t.prisma.$transaction([drawing(p, `a-${run}`, 'hub'), raw(`UPDATE "Drawing" SET "id" = $1 WHERE "id" = $2`, `b-${run}`, `a-${run}`),
+      raw(`UPDATE "Drawing" SET "id" = $1 WHERE "id" = $2`, `c-${run}`, `b-${run}`)])).rejects.toThrow(drawingRecord);
+    await expect(t.prisma.$transaction([revision(p, `h-${run}`, `h3-${run}`, 'hub'),
+      raw(`UPDATE "DrawingRevision" SET "id" = $1 WHERE "id" = $2`, `h4-${run}`, `h3-${run}`)])).rejects.toThrow(revisionRecord);
+    // renamed onto an id whose record is written in the same transaction, it commits; once it has a record its id is fixed
+    await t.prisma.$transaction([drawing(p, `a-${run}`, 'hub'), raw(`UPDATE "Drawing" SET "id" = $1 WHERE "id" = $2`, `b-${run}`, `a-${run}`), hubDrawing(p, `b-${run}`)]);
+    await expect(raw(`UPDATE "Drawing" SET "id" = $1 WHERE "id" = $2`, `c-${run}`, `b-${run}`)).rejects.toThrow(/HubDrawing_projectId_drawingId_source_fkey/);
+    await expect(raw(`UPDATE "DrawingRevision" SET "id" = $1 WHERE "id" = $2`, `h5-${run}`, `h2-${run}`)).rejects.toThrow(/HubRevision_projectId_drawingId_revisionId_source_fkey/);
   });
 
   it('I4: a record belongs to a Hub drawing and its own revisions, and its version order is a real Hub version', async () => {
@@ -375,7 +386,7 @@ describe('#1118 U1b — a drawing\'s source and its Hub records (live PG)', () =
       'HubDrawing_no_truncate', 'HubDrawing_sealed', 'HubGoverningMark_no_truncate', 'HubGoverningMark_sealed', 'HubRevision_no_truncate', 'HubRevision_sealed',
     ].sort());
     for (const name of ['Drawing_hub_record', 'DrawingRevision_hub_record']) {
-      expect(before.find((r) => r.name === name && r.kind === 'trigger')?.def, name).toMatch(/CONSTRAINT TRIGGER .* AFTER INSERT .* DEFERRABLE INITIALLY DEFERRED .* WHEN \(\(new\.source = 'hub'::text\)\)/);
+      expect(before.find((r) => r.name === name && r.kind === 'trigger')?.def, name).toMatch(/CONSTRAINT TRIGGER .* AFTER INSERT OR UPDATE OF id ON .* DEFERRABLE INITIALLY DEFERRED .* WHEN \(\(new\.source = 'hub'::text\)\)/);
     }
     expect(before.find((r) => r.name === 'DrawingRevision_projectId_drawingId_source_fkey')?.def)
       .toBe('FOREIGN KEY ("projectId", "drawingId", source) REFERENCES "Drawing"("projectId", id, source) ON UPDATE CASCADE ON DELETE CASCADE true');
