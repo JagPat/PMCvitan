@@ -148,6 +148,21 @@
   display: block;
   background: rgba(35, 33, 28, 0.06);
 }
+.voice {
+  min-width: 72px;
+  display: flex;
+  align-items: center;
+}
+.voice audio {
+  max-width: 220px;
+}
+.recording {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
 .copyOf {
   display: flex;
   align-items: center;

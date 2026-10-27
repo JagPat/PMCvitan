@@ -118,9 +118,70 @@ export const SV = {
     gu: 'આ મુલાકાતના ફેરફારો રોકાયેલા છે: આ ફોનનો સ્ટોરેજ હમણાં વાંચી શકાતો નથી, અને તેમાં કોઈ ફોટો હજી મોકલવાનો બાકી હોઈ શકે છે.',
   },
   sendAnyway: { en: 'Send anyway', hi: 'फिर भी भेजें', gu: 'તો પણ મોકલો' },
-  notSent: { en: 'Photos not sent', hi: 'फ़ोटो जो नहीं भेजी गईं', gu: 'ન મોકલાયેલા ફોટા' },
+  notSent: { en: 'Photos and voice notes not sent', hi: 'फ़ोटो और वॉइस नोट जो नहीं भेजे गए', gu: 'ન મોકલાયેલા ફોટા અને વૉઇસ નોટ' },
   dismiss: { en: 'Dismiss', hi: 'हटाएँ', gu: 'દૂર કરો' },
   photoOpen: { en: 'Open photo', hi: 'फ़ोटो खोलें', gu: 'ફોટો ખોલો' },
+  // Stage 1 voice notes: a spoken note on the visit, up to two minutes, kept and sent the way a photo is
+  files: { en: 'Photos and voice notes', hi: 'फ़ोटो और वॉइस नोट', gu: 'ફોટા અને વૉઇસ નોટ' },
+  voiceNote: { en: 'Voice note', hi: 'वॉइस नोट', gu: 'વૉઇસ નોટ' },
+  recordVoice: { en: 'Record voice note', hi: 'वॉइस नोट रिकॉर्ड करें', gu: 'વૉઇસ નોટ રેકોર્ડ કરો' },
+  recording: { en: 'Recording', hi: 'रिकॉर्ड हो रहा है', gu: 'રેકોર્ડ થઈ રહ્યું છે' },
+  // the running time against the cap: "0:12 of 2:00"
+  recordingOf: { en: 'of', hi: '/', gu: '/' },
+  voiceStop: { en: 'Stop and add', hi: 'रोकें और जोड़ें', gu: 'રોકો અને ઉમેરો' },
+  voiceDiscard: { en: 'Discard', hi: 'रद्द करें', gu: 'રદ કરો' },
+  voiceCapped: {
+    en: 'The recording stopped at two minutes and was added.',
+    hi: 'रिकॉर्डिंग दो मिनट पर रुक गई और जोड़ दी गई।',
+    gu: 'રેકોર્ડિંગ બે મિનિટે અટકી ગયું અને ઉમેરાઈ ગયું.',
+  },
+  play: { en: 'Play', hi: 'चलाएँ', gu: 'વગાડો' },
+  playFailed: { en: 'This voice note could not be played.', hi: 'यह वॉइस नोट चल नहीं सका।', gu: 'આ વૉઇસ નોટ વાગી શકી નહીં.' },
+  voiceDenied: {
+    en: 'Voice notes need the microphone. Allow the microphone for this site in the browser settings, then try again.',
+    hi: 'वॉइस नोट के लिए माइक्रोफ़ोन चाहिए। ब्राउज़र सेटिंग में इस साइट के लिए माइक्रोफ़ोन की अनुमति दें, फिर से कोशिश करें।',
+    gu: 'વૉઇસ નોટ માટે માઇક્રોફોન જોઈએ. બ્રાઉઝર સેટિંગમાં આ સાઇટ માટે માઇક્રોફોનની મંજૂરી આપો, પછી ફરી પ્રયત્ન કરો.',
+  },
+  voiceUnavailable: {
+    en: 'This phone could not start recording. Check that no other app is using the microphone, then try again.',
+    hi: 'यह फ़ोन रिकॉर्डिंग शुरू नहीं कर सका। देखें कि कोई दूसरा ऐप माइक्रोफ़ोन इस्तेमाल न कर रहा हो, फिर से कोशिश करें।',
+    gu: 'આ ફોન રેકોર્ડિંગ શરૂ કરી શક્યો નહીં. જુઓ કે બીજી કોઈ ઍપ માઇક્રોફોન વાપરતી ન હોય, પછી ફરી પ્રયત્ન કરો.',
+  },
+  voiceTooShort: {
+    en: 'This recording was too short to add. Record for at least a second.',
+    hi: 'यह रिकॉर्डिंग जोड़ने के लिए बहुत छोटी थी। कम से कम एक सेकंड रिकॉर्ड करें।',
+    gu: 'આ રેકોર્ડિંગ ઉમેરવા માટે બહુ ટૂંકું હતું. ઓછામાં ઓછી એક સેકન્ડ રેકોર્ડ કરો.',
+  },
+  voiceUnreadable: {
+    en: 'This recording could not be read. Record it again.',
+    hi: 'यह रिकॉर्डिंग पढ़ी नहीं जा सकी। फिर से रिकॉर्ड करें।',
+    gu: 'આ રેકોર્ડિંગ વાંચી શકાયું નહીં. ફરી રેકોર્ડ કરો.',
+  },
+  voiceTooBig: {
+    en: 'This recording is too large to send. Record a shorter note.',
+    hi: 'यह रिकॉर्डिंग भेजने के लिए बहुत बड़ी है। छोटा नोट रिकॉर्ड करें।',
+    gu: 'આ રેકોર્ડિંગ મોકલવા માટે બહુ મોટું છે. નાની નોટ રેકોર્ડ કરો.',
+  },
+  voiceNoStorage: {
+    en: 'This voice note was not added: this browser cannot save it on the phone (private browsing cannot). Open the app in a normal browser window and record it again.',
+    hi: 'यह वॉइस नोट नहीं जोड़ा गया: यह ब्राउज़र इसे फ़ोन पर सहेज नहीं सकता (प्राइवेट ब्राउज़िंग नहीं कर सकती)। ऐप को सामान्य ब्राउज़र विंडो में खोलें और फिर से रिकॉर्ड करें।',
+    gu: 'આ વૉઇસ નોટ ઉમેરાઈ નથી: આ બ્રાઉઝર તેને ફોન પર સાચવી શકતું નથી (પ્રાઇવેટ બ્રાઉઝિંગ નથી સાચવી શકતું). ઍપ સામાન્ય બ્રાઉઝર વિન્ડોમાં ખોલો અને ફરી રેકોર્ડ કરો.',
+  },
+  voiceNotKept: {
+    en: 'This voice note was not added: it could not be saved on this phone. Free some space on the phone, then record it again.',
+    hi: 'यह वॉइस नोट नहीं जोड़ा गया: इसे इस फ़ोन पर सहेजा नहीं जा सका। फ़ोन में कुछ जगह खाली करें, फिर से रिकॉर्ड करें।',
+    gu: 'આ વૉઇસ નોટ ઉમેરાઈ નથી: તેને આ ફોન પર સાચવી શકાઈ નહીં. ફોનમાં થોડી જગ્યા ખાલી કરો, પછી ફરી રેકોર્ડ કરો.',
+  },
+  voiceMaybeNotKept: {
+    en: 'This voice note may not have been saved: the phone did not say in time. If it does not appear on the visit soon, record it again.',
+    hi: 'हो सकता है यह वॉइस नोट सहेजा न गया हो: फ़ोन ने समय पर नहीं बताया। अगर यह जल्द ही विज़िट पर न दिखे, तो इसे फिर से रिकॉर्ड करें।',
+    gu: 'આ વૉઇસ નોટ કદાચ સચવાઈ ન હોય: ફોને સમયસર જણાવ્યું નહીં. જો તે થોડી વારમાં મુલાકાત પર ન દેખાય, તો તેને ફરી રેકોર્ડ કરો.',
+  },
+  voicePlaceGone: {
+    en: 'The place you chose was removed from this visit. Choose the place again, then record the note.',
+    hi: 'आपकी चुनी जगह इस विज़िट से हटा दी गई। जगह फिर से चुनें, फिर नोट रिकॉर्ड करें।',
+    gu: 'તમે પસંદ કરેલી જગ્યા આ મુલાકાતમાંથી દૂર કરાઈ. જગ્યા ફરી પસંદ કરો, પછી નોટ રેકોર્ડ કરો.',
+  },
   // M3: marking up a photo on the visit; the copy is a new photo, the original stays as it was
   markUp: { en: 'Mark up', hi: 'निशान लगाएँ', gu: 'નિશાન કરો' },
   markupCopy: { en: 'Marked-up copy', hi: 'निशान लगी कॉपी', gu: 'નિશાનવાળી નકલ' },

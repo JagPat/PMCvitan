@@ -1568,6 +1568,9 @@ export interface SiteVisitFile {
   takenAt: string | null;
   /** A marked-up copy's original, a file on the same visit (M3); null or absent (an API before M3) for a photo as taken. */
   sourceMediaId?: string | null;
+  /** A voice note's length in whole seconds, as the server read it from the file; null for a photo, absent from an API
+   *  before voice notes. */
+  durationSec?: number | null;
   note: string | null;
   rating: SiteVisitRating | null;
   /** The place the file showed when it was added, with the name it had then. */

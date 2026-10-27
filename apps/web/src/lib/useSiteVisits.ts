@@ -14,6 +14,8 @@ import { setClampedTimeout } from './clampedTimer';
 import { captureStamp } from './captureStamp';
 import { photoDecodes } from './photoDecodes';
 import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto';
+import { blobBase64, type Recorded } from './mediaRecorder';
+import { VOICE_NOTE_MIMES } from '@/data/queueContracts';
 import { SV } from './siteVisitWords';
 
 /**
@@ -211,6 +213,18 @@ export const MARKUP_OPEN_WAIT_MS = 30_000;
 /** M3: a visit kept on screen from beyond the pages read (an act answered with it) is looked for in the older pages
  *  when its link must be renewed, this many pages at most (the API has no read of one visit). */
 export const MARKUP_RELINK_PAGES = 10;
+
+/** Stage 1 voice notes: a recording stops itself here, half a second inside the server's two minutes (it refuses a
+ *  note that reads 120.5 s or more), so a container's last frame never carries it over. */
+export const VOICE_MAX_MS = 119_500;
+/** and one shorter than this is not kept: the server refuses under half a second, and a tap that recorded nothing is
+ *  no note */
+export const VOICE_MIN_MS = 1_000;
+
+/** What the person is told when a visit file is not kept on the phone, in the words of what it is. */
+type KeepWords = Record<'noStorage' | 'notKept' | 'maybeNotKept', (typeof SV)[keyof typeof SV]>;
+const PHOTO_KEEP: KeepWords = { noStorage: SV.photoNoStorage, notKept: SV.photoNotKept, maybeNotKept: SV.photoMaybeNotKept };
+const VOICE_KEEP: KeepWords = { noStorage: SV.voiceNoStorage, notKept: SV.voiceNotKept, maybeNotKept: SV.voiceMaybeNotKept };
 
 /** How an open for marking ended: the photo, ready to draw on; why it did not open; or `moved`, when the person went on
  *  (Cancel, another photo, a sign-out or another project), which says nothing. */
@@ -648,8 +662,8 @@ export function useSiteVisits() {
   // a queued photo shows its own picture; a refused one is listed apart, with why, until dismissed
   const previews = useMemo(() => new Map(kept.filter((r) => r.state !== 'failed').map((r) => [r.clientKey, `data:${r.op.file.mime};base64,${r.data}`])), [kept]);
   const notSent = useMemo(() => kept.filter((r) => r.state === 'failed').map((r) => ({
-    key: r.clientKey, url: `data:${r.op.file.mime};base64,${r.data}`, note: r.op.file.note ?? null, placeName: r.op.placeName, reason: r.reason,
-    copy: !!r.op.file.sourceMediaId,
+    key: r.clientKey, url: `data:${r.op.file.mime};base64,${r.data}`, mime: r.op.file.mime, note: r.op.file.note ?? null, placeName: r.op.placeName,
+    reason: r.reason, copy: !!r.op.file.sourceMediaId,
   })), [kept]);
   // a photo the server took is shown from its filed row (not as waiting to send) until the server's list shows it
   const filed = useMemo(() => kept.filter((r) => r.state === 'filed'), [kept]);
@@ -690,12 +704,14 @@ export function useSiteVisits() {
   known.current = new Set([...shown.visits.map((v) => v.id), ...queued.map(siteVisitOf)]);
   shownRef.current = shown.visits;
 
-  /** A visit file (a photo, or a marked-up copy: M3) kept on the phone with the one act that sends it, then queued like
-   *  every visit act. "Waiting to send" means written; a phone that cannot keep it is told so and nothing is sent. */
+  /** A visit file (a photo, a marked-up copy: M3, or a voice note) kept on the phone with the one act that sends it, then
+   *  queued like every visit act. "Waiting to send" means written; a phone that cannot keep it is told so, in the words
+   *  of what it is, and nothing is sent. */
   const keepAndQueue = async (
     scope: ProjectScope, op: SiteVisitAddFileOp, data: string, say: (text: (typeof SV)[keyof typeof SV]) => void,
+    words: KeepWords = PHOTO_KEEP,
   ): Promise<boolean> => {
-    if (!storageAvailable()) { say(SV.photoNoStorage); return false; }
+    if (!storageAvailable()) { say(words.noStorage); return false; }
     const s = useStore.getState();
     // a visit whose start is still waiting to send: that start is kept with the photo too, so the photo never
     // outlives the act it needs (Codex 4320122186)
@@ -712,7 +728,7 @@ export function useSiteVisits() {
     try {
       await putVisitPhoto(op.scope, s.activeProjectId, op, data, start, lateCommit);
     } catch (err) {
-      say(err instanceof VisitPhotoUnconfirmed ? SV.photoMaybeNotKept : SV.photoNotKept);
+      say(err instanceof VisitPhotoUnconfirmed ? words.maybeNotKept : words.notKept);
       return false;
     }
     // the person signed out or moved to another project while it was written: the row stays, kept for the user and
@@ -805,6 +821,44 @@ export function useSiteVisits() {
           by: { name: s.userName ?? '', role: s.role }, placeName: extra.placeName ?? null, queuedAt: now(),
         };
         return await keepAndQueue(scope, op, m[2], say);
+      } finally {
+        if (live(scope)) setBusy(false);
+      }
+    },
+    /** Stage 1 voice notes: a recording on the visit, with the same optional note, rating and place as a photo, from the
+     *  same people while the visit is not closed (the server asks again). It goes the way a photo goes: kept on the
+     *  phone with the one act that sends it, then queued, so it waits through no signal, a reload and a sign-in. Only
+     *  a type the upload takes, at least a second long and within the upload's size, is kept. Its length is not sent:
+     *  the server reads it from the file and stores that. */
+    addVoice: async (visitId: string, rec: Recorded, extra: { note?: string; rating?: SiteVisitRating; nodeId?: string; placeName?: string | null }): Promise<boolean> => {
+      const state = useStore.getState();
+      if (!state.serverGateway()) { setError(SV.needsServer[state.lang]); return false; }
+      const scope = projectScopeOf(state);
+      const say = (text: (typeof SV)[keyof typeof SV]) => { if (live(scope)) setError(text[useStore.getState().lang]); };
+      setBusy(true);
+      setError(null);
+      setNotice(null);
+      try {
+        if (!(VOICE_NOTE_MIMES as readonly string[]).includes(rec.mime)) { say(SV.voiceUnreadable); return false; }
+        if (rec.ms < VOICE_MIN_MS || rec.blob.size === 0) { say(SV.voiceTooShort); return false; }
+        const data = await blobBase64(rec.blob).catch(() => null);
+        if (!data) { say(SV.voiceUnreadable); return false; }
+        if (data.length > MAX_PHOTO_BASE64) { say(SV.voiceTooBig); return false; }
+        if (!live(scope)) return false;
+        // the place is checked as the visit is now shown, as a photo's is
+        const v = shownRef.current.find((x) => x.id === visitId);
+        if (extra.nodeId && !v?.places.some((p) => p.nodeId === extra.nodeId && !p.retiredAt)) { say(SV.voicePlaceGone); return false; }
+        const s = useStore.getState();
+        const note = extra.note?.trim();
+        const op: SiteVisitAddFileOp = {
+          t: 'siteVisitAddFile', visitId, idempotencyKey: newIdempotencyKey(), scope: visitPhotoScope(s.sessionToken, s.sessionUserId),
+          file: {
+            id: newIdempotencyKey(), mime: rec.mime,
+            ...(extra.nodeId ? { nodeId: extra.nodeId } : {}), ...(note ? { note } : {}), ...(extra.rating ? { rating: extra.rating } : {}),
+          },
+          by: { name: s.userName ?? '', role: s.role }, placeName: extra.placeName ?? null, queuedAt: now(),
+        };
+        return await keepAndQueue(scope, op, data, say, VOICE_KEEP);
       } finally {
         if (live(scope)) setBusy(false);
       }

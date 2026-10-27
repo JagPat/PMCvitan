@@ -4,8 +4,10 @@ import { can, forYouRole, type Lang, type ProjectMember, type Role } from '@vita
 import { useStore } from '@/store/store';
 import { Button, Modal } from '@/components';
 import { PhotoMarkup } from '@/components/PhotoMarkup';
+import { MediaPlayer } from '@/components/MediaPlayer';
 import { trailOf } from '@/lib/locationTree';
-import { mayAddPhoto, useSiteVisits } from '@/lib/useSiteVisits';
+import { mayAddPhoto, useSiteVisits, VOICE_MAX_MS } from '@/lib/useSiteVisits';
+import { clockText, pickRecordType, RecordError, startRecording, type Recorded, type Recording } from '@/lib/mediaRecorder';
 import { UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
 import { SV, visitTime } from '@/lib/siteVisitWords';
 import { stampText } from '@/lib/captureStamp';
@@ -101,7 +103,9 @@ export function SiteVisitsScreen() {
           <ul className={styles.files}>
             {sv.notSent.map((p) => (
               <li key={p.key} className={styles.file} data-testid={`sv-not-sent-${p.key}`}>
-                <img className={styles.thumb} src={p.url} alt={p.note ?? SV.photos[lang]} />
+                {p.mime.startsWith('audio/')
+                  ? <div className={styles.voice}><MediaPlayer url={p.url} mime={p.mime} label={p.note ?? SV.voiceNote[lang]} words={playWords(lang)} /></div>
+                  : <img className={styles.thumb} src={p.url} alt={p.note ?? SV.photos[lang]} />}
                 <div className={styles.fileText}>
                   {p.copy && <div className={styles.meta}>{SV.markupCopy[lang]}</div>}
                   {p.note && <div>{p.note}</div>}
@@ -230,6 +234,8 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
   // a photo is placed at one of the places this visit walked
   const walked = v.places.filter((p) => !p.retiredAt && p.nodeId);
   const files = v.files ?? [];
+  // a copy names its original by its place among the visit's photos, so voice notes between them are not counted
+  const photos = files.filter((f) => !f.mime.startsWith('audio/'));
   // a place chosen for the photo and then removed from the visit is no longer offered, so it is not sent either
   const photoAt = walked.find((p) => p.nodeId === photoPlace);
   useEffect(() => { if (photoPlace && !photoAt) setPhotoPlace(''); }, [photoPlace, photoAt]);
@@ -331,13 +337,17 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
         </>
       )}
 
-      <h2 className={styles.sub}>{SV.photos[lang]}</h2>
+      <h2 className={styles.sub}>{SV.files[lang]}</h2>
       {files.length === 0 && <div className={styles.meta}>{SV.none[lang]}</div>}
       <ul className={styles.files}>
         {files.map((f) => (
           <li key={f.mediaId} className={styles.file} data-testid={`sv-file-${f.mediaId}`}>
-            {/* a queued photo the phone no longer has a picture of (its row is gone) shows without one until read again */}
-            {f.url ? (
+            {/* a voice note plays where a photo shows; one the phone no longer has (its row is gone) shows without a player */}
+            {f.mime.startsWith('audio/') ? (
+              <div className={styles.voice}>
+                {f.url ? <MediaPlayer url={f.url} mime={f.mime} label={f.note ?? SV.voiceNote[lang]} words={playWords(lang)} /> : null}
+              </div>
+            ) : /* a queued photo the phone no longer has a picture of (its row is gone) shows without one until read again */ f.url ? (
               <a href={resolveMediaUrl(f.url)} target="_blank" rel="noreferrer" aria-label={SV.photoOpen[lang]}>
                 <img
                   className={styles.thumb} src={resolveMediaUrl(f.url)} alt={f.note ?? SV.photos[lang]} loading="lazy"
@@ -351,7 +361,10 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
             ) : <div className={styles.thumb} aria-hidden="true" />}
             <div className={styles.fileText}>
               {f.rating && <span className={styles.rating} data-rating={f.rating}>{ratingName(f.rating, lang)}</span>}
-              {f.sourceMediaId && <CopyOf files={files} at={files.findIndex((x) => x.mediaId === f.sourceMediaId)} copyId={f.mediaId} lang={lang} />}
+              {f.sourceMediaId && <CopyOf files={photos} at={photos.findIndex((x) => x.mediaId === f.sourceMediaId)} copyId={f.mediaId} lang={lang} />}
+              {f.mime.startsWith('audio/') && (
+                <div className={styles.meta}>{SV.voiceNote[lang]}{typeof f.durationSec === 'number' ? ` · ${clockText(f.durationSec * 1000)}` : ''}</div>
+              )}
               {f.note && <div>{f.note}</div>}
               {f.place && <div className={styles.meta}>{f.place.name}</div>}
               <div className={styles.meta}>
@@ -392,6 +405,11 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
             }}
           />
           <Button variant="light" disabled={sv.busy} onClick={() => fileRef.current?.click()}>{SV.addPhoto[lang]}</Button>
+          <VoiceRecorder
+            visitId={v.id} lang={lang} busy={sv.busy}
+            onRecorded={(rec) => sv.addVoice(v.id, rec, { note: photoNote, ...(photoRating ? { rating: photoRating } : {}), ...(photoAt ? { nodeId: photoAt.nodeId!, placeName: photoAt.name } : {}) })
+              .then((ok) => { sent(ok); return ok; })}
+          />
         </div>
       )}
 
@@ -409,5 +427,84 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
         </div>
       )}
     </article>
+  );
+}
+
+const playWords = (lang: Lang) => ({ play: SV.play[lang], failed: SV.playFailed[lang], retry: SV.retry[lang] });
+
+/** Stage 1 voice notes: record a note on the visit. Offered only where this browser's recorder writes a type the upload
+ *  takes. It stops itself at the cap and is added then too; Discard keeps nothing. The microphone is let go when the
+ *  recording ends, and when the card goes while it runs. What is recorded is handed to the visit-file outbox. */
+function VoiceRecorder({ visitId, lang, busy, onRecorded }: {
+  visitId: string;
+  lang: Lang;
+  busy: boolean;
+  onRecorded: (rec: Recorded) => Promise<boolean>;
+}) {
+  const type = useMemo(() => pickRecordType('audio'), []);
+  const [phase, setPhase] = useState<'idle' | 'starting' | 'recording'>('idle');
+  const [elapsed, setElapsed] = useState(0);
+  const [said, setSaid] = useState<string | null>(null);
+  const run = useRef<Recording | null>(null);
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; run.current?.cancel(); run.current = null; }, []);
+  // the running time, for the person only: the recording's own cap stops it
+  useEffect(() => {
+    if (phase !== 'recording') return;
+    const began = performance.now();
+    setElapsed(0);
+    const tick = setInterval(() => setElapsed(performance.now() - began), 250);
+    return () => clearInterval(tick);
+  }, [phase]);
+  if (!type) return null;
+
+  const finish = async (rec: Recorded, capped: boolean) => {
+    setPhase('idle');
+    const ok = await onRecorded(rec);
+    if (ok && capped && alive.current) setSaid(SV.voiceCapped[lang]);
+  };
+  const start = async () => {
+    setSaid(null);
+    setPhase('starting');
+    try {
+      const r = await startRecording('audio', type, VOICE_MAX_MS);
+      if (!alive.current) { r.cancel(); return; }
+      run.current = r;
+      setPhase('recording');
+      // stopped by its cap: added as if Stop was tapped, unless Stop or Discard came first
+      void r.capped.then((rec) => { if (run.current === r) { run.current = null; void finish(rec, true); } });
+    } catch (err) {
+      if (!alive.current) return;
+      setPhase('idle');
+      setSaid(err instanceof RecordError && err.reason === 'denied' ? SV.voiceDenied[lang] : SV.voiceUnavailable[lang]);
+    }
+  };
+  const stop = async () => {
+    const r = run.current;
+    if (!r) return;
+    run.current = null;
+    void finish(await r.stop(), false);
+  };
+  const discard = () => {
+    run.current?.cancel();
+    run.current = null;
+    setPhase('idle');
+  };
+
+  return (
+    <>
+      {phase === 'recording' ? (
+        <div className={styles.recording} role="status" data-testid={`sv-recording-${visitId}`}>
+          <span>{SV.recording[lang]} {clockText(elapsed)} {SV.recordingOf[lang]} {clockText(VOICE_MAX_MS + 500)}</span>
+          <Button variant="ink" onClick={() => void stop()}>{SV.voiceStop[lang]}</Button>
+          <Button variant="ghost" onClick={discard}>{SV.voiceDiscard[lang]}</Button>
+        </div>
+      ) : (
+        <Button variant="light" disabled={busy || phase === 'starting'} data-testid={`sv-record-${visitId}`} onClick={() => void start()}>
+          {SV.recordVoice[lang]}
+        </Button>
+      )}
+      {said && <div className={styles.meta} role="status">{said}</div>}
+    </>
   );
 }
