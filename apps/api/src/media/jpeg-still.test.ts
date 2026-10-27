@@ -6,6 +6,9 @@ import { POSTER_MAX_SIDE, readJpegStill } from './jpeg-still';
 const still = (name: string) => readFileSync(join(__dirname, '..', '..', 'test', 'unit-support', 'recordings', name));
 const big = still('chromium-153-still-640x360.jpg');
 const tiny = still('chromium-153-still-1x1.jpg');
+const progressive = still('pillow-12.3-progressive-48x32.jpg');
+const restart = still('pillow-12.3-restart-48x32.jpg');
+const restartProgressive = still('pillow-12.3-restart-progressive-48x32.jpg');
 
 /** A JPEG as its segments: each marker with its body, a scan's entropy data riding after its SOS. */
 interface Part { marker: number; body: Buffer; scan?: Buffer }
@@ -45,6 +48,11 @@ const segment = (marker: number, body: number[] | Buffer): Part => ({ marker, bo
 const edited = (edit: (ps: Part[]) => Part[]) => build(edit(parts(big).map((p) => ({ ...p, body: Buffer.from(p.body) }))));
 const sof = (ps: Part[]) => ps.find((p) => p.marker === 0xc0)!;
 const sos = (ps: Part[]) => ps.find((p) => p.marker === 0xda)!;
+/** The component ids of a still's frame. */
+const sofOf = (b: Buffer) => {
+  const f = parts(b).find((p) => p.marker === 0xc0 || p.marker === 0xc2)!.body;
+  return Array.from({ length: f[5]! }, (_, i) => f[6 + 3 * i]!);
+};
 const before = (ps: Part[], marker: number, add: Part) => {
   const i = ps.findIndex((p) => p.marker === marker);
   return [...ps.slice(0, i), add, ...ps.slice(i)];
@@ -56,8 +64,12 @@ describe('readJpegStill — real stills', () => {
     expect(readJpegStill(tiny)).toEqual({ width: 1, height: 1 });
   });
 
-  it('round-trips the fixture through the test builder unchanged', () => {
-    expect(build(parts(big)).equals(big)).toBe(true);
+  it("passes another encoder's progressive and restart stills (Pillow 12.3, libjpeg-turbo)", () => {
+    for (const b of [progressive, restart, restartProgressive]) expect(readJpegStill(b)).toEqual({ width: 48, height: 32 });
+  });
+
+  it('round-trips the fixtures through the test builder unchanged', () => {
+    for (const b of [big, progressive, restart, restartProgressive]) expect(build(parts(b)).equals(b)).toBe(true);
   });
 });
 
@@ -153,6 +165,59 @@ describe('readJpegStill — what may be in it', () => {
   });
 });
 
+describe('readJpegStill — the tables', () => {
+  /** The still with its `n`th segment of `marker` changed by `edit`. */
+  const table = (marker: number, n: number, edit: (body: Buffer) => Buffer | void) => edited((ps) => {
+    const p = ps.filter((q) => q.marker === marker)[n]!;
+    p.body = edit(p.body) ?? p.body;
+    return ps;
+  });
+  const without = (marker: number, n: number) => edited((ps) => ps.filter((q) => q !== ps.filter((r) => r.marker === marker)[n]));
+
+  it('passes two quantization tables in one DQT, and refuses one that is not 8-bit, numbered over 3, cut short or followed by a byte', () => {
+    expect(readJpegStill(edited((ps) => {
+      const [a, b] = ps.filter((q) => q.marker === 0xdb);
+      a!.body = Buffer.concat([a!.body, b!.body]);
+      return ps.filter((q) => q !== b);
+    }))).toEqual({ width: 640, height: 360 });
+    expect(readJpegStill(table(0xdb, 0, (b) => void (b[0] = 0x10)))).toBeNull();
+    expect(readJpegStill(table(0xdb, 1, (b) => void (b[0] = 0x04)))).toBeNull();
+    // an extra table no component could name
+    expect(readJpegStill(table(0xdb, 1, (b) => Buffer.concat([b, Buffer.from([0x04]), b.subarray(1)])))).toBeNull();
+    expect(readJpegStill(table(0xdb, 1, (b) => Buffer.concat([b, Buffer.from([0x03]), b.subarray(1)])))).toEqual({ width: 640, height: 360 });
+    expect(readJpegStill(table(0xdb, 0, (b) => b.subarray(0, 64)))).toBeNull();
+    expect(readJpegStill(table(0xdb, 0, (b) => Buffer.concat([b, Buffer.from([0])])))).toBeNull();
+  });
+
+  it('refuses a Huffman table of a class over 1, numbered over 3, with no codes or over 256, cut short or followed by a byte', () => {
+    expect(readJpegStill(table(0xc4, 0, (b) => void (b[0] = 0x20)))).toBeNull();
+    // an extra table beside the real ones: a third class, or a fifth number
+    const extra = (tcth: number) => table(0xc4, 0, (b) => Buffer.concat([b, Buffer.from([tcth]), b.subarray(1)]));
+    expect(readJpegStill(extra(0x03))).toEqual({ width: 640, height: 360 });
+    expect(readJpegStill(extra(0x20))).toBeNull();
+    expect(readJpegStill(extra(0x04))).toBeNull();
+    expect(readJpegStill(table(0xc4, 1, (b) => void (b[0] = 0x14)))).toBeNull();
+    expect(readJpegStill(table(0xc4, 0, (b) => Buffer.concat([b.subarray(0, 1), Buffer.alloc(16)])))).toBeNull();
+    expect(readJpegStill(table(0xc4, 0, (b) => Buffer.concat([b.subarray(0, 1), Buffer.alloc(16, 17), Buffer.alloc(272)])))).toBeNull();
+    expect(readJpegStill(table(0xc4, 1, (b) => b.subarray(0, b.length - 1)))).toBeNull();
+    expect(readJpegStill(table(0xc4, 1, (b) => Buffer.concat([b, Buffer.from([0])])))).toBeNull();
+    expect(readJpegStill(table(0xc4, 0, (b) => b.subarray(0, 10)))).toBeNull();
+  });
+
+  it('refuses a scan that decodes with a table not yet defined', () => {
+    // two quantization tables, two DC and two AC Huffman tables: each one is used
+    for (const [marker, n] of [[0xdb, 0], [0xdb, 1], [0xc4, 0], [0xc4, 1], [0xc4, 2], [0xc4, 3]] as const) {
+      expect(readJpegStill(without(marker, n)), `${marker.toString(16)} ${n}`).toBeNull();
+      const late = edited((ps) => {
+        const p = ps.filter((q) => q.marker === marker)[n]!;
+        const i = ps.indexOf(sos(ps));
+        return [...ps.slice(0, i + 1).filter((q) => q !== p), p, ...ps.slice(i + 1)];
+      });
+      expect(readJpegStill(late), `${marker.toString(16)} ${n} after the scan`).toBeNull();
+    }
+  });
+});
+
 describe('readJpegStill — the frame', () => {
   const frame = (edit: (body: Buffer) => Buffer | void) => edited((ps) => {
     const p = sof(ps);
@@ -200,13 +265,10 @@ describe('readJpegStill — the frame', () => {
   });
 
   it('passes a progressive frame with several scans, and refuses a second scan on a baseline frame', () => {
-    const two = (marker: number) => edited((ps) => {
-      sof(ps).marker = marker;
-      const scan = sos(ps);
-      return [...ps, { ...scan }];
-    });
-    expect(readJpegStill(two(0xc2))).toEqual({ width: 640, height: 360 });
-    expect(readJpegStill(two(0xc0))).toBeNull();
+    expect(parts(progressive).filter((p) => p.marker === 0xda).length).toBeGreaterThan(1);
+    expect(readJpegStill(edited((ps) => [...ps, { ...sos(ps) }]))).toBeNull();
+    // the same scans under a baseline frame
+    expect(readJpegStill(build(parts(progressive).map((p) => (p.marker === 0xc2 ? { ...p, marker: 0xc0 } : p))))).toBeNull();
   });
 });
 
@@ -232,23 +294,87 @@ describe('readJpegStill — the scan', () => {
     expect(readJpegStill(header(2, [ids[0]!, ids[0]!]))).toBeNull();
   });
 
+  it('refuses a table selector over 3, and a baseline scan that is not the whole band at full precision', () => {
+    const at = (i: number, v: number) => scan((p) => void (p.body[i] = v));
+    expect(readJpegStill(at(2, 0x40))).toBeNull();
+    expect(readJpegStill(at(2, 0x04))).toBeNull();
+    for (const [i, v] of [[7, 1], [8, 62], [8, 64], [9, 0x10], [9, 0x01]] as const) expect(readJpegStill(at(i, v)), `${i}=${v}`).toBeNull();
+  });
+
+  it('refuses a progressive scan outside the spectral and precision rules', () => {
+    // the real progressive still, with its nth scan's last three header bytes (Ss, Se, Ah:Al) or count changed
+    const scanAt = (n: number, edit: (body: Buffer) => Buffer | void) => build(parts(progressive).map((p) => ({ ...p, body: Buffer.from(p.body) })).map((p, _, ps) => {
+      if (p === ps.filter((q) => q.marker === 0xda)[n]) p.body = edit(p.body) ?? p.body;
+      return p;
+    }));
+    const tail = (n: number, ss: number, se: number, ahal: number) => scanAt(n, (b) => {
+      b[b.length - 3] = ss;
+      b[b.length - 2] = se;
+      b[b.length - 1] = ahal;
+    });
+    const scans = parts(progressive).filter((p) => p.marker === 0xda);
+    const ac = scans.findIndex((p) => p.body[p.body.length - 3]! > 0);
+    const acSs = scans[ac]!.body[scans[ac]!.body.length - 3]!;
+    expect(readJpegStill(tail(ac, acSs, 64, 0))).toBeNull();
+    expect(readJpegStill(tail(ac, 5, 4, 0))).toBeNull();
+    expect(readJpegStill(tail(ac, acSs, 63, 0xe0))).toBeNull();
+    expect(readJpegStill(tail(ac, acSs, 63, 0x0e))).toBeNull();
+    expect(readJpegStill(tail(0, 0, 63, 0))).toBeNull();
+    // with every table defined: the baseline still's one full scan, under a progressive frame
+    expect(readJpegStill(edited((ps) => {
+      sof(ps).marker = 0xc2;
+      return ps;
+    }))).toBeNull();
+    expect(readJpegStill(tail(0, 0, 0, 0x01))).toEqual({ width: 48, height: 32 });
+    // an AC scan of two components
+    const ids = sofOf(progressive);
+    const sel = scans[ac]!.body[2]!;
+    expect(readJpegStill(scanAt(ac, (b) => Buffer.from([2, ids[0]!, sel, ids[1]!, sel, ...b.subarray(b.length - 3)])))).toBeNull();
+    // a selector over 3 is refused even where the scan does not decode with it
+    expect(readJpegStill(scanAt(ac, (b) => void (b[2] = 0x40 | (sel & 0x0f))))).toBeNull();
+    expect(readJpegStill(scanAt(0, (b) => void (b[2] = (b[2]! & 0xf0) | 0x04)))).toBeNull();
+  });
+
   it('refuses a scan header whose length is not its fields', () => {
     expect(readJpegStill(scan((p) => void (p.body = Buffer.concat([p.body, Buffer.from([0])]))))).toBeNull();
     expect(readJpegStill(scan((p) => void (p.body = p.body.subarray(0, p.body.length - 1))))).toBeNull();
   });
 
-  it('reads stuffed bytes and restart markers as entropy data, and refuses a scan that never reaches a marker', () => {
-    expect(readJpegStill(scan((p) => void (p.scan = Buffer.concat([p.scan!, Buffer.from([0xff, 0x00, 0xff, 0xd0, 0x12])]))))).toEqual({ width: 640, height: 360 });
+  it('reads stuffed bytes as entropy data, and refuses a scan that never reaches a marker', () => {
+    expect(readJpegStill(scan((p) => void (p.scan = Buffer.from([0xff, 0x00]))))).toEqual({ width: 640, height: 360 });
+    expect(readJpegStill(scan((p) => void (p.scan = Buffer.concat([p.scan!, Buffer.from([0xff, 0x00, 0x12])]))))).toEqual({ width: 640, height: 360 });
     expect(readJpegStill(Buffer.concat([build(parts(big), Buffer.alloc(0)), Buffer.from([0x12, 0xff])]))).toBeNull();
   });
 
-  it('refuses a scan with no coded data (Codex P2 on #1166)', () => {
-    expect(readJpegStill(scan((p) => void (p.scan = Buffer.alloc(0))))).toBeNull();
-    const two = edited((ps) => {
-      sof(ps).marker = 0xc2;
-      return [...ps, { ...sos(ps), scan: Buffer.alloc(0) }];
+  it('reads restart markers only after a nonzero restart interval (Codex P2 on #1166)', () => {
+    const rst = Buffer.from([0xff, 0xd0, 0x12]);
+    const withRst = (interval: number[] | null) => edited((ps) => {
+      sos(ps).scan = Buffer.concat([sos(ps).scan!, rst]);
+      return interval ? before(ps, 0xda, segment(0xdd, interval)) : ps;
     });
-    expect(readJpegStill(two)).toBeNull();
+    expect(readJpegStill(withRst([0, 4]))).toEqual({ width: 640, height: 360 });
+    expect(readJpegStill(withRst(null))).toBeNull();
+    expect(readJpegStill(withRst([0, 0]))).toBeNull();
+    // a later DRI of 0 turns restarts off again
+    expect(readJpegStill(build(parts(restart).map((p) => (p.marker === 0xdd ? segment(0xdd, [0, 0]) : p))))).toBeNull();
+  });
+
+  it('refuses a scan with no coded data, restart markers alone included (Codex P2s on #1166)', () => {
+    expect(readJpegStill(scan((p) => void (p.scan = Buffer.alloc(0))))).toBeNull();
+    const two = (data: Buffer) => edited((ps) => {
+      const id = sof(ps).body[6]!;
+      sof(ps).marker = 0xc2;
+      const first = sos(ps);
+      // a DC first scan of every component (Ss 0, Se 0, Al 1)
+      first.body = Buffer.concat([first.body.subarray(0, first.body.length - 3), Buffer.from([0, 0, 0x01])]);
+      // the second scan is a DC refinement of one component, whose header is valid on its own
+      return [...before(ps, 0xda, segment(0xdd, [0, 1])), { ...first, body: Buffer.from([1, id, 0, 0, 0, 0x10]), scan: data }];
+    });
+    expect(readJpegStill(two(Buffer.from([0x12])))).toEqual({ width: 640, height: 360 });
+    expect(readJpegStill(two(Buffer.alloc(0)))).toBeNull();
+    expect(readJpegStill(two(Buffer.from([0xff, 0xd0])))).toBeNull();
+    expect(readJpegStill(two(Buffer.from([0xff, 0xd0, 0xff, 0xd1])))).toBeNull();
+    expect(readJpegStill(scan((p) => void (p.scan = Buffer.from([0xff, 0xd0]))))).toBeNull();
   });
 
   it('refuses a marker the walk does not name inside the entropy data', () => {

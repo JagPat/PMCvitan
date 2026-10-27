@@ -95,6 +95,17 @@ const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.8));
 Chromium writes SOI, a JFIF APP0, a single-chunk ICC profile in APP2, two DQT, a baseline SOF0, four DHT, one scan
 and EOI. It writes no Exif.
 
+## Progressive and restart stills
+
+A browser's canvas writes neither, but the reader admits both, so three small stills from another real encoder pin
+that it reads them as the format has them: Pillow 12.3.0 (libjpeg-turbo), quality 80, a 48 × 32 gradient.
+
+| File | Written with | Shape |
+| --- | --- | --- |
+| `pillow-12.3-progressive-48x32.jpg` | `progressive=True` | SOF2, ten scans, a DHT before most of them |
+| `pillow-12.3-restart-48x32.jpg` | `restart_marker_blocks=1` | SOF0, a DRI, one scan with restart markers |
+| `pillow-12.3-restart-progressive-48x32.jpg` | `progressive=True, restart_marker_rows=1` | SOF2, a DRI before most scans |
+
 ## What these stills do not cover
 
 There is no Firefox or iOS Safari still here. The video web unit must add real ones from both, and prove the reader
