@@ -4,6 +4,7 @@ import {
   ApiGateway, COUNTERSIGN_CHAIN_OP_TYPES, isCountersignChainOp, refusalMessage, replayOutboxOp,
   type ApiSnapshot, type OutboxOp,
 } from '@/data/apiGateway';
+import { storedQueue } from './queueWrites';
 
 /**
  * Phase 6 task 4d-ii-b / B5a — the FOUR countersign-chain commands on the client (4d-ii-a / A8a, A8b):
@@ -131,7 +132,7 @@ describe('B5a — the four countersign-chain commands are write-ahead acts under
       // the new scope's queue is untouched, and the old scope's persisted queue was not replaced by this flush's result
       expect(s().outbox).toEqual([]);
       expect(method).toHaveBeenCalledTimes(1);
-      expect(JSON.parse(globalThis.localStorage?.getItem(oldKey) ?? '[]')).toEqual([]);
+      expect(storedQueue(globalThis.localStorage?.getItem(oldKey) ?? '[]')).toEqual([]);
     });
 
     it(`${cmd.label}: a server refusal (terminal 4xx) drops the act and surfaces the SERVER's message, unmasked`, async () => {

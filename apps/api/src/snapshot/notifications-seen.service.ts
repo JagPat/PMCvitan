@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import type { AuthUser } from '../common/auth';
 import { readViewerFeed, servedNotifications } from './served-notifications';
+import { lockStandingAnchors } from '../common/standing-anchor';
 
 /**
  * Top 10 #4b unit C (#778) — the bell's "seen" mark: `POST /projects/:projectId/notifications/seen`.
@@ -22,8 +23,9 @@ import { readViewerFeed, servedNotifications } from './served-notifications';
  * - **No oracle.** An id that is hidden, foreign, unknown or deleted at the eligibility read is
  *   simply absent from `confirmed`, identically. An earlier receipt for an id that is hidden at the
  *   read does not confirm it.
- * - **Standing, under the established lock order.** The write locks the viewer's `OrgUserAuthority`
- *   row for the project's org, then their `ProjectUserStanding` rows, FOR SHARE (the actor envelope's
+ * - **Standing, under the established lock order.** The write takes the viewer's standing anchor
+ *   shared (`common/standing-anchor.ts`, #1061), which every writer of their standing holds exclusive
+ *   from before its first row, then locks the viewer's `OrgUserAuthority` row for the project's org, then their `ProjectUserStanding` rows, FOR SHARE (the actor envelope's
  *   order, `platform/actor-envelope.ts`), then the project row through `phase6_project_operable`, and
  *   requires `platform_user_holds_role_windowed(project, sub, token role)`. A concurrent removal,
  *   demotion, re-role or archive therefore either waits for this commit (the viewer was authorized at
@@ -34,8 +36,9 @@ import { readViewerFeed, servedNotifications } from './served-notifications';
  *   this commit (and cascades the receipt) or committed first (and the id is not inserted). Project
  *   before notice is the receipt INSERT's own order: its BEFORE trigger's operability check runs
  *   before the foreign-key check takes the notice row.
- * - **Failure.** A serialization failure or deadlock is retried once internally, then answered 409;
- *   no standing 403; a malformed or oversized body 400 (the controller's schema). Every refusal
+ * - **Failure.** A serialization failure or deadlock is answered 409 at once, never retried (#1061):
+ *   the lock order is fixed at the writers, so a cycle here is a defect to see, not to absorb; no
+ *   standing 403; a malformed or oversized body 400 (the controller's schema). Every refusal
  *   rolls the whole write back, so it confirms and records nothing.
  * - **Convergence.** `createMany` with `skipDuplicates` (`INSERT … ON CONFLICT DO NOTHING`): a retry, a double tap or two tabs converge on
  *   one receipt per (notice, viewer).
@@ -56,23 +59,23 @@ export class NotificationsSeenService {
     const served = new Set(servedNotifications(read, user.role, user.sub, this.decisionsQuery).map((n) => n.id));
     const eligible = submitted.filter((id) => served.has(id));
 
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        const confirmed = await this.prisma.$transaction(
-          (tx) => this.write(tx, projectId, user, eligible),
-          { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 10_000, timeout: 30_000 },
-        );
-        return { confirmed };
-      } catch (error) {
-        if (!isRetryableWriteFailure(error)) throw error;
-        if (attempt >= 1) throw new ConflictException('The notices could not be marked seen; try again');
-      }
+    try {
+      const confirmed = await this.prisma.$transaction(
+        (tx) => this.write(tx, projectId, user, eligible),
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 10_000, timeout: 30_000 },
+      );
+      return { confirmed };
+    } catch (error) {
+      if (isLockConflict(error)) throw new ConflictException('The notices could not be marked seen; try again');
+      throw error;
     }
   }
 
   /** The READ COMMITTED write: standing under the lock order, then the receipts, then what is durable. */
   private async write(tx: Prisma.TransactionClient, projectId: string, user: AuthUser, eligible: readonly string[]): Promise<string[]> {
-    // OrgUserAuthority BEFORE ProjectUserStanding: the OrgMembership projection writers' order
+    // #1061 — the viewer's anchor first, then OrgUserAuthority BEFORE ProjectUserStanding: the OrgMembership
+    // projection writers' order
+    await lockStandingAnchors(tx, { read: [user.sub] });
     await tx.$queryRaw(Prisma.sql`
       SELECT 1 FROM "OrgUserAuthority" a
         JOIN "ProjectOrg" po ON po."orgId" = a."orgId"
@@ -111,7 +114,7 @@ export class NotificationsSeenService {
 }
 
 /** A serialization failure or deadlock, through Prisma's transaction or a raw statement's SQLSTATE. */
-export function isRetryableWriteFailure(error: unknown): boolean {
+export function isLockConflict(error: unknown): boolean {
   if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
   if (error.code === 'P2034') return true;
   const code = (error.meta as { code?: unknown } | undefined)?.code;

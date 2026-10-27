@@ -14,4 +14,27 @@ export const QW = {
     hi: 'Vitan के नए संस्करण ने इस फ़ोन पर जो बदलाव सहेजे हैं, वे यहाँ पढ़े नहीं जा सकते।',
     gu: 'Vitanના નવા સંસ્કરણે આ ફોન પર સાચવેલા ફેરફારો અહીં વાંચી શકાતા નથી.',
   },
+  reload: { en: 'Reload', hi: 'फिर से लोड करें', gu: 'ફરીથી લોડ કરો' },
+  newerReloaded: {
+    en: 'These updates were saved by a newer version of Vitan. This version can’t send them. Set them aside to keep working. They stay on this phone.',
+    hi: 'ये बदलाव Vitan के नए संस्करण ने सहेजे थे। यह संस्करण उन्हें नहीं भेज सकता। काम जारी रखने के लिए इन्हें अलग रखें। ये इस फ़ोन पर रहेंगे।',
+    gu: 'આ ફેરફારો Vitanના નવા સંસ્કરણે સાચવ્યા હતા. આ સંસ્કરણ તેમને મોકલી શકતું નથી. કામ ચાલુ રાખવા માટે તેમને અલગ રાખો. તે આ ફોન પર રહેશે.',
+  },
+  setAside: { en: 'Set aside and continue', hi: 'अलग रखें और जारी रखें', gu: 'અલગ રાખો અને ચાલુ રાખો' },
+  setAsideFailed: {
+    en: 'They could not be set aside on this phone, so nothing was changed.',
+    hi: 'उन्हें इस फ़ोन पर अलग नहीं रखा जा सका, इसलिए कुछ नहीं बदला गया।',
+    gu: 'તેમને આ ફોન પર અલગ રાખી શકાયા નહીં, તેથી કંઈ બદલાયું નથી.',
+  },
+  leaveTitle: {
+    en: '{n} updates aren’t saved on this phone and will be lost. Continue?',
+    hi: '{n} बदलाव इस फ़ोन पर सहेजे नहीं गए हैं और खो जाएँगे। जारी रखें?',
+    gu: '{n} ફેરફારો આ ફોન પર સચવાયા નથી અને ખોવાઈ જશે. ચાલુ રાખવું છે?',
+  },
+  /** step B2f-1: an act made while this tab could not write it to this phone (no cross-tab lock, an unreadable key) */
+  notSavedYet: {
+    en: 'Not saved on this phone yet. Keep Vitan open until it sends.',
+    hi: 'अभी इस फ़ोन पर सहेजा नहीं गया। भेजे जाने तक Vitan खुला रखें।',
+    gu: 'હજુ આ ફોન પર સાચવાયું નથી. મોકલાય ત્યાં સુધી Vitan ખુલ્લું રાખો.',
+  },
 } satisfies Record<string, Words>;

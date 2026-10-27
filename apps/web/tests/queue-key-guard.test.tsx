@@ -3,6 +3,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import { replayOutboxOp, type ApiGateway, type OutboxOp } from '@/data/apiGateway';
+import { queueWritten, storedQueue } from './queueWrites';
 
 /**
  * WEB-02 step A (#482 6333415419): what this release takes from a stored queue key, and what its writes keep.
@@ -23,7 +24,7 @@ const lane = `vitan.siteVisitQueue.dev:${USER}.${P1}`;
 const s = () => useStore.getState();
 const end = (visitId: string, k: string): OutboxOp => ({ t: 'siteVisitEnd', visitId, claimedAt: '2026-10-14T05:30:00.000Z', idempotencyKey: k });
 const approve = (k: string): OutboxOp => ({ t: 'approve', decisionId: 'd-1', optionIndex: 0, idempotencyKey: k });
-const keysOf = (k: string) => ((JSON.parse(localStorage.getItem(k) ?? '[]') ?? []) as { idempotencyKey?: string }[]).map((o) => o.idempotencyKey);
+const keysOf = (k: string) => ((storedQueue(localStorage.getItem(k) ?? '[]') ?? []) as { idempotencyKey?: string }[]).map((o) => o.idempotencyKey);
 const photo = { t: 'siteVisitAddFile', visitId: '00000000-0000-4000-8000-000000000001', scope: `dev:${USER}`, file: { id: 'f', mime: 'image/png' }, by: { name: 'n', role: 'pmc' }, placeName: null, idempotencyKey: 'k-photo' };
 
 /** signed in on P1 (passwordless dev auth), offline, both keys as given */
@@ -48,27 +49,31 @@ describe('WEB-02 step A: what a stored queue key gives this release, and what it
     const newer = { t: 'aKindFromANewerRelease', idempotencyKey: 'k-new' };
     signedIn({ general: [newer] });
     expect(s().outbox).toEqual([]);
-    expect(s().queueUnreadable).toEqual([{ key, read: 'newer' }]);
+    expect(s().queueUnreadable).toEqual([{ key, read: 'newer', reloaded: false }]);
     useStore.setState({ online: true });
     await act(async () => { await s().flushOutbox(); });
-    expect(JSON.parse(localStorage.getItem(key)!)).toEqual([newer]);
+    expect(storedQueue(localStorage.getItem(key)!)).toEqual([newer]);
   });
 
   it('4344812918: a kind with no replay case is refused, never answered as sent', async () => {
     await expect(replayOutboxOp({ project: P1 } as unknown as ApiGateway, { t: 'aKindFromANewerRelease' } as unknown as OutboxOp)).rejects.toThrow('no replay for aKindFromANewerRelease');
   });
 
-  it('4344270652: a lane photo act memory leaves out stays stored at this tab’s writes', () => {
+  it('4344270652: a lane photo act memory leaves out stays stored at this tab’s writes', async () => {
     signedIn({ lane: [photo] });
     act(() => { s().queueSiteVisitAct(end('00000000-0000-4000-8000-000000000002', 'k-mine'), 'saved offline'); });
-    expect(keysOf(lane)).toEqual(['k-mine', 'k-photo']);
+    await queueWritten(); // step B2f-1: the write runs under the queue's lock, after the act
+    // L2b (Codex 4344812888): the act the key already held keeps its place; memory's new one follows it
+    expect(keysOf(lane)).toEqual(['k-photo', 'k-mine']);
   });
 
-  it('4344270652: a site visit act stored in the general key, which memory leaves out, stays stored there', () => {
+  it('4344270652: a site visit act stored in the general key, which memory leaves out, stays stored there', async () => {
     signedIn({ general: [end('00000000-0000-4000-8000-000000000001', 'k-in-general'), approve('k-a')] });
     useStore.setState((st) => { st.outbox = [...st.outbox, approve('k-b')]; });
     act(() => { s().queueSiteVisitAct(end('00000000-0000-4000-8000-000000000002', 'k-v'), 'saved offline'); });
-    expect(keysOf(key)).toEqual(['k-a', 'k-b', 'k-in-general']);
+    await queueWritten(); // step B2f-1: the write runs under the queue's lock, after the act
+    // L2b (Codex 4344812888): the stored acts keep their order; memory's new one follows them
+    expect(keysOf(key)).toEqual(['k-in-general', 'k-a', 'k-b']);
   });
 
   it('4344270663, 4344812910: a list holding an entry that is not an act gives nothing to replay and is never written over', async () => {
@@ -78,10 +83,11 @@ describe('WEB-02 step A: what a stored queue key gives this release, and what it
     expect(s().outbox).toEqual([]);
     useStore.setState((st) => { st.outbox = [...st.outbox, approve('k-mine')]; });
     act(() => { s().queueSiteVisitAct(end('00000000-0000-4000-8000-000000000002', 'k-v'), 'saved offline'); });
-    expect(JSON.parse(localStorage.getItem(key)!)).toEqual(newer);
+    await queueWritten(); // step B2f-1: the write runs under the queue's lock, after the act
+    expect(storedQueue(localStorage.getItem(key)!)).toEqual(newer);
     expect(keysOf(lane)).toEqual(['k-v']);
     // the act made here is copied aside beside the key, so it stays on this phone
-    const asides = Object.keys(localStorage).filter((x) => x.startsWith(`vitan.unreadable.${key}.`)).map((x) => JSON.parse(localStorage.getItem(x)!) as OutboxOp[]);
+    const asides = Object.keys(localStorage).filter((x) => x.startsWith(`vitan.unreadable.${key}.`)).map((x) => storedQueue(localStorage.getItem(x)!) as OutboxOp[]);
     expect(asides).toEqual([[approve('k-mine')]]);
   });
 

@@ -5,14 +5,17 @@ import '@testing-library/jest-dom/vitest';
 // minimal per-name FIFO LockManager here — the same exclusive semantics within this one test document.
 if (typeof navigator !== 'undefined' && !(navigator as Navigator & { locks?: unknown }).locks) {
   const tails = new Map<string, Promise<unknown>>();
+  const open = new Map<string, number>(); // per name, the requests not yet settled (`query`, for tests that wait on them)
   const locks = {
     request: (name: string, optsOrCb: unknown, maybeCb?: () => unknown) => {
       const cb = (typeof optsOrCb === 'function' ? optsOrCb : maybeCb) as () => unknown;
-      const run = (tails.get(name) ?? Promise.resolve()).then(() => cb());
+      open.set(name, (open.get(name) ?? 0) + 1);
+      const settle = () => { const n = (open.get(name) ?? 1) - 1; if (n > 0) open.set(name, n); else open.delete(name); };
+      const run = (tails.get(name) ?? Promise.resolve()).then(() => cb()).then((v) => { settle(); return v; }, (e: unknown) => { settle(); throw e; });
       tails.set(name, run.catch(() => undefined));
       return run;
     },
-    query: async () => ({ held: [], pending: [] }),
+    query: async () => ({ held: [], pending: [...open.keys()].map((name) => ({ name, mode: 'exclusive' as const })) }),
   };
   Object.defineProperty(navigator, 'locks', { value: locks, configurable: true });
 }

@@ -60,7 +60,7 @@ describe('civil-date fields answer 400, not 500 (live PG)', () => {
     const activityId = `IT-CIV-${Date.now() % 1e6}`;
     await t.prisma.activity.create({ data: { id: activityId, projectId: P(), name: 'Civil act', zone: 'Z', plannedStart: 0, plannedEnd: 10 } });
     const requirement = await t.app.get(RequirementsService).create(P(), {
-      activityId, materialCategory: 'Cement', make: 'UltraTech', grade: 'OPC 53', attributes: 'grey',
+      type: 'material', activityId, materialCategory: 'Cement', make: 'UltraTech', grade: 'OPC 53', attributes: 'grey',
       baseUom: 'bag', qty: '100', requiredBy: '2026-08-15', criticality: 'normal', decisionId: null,
       responsibleId: null, tolerance: null
     }, pmc());

@@ -5,11 +5,12 @@ import * as contracts from '../../api/src/contracts';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
 import { isKnownOutboxOp, SERVER_SCHEMA_OF } from '@/data/storedActs';
+import { queueWritten } from './queueWrites';
 
 /**
  * #1071 F4 (Codex 4341067934) and #1085 r1 (Codex 4345664659). A stored act was read through the type of each field its
  * replay reads, then through hand copies of the server's `.refine`s, but not through the server's bounds: an approval
- * of option -1 loaded, was refused for good, and was dropped by its flush, its bytes lost and nobody told.
+ * of option -1 loaded, was refused for good, and was dropped by its flush, its bytes lost with no Set aside offered.
  * The body each kind's replay sends is now parsed by the server's own zod schema (`SERVER_CONTRACT_OF`), so every bound,
  * pattern, strict object and refine applies as the server applies it, no stricter and no looser.
  *
@@ -282,8 +283,8 @@ afterEach(() => {
   sessionStorage.clear();
 });
 
-describe('#1071 F4: a key holding such an act is listed and kept, never sent or dropped', () => {
-  it('an allocation naming both a worker and a crew: the key is listed, nothing is sent, and its bytes are kept', async () => {
+describe('#1071 F4: a key holding such an act is set aside, never sent or dropped', () => {
+  it('an allocation naming both a worker and a crew: the key is listed, nothing is sent, and Set aside keeps its bytes', async () => {
     const both = { t: 'allocateLabour', input: { activityId: 'a', requirementId: 'r', civilDate: day, workerId: 'w', crewId: 'c' }, idempotencyKey: k, coalesceKey: c };
     const raw = JSON.stringify([both]);
     const allocateLabour = vi.fn(async () => ({}));
@@ -294,9 +295,13 @@ describe('#1071 F4: a key holding such an act is listed and kept, never sent or 
     await useStore.getState().flushOutbox();
     expect(allocateLabour).not.toHaveBeenCalled();
     expect(localStorage.getItem(general)).toBe(raw);
+    await useStore.getState().setAsideUnreadableQueue();
+    await queueWritten(); // step B1: Set aside runs under the keys' locks
+    const copies = Object.keys(localStorage).filter((x) => x.startsWith(`vitan.unreadable.${general}.`)).map((x) => localStorage.getItem(x));
+    expect(copies).toEqual([raw]);
   });
 
-  it('#1085 r1 (Codex 4345664659): an approval of option -1 is listed, never sent, and its bytes are kept', async () => {
+  it('#1085 r1 (Codex 4345664659): an approval of option -1 is listed, never sent, and Set aside keeps its bytes', async () => {
     const minus = { t: 'approve', decisionId: 'd-1', optionIndex: -1, idempotencyKey: k };
     const raw = JSON.stringify([minus]);
     const approveDecision = vi.fn(async () => null);

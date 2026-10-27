@@ -90,10 +90,12 @@ import {
   beginCreateSend, createHoldScope, currentCreateHoldView, releaseCreate, reserveCreateRetry, reserveNewCreate, serverKeepsCreateReceipts,
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
 } from './projectCreateHold';
-import { createQueueKeyGuard, type QueueWrite } from '@/store/queueKeyGuard';
+import { createQueueKeyGuard, queueActIdent, type QueueWrite } from '@/store/queueKeyGuard';
+import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
+import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isMediaNotFound, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
-import type { QueueScopes } from '@/data/storedActs';
+import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { clearVisitPhotoStart, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { parseLocation } from '@/lib/screens';
@@ -424,8 +426,8 @@ export interface AppState {
   online: boolean;
   syncQueue: string[];
   outbox: OutboxOp[];
-  /** WEB-02 step A: this scope's queue keys this release cannot read */
-  queueUnreadable: UnreadableKey[];
+  /** WEB-02 step A: this scope's queue keys this release cannot read, and whether the last Set aside could not copy them */
+  queueUnreadable: UnreadableKey[]; queueSetAsideFailed: boolean;
   /** SV2: the visits whose acts the last flush held behind a photo this phone may still keep but could not read, for the
    *  project and sign-in it ran in; null when it held none. The Site Visits screen says so, with "Send anyway". */
   siteVisitsHeld: { project: string; generation: number; visits: string[] } | null;
@@ -836,10 +838,11 @@ export interface AppActions {
   record: (label: string) => void;
   toggleOnline: () => void;
   /** Replay the durable outbox in order. `okMsg` (write-ahead command path) announces the command's
-   *  success on a clean flush instead of the batch "N synced" summary. Resolves a structured
+   *  success instead of the batch "N synced" summary. Resolves a structured
    *  `OutboxFlushResult` so a caller can confirm ITS OWN ops by key (queue absence ≠ success — a
-   *  terminal 4xx also removes the op). */
-  flushOutbox: (opts?: { okMsg?: string | (() => string) }) => Promise<OutboxFlushResult>;
+   *  terminal 4xx also removes the op). `act` is the command's act: its `okMsg` waits for the flush that sends that act,
+   *  this one or a later one, whichever call it came with (#1133); a line always comes with its act (#1134 r2). */
+  flushOutbox: (opts?: { okMsg: string | (() => string); act: OutboxOp }) => Promise<OutboxFlushResult>;
   /** Site Visits SV1-c unit 2 (#792, F53): put one site-visit act in the durable outbox and send it (write-ahead,
    *  as the Daily Log does); `offlineMsg` is what the viewer is told when the app is offline. False without the server. */
   queueSiteVisitAct: (op: OutboxOp, offlineMsg: string) => boolean;
@@ -849,6 +852,8 @@ export interface AppActions {
    *  load only (Codex 4323247780). */
   sendSiteVisitAnyway: (visitId: string) => void;
   hydrateOutbox: () => void;
+  /** WEB-02 step A: copy this scope's unreadable queue keys aside (Set aside), or reload for a newer release's */
+  setAsideUnreadableQueue: () => Promise<void>; reloadForNewerQueue: () => void;
   // team access
   accWho: (who: Exclude<AccessWho, null>) => void;
   accTrade: (t: string) => void;
@@ -882,6 +887,9 @@ export interface AppActions {
    *  still running when it ends: a test waits for it to settle before the next begins, or the next test's flushes are
    *  coalesced into it. */
   _outboxFlushing: () => boolean;
+  /** Tests only: settles once every queue-key release so far has asked its flush (or found the app offline). A test waits
+   *  on it, the flushes and the queue's locks, never on a count of turns or a clock. */
+  _queueReleased: () => Promise<void>;
   /** adopt the session this tab saved before a reload, if one is still valid; true when one was adopted */
   restoreSession: () => boolean;
   /** Site Visits SV1-c (#792) — the gateway a screen that keeps its own state (the Site Visits screen) sends
@@ -1451,7 +1459,7 @@ export function getInitialState(): AppState {
     online: true,
     syncQueue: [],
     outbox: [],
-    queueUnreadable: [],
+    queueUnreadable: [], queueSetAsideFailed: false,
     siteVisitsHeld: null,
     siteVisitsSentAnyway: [],
     photoUploadsInFlight: [],
@@ -1613,6 +1621,10 @@ export const useStore = create<Store>()(
     // but serializing keeps ordering and avoids redundant sends.
     let outboxFlushing = false;
     let outboxFlushQueued = false;
+    /** #1133 (Codex 4374997251, #1134 r1 4376641813): each command's success line, by its act's idempotency key and the
+     *  queue it is in, from its flush call until a flush settles that act: the flush the server accepts it in says the
+     *  line, one that refuses it for good drops it, and one that leaves it queued (held, offline, a failed send) keeps it */
+    let okWaiting: { okMsg: string | (() => string); key: string; queue: string }[] = [];
     const scopeCoordinators = new Map<string, ScopeCoordinator>();
     const scopeKey = (scope: ProjectScope): string => `${scope.projectId}::${scope.generation}`;
     /** Drop coordinators for scopes we've LEFT that have no pull in flight — a scope
@@ -1779,7 +1791,9 @@ export const useStore = create<Store>()(
         const content = `${scope}\n${JSON.stringify(o.input)}`;
         const nth = seen.get(content) ?? 0;
         seen.set(content, nth + 1);
-        return { ...o, input: { ...o.input, clientKey: `legacy-photo-${contentHash(content)}-${nth}` } };
+        const keyedOp = { ...o, input: { ...o.input, clientKey: `legacy-photo-${contentHash(content)}-${nth}` } };
+        queueKeys.adopt(scope, o, keyedOp); // L2b (G1): the keyed photo is the same occurrence, in the same place
+        return keyedOp;
       });
       return { ops: keyed, changed };
     };
@@ -2465,39 +2479,90 @@ export const useStore = create<Store>()(
      *  release before it, which replays every `siteVisit…` act it finds and has no case for a photo, never meets one,
      *  and this lane is stored exactly as before (Codex 4320122193, 4320404449, 4320404441). */
     const isStoredVisitOp = (o: OutboxOp): boolean => isSiteVisitOp(o) && o.t !== 'siteVisitAddFile';
+    /** the release drains asked so far, settled once each has asked its flush or found the app offline (tests wait on it,
+     *  `_queueReleased`, #1134 r1 4376641821) */
+    let releaseDrains: Promise<void> = Promise.resolve();
     /** WEB-02 step A: both queue keys are read and written only through `queueKeys`, which never writes a key this
      *  release cannot read; each read of this scope's keys lists such a key in the strip */
-    const strip = queueStrip({ get, set, scope: () => [outboxKey(), siteVisitKeyOf(outboxKey())] });
-    const queueKeys = createQueueKeyGuard(strip.noteRead, (key) => queueKeyScopes.get(key));
+    const strip = queueStrip({ get, set, scope: () => [outboxKey(), siteVisitKeyOf(outboxKey())], keys: () => queueKeys, writes: () => queueWrites() });
+    // a queue-key hold let go (the key heard readable or cleared, or written) resumes sending, as a kept photo put back
+    // does: once, after the write or event that let it go, and a flush running then runs again (#1132 r2, 4374538874)
+    const queueKeys = createQueueKeyGuard(strip.noteRead, (key) => queueKeyScopes.get(key), () => {
+      const drain = Promise.resolve().then(() => { if (get().online) void get().flushOutbox(); });
+      releaseDrains = Promise.all([releaseDrains, drain]).then(() => undefined);
+    });
     /** Every scope change (an auth result, a persona switch, a sign-out, and each load of a scope's queue) ends the old
      *  scope's queue-key memory and its strip list here, first, before any storage access: a storage that throws can
      *  then never leave the old scope's list on the next one (Codex 4351952392, the third such leak's root cause) */
     const resetQueueScope = (): void => {
       queueKeys.forget();
-      set({ queueUnreadable: [] });
+      aheadUnsaved.clear(); // what this tab held back for the scope it left goes with that scope's memory
+      set({ queueUnreadable: [], queueSetAsideFailed: false });
     };
     /** each stored key's write from memory: the general queue, then the visit lane */
     const queueWrites = (): QueueWrite[] => [
       { key: outboxKey(), mine: get().outbox.filter((o) => !isSiteVisitOp(o)), takes: (o) => !isSiteVisitOp(o) },
       { key: siteVisitKeyOf(outboxKey()), mine: get().outbox.filter(isStoredVisitOp), takes: isStoredVisitOp },
     ];
-    /** true only when both keys were written */
-    const persistOutbox = (): boolean => {
+    /** the new acts no write has yet stored in their key. A flush sends none while its write is still running (#1099 r1,
+     *  Codex 4358186328); once that write has run and not stored it, the flush writes it again and then sends it from
+     *  memory, said not saved: its ask's made record is its retry record on this phone, and an act this tab could not
+     *  store is never held from the server (#1113 r1 re-check) */
+    // L2b: an unkeyed act by the act itself, never its identity: two identical unkeyed acts are two, and one's write
+    // says nothing of the other's (the store keeps a queued act as the same object until the flush removes it). A keyed
+    // act by its identity: a photo row read back from IndexedDB and a visit act the flush re-creates are new objects
+    // for the same act (re-check N5)
+    const aheadUnsaved = new Set<OutboxOp | string>();
+    const aheadId = (o: OutboxOp): OutboxOp | string => { const i = queueActIdent(o); return i.startsWith('json:') ? o : i; };
+    /** acts now on this phone: their key's write holds them, or a kept photo's row (IndexedDB) does */
+    const storedHere = (acts: OutboxOp[]): void => { for (const o of acts) aheadUnsaved.delete(aheadId(o)); };
+    /** step B2f-1: each key is written under its own cross-tab lock (`writeQueueKey`, main's write inside it). Memory is
+     *  read as it is now, so the writes run in the order the acts were made; true only when both keys' writes landed */
+    const persistOutbox = async (): Promise<boolean> => {
       try {
         const storage = globalThis.localStorage;
         if (!storage) return false;
-        let all = true;
-        for (const w of queueWrites()) all = queueKeys.write(storage, w.key, w.mine, w.takes) && all;
-        return all;
+        return (await Promise.all(queueWrites().map(async (w) => {
+          const kept = await writeQueueKey(queueKeys, storage, w.key, w.mine, w.takes);
+          if (kept) storedHere(w.mine);
+          return kept;
+        }))).every(Boolean);
       } catch {
-        /* storage unavailable — the in-session outbox still works */
-        return false;
+        return false; // storage unavailable — the in-session outbox still works, and nothing says it is saved
       }
     };
-    /** another tab's write of this scope's queue key is read and listed, never answered (`null`: storage cleared) */
+    /** step B2f-1: every write of a new act (write-ahead or offline) is tracked here until it has run; a flush sends the
+     *  acts queued before it only once their writes have run, and leaves the acts queued during that wait to its drain
+     *  pass (#1113 r1 Codex 4367242045, r2 Codex 4367436925) */
+    const aheadWrites = new Set<Promise<boolean>>();
+    const writeAhead = (acts: OutboxOp[]): Promise<boolean> => {
+      for (const o of acts) aheadUnsaved.add(aheadId(o));
+      const written = persistOutbox();
+      aheadWrites.add(written);
+      void written.finally(() => aheadWrites.delete(written));
+      return written;
+    };
+    /** whether `acts` are on this phone: their own key's write held them, or a kept photo's row does, whatever the other
+     *  key's write did (#1113 r1, Codex 4367242052) */
+    const storedNow = (acts: OutboxOp[]): boolean => acts.every((o) => !aheadUnsaved.has(aheadId(o)));
+    /** an offline act is said saved only once the locked write of its own key holds it (Codex 4344812898, 4344270659,
+     *  4367242052); its write is tracked as a write-ahead's is, so no flush sends it first (Codex 4367242045). The line
+     *  is shown only while the scope, person and key it was made in still hold (#1099 r3, Codex 4360928308) */
+    const flashSaved = (msg: string, acts: OutboxOp[]): void => {
+      const stillThere = madeHere();
+      void writeAhead(acts).then(() => { if (stillThere()) get().flash(storedNow(acts) ? msg : QW.notSavedYet[get().lang]); });
+    };
+    /** the scope, person and key an act is made in: a write that returns after any of them moved says nothing and starts
+     *  nothing there (#1099 r2, Codex 4358855946) */
+    const madeHere = (): (() => boolean) => {
+      const made = { scope: currentScope(), token: get().sessionToken, key: outboxKey() };
+      return () => scopeStillCurrent(made.scope) && get().sessionToken === made.token && outboxKey() === made.key;
+    };
+    /** another tab's write of this scope's queue key is read and listed, never written back (`null`: storage cleared);
+     *  memory's acts for it go with it, for the guard to copy aside or hold (U3) */
     globalThis.addEventListener?.('storage', (e: StorageEvent) => {
       const storage = globalThis.localStorage;
-      if (storage && e.storageArea === storage && get().sessionUserId) for (const k of [outboxKey(), siteVisitKeyOf(outboxKey())]) if (e.key === null || e.key === k) queueKeys.heard(storage, k);
+      if (storage && e.storageArea === storage && get().sessionUserId) for (const w of queueWrites()) if (e.key === null || e.key === w.key) queueKeys.heard(storage, w.key, w.mine);
     });
 
     // Evidence bytes share the outbox's user scope (WEB-02): the IndexedDB entries are
@@ -2560,7 +2625,7 @@ export const useStore = create<Store>()(
             reconstructed = true;
           }
         });
-        if (reconstructed) persistOutbox();
+        if (reconstructed) void persistOutbox(); // the bytes' rows are the durable record: the acts are rebuilt from them
       } catch {
         /* evidence store unavailable — the mirrors stay empty */
         // with no IndexedDB at all nothing can be pending on this device; a read that failed otherwise leaves the keys
@@ -2625,7 +2690,9 @@ export const useStore = create<Store>()(
           rebuilt = true;
         }
       });
-      if (rebuilt) persistOutbox();
+      // a kept photo's row holds its act and the start it needs: their retry record is on this phone
+      for (const row of rows) if (row.state === 'queued') storedHere([row.op, ...(row.start ? [row.start] : [])]);
+      if (rebuilt) void persistOutbox();
       return rebuilt;
     };
     /** The read made on load, so the queue shows a kept photo before anything is sent. One a flush overtook is read
@@ -2760,8 +2827,7 @@ export const useStore = create<Store>()(
         s.outbox.push(op);
         s.syncQueue.push(label);
       });
-      persistOutbox();
-      get().flash(offlineMsg ?? label + ' — saved offline, will sync when you reconnect.');
+      flashSaved(offlineMsg ?? label + ' — saved offline, will sync when you reconnect.', [op]); // said once the locked write holds it
       return true;
     };
 
@@ -2794,14 +2860,22 @@ export const useStore = create<Store>()(
     // viewer's language); without it, the label plus the standard English line, as before
     // okMsg may be a function: it is then read when the result is shown, so a translated success line
     // follows a language the viewer switched to while the command was on its way (#835)
-    const runWriteAhead = (op: OutboxOp, label: string, okMsg: string | (() => string), offlineMsg?: string): boolean => {
+    // `inRow`: acts a kept photo's row (IndexedDB) already holds, so on this phone before any key's write
+    const runWriteAhead = (op: OutboxOp, label: string, okMsg: string | (() => string), offlineMsg?: string, inRow: OutboxOp[] = []): boolean => {
       if (!gateway) return false;
       set((s) => { s.outbox.push(op); if (!s.online) s.syncQueue.push(label); });
-      persistOutbox();
+      storedHere(inRow);
+      // stored before any network call: no flush takes the outbox while a write-ahead's write is still waiting
+      const written = writeAhead(inRow.includes(op) ? [] : [op]);
+      // on this phone once its own key's write holds it, or a photo's row does, whatever the other key's write does
+      const stored = () => storedNow([op]);
+      const stillThere = madeHere();
       if (get().online) {
-        get().flushOutbox({ okMsg });
+        // sent once its write has run; one that write could not store is said not saved, and sent from memory with its
+        // ask's made record on this phone (#1113 r1 re-check: never held from the server)
+        void written.then(() => { if (!stillThere()) return; if (!stored()) get().flash(QW.notSavedYet[get().lang]); void get().flushOutbox({ okMsg, act: op }); });
       } else {
-        get().flash(offlineMsg ?? label + ' — saved offline, will sync when you reconnect.');
+        void written.then(() => { if (stillThere()) get().flash(stored() ? (offlineMsg ?? label + ' — saved offline, will sync when you reconnect.') : QW.notSavedYet[get().lang]); });
       }
       return true;
     };
@@ -3084,6 +3158,7 @@ export const useStore = create<Store>()(
       gateway = g;
     },
     _outboxFlushing: () => outboxFlushing,
+    _queueReleased: () => releaseDrains,
     restoreSession: () => {
       // #482 6227430525 — a reload adopts the session this tab saved, through the one adoption path, so a
       // reload lands back where the person was instead of on the sign-in screen. Never under dev auth.
@@ -3741,8 +3816,10 @@ export const useStore = create<Store>()(
           mirrorCapture(s);
           s.pendingEvidenceCount += 1;
         });
-        persistOutbox();
-        get().flash(CHT.savedOffline[get().lang]);
+        // the bytes' row is the durable record (the act is rebuilt from it), so the line does not depend on the write
+        const stillThere = madeHere();
+        await persistOutbox();
+        if (stillThere()) get().flash(CHT.savedOffline[get().lang]);
         return;
       }
       // ONLINE: upload now with the idempotency key; reconcile from the snapshot.
@@ -3779,8 +3856,8 @@ export const useStore = create<Store>()(
         s.syncQueue.push('Evidence photo (retry)');
         s.pendingEvidenceCount += 1;
       });
-      persistOutbox();
-      if (get().online) get().flushOutbox();
+      await persistOutbox();
+      if (evidenceContextStillCurrent(ctx) && get().online) void get().flushOutbox();
     },
     deleteFailedEvidence: async (clientKey) => {
       invalidateEvidenceReconciles(); // the row is about to vanish under any in-flight read
@@ -3902,14 +3979,14 @@ export const useStore = create<Store>()(
         }
         // offline: QUEUE the submit (persisted) and freeze as 'queued'. The freeze
         // survives a reload because reconcileSubmission rebuilds it from the outbox.
+        const submit: OutboxOp = { t: 'submitInspection', inspectionId: c.id, items: c.items };
         set((s) => {
-          s.outbox.push({ t: 'submitInspection', inspectionId: c.id, items: c.items });
+          s.outbox.push(submit);
           s.syncQueue.push('Submit inspection');
           s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'queued', attempt: 0 };
         });
-        persistOutbox();
         emitGuideOutcome('inspection-submitted', c.id);
-        get().flash(CHT.savedOfflineSubmit[get().lang]);
+        flashSaved(CHT.savedOfflineSubmit[get().lang], [submit]); // said only once the locked write holds it (Codex 4344812898)
         return;
       }
       // demo (no gateway): the submit succeeds locally and synchronously — the
@@ -4193,7 +4270,8 @@ export const useStore = create<Store>()(
               if (!s.online) s.syncQueue.push('Publish ' + number);
             });
           });
-          persistOutbox();
+          // no flush sends these while their locked write is still running (`aheadWrites`)
+          void writeAhead(get().outbox.filter((o) => o.t === 'publishDrawing' && drawingKeys.includes((o as { idempotencyKey?: string }).idempotencyKey ?? '')));
           if (get().online) flushDone = get().flushOutbox();
         }
         void (async () => {
@@ -6023,8 +6101,9 @@ export const useStore = create<Store>()(
         // (local data URL) and queue the upload for replay on reconnect — instead
         // of losing it. Mirrors runRemoteOrQueue for the JSON mutations.
         if (!get().online) {
+          const upload: OutboxOp = { t: 'uploadMedia', input };
           set((s) => {
-            s.outbox.push({ t: 'uploadMedia', input });
+            s.outbox.push(upload);
             s.syncQueue.push('Progress photo');
             const log = onPickedLog(s);
             if (log) {
@@ -6034,9 +6113,8 @@ export const useStore = create<Store>()(
               recordDraftPhoto(s);
             }
           });
-          persistOutbox();
           persistDailyLogDraft();
-          get().flash(DLT.photoOffline[get().lang]);
+          flashSaved(DLT.photoOffline[get().lang], [upload]); // the photo's bytes live only in this act: said once it is written
           return;
         }
         // raw-DTO reconcile: pin the reply to the scope that uploaded it — a late
@@ -6223,7 +6301,9 @@ export const useStore = create<Store>()(
         get().flash(DLX.synced(n, get().lang));
       }
     },
-    queueSiteVisitAct: (op, offlineMsg) => runWriteAhead(op, 'Site visit', '', offlineMsg),
+    // a photo is queued only once its row holds it and the start it needs (`keepAndQueue`)
+    queueSiteVisitAct: (op, offlineMsg) => runWriteAhead(op, 'Site visit', '', offlineMsg, op.t === 'siteVisitAddFile'
+      ? [op, ...get().outbox.filter((o) => o.t === 'siteVisitStart' && o.body.id === op.visitId)] : []),
     // the screen's own reads: a sent photo not listed yet, or its kept photos not read. A retry holds nothing: the flush
     // it runs holds only the visits a kept photo may be on
     retrySiteVisits: () => { if (get().online) retryVisitPhotos(); },
@@ -6237,6 +6317,9 @@ export const useStore = create<Store>()(
       // `ran:false`/empty so a caller confirming its own ops never mistakes "not run" for "succeeded".
       const notRun = (): OutboxFlushResult => ({ ran: false, scopeMoved: false, succeededKeys: [], droppedKeys: [], pendingKeys: [] });
       if (!gateway) return notRun();
+      // a site visit act's word is the Site Visits screen's, never a line here, and it is not in the batch count either
+      const okKey = opts?.act && !isSiteVisitOp(opts.act) && 'idempotencyKey' in opts.act ? opts.act.idempotencyKey : undefined;
+      if (opts?.okMsg && okKey && !okWaiting.some((w) => w.key === okKey)) okWaiting.push({ okMsg: opts.okMsg, key: okKey, queue: outboxKey() });
       // finding 1 — serialize flushes: a write-ahead command fires a flush per command, so one may be
       // in flight already. Coalesce (mark + return); the in-flight flush re-runs once after it settles,
       // so a command persisted mid-flush is still sent. Idempotency keys make an overlap harmless.
@@ -6283,8 +6366,30 @@ export const useStore = create<Store>()(
       }
       // not read: a photo may be waiting whether or not any act is queued, so this is tried again (Codex 4321558423)
       if (holdVisits) retryVisitPhotos();
+      // step B2f-1 (#1113 r2 root cause, Codex 4367436925): this flush sends only the acts queued before it waits for
+      // their writes, and only once each of those writes has run: the writes running now, then one later attempt for an
+      // act none of them stored, sent from memory if that does not store it either (its ask's made record on this phone,
+      // #1099 r1 4358186328, #1113 r1 re-check). An act queued during the wait is neither sent early nor held: it is left
+      // in the queue for the drain pass this flush runs when it settles, which waits for that act's write the same way
+      // The acts are pinned as the objects in the queue (two keyless acts can be alike): one changed during the wait is
+      // a new object, and waits for the drain pass too
+      let waited: ReadonlySet<OutboxOp> | null = null;
+      if (aheadWrites.size > 0 || aheadUnsaved.size > 0) {
+        const before = new Set(get().outbox);
+        waited = before;
+        const here = madeHere();
+        const waitGateway = gateway;
+        await Promise.all([...aheadWrites]);
+        if ([...before].some((o) => aheadUnsaved.has(aheadId(o)))) await writeAhead([]);
+        // a scope move meanwhile leaves this flush's queue to its own scope
+        if (!here() || gateway !== waitGateway) return notRun();
+      }
       const heldVisits: OutboxOp[] = [];
-      const ops = get().outbox.slice();
+      // taken: the queue's head up to the first act queued during the wait (the rest go to the drain pass)
+      const queued = get().outbox;
+      const lateAt = waited ? queued.findIndex((o) => !waited.has(o)) : -1;
+      if (lateAt >= 0) outboxFlushQueued = true;
+      const ops = lateAt >= 0 ? queued.slice(0, lateAt) : queued.slice();
       // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
       // take its own acts out of `ops` as it goes)
       const taken = ops.length;
@@ -6388,6 +6493,20 @@ export const useStore = create<Store>()(
       );
       let stoppedAt = -1;
       let scopeMoved = false;
+      // step B1a: an act the server now has, or refused for good, is marked so at once, before the flush goes on: a page
+      // closed before this flush writes its key without it never sends it again
+      let markStore: Storage | null = null;
+      try { markStore = globalThis.localStorage ?? null; } catch { markStore = null; }
+      const settle = (o: OutboxOp): void => { queueKeys.settled(markStore, isSiteVisitOp(o) ? siteVisitKeyOf(flushKey) : flushKey, o); };
+      const withheldVisits = new Set<string>();
+      let generalWithheld = false;
+      const withheldNow = (op: OutboxOp): boolean => {
+        const visit = isSiteVisitOp(op);
+        if (visit ? withheldVisits.has(siteVisitOf(op)) : generalWithheld) return true;
+        if (!queueKeys.withholds(visit ? siteVisitKeyOf(flushKey) : flushKey, op)) return false;
+        if (visit) withheldVisits.add(siteVisitOf(op)); else generalWithheld = true;
+        return true;
+      };
       for (let i = 0; i < ops.length; i++) {
         // live check BEFORE each replay: if the project or session changed while a
         // previous op was in flight, the rest of this queue belongs to the OLD
@@ -6397,7 +6516,18 @@ export const useStore = create<Store>()(
           scopeMoved = true;
           break;
         }
-        if (holds(ops[i])) { heldVisits.push(ops[i]); continue; }
+        // U3 (Codex 4353751507): an act its key withholds (another tab made the key unreadable) stays here, unsent, and
+        // so does every later act that may depend on it: the rest of its visit, or the rest of the general queue (a
+        // later act sent alone would be refused for good and dropped: Stage 1 gap check of 3302f45, gap 1). It is asked
+        // first, so an act the photo hold also holds still latches its visit (#1122 r2, 4370280911)
+        const withheldHere = withheldNow(ops[i]);
+        const photoHeld = holds(ops[i]);
+        // U3b (4370280911): a visit act the photo hold holds latches its visit for the rest of this flush, so Send anyway
+        // tapped during a later await sends none of its later acts ahead of it; it takes effect at the next flush. A
+        // photo's own act latches nothing: only its row sends it, and Send anyway is for the visit's other acts
+        const visitAct = ops[i];
+        if (photoHeld && isSiteVisitOp(visitAct) && visitAct.t !== 'siteVisitAddFile') withheldVisits.add(siteVisitOf(visitAct));
+        if (photoHeld || withheldHere) { heldVisits.push(ops[i]); continue; }
         const mat = isMaterialsOp(ops[i]);
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);
@@ -6405,6 +6535,7 @@ export const useStore = create<Store>()(
           let photoGone = false;
           let goneEvidence: { url: string; inspectionId?: string; inspectionItemId?: string } | undefined;
           const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation, (local) => { photoGone = true; goneEvidence = local; });
+          settle(ops[i]);
           if (snap) { lastSnap = snap; lastSnapStale = false; } else if (lastSnap && isSiteVisitOp(ops[i])) lastSnapStale = true;
           // an evidence send settled with its refresh failed (its bytes are gone, so it is never sent again): the pull it
           // owes is asked for once the flush is done, as a 410's is (#482)
@@ -6520,7 +6651,7 @@ export const useStore = create<Store>()(
                 } else {
                   // not sent, and kept with the server's words, so the screen says which photos and why
                   ops.splice(i + 1, rest.length, ...rest.filter((o) => !onIt.includes(o)));
-                  for (const o of onIt) { const k = keyOf(o); if (k) droppedKeys.push(k); }
+                  for (const o of onIt) { settle(o); const k = keyOf(o); if (k) droppedKeys.push(k); }
                 }
                 visitMoves.push([op.body.id, open?.id ?? null]);
               }
@@ -6531,6 +6662,7 @@ export const useStore = create<Store>()(
             } else {
               dropped += 1; // server will never accept this one — discard and keep going
             }
+            settle(ops[i]);
             const k = keyOf(ops[i]); if (k) droppedKeys.push(k);
             if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
             if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
@@ -6581,9 +6713,9 @@ export const useStore = create<Store>()(
         // aside (no storage to be had included) are held stranded for the old scope, never dropped (Codex 4345664670)
         let storage: Storage | null = null;
         try { storage = globalThis.localStorage ?? null; } catch { storage = null; }
-        queueKeys.keepUnsent(storage, flushKey, remaining.filter((o) => !isSiteVisitOp(o)), flushed.filter((o) => !isSiteVisitOp(o)), (l) => l, (o) => !isSiteVisitOp(o));
+        await keepUnsentLocked(queueKeys, storage, flushKey, remaining.filter((o) => !isSiteVisitOp(o)), flushed.filter((o) => !isSiteVisitOp(o)), (l) => l, (o) => !isSiteVisitOp(o));
         // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
-        queueKeys.keepUnsent(storage, siteVisitKeyOf(flushKey), remaining.filter(isStoredVisitOp), flushed.filter(isStoredVisitOp), (l) => remapVisits(l).filter(isStoredVisitOp), isStoredVisitOp);
+        await keepUnsentLocked(queueKeys, storage, siteVisitKeyOf(flushKey), remaining.filter(isStoredVisitOp), flushed.filter(isStoredVisitOp), (l) => remapVisits(l).filter(isStoredVisitOp), isStoredVisitOp);
         return { ran: true, scopeMoved: true, succeededKeys, droppedKeys, pendingKeys };
       }
 
@@ -6609,14 +6741,49 @@ export const useStore = create<Store>()(
         // snapshot below, which reconciles it to read-only).
         reconcileSubmission(s);
       });
-      persistOutbox();
+      // step B2f-1: the flush goes on only once its locked end write has run (#1099 r2, review-body P1): its word and
+      // its reconcile come after. Until then each sent act's settled mark keeps a reload from sending it again (B1a).
+      // Its lines are said only in the scope it ran in; the reconciles below carry their own scope guards
+      const endHere = madeHere();
+      await persistOutbox();
+      // an act this flush settled is no longer one to write again
+      const left = new Set(get().outbox.map(aheadId));
+      for (const o of [...aheadUnsaved]) if (!left.has(o)) aheadUnsaved.delete(o);
       // finding 1 — a write-ahead command passes its own success toast (`okMsg`); the reconcile
       // announces it on `applied`. In that case suppress the batch "N synced" line below (the okMsg
       // already reported success), but still surface the error parts (dropped / still-pending).
-      const flushOk = typeof opts?.okMsg === 'function' ? opts.okMsg() : opts?.okMsg;
+      // a command's line is said only by the flush the server accepted its act in, whichever call it came with (#1133).
+      // An act refused for good leaves the queue too, and says the refused line instead. A line whose act is still in this
+      // queue waits for a later flush (#1134 r1 4376641813); one whose act left it, sent or refused, is done
+      const succeeded = new Set(succeededKeys);
+      const stillQueued = new Set(get().outbox.flatMap((o) => keyOf(o) ?? []));
+      const said = okWaiting.filter((w) => succeeded.has(w.key));
+      okWaiting = okWaiting.filter((w) => w.queue !== flushKey || stillQueued.has(w.key));
+      // #1134 r2 (4377928188, root-cause audit in notes/site-visits/web-02-U3/u3b/r2/fix.md): a flush sends 0..N commands'
+      // acts, each with its own outcome. Each command whose act this flush sent says its line once, in the order sent, in
+      // this flush's one line; past two, the first is said and the rest are counted. The count covers every sent act
+      // without a line (every waiting act was counted as sent: no site visit act waits for a line)
+      const sentOrder = (k: string) => succeededKeys.indexOf(k);
+      // (every outbox act is keyed, so a line comes only with its act: `okWaiting`)
+      const lined = said.sort((a, b) => sentOrder(a.key) - sentOrder(b.key)).map((w) => w.okMsg);
+      const told = lined.length > 2 ? lined.slice(0, 1) : lined;
+      const flushOk = told.map((m) => (typeof m === 'function' ? m() : m)).join(' ') || undefined;
+      const unlined = synced - told.length;
+      const parts: string[] = [];
+      const lang = get().lang;
+      if (unlined > 0) parts.push(SYNC.synced(unlined, lang));
+      if (dropped > 0) parts.push(SYNC.dropped(dropped, lang));
+      if (remaining.length > 0) parts.push(SYNC.pending(remaining.length, lang));
+      // the chain refusals carry the server's words, so they are not folded into the count, but they are said in the same
+      // line: the command's line and everything else this flush did are one line, so none hides another (#1134 r1
+      // 4376641802, Stage 1 re-check of 62c8d1e)
+      const rest = [...(parts.length ? [SYNC.join(parts, lang)] : []), ...chainRefusals].join(' ');
+      let toldWith: string | undefined;
       if (lastSnap && flushLease) {
         // a stale snapshot is handled as a superseded one is: the command's word is said, and a reconcile asked after it
-        consumeSnapshotResult(lastSnapStale ? 'superseded' : acceptSnapshot(lastSnap, flushLease), flushOk, flushLease.scope);
+        const result = lastSnapStale ? 'superseded' : acceptSnapshot(lastSnap, flushLease);
+        if (flushOk && rest && (result === 'applied' || result === 'superseded')) toldWith = flushOk;
+        consumeSnapshotResult(result, toldWith ? undefined : flushOk, flushLease.scope);
       } else if (flushLease && pullSuperseded) {
         // (a flush whose project changed has returned above: the scope here is still the flush's)
         void requestFreshSnapshot(flushLease.scope);
@@ -6625,14 +6792,7 @@ export const useStore = create<Store>()(
       // the count's "updating" and takes the photo out of the log, and one that fails shows the Retry
       if (photoSettledGone && flushLease) scheduleReconcile(flushLease.scope, { kind: 'command', createdAfterSequence: snapshotSeq });
 
-      const parts: string[] = [];
-      const lang = get().lang;
-      if (synced > 0 && !opts?.okMsg) parts.push(SYNC.synced(synced, lang));
-      if (dropped > 0) parts.push(SYNC.dropped(dropped, lang));
-      if (remaining.length > 0) parts.push(SYNC.pending(remaining.length, lang));
-      if (parts.length) get().flash(SYNC.join(parts, lang));
-      // the chain refusals carry the server's words, so they are not folded into the count above
-      if (chainRefusals.length) get().flash(chainRefusals.join(' '));
+      if (rest && endHere()) get().flash(toldWith ? `${toldWith} ${rest}` : rest);
       // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved
       // to FAILED; an op kept alive by a failed dead-letter write stays covered
       void reconcileEvidence();
@@ -6724,8 +6884,8 @@ export const useStore = create<Store>()(
           visitPhotoRecheck = false;
           void reconcileVisitPhotos();
         }
-        // a command persisted DURING this flush was not replayed here — flush it now (plain, no okMsg,
-        // so its success shows via the batch summary). Bounded: the rerun fires at most once per settle.
+        // a command persisted DURING this flush was not replayed here — flush it now (plain: a command's line still
+        // waiting is said by the flush that sends its act, #1133). Bounded: the rerun fires at most once per settle.
         // It runs on an empty queue too: a visit photo kept meanwhile whose act this flush let go (its visit's
         // start was refused) has it put back there and settled (SV2, Codex 4321084743)
         if (outboxFlushQueued) {
@@ -6734,6 +6894,9 @@ export const useStore = create<Store>()(
         }
       }
     },
+    // L2b: it runs under every listed key's lock; done once its writes (or put-backs) have run
+    setAsideUnreadableQueue: () => strip.setAside(),
+    reloadForNewerQueue: () => strip.reload(),
     hydrateOutbox: () => {
       resetQueueScope(); // before any storage access: a storage that throws below leaves no other scope's list
       // this scope's evidence rows are read again below: until then an own evidence photo's Delete waits (#482)
@@ -6743,6 +6906,10 @@ export const useStore = create<Store>()(
         if (storage) {
           // one-time migration: adopt the old unscoped queue into the current scope
           const legacy = storage.getItem(LEGACY_OUTBOX_KEY);
+          /** L2b (coordinator ruling on gap check 9): the old queue's acts this scope adopts. They join memory after the
+           *  key's own and are stored by the locked write below, through the ledger, like every queue-key write; the old
+           *  key goes only once that write has landed */
+          let adopted: OutboxOp[] = [];
           if (legacy) {
             // #1085 r2 audit: removed only once its bytes are kept, so a write that fails never loses them. When the
             // scoped key already holds other acts, the old bytes are copied aside beside it, never left for another
@@ -6756,20 +6923,31 @@ export const useStore = create<Store>()(
               for (let i = 0; i < storage.length; i += 1) {
                 const k = storage.key(i);
                 if (k !== null && k !== scoped && k !== lane && (k.startsWith('vitan.outbox.') || k.startsWith('vitan.siteVisitQueue.'))) another = true;
+                // L2b: a made record (an earlier adoption's write that waits or did not land keeps one) loads its acts
+                // with the key, so these bytes are copied aside, never adopted a second time
+                if (k !== null && k.startsWith('vitan.made.')) another = true;
               }
-              // only an absent key: one holding any bytes, even '' (unreadable), is never written over (Codex 4351662034)
-              if (storage.getItem(scoped) === null && !another) storage.setItem(scoped, legacy);
-              // a copy name holding other bytes (an earlier legacy queue copied aside) is never written over: the next free name
-              let aside = `vitan.unreadable.${LEGACY_OUTBOX_KEY}.${scoped}`;
-              for (let n = 1; storage.getItem(aside) !== null && storage.getItem(aside) !== legacy && n <= 100; n += 1) aside = `vitan.unreadable.${LEGACY_OUTBOX_KEY}.${scoped}.${n}`;
-              if (storage.getItem(scoped) !== legacy && storage.getItem(aside) === null) storage.setItem(aside, legacy);
-              if (storage.getItem(scoped) === legacy || storage.getItem(aside) === legacy) storage.removeItem(LEGACY_OUTBOX_KEY);
+              // only an absent key: one holding any bytes, even '' (unreadable), is never written over (Codex 4351662034).
+              // Its acts are adopted only when this release reads them all; else they are copied aside
+              // A load again, in this tab or another, while the adoption's write waits adopts them again: their
+              // occurrences are named from the old bytes (`adoptLegacy`), so every adoption names the same ones and the
+              // key holds each once (probes "gap check 9: two loads ..." and "two tabs adopt ...")
+              const read = storage.getItem(scoped) === null && !another ? readLedgerQueue(legacy, queueKeyScopes.get(scoped)) : null;
+              if (read && 'acts' in read) { adopted = read.acts; queueKeys.adoptLegacy(legacy, adopted); }
+              else {
+                // a copy name holding other bytes (an earlier legacy queue copied aside) is never written over: the next free name
+                let aside = `vitan.unreadable.${LEGACY_OUTBOX_KEY}.${scoped}`;
+                for (let n = 1; storage.getItem(aside) !== null && storage.getItem(aside) !== legacy && n <= 100; n += 1) aside = `vitan.unreadable.${LEGACY_OUTBOX_KEY}.${scoped}.${n}`;
+                if (storage.getItem(aside) === null) storage.setItem(aside, legacy);
+                if (storage.getItem(aside) === legacy) storage.removeItem(LEGACY_OUTBOX_KEY);
+              }
             } catch { /* kept under the old key: this scope's load retries it */ }
           }
           // REPLACE the in-memory queue with this scope's persisted one (WEB-02) —
           // called again on every sign-in / project switch, so ops queued under a
           // different user or project never leak into the current context.
-          const parsed: unknown = queueKeys.load(storage, outboxKey()); // step A: a key this release cannot read loads none
+          const loadedOps: unknown = queueKeys.load(storage, outboxKey()); // step A: a key this release cannot read loads none
+          const parsed: unknown = Array.isArray(loadedOps) ? [...(loadedOps as OutboxOp[]), ...adopted] : loadedOps;
           // Phase 3 Task 7 (correction 4) — a materials op persisted by PR #207 carries only
           // `idempotencyKey` (no `coalesceKey`); PR #208 keys coalescing on `coalesceKey`, so without this
           // a legacy queued op would not coalesce and could execute a SECOND time (double reserve). Derive
@@ -6787,10 +6965,22 @@ export const useStore = create<Store>()(
           // #482 — a photo queued by an earlier release carries no key, so a replay whose reply was lost would
           // store it twice. It gets one key now, persisted below, so every later replay is the same photo.
           const photosNorm = keyQueuedPhotoUploads(commercialNorm.ops, outboxKey());
+          // step B2f-1: the made record a write kept while it waited for its lock holds a photo under the key it got here,
+          // while the stored queue may still hold it with none (that write not yet run): once keyed, the same act is
+          // taken once (#1099 r2)
+          const keyedOnce = new Set<string>();
+          // L2b: only an identity no other act shares is one act; two identical unkeyed acts are two occurrences (the ledger's)
+          photosNorm.ops = photosNorm.ops.filter((o) => { const i = queueActIdent(o); if (i.startsWith('json:')) return true; if (keyedOnce.has(i)) { queueKeys.merge(outboxKey(), o); return false; } keyedOnce.add(i); return true; });
           const changed = materialsNorm.changed || labourNorm.changed || commercialNorm.changed || photosNorm.changed;
           // persist the migrated queue back to the SAME scoped key so the one-time normalization is durable;
           // a write that fails (storage full) keeps the queue in memory, and the next load derives the same keys
-          if (changed) queueKeys.write(storage, outboxKey(), photosNorm.ops);
+          if (changed || adopted.length > 0) {
+            void writeQueueKey(queueKeys, storage, outboxKey(), photosNorm.ops).then((kept) => {
+              // the old queue's bytes go once the scoped key holds its acts (a write that did not land leaves them, and
+              // the next load copies them aside beside the key that now exists)
+              try { if (kept && adopted.length > 0 && storage.getItem(LEGACY_OUTBOX_KEY) === legacy) storage.removeItem(LEGACY_OUTBOX_KEY); } catch { /* kept under the old key */ }
+            });
+          }
           // the site visit acts, from their own key (malformed → none); a visit photo's act comes from its row (SV2)
           let visitOps: OutboxOp[] = [];
           try {

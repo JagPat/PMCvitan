@@ -6,6 +6,7 @@ import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { refreshSiteVisits, uuidV4, VISIT_PAGE, withQueued } from '@/lib/useSiteVisits';
 import type { ApiGateway, ApiSnapshot, OutboxOp, SiteVisit } from '@/data/apiGateway';
 import { leftoverEnglish } from './leftover-english';
+import { queueWritten, storedQueue } from './queueWrites';
 
 /**
  * Site Visits SV1-c (#792, QA item 6): the screen reads every visit for every member, and offers only the acts
@@ -122,7 +123,7 @@ describe('Site Visits screen', () => {
 
   it('saves the phone’s location when it shares one, and starts without it when the prompt goes unanswered', async () => {
     const geo = { getCurrentPosition: vi.fn((ok: PositionCallback) => ok({ coords: { latitude: 23.03, longitude: 72.5, accuracy: 12 }, timestamp: Date.parse('2026-10-14T04:30:00Z') } as GeolocationPosition)) };
-    vi.stubGlobal('navigator', { ...navigator, geolocation: geo });
+    vi.stubGlobal('navigator', { ...navigator, locks: navigator.locks, geolocation: geo });
     const gw = fakeGateway([]);
     await mount('pmc', PMC, gw);
     await act(async () => { fireEvent.click(screen.getByTestId('sv-start')); });
@@ -131,7 +132,7 @@ describe('Site Visits screen', () => {
 
     // a permission prompt nobody answers never calls back; the start goes without a location after the wait
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    vi.stubGlobal('navigator', { ...navigator, geolocation: { getCurrentPosition: vi.fn() } });
+    vi.stubGlobal('navigator', { ...navigator, locks: navigator.locks, geolocation: { getCurrentPosition: vi.fn() } });
     const gw2 = fakeGateway([]);
     await mount('pmc', PMC, gw2);
     await act(async () => { fireEvent.click(screen.getByTestId('sv-start')); });
@@ -324,7 +325,7 @@ describe('Site Visits screen', () => {
 
   it('never sends a start whose location wait outlives the project it was pressed in (Codex 4274234657)', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    vi.stubGlobal('navigator', { ...navigator, geolocation: { getCurrentPosition: vi.fn() } });
+    vi.stubGlobal('navigator', { ...navigator, locks: navigator.locks, geolocation: { getCurrentPosition: vi.fn() } });
     const gw = fakeGateway([]);
     await mount('pmc', PMC, gw);
     await act(async () => { fireEvent.click(screen.getByTestId('sv-start')); });
@@ -816,7 +817,7 @@ describe('the snapshot a flush with site visit acts takes (#908)', () => {
     const stop = useStore.subscribe((s, prev) => { if (s.notifications !== prev.notifications) seen.push(s.notifications.map((n) => n.id)); });
     try {
       useStore.setState({ outbox: [approveAct, endAct] });
-      await useStore.getState().flushOutbox({ okMsg: 'Approved.' });
+      await useStore.getState().flushOutbox({ okMsg: 'Approved.', act: approveAct });
       expect(gw.endSiteVisit).toHaveBeenCalledTimes(1);
       // the approval's own word is still said
       expect(useStore.getState().toast).toBe('Approved.');
@@ -842,7 +843,7 @@ describe('the snapshot a flush with site visit acts takes (#908)', () => {
     const stop = useStore.subscribe((s, prev) => { if (s.notifications !== prev.notifications) seen.push(s.notifications.map((n) => n.id)); });
     try {
       useStore.setState({ outbox: [approveAct, endAct] });
-      await useStore.getState().flushOutbox({ okMsg: 'Approved.' });
+      await useStore.getState().flushOutbox({ okMsg: 'Approved.', act: approveAct });
       expect(gw.endSiteVisit).toHaveBeenCalledTimes(1);
       await until((st) => ids(st).length > 0);
       expect(ids(useStore.getState())).toEqual(['visit ended']);
@@ -910,12 +911,13 @@ describe('the snapshot a flush with site visit acts takes (#908)', () => {
 describe('the queue of site visit acts', () => {
   const end = { t: 'siteVisitEnd' as const, visitId: 'v-1', claimedAt: '2026-10-14T06:00:00.000Z', idempotencyKey: 'k-end' };
 
-  it('is kept per person under passwordless dev sign-in (Codex 4278754328)', () => {
+  it('is kept per person under passwordless dev sign-in (Codex 4278754328)', async () => {
     useStore.setState({ ...getInitialState(), sessionToken: null, sessionUserId: 'u-a', online: false });
     useStore.getState()._setGateway({ project: useStore.getState().activeProjectId } as unknown as ApiGateway);
     useStore.getState().queueSiteVisitAct(end, 'saved');
+    await queueWritten(); // step B1: written under the queue's lock, after the act
     const project = useStore.getState().activeProjectId;
-    expect(JSON.parse(localStorage.getItem(`vitan.siteVisitQueue.dev:u-a.${project}`) ?? '[]')).toEqual([end]);
+    expect(storedQueue(localStorage.getItem(`vitan.siteVisitQueue.dev:u-a.${project}`) ?? '[]')).toEqual([end]);
     // another dev persona on the same project does not get it
     useStore.setState({ sessionUserId: 'u-b' });
     useStore.getState().hydrateOutbox();
@@ -954,21 +956,22 @@ describe('the queue of site visit acts', () => {
     useStore.setState((s) => ({ activeProjectId: 'p-b', projectScopeGeneration: s.projectScopeGeneration + 1 }));
     ended(open);
     await flushed;
-    const kept = JSON.parse(localStorage.getItem(`vitan.siteVisitQueue.dev:${PMC}.p-a`) ?? '[]') as { t: string; visitId: string }[];
+    const kept = storedQueue(localStorage.getItem(`vitan.siteVisitQueue.dev:${PMC}.p-a`) ?? '[]') as { t: string; visitId: string }[];
     expect(kept).toEqual([expect.objectContaining({ t: 'siteVisitAddAttendee', visitId: 'v-open' })]);
     localStorage.clear();
   });
 
-  it('is kept apart from the outbox an older bundle reads, so it never replays an act it has no case for (Codex 4278991737)', () => {
+  it('is kept apart from the outbox an older bundle reads, so it never replays an act it has no case for (Codex 4278991737)', async () => {
     useStore.setState({ ...getInitialState(), sessionToken: null, sessionUserId: 'u-a', online: false });
     useStore.getState()._setGateway({ project: useStore.getState().activeProjectId } as unknown as ApiGateway);
     const project = useStore.getState().activeProjectId;
     const other: OutboxOp = { t: 'changeWithdraw', decisionId: 'd-1', idempotencyKey: 'k-w' };
     useStore.setState({ outbox: [other] });
     useStore.getState().queueSiteVisitAct(end, 'saved');
+    await queueWritten();
     // the outbox key an older bundle reads holds no site visit act
-    expect(JSON.parse(localStorage.getItem(`vitan.outbox.dev:u-a.${project}`) ?? '[]')).toEqual([other]);
-    expect(JSON.parse(localStorage.getItem(`vitan.siteVisitQueue.dev:u-a.${project}`) ?? '[]')).toEqual([end]);
+    expect(storedQueue(localStorage.getItem(`vitan.outbox.dev:u-a.${project}`) ?? '[]')).toEqual([other]);
+    expect(storedQueue(localStorage.getItem(`vitan.siteVisitQueue.dev:u-a.${project}`) ?? '[]')).toEqual([end]);
     // a reload reads both back
     useStore.setState({ outbox: [] });
     useStore.getState().hydrateOutbox();

@@ -233,3 +233,118 @@ self.addEventListener('notificationclick', (event) => {
     }),
   );
 });
+
+/*
+ * WEB-02 step B2f-2 (plan r3 v4, #1094): one answer per phone to "may the queue ledger write?". Yes only while every
+ * window `matchAll` lists has announced a release that knows the write token at the level asked or above; no answer,
+ * an unannounced window, or anything that goes wrong gives no. Announcements are kept in this worker's IndexedDB, by
+ * window id, so a worker restarted between two asks answers the same; a window closed since it announced is forgotten
+ * whenever a window announces or asks. The
+ * answer only decides when the ledger writes, so open tabs of an earlier release stay off the "newer version" strip.
+ * No safety rests on it: `matchAll` cannot list a frozen, discarded or bfcached page, and the write token covers those.
+ */
+const WINDOWS_DB = 'vitan-sw-windows';
+const WINDOWS = 'announced';
+
+/** One transaction on the announcements, resolved once it has committed, with what `work`'s returned reader gives. */
+function windowsTx(mode, work) {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open(WINDOWS_DB, 1);
+    open.onupgradeneeded = () => open.result.createObjectStore(WINDOWS);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      let tx;
+      try {
+        tx = db.transaction(WINDOWS, mode);
+      } catch (error) {
+        db.close();
+        reject(error);
+        return;
+      }
+      const read = work(tx.objectStore(WINDOWS));
+      tx.oncomplete = () => { db.close(); resolve(typeof read === 'function' ? read() : undefined); };
+      tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
+    };
+  });
+}
+
+/** Each announced window's record, by window id: the level it gave, and the announcement's own nonce. */
+function announcedWindows() {
+  return windowsTx('readonly', (store) => {
+    const out = new Map();
+    const req = store.openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) return;
+      const v = cursor.value;
+      if (v && Number.isInteger(v.level) && typeof v.n === 'string') out.set(cursor.key, v);
+      cursor.continue();
+    };
+    return () => out;
+  });
+}
+
+/** Forgets, in the transaction of `store`, each window in `records` whose record is still the one read: a window that
+ *  announced again meanwhile (back from the bfcache) keeps its new record. */
+function forgetIn(store, records) {
+  for (const [id, read] of records) {
+    const req = store.get(id);
+    req.onsuccess = () => { if (req.result && req.result.n === read.n) store.delete(id); };
+  }
+}
+
+/** The windows read in `seen` and missing from `windows`, a listing taken after that read: closed, or in the bfcache. */
+const unlisted = (seen, windows, except) => {
+  const listed = new Set(windows.map((w) => w.id));
+  return [...seen].filter(([id]) => id !== except && !listed.has(id));
+};
+
+const listWindows = () => self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+
+/** Keeps window `id`'s announcement and, in the same transaction, forgets the windows closed since they announced (read
+ *  first, listed after, unchanged records only), so records do not pile up while nothing asks. */
+function keepAnnouncement(id, level) {
+  return announcedWindows().then((seen) =>
+    listWindows().then((windows) =>
+      windowsTx('readwrite', (store) => {
+        store.put({ level, n: self.crypto.randomUUID() }, id);
+        forgetIn(store, unlisted(seen, windows, id));
+      }),
+    ),
+  );
+}
+
+/** Yes only while `matchAll` lists at least one window and every one listed announced `level` or above. The listing is
+ *  taken after the announcements are read, so a window forgotten here was kept before that listing and is not in it:
+ *  closed, or hidden in the bfcache. One that announces meanwhile, new or back from the bfcache, keeps what it announced
+ *  (`forgetIn`); until the next ask it counts as unannounced, a no. */
+function ledgerMayWrite(level) {
+  if (!Number.isInteger(level) || level < 1) return Promise.resolve(false);
+  return announcedWindows().then((seen) =>
+    listWindows().then((windows) => {
+      const gone = unlisted(seen, windows, null);
+      const forgotten = gone.length === 0 ? Promise.resolve() : windowsTx('readwrite', (store) => forgetIn(store, gone));
+      return forgotten.then(() => windows.length > 0 && windows.every((w) => seen.has(w.id) && seen.get(w.id).level >= level));
+    }),
+  );
+}
+
+self.addEventListener('message', (event) => {
+  const data = event.data;
+  const port = event.ports && event.ports[0];
+  if (!data || typeof data !== 'object' || !port) return;
+  if (data.type === 'vitan.window.announce') {
+    const id = event.source && event.source.id;
+    const known = typeof id === 'string' && Number.isInteger(data.level) && data.level >= 1;
+    // answered once the announcement is kept, so the window's own ask after it sees it
+    const kept = known ? keepAnnouncement(id, data.level).then(() => true) : Promise.resolve(false);
+    event.waitUntil(kept.catch(() => false).then((ok) => port.postMessage({ type: 'vitan.window.announced', ok })));
+  } else if (data.type === 'vitan.window.ask') {
+    event.waitUntil(
+      ledgerMayWrite(data.level)
+        .catch(() => false)
+        .then((yes) => port.postMessage({ type: 'vitan.window.answer', yes })),
+    );
+  }
+});

@@ -3,11 +3,12 @@ import { useStore, getInitialState } from '@/store/store';
 import { ApiGateway, replayOutboxOp, type OutboxOp } from '@/data/apiGateway';
 import { isKnownOutboxOp, SERVER_SCHEMA_OF, serverBodyOf } from '@/data/storedActs';
 import { syncResultText as SYNC } from '@vitan/shared';
+import { queueWritten, storedQueue } from './queueWrites';
 
 /**
  * #1051 r1, Codex 4336713248: a stored act was taken as loadable when it named a known kind, whatever its fields held.
  * `[{"t":"approve"}]` loaded, its replay sent `undefined`, the 4xx dropped it, and the key was written over: the
- * stored bytes were lost and nobody was told. Each known kind is now read through the fields its replay reads,
+ * stored bytes were lost with no Set aside offered. Each known kind is now read through the fields its replay reads,
  * and a key holding any entry that fails them is unreadable as a whole. The per-kind store tests fail before the fix.
  */
 
@@ -388,7 +389,7 @@ describe('#1051 r1, Codex 4336713248: a key holding a damaged act of a known kin
   // the photo's act is kept in its IndexedDB row, never in a queue key: a damaged row is left as it is (gap 5's rule)
   const stored = (Object.keys(MIN) as OutboxOp['t'][]).filter((t) => t !== 'siteVisitAddFile');
 
-  it.each(stored)('%s missing its first field: listed, never loaded, replayed or written over', async (t) => {
+  it.each(stored)('%s missing its first field: listed, set aside on the tap, never loaded, replayed or written over', async (t) => {
     const bad = damaged(MIN[t])[0].act;
     const raw = JSON.stringify([neighbour(t), bad]);
     onP2({ [keyOf(t)]: raw });
@@ -399,12 +400,17 @@ describe('#1051 r1, Codex 4336713248: a key holding a damaged act of a known kin
     await useStore.getState().flushOutbox();
     useStore.setState({ online: false });
     useStore.getState().startActivity('B-1');
+    await queueWritten(); // step B1: written under the queue's lock, after the act
     expect(localStorage.getItem(keyOf(t))).toBe(raw);
-    expect(useStore.getState().queueUnreadable.map((u) => u.key)).toEqual([keyOf(t)]);
-    // beside the general key, the start this tab could not store there is copied aside (#1079 4344436665)
+    await useStore.getState().setAsideUnreadableQueue();
+    await queueWritten();
+    expect(useStore.getState().queueUnreadable).toEqual([]);
+    // the key's bytes are copied aside. The start this tab could not store beside the general key was copied aside too
+    // (#1079 4344436665); once Set aside writes it to the key, that copy is removed (#1096, Codex 4356145036)
     const copies = copiesOf(keyOf(t));
-    expect(copies.filter((c) => c === raw)).toHaveLength(0);
-    expect(copies.filter((c) => c !== raw).map((c) => (JSON.parse(c!) as OutboxOp[]).map((o) => o.t))).toEqual(keyOf(t) === general ? [['startActivity']] : []);
+    expect(copies.filter((c) => c === raw)).toHaveLength(1);
+    expect(copies.filter((c) => c !== raw)).toEqual([]);
+    expect((storedQueue(localStorage.getItem(general)!) as OutboxOp[]).map((o) => o.t)).toEqual(['startActivity']);
   });
 
   it('a key holding an act of every kind it keeps, each whole, loads every one', () => {
@@ -446,7 +452,7 @@ describe('#1051 r1, Codex 4336713248: a key holding a damaged act of a known kin
     await useStore.getState().flushOutbox();
     expect(send.mock.calls).toEqual([args]);
     expect(useStore.getState().outbox).toEqual([]);
-    expect(JSON.parse(localStorage.getItem(general) ?? '[]')).toEqual([]);
+    expect(storedQueue(localStorage.getItem(general) ?? '[]')).toEqual([]);
   });
 
   it('a July approve in the legacy unscoped queue moves into the scoped key and loads (re-check G2)', () => {
@@ -531,6 +537,9 @@ describe('#1088 r4 (Codex 4351952407): every shape a released build stored is re
   it('a body no release stored is still damage: rows some of which name an id, or a certification naming an unknown field', () => {
     const mixed = { t: 'submitInspection', inspectionId: 'i-1', items: [{ id: 'x', name: 'a', state: null, photos: 0, note: '' }, { name: 'b', state: null, photos: 0, note: '' }] };
     expect(isKnownOutboxOp(mixed, S)).toBe(false);
+    // Codex 4356145032: rows with no id but a field that came after #114 (evidence) are no release's either
+    const hybrid = { t: 'submitInspection', inspectionId: 'i-1', items: [{ name: 'a', state: 'fail', photos: 1, note: '', evidence: ['/media/m-1'] }] };
+    expect(isKnownOutboxOp(hybrid, S)).toBe(false);
     expect(isKnownOutboxOp({ ...MIN.certifyBill, input: { billId: 'b', versionId: 'v', extra: 1 } }, S)).toBe(false);
     expect(isKnownOutboxOp({ ...MIN.uploadMedia, input: { kind: 'progress', mime: 'text/html', data: 'AA==' } }, S)).toBe(false);
     // a photo of any image type is read only in the fields its release sent (and the client key a load gave it)

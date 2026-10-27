@@ -797,8 +797,14 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
    * and an ordinary inactive -> active engineer transition adds to that set only for an org
    * owner/admin. So a raw reactivation holds no advisory key and the fence's try-lock succeeds while
    * it commits underneath. The row lock closes it without needing the other writer to cooperate.
+   *
+   * #1100 (20280120): a raw reactivation now adds the assignee's standing row, and the standing projection
+   * takes the readiness key for that (`platform_user_standing_apply`). So the reactivation holds the key
+   * until it commits, and the fence's try-lock refuses the submit at once as contended instead of reaching
+   * its row lock. The guarantee this case pins is the same: the submit cannot interleave with the
+   * reactivation and decide on the picture before it.
    */
-  it('ROUND 9 — the fence LOCKS the assignee’s membership row, so a raw reactivation cannot interleave', async () => {
+  it('ROUND 9 — a raw reactivation of the assignee cannot interleave with a submit', async () => {
     const { p, pmcA } = await freshProject();
     const gone = `it-inidem-u-r9gone-${projSeq}`;
     const rival = `it-inidem-u-r9rival2-${projSeq}`;
@@ -813,35 +819,73 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
 
     const { PrismaClient } = await import('@prisma/client');
     const other = new PrismaClient();
-    // The blocked statement is STARTED inside the other transaction and AWAITED after it commits.
-    // Awaiting it inside would hold that transaction open past Prisma's timeout, and the resulting
-    // ROLLBACK would let the submit through for the wrong reason — the probe passing on a
-    // reactivation that never happened.
-    let blocked: Promise<number> | null = null;
     try {
-      // The raw reactivation holds the assignee's membership ROW and takes no advisory key — the
-      // writer shape the previous head's fence could not see.
+      // The raw reactivation holds the assignee's membership ROW and, through the standing projection, the
+      // project's readiness key, until it commits.
       await other.$transaction(async (tx2) => {
         await tx2.$executeRawUnsafe(
           `UPDATE "Membership" SET "status" = 'active' WHERE "projectId" = $1 AND "userId" = $2`, p, gone,
         );
-        blocked = t.prisma.$executeRaw`
-          UPDATE "Inspection" SET "submitted" = true, "submittedById" = ${rival} WHERE "id" = ${insp.id}`;
-        blocked.catch(() => {}); // the rejection is asserted below, not here
-        // it is genuinely WAITING on the row, not deciding on the pre-reactivation picture
-        await expect(Promise.race([
-          blocked.then(() => 'decided', () => 'decided'),
-          new Promise((r) => setTimeout(() => r('waiting'), 1200)),
-        ])).resolves.toBe('waiting');
+        // refused at once while the reactivation is still open: never decided on the pre-reactivation picture
+        await expect(t.prisma.$executeRaw`
+          UPDATE "Inspection" SET "submitted" = true, "submittedById" = ${rival} WHERE "id" = ${insp.id}`).rejects.toThrow(/readiness is held by another transaction/i);
       });
-      // the reactivation is committed; the fence now re-reads and finds A binding
-      await expect(blocked!).rejects.toThrow(/only its assignee may submit it/i);
     } finally {
       await other.$disconnect();
     }
     const after = await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } });
     expect(after.submitted).toBe(false);
     expect(after.submittedById).toBe(null);
+  });
+
+  /**
+   * ROUND 9, FINDING 2 — the fence's ROW LOCK, still exercised. A raw write of the assignee's membership row
+   * that changes no holder (a discipline edit of the removed row) takes no readiness key, so the fence's
+   * try-lock succeeds and the submit must wait on the row the fence locks FOR UPDATE until that write commits.
+   */
+  it('ROUND 9 — the fence waits on the assignee’s membership row held by a raw write that takes no key', async () => {
+    const { p, pmcA } = await freshProject();
+    const gone = `it-inidem-u-r9rowgone-${projSeq}`;
+    const rival = `it-inidem-u-r9rowrival-${projSeq}`;
+    for (const [id, name] of [[gone, 'Gone'], [rival, 'Rival']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+    await svc.create(p, createInput({ title: 'Row-locked fence, no key' }), asPmc(pmcA, p), 'k-r9n-1');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Row-locked fence, no key' } });
+    await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: gone } });
+    await t.prisma.membership.updateMany({ where: { projectId: p, userId: gone }, data: { status: 'removed' } });
+
+    const { PrismaClient } = await import('@prisma/client');
+    const other = new PrismaClient();
+    let blocked: Promise<number> | null = null;
+    try {
+      await other.$transaction(async (tx2) => {
+        const [{ pid }] = await tx2.$queryRawUnsafe<Array<{ pid: number }>>('SELECT pg_backend_pid() AS pid');
+        await tx2.$executeRawUnsafe(
+          `UPDATE "Membership" SET "discipline" = 'civil' WHERE "projectId" = $1 AND "userId" = $2`, p, gone,
+        );
+        blocked = t.prisma.$executeRaw`
+          UPDATE "Inspection" SET "submitted" = true, "submittedById" = ${rival} WHERE "id" = ${insp.id}`;
+        let decided = false;
+        blocked.then(() => { decided = true; }, () => { decided = true; }); // asserted below
+        // the submit is WAITING on the row this transaction holds (a signal from pg_locks, not a clock)
+        for (;;) {
+          const [{ n }] = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+            'SELECT COUNT(*)::bigint AS n FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))', Number(pid));
+          if (Number(n) > 0) break;
+          expect(decided, 'the submit decided without waiting on the membership row').toBe(false);
+          await new Promise((r) => setImmediate(r));
+        }
+      });
+      // the edit committed and changed no binding: the stranded assignment lets the rival submit
+      await expect(blocked!).resolves.toBe(1);
+    } finally {
+      await other.$disconnect();
+    }
+    const after = await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } });
+    expect(after.submitted).toBe(true);
+    expect(after.submittedById).toBe(rival);
   });
 
 

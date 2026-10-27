@@ -6,6 +6,7 @@ import type { ApiGateway, ProjectShell } from '@/data/apiGateway';
 import type { MaterialsView } from '@/store/materials';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import type { MaterialReadinessResult, ActivityShortageRow, ActivityReadinessRow, RequirementReadinessRow } from '@vitan/shared';
+import { queueWritten, storedQueue } from './queueWrites';
 
 /**
  * Phase 3 Task 7 (+ correction) — the pilot MATERIALS frontend: the capability-gated nav entry, the
@@ -470,7 +471,8 @@ describe('Task 7 (correction 2) — Materials single-command actions through the
       expect((s().outbox[0] as { idempotencyKey?: unknown }).idempotencyKey).toBe(c.coalesceKey); // unchanged
       expect(s().materialsPending).toEqual([c.coalesceKey]);
       expect(s().materialsPending).not.toContain(undefined);
-      const persisted = JSON.parse(globalThis.localStorage.getItem(OUTBOX_KEY)!) as Array<{ coalesceKey?: string }>;
+      await queueWritten(); // step B1: the migrated queue is written under the queue's lock
+      const persisted = storedQueue(globalThis.localStorage.getItem(OUTBOX_KEY)!) as Array<{ coalesceKey?: string }>;
       expect(persisted[0]!.coalesceKey).toBe(c.coalesceKey);
 
       // (b) an equivalent action while the legacy op is pending produces NO second op (coalesced)

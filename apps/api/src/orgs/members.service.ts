@@ -9,6 +9,7 @@ import { resolveActor, type Actor, type EventActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { lockStandingForWrite, resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
+import { lockStandingAnchors } from '../common/standing-anchor';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import { DecisionsParticipant } from '../decisions/decisions.participant';
 import { OrgsParticipant, refuseQaLock } from './orgs.participant';
@@ -79,15 +80,21 @@ function holderGuard4dRefusal(message: string): string | null {
 }
 
 /**
- * Phase 6 task 4d unit 4d-ii-a / A3b — the one 4d-i transition-seal refusal a correct command can
- * still meet: the actor's team-management authority, re-judged LIVE by
- * `MembershipTransition_t4d_seal` at the fact's insert. `canManage` read it before the
- * transaction (and a `pmc` token is trusted as issued), so a PMC demoted or an owner/admin removed
- * in between reaches the seal, and the caller is owed the 403 `canManage` would now give.
+ * Phase 6 task 4d unit 4d-ii-a / A3b — the two 4d-i transition-seal refusals a correct command can
+ * still meet, both re-judged LIVE by `MembershipTransition_t4d_seal` at the fact's insert:
+ * - the actor's team-management authority. `canManage` read it before the transaction (and a `pmc`
+ *   token is trusted as issued), so a PMC demoted or an owner/admin removed in between reaches the
+ *   seal, and the caller is owed the 403 `canManage` would now give;
+ * - the project's operability (#1072). An archive that commits after the command passed its checks
+ *   is met at the seal's project-row lock ("is archived — no decision fact may be recorded"), and
+ *   the caller is owed a 409, like the other archived-project refusals, not a 500.
  */
-function rethrowTransitionAuthority(e: unknown): never {
+function rethrowTransitionSealRefusal(e: unknown): never {
   if (e instanceof Error && /holds neither owner\/admin authority/.test(e.message)) {
     throw new ForbiddenException('Only the project PMC or an org admin can manage the team');
+  }
+  if (e instanceof Error && /phase6 4d-i: project \S+ is archived — no decision fact may be recorded against it/.test(e.message)) {
+    throw new ConflictException('This project is archived — its team can no longer be changed');
   }
   throw e;
 }
@@ -272,7 +279,7 @@ export class MembersService {
         },
         select: { id: true },
       })
-      .catch(rethrowTransitionAuthority);
+      .catch(rethrowTransitionSealRefusal);
     return id;
   }
 
@@ -435,6 +442,9 @@ export class MembersService {
         // An ADD's membership does not exist yet, so its id is minted here for the fact to name;
         // the fact's membership FK is deferred to commit for exactly this order.
         const membershipId = prior?.id ?? randomUUID();
+        // #1061 — both people's standing anchors in one sorted call, before any standing or project row:
+        // the requester's read by `factPair`, the target's written by this command
+        await lockStandingAnchors(tx, { read: [actor.actorId], write: [user.id] });
         const pair = await this.factPair(tx, projectId, actor);
         // 4d-iii / R0a-2 — the target's standing rows before this command emits: standing, then stream,
         // the one order every emitter takes (`lockStandingForWrite`); after `factPair`, which takes the
@@ -543,6 +553,9 @@ export class MembersService {
           throw new ConflictException('Only an active member\'s role can be changed — add them to the team again instead');
         }
         if (cur.role === input.role) throw new ConflictException('This member\'s role changed while updating — reload and retry');
+        // #1061 — both people's standing anchors in one sorted call, before any standing or project row:
+        // the requester's read by `factPair`, the target's written by this command
+        await lockStandingAnchors(tx, { read: [actor.actorId], write: [userId] });
         const pair = await this.factPair(tx, projectId, actor);
         // 4d-iii / R0a-2 — the target's standing rows before this command emits: standing, then stream,
         // the one order every emitter takes (`lockStandingForWrite`); after `factPair`, which takes the
@@ -613,6 +626,16 @@ export class MembersService {
           throw new ConflictException('Only an active member can be changed — add them to the team again instead');
         }
         if ((cur.discipline ?? null) === discipline) return { resultRef: cur.id, value: cur, events: [] };
+        // #1061 — the target's standing row is written here and the requester's read at the emit: both
+        // anchors in one sorted call first, so two edits naming the same two people the other way round
+        // (on another project) cannot each hold one
+        await lockStandingAnchors(tx, { read: [actor.actorId], write: [userId] });
+        // #1110 — no transition fact, so no 4d-i seal re-judges the project here, and an archive takes no
+        // readiness key: lock the project row and re-read it, as the seal does for the other member
+        // commands, so an archive that committed after the door's checks is refused, not written past
+        if (!(await this.standing.isProjectOperable(tx, projectId))) {
+          throw new ConflictException('This project is archived — its team can no longer be changed');
+        }
         const m = await tx.membership.update({ where: { id: cur.id }, data: { discipline }, include: { user: true } });
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: discipline ? { discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} });
         return { resultRef: m.id, value: m, events: [ev] };
@@ -664,6 +687,9 @@ export class MembersService {
             'This member is the named decider on an open decision — withdraw and reissue it first',
           );
         }
+        // #1061 — both people's standing anchors in one sorted call, before any standing or project row:
+        // the requester's read by `factPair`, the target's written by this command
+        await lockStandingAnchors(tx, { read: [actor.actorId], write: [userId] });
         const pair = await this.factPair(tx, projectId, actor);
         // 4d-iii / R0a-2 — the target's standing rows before this command emits: standing, then stream,
         // the one order every emitter takes (`lockStandingForWrite`); after `factPair`, which takes the

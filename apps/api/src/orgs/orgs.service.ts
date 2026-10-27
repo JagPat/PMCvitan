@@ -27,6 +27,7 @@ import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { executeCommand, hashRequest } from '../platform/commands';
 import { projectsInReach } from './project-reach';
+import { lockStandingAnchors } from '../common/standing-anchor';
 import {
   lockInitializationDisplayIds,
   runSerializableProjectInit,
@@ -210,6 +211,11 @@ export class OrgsService {
       });
       if (!holdsOrgStanding(current?.role) && !holdsOrgStanding(nextRole)) return write(tx);
       const projects = await lockOrgStandingWriters(tx, orgId);
+      // #1061 — the target's standing anchor, after the keys and before the write deletes or re-creates
+      // their authority and standing rows: a reader of their standing waits here, not on a row that goes.
+      // The member-only arm above takes NO anchor: it writes no standing, and an anchor there would cycle
+      // with an approve by that member (their Membership / OrgMembership rows, then S at its envelope)
+      await lockStandingAnchors(tx, { write: [targetUserId] });
       const reduces = holdsOrgStanding(current?.role) && !holdsOrgStanding(nextRole);
       if (!reduces) return write(tx);
       // the DB org-membership seal (AFTER-row) judges this write at the statement — its raise
@@ -1254,6 +1260,14 @@ export class OrgsService {
     const base = await resolveActor(this.prisma, { sub: userId, role: 'pmc', projectId: pid } as unknown as AuthUser);
     const updated = await this.prisma.$transaction(async (tx) => {
       const actor = await this.lifecycleActor(tx, orgId, pid, base, { projectPmcMay: true, refusal: 'Only the project PMC or an org admin can edit a project' });
+      // #1061 — the actor's standing anchor BEFORE the project row: the emit reads their standing after
+      // it, and a member command re-roling them holds their anchor and then waits on this project row
+      await lockStandingAnchors(tx, { read: [actor.actorId] });
+      // #1128 — an archived project is not edited. Re-read it under its row lock, after the org key (which an
+      // archive also holds), so an archive that committed after the door's checks is refused, not written past
+      if (!(await this.orgsParticipant.isProjectOperable(tx, pid))) {
+        throw new ConflictException('This project is archived — restore it before editing it');
+      }
       const u = await tx.project.update({ where: { id: pid }, data: input });
       await emitEvent(tx, { projectId: pid, actor, eventType: 'project.updated', entityType: 'Project', entityId: pid, effectKey: 'project.updated', dispatch: {} });
       return u;
@@ -1273,6 +1287,9 @@ export class OrgsService {
     const base = await resolveActor(this.prisma, { sub: userId, role: 'pmc', projectId } as unknown as AuthUser);
     await this.prisma.$transaction(async (tx) => {
       const actor = await this.lifecycleActor(tx, orgId, projectId, base, { projectPmcMay: false, refusal: 'Only an org owner or admin can delete projects' });
+      // #1061 — the actor's standing anchor BEFORE the project row: the emit reads their standing after
+      // it, and a member command re-roling them holds their anchor and then waits on this project row
+      await lockStandingAnchors(tx, { read: [actor.actorId] });
       await tx.project.update({ where: { id: projectId }, data: { archivedAt: new Date() } });
       await emitEvent(tx, { projectId, actor, eventType: 'project.archived', entityType: 'Project', entityId: projectId, effectKey: 'project.archived', dispatch: {} });
     });
@@ -1290,6 +1307,9 @@ export class OrgsService {
     const base = await resolveActor(this.prisma, { sub: userId, role: 'pmc', projectId } as unknown as AuthUser);
     await this.prisma.$transaction(async (tx) => {
       const actor = await this.lifecycleActor(tx, orgId, projectId, base, { projectPmcMay: false, refusal: 'Only an org owner or admin can restore projects' });
+      // #1061 — the actor's standing anchor BEFORE the project row: the emit reads their standing after
+      // it, and a member command re-roling them holds their anchor and then waits on this project row
+      await lockStandingAnchors(tx, { read: [actor.actorId] });
       await tx.project.update({ where: { id: projectId }, data: { archivedAt: null } });
       await emitEvent(tx, { projectId, actor, eventType: 'project.restored', entityType: 'Project', entityId: projectId, effectKey: 'project.restored', dispatch: {} });
     });
