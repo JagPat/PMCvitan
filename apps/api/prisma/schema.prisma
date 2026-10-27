@@ -116,6 +116,8 @@ model Project {
   media                      Media[]
   // #482 site photos (20280117): the keys of this project's deleted photos, so a late copy of a send is not stored again
   mediaTombstones            MediaTombstone[]
+  // #1118 U1a-3 (20280121200000): the Hub blobs fetched into storage for this project, the ledger the sweep walks
+  hubFetchedBlobs            HubFetchedBlob[]
   pushSubs                   PushSubscription[]
   drawings                   Drawing[]
   phases                     Phase[]
@@ -1299,6 +1301,23 @@ model DrawingRevision {
   @@unique([projectId, id]) // composite identity — tenant-safe reference target (Task 3)
   @@unique([drawingId, rev]) // one Rev B per drawing — a duplicate label is a 409
   @@index([drawingId])
+}
+
+// #1118 U1a-3 (20280121200000_hub_fetched_blob): one per storage key a Hub fetch wrote, the ledger the sweep walks. Its
+// id and Hub version hold more than whitespace ("HubFetchedBlob_id_present", "_hubVersionId_present"), and its key is
+// exactly "<projectId>/hub/<uuid>.<ext>", what StorageService.keyFor(projectId, 'hub', mime) makes, with no '/' in the
+// project id ("HubFetchedBlob_storageKey_shape"), so no native drawing or media key is ever one. A row is never changed
+// ("HubFetchedBlob_sealed") or truncated ("HubFetchedBlob_no_truncate"); the sweep's DELETE is its one designed delete.
+// Prisma cannot express the checks or the triggers (raw SQL); see the migration's B1-B5.
+model HubFetchedBlob {
+  id           String   @id @default(cuid())
+  storageKey   String   @unique
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  projectId    String
+  hubVersionId String
+  fetchedAt    DateTime @default(now())
+
+  @@index([projectId])
 }
 
 // WHO a revision was issued to — frozen at issue time (Phase 1 Task 3). The rows
