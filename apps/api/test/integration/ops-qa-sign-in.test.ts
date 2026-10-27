@@ -456,6 +456,7 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
     const started = async (sql: string, args: unknown[], tag: string) => {
       let done = false;
       const write = t.prisma.$executeRawUnsafe(sql, ...args).then((n) => { done = true; return n; });
+      write.catch(() => {}); // a refusal is read by `landed` below, never left unhandled
       for (let i = 0; !done; i++) {
         const [{ c }] = await t.prisma.$queryRawUnsafe<Array<{ c: number }>>(
           `SELECT COUNT(*)::int AS c FROM pg_stat_activity
@@ -464,7 +465,19 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
         if (i >= 400) throw new Error(`${tag} neither committed nor waited`);
         await new Promise((r) => setTimeout(r, 25));
       }
-      return { write, committedFirst: done };
+      return { write, committedFirst: done, sql, args };
+    };
+    /**
+     * #1144 — a waiting direct write can be woken before the sign-in's advisory locks are released: PostgreSQL's
+     * `ProcReleaseLocks` releases the regular locks first, then the advisory ones. So the write's standing seal can
+     * still find the readiness key held in that window, and it then fails closed, as designed for a direct writer,
+     * with exactly this refusal. The sign-in has committed by now, so the direct writer's one retry must land.
+     */
+    const landed = async (w: { write: Promise<unknown>; sql: string; args: unknown[] }) => {
+      const refusal = await w.write.then(() => null, (e: unknown) => String(e));
+      if (refusal === null) return;
+      expect(refusal, 'a refusal other than the seal failing closed').toMatch(/the project readiness key is held elsewhere/);
+      await t.prisma.$executeRawUnsafe(w.sql, ...w.args);
     };
     const arrivals = [
       {
@@ -508,8 +521,8 @@ describe('#482 operator door QA sign-in on the QA company lock (live PG)', () =>
       expect.soft(arrival!.committedFirst, `${a.why} committed inside the sign-in`).toBe(false);
       expect.soft(await audited()).toBe(before + 1);
       // the arrival goes through once the sign-in commits; the removal does too where the row already existed (a new row is invisible to it, so it changes nothing)
-      await arrival!.write;
-      await leaving!.write;
+      await landed(arrival!);
+      await landed(leaving!);
     }
   });
 
