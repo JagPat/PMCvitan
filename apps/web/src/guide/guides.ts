@@ -28,9 +28,12 @@ export interface GuideStep {
   /**
    * For `until: 'outcome'`: the store's report that the pressed action succeeded (`ok`) or did not
    * (`failed`). Between the press and the report the guide waits instead of stepping back, because the
-   * control may leave the screen while the request is on its way; a failure ends that wait.
+   * control may leave the screen while the request is on its way; a failure ends that wait. `held` is the
+   * report that the action went through but may not last (an offline photo the phone could not keep, still
+   * sent from memory while Vitan stays open): the run ends unfinished, so it is offered again later and does
+   * not invite a second try that would send the same thing twice.
    */
-  outcome?: { ok: GuideOutcome; failed: GuideOutcome };
+  outcome?: { ok: GuideOutcome; failed: GuideOutcome; held?: GuideOutcome };
   /**
    * For `until: 'outcome'`: true when the store already shows the pressed action done, however that
    * became known (a live refresh can show a checklist submitted before the request's own answer comes
@@ -101,7 +104,7 @@ export const GUIDES: readonly Guide[] = [
     roles: ['pmc', 'engineer'],
     screen: 'dashboard',
     steps: [
-      { target: 'add-site-photo', tip: 'photoAdd', until: 'outcome', outcome: { ok: 'site-photo-added', failed: 'site-photo-add-failed' }, settled: guidedPhotoOnRecord },
+      { target: 'add-site-photo', tip: 'photoAdd', until: 'outcome', outcome: { ok: 'site-photo-added', failed: 'site-photo-add-failed', held: 'site-photo-not-kept' }, settled: guidedPhotoOnRecord },
     ],
   },
 ];

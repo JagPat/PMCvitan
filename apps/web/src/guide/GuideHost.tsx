@@ -224,7 +224,9 @@ export function GuideHost() {
         // a keyed step follows one record: another checklist's submit is not this guide's
         if (current.keyed && !guideKeyMatches(outcomeKey, g.run.key)) return;
         // a failure report never undoes what the store already shows done (a refresh that showed it first)
-        if (outcome === current.outcome.ok || (outcome === current.outcome.failed && current.settled?.(g.run.key))) completeStep(key, g, null);
+        const notOk = outcome === current.outcome.failed || outcome === current.outcome.held;
+        if (outcome === current.outcome.ok || (notOk && current.settled?.(g.run.key))) completeStep(key, g, null);
+        else if (outcome === current.outcome.held) g.stop();
         else if (outcome === current.outcome.failed) g.setWait(false);
       }),
     [key],

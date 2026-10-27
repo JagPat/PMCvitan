@@ -183,7 +183,7 @@ describe('the "add a site photo" guide', () => {
     expect(tip()).toBeNull();
   });
 
-  it('a photo that could not be kept on this phone does not finish it: lost on a reload, the guide stays to try again', async () => {
+  it('a photo that could not be kept on this phone does not finish it, and does not ask for it again: it is still sent from memory', async () => {
     const { useStore, view } = await dashboard('pmc', { online: false });
     act(() => { useStore.getState()._setGateway({ uploadMedia: vi.fn() } as never); });
     stubFileReader('data:image/jpeg;base64,AAAA');
@@ -197,9 +197,16 @@ describe('the "add a site photo" guide', () => {
     const { useGuideState } = await import('@/guide/guideState');
     expect(useGuideState.getState().run?.waiting).toBe(true);
     pick(view);
-    // the write's answer ends the wait without finishing the guide
-    await vi.waitFor(() => expect(useGuideState.getState().run?.waiting).toBe(false));
+    // the write's answer ends the run unfinished: lost on a reload, so not marked done, but the same photo is still on its
+    // way from memory, so no tip invites a second pick that would send it twice
+    await vi.waitFor(() => expect(useGuideState.getState().run).toBeNull());
     expect(done()).not.toContain('add-site-photo');
+    expect(useStore.getState().outbox.filter((op) => op.t === 'uploadMedia')).toHaveLength(1);
+    tick(2000);
+    expect(tip()).toBeNull();
+    // "Guide me" still offers it
+    const { GUIDES } = await import('@/guide/guides');
+    act(() => { useGuideState.getState().start(GUIDES.find((g) => g.id === 'add-site-photo')!); });
     tick();
     expect(tip()?.getAttribute('data-guide-id')).toBe('add-site-photo');
   });

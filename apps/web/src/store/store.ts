@@ -6126,9 +6126,10 @@ export const useStore = create<Store>()(
             }
           });
           persistDailyLogDraft();
-          // the photo's bytes live only in this act: said once it is written, and the guide's step is done only then (one
-          // not kept on this phone is lost on a reload, so the guide stays to be tried again)
-          flashSaved(DLT.photoOffline[get().lang], [upload], (stored) => emitGuideOutcome(stored ? 'site-photo-added' : 'site-photo-add-failed', null, guideRun));
+          // the photo's bytes live only in this act: said once it is written, and the guide's step is done only then. One
+          // not kept on this phone is still sent from memory but lost on a reload: the guide ends unfinished (offered again
+          // later) rather than asking for the same photo twice
+          flashSaved(DLT.photoOffline[get().lang], [upload], (stored) => emitGuideOutcome(stored ? 'site-photo-added' : 'site-photo-not-kept', null, guideRun));
           return;
         }
         // raw-DTO reconcile: pin the reply to the scope that uploaded it — a late
