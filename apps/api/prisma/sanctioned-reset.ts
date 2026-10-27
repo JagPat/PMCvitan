@@ -173,6 +173,8 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   { table: 'HubVersionTombstone', trigger: 'HubVersionTombstone_no_truncate' },
   { table: 'DrawingHubLink', trigger: 'DrawingHubLink_no_truncate' },
   { table: 'DrawingHubLinkEvent', trigger: 'DrawingHubLinkEvent_no_truncate' },
+  // #1118 U1a round 2 (r4384500498) — the fetched-blob ledger refuses TRUNCATE too (its row DELETE is the sweep's).
+  { table: 'HubFetchedBlob', trigger: 'HubFetchedBlob_no_truncate' },
 ];
 
 /**

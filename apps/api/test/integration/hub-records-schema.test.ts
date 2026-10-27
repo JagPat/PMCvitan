@@ -18,6 +18,7 @@ import { sanctionedReset, TRUNCATE_SEALS } from '../../prisma/sanctioned-reset';
  */
 const MIGRATION = join(__dirname, '../../prisma/migrations/20280121000000_hub_records/migration.sql');
 const SEALED = ['HubWebhookReceipt', 'HubVersionTombstone', 'DrawingHubLink', 'DrawingHubLinkEvent'] as const;
+const NO_TRUNCATE = [...SEALED, 'HubFetchedBlob'] as const;
 
 describe('#1118 U1a — the Hub records (live PG)', () => {
   let t: TestApp;
@@ -64,8 +65,8 @@ describe('#1118 U1a — the Hub records (live PG)', () => {
     return id;
   };
   const link = (projectId: string, orgId = f.orgA.id) => raw(`INSERT INTO "DrawingHubLink" ("projectId", "orgId") VALUES ($1, $2)`, projectId, orgId);
-  const event = (projectId: string, seq: number, prevSeq: number | null, kind: string, hubProjectId: string | null, by = 'it') =>
-    raw(`INSERT INTO "DrawingHubLinkEvent" ("projectId", "seq", "prevSeq", "kind", "hubProjectId", "by") VALUES ($1, $2, $3, $4, $5, $6)`, projectId, seq, prevSeq, kind, hubProjectId, by);
+  const event = (projectId: string, seq: number, prevSeq: number | null, kind: string, hubProjectId: string | null, by = f.memberUser.id) =>
+    raw(`INSERT INTO "DrawingHubLinkEvent" ("projectId", "seq", "prevSeq", "kind", "hubProjectId", "byUserId") VALUES ($1, $2, $3, $4, $5, $6)`, projectId, seq, prevSeq, kind, hubProjectId, by);
 
   it('R1/R2: one record per key, each owned by a project or org that exists, a link\'s org its project\'s own', async () => {
     const p = await project('r12');
@@ -105,7 +106,7 @@ describe('#1118 U1a — the Hub records (live PG)', () => {
     const updates: Array<[string, string, unknown[]]> = [
       ['DrawingHubLink', `"projectId" = '${other}'`, [p]], ['DrawingHubLink', `"orgId" = '${f.orgB.id}'`, [p]],
       ['DrawingHubLink', `"orgId" = "orgId"`, [p]],
-      ['DrawingHubLinkEvent', `"hubProjectId" = 'hp2'`, [p]], ['DrawingHubLinkEvent', `"by" = 'x'`, [p]], ['DrawingHubLinkEvent', `"at" = now()`, [p]],
+      ['DrawingHubLinkEvent', `"hubProjectId" = 'hp2'`, [p]], ['DrawingHubLinkEvent', `"byUserId" = '${f.ownerUser.id}'`, [p]], ['DrawingHubLinkEvent', `"at" = now()`, [p]],
       ['DrawingHubLinkEvent', `"seq" = 3, "prevSeq" = 2`, [p]], ['DrawingHubLinkEvent', `"projectId" = '${other}'`, [p]],
       ['HubVersionTombstone', `"hubFileId" = 'g'`, [p]], ['HubVersionTombstone', `"versionSeq" = NULL`, [p]], ['HubVersionTombstone', `"projectId" = '${other}'`, [p]],
       // the same value is still a write, and still refused: a record is never rewritten
@@ -126,12 +127,12 @@ describe('#1118 U1a — the Hub records (live PG)', () => {
       await expect(raw(`DELETE FROM "${table}" WHERE "projectId" = $1`, p), table).rejects.toThrow(/never deleted; it goes only with its project/);
     }
     await expect(raw(`DELETE FROM "HubWebhookReceipt" WHERE "orgId" = $1 AND "webhookId" = $2`, f.orgA.id, `wh3-${run}`)).rejects.toThrow(/never deleted; it goes only with its org/);
-    for (const table of SEALED) {
+    for (const table of NO_TRUNCATE) {
       await expect(raw(`TRUNCATE TABLE "${table}" CASCADE`), table).rejects.toThrow(/are records and are never truncated/);
     }
     // nothing moved
     expect(await t.prisma.drawingHubLink.count({ where: { projectId: p } })).toBe(1);
-    expect(await t.prisma.drawingHubLinkEvent.findMany({ where: { projectId: p } })).toEqual([expect.objectContaining({ seq: 1, kind: 'linked', hubProjectId: 'hp', by: 'it' })]);
+    expect(await t.prisma.drawingHubLinkEvent.findMany({ where: { projectId: p } })).toEqual([expect.objectContaining({ seq: 1, kind: 'linked', hubProjectId: 'hp', byUserId: f.memberUser.id })]);
     expect((await t.prisma.hubVersionTombstone.findUniqueOrThrow({ where: { projectId_hubVersionId: { projectId: p, hubVersionId: 'v' } } })).versionSeq).toBe(5);
     expect((await t.prisma.hubWebhookReceipt.findUniqueOrThrow({ where: { orgId_webhookId: { orgId: f.orgA.id, webhookId: `wh3-${run}` } } })).outcome).toBe('applied');
     expect(await t.prisma.hubFetchedBlob.findMany({ where: { projectId: p } })).toEqual([expect.objectContaining({ storageKey: `${p}/drawings/hub/r3`, hubVersionId: 'v' })]);
@@ -183,24 +184,34 @@ describe('#1118 U1a — the Hub records (live PG)', () => {
       await link(q);
       await expect(event(q, 1, null, 'linked', b), JSON.stringify(b)).rejects.toThrow(/DrawingHubLinkEvent_hubProjectId_on_link/);
     }
-    await expect(event(p, 2, 1, 'unlinked', null, ' ')).rejects.toThrow(/DrawingHubLinkEvent_by_present/);
+    // the actor is a real user: a name, a blank or an unknown id is refused, and a user with history is never deleted
+    for (const b of ['it', '', ' ', `no-such-user-${run}`]) {
+      await expect(event(p, 2, 1, 'unlinked', null, b), JSON.stringify(b)).rejects.toThrow(/DrawingHubLinkEvent_byUserId_fkey/);
+    }
+    const actor = await t.prisma.user.create({ data: { email: `hubr.actor.${run}@test.local`, name: 'Hub actor', role: 'pmc', projectId: f.projectA.id } });
+    const q2 = await project('r4u');
+    await link(q2);
+    await event(q2, 1, null, 'linked', 'hp', actor.id);
+    await expect(raw(`DELETE FROM "User" WHERE "id" = $1`, actor.id)).rejects.toThrow(/DrawingHubLinkEvent_byUserId_fkey/);
+    await raw(`DELETE FROM "Project" WHERE "id" = $1`, q2);
+    expect(await raw(`DELETE FROM "User" WHERE "id" = $1`, actor.id)).toBe(1);
     await expect(event(p, 2, 1, 'paused', null)).rejects.toThrow(/DrawingHubLinkEvent_(kind_alternates|hubProjectId_on_link)/);
     // U7's order: link, unlink, then relink (to another Hub project too); each is its own attributed record
-    await event(p, 2, 1, 'unlinked', null, 'it-unlink');
+    await event(p, 2, 1, 'unlinked', null, f.ownerUser.id);
     // two writers that read the same head race for the next event: both insert event 3 from it, the second waits on
     // the first's key entry, and when the first commits the second is refused; exactly one event 3 stands
     const readA = gate(), readB = gate(), insertedA = gate(), commitA = gate();
     let pidA = 0;
     const head = async (tx: Pick<typeof t.prisma, '$queryRawUnsafe'>) =>
       Number((await tx.$queryRawUnsafe<Array<{ head: number }>>(`SELECT max("seq")::int AS head FROM "DrawingHubLinkEvent" WHERE "projectId" = $1`, p))[0]!.head);
-    const next = `INSERT INTO "DrawingHubLinkEvent" ("projectId", "seq", "prevSeq", "kind", "hubProjectId", "by") VALUES ($1, $2, $3, 'linked', $4, $5)`;
+    const next = `INSERT INTO "DrawingHubLinkEvent" ("projectId", "seq", "prevSeq", "kind", "hubProjectId", "byUserId") VALUES ($1, $2, $3, 'linked', $4, $5)`;
     const txOptions = { maxWait: 10_000, timeout: 30_000 };
     const a = settle(t.prisma.$transaction(async (tx) => {
       pidA = Number((await tx.$queryRawUnsafe<Array<{ pid: number }>>('SELECT pg_backend_pid() AS pid'))[0]!.pid);
       const h = await head(tx);
       readA.open();
       await readB.p;
-      await tx.$executeRawUnsafe(next, p, h + 1, h, 'hp-b', 'it-relink');
+      await tx.$executeRawUnsafe(next, p, h + 1, h, 'hp-b', f.otherUser.id);
       insertedA.open();
       await commitA.p;
     }, txOptions));
@@ -209,7 +220,7 @@ describe('#1118 U1a — the Hub records (live PG)', () => {
       const h = await head(tx);
       readB.open();
       await insertedA.p;
-      await tx.$executeRawUnsafe(next, p, h + 1, h, 'hp-c', 'it-relink-b');
+      await tx.$executeRawUnsafe(next, p, h + 1, h, 'hp-c', f.clientUser.id);
     }, txOptions));
     await insertedA.p;
     await until(async () => (await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
@@ -220,8 +231,8 @@ describe('#1118 U1a — the Hub records (live PG)', () => {
     expect(rb.ok).toBe(false);
     expect(rb.ok ? '' : rb.e).toMatch(/23505/);
     const history = await t.prisma.drawingHubLinkEvent.findMany({ where: { projectId: p }, orderBy: { seq: 'asc' } });
-    expect(history.map((e) => [e.seq, e.prevSeq, e.kind, e.hubProjectId, e.by])).toEqual([
-      [1, null, 'linked', 'hp-a', 'it'], [2, 1, 'unlinked', null, 'it-unlink'], [3, 2, 'linked', 'hp-b', 'it-relink'],
+    expect(history.map((e) => [e.seq, e.prevSeq, e.kind, e.hubProjectId, e.byUserId])).toEqual([
+      [1, null, 'linked', 'hp-a', f.memberUser.id], [2, 1, 'unlinked', null, f.ownerUser.id], [3, 2, 'linked', 'hp-b', f.otherUser.id],
     ]);
     // the active link is the latest event when it is a link; a link row with no event is not linked
     const active = (projectId: string) => t.prisma.$queryRawUnsafe<Array<{ hubProjectId: string | null }>>(
@@ -271,19 +282,19 @@ describe('#1118 U1a — the Hub records (live PG)', () => {
   });
 
   it('R3: the sanctioned reset lifts every Hub TRUNCATE seal by name and puts it back', async () => {
-    for (const table of SEALED) {
+    for (const table of NO_TRUNCATE) {
       const seals = await t.prisma.$queryRawUnsafe<Array<{ name: string }>>(
         `SELECT tgname::text AS name FROM pg_trigger WHERE tgrelid = $1::regclass AND NOT tgisinternal AND (tgtype & 32) <> 0`, `"${table}"`);
       expect(seals.map((x) => x.name), table).toEqual([`${table}_no_truncate`]);
       expect(TRUNCATE_SEALS).toContainEqual({ table, trigger: `${table}_no_truncate` });
     }
-    await sanctionedReset(t.prisma, [...SEALED]);
-    for (const table of SEALED) {
+    await sanctionedReset(t.prisma, [...NO_TRUNCATE]);
+    for (const table of NO_TRUNCATE) {
       expect(await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(`SELECT count(*) AS n FROM "${table}"`), table).toEqual([{ n: 0n }]);
     }
     const states = await t.prisma.$queryRawUnsafe<Array<{ enabled: string }>>(
-      `SELECT tgenabled::text AS enabled FROM pg_trigger WHERE tgname = ANY($1::text[])`, SEALED.map((s) => `${s}_no_truncate`));
-    expect(states.map((x) => x.enabled)).toEqual(['O', 'O', 'O', 'O']);
+      `SELECT tgenabled::text AS enabled FROM pg_trigger WHERE tgname = ANY($1::text[])`, NO_TRUNCATE.map((s) => `${s}_no_truncate`));
+    expect(states.map((x) => x.enabled)).toEqual(['O', 'O', 'O', 'O', 'O']);
   });
 
   it('re-runs: a second and third run of the file leave the same keys, checks, triggers and functions', async () => {
@@ -299,9 +310,9 @@ describe('#1118 U1a — the Hub records (live PG)', () => {
        WHERE n.nspname = 'public' AND p.proname IN ('drawings_hub_record_sealed', 'drawings_hub_record_no_truncate')
       ORDER BY 1, 2`, tables, tables.map((x) => `"${x}"`));
     const before = await shape();
-    expect(before.filter((r) => r.kind === 'trigger')).toHaveLength(9);
-    expect(before.filter((r) => r.kind === 'constraint' && r.def.startsWith('CHECK'))).toHaveLength(12);
-    expect(before.filter((r) => r.kind === 'constraint' && r.def.startsWith('FOREIGN KEY'))).toHaveLength(6);
+    expect(before.filter((r) => r.kind === 'trigger')).toHaveLength(10);
+    expect(before.filter((r) => r.kind === 'constraint' && r.def.startsWith('CHECK'))).toHaveLength(11);
+    expect(before.filter((r) => r.kind === 'constraint' && r.def.startsWith('FOREIGN KEY'))).toHaveLength(7);
     expect(before.filter((r) => r.kind === 'function').map((r) => r.def)).toEqual(Array(2).fill('search_path=pg_catalog, public, pg_temp'));
     replay();
     replay();

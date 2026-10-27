@@ -14,8 +14,9 @@
 --                          no Hub project, holds no lifecycle and records no one: who linked or unlinked the project,
 --                          and when, is its events' alone (event 1 is the first link), so there is one answer.
 --   "DrawingHubLinkEvent"  the project's link history, one row per link or unlink, in order. Event 1 is a link; links and
---                          unlinks alternate; each link names the Hub project. The active link is the latest event when
---                          it is a link. A project with no event is not linked (fail closed).
+--                          unlinks alternate; each link names the Hub project; each names the user who acted. The active
+--                          link is the latest event when it is a link. A project with no event is not linked (fail
+--                          closed).
 --   "HubFetchedBlob"       one per storage key a Hub fetch wrote, with its project and version, so the later sweep walks
 --                          this ledger and never lists the bucket or touches a PMC upload.
 --
@@ -24,20 +25,26 @@
 --       per (project, seq), one ledger row per storage key (unique beside its "id").
 --   R2  Owners: a link's org is its project's org (a composite key to "Project" ("orgId", "id")); an event belongs to its
 --       project's link; every other row names a project, or for a receipt an org, that exists. Each goes with its
---       project or org (ON DELETE CASCADE). No key ever moves (ON UPDATE NO ACTION, and R3).
+--       project or org (ON DELETE CASCADE). An event's actor is a real user: "byUserId" is a key to "User" ("id"), NO
+--       ACTION, the rule every actor column here follows ("createdById", "approvedById", "boundById"), so a user who
+--       linked or unlinked a project is never deleted from under its history. Whether that user may link this project
+--       is the linking command's check, through the orgs module (U7), not a trigger here: a trigger reading "Membership"
+--       or "OrgMembership" is the cross-module read AGENTS.md forbids (20270515, round 11). No key ever moves (ON UPDATE
+--       NO ACTION, and R3).
 --   R3  Records: a receipt, a tombstone, a link and an event are never changed, never deleted on their own and never
 --       truncated. Any UPDATE is refused; a direct DELETE (trigger depth 1) is refused; TRUNCATE is refused (a statement
 --       seal). Each goes only by its owner's cascade, which runs below depth 1, the rule "MediaTombstone" (20280117)
 --       uses. `project:remove` turns off the ON DELETE triggers of the tables it empties for its own run, as for every
 --       sealed table, and the sanctioned reset lifts the TRUNCATE seals by name ("TRUNCATE_SEALS" in
---       prisma/sanctioned-reset.ts). A ledger row is never changed either (UPDATE refused, so its project and key can
---       never move together); the sweep's DELETE of a ledger row is its one designed delete.
+--       prisma/sanctioned-reset.ts). A ledger row is never changed (UPDATE refused, so its project and key can never
+--       move together) and never truncated (TRUNCATE would erase the only list of the Hub objects in storage); the
+--       sweep's DELETE of a ledger row, one per object it removes, is its one designed delete.
 --   R4  The link history is a chain by its keys and checks alone: event 1 has no previous event, every later event names
 --       the one before it (a key to the same project's event "seq" - 1; the check compares with IS NOT DISTINCT FROM, so
 --       a NULL "prevSeq" on a later event is refused rather than passing as unknown, and the key then always applies), odd events are links and even events unlinks,
 --       a link names a Hub project and an unlink names none. So the history is never rewritten, has no gap, and never
 --       holds two links or two unlinks in a row.
---   R5  Well formed: every required id (a ledger row's "id" too), an event's "by" and a receipt's "eventType" hold more than whitespace
+--   R5  Well formed: every required id (a ledger row's "id" too) and a receipt's "eventType" hold more than whitespace
 --       (the full ASCII set, E' \t\n\x0B\f\r', as "manualReason" does in 20270220); a receipt's outcome is 'applied',
 --       'refused' or 'ignored'; a ledger key starts with its own project's Hub prefix, "projectId" || '/drawings/hub/'
 --       (`starts_with`, which has no wildcards), and names something after it.
@@ -50,8 +57,8 @@
 -- writer ever sees a record table without its seal.
 --
 -- LOCKS WHILE IT RUNS. Every lock is held until the file commits. Adding each key to
--- "Project" or "Org" takes ShareRowExclusiveLock on that table, so from then until commit inserts, updates and deletes
--- on those two tables wait; reads and row locks do not. Everything else is on the new tables, which nothing uses yet.
+-- "Project", "Org" or "User" takes ShareRowExclusiveLock on that table, so from then until commit inserts, updates and
+-- deletes on those three tables wait; reads and row locks do not. Everything else is on the new tables, which nothing uses yet.
 --
 -- NAMES. Both functions have search_path pg_catalog, public, pg_temp and qualified names. Re-runnable, and on
 -- `scripts/migrate.sh`'s ALWAYS_EXECUTE: a `db push` baseline models the tables and keys but not the checks or the
@@ -91,7 +98,7 @@ CREATE TABLE IF NOT EXISTS public."DrawingHubLinkEvent" (
   "kind" TEXT NOT NULL,
   "hubProjectId" TEXT,
   "at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  "by" TEXT NOT NULL,
+  "byUserId" TEXT NOT NULL,
   CONSTRAINT "DrawingHubLinkEvent_pkey" PRIMARY KEY ("projectId", "seq")
 );
 
@@ -105,6 +112,7 @@ CREATE TABLE IF NOT EXISTS public."HubFetchedBlob" (
   "fetchedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT "HubFetchedBlob_pkey" PRIMARY KEY ("id")
 );
+CREATE INDEX IF NOT EXISTS "DrawingHubLinkEvent_byUserId_idx" ON public."DrawingHubLinkEvent" ("byUserId");
 CREATE UNIQUE INDEX IF NOT EXISTS "HubFetchedBlob_storageKey_key" ON public."HubFetchedBlob" ("storageKey");
 CREATE INDEX IF NOT EXISTS "HubFetchedBlob_projectId_idx" ON public."HubFetchedBlob" ("projectId");
 
@@ -126,6 +134,8 @@ BEGIN
        'ALTER TABLE public."DrawingHubLinkEvent" ADD CONSTRAINT "DrawingHubLinkEvent_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES public."DrawingHubLink"("projectId") ON DELETE CASCADE ON UPDATE NO ACTION'),
       ('"DrawingHubLinkEvent"', 'DrawingHubLinkEvent_projectId_prevSeq_fkey',
        'ALTER TABLE public."DrawingHubLinkEvent" ADD CONSTRAINT "DrawingHubLinkEvent_projectId_prevSeq_fkey" FOREIGN KEY ("projectId", "prevSeq") REFERENCES public."DrawingHubLinkEvent"("projectId", "seq") ON DELETE NO ACTION ON UPDATE NO ACTION'),
+      ('"DrawingHubLinkEvent"', 'DrawingHubLinkEvent_byUserId_fkey',
+       'ALTER TABLE public."DrawingHubLinkEvent" ADD CONSTRAINT "DrawingHubLinkEvent_byUserId_fkey" FOREIGN KEY ("byUserId") REFERENCES public."User"("id") ON DELETE NO ACTION ON UPDATE NO ACTION'),
       ('"HubFetchedBlob"', 'HubFetchedBlob_projectId_fkey',
        'ALTER TABLE public."HubFetchedBlob" ADD CONSTRAINT "HubFetchedBlob_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES public."Project"("id") ON DELETE CASCADE ON UPDATE NO ACTION')
     ) AS v(tbl, name, ddl)
@@ -159,9 +169,7 @@ ALTER TABLE public."DrawingHubLinkEvent"
   DROP CONSTRAINT IF EXISTS "DrawingHubLinkEvent_hubProjectId_on_link",
   ADD CONSTRAINT "DrawingHubLinkEvent_hubProjectId_on_link" CHECK (
     ("kind" = 'linked' AND "hubProjectId" IS NOT NULL AND pg_catalog.btrim("hubProjectId", E' \t\n\x0B\f\r') <> '')
-    OR ("kind" = 'unlinked' AND "hubProjectId" IS NULL)),
-  DROP CONSTRAINT IF EXISTS "DrawingHubLinkEvent_by_present",
-  ADD CONSTRAINT "DrawingHubLinkEvent_by_present" CHECK (pg_catalog.btrim("by", E' \t\n\x0B\f\r') <> '');
+    OR ("kind" = 'unlinked' AND "hubProjectId" IS NULL));
 ALTER TABLE public."HubFetchedBlob"
   DROP CONSTRAINT IF EXISTS "HubFetchedBlob_id_present",
   ADD CONSTRAINT "HubFetchedBlob_id_present" CHECK (pg_catalog.btrim("id", E' \t\n\x0B\f\r') <> ''),
@@ -227,10 +235,14 @@ CREATE TRIGGER "DrawingHubLinkEvent_no_truncate"
   BEFORE TRUNCATE ON public."DrawingHubLinkEvent"
   FOR EACH STATEMENT EXECUTE FUNCTION public.drawings_hub_record_no_truncate('project');
 
--- the ledger: UPDATE only (its DELETE is the sweep's)
+-- the ledger: UPDATE and TRUNCATE (its row DELETE is the sweep's)
 DROP TRIGGER IF EXISTS "HubFetchedBlob_sealed" ON public."HubFetchedBlob";
 CREATE TRIGGER "HubFetchedBlob_sealed"
   BEFORE UPDATE ON public."HubFetchedBlob"
   FOR EACH ROW EXECUTE FUNCTION public.drawings_hub_record_sealed('project');
+DROP TRIGGER IF EXISTS "HubFetchedBlob_no_truncate" ON public."HubFetchedBlob";
+CREATE TRIGGER "HubFetchedBlob_no_truncate"
+  BEFORE TRUNCATE ON public."HubFetchedBlob"
+  FOR EACH STATEMENT EXECUTE FUNCTION public.drawings_hub_record_no_truncate('project');
 
 COMMIT;

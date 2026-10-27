@@ -1358,14 +1358,18 @@ model DrawingHubLinkEvent {
   kind         String // linked | unlinked
   hubProjectId String? // the Hub project, on a link only
   at           DateTime              @default(now())
-  by           String
+  // the user who linked or unlinked (NO ACTION, as every actor key); whether they may is the linking command's check
+  by           User                  @relation("hubLinkEventsBy", fields: [byUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  byUserId     String
 
   @@id([projectId, seq])
+  @@index([byUserId])
 }
 
 // one per storage key a Hub fetch wrote, the ledger the sweep walks. Its id holds more than whitespace
-// ("HubFetchedBlob_id_present") and the key starts with its project's Hub prefix (check "HubFetchedBlob_storageKey_in_project"); a row is never changed ("HubFetchedBlob_sealed"), and the sweep's
-// DELETE is its one designed delete.
+// ("HubFetchedBlob_id_present") and the key starts with its project's Hub prefix ("HubFetchedBlob_storageKey_in_project").
+// A row is never changed ("HubFetchedBlob_sealed") or truncated ("HubFetchedBlob_no_truncate"); the sweep's DELETE is its
+// one designed delete.
 model HubFetchedBlob {
   id           String   @id @default(cuid())
   storageKey   String   @unique
@@ -1517,6 +1521,7 @@ model User {
   paymentsRecorded             Payment[]                      @relation("paymentsRecorded")
   paymentsReversed             PaymentReversal[]              @relation("paymentsReversed")
   advancesPaid                 VendorAdvance[]                @relation("advancesPaid")
+  hubLinkEvents                DrawingHubLinkEvent[]          @relation("hubLinkEventsBy")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
