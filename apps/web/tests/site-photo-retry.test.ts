@@ -105,6 +105,24 @@ async function directSendAnswered(answer: (a: ReturnType<typeof deferred<{ id: s
 beforeEach(() => { globalThis.indexedDB = new IDBFactory(); localStorage.clear(); arms.length = 0; armWaiters = []; });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.resetModules(); });
 
+/** "sent" markers cannot be written (reads and other writes still work) until `heal()`; `keys` lists each marker tried */
+function failMarkers() {
+  const real = IDBObjectStore.prototype.put;
+  let broken = true;
+  const keys: string[] = [];
+  vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, v: unknown, k?: IDBValidKey) {
+    const row = v as { key?: string; sentAt?: number };
+    if (row && typeof row === 'object' && 'sentAt' in row) { keys.push(String(row.key)); if (broken) throw new Error('quota'); }
+    return real.call(this, v, k);
+  });
+  return { heal: () => { broken = false; }, keys };
+}
+/** the site photo row locks any tab holds or waits for */
+const heldSiteLocks = async () => {
+  const q = await navigator.locks.query();
+  return [...(q.held ?? []), ...(q.pending ?? [])].map((l) => l.name ?? '').filter((n) => n.startsWith('vitan.sitePhoto.'));
+};
+
 describe('the site photo retry (#917, #1161)', () => {
   it('an op held while another tab sends its row backs off 5 s to a minute, and never starts again at 5 s while it is held (Stage 1 r3, P7)', async () => {
     const A = await tab();
@@ -167,6 +185,56 @@ describe('the site photo retry (#917, #1161)', () => {
     expect(await rows.sitePhotosLocked(ROWS, 'villa-b')).not.toContain(key);
     await A.getState().flushOutbox();
     await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('a marker that keeps failing is made again on a retry that backs off 5 s to a minute, and the lock goes once it lands (Stage 1 r4, P12)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const m = failMarkers();
+    const uploadMedia = vi.fn().mockResolvedValue({ id: 'm', url: '/media/m' });
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.getState().addProgressPhoto(PNG);
+    for (let n = 1; n <= 7; n++) {
+      await armed(n);
+      await settled();
+      if (n < 7) { arms[n - 1]!.fn(); await settled(); }
+    }
+    expect(arms.map((a) => a.ms).slice(0, 6)).toEqual([5000, 10000, 20000, 40000, 60000, 60000]);
+    expect(await heldSiteLocks()).toHaveLength(1);
+    m.heal();
+    arms[6]!.fn();
+    await settled();
+    expect(await heldSiteLocks()).toEqual([]);
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['sign-out', 'a project switch'] as const)('after %s, the change made again writes only its own row, and no flush runs for it (Stage 1 r4, P13)', async (how) => {
+    const A = await tab();
+    startWork(A as never);
+    const rows = await rowsOf();
+    // another person's and another project's kept rows on this phone
+    await rows.putSitePhotoRow('someone-else', 'villa-b', { kind: 'progress', mime: 'image/png', data: 'XXXX', clientKey: 'k-other-user' });
+    await rows.putSitePhotoRow(ROWS, 'villa-c', { kind: 'progress', mime: 'image/png', data: 'YYYY', clientKey: 'k-other-proj' });
+    const m = failMarkers();
+    const uploadMedia = vi.fn().mockResolvedValue({ id: 'm', url: '/media/m' });
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.getState().addProgressPhoto(PNG);
+    await armed(1);
+    await settled();
+    const own = m.keys[0]!;
+    if (how === 'a project switch') A.setState({ activeProjectId: 'villa-c', projectScopeGeneration: 2 } as never);
+    else A.getState().completeSignOut();
+    m.heal();
+    const flush = vi.spyOn(A.getState(), 'flushOutbox');
+    arms[0]!.fn();
+    await settled();
+    expect([...new Set(m.keys)]).toEqual([own]);
+    expect(own.startsWith(`${ROWS}::villa-b::`)).toBe(true);
+    expect(flush).not.toHaveBeenCalled();
+    expect(await rows.getSitePhotoRow('someone-else', 'villa-b', 'k-other-user')).toMatchObject({ input: { data: 'XXXX' } });
+    expect(await rows.getSitePhotoRow(ROWS, 'villa-c', 'k-other-proj')).toMatchObject({ input: { data: 'YYYY' } });
+    expect(await heldSiteLocks()).toEqual([]);
     expect(uploadMedia).toHaveBeenCalledTimes(1);
   });
 });

@@ -900,6 +900,10 @@ describe('Codex round 1 on #1161: a site photo is settled only once its row says
     expect(A.getState().dailyLog!.photos).toEqual([]);
     expect(A.getState().dailyLogDraft?.photosAdded ?? 0).toBe(0);
     expect(A.getState().sitePhotosKept).toEqual([]);
+    // and the draft saved on this phone says so too, so a reload does not bring the photo back into the count
+    const saved = Object.keys(localStorage).filter((k) => k.startsWith('vitan.dailyLogDraft.') && !k.includes('.legacy.'));
+    expect(saved).toHaveLength(1);
+    expect((JSON.parse(localStorage.getItem(saved[0]!)!) as { photosAdded?: number }).photosAdded ?? 0).toBe(0);
   });
 
   it('a direct send the server took whose row could not be marked stays this tab\'s: no flush sends it again (4389428586)', async () => {

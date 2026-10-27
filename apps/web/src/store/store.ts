@@ -2572,7 +2572,7 @@ export const useStore = create<Store>()(
         // give the row its op while this tab stays online with nothing queued. Read again (Codex 4389428598)
         else if (full.some((r) => locked.has(r.clientKey) && !sitePhotoSendsDirect.has(r.clientKey) && !uploadQueued(get().outbox, r.clientKey))) retrySitePhotos();
         // the wait starts again only once no row is held by another tab: a row held for that tab's life keeps backing off
-        else if (!full.some((r) => locked.has(r.clientKey) && !sitePhotoSendsDirect.has(r.clientKey))) sitePhotoRetryMs = 5000;
+        else if (sitePhotoRowChanges.size === 0 && !full.some((r) => locked.has(r.clientKey) && !sitePhotoSendsDirect.has(r.clientKey))) sitePhotoRetryMs = 5000;
       }, () => {
         // not read: a photo may be kept whether or not any act is queued, so this is tried again (Codex 4389428598)
         if (scopeStillCurrent(readScope) && outboxKey() === readKey) retrySitePhotos();
