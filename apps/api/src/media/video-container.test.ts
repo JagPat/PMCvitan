@@ -468,4 +468,20 @@ describe('readVideoClip — MP4', () => {
     expect(mp4(clipFragmented())).not.toBeNull();
     expect(mp4(empty(clipFragmented()))).toBeNull();
   });
+  it('parser follow-ups (#1141): an edit\'s 64-bit media_time past what a number holds exactly is refused, not rounded', () => {
+    const edited = (mediaTime: bigint) => {
+      const entry = Buffer.alloc(20);
+      entry.writeBigUInt64BE(1500n);
+      entry.writeBigInt64BE(mediaTime, 8);
+      entry.writeInt16BE(1, 16);
+      const edts = box('edts', fullBox('elst', 1, 0, [u32(1), entry]));
+      const head = (offset: number) => Buffer.concat([ftyp('isom'), box('moov', [mvhd(), pictureTrak(1, [NAL_SAMPLE.length, NAL_SAMPLE.length], offset, { extra: [edts] })])]);
+      return Buffer.concat([head(head(0).length + 8), box('mdat', [NAL_SAMPLE, NAL_SAMPLE])]);
+    };
+    expect(mp4(edited(0n))).not.toBeNull();
+    expect(mp4(edited(2n ** 53n - 1n))).not.toBeNull();
+    // on e50a1cf both read 1.5 s
+    expect(mp4(edited(2n ** 53n + 2n))).toBeNull();
+    expect(mp4(edited(2n ** 62n))).toBeNull();
+  });
 });

@@ -89,6 +89,7 @@ describe('isAudioOnlyRecording', () => {
     const first = oggPage(0, 1, 2, big.subarray(0, 510)); // two 255s: the packet continues on the next page
     const lacing = first[26]!;
     first[26] = lacing - 1; // drop the closing 0-lace, so the packet runs on
+    first.writeBigInt64LE(-1n, 6); // and the page, finishing no packet now, has no granule (#1154)
     const cut = oggSeal(Buffer.concat([first.subarray(0, 27 + lacing - 1), first.subarray(27 + lacing)]));
     const rest = oggPage(0x05, 1, 3, big.subarray(510));
     expect(ogg(Buffer.concat([oggPage(0x02, 1, 0, OPUS_HEAD), oggPage(0, 1, 1, OPUS_TAGS), cut, rest]))).toBe(true);
@@ -1404,11 +1405,12 @@ describe('Codex round 1 on #1025', () => {
   it('Ogg pages are capped at 100,000: a page completes no packet when it holds none, so pages are capped on their own', () => {
     const pages = (n: number) => {
       const out = [oggPage(0x02, 1, 0, OPUS_HEAD), oggPage(0x00, 1, 1, OPUS_TAGS), oggPage(0x00, 1, 2, AUDIO_PACKET)];
-      for (let i = 0; i < n; i++) out.push(oggPage(i === n - 1 ? 0x04 : 0x00, 1, 3 + i, []));
+      // the last page ends the stream with a packet, so the file ends on a page with a granule (#1154)
+      for (let i = 0; i < n; i++) out.push(i === n - 1 ? oggPage(0x04, 1, 3 + i, AUDIO_PACKET) : oggPage(0x00, 1, 3 + i, []));
       return Buffer.concat(out);
     };
-    // with the three pages before them, 99,996 empty pages make 99,999, the most a walk reads to its end; 99,997 make
-    // 100,000, and the walk stops at its cap before the end
+    // with the three pages before them, 99,995 empty pages and the last make 99,999, the most a walk reads to its end;
+    // one more empty page makes 100,000, and the walk stops at its cap before the end
     expect(ogg(pages(99_996))).toBe(true);
     expect(ogg(pages(99_997))).toBe(false);
   });
@@ -1579,5 +1581,136 @@ describe('Codex round 2 on #1025: the length is where the last decodable sample 
     const ends = pages.map((_, i) => Buffer.concat(pages.slice(0, i + 1)).length);
     expect(cuts('audio/ogg', o, 1)).toEqual([{ at: ends[2], seconds: 0.04 }, { at: ends[3], seconds: 0.08 }]);
     expect(seconds('audio/ogg', o)).toBeCloseTo(0.12, 6);
+  });
+});
+
+describe('parser follow-ups from #1025 (#1097, #1141, #1154)', () => {
+  const webm = (b: Buffer) => isAudioOnlyRecording('audio/webm', b);
+  const mp4 = (b: Buffer) => isAudioOnlyRecording('audio/mp4', b);
+  const ogg = (b: Buffer) => isAudioOnlyRecording('audio/ogg', b);
+  /** big-endian 32-bit words */
+  const be = (...values: number[]) => {
+    const out = Buffer.alloc(4 * values.length);
+    values.forEach((v, i) => out.writeUInt32BE(v, 4 * i));
+    return out;
+  };
+  /** a fragmented MP4 of `count` 4-byte samples whose durations the file gives as 0 (trex's default), its run placed
+   *  `at` seconds into the 48 kHz media timeline by tfdt, with a sample `shift` ticks late, in AAC or Opus */
+  const zeroTimed = (count: number, at: number, o: { opus?: boolean; shift?: number } = {}) => fragmentedMp4({
+    table: [stsd(o.opus ? 'Opus' : 'mp4a'), stts(0), stsc(0), stsz([]), stco(0, 0)],
+    traf: (off) => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000 * at)), o.shift === undefined ? trun(Array.from({ length: count }, () => 4), off)
+      : fullBox('trun', 1, 0x000a01, [be(count, off), be(...Array.from({ length: count }, (_, i) => [4, i === 0 ? o.shift! : 0]).flat())])],
+    mdatBytes: 4 * count,
+  });
+
+  it('#1097: a fragment run\'s frames end where they play from the run\'s place, not only as a file-wide total', () => {
+    // Codex's example: 2,000 AAC frames whose durations are 0, placed 100 s in, play to 142.67 s and are refused over
+    // the caller's 120 s cap; on main they read max(100, 42.67) = 100 s
+    const codex = zeroTimed(2000, 100);
+    expect(mp4(codex)).toBe(true);
+    expect(recordingSeconds('audio/mp4', codex)).toBeCloseTo(100 + (2000 * 1024) / 48_000, 6);
+    expect(readVoiceRecording('audio/mp4', codex)!.durationSec).toBe(143);
+    // Opus the same way, each packet timed by its TOC byte
+    const opusAt0 = recordingSeconds('audio/mp4', zeroTimed(2000, 0, { opus: true }))!;
+    expect(opusAt0).toBeGreaterThan(0);
+    expect(recordingSeconds('audio/mp4', zeroTimed(2000, 100, { opus: true }))).toBeCloseTo(100 + opusAt0, 6);
+    // a composition offset presents the run later: a sample 100 s late puts the frames' end past 100 s too
+    expect(recordingSeconds('audio/mp4', zeroTimed(2000, 0, { shift: 48_000 * 100 }))).toBeCloseTo(100 + (2000 * 1024) / 48_000, 6);
+    // a run at 0 reads its frames, as before
+    expect(recordingSeconds('audio/mp4', zeroTimed(2000, 0))).toBeCloseTo((2000 * 1024) / 48_000, 6);
+  });
+
+  it('#1141: the media edit starts before the track\'s last sample ends, so it plays some sound', () => {
+    // two AAC frames, 2,048 ticks of a 48 kHz track (stts 1,024 each)
+    const edited = (version: 0 | 1, mediaTime: number | bigint) => {
+      const entry = Buffer.alloc(version === 1 ? 20 : 12);
+      if (version === 1) {
+        entry.writeBigUInt64BE(5000n);
+        entry.writeBigInt64BE(BigInt(mediaTime), 8);
+        entry.writeInt16BE(1, 16);
+      } else {
+        entry.writeUInt32BE(5000);
+        entry.writeInt32BE(Number(mediaTime), 4);
+        entry.writeInt16BE(1, 8);
+      }
+      const edts = box('edts', fullBox('elst', version, 0, [be(1), entry]));
+      return Buffer.concat([laidOut((o) => Buffer.concat([ftyp(), box('moov', [mvhd(0, 1000), trak('soun', 1, [4, 4], o, 0, [edts])])])), mdat(8)]);
+    };
+    for (const version of [0, 1] as const) {
+      expect(mp4(edited(version, 0))).toBe(true);
+      expect(mp4(edited(version, 2047))).toBe(true); // its last tick is sound
+      // Codex's example: an edit starting where the track ends shows none of it (on main, accepted as 5 s)
+      expect(mp4(edited(version, 2048)), `version ${version}`).toBe(false);
+      expect(mp4(edited(version, 48_000)), `version ${version}`).toBe(false);
+    }
+    // a 64-bit media time past what a number holds exactly is refused, not rounded
+    expect(mp4(edited(1, 2n ** 60n))).toBe(false);
+    // durations the file states past its frames are silence: two AAC frames whose stts says 30 s each, with the edit
+    // at 50 s, start past every frame and are refused (Stage 1 gap-check: read as 60 s of silence when the bound took
+    // the stated durations); at 0 they pass
+    const stated = (mediaTime: number) => {
+      const entry = Buffer.alloc(12);
+      entry.writeUInt32BE(5000);
+      entry.writeInt32BE(mediaTime, 4);
+      entry.writeInt16BE(1, 8);
+      const edts = box('edts', fullBox('elst', 0, 0, [be(1), entry]));
+      return Buffer.concat([
+        laidOut((o) => Buffer.concat([ftyp(), box('moov', [mvhd(0, 1000), box('trak', [tkhd(1), edts, box('mdia', [mdhd(), hdlr('soun'),
+          box('minf', [fullBox('smhd', 0, 0, be(0)), dinf(), box('stbl', [stsd('mp4a'), stts(2, 48_000 * 30), stsc(2), stsz([4, 4]), stco(2, o)])])])])])])),
+        mdat(8)]);
+    };
+    expect(mp4(stated(0))).toBe(true);
+    expect(mp4(stated(48_000 * 50))).toBe(false);
+    expect(mp4(stated(2047))).toBe(true);
+  });
+
+  it('#1141: a fragment marked duration-is-empty holding a run, and #1154: track_ID 0, are refused (landed in #1158)', () => {
+    // pinned by "Codex round 1 on #1158" and "Codex round 2 on #1158" above; listed here so each follow-up has its test
+    const empty = Buffer.from(fragmentedMp4());
+    empty[empty.indexOf(Buffer.from('tfhd')) + 5]! |= 0x01;
+    expect(mp4(empty)).toBe(false);
+    const zero = Buffer.from(plainMp4());
+    zero.writeUInt32BE(0, zero.indexOf(Buffer.from('tkhd')) + 4 + 12);
+    expect(mp4(zero)).toBe(false);
+  });
+
+  it('#1154: an Ogg page that finishes no packet carries granule -1', () => {
+    const heads = [oggPage(0x02, 1, 0, OPUS_HEAD), oggPage(0, 1, 1, OPUS_TAGS)];
+    // Codex's example: valid audio, then an empty end-of-stream page with a granule of its own, read as 600 s on main
+    const audio = oggPage(0, 1, 2, [AUDIO_PACKET, AUDIO_PACKET]);
+    expect(ogg(Buffer.concat([...heads, audio, withGranule(oggPage(0x04, 1, 3, []), BigInt(OPUS_PRE_SKIP + 48_000 * 600))]))).toBe(false);
+    // an empty page with -1 cannot end the file either (no granule), but mid-stream it passes, and with a granule it is refused
+    const last = oggPage(0x04, 1, 4, AUDIO_PACKET);
+    expect(ogg(Buffer.concat([...heads, audio, oggPage(0, 1, 3, []), last]))).toBe(true);
+    expect(ogg(Buffer.concat([...heads, audio, withGranule(oggPage(0, 1, 3, []), 0n), last]))).toBe(false);
+    // a page whose one packet runs on to the next finishes none on it: -1 passes, a granule is refused
+    const big = Buffer.alloc(300, 9);
+    const runs = oggPageRaw(0, 1, 3, [255], big.subarray(0, 255));
+    const ends = oggPageRaw(0x05, 1, 4, [45], big.subarray(255));
+    expect(ogg(Buffer.concat([...heads, audio, runs, ends]))).toBe(true);
+    expect(ogg(Buffer.concat([...heads, audio, withGranule(runs, 0n), ends]))).toBe(false);
+  });
+
+  it('#1154: the first Ogg page is page 0', () => {
+    expect(ogg(Buffer.concat([oggPage(0x02, 1, 0, OPUS_HEAD), oggPage(0, 1, 1, OPUS_TAGS), oggPage(0x04, 1, 2, AUDIO_PACKET)]))).toBe(true);
+    // on main, a stream numbered from 5 passed
+    expect(ogg(Buffer.concat([oggPage(0x02, 1, 5, OPUS_HEAD), oggPage(0, 1, 6, OPUS_TAGS), oggPage(0x04, 1, 7, AUDIO_PACKET)]))).toBe(false);
+    expect(ogg(Buffer.concat([oggPage(0x02, 1, 1, OPUS_HEAD), oggPage(0, 1, 2, OPUS_TAGS), oggPage(0x04, 1, 3, AUDIO_PACKET)]))).toBe(false);
+  });
+
+  it('#1154: a WebM track with FlagLacing 0 holds no laced block', () => {
+    const track = (lacing?: number) => ebml(WEBM.trackEntry, Buffer.concat([ebml(WEBM.trackNumber, Buffer.from([1])), ebml(WEBM.trackType, Buffer.from([2])),
+      ebml(WEBM.codecId, 'A_OPUS'), ebml(WEBM.codecPrivate, OPUS_HEAD), ...(lacing === undefined ? [] : [ebml(0x9c, Buffer.from([lacing]))])]));
+    const file = (lacing: number | undefined, block: Buffer) => Buffer.concat([webmHeader(),
+      ebml(WEBM.segment, Buffer.concat([webmInfo(), ebml(WEBM.tracks, track(lacing)), webmCluster([simpleBlock(), block])]), true)]);
+    const six = Buffer.from([0xfc, 1, 2, 0xfc, 4, 5]);
+    const laced = [lacedBlock(1, 1, 2, Buffer.from([3]), six), lacedBlock(1, 2, 2, Buffer.alloc(0), six), lacedBlock(1, 3, 2, Buffer.from([0x83]), six)];
+    for (const [i, block] of laced.entries()) {
+      // on main each passed with FlagLacing 0
+      expect(webm(file(0, block)), `lacing ${i + 1}`).toBe(false);
+      expect(webm(file(1, block)), `lacing ${i + 1}`).toBe(true);
+      expect(webm(file(undefined, block)), `lacing ${i + 1}`).toBe(true); // FlagLacing defaults to 1
+    }
+    expect(webm(file(0, simpleBlock()))).toBe(true); // an unlaced block on such a track
   });
 });

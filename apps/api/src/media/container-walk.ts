@@ -235,30 +235,32 @@ function uintOf(b: Buffer, e: Element): number {
 
 /**
  * An audio TrackEntry's fields, each read once by the walk (`seen`, by ID): the track a player plays, Opus with its
- * OpusHead. Returns its number and DefaultDuration. Also read for a video clip's sound track (#995).
+ * OpusHead. Returns its number, DefaultDuration and whether its blocks may be laced. Also read for a video clip's sound
+ * track (#995).
  */
-function opusTrack(b: Buffer, seen: Map<number, Element>): { number: number; frameNs: number } {
+function opusTrack(b: Buffer, seen: Map<number, Element>): { number: number; frameNs: number; lacing: boolean } {
   const number = seen.get(TRACK_NUMBER);
   const codec = seen.get(CODEC_ID);
   if (!number || !codec) fail();
   // Opus only: Vorbis's length would come from its headers alone, and no browser records it
   if (codeOf(b, codec!) !== 'A_OPUS') fail();
-  trackFlags(b, seen);
+  const { lacing } = trackFlags(b, seen);
   // an Opus track's CodecPrivate is its OpusHead, which Matroska requires and Chrome writes
   const head = seen.get(CODEC_PRIVATE);
   if (!head || !isOpusHead(b, head.dataStart, head.dataEnd - head.dataStart)) fail();
   // DefaultDuration: what the file says each frame lasts, in nanoseconds (0 when not written)
   const each = seen.get(DEFAULT_DURATION);
-  const found = { number: uintOf(b, number!), frameNs: each ? uintOf(b, each) : 0 };
+  const found = { number: uintOf(b, number!), frameNs: each ? uintOf(b, each) : 0, lacing };
   if (found.number < 1) fail();
   return found;
 }
 
 /**
  * The track is one a player plays (Codex P2 on #1013 round 3): enabled and default when the flags are written (both
- * default to 1), and the other flags are booleans.
+ * default to 1), and the other flags are booleans. Returns FlagLacing (1 when not written): a track that sets it to 0
+ * says none of its blocks is laced (#1154).
  */
-function trackFlags(b: Buffer, seen: Map<number, Element>): void {
+function trackFlags(b: Buffer, seen: Map<number, Element>): { lacing: boolean } {
   const flag = (id: number, allowed: number[]) => {
     const f = seen.get(id);
     if (f && !allowed.includes(uintOf(b, f))) fail();
@@ -267,6 +269,8 @@ function trackFlags(b: Buffer, seen: Map<number, Element>): void {
   flag(FLAG_DEFAULT, [1]);
   flag(FLAG_FORCED, [0, 1]);
   flag(FLAG_LACING, [0, 1]);
+  const lacing = seen.get(FLAG_LACING);
+  return { lacing: !lacing || uintOf(b, lacing) === 1 };
 }
 
 /**
@@ -279,7 +283,7 @@ function trackFlags(b: Buffer, seen: Map<number, Element>): void {
  * for by the block element's own step), and every frame holds at least one byte (Codex P2 on #1025): an empty one
  * refuses the file.
  */
-function blockTrack(b: Buffer, start: number, end: number, steps: Walk): { track: number; timecode: number; frames: Array<{ at: number; size: number }> } {
+function blockTrack(b: Buffer, start: number, end: number, steps: Walk): { track: number; timecode: number; laced: boolean; frames: Array<{ at: number; size: number }> } {
   const track = vint(b, start, end, false);
   if (track.unknown) fail();
   const flagsAt = start + track.length + 2;
@@ -335,7 +339,7 @@ function blockTrack(b: Buffer, start: number, end: number, steps: Walk): { track
     frames.push({ at, size });
     at += size;
   }
-  return { track: track.value, timecode, frames };
+  return { track: track.value, timecode, laced: lacing !== 0, frames };
 }
 
 /** A float element of 0, 4 or 8 bytes; it must be a finite number, not below 0. */
@@ -719,9 +723,10 @@ function audioSampleEntry(b: Buffer, stsd: Box, steps: Walk): { opus: boolean; r
 /**
  * A track's edit list, when it has one (#1013 replacement review): exactly one elst of one or two entries, each at
  * rate 1, at most one empty edit (media_time -1) and only first, and exactly one edit of the media, so no edit plays
- * the media twice. Returns the empty edit's delay and the media edit's duration, in movie ticks.
+ * the media twice. Returns the empty edit's delay and the media edit's duration, in movie ticks, and where in the media
+ * the edit starts (its media_time), in media ticks (#1141).
  */
-function editList(b: Buffer, edts: Box, steps: Walk): { delay: number; edit: number } {
+function editList(b: Buffer, edts: Box, steps: Walk): { delay: number; edit: number; start: number } {
   const elst = only(children(b, edts.dataStart, edts.end, 'edts', steps, ['elst']), 'elst');
   const { version, flags } = fullBoxHead(b, elst);
   if (version > 1 || flags !== 0 || elst.dataStart + 8 > elst.end) fail();
@@ -730,6 +735,7 @@ function editList(b: Buffer, edts: Box, steps: Walk): { delay: number; edit: num
   if (count < 1 || count > 2 || elst.dataStart + 8 + width * count !== elst.end) fail();
   let delay = 0;
   let edit: number | undefined;
+  let start = 0;
   for (let i = 0; i < count; i++) {
     const at = elst.dataStart + 8 + width * i;
     const duration = version === 1 ? u64(b, at) : b.readUInt32BE(at);
@@ -740,11 +746,12 @@ function editList(b: Buffer, edts: Box, steps: Walk): { delay: number; edit: num
       if (i !== 0 || count !== 2) fail(); // an empty edit only before the media
       delay = duration;
     } else {
-      if (mediaTime < 0n || edit !== undefined) fail(); // one edit of the media
+      if (mediaTime < 0n || mediaTime > BigInt(Number.MAX_SAFE_INTEGER) || edit !== undefined) fail(); // one edit of the media
       edit = duration;
+      start = Number(mediaTime);
     }
   }
-  return { delay, edit: edit! };
+  return { delay, edit: edit!, start };
 }
 
 /**
@@ -774,10 +781,11 @@ function timeHeader(b: Buffer, box: Box, sizes: number[]): { scale: number; dura
 
 /**
  * One trun: its sample count, its data_offset if it gives one (signed), its bytes and ticks with the defaults applied,
- * where its latest sample ends as presented (after its composition offset), and each sample's size. A count above `left` (the samples the file may still list) is refused before any sample is
- * read: with default sizes and durations a run's samples take no bytes of their own.
+ * where its latest sample ends as presented (after its composition offset), the latest any sample is presented after
+ * its decode time (0 when none is later), and each sample's size. A count above `left` (the samples the file may still
+ * list) is refused before any sample is read: with default sizes and durations a run's samples take no bytes of their own.
  */
-function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: number }, left: number): { count: number; dataOffset: number | undefined; bytes: number; ticks: number; reach: number; sizeOf: (i: number) => number } {
+function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: number }, left: number): { count: number; dataOffset: number | undefined; bytes: number; ticks: number; reach: number; shift: number; sizeOf: (i: number) => number } {
   const { version, flags } = fullBoxHead(b, trun);
   if (version > 1 || flags & ~TRUN_FLAGS) fail(); // version 1 differs only in signed composition offsets
   let at = trun.dataStart + 4;
@@ -804,13 +812,15 @@ function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: numbe
   let bytes = 0;
   let ticks = 0;
   let reach = 0; // where the run's latest sample ends as presented, from the run's start
+  let shift = 0; // the latest any sample is presented after its decode time
   for (let i = 0; i < count; i++) {
     bytes += sizeOf(i);
     const duration = durationOf(i);
     reach = Math.max(reach, ticks + shiftOf(i) + duration);
+    shift = Math.max(shift, shiftOf(i));
     ticks += duration;
   }
-  return { count, dataOffset, bytes, ticks, reach, sizeOf };
+  return { count, dataOffset, bytes, ticks, reach, shift, sizeOf };
 }
 
 export type { Walk, Kind, Element, Box, MediaRanges, SampleRanges };

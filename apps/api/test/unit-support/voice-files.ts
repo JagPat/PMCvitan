@@ -114,6 +114,7 @@ export const oggPage = (headerType: number, serial: number, sequence: number, pa
   head.writeUInt32LE(serial, 14);
   head.writeUInt32LE(sequence, 18);
   head[26] = lacing.length;
+  if (!lacing.some((v) => v < 255)) head.writeBigInt64LE(-1n, 6); // a page that finishes no packet has no granule
   return oggSeal(Buffer.concat([head, Buffer.from(lacing), ...packets]));
 };
 /** one Ogg page with the lacing values given as they are, so a packet can be left open (a last value of 255); sealed */
@@ -124,6 +125,7 @@ export const oggPageRaw = (headerType: number, serial: number, sequence: number,
   head.writeUInt32LE(serial, 14);
   head.writeUInt32LE(sequence, 18);
   head[26] = lacing.length;
+  if (!lacing.some((v) => v < 255)) head.writeBigInt64LE(-1n, 6); // a page that finishes no packet has no granule
   return oggSeal(Buffer.concat([head, Buffer.from(lacing), data]));
 };
 export const OPUS_TAGS = Buffer.concat([Buffer.from('OpusTags', 'latin1'), Buffer.from([7, 0, 0, 0]), Buffer.from('Mozilla', 'latin1'), Buffer.alloc(4)]);
