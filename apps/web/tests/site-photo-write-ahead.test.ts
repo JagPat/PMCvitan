@@ -773,3 +773,227 @@ describe('the settle skip touches only a site photo\'s op (#917 port, r2 re-chec
     expect(A.getState().outbox).toEqual([]);
   });
 });
+
+describe('Codex round 1 on #1161: a site photo is settled only once its row says so, and never left without a send (#917)', () => {
+  const LOG = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 0, crew: [], materials: [], photos: [] };
+  /** The phone's site photo database refuses every write while `on` is true; reads still answer. */
+  const failingWrites = () => {
+    const state = { on: false };
+    const transaction = IDBDatabase.prototype.transaction;
+    vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...args: Parameters<IDBDatabase['transaction']>) {
+      if (state.on && this.name === 'vitan-site-photos' && args[1] === 'readwrite') throw new Error('broken');
+      return transaction.apply(this, args);
+    } as IDBDatabase['transaction']);
+    return state;
+  };
+
+  it('a replay the server took whose row could not be marked keeps its op, and its bytes stay to be sent again (4389428571)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const rows = await rowsOf();
+    await rows.putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-c1' });
+    const writes = failingWrites();
+    // the database fails from the moment the server has answered the first send: the marker it owes cannot be written
+    const uploadMedia = vi.fn(async () => { if (uploadMedia.mock.calls.length === 1) writes.on = true; return { id: 'm-c1', url: '/media/m-c1' }; });
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.setState({ outbox: [{ t: 'uploadSitePhoto', scope: ROWS, clientKey: 'k-c1' }] } as never);
+    await A.getState().flushOutbox();
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(A.getState().outbox).toEqual([{ t: 'uploadSitePhoto', scope: ROWS, clientKey: 'k-c1' }]);
+    writes.on = false;
+    // sent again under its key: the server answers with the same photo, and the row is marked this time
+    await A.getState().flushOutbox();
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(2);
+    expect(A.getState().outbox).toEqual([]);
+    const row = await rows.getSitePhotoRow(ROWS, 'villa-b', 'k-c1');
+    expect(row && rows.isSitePhotoSent(row)).toBe(true);
+  });
+
+  it('a replay the server took whose refresh failed asks for one at once (4389428615)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const rows = await rowsOf();
+    await rows.putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-c2' });
+    const uploadMedia = vi.fn().mockResolvedValue({ id: 'm-c2', url: '/media/m-c2' });
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
+    A.setState({ outbox: [{ t: 'uploadSitePhoto', scope: ROWS, clientKey: 'k-c2' }] } as never);
+    await A.getState().flushOutbox();
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().commandReconcilePending).toBe(true);
+  });
+
+  it('refused for good after a lost answer, it leaves the gallery, the count and the draft it was added to (4389428627)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    A.setState({ dailyLog: { ...LOG } } as never);
+    A.getState()._setGateway({ uploadMedia: vi.fn().mockRejectedValue(lost()), snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.getState().addProgressPhoto(PNG);
+    await until(A, (s) => s.toast === SAVED);
+    expect(A.getState().dailyLog!.photos).toHaveLength(1);
+    expect(A.getState().dailyLog!.progress).toBe(1);
+    expect(A.getState().dailyLogDraft?.photosAdded).toBe(1);
+    A.getState()._setGateway({ uploadMedia: vi.fn().mockRejectedValue(Object.assign(new Error('/media 403'), { status: 403, serverMessage: 'no' })), snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    await A.getState().flushOutbox();
+    await settled();
+    expect(A.getState().toast).toBe(DISCARDED);
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().dailyLog!.photos).toEqual([]);
+    expect(A.getState().dailyLog!.progress).toBe(0);
+    expect(A.getState().dailyLogDraft?.photosAdded ?? 0).toBe(0);
+    expect(A.getState().sitePhotosKept).toEqual([]);
+  });
+
+  it('a lost answer for a photo a refresh already shows adds no second copy to the gallery and no draft photo (4389428620)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    A.setState({ dailyLog: { ...LOG, photoCount: 0, myPhotoKeys: [] } } as never);
+    const up = uploads();
+    A.getState()._setGateway({ uploadMedia: up.fn, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.getState().addProgressPhoto(PNG);
+    await up.called();
+    const key = up.calls[0]!.input.clientKey;
+    // a refresh landed while the send was out: the server holds the photo, and its key is in the log's own list
+    A.setState({ dailyLog: { ...LOG, photoCount: 1, myPhotoKeys: [key], photos: [{ id: 'm-c4', url: '/media/m-c4' }] } } as never);
+    up.calls[0]!.answer.reject(lost());
+    await until(A, (s) => s.toast === SAVED);
+    expect(A.getState().dailyLog!.photos).toEqual([{ id: 'm-c4', url: '/media/m-c4' }]);
+    expect(A.getState().dailyLog!.progress).toBe(1);
+    expect(A.getState().dailyLogDraft?.photosAdded ?? 0).toBe(0);
+  });
+
+  it('whose row is gone leaves the gallery, the count and the draft, and asks for the server\'s word on it (4389716748)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    A.setState({ dailyLog: { ...LOG } } as never);
+    A.getState()._setGateway({ uploadMedia: vi.fn().mockRejectedValue(lost()), snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.getState().addProgressPhoto(PNG);
+    await until(A, (s) => s.toast === SAVED);
+    const key = (A.getState().outbox[0] as { clientKey: string }).clientKey;
+    expect(A.getState().dailyLog!.photos).toHaveLength(1);
+    // its marker passed its keep, or the site's data was cleared
+    await (await rowsOf()).deleteSitePhotoRow(ROWS, 'villa-b', key);
+    const uploadMedia = vi.fn();
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    await A.getState().flushOutbox();
+    expect(uploadMedia).not.toHaveBeenCalled();
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().dailyLog!.photos).toEqual([]);
+    expect(A.getState().dailyLog!.progress).toBe(0);
+    expect(A.getState().dailyLogDraft?.photosAdded ?? 0).toBe(0);
+    expect(A.getState().commandReconcilePending).toBe(true);
+  });
+
+  it('answered 410 after a lost answer takes the draft photo and kept copy back too, as a refusal and a gone row do (Stage 1 r3)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    A.setState({ dailyLog: { ...LOG } } as never);
+    A.getState()._setGateway({ uploadMedia: vi.fn().mockRejectedValue(lost()), snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.getState().addProgressPhoto(PNG);
+    await until(A, (s) => s.toast === SAVED);
+    expect(A.getState().dailyLogDraft?.photosAdded).toBe(1);
+    // the refresh after it fails, so the log on screen is still the one the photo was added to
+    A.getState()._setGateway({ uploadMedia: vi.fn().mockRejectedValue(Object.assign(new Error('/media 410'), { status: 410, serverMessage: 'This photo was deleted' })), snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
+    await A.getState().flushOutbox();
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().dailyLog!.photos).toEqual([]);
+    expect(A.getState().dailyLogDraft?.photosAdded ?? 0).toBe(0);
+    expect(A.getState().sitePhotosKept).toEqual([]);
+  });
+
+  it('a direct send the server took whose row could not be marked stays this tab\'s: no flush sends it again (4389428586)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const up = uploads();
+    A.getState()._setGateway({ uploadMedia: up.fn, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.getState().addProgressPhoto(PNG);
+    await up.called();
+    const writes = failingWrites();
+    writes.on = true;
+    up.calls[0]!.answer.resolve({ id: 'm-c5', url: '/media/m-c5' });
+    await until(A, (s) => /uploaded/.test(s.toast ?? ''));
+    await settled();
+    writes.on = false;
+    await A.getState().flushOutbox();
+    await settled();
+    expect(up.fn).toHaveBeenCalledTimes(1);
+    expect(A.getState().outbox).toEqual([]);
+  });
+
+  it('a read of the kept copies that fails is tried again, with nothing else queued (4389428598)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const rows = await rowsOf();
+    await rows.putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-c6' });
+    const uploadMedia = vi.fn().mockResolvedValue({ id: 'm-c6', url: '/media/m-c6' });
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const broken = vi.spyOn(indexedDB, 'open').mockImplementation(() => { throw new Error('broken'); });
+      A.getState().hydrateOutbox();
+      await settled();
+      expect(uploadMedia).not.toHaveBeenCalled();
+      broken.mockRestore();
+      await vi.advanceTimersByTimeAsync(5000);
+      await settled();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(A.getState().outbox).toEqual([]);
+  });
+
+  it('a copy another tab was sending when it closed is sent here, with nothing else queued (4389428598)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const rows = await rowsOf();
+    await rows.putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-c7' });
+    const uploadMedia = vi.fn().mockResolvedValue({ id: 'm-c7', url: '/media/m-c7' });
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    // the other tab's send holds the row's lock
+    const release = await rows.holdSitePhotoLock(ROWS, 'villa-b', 'k-c7');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      A.getState().hydrateOutbox();
+      await settled();
+      expect(uploadMedia).not.toHaveBeenCalled();
+      expect(A.getState().outbox).toEqual([]);
+      // that tab closes before its answer: its lock goes, and its row is still full
+      release();
+      await vi.advanceTimersByTimeAsync(5000);
+      await settled();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(A.getState().outbox).toEqual([]);
+  });
+
+  it('a copy that could not be read while offline is read again when the app comes back online with nothing queued (4389428598)', async () => {
+    const A = await tab();
+    A.setState({ online: false } as never);
+    startWork(A as never);
+    const rows = await rowsOf();
+    await rows.putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-c8' });
+    const uploadMedia = vi.fn().mockResolvedValue({ id: 'm-c8', url: '/media/m-c8' });
+    A.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const broken = vi.spyOn(indexedDB, 'open').mockImplementation(() => { throw new Error('broken'); });
+      A.getState().hydrateOutbox();
+      await settled();
+      broken.mockRestore();
+      // the retry finds the app offline and sends nothing
+      await vi.advanceTimersByTimeAsync(5000);
+      await settled();
+      expect(A.getState().outbox).toEqual([]);
+      A.getState().toggleOnline();
+      await settled();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(A.getState().outbox).toEqual([]);
+  });
+});

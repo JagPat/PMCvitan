@@ -2320,8 +2320,9 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
           }
           throw err;
         }
-        // a row the phone could not mark is given its op again and sent again; the server answers with the same photo
-        await markSitePhotoSent(op.scope, gw.project, op.clientKey).catch(() => {});
+        // a row the phone could not mark keeps this op, which is sent again; the server answers with the same photo. Never
+        // settled with its bytes still in the row: a later load would rebuild an op for a photo said to be sent (Codex 4389428571)
+        await markSitePhotoSent(op.scope, gw.project, op.clientKey).catch(() => { throw new SitePhotoUnreadable(); });
         return false;
       }).then((gone) => {
         if (gone === null) throw new SitePhotoBusy();
