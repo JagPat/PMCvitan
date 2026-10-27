@@ -72,6 +72,8 @@ const MODEL_OWNER: Record<string, string> = {
   phase: 'phases',
   inspection: 'inspections', inspectionItem: 'inspections',
   drawing: 'drawings', drawingRevision: 'drawings', drawingRecipient: 'drawings', drawingAck: 'drawings',
+  // #1118 U3 — Hub's delivery receipts (U1a-1's ledger), written by the Hub webhook receiver
+  hubWebhookReceipt: 'drawings',
   dailyLog: 'daily-log', crewRow: 'daily-log', siteMaterial: 'daily-log',
   // Phase 3 Task 5 (§E) — the append-only mismatch resolution register, written only by
   // daily-log.resolveMismatch (one per observation; the observation row is never edited)
@@ -211,6 +213,9 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // edges 2/3 (sign-off done/revert) → activity.participant.applySignOff/revertSignOff
   'inspections/inspections.service.ts': { domain: 'inspections', foreign: {}, dispatch: 3 },
   'drawings/drawings.service.ts': { domain: 'drawings', foreign: {}, dispatch: 5 },
+  // #1118 U3 — Hub's webhook receiver records refused and ignored deliveries in the drawings-owned receipt ledger (and
+  // audits a refusal through `recordAudit`); it emits no domain event, so it dispatches nothing
+  'drawings/hub/hub-receiver.service.ts': { domain: 'drawings', foreign: {}, dispatch: 0 },
   // edge 4 (material mismatch block) → activity.participant.blockForMaterialMismatch;
   // Phase 3 Task 5 adds resolveMismatch (the inverse edge → clearMaterialMismatchBlock)
   'daily-log/daily-log.service.ts': { domain: 'daily-log', foreign: {}, dispatch: 5 },
@@ -558,6 +563,8 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   'platform/ops/ops.controller.ts': ["Post('projects/:projectId/capabilities/:capability/enable')", "Post('projects/:projectId/capabilities/:capability/disable')"],
   // #482 operator door — the QA-only mark, door guard before the rate limit (Codex P2 on #1020)
   'platform/ops/ops-qa.controller.ts': ["Post('orgs/:orgId/qa-only')"],
+  // #1118 U3 — Hub's signed webhook deliveries (no user; closed without HUB_*)
+  'drawings/hub/hub-receiver.controller.ts': ["Post(':orgId/events')"],
 };
 
 // Controllers with NO mutating route (read-only surfaces).
@@ -637,12 +644,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only)', () => {
+    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only; +1 #1118 U3 Hub webhook deliveries)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(188);
+      expect(total).toBe(189);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(188);
+      expect(live).toBe(189);
     });
   });
 

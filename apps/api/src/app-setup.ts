@@ -3,6 +3,7 @@ import { resolveCorsOrigins } from './config';
 import { Reflector } from '@nestjs/core';
 import { RecordedCompatInterceptor } from './common/recorded-compat.interceptor';
 import { CountersignCompatInterceptor } from './common/countersign-compat.interceptor';
+import { HUB_WEBHOOK_PREFIX, hubRawBody } from './drawings/hub/hub-raw-body';
 
 /**
  * The app configuration shared by the production bootstrap (src/main.ts) and the
@@ -19,6 +20,9 @@ export function configureApp(app: NestExpressApplication): void {
   // Raise the body limit so base64 photo uploads (Phase 7c-media) fit; the
   // default 100kb is too small. Validation is done per-route with Zod
   // (see common/zod.pipe.ts); no global ValidationPipe.
+  // #1118 U3 — Hub's webhooks keep their raw bytes for the signature check: this reader runs first on its prefix, and
+  // the JSON parser below then skips what it has read (see hub-raw-body.ts).
+  app.use(HUB_WEBHOOK_PREFIX, hubRawBody);
   app.useBodyParser('json', { limit: '12mb' });
   app.useBodyParser('urlencoded', { limit: '12mb', extended: true });
   // Phase 6 unit 4b (Codex R2-F1) — the previous-release version boundary for the new

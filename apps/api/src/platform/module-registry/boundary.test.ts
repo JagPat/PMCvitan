@@ -168,7 +168,7 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
     const declared = MODULE_MANIFESTS.flatMap((m) => m.routes);
     expect([...derived.keys()].sort()).toEqual([...declared].sort());
     expect(declared.length).toBe(new Set(declared).size); // globally unique
-    expect(declared.length).toBe(188); // the documented command inventory §4 (+2: #482 QA door rebuild qa-sign-in, mark a company QA-only; +1: Phase-6 task-4a decisions.withdraw; +3: 4d-ii-a / A8b countersign, disagree, stranded; +1: Top 10 #4b unit C notifications.seen; +3: Site Visits SV1-b start, end, close; +4: SV1-b unit 2 place and attendee add and retire; +2: #482 operator door enable, disable)
+    expect(declared.length).toBe(189); // the documented command inventory §4 (+1: #1118 U3 Hub webhook deliveries; +2: #482 QA door rebuild qa-sign-in, mark a company QA-only; +1: Phase-6 task-4a decisions.withdraw; +3: 4d-ii-a / A8b countersign, disagree, stranded; +1: Top 10 #4b unit C notifications.seen; +3: Site Visits SV1-b start, end, close; +4: SV1-b unit 2 place and attendee add and retire; +2: #482 operator door enable, disable)
     // no route contributed by two controllers or two manifests, no missing/unexpected route
     expect(analysis.routeFindings).toEqual([]);
   });
