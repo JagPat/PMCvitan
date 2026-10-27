@@ -71,3 +71,9 @@ test('the api job runs the sharded suite, one migrated server per shard', async 
   assert.match(api, /for i in 1 2 3; do[\s\S]*pnpm --filter api prisma:migrate/u);
   assert.doesNotMatch(api, /pnpm --filter api test:integration/u);
 });
+
+test('the runner never cuts its own output short with process.exit', async () => {
+  const runner = await readFile(new URL('../apps/api/test/integration-shards.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(runner, /process\.exit\(/u);
+  assert.match(runner, /process\.exitCode = 1/u);
+});

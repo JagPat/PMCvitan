@@ -5,6 +5,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { plantLegacyApprovalRevision, rawDeliveryRowsSql } from './fixtures';
 import { effectCoverageVersion } from '../../src/platform/external-effects';
+import { readinessLockKey } from '../../src/common/readiness-lock';
 
 /**
  * Phase 6 unit 4c-i — CONSULTATION, deployed DARK (plan §A/§D, probes P23/P25/P25d/P27/P41 DB arms).
@@ -42,10 +43,27 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
   let seq = 0;
 
   const sql = (q: string) => t.prisma.$executeRawUnsafe(q);
-  /** A raw statement that MUST be refused — asserted on the message so a different failure fails. */
-  const refused = async (q: string, match: RegExp): Promise<void> => {
-    await expect(sql(q), q).rejects.toThrow(match);
+  /**
+   * #1144 — wait until the statement just refused has RELEASED both fixture projects' readiness
+   * keys. PostgreSQL sends an error to the client before it aborts that transaction and drops its
+   * locks, so the suite's next write, on another pooled connection, could find the key still held
+   * by the refused statement and be refused itself ("the project readiness key is held elsewhere").
+   * A blocking acquire in a statement of its own waits for exactly that release: a lock wait, not
+   * a clock, and it holds nothing once it returns.
+   */
+  const settle = async (): Promise<void> => {
+    await t.prisma.$executeRawUnsafe(
+      `SELECT pg_advisory_xact_lock(hashtextextended(k, 0)) FROM unnest($1::text[]) AS k`,
+      [readinessLockKey(projectId), readinessLockKey(projectBId)],
+    );
   };
+  /** A write that MUST be refused — asserted on the message so a different failure fails. */
+  const rejected = async (write: Promise<unknown>, match: RegExp, label?: string): Promise<void> => {
+    await expect(write, label).rejects.toThrow(match);
+    await settle();
+  };
+  /** A raw statement that MUST be refused. */
+  const refused = (q: string, match: RegExp): Promise<void> => rejected(sql(q), match, q);
 
   /**
    * The receipt statements, as SQL. The delivered receipt protocol requires reserve and complete
@@ -530,22 +548,24 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
 
     // a receipt left RESERVED at commit — the deferred binding refuses the whole transaction
     const dangling = id(`cmd${seq++}`);
-    await expect(
+    await rejected(
       t.prisma.$transaction([
         sql(reserveSql(dangling, 'consultations.request', users.pmc)),
         sql(requestSql({ id: id('p7'), sourceCommandId: dangling })),
       ]),
-    ).rejects.toThrow(/did not succeed/i);
+      /did not succeed/i,
+    );
 
     // a receipt that completes naming ANOTHER row
     const misbound = id(`cmd${seq++}`);
-    await expect(
+    await rejected(
       t.prisma.$transaction([
         sql(reserveSql(misbound, 'consultations.request', users.pmc)),
         sql(requestSql({ id: id('p8'), sourceCommandId: misbound })),
         sql(completeSql(misbound, 'a-different-row')),
       ]),
-    ).rejects.toThrow(/result names/i);
+      /result names/i,
+    );
   });
 
   it('provenance (Codex F1): the RESPONSE table is judged by the same rules, through its own writer', async () => {
@@ -576,21 +596,23 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     // the DEFERRED half, on this table: a receipt left reserved at commit, and one completing with
     // a `resultRef` naming another row
     const dangling = id(`cmd${seq++}`);
-    await expect(
+    await rejected(
       t.prisma.$transaction([
         sql(reserveSql(dangling, 'consultations.respond', users.eng)),
         sql(responseSql({ id: id('q6'), consultationId: cons, sourceCommandId: dangling })),
       ]),
-    ).rejects.toThrow(/did not succeed/i);
+      /did not succeed/i,
+    );
 
     const misbound = id(`cmd${seq++}`);
-    await expect(
+    await rejected(
       t.prisma.$transaction([
         sql(reserveSql(misbound, 'consultations.respond', users.eng)),
         sql(responseSql({ id: id('q7'), consultationId: cons, sourceCommandId: misbound })),
         sql(completeSql(misbound, 'a-different-row')),
       ]),
-    ).rejects.toThrow(/result names/i);
+      /result names/i,
+    );
 
     // and the one-use rule, reached through the seal exactly as on the request side
     const answered = await commitResponse({ consultationId: cons });
@@ -737,6 +759,7 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     withdrawer.release();
     expect(await withdrawer.done).toBeUndefined();
     const outcome = await late;
+    await settle();
     expect(String(outcome)).toMatch(/PUBLISHED, still-open/i);
     expect(await t.prisma.decisionConsultation.count({ where: { decisionId: d2.d } })).toBe(0);
   });
@@ -793,6 +816,7 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
       archiver2.release();
       expect(await archiver2.done).toBeUndefined();
       expect(String(await lateReq)).toMatch(/archiv/i);
+      await settle();
       expect(await t.prisma.decisionConsultation.count({ where: { decisionId: d2.d } })).toBe(0);
       await unarchive();
 
@@ -833,6 +857,7 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
       archiver4.release();
       expect(await archiver4.done).toBeUndefined();
       expect(String(await lateRes)).toMatch(/archiv/i);
+      await settle();
       expect(await t.prisma.decisionConsultationResponse.count({ where: { consultationId: cons4 } })).toBe(0);
     } finally {
       // the shared project is fixture state for every later probe — never leave it archived
@@ -858,11 +883,12 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     // LEGACY rows keep their NULL. The trigger is INSERT-scoped, so history stays honestly
     // incomplete rather than being backfilled with provenance nobody recorded.
     const own = await make(projectId, `old${seq++}`);
-    await expect(
+    await rejected(
       t.prisma.decisionApprovalRevision.create({
         data: { id: id(`rev${seq++}`), projectId, decisionId: own.d, version: 1, optionKey: 'a', approvedAt: new Date(), approvedById: users.client },
       }),
-    ).rejects.toThrow(/carries no source command/);
+      /carries no source command/,
+    );
 
     // …and the fixture bypass — which is what a legacy row IS — still lands, with its NULL intact
     const legacyId = id(`rev${seq++}`);
