@@ -58,8 +58,9 @@ describe.each(['hi', 'gu'] as const)('the Dashboard photo section in %s (#954)',
 describe('English is unchanged (#954)', () => {
   it('the heading, empty line, kinds and alt text read as before', async () => {
     const empty = await load('dashboard', 'en', []);
-    // #482 site photos: the "Add site photo" button sits between the heading and the empty line
-    expect(empty.getByTestId('dash-photo-block').textContent).toBe('LATEST · SITE PHOTOS Add site photoNo progress photos recorded');
+    // #482 site photos: the "Add site photo" button sits between the heading and the empty line, and (#482 in-app
+    // guide) the empty line is followed by the one line naming that button
+    expect(empty.getByTestId('dash-photo-block').textContent).toBe('LATEST · SITE PHOTOS Add site photoNo progress photos recordedTo add the first photo of the site, tap Add site photo above.');
     cleanup();
     const full = await load('dashboard', 'en', PHOTOS);
     const block = full.getByTestId('dash-photo-block');

@@ -91,6 +91,16 @@ export const GUIDES: readonly Guide[] = [
       { target: 'publish-decision', tip: 'decisionPublish', until: 'outcome', outcome: { ok: 'decision-published', failed: 'decision-publish-failed' } },
     ],
   },
+  {
+    // a site photo: the Dashboard's "Add site photo" opens the phone's camera or gallery. The step ends only when the
+    // store has the photo (sent, or kept on this phone to send), so a cancelled picker leaves the tip where it is.
+    id: 'add-site-photo',
+    roles: ['pmc', 'engineer'],
+    screen: 'dashboard',
+    steps: [
+      { target: 'add-site-photo', tip: 'photoAdd', until: 'outcome', outcome: { ok: 'site-photo-added', failed: 'site-photo-add-failed' } },
+    ],
+  },
 ];
 
 /** The run's key is `<checklist id>:<item>`: that checklist is submitted once it is no longer out on site. */

@@ -830,7 +830,8 @@ export interface AppActions {
    * with `pickedIn` for the same reason: a same-project refresh can replace the log before the read resolves.
    * Omitted, the log on screen now is used.
    */
-  addProgressPhoto: (dataUrl: string, nodeId?: string | null, stamp?: CaptureStamp, pickedIn?: ProjectScope, pickedForLog?: string | null) => void;
+  /** `guideRun`: the in-app guide run the photo was chosen under (taken before the file was read); now when not given */
+  addProgressPhoto: (dataUrl: string, nodeId?: string | null, stamp?: CaptureStamp, pickedIn?: ProjectScope, pickedForLog?: string | null, guideRun?: number) => void;
   /** #482 site photos — delete a site photo the viewer added, within the hour (needs a connection). Settles when the
    *  server has answered; a second ask for the same photo while one is on its way joins it. */
   deleteSitePhoto: (photoId: string) => Promise<void>;
@@ -6062,14 +6063,17 @@ export const useStore = create<Store>()(
       persistDailyLogDraft();
       get().record('Progress photo');
     },
-    addProgressPhoto: (dataUrl, nodeId, stamp, pickedIn, pickedForLog) => {
+    addProgressPhoto: (dataUrl, nodeId, stamp, pickedIn, pickedForLog, pickedInRun) => {
       // The file was chosen BEFORE the read that produced this data URL, and a project switch
       // (or sign-out, or re-auth) in between makes this photo — and its `photoNode` — belong
       // to a project we have left. Uploading it through whichever gateway is installed now
       // would file A's evidence under B. Same silent drop as every other scope guard here.
       if (pickedIn && !scopeStillCurrent(pickedIn)) return;
+      // #482 in-app guide: the run this photo was chosen under, so a late read or reply cannot finish a later run
+      const guideRun = pickedInRun ?? guideRunToken();
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {
+        emitGuideOutcome('site-photo-add-failed', null, guideRun);
         get().flash(DLT.photoUnreadable[get().lang]);
         return;
       }
@@ -6116,6 +6120,8 @@ export const useStore = create<Store>()(
             }
           });
           persistDailyLogDraft();
+          // queued to send, as an offline submit is: the guide's step is done (the act's own line says if it is kept)
+          emitGuideOutcome('site-photo-added', null, guideRun);
           flashSaved(DLT.photoOffline[get().lang], [upload]); // the photo's bytes live only in this act: said once it is written
           return;
         }
@@ -6178,6 +6184,7 @@ export const useStore = create<Store>()(
               recordDraftPhoto(s);
             });
             persistDailyLogDraft();
+            emitGuideOutcome('site-photo-added', null, guideRun);
             // #482 site photos: the snapshot says until when the new photo is the viewer's to delete
             void requestFreshSnapshot(scope);
             // say what the photo actually carried, not what the feature is called
@@ -6187,6 +6194,7 @@ export const useStore = create<Store>()(
           })
           .catch(() => {
             set((s) => settle(s, false));
+            emitGuideOutcome('site-photo-add-failed', null, guideRun);
             get().flash(DLT.photoUploadFailed[get().lang]);
           })
           .finally(() => { set((s) => { s.photoUploadsSending = s.photoUploadsSending.filter((k) => k !== clientKey); }); });
@@ -6213,6 +6221,7 @@ export const useStore = create<Store>()(
       });
       persistDailyLogDraft();
       get().record('Progress photo');
+      emitGuideOutcome('site-photo-added', null, guideRun);
       if (!get().online) {
         get().flash(DLT.photoOffline[get().lang]);
       } else {

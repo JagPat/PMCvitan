@@ -12,6 +12,7 @@ import { ROUTE_ONLY_SCREENS, SCREEN_MODULE } from '@/lib/screens';
 import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { AddSitePhoto } from '@/components/AddSitePhoto';
+import { EmptyHint } from '@/guide/EmptyHint';
 import { SitePhotoDelete } from '@/components/SitePhotoDelete';
 import { queuedSitePhotos } from '@/lib/queuedSitePhotos';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
@@ -49,6 +50,7 @@ export function DashboardScreen() {
   // …and never a confident 0 from a slice that has not landed: a live tile reads "—" until its slice settles
   const decisionsKnown = useStore((s) => decisionsSliceSettled(s) && (!API_BASE || s.projectLoadState === 'ready'));
   const inspectionsKnown = useStore((s) => inspectionsSliceSettled(s) && (!API_BASE || s.projectLoadState === 'ready'));
+  const photosKnown = useStore((s) => s.projectLoadState === 'ready');
   const decisionsFailed = useStore((s) => s.decisionsLoad === 'error');
   const inspectionsFailed = useStore((s) => s.inspectionsLoad === 'error');
   const reviewPending = useStore(selectReviewPending);
@@ -338,6 +340,8 @@ export function DashboardScreen() {
           sitePhotos.length === 0 ? (
             <div style={{ fontSize: 13, color: 'var(--muted)', border: '1px dashed var(--hairline)', borderRadius: 10, padding: '22px 16px', textAlign: 'center' }}>
               {L.noProgressPhotos[lang]}
+              {/* #482 in-app guide: the button to press, once the project's photos are known to be none */}
+              {photosKnown && <EmptyHint task="photo" />}
             </div>
           ) : (
             <div className={styles.photos}>

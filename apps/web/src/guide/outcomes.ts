@@ -11,7 +11,9 @@ export type GuideOutcome =
   | 'checklist-issued'
   | 'checklist-issue-failed'
   | 'decision-published'
-  | 'decision-publish-failed';
+  | 'decision-publish-failed'
+  | 'site-photo-added'
+  | 'site-photo-add-failed';
 
 /** `key`: which record the outcome is about (the submitted inspection's id), so a guide following one
  *  checklist ignores the submit of another. `run`: the guide run the request was sent under (see
