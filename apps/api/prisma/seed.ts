@@ -142,7 +142,11 @@ async function main(): Promise<void> {
     // #1118 U1a-2 — a Hub link event names the user who acted through a NO ACTION key, so it goes before the users;
     // it refuses row DELETE, so it is cleared here, its TRUNCATE seal bypassed by name. The link goes in the same
     // statement: this reset commits on its own, and a link left behind without its events could never be written again.
-    'DrawingHubLinkEvent', 'DrawingHubLink'
+    'DrawingHubLinkEvent', 'DrawingHubLink',
+    // #1118 U1b — a Hub drawing's, revision's and mark's records hold RESTRICT keys to "Drawing" and "DrawingRevision"
+    // and refuse row DELETE, so the drawing wipe below would be refused while one exists; they are cleared here, their
+    // TRUNCATE seals bypassed by name, together because each references the one before it.
+    'HubGoverningMark', 'HubRevision', 'HubDrawing'
   ] as const;
   await sanctionedReset(prisma, RESET_TABLES);
   await prisma.gateOverride.deleteMany();
