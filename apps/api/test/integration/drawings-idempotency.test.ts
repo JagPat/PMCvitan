@@ -111,7 +111,7 @@ describe('Phase 2 Task 10 — drawing commands are idempotent (live PG)', () => 
 
   it('issue (presigned): the SAME key + same storageKey + same contentSha256 replays; a DIFFERENT digest is a 409', async () => {
     const { p } = await freshProject();
-    const storageKey = `${p}/drawings/fixture.pdf`; // must belong to the project (the service enforces the prefix)
+    const storageKey = `${p}/drawings/typed/fixture.pdf`; // must belong to the project (the service enforces the prefix)
     const digestA = sha256Hex(Buffer.from('the original large file bytes'));
     const digestB = sha256Hex(Buffer.from('a DIFFERENT large file uploaded to the same key'));
     // the bucket holds the object as the type the issue gives (the service checks it before recording the key)

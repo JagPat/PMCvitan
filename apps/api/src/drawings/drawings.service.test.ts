@@ -257,10 +257,10 @@ describe('DrawingsService.issue', () => {
 
   it('accepts a presigned storageKey (skips put, records the bucket pointer, stores no public url)', async () => {
     const { svc, draws, storage } = make();
-    await svc.issue('ambli', drawUser, { ...base, data: undefined as never, storageKey: 'ambli/drawings/big.pdf', sizeBytes: 9_000_000 });
+    await svc.issue('ambli', drawUser, { ...base, data: undefined as never, storageKey: 'ambli/drawings/typed/big.pdf', sizeBytes: 9_000_000 });
     expect(storage.put).not.toHaveBeenCalled();
     const rev = draws[0].revisions[0];
-    expect(rev.storageKey).toBe('ambli/drawings/big.pdf');
+    expect(rev.storageKey).toBe('ambli/drawings/typed/big.pdf');
     expect(rev.url).toBeNull(); // private delivery: never persist the public bucket url
     expect(rev.data).toBeNull();
   });
@@ -270,12 +270,21 @@ describe('DrawingsService.issue', () => {
       const { svc, draws, storage } = make();
       storage.storedType.mockResolvedValueOnce(stored);
       await expect(
-        svc.issue('ambli', drawUser, { ...base, data: undefined as never, storageKey: 'ambli/drawings/big.pdf', sizeBytes: 9_000_000 }),
+        svc.issue('ambli', drawUser, { ...base, data: undefined as never, storageKey: 'ambli/drawings/typed/big.pdf', sizeBytes: 9_000_000 }),
         String(stored),
       ).rejects.toThrow(/not of the type given/);
-      expect(storage.storedType).toHaveBeenCalledWith('ambli/drawings/big.pdf');
+      expect(storage.storedType).toHaveBeenCalledWith('ambli/drawings/typed/big.pdf');
       expect(draws).toHaveLength(0);
     }
+  });
+
+  it('refuses a key from an upload link minted before the type was signed, whatever the object holds (#995 nosniff)', async () => {
+    const { svc, draws, storage } = make();
+    await expect(
+      svc.issue('ambli', drawUser, { ...base, data: undefined as never, storageKey: 'ambli/drawings/3f2a9c1e.pdf', sizeBytes: 9_000_000 }),
+    ).rejects.toThrow(/out of date/);
+    expect(storage.storedType).not.toHaveBeenCalled();
+    expect(draws).toHaveLength(0);
   });
 
   it('rejects a storageKey that belongs to another project (cross-project drawing read)', async () => {
@@ -407,6 +416,9 @@ describe('DrawingsService — controlled lifecycle (Phase 1 Task 3)', () => {
 describe('DrawingsService.presign', () => {
   it('returns a presigned upload target in S3 mode', async () => {
     const { svc } = make('https://cdn.vitan.in/ambli/drawings/x.pdf');
+    const { svc: s3, storage } = make('https://cdn.vitan.in/ambli/drawings/x.pdf');
+    await s3.presign('ambli', 'application/pdf');
+    expect(storage.keyFor).toHaveBeenCalledWith('ambli', 'drawings/typed', 'application/pdf'); // the only keys issue() records
     const res = await svc.presign('ambli', 'application/pdf');
     expect(res).toMatchObject({ storageKey: 'ambli/drawings/x.pdf', uploadUrl: expect.stringContaining('upload') });
   });

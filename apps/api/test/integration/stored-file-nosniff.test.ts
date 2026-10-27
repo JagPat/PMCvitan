@@ -47,6 +47,7 @@ describe('#995 — stored files are served with nosniff (live PG)', () => {
       await t.prisma.media.deleteMany({ where: { id: { in: media } } });
       await t.prisma.drawingRevision.deleteMany({ where: { drawingId: { in: drawings } } });
       await t.prisma.drawing.deleteMany({ where: { id: { in: drawings } } });
+      await f?.cleanup();
       await t.close();
     }
   });
