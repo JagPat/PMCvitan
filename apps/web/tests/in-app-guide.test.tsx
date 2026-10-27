@@ -491,6 +491,18 @@ describe('follow-ups from review (#858, #861, #862)', () => {
     expect(done()).toEqual(['raise-issue-engineer']);
   });
 
+  it('a checklist submitted elsewhere before this run pressed Submit does not finish the guide', async () => {
+    const { useStore } = await engineerAtSubmit();
+    tick();
+    expect(step()).toBe('2');
+    // another tab (or a teammate) submits it: the store shows it done, but this run never pressed Submit
+    act(() => { useStore.setState({ openChecklists: [], checklist: null }); });
+    tick();
+    tick(2000);
+    tick();
+    expect(done()).toEqual([]);
+  });
+
   it('an already-failed item\'s Fail is never the spotlit control (pressing it would clear the failure)', async () => {
     const s = await setup('engineer', 'engineer-check');
     const c = checklist();

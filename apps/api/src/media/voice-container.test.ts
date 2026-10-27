@@ -925,6 +925,25 @@ describe('the #1013 replacement, second review: every part read by its type, and
     expect(mp4(fragmentedMp4())).toBe(true);
   });
 
+  it('Codex round 1 on #1158: a fragment marked duration-is-empty holds no track run', () => {
+    const empty = (b: Buffer) => {
+      const out = Buffer.from(b);
+      out[out.indexOf(Buffer.from('tfhd')) + 5]! |= 0x01; // tfhd flags 0x010000
+      return out;
+    };
+    expect(mp4(empty(fragmentedMp4()))).toBe(false);
+  });
+
+  it('Codex round 2 on #1158: an MP4 track has a nonzero track_ID', () => {
+    const zero = (b: Buffer) => {
+      const out = Buffer.from(b);
+      out.writeUInt32BE(0, out.indexOf(Buffer.from('tkhd')) + 4 + 12); // version 0: track_ID after the two times
+      return out;
+    };
+    expect(mp4(plainMp4())).toBe(true);
+    expect(mp4(zero(plainMp4()))).toBe(false);
+  });
+
   it('WebM DocType and CodecID: at most 16 bytes, and trailing zeros dropped by a loop, never a pattern (no quadratic time)', () => {
     const nuls = (n: number) => Buffer.concat([Buffer.alloc(n), Buffer.from('x')]);
     // 80,000 zero bytes then one more took 6.7 s on ee78dd1's pattern; the length rule refuses it before reading it

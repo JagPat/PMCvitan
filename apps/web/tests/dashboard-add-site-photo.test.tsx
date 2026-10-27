@@ -64,9 +64,10 @@ describe('#482 site photos: "Add site photo" on the Dashboard', () => {
     const r = render(<DashboardScreen />);
     const button = r.getByTestId('add-site-photo');
     expect(button.textContent).toContain('Add site photo');
-    expect(button.closest('[data-guide="add-site-photo"]')).not.toBeNull();
+    // the in-app guide points at the button itself (#482)
+    expect(button.getAttribute('data-guide')).toBe('add-site-photo');
     // one button: no other control comes with it
-    expect(button.closest('[data-guide="add-site-photo"]')!.querySelectorAll('select, button')).toHaveLength(1);
+    expect(button.parentElement!.querySelectorAll('select, button')).toHaveLength(1);
     // no `capture`: the gallery stays open on Android
     expect(r.getByTestId('add-site-photo-file').hasAttribute('capture')).toBe(false);
   });
