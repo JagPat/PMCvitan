@@ -446,7 +446,12 @@ function VoiceRecorder({ visitId, lang, busy, onRecorded }: {
   const [elapsed, setElapsed] = useState(0);
   const [said, setSaid] = useState<string | null>(null);
   const run = useRef<Recording | null>(null);
+  // the recording stays this screen's until it has stopped, so leaving (or Discard) meanwhile still keeps nothing
+  const stopping = useRef<Recording | null>(null);
   const alive = useRef(true);
+  // the note, rating and place as they are when the recording ends, however it ends (the cap included)
+  const recorded = useRef(onRecorded);
+  useEffect(() => { recorded.current = onRecorded; });
   // set again on each mount: StrictMode runs the cleanup once before the real mount (as ProjectSwitcher does)
   useEffect(() => {
     alive.current = true;
@@ -464,7 +469,7 @@ function VoiceRecorder({ visitId, lang, busy, onRecorded }: {
 
   const finish = async (rec: Recorded, capped: boolean) => {
     setPhase('idle');
-    const ok = await onRecorded(rec);
+    const ok = await recorded.current(rec);
     if (ok && capped && alive.current) setSaid(SV.voiceCapped[lang]);
   };
   const start = async () => {
@@ -475,8 +480,12 @@ function VoiceRecorder({ visitId, lang, busy, onRecorded }: {
       if (!alive.current) { r.cancel(); return; }
       run.current = r;
       setPhase('recording');
-      // stopped by its cap: added as if Stop was tapped, unless Stop or Discard came first
-      void r.capped.then((rec) => { if (run.current === r) { run.current = null; void finish(rec, true); } });
+      // stopped by its cap, or ended by the browser: added as if Stop was tapped, unless Stop or Discard came first
+      void r.ended.then(({ rec, cause }) => {
+        if (run.current !== r || !alive.current) return;
+        run.current = null;
+        void finish(rec, cause === 'cap');
+      });
     } catch (err) {
       if (!alive.current) return;
       setPhase('idle');
@@ -486,9 +495,12 @@ function VoiceRecorder({ visitId, lang, busy, onRecorded }: {
   };
   const stop = async () => {
     const r = run.current;
-    if (!r) return;
+    if (!r || stopping.current === r) return;
+    stopping.current = r;
+    const rec = await r.stop();
+    if (run.current !== r || !alive.current) return;
     run.current = null;
-    void finish(await r.stop(), false);
+    void finish(rec, false);
   };
   const discard = () => {
     run.current?.cancel();

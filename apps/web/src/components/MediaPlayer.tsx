@@ -48,9 +48,12 @@ export function MediaPlayer({ url, mime, label, words }: {
   };
 
   if (state.phase === 'ready') {
+    // a file this browser cannot play (another browser's format, or damaged) says so, with Try again, rather than
+    // leaving a player that does nothing
+    const failed = () => setState({ phase: 'failed' });
     return mime.startsWith('video/')
-      ? <video controls playsInline preload="metadata" src={state.src} aria-label={label} />
-      : <audio controls preload="metadata" autoPlay={!local} src={state.src} aria-label={label} />;
+      ? <video controls playsInline preload="metadata" src={state.src} aria-label={label} onError={failed} />
+      : <audio controls preload="metadata" autoPlay={!local} src={state.src} aria-label={label} onError={failed} />;
   }
   if (state.phase === 'failed') {
     return (

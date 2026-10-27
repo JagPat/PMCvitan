@@ -64,20 +64,27 @@ async function mount(role: Role, me: string, gw: Fake, lang: Lang = 'en', outbox
 // test's own clock
 let now = 0;
 let writes: string | null = null;
+/** when set, a stop's last data and stop event wait until the test lets them go (`release`) */
+let holdStop = false;
+let release: (() => void) | null = null;
 let tracks: Array<{ stop: ReturnType<typeof vi.fn> }> = [];
 const getUserMedia = vi.fn(async () => ({ getTracks: () => tracks }));
 class FakeRecorder {
   static isTypeSupported(t: string) { return t.startsWith('audio/webm'); }
+  static last: FakeRecorder | null = null;
   state: 'inactive' | 'recording' = 'inactive';
   mimeType: string;
   ondataavailable: ((e: { data: Blob }) => void) | null = null;
   onstop: (() => void) | null = null;
-  constructor(_stream: unknown, options: { mimeType: string }) { this.mimeType = writes ?? options.mimeType; }
+  constructor(_stream: unknown, options: { mimeType: string }) { this.mimeType = writes ?? options.mimeType; FakeRecorder.last = this; }
   start() { this.state = 'recording'; }
   stop() {
     this.state = 'inactive';
-    this.ondataavailable?.({ data: new Blob([new Uint8Array([1, 2, 3])], { type: this.mimeType }) });
-    this.onstop?.();
+    const end = () => {
+      this.ondataavailable?.({ data: new Blob([new Uint8Array([1, 2, 3])], { type: this.mimeType }) });
+      this.onstop?.();
+    };
+    if (holdStop) release = end; else end();
   }
 }
 const withRecorder = () => {
@@ -90,6 +97,8 @@ beforeEach(() => {
   onTestFinished(startWork(useStore));
   now = 0;
   writes = null;
+  holdStop = false;
+  release = null;
   vi.spyOn(Date, 'now').mockImplementation(() => now);
   tracks = [{ stop: vi.fn() }];
   getUserMedia.mockClear();
@@ -280,6 +289,42 @@ describe('Stage 1 voice notes on a visit', () => {
     expect(useStore.getState().outbox).toHaveLength(0);
   });
 
+  it('adds a recording the browser ended by itself, with the note as it is then, and stops showing it as recording', async () => {
+    withRecorder();
+    const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
+    const card = screen.getByTestId('sv-visit-v-1');
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Record voice note' })); });
+    // the note is written while recording
+    fireEvent.change(within(card).getByLabelText('Note (optional)'), { target: { value: 'Written while recording' } });
+    now += 3_000;
+    // the microphone went away: the recorder stops without Stop being tapped
+    await act(async () => { FakeRecorder.last!.stop(); });
+    await settled();
+    expect(within(card).queryByTestId('sv-recording-v-1')).toBeNull();
+    expect(within(card).getByRole('button', { name: 'Record voice note' })).toBeTruthy();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect((uploadMedia.mock.calls[0] as unknown as [Record<string, unknown>])[0]).toMatchObject({ siteVisit: { note: 'Written while recording' } });
+  });
+
+  it('keeps nothing when the screen is left after Stop but before the recording has finished', async () => {
+    withRecorder();
+    holdStop = true;
+    const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
+    const card = screen.getByTestId('sv-visit-v-1');
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Record voice note' })); });
+    now += 3_000;
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Stop and add' })); });
+    expect(release).not.toBeNull();
+    cleanup();
+    await act(async () => { release!(); });
+    await settled();
+    expect(uploadMedia).not.toHaveBeenCalled();
+    expect(useStore.getState().outbox).toHaveLength(0);
+    expect(tracks[0].stop).toHaveBeenCalled();
+  });
+
   it('records and sends a note when the screen runs under StrictMode, as the app does', async () => {
     withRecorder();
     const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
@@ -338,6 +383,19 @@ describe('Stage 1 voice notes on a visit', () => {
     const row = screen.getByTestId('sv-file-m-v');
     await act(async () => { fireEvent.click(within(row).getByRole('button', { name: 'Play: Slab level is off' })); });
     await settled();
+    expect(row.textContent).toContain('This voice note could not be played.');
+    expect(within(row).getByRole('button', { name: 'Try again' })).toBeTruthy();
+  });
+
+  it('says a note could not be played when the browser cannot play the file it fetched', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/webm' }) })));
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:voice-1'), revokeObjectURL: vi.fn() }));
+    await mount('client', 'u-client', fakeGateway([visit({ status: 'ended', files: [voiceFile()] })]));
+    const row = screen.getByTestId('sv-file-m-v');
+    await act(async () => { fireEvent.click(within(row).getByRole('button', { name: 'Play: Slab level is off' })); });
+    await settled();
+    await act(async () => { fireEvent.error(row.querySelector('audio')!); });
+    expect(row.querySelector('audio')).toBeNull();
     expect(row.textContent).toContain('This voice note could not be played.');
     expect(within(row).getByRole('button', { name: 'Try again' })).toBeTruthy();
   });

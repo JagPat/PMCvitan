@@ -75,8 +75,10 @@ export interface Recording {
   stop(): Promise<Recorded>;
   /** Stop and keep nothing. */
   cancel(): void;
-  /** Settles once with the recording when it stopped itself at its cap (it is then also what `stop` returns). */
-  capped: Promise<Recorded>;
+  /** Settles once when the recording stopped without Stop or Cancel: at its cap (`cap`), or because the browser ended it
+   *  (`ended`: the microphone went away, the phone took it for a call). It carries that recording, which is then also
+   *  what `stop` returns. */
+  ended: Promise<{ rec: Recorded; cause: 'cap' | 'ended' }>;
 }
 
 /** What a kind may ask of the recorder beyond its type: its bit rates (a video clip keeps a minute inside the upload's
@@ -90,7 +92,7 @@ export interface RecordOptions {
  * Start recording `kind` in `type` (from `pickRecordType`). It stops itself after `maxMs`. The recording is one blob,
  * written when it stops (no timeslice), so a container's own header and index are whole. It records from the phone's
  * own devices (`getUserMedia`), never a drawn stream. A recorder that writes a type the upload does not take for `kind`
- * (whatever it was asked for) is stopped at once and reported as unavailable, so such a file is never kept. The
+ * (whatever it was asked for) is stopped at once and reported as a format refusal, so such a file is never kept. The
  * microphone (and camera) are let go as soon as it stops or is cancelled.
  */
 export async function startRecording(kind: RecordKind, type: string, maxMs: number, options: RecordOptions = {}): Promise<Recording> {
@@ -114,6 +116,11 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
   }
   const chunks: Blob[] = [];
   let began: number | null = null;
+  // when the stop was asked for (Stop, Cancel or the cap): the recording's length runs to there, not to the stop event,
+  // which comes once the recorder has written its last data
+  let stoppedAt: number | null = null;
+  let asked = false;
+  let byCap = false;
   let cancelled = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
@@ -124,12 +131,20 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
       release();
       const written = recorder.mimeType || type;
       const mime = baseType(written);
-      resolve({ blob: new Blob(chunks, { type: mime }), mime, type: written, ms: began === null ? 0 : Math.max(0, Date.now() - began) });
+      const rec = { blob: new Blob(chunks, { type: mime }), mime, type: written, ms: began === null ? 0 : Math.max(0, (stoppedAt ?? Date.now()) - began) };
+      resolve(rec);
+      // stopped by its cap, or by the browser itself: said, so the screen does not go on showing a recording
+      if (!cancelled && (byCap || !asked)) resolveEnded({ rec, cause: byCap ? 'cap' : 'ended' });
     };
   });
-  let resolveCapped: (r: Recorded) => void = () => {};
-  const capped = new Promise<Recorded>((resolve) => { resolveCapped = resolve; });
-  const halt = () => { if (recorder.state !== 'inactive') recorder.stop(); };
+  let resolveEnded: (r: { rec: Recorded; cause: 'cap' | 'ended' }) => void = () => {};
+  const ended = new Promise<{ rec: Recorded; cause: 'cap' | 'ended' }>((resolve) => { resolveEnded = resolve; });
+  const halt = () => {
+    if (recorder.state === 'inactive') return;
+    asked = true;
+    stoppedAt ??= Date.now();
+    recorder.stop();
+  };
   try {
     recorder.start();
   } catch {
@@ -147,14 +162,15 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
   }
   began = Date.now();
   timer = setTimeout(() => {
+    if (recorder.state === 'inactive' || asked) return;
+    byCap = true;
     halt();
-    void done.then((r) => { if (!cancelled) resolveCapped(r); });
   }, maxMs);
   return {
     stop: () => { halt(); return done; },
     // the last data the recorder hands over as it stops is dropped too
     cancel: () => { cancelled = true; recorder.ondataavailable = null; chunks.length = 0; halt(); },
-    capped,
+    ended,
   };
 }
 

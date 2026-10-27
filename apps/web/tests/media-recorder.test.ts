@@ -10,6 +10,8 @@ import { acceptedType, baseType, clockText, pickRecordType, RecordError, startRe
 
 type Track = { stop: ReturnType<typeof vi.fn> };
 let writes: string | null = null;
+/** how long the recorder takes from stop() to its stop event (writing its last data); 0 is at once */
+let stopTakes = 0;
 let supported = new Set<string>();
 
 class FakeRecorder {
@@ -28,8 +30,11 @@ class FakeRecorder {
   start() { this.state = 'recording'; }
   stop() {
     this.state = 'inactive';
-    this.ondataavailable?.({ data: new Blob([new Uint8Array([1, 2, 3])], { type: this.mimeType }) });
-    this.onstop?.();
+    const end = () => {
+      this.ondataavailable?.({ data: new Blob([new Uint8Array([1, 2, 3])], { type: this.mimeType }) });
+      this.onstop?.();
+    };
+    if (stopTakes > 0) setTimeout(end, stopTakes); else end();
   }
 }
 
@@ -39,6 +44,7 @@ const getUserMedia = vi.fn(async () => ({ getTracks: () => tracks }));
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance', 'Date'] });
   writes = null;
+  stopTakes = 0;
   supported = new Set(['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']);
   tracks = [{ stop: vi.fn() }];
   getUserMedia.mockClear();
@@ -87,28 +93,65 @@ describe('Stage 1 voice notes: the shared recorder', () => {
 
   it('stops itself at its cap, and that recording is what Stop then gives', async () => {
     const r = await startRecording('audio', 'audio/webm', 119_500);
-    let capped: unknown = null;
-    void r.capped.then((x) => { capped = x; });
+    let ended: { rec: unknown; cause: string } | null = null;
+    void r.ended.then((x) => { ended = x; });
     vi.advanceTimersByTime(119_499);
     await Promise.resolve();
     expect(FakeRecorder.last!.state).toBe('recording');
     vi.advanceTimersByTime(1);
     await vi.runAllTimersAsync();
     expect(FakeRecorder.last!.state).toBe('inactive');
-    expect(capped).toMatchObject({ mime: 'audio/webm' });
+    expect(ended).toMatchObject({ cause: 'cap', rec: { mime: 'audio/webm', ms: 119_500 } });
     expect(tracks[0].stop).toHaveBeenCalled();
-    expect(await r.stop()).toBe(capped);
+    expect(await r.stop()).toBe(ended!.rec);
+  });
+
+  it('says when the browser ends a recording by itself, before its cap', async () => {
+    const r = await startRecording('audio', 'audio/webm', 119_500);
+    let ended: { rec: unknown; cause: string } | null = null;
+    void r.ended.then((x) => { ended = x; });
+    vi.advanceTimersByTime(30_000);
+    // the microphone went away: the recorder stops without being asked
+    FakeRecorder.last!.stop();
+    await vi.runAllTimersAsync();
+    expect(ended).toMatchObject({ cause: 'ended', rec: { mime: 'audio/webm', ms: 30_000 } });
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1);
+    expect(await r.stop()).toBe(ended!.rec);
+  });
+
+  it('is as long as it ran until the stop was asked for, however long the recorder then takes to finish', async () => {
+    stopTakes = 900;
+    const r = await startRecording('audio', 'audio/webm', 119_500);
+    vi.advanceTimersByTime(119_500);
+    // the cap asked for the stop at 119.5 s; the stop event comes 0.9 s later
+    await vi.runAllTimersAsync();
+    expect((await r.stop()).ms).toBe(119_500);
+    const s = await startRecording('audio', 'audio/webm', 119_500);
+    vi.advanceTimersByTime(10_000);
+    const stopped = s.stop();
+    await vi.runAllTimersAsync();
+    expect((await stopped).ms).toBe(10_000);
   });
 
   it('keeps nothing when cancelled, and lets the microphone go', async () => {
     const r = await startRecording('audio', 'audio/webm', 119_500);
-    let capped = false;
-    void r.capped.then(() => { capped = true; });
+    let ended = false;
+    void r.ended.then(() => { ended = true; });
     r.cancel();
     expect(tracks[0].stop).toHaveBeenCalled();
     expect((await r.stop()).blob.size).toBe(0);
     await vi.runAllTimersAsync();
-    expect(capped).toBe(false);
+    expect(ended).toBe(false);
+  });
+
+  it('does not say a recording stopped by Stop ended by itself', async () => {
+    const r = await startRecording('audio', 'audio/webm', 119_500);
+    let ended = false;
+    void r.ended.then(() => { ended = true; });
+    vi.advanceTimersByTime(5_000);
+    await r.stop();
+    await vi.runAllTimersAsync();
+    expect(ended).toBe(false);
   });
 
   it('says the microphone was refused, apart from a phone that has none', async () => {
