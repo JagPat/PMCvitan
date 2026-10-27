@@ -449,8 +449,33 @@ jobs:
         run: pnpm --filter api prisma:migrate
       - name: Unit tests
         run: pnpm --filter api test
-      - name: Integration tests (real app over real PostgreSQL)
-        run: pnpm --filter api test:integration
+      # Owner request 2026-10-27: the integration suite was ~25 minutes run file by file, the largest part
+      # of this job. It now runs as four parallel shards, each on its OWN PostgreSQL server (the service
+      # above is shard 1; three more postgres:16 containers are started here), because the suite uses
+      # server-wide state: roles, lock-wait barriers read from pg_stat_activity, fixed scratch database
+      # names. Files inside a shard still run one at a time. apps/api/test/integration-shards.mjs places
+      # every file in exactly one shard and fails the step unless each shard's report names exactly its
+      # files, all passed: no test is dropped and the pass gate is unchanged.
+      - name: Start and migrate the integration shard databases
+        timeout-minutes: 5
+        run: |
+          for i in 1 2 3; do
+            docker run -d --name "pg-shard-$i" -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+              -e POSTGRES_DB=pmcvitan_test -p "$((5432 + i)):5432" postgres:16 >/dev/null
+          done
+          for i in 1 2 3; do
+            for _ in $(seq 60); do docker exec "pg-shard-$i" pg_isready -U postgres -h localhost >/dev/null 2>&1 && break; sleep 1; done
+            docker exec "pg-shard-$i" pg_isready -U postgres -h localhost
+            DATABASE_URL="postgresql://postgres:postgres@localhost:$((5432 + i))/pmcvitan_test?schema=public" \
+              pnpm --filter api prisma:migrate
+          done
+      - name: Integration tests (real app over real PostgreSQL, four parallel shards)
+        working-directory: apps/api
+        run: |
+          node test/integration-shards.mjs "$DATABASE_URL" \
+            "postgresql://postgres:postgres@localhost:5433/pmcvitan_test?schema=public" \
+            "postgresql://postgres:postgres@localhost:5434/pmcvitan_test?schema=public" \
+            "postgresql://postgres:postgres@localhost:5435/pmcvitan_test?schema=public"
       - name: Typecheck
         run: pnpm --filter api typecheck
       - name: Build
