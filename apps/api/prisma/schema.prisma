@@ -1528,6 +1528,8 @@ model User {
   siteVisitAttendeesRetired SiteVisitAttendee[]    @relation("siteVisitAttendeeRetiredBy")
   siteVisitPlacesAdded      SiteVisitPlace[]       @relation("siteVisitPlaceAddedBy")
   siteVisitMediaAdded       SiteVisitMedia[]       @relation("siteVisitMediaAddedBy")
+  siteVisitRemovalsAdded    SiteVisitFileRemoval[] @relation("siteVisitFileRemovalAddedBy")
+  siteVisitRemovalsMade     SiteVisitFileRemoval[] @relation("siteVisitFileRemovalRemovedBy")
   siteVisitPlacesRetired    SiteVisitPlace[]       @relation("siteVisitPlaceRetiredBy")
   // Phase 6 task 4b (§A.3) — push subscriptions currently linked to this user for targeted delivery
   pushSubscriptionsLinked   PushSubscription[]     @relation("pushSubscriptionsLinked")
@@ -5300,6 +5302,7 @@ model SiteVisit {
   attendees SiteVisitAttendee[]
   places    SiteVisitPlace[]
   media     SiteVisitMedia[]
+  removals  SiteVisitFileRemoval[]
 
   @@unique([projectId, id])
   @@index([projectId])
@@ -5370,6 +5373,35 @@ model SiteVisitMedia {
   @@unique([projectId, mediaId])
   @@index([projectId, visitId])
   @@index([nodeId])
+}
+
+// #1179 R1 — a file taken off a visit (Jagrut, 27 Oct 2026: the adder within the hour, the PMC any time with a
+// reason). One row per removed file, frozen; it outlives the file (no key to Media) and goes with its visit's project.
+// The insert trigger copies the visit and the adder from the file's link, the kind from the file's type, the remover's
+// name as they stood, and stamps the time; a link is not cascaded away without its record (20280125000000).
+model SiteVisitFileRemoval {
+  visit         SiteVisit @relation(fields: [projectId, visitId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId     String
+  visitId       String
+  mediaId       String
+  // photo | voice | video | file, from the file's type
+  fileKind      String    @default("file")
+  addedBy       User      @relation("siteVisitFileRemovalAddedBy", fields: [addedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  addedById     String
+  addedByRole   String    @default("")
+  addedByName   String    @default("")
+  addedAt       DateTime  @default(now())
+  removedBy     User      @relation("siteVisitFileRemovalRemovedBy", fields: [removedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  removedById   String
+  removedByRole String
+  removedByName String    @default("")
+  // required unless the adder removes their own file within the hour; never blank
+  reason        String?   @db.VarChar(300)
+  removedAt     DateTime  @default(now())
+
+  @@id([mediaId])
+  @@unique([projectId, mediaId])
+  @@index([projectId, visitId])
 }
 
 model SiteVisitPlace {

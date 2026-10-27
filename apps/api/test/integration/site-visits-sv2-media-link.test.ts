@@ -54,7 +54,7 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
   afterAll(async () => {
     if (t) {
       await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
-        'SiteVisitMedia', 'SiteVisitPlace', 'SiteVisitAttendee', 'SiteVisit'], { cascade: true });
+        'SiteVisitFileRemoval', 'SiteVisitMedia', 'SiteVisitPlace', 'SiteVisitAttendee', 'SiteVisit'], { cascade: true });
       await t.prisma.media.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
       await t.prisma.projectNode.deleteMany({ where: { projectId: f.projectA.id, name: { endsWith: run } } });
       await t.prisma.membership.deleteMany({ where: { userId: consultant } });
@@ -240,7 +240,13 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
   it('removing the file removes it from the visit, and the visit stays', async () => {
     const m = await photo(f.projectA.id);
     await link(f.projectA.id, visitA, m.id);
-    await t.prisma.media.delete({ where: { id: m.id } });
+    // #1179 R1: the file's delete takes its link only with the visit's line saying who removed it
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        INSERT INTO "SiteVisitFileRemoval" ("projectId","visitId","mediaId","removedById","removedByRole")
+        VALUES (${f.projectA.id}, ${visitA}, ${m.id}, ${f.memberUser.id}, 'pmc')`;
+      await tx.media.delete({ where: { id: m.id } });
+    });
     expect(await t.prisma.siteVisitMedia.findUnique({ where: { mediaId: m.id } })).toBeNull();
     expect(await t.prisma.siteVisit.findUnique({ where: { id: visitA }, select: { id: true } })).toEqual({ id: visitA });
   });
@@ -338,7 +344,8 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
     expect(await def('SiteVisitMedia_shape_check')).toMatch(/btrim/);
     const triggers = await t.prisma.$queryRaw<Array<{ n: string }>>`
       SELECT tgname AS n FROM pg_trigger WHERE tgrelid = '"SiteVisitMedia"'::regclass AND NOT tgisinternal ORDER BY tgname`;
-    expect(triggers.map((r) => r.n)).toEqual(['SiteVisitMedia_insert', 'SiteVisitMedia_no_delete', 'SiteVisitMedia_no_truncate', 'SiteVisitMedia_update']);
+    // #1179 R1's removal guard is its own file's trigger, which this replay leaves standing
+    expect(triggers.map((r) => r.n)).toEqual(['SiteVisitMedia_insert', 'SiteVisitMedia_no_delete', 'SiteVisitMedia_no_truncate', 'SiteVisitMedia_removal_recorded', 'SiteVisitMedia_update']);
     const fks = await t.prisma.$queryRaw<Array<{ n: bigint }>>`
       SELECT count(*) AS n FROM pg_constraint WHERE conrelid = '"SiteVisitMedia"'::regclass AND contype = 'f'`;
     expect(Number(fks[0].n)).toBe(4);
