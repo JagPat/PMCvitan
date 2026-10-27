@@ -459,14 +459,15 @@ export class MediaService {
    * frame adds no file to its visit, and other viewers see it on their next read of the visit's files.
    */
   async addPoster(projectId: string, mediaId: string, user: AuthUser, input: AddPosterInput): Promise<{ id: string; posterUrl: string }> {
-    const answer = { id: mediaId, posterUrl: this.signed.posterPath(mediaId) };
+    // minted at each return, after the PUT and the lock wait, so its link outlives the request (Codex P2 on #1166)
+    const answer = () => ({ id: mediaId, posterUrl: this.signed.posterPath(mediaId) });
     const select = { projectId: true, kind: true, mime: true, uploadedBy: true, posterStorageKey: true } as const;
     const early = await this.prisma.media.findUnique({ where: { id: mediaId }, select });
     assertMayAddPoster(early, projectId, user);
     const bytes = Buffer.from(input.data, 'base64');
     if (!readJpegStill(bytes)) throw new BadRequestException('This file is not a still frame the app can show');
     // a replay after a lost reply, or a later frame: the stored one stands, and nothing is stored
-    if (early.posterStorageKey !== null) return answer;
+    if (early.posterStorageKey !== null) return answer();
     // the dev stub keeps a file's bytes in its row, and a clip's row has room for one file only
     if (!this.storage.configured) throw new ConflictException('This server has no file storage for a still frame');
     const key = this.storage.keyFor(projectId, 'visit', 'image/jpeg');
@@ -495,7 +496,7 @@ export class MediaService {
       throw e;
     }
     if (stored !== key) await this.removePosterIfUnreferenced(projectId, key);
-    return answer;
+    return answer();
   }
 
   /** {@link removeIfUnreferenced} for a still frame's object: removed only once a fresh read proves no clip names it. */
