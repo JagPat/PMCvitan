@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import net, { type AddressInfo } from 'node:net';
+import { gzipSync } from 'node:zlib';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -109,6 +111,42 @@ describe('#1118 U3 — Hub webhook receiver (live PG)', () => {
       .send(body.toString('utf8'));
     return { id, r };
   };
+  /**
+   * One request on a raw socket, for what supertest can't send: a body in chunks with no `Content-Length`, or bytes
+   * that aren't text. Resolves the status code once the answer's status line arrives.
+   */
+  const rawPost = async (path: string, headers: Record<string, string>, body: Buffer, chunked = false) => {
+    const server = t.app.getHttpServer();
+    if (!server.listening) await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const { port } = server.address() as AddressInfo;
+    const framed = chunked
+      ? Buffer.concat([...Array.from({ length: Math.ceil(body.length / 65536) }, (_, i) => body.subarray(i * 65536, (i + 1) * 65536))
+        .flatMap((part) => [Buffer.from(`${part.length.toString(16)}\r\n`), part, Buffer.from('\r\n')]), Buffer.from('0\r\n\r\n')])
+      : body;
+    const head = [`POST ${path} HTTP/1.1`, 'Host: hub.test', 'Connection: close', chunked ? 'Transfer-Encoding: chunked' : `Content-Length: ${body.length}`,
+      ...Object.entries(headers).map(([name, value]) => `${name}: ${value}`)].join('\r\n');
+    return new Promise<number>((resolve, reject) => {
+      const socket = net.connect(port, '127.0.0.1');
+      let answer = '';
+      const settle = () => {
+        const status = /^HTTP\/1\.1 (\d{3})/.exec(answer)?.[1];
+        if (status) { resolve(Number(status)); socket.destroy(); }
+        return Boolean(status);
+      };
+      socket.on('data', (data) => { answer += data.toString('latin1'); settle(); });
+      // the server may close mid-upload once it has answered (a 413): only a close with no answer fails the request
+      socket.on('error', () => undefined);
+      socket.on('close', () => { if (!settle()) reject(new Error(`no answer from ${path}`)); });
+      socket.write(`${head}\r\n\r\n`);
+      socket.write(framed);
+    });
+  };
+  /** The three Standard Webhooks headers for `body`, signed now. */
+  const signedHeaders = (body: Buffer) => {
+    const id = `evt_${randomUUID().replace(/-/g, '')}`;
+    const timestamp = Math.floor(Date.now() / 1000);
+    return { id, headers: { 'webhook-id': id, 'webhook-timestamp': String(timestamp), 'webhook-signature': sign(id, timestamp, body) } };
+  };
   const receipts = (webhookId: string) => t.prisma.hubWebhookReceipt.findMany({
     where: { webhookId }, orderBy: { id: 'asc' }, select: { id: true, orgId: true, eventType: true, outcome: true, projectId: true, hubVersionId: true, appliedFact: true },
   });
@@ -182,6 +220,49 @@ describe('#1118 U3 — Hub webhook receiver (live PG)', () => {
     expect(await receipts(big.id)).toEqual([]);
   });
 
+  it('reads a chunked body raw up to 256 KiB (413 above), and never reads a compressed one raw (400); neither writes', async () => {
+    open();
+    const sized = (bytes: number) => { const head = '{"type":"webhook.test","pad":"'; return Buffer.from(head + 'x'.repeat(bytes - head.length - 2) + '"}'); };
+    const path = `/integrations/hub/${f.orgA.id}/events`;
+    const most = sized(256 * 1024);
+    const judged = signedHeaders(most);
+    expect(await rawPost(path, { 'Content-Type': 'application/json', ...judged.headers }, most, true)).toBe(204);
+    expect(await receipts(judged.id)).toMatchObject([{ outcome: 'ignored' }]);
+    const over = sized(256 * 1024 + 1);
+    const refused = signedHeaders(over);
+    expect(await rawPost(path, { 'Content-Type': 'application/json', ...refused.headers }, over, true)).toBe(413);
+    expect(await receipts(refused.id)).toEqual([]);
+
+    // signed over the compressed bytes: read raw, they would verify; the global parser inflates them, so no Buffer
+    const gzipped = gzipSync(Buffer.from(JSON.stringify(event([]))));
+    const compressed = signedHeaders(gzipped);
+    expect(await rawPost(path, { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip', ...compressed.headers }, gzipped)).toBe(400);
+    expect(await receipts(compressed.id)).toEqual([]);
+  });
+
+  it('reads a body raw only on the Hub org\'s events path while open: closed, another org and another path answer alike', async () => {
+    // 300 KiB, over what the raw reader takes: anywhere it doesn't read, the global parser takes it and Nest answers 404
+    const big = { type: 'webhook.test', pad: 'x'.repeat(300 * 1024) };
+    const unrouted = (path: string, body: { message: string }) => expect(body).toMatchObject({ statusCode: 404, message: `Cannot POST ${path}` });
+    for (const name of ['HUB_BASE_URL', 'HUB_OFFICE_TOKEN', 'HUB_WEBHOOK_SECRET', 'HUB_ORG_ID']) vi.stubEnv(name, '');
+    const closed = await deliver(big).r;
+    expect(closed.status).toBe(404);
+    unrouted(`/integrations/hub/${f.orgA.id}/events`, closed.body);
+
+    open();
+    const other = await deliver(big, { orgId: f.orgB.id }).r;
+    expect(other.status).toBe(404);
+    unrouted(`/integrations/hub/${f.orgB.id}/events`, other.body);
+    for (const path of ['/integrations/hub/x', `/integrations/hub/${f.orgA.id}/other`]) {
+      const elsewhere = await request(t.app.getHttpServer()).post(path).set('Content-Type', 'application/json').send(JSON.stringify(big));
+      expect(elsewhere.status, path).toBe(404);
+      unrouted(path, elsewhere.body);
+    }
+    const own = deliver(big);
+    expect((await own.r).status).toBe(413); // only the Hub org's own events path reads it raw
+    expect(await receipts(own.id)).toEqual([]);
+  });
+
   it('refuses an unreadable or malformed delivery: recorded with no project, audited by reason, answered 204', async () => {
     open();
     const unreadable = deliver('not json');
@@ -241,7 +322,8 @@ describe('#1118 U3 — Hub webhook receiver (live PG)', () => {
       expect((await r).status, what).toBe(204);
       const rows = await receipts(id);
       expect(rows.map((x) => [x.outcome, x.projectId]), what).toEqual([['refused', null]]);
-      expect((await audits(rows.map((x) => x.id))).map((a) => a.payload), what).toEqual([{ eventType: 'drawing.issued', reason }]);
+      // the audit row names no project either, even when the PMC project Hub named exists and is linked
+      expect((await audits(rows.map((x) => x.id))).map((a) => [a.projectId, a.payload]), what).toEqual([[null, { eventType: 'drawing.issued', reason }]]);
     }
 
     // each of two links to one Hub project resolves its own PMC project, by the id Hub names; a numeric Hub id matches

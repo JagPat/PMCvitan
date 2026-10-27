@@ -5,20 +5,27 @@ import { readHubConfig } from './hub-config';
 export const HUB_WEBHOOK_PREFIX = '/integrations/hub';
 /** The largest Hub webhook body read. Hub's drawing events are a few KiB. */
 export const HUB_BODY_MAX_BYTES = 256 * 1024;
+/** The receiver's route below {@link HUB_WEBHOOK_PREFIX}, `/:orgId/events`, matched as Express routes it (any case, an
+ *  optional trailing slash); the org itself must match exactly, as the receiver checks it. */
+const EVENTS_PATH = /^\/([^/]+)\/events\/?$/i;
 
 /**
  * #1118 U3 — keeps a Hub webhook's body as the exact bytes Hub signed. Mounted on {@link HUB_WEBHOOK_PREFIX} BEFORE the
  * global JSON parser (`configureApp`): it reads an `application/json` body into a Buffer on `req.body`, and the JSON
  * parser then skips the request because its body is already read.
  *
- * While the integration is closed it does nothing, so the path answers exactly as an unrouted one does (the global
- * parsers, then Nest's 404). A body over {@link HUB_BODY_MAX_BYTES}, by `Content-Length` or as it arrives, is refused
- * with 413 and the connection is closed; a compressed body is left alone, so it never reaches the verifier as a Buffer.
+ * It reads only a POST to the Hub org's own events path while the integration is open. Anything else (closed, another
+ * org, another path) is left to the global parsers, so it answers exactly as it does with the integration closed and
+ * says nothing about whether it is open. A body over {@link HUB_BODY_MAX_BYTES}, by `Content-Length` or as it arrives,
+ * is refused with 413 and the connection is closed; a compressed body is left alone, so it never reaches the verifier
+ * as a Buffer.
  */
 export function hubRawBody(req: Request, res: Response, next: NextFunction): void {
   const type = String(req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
   const encoding = String(req.headers['content-encoding'] ?? 'identity').trim().toLowerCase();
-  if (type !== 'application/json' || encoding !== 'identity' || !readHubConfig().open) return next();
+  if (type !== 'application/json' || encoding !== 'identity' || req.method !== 'POST') return next();
+  const hub = readHubConfig();
+  if (!hub.open || EVENTS_PATH.exec(req.path)?.[1] !== hub.config.orgId) return next();
 
   let settled = false;
   const refuse = (status: number): void => {
