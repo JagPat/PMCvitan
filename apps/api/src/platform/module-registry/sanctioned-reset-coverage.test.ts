@@ -137,6 +137,8 @@ describe('Phase 6 unit 4c-0 — sanctioned resets route through the shared helpe
       'media-tombstone-schema.test.ts': 1,
       // #1118 U1a-3: the Hub fetched-blob ledger's no-truncate seal asserted to REFUSE the statement.
       'hub-blob-schema.test.ts': 1,
+      // #1118 U1a-2: the Hub link's and its history's no-truncate seals asserted to REFUSE the statement (one looped site).
+      'hub-link-schema.test.ts': 1,
       // Phase 6 unit 4c-iii-r: the repair MARKER's statement-level `BEFORE TRUNCATE` seal. The
       // marker authorizes every later start to skip the decisions.inbox repair, so losing it by
       // TRUNCATE is sealed exactly as losing it by DELETE is — and this probe asserts the seal
