@@ -146,7 +146,10 @@ async function main(): Promise<void> {
     // #1118 U1b — a Hub drawing's, revision's and mark's records hold RESTRICT keys to "Drawing" and "DrawingRevision"
     // and refuse row DELETE, so the drawing wipe below would be refused while one exists; they are cleared here, their
     // TRUNCATE seals bypassed by name, together because each references the one before it.
-    'HubGoverningMark', 'HubRevision', 'HubDrawing'
+    'HubGoverningMark', 'HubRevision', 'HubDrawing',
+    // #1118 U1a-1 — a delivery's applied receipt and the fact it wrote reference each other (deferred keys), so they go in
+    // the same statement as the facts; both refuse row DELETE, their TRUNCATE seals bypassed by name.
+    'HubWebhookReceipt', 'HubVersionTombstone'
   ] as const;
   await sanctionedReset(prisma, RESET_TABLES);
   await prisma.gateOverride.deleteMany();
