@@ -60,11 +60,8 @@ async function mount(role: Role, me: string, gw: Fake, lang: Lang = 'en', outbox
   return view;
 }
 
-/** One turn of the event loop, inside `act`: every promise already settled has run its callbacks, and React has drawn
- *  what they set. */
-const turn = () => act(async () => { await new Promise((done) => setTimeout(done, 0)); });
-/** The next file read's own end (`loadend`). A photo is refused after its read with no timer or I/O left, so after this
- *  and one `turn()` the refusal is on screen. */
+/** The next file read's own end (`loadend`). A photo is refused after its read; once this has fired and `settled()`
+ *  says no work is left, the refusal is on screen. */
 const readEnded = () => new Promise<void>((done) => {
   const real = FileReader.prototype.readAsDataURL;
   vi.spyOn(FileReader.prototype, 'readAsDataURL').mockImplementationOnce(function (this: FileReader, blob: Blob) {
@@ -173,7 +170,7 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     const read = readEnded();
     await pick('v-1', new File([new Uint8Array(bytes)], 'huge.jpg', { type: 'image/jpeg' }));
     await read;
-    await turn();
+    await settled();
     expect(screen.getByRole('alert').textContent).toBe('This photo is too large to send. Try a smaller one.');
     expect(uploadMedia).not.toHaveBeenCalled();
   });
@@ -190,7 +187,7 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     const read = readEnded();
     await pick('v-1', new File([new Uint8Array((13_000_000 / 4) * 3)], 'big.heic', { type: 'image/heic' }));
     await read;
-    await turn();
+    await settled();
     expect(screen.getByRole('alert').textContent).toBe('This photo is too large to send. Try a smaller one.');
     expect(uploadMedia).not.toHaveBeenCalled();
     expect(useStore.getState().outbox).toHaveLength(0);
@@ -202,7 +199,7 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
     const read = readEnded();
     await pick('v-1', new File(['<svg/>'], 'plan.svg', { type: 'image/svg+xml' }));
     await read;
-    await turn();
+    await settled();
     expect(screen.getByRole('alert').textContent).toBe('This photo could not be read. Try another.');
     expect(useStore.getState().outbox).toHaveLength(0);
     expect(uploadMedia).not.toHaveBeenCalled();
@@ -349,7 +346,7 @@ describe('Site Visits SV2: photos on a visit (#792)', () => {
       refreshSiteVisits();
     });
     await read;
-    await turn();
+    await settled();
     expect(screen.getByRole('alert').textContent).toBe('The place you chose was removed from this visit. Choose the place again, then add the photo.');
     expect(uploadMedia).not.toHaveBeenCalled();
   });

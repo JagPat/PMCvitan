@@ -19,6 +19,22 @@ const notice = (id: string, unread = true): AppNotification =>
 
 await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'));
 
+type Store = (typeof import('@/store/store'))['useStore'];
+/** Every run of the bell's marking (`markShownNotificationsSeen`, which an open starts) is kept, so a test waits on the
+ *  run's own end instead of on a number of turns. `last()` is the newest run, and fails if none was started. */
+const followRuns = (useStore: Store) => {
+  const all: Promise<void>[] = [];
+  const mark = useStore.getState().markShownNotificationsSeen;
+  useStore.setState({ markShownNotificationsSeen: () => { const run = mark(); all.push(run); return run; } });
+  return {
+    last: () => {
+      const run = all[all.length - 1];
+      if (!run) throw new Error('the bell started no marking');
+      return run;
+    },
+  };
+};
+
 describe('notificationSeen — the per-id state machine', () => {
   it('counts server-unread notices and those with no read state; a server-read notice is not counted', () => {
     const state = emptyNotifSeen();
@@ -83,7 +99,6 @@ describe('notificationSeen — the per-id state machine', () => {
 });
 
 describe('the bell marks displayed notices seen (store, stubbed gateway)', () => {
-  const flush = async () => { for (let i = 0; i < 6; i += 1) await new Promise((r) => setTimeout(r, 0)); };
   const snapshot = (notifications: AppNotification[]): ApiSnapshot => ({
     project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: 'G+2', stage: 'Finishing', siteCode: 'AMB', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
     decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
@@ -108,17 +123,19 @@ describe('the bell marks displayed notices seen (store, stubbed gateway)', () =>
     };
     s()._setGateway(gw as unknown as ApiGateway);
     expect(s().applySnapshot(snapshot(feed))).toBe(true);
+    // the signal a test waits on: each run of the bell's marking, which the open starts, ends on its own promise
+    const runs = followRuns(useStore);
     const open = async () => {
       if (s().notifOpen) s().toggleNotif();
       s().toggleNotif();
-      await flush();
+      await runs.last();
     };
     const badge = () => {
       const st = s();
       return unreadCount(st.notifications, st.notifSeen);
     };
     const defer = () => { let resolve!: (a: Answer) => void; const p = new Promise<Answer>((r) => { resolve = r; }); return { p, resolve }; };
-    return { useStore, s, gw, calls, answers, open, badge, defer, apply: (f: AppNotification[]) => s().applySnapshot(snapshot(f)) };
+    return { useStore, s, gw, calls, answers, open, runs, badge, defer, apply: (f: AppNotification[]) => s().applySnapshot(snapshot(f)) };
   };
 
   afterEach(async () => {
@@ -143,10 +160,11 @@ describe('the bell marks displayed notices seen (store, stubbed gateway)', () =>
     const held = t.defer();
     t.answers.push(held.p);
     t.s().toggleNotif();
-    await new Promise((r) => setTimeout(r, 0));
+    // the claim and the request are made before the run first waits, so they show at once
+    expect(t.calls).toEqual([['a', 'b']]);
     expect(t.badge(), 'suppressed while in flight').toBe(0);
     held.resolve(Object.assign(new Error('/notifications/seen 503'), { status: 503 }));
-    await new Promise((r) => setTimeout(r, 0));
+    await t.runs.last();
     expect(t.badge(), 'restored after the failure').toBe(2);
     await t.open();
     expect(t.calls).toEqual([['a', 'b'], ['a', 'b']]);
@@ -160,7 +178,7 @@ describe('the bell marks displayed notices seen (store, stubbed gateway)', () =>
     t.gw.markNotificationsSeen.mockImplementation(async (ids: readonly string[]) => {
       t.calls.push([...ids]);
       inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight);
-      await new Promise((r) => setTimeout(r, 0));
+      await Promise.resolve(); // answered later, not in the same call
       inFlight -= 1;
       return { confirmed: [...ids] };
     });
@@ -224,14 +242,15 @@ describe('the bell marks displayed notices seen (store, stubbed gateway)', () =>
     const older = t.defer();
     t.answers.push(older.p);
     t.s().toggleNotif(); // open: A in flight (held)
-    await new Promise((r) => setTimeout(r, 0));
+    const first = t.runs.last();
+    expect(t.calls).toEqual([['A']]);
     // a new notice arrives; the next open sends only it (A is still in flight)
     expect(t.apply([notice('C'), notice('A')])).toBe(true);
     await t.open();
     expect(t.calls).toEqual([['A'], ['C']]);
     expect(t.s().notifSeen.entries.C).toEqual({ kind: 'confirmed' });
     older.resolve(new Error('/notifications/seen 503'));
-    await new Promise((r) => setTimeout(r, 0)); await new Promise((r) => setTimeout(r, 0));
+    await first;
     expect(t.s().notifSeen.entries.C, 'the newer confirmation stands').toEqual({ kind: 'confirmed' });
     expect(t.badge(), 'only A, whose own attempt failed, is unread again').toBe(1);
   });
@@ -250,13 +269,13 @@ describe('the bell marks displayed notices seen (store, stubbed gateway)', () =>
       const first = t.defer();
       t.answers.push(first.p, { confirmed: [X] }, variant === 'fails' ? new Error('/notifications/seen 503') : { confirmed: [] });
       t.s().toggleNotif(); // open 1: [n0..n199] in flight, [X] queued behind it
-      await new Promise((r) => setTimeout(r, 0));
+      const open1 = t.runs.last();
       expect(t.calls.map((c) => c.length)).toEqual([200]);
       await t.open(); // close and reopen: open 2 sends only X, which is not yet claimed
       expect(t.calls[1]).toEqual([X]);
       expect(t.s().notifSeen.entries[X]).toEqual({ kind: 'confirmed' });
       first.resolve({ confirmed: feed.slice(0, 200).map((n) => n.id!) });
-      for (let i = 0; i < 6; i += 1) await new Promise((r) => setTimeout(r, 0));
+      await open1; // open 1 has reached its queued chunk, and ended
       // the stale feed still serves X unread, but X's durable confirmation stands and nothing re-sends it
       expect(t.s().notifSeen.entries[X], 'X stays confirmed').toEqual({ kind: 'confirmed' });
       expect(t.badge(), 'nothing returns to the badge').toBe(0);
@@ -269,14 +288,14 @@ describe('the bell marks displayed notices seen (store, stubbed gateway)', () =>
     const held = t.defer();
     t.answers.push(held.p);
     t.s().toggleNotif();
-    await new Promise((r) => setTimeout(r, 0));
+    const run = t.runs.last();
     expect(t.s().notifSeen.entries.A).toMatchObject({ kind: 'pending' });
     // the scope changes (as every project switch bumps it) and the project's state starts clean
     const { emptyProjectData } = await import('@/store/projectScope');
     t.useStore.setState((st) => ({ ...emptyProjectData(), projectScopeGeneration: st.projectScopeGeneration + 1, notifications: [notice('A')] }));
     expect(t.s().notifSeen.entries).toEqual({});
     held.resolve({ confirmed: ['A'] });
-    await new Promise((r) => setTimeout(r, 0)); await new Promise((r) => setTimeout(r, 0));
+    await run;
     expect(t.s().notifSeen.entries, 'the stale answer is dropped').toEqual({});
     expect(t.badge()).toBe(1);
   });
@@ -294,8 +313,9 @@ describe('the bell marks displayed notices seen (store, stubbed gateway)', () =>
     useStore.setState(getInitialState());
     useStore.getState()._setGateway(null);
     useStore.setState({ notifications: [notice('A')] });
+    const runs = followRuns(useStore);
     useStore.getState().toggleNotif();
-    await new Promise((r) => setTimeout(r, 0));
+    await runs.last();
     const st = useStore.getState();
     expect(unreadCount(st.notifications, st.notifSeen)).toBe(1);
   });
