@@ -519,7 +519,9 @@ const HANDLER_NAME_MAX = 64;
 /** A track's track_ID from its tkhd (version 1 has 64-bit times before it). */
 function trackId(b: Buffer, tkhd: Box): number {
   const { version } = fullBoxHead(b, tkhd);
-  return b.readUInt32BE(tkhd.dataStart + (version === 1 ? 20 : 12)); // read whole by exactBox before this
+  const id = b.readUInt32BE(tkhd.dataStart + (version === 1 ? 20 : 12)); // read whole by exactBox before this
+  if (id === 0) fail(); // ISO 14496-12 §8.3.2: track_ID 0 is reserved and names no track
+  return id;
 }
 
 /**

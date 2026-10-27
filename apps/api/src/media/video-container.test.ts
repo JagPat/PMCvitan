@@ -69,9 +69,9 @@ describe('readVideoClip — WebM', () => {
     expect(webm(clipWebm())).not.toBeNull();
     expect(webm(silentClipWebm())).not.toBeNull();
     expect(webm(clipWebm({ tracks: [pictureTrack(1, 'V_VP9'), soundTrack()] }))).not.toBeNull();
-    expect(webm(clipWebm({ clusters: [webmCluster([pictureBlock()], false)] }))).not.toBeNull();
+    expect(webm(clipWebm({ clusters: [webmCluster([pictureBlock(), pictureBlock(1, 33)], false)] }))).not.toBeNull();
     // the sound track first, as Chrome writes a VP9 recording
-    expect(webm(clipWebm({ tracks: [soundTrack(1), pictureTrack(2)], clusters: [webmCluster([pictureBlock(2), simpleBlock(1)])] }))).not.toBeNull();
+    expect(webm(clipWebm({ tracks: [soundTrack(1), pictureTrack(2)], clusters: [webmCluster([pictureBlock(2), simpleBlock(1), pictureBlock(2, 33)])] }))).not.toBeNull();
   });
 
   it('a clip has exactly one picture track and at most one sound track, with distinct numbers', () => {
@@ -128,15 +128,15 @@ describe('readVideoClip — WebM', () => {
 
   it('BlockAdditions (an alpha channel) are refused, as every BlockGroup child but the voice ones', () => {
     const block = ebml(WEBM.block, Buffer.concat([Buffer.from([0x81, 0, 0, 0x80]), Buffer.from([1, 2, 3])]));
-    expect(webm(clipWebm({ clusters: [webmCluster([ebml(WEBM.blockGroup, block)])] }))).not.toBeNull();
+    expect(webm(clipWebm({ clusters: [webmCluster([ebml(WEBM.blockGroup, block), pictureBlock(1, 33)])] }))).not.toBeNull();
     const additions = ebml(CLIP_WEBM.blockAdditions, ebml(0xa6, Buffer.concat([ebml(0xee, uint(1)), ebml(0xa5, Buffer.from([1, 2, 3]))])));
-    expect(webm(clipWebm({ clusters: [webmCluster([ebml(WEBM.blockGroup, Buffer.concat([block, additions]))])] }))).toBeNull();
+    expect(webm(clipWebm({ clusters: [webmCluster([ebml(WEBM.blockGroup, Buffer.concat([block, additions])), pictureBlock(1, 33)])] }))).toBeNull();
   });
 
   it('the length is the longest of Info\'s Duration and where the latest block ends, picture or sound', () => {
     expect(webm(clipWebmTimed(42))).toBe(42);
-    // a picture block at 59.6 s, with no Duration
-    expect(webm(clipWebm({ clusters: [webmClusterAt(0, [pictureBlock()]), webmClusterAt(59_600, [pictureBlock()])] }))).toBeCloseTo(59.6, 6);
+    // picture blocks with no Duration, as Chrome writes them: the latest is held for the longest interval between them
+    expect(webm(clipWebm({ clusters: [webmClusterAt(59_533, [pictureBlock(), pictureBlock(1, 33)])] }))).toBeCloseTo(59.599, 6);
     // a picture block's BlockDuration counts, as a sound block's does
     const lasting = ebml(WEBM.blockGroup, Buffer.concat([ebml(WEBM.block, Buffer.concat([Buffer.from([0x81, 0, 0, 0x80]), Buffer.from([1, 2, 3])])), ebml(CLIP_WEBM.blockDuration, Buffer.from([0x75, 0x30]))]));
     expect(webm(clipWebm({ clusters: [webmClusterAt(40_000, [lasting])] }))).toBeCloseTo(70, 6);
@@ -144,11 +144,27 @@ describe('readVideoClip — WebM', () => {
     const timed = pictureTrack(1, 'V_VP8', [videoElement(), ebml(CLIP_WEBM.defaultDuration, u32(1_000_000_000))]);
     expect(webm(clipWebm({ tracks: [timed, soundTrack()], clusters: [webmClusterAt(60_000, [pictureBlock()])] }))).toBeCloseTo(61, 6);
     // a sound block is timed by its Opus frames, as a voice note's: 120 ms of laced frames end after the picture
-    expect(webm(clipWebm({ clusters: [webmClusterAt(1_000, [pictureBlock(), simpleBlock(2, Buffer.from([0xfc, 0xff, 0xfe]))])] }))).toBeCloseTo(1.02, 6);
-    expect(webm(clipWebm({ info: webmInfo(), clusters: [webmClusterAt(0, [pictureBlock()])] }))).toBe(0);
+    expect(webm(clipWebm({ clusters: [webmClusterAt(1_000, [pictureBlock(), pictureBlock(1, 5), simpleBlock(2, Buffer.from([0xfc, 0xff, 0xfe]))])] }))).toBeCloseTo(1.02, 6);
     // and never less than all its Opus frames together: 100 sound blocks of 20 ms, every one placed at 0, are 2 s
     const stacked = Array.from({ length: 100 }, () => simpleBlock(2, Buffer.from([0xfc, 0xff, 0xfe])));
-    expect(webm(clipWebm({ clusters: [webmClusterAt(0, [pictureBlock(), ...stacked])] }))).toBeCloseTo(2, 6);
+    expect(webm(clipWebm({ clusters: [webmClusterAt(0, [pictureBlock(), pictureBlock(1, 33), ...stacked])] }))).toBeCloseTo(2, 6);
+  });
+
+  it('Codex round 2 on #1158: a latest picture block with no duration is held for the longest interval, or refused', () => {
+    // frames at 59.4 s and 60.4 s: the last one is held for a second, to 61.4 s, which the upload refuses
+    expect(webm(clipWebm({ clusters: [webmClusterAt(59_400, [pictureBlock()]), webmClusterAt(60_400, [pictureBlock()])] }))).toBeCloseTo(61.4, 6);
+    // the longest interval, wherever it falls, and on the picture track only: sound blocks do not shorten it
+    const opus = Buffer.from([0xfc, 0xff, 0xfe]);
+    expect(webm(clipWebm({ clusters: [webmClusterAt(0, [pictureBlock(), pictureBlock(1, 900), simpleBlock(2, opus), pictureBlock(1, 1_000)])] }))).toBeCloseTo(1.9, 6);
+    // one picture block, or several at one time, with no duration and no Duration: the end is unknown
+    expect(webm(clipWebm({ clusters: [webmClusterAt(0, [pictureBlock()])] }))).toBeNull();
+    expect(webm(clipWebm({ clusters: [webmClusterAt(30_000, [pictureBlock(), pictureBlock(), simpleBlock(2, opus)])] }))).toBeNull();
+    // Info's Duration past the latest picture's start gives the end; one that does not reach it does not
+    expect(webm(clipWebm({ info: webmInfo(31_000), clusters: [webmClusterAt(30_000, [pictureBlock()])] }))).toBe(31);
+    expect(webm(clipWebm({ info: webmInfo(30_000), clusters: [webmClusterAt(30_000, [pictureBlock()])] }))).toBeNull();
+    // a timed latest picture block needs no interval: its DefaultDuration ends it
+    const timed = pictureTrack(1, 'V_VP8', [videoElement(), ebml(CLIP_WEBM.defaultDuration, u32(40_000_000))]);
+    expect(webm(clipWebm({ tracks: [timed, soundTrack()], clusters: [webmClusterAt(30_000, [pictureBlock()])] }))).toBeCloseTo(30.04, 6);
   });
 
   it('rounds the length to whole seconds and refuses one that rounds to none', () => {
@@ -165,7 +181,7 @@ describe('readVideoClip — WebM frames', () => {
     const build = (pictures: number, sounds: number) => clipWebm({
       tracks: [pictureTrack(), soundTrack()],
       clusters: [webmCluster([
-        ...Array.from({ length: pictures }, () => pictureBlock()),
+        ...Array.from({ length: pictures }, (_, i) => pictureBlock(1, i % 2 ? 33 : 0)),
         ...Array.from({ length: sounds }, () => simpleBlock(2, opus)),
       ])],
     });
@@ -385,13 +401,15 @@ describe('readVideoClip — MP4', () => {
     expect(mp4(Buffer.concat([file, index]))).not.toBeNull();
     expect(mp4(Buffer.concat([file, index, index]))).toBeNull();
     expect(mp4(Buffer.concat([file, index, box('free', Buffer.alloc(4))]))).toBeNull();
-    // a tfra's time counts in its track's length
-    const late = (at: number) => {
-      const t = tfra(1, [at], { version: 0 });
-      t.writeUInt32BE(48_000 * 50, 8 + 16); // 50 s at the media timescale
+    // Codex round 2 on #1158: a tfra indexes the samples and is no length of its own; an entry past them is refused
+    const at = (ticks: number) => (moof: number) => {
+      const t = tfra(1, [moof], { version: 0 });
+      t.writeUInt32BE(ticks, 8 + 16); // the entry's time, at the media timescale
       return mfra([t]);
     };
-    expect(mp4(clipFragmented({ mfra: late }))).toBeCloseTo(50, 6);
+    const length = mp4(clipFragmented())!;
+    expect(mp4(clipFragmented({ mfra: at(1) }))).toBeCloseTo(length, 6);
+    expect(mp4(clipFragmented({ mfra: at(48_000 * 50) }))).toBeNull(); // 50 s, in a fragment of a few milliseconds
   });
 
   it('the length is the longest of every track\'s and the movie\'s, as a voice note\'s is', () => {
@@ -422,6 +440,23 @@ describe('readVideoClip — MP4', () => {
     };
     expect(mp4(build(25_000, 25_000))).not.toBeNull();
     expect(mp4(build(25_000, 25_001))).toBeNull();
+  });
+
+  it('Codex round 2 on #1158: the picture track is in the movie, and no track has track_ID 0', () => {
+    const tkhdAt = (b: Buffer) => b.indexOf(Buffer.from('tkhd')) + 4; // the picture's tkhd, the first trak's
+    const hidden = (b: Buffer) => {
+      const out = Buffer.from(b);
+      out[tkhdAt(out) + 3] = 0x01; // track_enabled alone: track_in_movie clear
+      return out;
+    };
+    const zero = (b: Buffer) => {
+      const out = Buffer.from(b);
+      out.writeUInt32BE(0, tkhdAt(out) + 12); // version 0: track_ID after the two times
+      return out;
+    };
+    expect(mp4(clipMp4())).not.toBeNull();
+    expect(mp4(hidden(clipMp4()))).toBeNull();
+    expect(mp4(zero(clipMp4()))).toBeNull();
   });
 
   it('Codex round 1 on #1158: a fragment marked duration-is-empty holds no track run', () => {

@@ -35,22 +35,27 @@ export const pictureTrack = (n = 1, codec = 'V_VP8', fields: Buffer[] = [videoEl
     ebml(CLIP_WEBM.maxBlockAdditionId, Buffer.from([1])), ebml(WEBM.codecId, codec), ...fields]));
 /** the sound track a clip carries: Opus, as a voice note's */
 export const soundTrack = (n = 2) => webmTrack(n, 2, 'A_OPUS');
-export const pictureBlock = (track = 1) => simpleBlock(track, PICTURE_FRAME);
+/** a picture SimpleBlock `ms` after its Cluster's Timestamp, with no duration, as Chrome writes them */
+export const pictureBlock = (track = 1, ms = 0) => {
+  const block = simpleBlock(track, PICTURE_FRAME);
+  block.writeInt16BE(ms, block.length - PICTURE_FRAME.length - 3); // the block's timecode, after its track number
+  return block;
+};
 
-/** a clip as Chrome writes it: a picture track and a sound track, then a Cluster of picture and sound blocks */
+/** a clip as Chrome writes it: a picture track and a sound track, then a Cluster of picture and sound blocks, 33 ms apart */
 export const clipWebm = (o: { tracks?: Buffer[]; clusters?: Buffer[]; info?: Buffer; docType?: string } = {}): Buffer =>
   Buffer.concat([
     webmHeader(o.docType ?? 'webm'),
     ebml(WEBM.segment, Buffer.concat([
       o.info ?? webmInfo(),
       ebml(WEBM.tracks, Buffer.concat(o.tracks ?? [pictureTrack(), soundTrack()])),
-      ...(o.clusters ?? [webmCluster([pictureBlock(), simpleBlock(2), pictureBlock()])]),
+      ...(o.clusters ?? [webmCluster([pictureBlock(), simpleBlock(2), pictureBlock(1, 33)])]),
     ]), true),
   ]);
 /** a clip of `seconds`, as its Info Duration says */
 export const clipWebmTimed = (seconds: number) => clipWebm({ info: webmInfo(seconds * 1000) });
 /** a picture-only clip, as a camera recording with no microphone */
-export const silentClipWebm = () => clipWebm({ tracks: [pictureTrack()], clusters: [webmCluster([pictureBlock(), pictureBlock()])] });
+export const silentClipWebm = () => clipWebm({ tracks: [pictureTrack()], clusters: [webmCluster([pictureBlock(), pictureBlock(1, 33)])] });
 export { OPUS_HEAD };
 
 // ── MP4 ──────────────────────────────────────────────────────────────────────────────────────

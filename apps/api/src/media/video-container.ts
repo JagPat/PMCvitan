@@ -111,6 +111,8 @@ const COLOUR_CHILDREN = new Map<number, Kind>([
 ]);
 
 interface ClipTrack { number: number; frameNs: number; sound: boolean }
+/** every picture block's start, in seconds, and the latest start of a block that says how long it lasts and of one that does not */
+interface Pictures { starts: number[]; timed: number; untimed: number }
 
 /**
  * A clip's tracks, by number: exactly one picture track (VP8 or VP9) and at most one sound track (Opus, read as a voice
@@ -168,7 +170,7 @@ function clipTracks(b: Buffer, tracks: Element, steps: Walk): Map<number, ClipTr
  * Segment walk resumes, whether a block held a picture, where its latest block ends (in seconds), and the Opus samples
  * its sound frames hold. Every frame is counted into `frames`, the whole file's, refused past the sample cap.
  */
-function walkCluster(b: Buffer, cluster: Element, tracks: Map<number, ClipTrack>, scale: number, steps: Walk, frames: { n: number }): { next: number; picture: boolean; last: number; samples: number } {
+function walkCluster(b: Buffer, cluster: Element, tracks: Map<number, ClipTrack>, scale: number, steps: Walk, frames: { n: number }, pictures: Pictures): { next: number; picture: boolean; last: number; samples: number } {
   const end = cluster.dataEnd;
   let picture = false;
   let last = 0;
@@ -212,6 +214,12 @@ function walkCluster(b: Buffer, cluster: Element, tracks: Map<number, ClipTrack>
       else picture = true; // every frame of it holds at least one byte
       samples += held;
       const start = ((base! + r.timecode) * scale) / 1e9;
+      if (!track!.sound) {
+        pictures.starts.push(start);
+        // a picture block with no BlockDuration and no DefaultDuration says where it starts, not where it ends
+        if (ticks === 0 && track!.frameNs === 0) pictures.untimed = Math.max(pictures.untimed, start);
+        else pictures.timed = Math.max(pictures.timed, start);
+      }
       last = Math.max(last, start + Math.max(held / OPUS_RATE, (ticks * scale) / 1e9, (r.frames.length * track!.frameNs) / 1e9));
     }
     at = e.dataEnd;
@@ -240,6 +248,7 @@ function webmSeconds(b: Buffer): number | null {
   let last = 0; // where the latest block ends, in seconds
   let samples = 0; // Opus samples in every sound frame
   const frames = { n: 0 }; // frames of both tracks, capped together
+  const pictures: Pictures = { starts: [], timed: -1, untimed: -1 };
   for (let at = segment.dataStart; at < segment.dataEnd;) {
     const id = vint(b, at, segment.dataEnd, true).value;
     const e = readElement(b, at, segment.dataEnd, steps, id === CLUSTER);
@@ -247,7 +256,7 @@ function webmSeconds(b: Buffer): number | null {
     if (e.id === CLUSTER) {
       // blocks before the track table that names their tracks, or before the Info that times them
       if (tracks === undefined || !info) return null;
-      const r = walkCluster(b, e, tracks, scale, steps, frames);
+      const r = walkCluster(b, e, tracks, scale, steps, frames, pictures);
       if (r.picture) picture = true;
       last = Math.max(last, r.last);
       samples += r.samples;
@@ -272,6 +281,16 @@ function webmSeconds(b: Buffer): number | null {
   }
   // a clip has a picture: a file whose only blocks are sound is a voice note, not a video
   if (tracks === undefined || !picture) return null;
+  // Chromium writes no durations for picture blocks. When the latest picture block is one of those and Info's Duration
+  // does not reach past its start, its frame is held for the longest interval between picture blocks, so a frame cannot
+  // start inside the minute and play on past it; with no interval to go by, the clip's end is unknown and it is refused
+  if (pictures.untimed > pictures.timed && (duration * scale) / 1e9 <= pictures.untimed) {
+    const starts = pictures.starts.sort((x, y) => x - y);
+    let interval = 0;
+    for (let i = 1; i < starts.length; i++) interval = Math.max(interval, starts[i]! - starts[i - 1]!);
+    if (interval === 0) return null;
+    last = Math.max(last, pictures.untimed + interval);
+  }
   return Math.max((duration * scale) / 1e9, last, samples / OPUS_RATE);
 }
 
@@ -469,6 +488,8 @@ function readTrak(b: Buffer, trak: Box, movieScale: number, media: MediaRanges, 
   const type = b.toString('latin1', hdlr.dataStart + 8, hdlr.dataStart + 12);
   if (type !== 'vide' && type !== 'soun') fail();
   const picture = type === 'vide';
+  // the picture is shown: a picture track left out of the movie (track_in_movie clear) plays as sound alone
+  if (picture && !(b.readUInt32BE(tkhd.dataStart) & 0x2)) fail();
   const minf = only(m, 'minf');
   const mi = children(b, minf.dataStart, minf.end, 'minf', steps, ['smhd', 'vmhd', 'dinf', 'stbl'], CLIP_MP4_CHILDREN);
   // the media header its handler carries, and not the other one
@@ -502,7 +523,7 @@ function readTrak(b: Buffer, trak: Box, movieScale: number, media: MediaRanges, 
 /**
  * The closing mfra, read whole (ISO 14496-12 §8.8.9-11): at most one tfra for each listed track, version 0 or 1 with no
  * flags, the reserved bits clear, ending exactly at its last entry, every entry pointing at the start of a moof of
- * this file; then exactly one mfro, last, giving the mfra's own size. A tfra entry's time counts in its track's length.
+ * this file, at a time inside the track's samples; then exactly one mfro, last, giving the mfra's own size.
  */
 function frameIndex(b: Buffer, mfra: Box, tracks: Map<number, Mp4Track>, moofs: Set<number>, steps: Walk): void {
   const kids = [...boxes(b, mfra.dataStart, mfra.end, steps)];
@@ -530,7 +551,8 @@ function frameIndex(b: Buffer, mfra: Box, tracks: Map<number, Mp4Track>, moofs: 
       const time = wide === 8 ? u64(b, at) : b.readUInt32BE(at);
       const moof = wide === 8 ? u64(b, at + 8) : b.readUInt32BE(at + 4);
       if (!moofs.has(moof)) fail();
-      track!.ticks = Math.max(track!.ticks, time);
+      // an index over the samples, not a length of its own: an entry past where the track's samples end is refused
+      if (time > track!.ticks) fail();
       at += entry;
     }
   }
