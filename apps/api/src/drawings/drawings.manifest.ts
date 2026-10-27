@@ -8,8 +8,9 @@ export const drawingsManifest: ModuleManifest = {
   id: 'drawings',
   title: 'Drawing Control',
   kind: 'domain',
-  ownsModels: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection'],
-  readEncapsulated: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection'],
+  // #1118 U1a-3 (20280121200000) — the Hub fetched-blob ledger
+  ownsModels: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection', 'hubFetchedBlob'],
+  readEncapsulated: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection', 'hubFetchedBlob'],
   dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
   workflowParticipants: [],
   producesEvents: [
