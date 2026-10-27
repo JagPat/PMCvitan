@@ -36,6 +36,15 @@ interface GuideState {
   /** start or end the wait for an `outcome` step's report */
   setWait: (waiting: boolean) => void;
   setOffer: (guide: Guide | null) => void;
+  /**
+   * a guide asked for from the Help sheet: it starts as soon as its first control is on screen on its own
+   * screen (the sheet moves there first), and is dropped when the person goes elsewhere or it cannot start
+   */
+  requested: Guide | null;
+  request: (guide: Guide | null) => void;
+  /** bumped when the person asks for the first-time tips again: the overlay allows a new automatic start */
+  tipsEpoch: number;
+  tipsAgain: () => void;
 }
 
 export const useGuideState = create<GuideState>()((set) => ({
@@ -47,4 +56,9 @@ export const useGuideState = create<GuideState>()((set) => ({
   stop: () => set({ run: null }),
   setWait: (waiting) => set((s) => (s.run ? { run: { ...s.run, waiting, pressed: s.run.pressed || waiting } } : s)),
   setOffer: (offer) => set((s) => (s.offer === offer ? s : { offer })),
+  requested: null,
+  // a new request ends whatever runs now: the person asked for this one
+  request: (requested) => set(requested ? { requested, run: null } : { requested }),
+  tipsEpoch: 0,
+  tipsAgain: () => set((s) => ({ tipsEpoch: s.tipsEpoch + 1 })),
 }));
