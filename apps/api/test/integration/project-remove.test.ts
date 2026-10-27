@@ -27,6 +27,11 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
   // a staff account whose home is elsewhere and whose last-used project is the target (jp@ on #482)
   const staffId = `it-rm-staff-${run}`;
   const staffEmail = `staff.${run}@vitan.in`;
+  // the Hub link's actor (#1118 U1a-2): a user of this file's own, homed on a project of its own in a company of its own, so
+  // no fixture row is named by an event (an event names its actor through a NO ACTION key and goes only with its project)
+  const hubOrgId = `it-rm-hubo-${run}`;
+  const hubHomeId = `it-rm-hubh-${run}`;
+  const hubActorId = `it-rm-hubu-${run}`;
   let streamPosition = 0;
 
   const opts = async (over: Partial<RemovalOptions> = {}): Promise<RemovalOptions> => ({
@@ -49,10 +54,15 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     await t.prisma.mediaTombstone.create({ data: { projectId: a, clientKey: `it-rm-key-${run}` } });
     // the Hub link and its history (#1118 U1a-2) go with the project; both are sealed against a direct DELETE, and a link
     // commits only with its event 1, so the link and its events are one transaction
+    await t.prisma.org.create({ data: { id: hubOrgId, name: hubOrgId, slug: hubOrgId } });
+    await t.prisma.project.create({ data: {
+      id: hubHomeId, orgId: hubOrgId, name: hubHomeId, short: 'Home', descriptor: '', stage: 'x', siteCode: 'HOM', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0,
+    } });
+    await t.prisma.user.create({ data: { id: hubActorId, projectId: hubHomeId, role: 'pmc', name: 'Hub actor', email: `rm.hub.${run}@test.local` } });
     await t.prisma.$transaction([
       t.prisma.drawingHubLink.create({ data: { projectId: a, orgId: f.orgA.id } }),
-      t.prisma.drawingHubLinkEvent.create({ data: { projectId: a, seq: 1, kind: 'linked', hubProjectId: `it-rm-hp-${run}`, byUserId: f.memberUser.id } }),
-      t.prisma.drawingHubLinkEvent.create({ data: { projectId: a, seq: 2, prevSeq: 1, kind: 'unlinked', byUserId: f.memberUser.id } }),
+      t.prisma.drawingHubLinkEvent.create({ data: { projectId: a, seq: 1, kind: 'linked', hubProjectId: `it-rm-hp-${run}`, byUserId: hubActorId } }),
+      t.prisma.drawingHubLinkEvent.create({ data: { projectId: a, seq: 2, prevSeq: 1, kind: 'unlinked', byUserId: hubActorId } }),
     ]);
     await t.prisma.dailyLog.create({ data: { id: logId, projectId: a, date: '01 Jun 2026', logDate: new Date('2026-06-01') } });
     await t.prisma.crewRow.create({ data: { dailyLogId: logId, trade: 'Mason', count: 4, order: 0 } });
@@ -71,8 +81,15 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
       await t.prisma.dailyLog.deleteMany({ where: { id: logId } });
       await t.prisma.projectNode.deleteMany({ where: { projectId: f.projectA.id } });
     }
-    await f?.cleanup();
-    await t?.close();
+    try {
+      await f?.cleanup();
+    } finally {
+      // the fixture's cleanup takes projectA when the commit test did not, and with it the link's events: then the actor, its home, its company
+      await t?.prisma.user.deleteMany({ where: { id: hubActorId } });
+      await t?.prisma.project.deleteMany({ where: { id: hubHomeId } });
+      await t?.prisma.org.deleteMany({ where: { id: hubOrgId } });
+      await t?.close();
+    }
   });
 
   it('refuses a project that is not archived', async () => {
