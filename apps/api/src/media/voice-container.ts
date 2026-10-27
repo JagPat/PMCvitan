@@ -37,7 +37,7 @@
  *    empty edit first and exactly one edit of the media, starting before the sound ends; every container's children from its own allow-list, each
  *    table at most once (no udta, meta, iods, sgpd, sbgp, sidx, mfra, stss or elng); every table and full box ending
  *    exactly at its last field for its version (0, or 1 where the box defines it), with only the flags it defines
- *    (none, but tkhd's four track flags, tfhd's and trun's field flags and url's self-contained 1), the handler name at most 64 bytes
+ *    (none, but tkhd's four track flags, tfhd's and trun's field flags, never a non-zero trun composition offset, and url's self-contained 1), the handler name at most 64 bytes
  *    ending at its one zero byte, the data reference at most one zero byte; fragments only when moov's mvex has the
  *    track's trex; and the audio samples (stsz/stsc/stco or co64, and each fragment's runs for that track, from its
  *    base with the tfhd and trex defaults) add up to at least one byte, every chunk or run of them inside an mdat's
@@ -48,7 +48,7 @@
  *    their TOC bytes time them, or its BlockDuration, or DefaultDuration a frame); Ogg the last granule position (less
  *    the pre-skip); MP4 mvhd, mdhd, the edit list (its empty edit's delay before the media) and the media timeline's
  *    end (moov's stts durations, then each fragment's trun durations from its tfdt start, or from where the one before
- *    ended, each sample as presented, and each run's frames as decoded from where the run sits); and for every
+ *    ended, and each run's frames as decoded from where the run sits, a run with none moving nothing); and for every
  *    container the frames themselves (each Opus packet's length from its TOC byte, 1,024 samples per AAC frame at the
  *    esds rate). A file whose length cannot be read (an MP4 with no media timescale, an edit list with no movie
  *    timescale, an Ogg ending on a page with no granule) is refused, as is anything unfinished at the file's end (an
@@ -571,6 +571,10 @@ function mp4Seconds(b: Buffer): number | null {
       for (const trun of tr.get('trun') ?? []) {
         // the samples left under the cap bound this run's count before any of its samples is read (#1025 audit)
         const run = trunRun(b, trun, defaults, MAX_SAMPLES - frames);
+        // a sound track's frames are presented in the order they decode: AAC and Opus have no frame reordering, so a run
+        // presenting a frame at any other time is refused, as moov's ctts is; offsets that are all 0 change nothing
+        // (Codex P2 on #1165 round 2)
+        if (run.shifted) return null;
         frames += run.count;
         // a run starts at its data_offset from the base, else right after the previous run
         if (run.dataOffset !== undefined) cursor = base + run.dataOffset;
@@ -583,19 +587,19 @@ function mp4Seconds(b: Buffer): number | null {
         for (let i = 0, p = cursor; i < run.count; p += run.sizeOf(i), i++) sample(p, run.sizeOf(i));
         bytes += run.bytes;
         const runStart = timeline;
-        // the run's frames play one after another from its start, no earlier than its latest composition offset places
-        // a sample and no earlier than the frames before it end (Codex P1 on #1165: 2,000 zero-duration runs of one
-        // frame at 100 s end at 142.67 s, as one run of 2,000 does): a bound never shorter than the sound
+        // the run's frames play one after another from its start, no earlier than the frames before it end (Codex P1 on
+        // #1165: 2,000 zero-duration runs of one frame at 100 s end at 142.67 s, as one run of 2,000 does); a run with no
+        // frames holds no sound, so it moves nothing (Codex P2 on #1165 round 2)
         const decoded = opus ? (opusSamples - before) / OPUS_RATE : (run.count * 1024) / aacRate;
-        const from = Math.max((runStart + run.shift) / mdhd.scale, heard);
-        heard = from + decoded;
-        if (decoded > 0) sounds.push([from, heard]);
+        if (decoded > 0) {
+          const from = Math.max(runStart / mdhd.scale, heard);
+          heard = from + decoded;
+          sounds.push([from, heard]);
+        }
         timeline += run.ticks;
         summed += run.ticks;
         if (!Number.isSafeInteger(timeline) || !Number.isSafeInteger(summed)) fail();
-        // a sample's composition offset places it later (or, at version 1, earlier) than its decode time: the length
-        // counts where the run's latest sample ends as presented (ISO 14496-12 §8.6.1.1)
-        ticks = Math.max(ticks, timeline, runStart + run.reach);
+        ticks = Math.max(ticks, timeline);
         cursor += run.bytes;
       }
       previousEnd = cursor;

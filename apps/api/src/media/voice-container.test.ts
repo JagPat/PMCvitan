@@ -1415,28 +1415,23 @@ describe('Codex round 1 on #1025', () => {
     expect(ogg(pages(99_997))).toBe(false);
   });
 
-  it('pre-existing, same class as tfdt: a trun sample\'s composition offset counts in the length, at version 0 and 1', () => {
-    // two 1 s samples, the second presented 600 s after its decode time (CT = DT + offset, ISO 14496-12 §8.6.1.1): a
-    // player shows it ten minutes in, so the file is 602 s and the upload refuses it; 442d7d1 read 2 s
+  it('pre-existing, same class as tfdt: a trun with a non-zero composition offset is refused, at version 0 and 1', () => {
+    // two 1 s samples, the second presented 600 s after its decode time (CT = DT + offset, ISO 14496-12 §8.6.1.1): 442d7d1
+    // read 2 s; this round read 602 s. A sound track presents its frames in decode order, so since Codex round 2 on
+    // #1165 a run presenting any frame at another time is refused
     const offsets = (version: 0 | 1, shifts: [number, number]) => fragmentedMp4({ traf: (off) => [tfhd(1),
       fullBox('trun', version, 0x000b01, [be(2, off), be(48_000, 4, shifts[0] >>> 0, 48_000, 4, shifts[1] >>> 0)])] });
     for (const version of [0, 1] as const) {
-      const late = offsets(version, [0, 48_000 * 600]);
-      expect(mp4(late)).toBe(true);
-      expect(recordingSeconds('audio/mp4', late)).toBeCloseTo(602, 6); // the shifted sample's own second counts
-      expect(readVoiceRecording('audio/mp4', late)!.durationSec).toBeGreaterThan(120);
-      // offsets of 0 read the durations, as before
+      for (const shifts of [[0, 48_000 * 600], [48_000 * 600, 0], [0, 2 ** 31], [0, -24_000]] as Array<[number, number]>) {
+        expect(mp4(offsets(version, shifts))).toBe(false);
+        expect(readVoiceRecording('audio/mp4', offsets(version, shifts))).toBeNull();
+      }
+      // offsets that are all 0 present every frame at its decode time: the run reads as it does without them
       expect(recordingSeconds('audio/mp4', offsets(version, [0, 0]))).toBeCloseTo(2, 6);
     }
-    // a negative offset (version 1) presents a sample earlier; it cannot shorten the file below its durations
-    expect(recordingSeconds('audio/mp4', offsets(1, [0, -24_000]))).toBeCloseTo(2, 6);
-    // at version 0 the offset is unsigned: 2^31 ticks is over 44,000 s, never a negative shift
-    expect(recordingSeconds('audio/mp4', offsets(0, [0, 2 ** 31]))).toBeGreaterThan(44_000);
-    // a run tfdt places 600 s in, with a negative offset on its last sample: the length is still where the timeline
-    // reaches, 602 s, not where the shifted sample is presented
-    const placed = fragmentedMp4({ traf: (off) => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000 * 600)),
-      fullBox('trun', 1, 0x000b01, [be(2, off), be(48_000, 4, 0, 48_000, 4, -24_000 >>> 0)])] });
-    expect(recordingSeconds('audio/mp4', placed)).toBeCloseTo(602, 6);
+    // the same run without the offsets column reads its durations
+    const plain = fragmentedMp4({ traf: (off) => [tfhd(1), fullBox('trun', 0, 0x000301, [be(2, off), be(48_000, 4, 48_000, 4)])] });
+    expect(recordingSeconds('audio/mp4', plain)).toBeCloseTo(2, 6);
   });
 
   it('audit: a trun past the samples left is refused before any of its sample fields is read', () => {
@@ -1614,8 +1609,6 @@ describe('parser follow-ups from #1025 (#1097, #1141, #1154)', () => {
     const opusAt0 = recordingSeconds('audio/mp4', zeroTimed(2000, 0, { opus: true }))!;
     expect(opusAt0).toBeGreaterThan(0);
     expect(recordingSeconds('audio/mp4', zeroTimed(2000, 100, { opus: true }))).toBeCloseTo(100 + opusAt0, 6);
-    // a composition offset presents the run later: a sample 100 s late puts the frames' end past 100 s too
-    expect(recordingSeconds('audio/mp4', zeroTimed(2000, 0, { shift: 48_000 * 100 }))).toBeCloseTo(100 + (2000 * 1024) / 48_000, 6);
     // a run at 0 reads its frames, as before
     expect(recordingSeconds('audio/mp4', zeroTimed(2000, 0))).toBeCloseTo((2000 * 1024) / 48_000, 6);
   });
@@ -1716,6 +1709,39 @@ describe('parser follow-ups from #1025 (#1097, #1141, #1154)', () => {
     ]);
     expect(mp4(carried)).toBe(true);
     expect(recordingSeconds('audio/mp4', carried)).toBeCloseTo((200 * 1024) / 48_000, 6);
+  });
+
+  it('Codex P2 on #1165 round 2: a run with no frames moves nothing; a run with a non-zero composition offset is refused', () => {
+    // an empty run at tfdt 60 s, then 100 AAC frames at tfdt 1 s, and an edit of the media from 1 s to 2 s: on 90eff85
+    // the empty run moved the decoded end to 60 s, so the frames were placed at 60 s and the edit refused
+    const entry = Buffer.alloc(12);
+    entry.writeUInt32BE(1000);
+    entry.writeInt32BE(48_000, 4);
+    entry.writeInt16BE(1, 8);
+    const edts = box('edts', fullBox('elst', 0, 0, [be(1), entry]));
+    const hundred = Array.from({ length: 100 }, () => 4);
+    const emptyFirst = (count: number) => Buffer.concat([
+      ftyp('iso5'), box('moov', [mvhd(0, 1000), trak('soun', 1, [], 0, 0, [edts]), box('mvex', trex(1))]),
+      fragment(1, () => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000 * 60)), fullBox('trun', 0, 0, be(0))]),
+      fragment(2, (o) => [tfhd(1), fullBox('tfdt', 0, 0, be(48_000)), trun(hundred.slice(0, count), o)]), mdat(4 * count),
+    ]);
+    expect(mp4(emptyFirst(100))).toBe(true);
+    // the length still counts the timeline tfdt states, 60 s, as before this PR: a stated length is never shortened
+    expect(recordingSeconds('audio/mp4', emptyFirst(100))).toBeCloseTo(60, 6);
+    // Codex's example of offsets: two zero-duration frames, the first presented 60 s late; on 90eff85 the run was read as
+    // one stretch at 60 s. AAC and Opus frames have no presentation order of their own, so the offset is refused
+    expect(mp4(zeroTimed(2, 0, { shift: 48_000 * 60 }))).toBe(false);
+    expect(mp4(zeroTimed(2, 0, { shift: 1, opus: true }))).toBe(false);
+    // the offsets column with every offset 0 changes nothing: it reads as the same run without it, in AAC and Opus
+    for (const opus of [false, true]) {
+      expect(mp4(zeroTimed(2, 0, { shift: 0, opus }))).toBe(true);
+      expect(recordingSeconds('audio/mp4', zeroTimed(2, 0, { shift: 0, opus }))).toBeCloseTo(recordingSeconds('audio/mp4', zeroTimed(2, 0, { opus }))!, 6);
+    }
+    // moov's ctts, the offsets of a non-fragmented track, is refused as before (stbl's allow-list never named it)
+    const table = (extra: Buffer[]) => Buffer.concat([laidOut((o) => Buffer.concat([ftyp(), box('moov', [mvhd(),
+      trakAround('soun', 1, [stsd('mp4a'), stts(2), stsc(2), stsz([4, 4]), stco(2, o), ...extra])])])), mdat(8)]);
+    expect(mp4(table([fullBox('ctts', 0, 0, be(1, 2, 0))]))).toBe(false);
+    expect(mp4(table([]))).toBe(true);
   });
 
   it('#1141: a fragment marked duration-is-empty holding a run, and #1154: track_ID 0, are refused (landed in #1158)', () => {

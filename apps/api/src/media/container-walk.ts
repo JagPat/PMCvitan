@@ -798,11 +798,11 @@ function timeHeader(b: Buffer, box: Box, sizes: number[]): { scale: number; dura
 
 /**
  * One trun: its sample count, its data_offset if it gives one (signed), its bytes and ticks with the defaults applied,
- * where its latest sample ends as presented (after its composition offset), the latest any sample is presented after
- * its decode time (0 when none is later), and each sample's size. A count above `left` (the samples the file may still
- * list) is refused before any sample is read: with default sizes and durations a run's samples take no bytes of their own.
+ * where its latest sample ends as presented (after its composition offset), whether any sample has a non-zero composition offset,
+ * and each sample's size. A count above `left` (the samples the file may still list) is refused before any sample is
+ * read: with default sizes and durations a run's samples take no bytes of their own.
  */
-function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: number }, left: number): { count: number; dataOffset: number | undefined; bytes: number; ticks: number; reach: number; shift: number; sizeOf: (i: number) => number } {
+function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: number }, left: number): { count: number; dataOffset: number | undefined; bytes: number; ticks: number; reach: number; shifted: boolean; sizeOf: (i: number) => number } {
   const { version, flags } = fullBoxHead(b, trun);
   if (version > 1 || flags & ~TRUN_FLAGS) fail(); // version 1 differs only in signed composition offsets
   let at = trun.dataStart + 4;
@@ -829,15 +829,15 @@ function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: numbe
   let bytes = 0;
   let ticks = 0;
   let reach = 0; // where the run's latest sample ends as presented, from the run's start
-  let shift = 0; // the latest any sample is presented after its decode time
+  let shifted = false; // a sample presented other than at its decode time
   for (let i = 0; i < count; i++) {
     bytes += sizeOf(i);
     const duration = durationOf(i);
     reach = Math.max(reach, ticks + shiftOf(i) + duration);
-    shift = Math.max(shift, shiftOf(i));
+    if (shiftOf(i) !== 0) shifted = true;
     ticks += duration;
   }
-  return { count, dataOffset, bytes, ticks, reach, shift, sizeOf };
+  return { count, dataOffset, bytes, ticks, reach, shifted, sizeOf };
 }
 
 export type { Walk, Kind, Element, Box, MediaRanges, SampleRanges };
