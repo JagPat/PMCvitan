@@ -2,8 +2,9 @@
  * Stage 1 video on site visits (#995) — is this upload a video clip, with a picture in it, in the container its type
  * names, and how long is it?
  *
- * The voice note's check (`voice-container.ts`), widened to a picture track: the same bounded structural walk, never a
- * decoder, with the same caps (steps, padding, samples, mdat boxes and fragments) and the same allow-lists for every
+ * The voice note's check (`voice-container.ts`), widened to a picture track, both reading with the shared walks in
+ * `container-walk.ts`: the same bounded structural walk, never a decoder, with the same caps (steps, padding, samples,
+ * here counted over every track's frames in WebM too, mdat boxes and fragments) and the same allow-lists for every
  * structure the two share, so a clip's sound is read exactly as a voice note's is. Anything this does not name is a
  * refusal, never skipped; anything it names is read whole. The rules, with the test pinning each, are in the PR's
  * "Parser rules":
@@ -37,7 +38,7 @@ import {
   MVHD, TKHD, MDHD, MEHD, TFDT, SMHD, MFHD, TREX, TKHD_FLAGS, HANDLER_NAME_MAX, trackId, sampleTable, selfContained,
   TFHD_FLAGS, audioSampleEntry, editList, MP4_BRANDS, timeHeader, trunRun,
   type Walk, type Kind, type Element, type Box, type MediaRanges, type SampleRanges,
-} from './voice-container';
+} from './container-walk';
 
 /**
  * An accepted clip: its length in seconds, from the file itself (never from the request), and the whole seconds it is
@@ -165,9 +166,9 @@ function clipTracks(b: Buffer, tracks: Element, steps: Walk): Map<number, ClipTr
 /**
  * A Cluster's children, as a voice note's are walked, with every block on one of the clip's tracks. Returns where the
  * Segment walk resumes, whether a block held a picture, where its latest block ends (in seconds), and the Opus samples
- * its sound frames hold.
+ * its sound frames hold. Every frame is counted into `frames`, the whole file's, refused past the sample cap.
  */
-function walkCluster(b: Buffer, cluster: Element, tracks: Map<number, ClipTrack>, scale: number, steps: Walk): { next: number; picture: boolean; last: number; samples: number } {
+function walkCluster(b: Buffer, cluster: Element, tracks: Map<number, ClipTrack>, scale: number, steps: Walk, frames: { n: number }): { next: number; picture: boolean; last: number; samples: number } {
   const end = cluster.dataEnd;
   let picture = false;
   let last = 0;
@@ -201,6 +202,9 @@ function walkCluster(b: Buffer, cluster: Element, tracks: Map<number, ClipTrack>
       const r = blockTrack(b, block.dataStart, block.dataEnd, steps);
       const track = tracks.get(r.track);
       if (!track) fail(); // a block on a track the file does not list
+      // every frame of either track counts toward the samples a clip may hold, as an MP4's do
+      frames.n += r.frames.length;
+      if (frames.n > MAX_SAMPLES) fail();
       // a block ends where its last frame ends: a sound block's frames as their TOC bytes time them, and for either
       // track what the file says the block lasts, BlockDuration or each frame's DefaultDuration, whichever is longest
       let held = 0;
@@ -235,6 +239,7 @@ function webmSeconds(b: Buffer): number | null {
   let duration = 0; // Info's Duration, in ticks
   let last = 0; // where the latest block ends, in seconds
   let samples = 0; // Opus samples in every sound frame
+  const frames = { n: 0 }; // frames of both tracks, capped together
   for (let at = segment.dataStart; at < segment.dataEnd;) {
     const id = vint(b, at, segment.dataEnd, true).value;
     const e = readElement(b, at, segment.dataEnd, steps, id === CLUSTER);
@@ -242,7 +247,7 @@ function webmSeconds(b: Buffer): number | null {
     if (e.id === CLUSTER) {
       // blocks before the track table that names their tracks, or before the Info that times them
       if (tracks === undefined || !info) return null;
-      const r = walkCluster(b, e, tracks, scale, steps);
+      const r = walkCluster(b, e, tracks, scale, steps, frames);
       if (r.picture) picture = true;
       last = Math.max(last, r.last);
       samples += r.samples;
@@ -590,6 +595,8 @@ function mp4Seconds(b: Buffer): number | null {
       const tfhd = only(tr, 'tfhd');
       const { version, flags } = fullBoxHead(b, tfhd);
       if (version !== 0 || flags & ~TFHD_FLAGS) return null;
+      // duration-is-empty says the fragment holds no samples for its time: a track run in it contradicts that
+      if (flags & 0x10000 && tr.has('trun')) return null;
       if (tfhd.dataStart + 8 > tfhd.end) fail();
       // a fragment of a listed track, which the movie declares fragments for
       const track = tracks.get(b.readUInt32BE(tfhd.dataStart + 4));

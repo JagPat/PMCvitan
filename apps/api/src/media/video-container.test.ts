@@ -159,6 +159,22 @@ describe('readVideoClip — WebM', () => {
   });
 });
 
+describe('readVideoClip — WebM frames', () => {
+  it('Codex round 1 on #1158: caps every track\'s frames together at 50,000, as an MP4\'s samples are', () => {
+    const opus = Buffer.from([0xfc, 0xff, 0xfe]); // 20 ms
+    const build = (pictures: number, sounds: number) => clipWebm({
+      tracks: [pictureTrack(), soundTrack()],
+      clusters: [webmCluster([
+        ...Array.from({ length: pictures }, () => pictureBlock()),
+        ...Array.from({ length: sounds }, () => simpleBlock(2, opus)),
+      ])],
+    });
+    expect(webm(build(25_000, 25_000))).not.toBeNull();
+    expect(webm(build(25_000, 25_001))).toBeNull();
+    expect(webm(build(50_001, 0))).toBeNull();
+  });
+});
+
 describe('readVideoClip — MP4', () => {
   it('passes the shapes Chrome and iOS write: plain with AAC sound, picture alone, VP9, fragmented with Opus and its mfra', () => {
     expect(mp4(clipMp4())).not.toBeNull();
@@ -406,5 +422,15 @@ describe('readVideoClip — MP4', () => {
     };
     expect(mp4(build(25_000, 25_000))).not.toBeNull();
     expect(mp4(build(25_000, 25_001))).toBeNull();
+  });
+
+  it('Codex round 1 on #1158: a fragment marked duration-is-empty holds no track run', () => {
+    const empty = (b: Buffer) => {
+      const out = Buffer.from(b);
+      out[out.indexOf(Buffer.from('tfhd')) + 5]! |= 0x01; // tfhd flags 0x010000 on the picture's traf
+      return out;
+    };
+    expect(mp4(clipFragmented())).not.toBeNull();
+    expect(mp4(empty(clipFragmented()))).toBeNull();
   });
 });
