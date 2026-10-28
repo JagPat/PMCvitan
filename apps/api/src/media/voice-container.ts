@@ -66,7 +66,7 @@ import {
   CLUSTER_TIMESTAMP, CUES, CUES_CHILDREN, CUE_CLUSTER_POSITION, CUE_POINT_CHILDREN, CUE_TIME, CUE_TRACK,
   CUE_TRACK_POSITIONS, CUE_TRACK_POSITIONS_CHILDREN, DOC_TYPE, DURATION, EBML_HEADER, EBML_HEADER_CHILDREN, HANDLER_NAME_MAX, INFO, INFO_CHILDREN,
   MAX_MEDIA_BOXES, MAX_SAMPLES, MAX_STEPS, MDHD, MEHD, MFHD, MP4_BRANDS, MP4_CHILDREN, MP4_COMPATIBLE_ONLY, MVHD,
-  Malformed, OPUS_RATE, SEGMENT, SEGMENT_CHILDREN, SIMPLE_BLOCK, SMHD, TFDT, TFHD_FLAGS, TIMESTAMP_SCALE, TKHD,
+  Malformed, OPUS_RATE, SEGMENT, SEGMENT_CHILDREN, SEEK_HEAD, seekHead, SIMPLE_BLOCK, SMHD, TFDT, TFHD_FLAGS, TIMESTAMP_SCALE, TKHD,
   TKHD_FLAGS, TRACKS, TRACKS_CHILDREN, TRACK_ENTRY, TRACK_ENTRY_CHILDREN, TRACK_TYPE, TREX, VOID, aacRate,
   audioSampleEntry, blockTrack, boxes, checkChild, children, codeOf, editList, elements, exactBox, fail,
   floatOf, fullBoxHead, inMedia, isOpusHead, isPadding, only, opusPacketSamples, opusTrack, padding, readElement,
@@ -206,6 +206,7 @@ function webmSeconds(b: Buffer): number | null {
   let track: { number: number; frameNs: number; lacing: boolean } | undefined; // the one audio track, from the one Segment-level Tracks
   let sound = false;
   let info = false;
+  let seek = false; // one SeekHead
   let scale = 1_000_000; // nanoseconds per tick, TimestampScale's default
   let duration = 0; // Info's Duration, in ticks
   let last = 0; // where the latest block ends, in seconds
@@ -250,6 +251,12 @@ function webmSeconds(b: Buffer): number | null {
         cued.push(uintOf(b, cluster));
       }
       if (cued.length === 0) return null;
+    } else if (e.id === SEEK_HEAD) {
+      // the seek index, read whole and never followed: once, first (Chromium and Firefox write it before Info), and
+      // pointing only at what this walk takes
+      if (seek || info || track !== undefined) return null;
+      seek = true;
+      seekHead(b, e, steps, VOICE_SEGMENT_CHILDREN, segment.unknownSize ? undefined : segment.dataEnd - segment.dataStart);
     } else if (e.id === INFO) {
       if (info) return null; // one Info
       info = true;
