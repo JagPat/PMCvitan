@@ -5820,6 +5820,10 @@ assert "#1179 R1: after the replay the removal line keeps its four triggers and 
 assert "#1177 VT1a: after the replay the transcripts table keeps its four triggers and its CHECK, and the media table its voice-note guard" \
   "SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"VoiceTranscript\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('VoiceTranscript_insert','VoiceTranscript_keys_fixed','VoiceTranscript_no_delete','VoiceTranscript_no_truncate'))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"VoiceTranscript\"'::regclass AND conname = 'VoiceTranscript_shape_check')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"Media\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname = 'Media_voice_transcript_note_kept')::text;" \
   "4|1|1"
+# #1177 VT1b — and the corrections migration (on ALWAYS_EXECUTE): its four triggers and its CHECK stand enabled.
+assert "#1177 VT1b: after the replay the corrections table keeps its four triggers and its CHECK" \
+  "SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"VoiceTranscriptCorrection\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('VoiceTranscriptCorrection_insert','VoiceTranscriptCorrection_frozen','VoiceTranscriptCorrection_no_delete','VoiceTranscriptCorrection_no_truncate'))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"VoiceTranscriptCorrection\"'::regclass AND conname = 'VoiceTranscriptCorrection_shape_check')::text;" \
+  "4|1"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \

@@ -125,7 +125,8 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     const n = await voice(f.projectA.id);
     await t.prisma.voiceTranscript.create({ data: { projectId: f.projectA.id, mediaId: n } });
     await expect(raw(`DELETE FROM "VoiceTranscript" WHERE "mediaId" = $1`, n)).rejects.toThrow(alone);
-    await expect(raw(`TRUNCATE "VoiceTranscript"`)).rejects.toThrow(/never truncated/);
+    // with CASCADE, since its corrections (#1177 VT1b) reference it; their own seal refuses the same statement
+    await expect(raw(`TRUNCATE "VoiceTranscript" CASCADE`)).rejects.toThrow(/never truncated/);
     expect(await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: m } })).toMatchObject({ status: 'done', text: 'પાઇપ લાઇન' });
     // the note's own delete still takes it (a cascade, below trigger depth 1)
     await raw(`DELETE FROM "Media" WHERE "id" IN ($1, $2)`, m, n);

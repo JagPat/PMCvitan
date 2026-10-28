@@ -7,7 +7,8 @@ export const mediaManifest: ModuleManifest = {
   kind: 'domain',
   // #482 site photos (20280117) — the keys of deleted photos, written by a trigger on this module's own Media table and read only by the media upload
   // #1177 VT1a (20280126000000) — a voice note's words, as the speech provider heard them
-  ownsModels: ['media', 'mediaTombstone', 'voiceTranscript'],
+  // #1177 VT1b (20280128000000) — people's corrections of those words, added and never changed
+  ownsModels: ['media', 'mediaTombstone', 'voiceTranscript', 'voiceTranscriptCorrection'],
   // Task 8 reads decisions; Task 10 reads daily-log + validates an evidence target via the inspections
   // query (InspectionsQueryService.assertEvidenceTarget) — all through their query contracts.
   dependsOn: ['decisions', 'daily-log', 'inspections'],

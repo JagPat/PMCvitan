@@ -596,6 +596,9 @@ if echo "$out" | grep -q "P3005"; then
   #
   # Voice-note transcripts (#1177 VT1a, 20280126000000) are here because their rules are a check and five triggers, which a
   # db-push baseline does not have. The file is guarded and re-runnable.
+  #
+  # Their corrections (#1177 VT1b, 20280128000000) are here for the same reason: a check and four triggers. The file is
+  # guarded and re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -644,7 +647,8 @@ if echo "$out" | grep -q "P3005"; then
 20280122000000_hub_drawing_identity
 20280123000000_hub_receipts
 20280125000000_site_visit_file_removal
-20280126000000_voice_transcript"
+20280126000000_voice_transcript
+20280128000000_voice_transcript_correction"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
