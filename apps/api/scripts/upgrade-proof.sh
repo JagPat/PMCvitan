@@ -5162,7 +5162,8 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # Site Visits SV1-a's two files (20280111, 20280112) extend A7d's catalog generation and 4d-i's
   # pairing claim, and refuse to apply without them, so they are excluded with their prerequisites.
   # Site Visits SV2's visit-media table (20280114) references SV1-a's visit table, so it is excluded with it.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*|20280106000000_*|20280107000000_*|20280111000000_*|20280112000000_*|20280114000000_*) continue ;; esac
+  # #1179 R1's visit file removal line (20280125) references SV1-a's visit table and SV2's files, so it is excluded with them.
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*|20280106000000_*|20280107000000_*|20280111000000_*|20280112000000_*|20280114000000_*|20280125000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5809,6 +5810,11 @@ assert "SV1-a: after the replay the kernel actor seal carries A7d's exemption an
 assert "SV2: after the replay the visit-file record keeps its four triggers, its CHECK and its place key's SET NULL (\"nodeId\")" \
   "SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"SiteVisitMedia\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('SiteVisitMedia_insert','SiteVisitMedia_update','SiteVisitMedia_no_delete','SiteVisitMedia_no_truncate'))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conname = 'SiteVisitMedia_shape_check')::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conname = 'SiteVisitMedia_projectId_nodeId_fkey' AND confdeltype = 'n' AND confdelsetcols IS NOT NULL)::text;" \
   "4|1|1"
+# #1179 R1 — the replay re-ran the removal-line migration (on ALWAYS_EXECUTE) too: its four triggers, its CHECK and
+# the guard it adds on the visit-file table stand enabled.
+assert "#1179 R1: after the replay the removal line keeps its four triggers and its CHECK, and the visit-file table its two removal guards and its visit lock" \
+  "SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"SiteVisitFileRemoval\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('SiteVisitFileRemoval_insert','SiteVisitFileRemoval_done','SiteVisitFileRemoval_frozen','SiteVisitFileRemoval_no_truncate'))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"SiteVisitFileRemoval\"'::regclass AND conname = 'SiteVisitFileRemoval_shape_check')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"SiteVisitMedia\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('SiteVisitMedia_removal_recorded','SiteVisitMedia_not_removed','SiteVisitMedia_00_visit_lock'))::text;" \
+  "4|1|3"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \
