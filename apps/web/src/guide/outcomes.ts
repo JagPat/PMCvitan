@@ -27,7 +27,10 @@ export type GuideOutcome =
   | 'visit-photo-add-failed'
   | 'daily-log-sent'
   | 'daily-log-send-failed'
-  | 'daily-log-not-kept';
+  | 'daily-log-not-kept'
+  | 'review-decided'
+  | 'review-decide-failed'
+  | 'review-decide-not-kept';
 
 /** `key`: which record the outcome is about (the submitted inspection's id), so a guide following one
  *  checklist ignores the submit of another. `run`: the guide run the request was sent under (see
@@ -42,8 +45,9 @@ let currentRun = 0;
 
 export function beginGuideRun(): number {
   currentRun += 1;
-  // a photo picked under an earlier run is not this run's
+  // a photo picked, or a review decided, under an earlier run is not this run's
   guidedPhotoPicks.clear();
+  guidedReviews.clear();
   return currentRun;
 }
 
@@ -59,6 +63,18 @@ export function recordGuidedPhotoPick(run: number, clientKey: string): void {
 
 export function guidedPhotoPicksOf(run: number): ReadonlySet<string> {
   return guidedPhotoPicks.get(run) ?? new Set<string>();
+}
+
+/** The review each guide run decided, so the review guide can see it decided when the decision's own answer is lost (a
+ *  refresh shows it decided, or gone from the queue, first). */
+const guidedReviews = new Map<number, string>();
+
+export function recordGuidedReview(run: number, reviewId: string): void {
+  guidedReviews.set(run, reviewId);
+}
+
+export function guidedReviewOf(run: number): string | null {
+  return guidedReviews.get(run) ?? null;
 }
 
 export function guideRunToken(): number {
