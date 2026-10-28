@@ -131,6 +131,27 @@ describe('#995 V1b — a video clip\'s still frame (live PG)', () => {
     expect(await events(id)).toBe(1);
   });
 
+  it("the frame's link is minted after the bytes are stored, so a slow PUT does not hand back a link already expired (Codex P2 on #1166)", async () => {
+    const signed = t.app.get((await import('../../src/media/signed-url.service')).SignedUrlService);
+    const ttl = signed.cacheMaxAge();
+    let now = 1_000_000_000;
+    // the signer's clock moves only when the PUT runs: a stand-in for a PUT or a lock wait longer than the link lives
+    vi.spyOn(signed as unknown as { nowSec: () => number }, 'nowSec').mockImplementation(() => now);
+    put.mockImplementation(async (key: string) => {
+      now += ttl + 60;
+      return { url: `https://bucket.test/${key}` };
+    });
+    const { id } = await clip();
+    const res = await poster(id);
+    expect(res.status, res.text).toBe(200);
+    expect((await http().get(res.body.posterUrl)).status).toBe(302);
+    // a replay mints at its own return too
+    now += ttl + 60;
+    const again = await poster(id);
+    expect(again.status, again.text).toBe(200);
+    expect((await http().get(again.body.posterUrl)).status).toBe(302);
+  });
+
   it('two frames sent at once: one is kept, the other\'s object is removed once no clip names it', async () => {
     const { id } = await clip();
     // both pass the early read before either takes the row: the row is held until both have stored their bytes

@@ -24,6 +24,7 @@ import { DailyLogController } from '../daily-log/daily-log.controller';
 import { SiteVisitsController } from '../site-visits/site-visits.controller';
 import { DecisionsController } from '../decisions/decisions.controller';
 import { DrawingsController } from '../drawings/drawings.controller';
+import { HubReceiverController } from '../drawings/hub/hub-receiver.controller';
 import { InspectionsController } from '../inspections/inspections.controller';
 import { MediaController } from '../media/media.controller';
 import { MembersController } from '../orgs/members.controller';
@@ -70,6 +71,8 @@ const CONTROLLERS = [
   SiteVisitsController,
   DecisionsController,
   DrawingsController,
+  // #1118 U3 — Hub's webhooks (@Public; Hub signs each delivery)
+  HubReceiverController,
   InspectionsController,
   MediaController,
   MembersController,
@@ -109,7 +112,8 @@ function collectRoutes(): RouteInfo[] {
   const routes: RouteInfo[] = [];
   for (const Controller of CONTROLLERS) {
     const classGuards = guardsOf(Controller);
-    const proto = Controller.prototype as Record<string, unknown>;
+    // through unknown: TypeScript refuses to convert the controllers' union to a record directly (TS2352)
+    const proto = Controller.prototype as unknown as Record<string, unknown>;
     for (const name of Object.getOwnPropertyNames(proto)) {
       if (name === 'constructor') continue;
       const handler = proto[name];

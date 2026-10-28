@@ -50,5 +50,6 @@ export {
   Blocks,
   BookmarkPlus,
   ShieldCheck,
+  CircleHelp,
   type LucideIcon,
 } from 'lucide-react';
