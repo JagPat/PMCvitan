@@ -1,10 +1,8 @@
-import { can, type Role, type ScreenKey } from '@vitan/shared';
+import type { Role, ScreenKey } from '@vitan/shared';
 import type { GuideTip, GuideTitle } from './words';
 import { guidedPhotoPicksOf, type GuideOutcome } from './outcomes';
 import { useGuideState } from './guideState';
 import { inspectionFrozen, useStore } from '@/store/store';
-import { dailyLogSendPending } from '@/store/dailyLogPending';
-import { API_BASE } from '@/data/apiGateway';
 
 /**
  * #482 (board decision 14 Oct) — the in-app guide: coach marks on the live screen.
@@ -115,7 +113,6 @@ export const GUIDES: readonly Guide[] = [
     title: 'addSitePhoto',
     roles: ['pmc', 'engineer'],
     screen: 'dashboard',
-    available: sitePhotoButtonUsable,
     steps: [
       { target: 'add-site-photo', tip: 'photoAdd', until: 'outcome', outcome: { ok: 'site-photo-added', failed: 'site-photo-add-failed', held: 'site-photo-not-kept' }, settled: guidedPhotoOnRecord },
     ],
@@ -137,13 +134,6 @@ function checklistOutOnSite(): boolean {
   const s = useStore.getState();
   const lists = s.checklist && !s.openChecklists.some((c) => c.id === s.checklist!.id) ? [...s.openChecklists, s.checklist] : s.openChecklists;
   return lists.some((c) => !inspectionFrozen(s, c) && c.items.some((it) => it.state !== 'fail'));
-}
-
-/** The Dashboard shows a pressable "Add site photo": only against the server (never in demo mode), to a role that may
- *  upload, and not while the day's log is being sent (see `AddSitePhoto`). */
-function sitePhotoButtonUsable(): boolean {
-  const s = useStore.getState();
-  return !!API_BASE && can('media.upload', s.role) && !dailyLogSendPending(s);
 }
 
 /** A photo picked under this run of the guide is in the project's photos (the viewer's own photos carry their upload key). */
