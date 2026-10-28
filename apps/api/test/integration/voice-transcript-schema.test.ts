@@ -156,6 +156,8 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     const m = await voice(f.projectA.id);
     await claim(m);
     await set(m, `"status" = 'running', "providerJobId" = 'job-3', "attempts" = 1, "leaseToken" = 'tok', "leaseUntil" = now()`);
+    // a running row does not go back to a claim (with or without its job)
+    await expect(set(m, `"status" = 'pending'`)).rejects.toThrow(/only forward/);
     // the update that makes it done may not drop or swap the job (Codex #1182, 4398744242)
     const once = /is set once per try/;
     await expect(set(m, `"status" = 'done', "text" = 'x', "providerJobId" = NULL`)).rejects.toThrow(once);
@@ -192,9 +194,14 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     await claim(n);
     await set(n, `"status" = 'running', "providerJobId" = 'job-4', "attempts" = 1`);
     await set(n, `"status" = 'failed', "lastError" = 'provider refused'`);
-    // a failed row is never made done: it is retried as a fresh claim first, and only a retry clears its job
-    await expect(set(n, `"status" = 'done', "text" = 'x'`)).rejects.toThrow(/done with the job it was heard by/);
-    await expect(set(n, `"status" = 'pending', "providerJobId" = NULL`)).rejects.toThrow(/is set once per try/);
+    // a failed row is never taken back up: not to done, not to running (then done, Codex #1208, 4399524540), and not to
+    // a claim that keeps its job, its tries or no mark of the retry; only a fresh retried claim starts it over
+    const forward = /only forward, or from failed to a fresh retried claim/;
+    await expect(set(n, `"status" = 'done', "text" = 'x'`)).rejects.toThrow(forward);
+    await expect(set(n, `"status" = 'running'`)).rejects.toThrow(forward);
+    await expect(set(n, `"status" = 'pending'`)).rejects.toThrow(forward);
+    await expect(set(n, `"status" = 'pending', "providerJobId" = NULL, "attempts" = 0`)).rejects.toThrow(/is set once per try/);
+    await expect(set(n, `"status" = 'pending', "providerJobId" = NULL, "retried" = true`)).rejects.toThrow(forward);
     await set(n, `"status" = 'pending', "providerJobId" = NULL, "attempts" = 0, "retried" = true, "lastError" = NULL`);
     await set(n, `"status" = 'running', "providerJobId" = 'job-5', "attempts" = 1`);
     await set(n, `"status" = 'done', "text" = 'words'`);

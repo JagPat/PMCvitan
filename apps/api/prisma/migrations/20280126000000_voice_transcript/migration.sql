@@ -30,11 +30,12 @@
 --       and its expiry together or neither; a job id, when set, never blank; "attempts" from 0 to 10; texts bounded
 --       (the provider's 20,000 characters, an error's 500); a language code shaped like 'gu-IN' or 'en'; every time
 --       finite.
---   V4  What the provider heard stays as heard, from the job that heard it. The job id is written once per try: it is
---       set when a pending row starts running and cleared only when a failed row is reset to a fresh claim for another
---       try ("retried"); it is never swapped or dropped in between. A row becomes done only from running, with that
---       job, or from pending, which never had one (a short note sent whole) (Codex #1182, 4398744242). Once a row is
---       done nothing in it changes but its update time, so a late provider answer cannot overwrite it (#1177 H7).
+--   V4  What the provider heard stays as heard, from the job that heard it. A row moves only forward: pending to
+--       running, failed or done; running to failed or done; and failed back only to a fresh claim for another try
+--       (pending, "retried", no job, no tries) (Codex #1208, 4399524540: not failed back to running). The job id is
+--       written once per try: it is set when a pending row starts running and cleared only by that fresh claim; it is
+--       never swapped or dropped in between (Codex #1182, 4398744242). Once a row is done nothing in it changes but
+--       its update time, so a late provider answer cannot overwrite it (#1177 H7).
 --       What the database cannot tell apart: a done row with no job after a reset is either a short note sent whole
 --       on its retry or a long one whose job a writer chose to abandon; both pass through a recorded failure and
 --       retry.
@@ -137,8 +138,8 @@ CREATE TRIGGER "VoiceTranscript_insert"
   BEFORE INSERT ON public."VoiceTranscript"
   FOR EACH ROW EXECUTE FUNCTION public.media_voice_transcript_insert();
 
--- V2 and V4, on update: the keys and the creation time never move; the job id is written once per try; a row becomes
--- done only from running with its job or from pending with none; a done row changes no more.
+-- V2 and V4, on update: the keys and the creation time never move; a row moves only forward, or from failed to a fresh
+-- claim; the job id is written once per try; a done row changes no more.
 CREATE OR REPLACE FUNCTION public.media_voice_transcript_keys_fixed() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
@@ -161,10 +162,16 @@ BEGIN
     RAISE EXCEPTION 'media: the job of voice note % is set once per try', OLD."mediaId"
       USING ERRCODE = 'check_violation';
   END IF;
-  -- and a row is done with the job it was heard by: from running or pending, its job (if any) unchanged above
-  IF NEW."status" = 'done' AND OLD."status" NOT IN ('done', 'running', 'pending') THEN
-    RAISE EXCEPTION 'media: voice note % is done with the job it was heard by', OLD."mediaId"
-      USING ERRCODE = 'check_violation';
+  -- the whole path, not only the step into done (Codex #1208, 4399524540): a failed try is never taken back up; it
+  -- starts over only as a fresh claim, so no text is published for a job already recorded as failed
+  -- (a word outside the list is the shape check's to refuse, with its own name)
+  IF NEW."status" IS DISTINCT FROM OLD."status" AND NEW."status" IN ('pending', 'running', 'failed', 'done') AND NOT (
+       (OLD."status" = 'pending' AND NEW."status" IN ('running', 'failed', 'done'))
+    OR (OLD."status" = 'running' AND NEW."status" IN ('failed', 'done'))
+    OR (OLD."status" = 'failed' AND NEW."status" = 'pending' AND NEW."retried"
+        AND NEW."providerJobId" IS NULL AND NEW."attempts" = 0)) THEN
+    RAISE EXCEPTION 'media: voice note % moves from % to % only forward, or from failed to a fresh retried claim',
+      OLD."mediaId", OLD."status", NEW."status" USING ERRCODE = 'check_violation';
   END IF;
   RETURN NEW;
 END $$;
