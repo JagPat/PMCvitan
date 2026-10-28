@@ -73,10 +73,16 @@ describe('#1118 U4 — fetching a version from Hub', () => {
       { fileId: 'f 17', versionId: 'v-9031', contentPath: '/api/v2/drawings/f 17/content?versionId=v-9031' },
       { fileId: 'f-17', versionId: 'v&x=1', contentPath: '/api/v2/drawings/f-17/content?versionId=v&x=1' },
       { fileId: 'x'.repeat(257), versionId: 'v-9031', contentPath: `/api/v2/drawings/${'x'.repeat(257)}/content?versionId=v-9031` },
+      // dot segments: the URL would drop or climb them and fetch another Hub path
+      { fileId: '.', versionId: 'v-9031', contentPath: '/api/v2/drawings/./content?versionId=v-9031' },
+      { fileId: '..', versionId: 'v-9031', contentPath: '/api/v2/drawings/../content?versionId=v-9031' },
+      { fileId: 'f-17', versionId: '..', contentPath: '/api/v2/drawings/f-17/content?versionId=..' },
     ]) {
       expect(await fetchHubContent(bad, { config }), JSON.stringify(bad).slice(0, 80)).toEqual({ ok: false, failure: 'bad_reference', retryable: false });
     }
     expect(hubRequests).toEqual([]);
+    // a run of dots longer than two is an ordinary segment
+    expect(hubContentPath('...', 'v-9031')).toBe('/api/v2/drawings/.../content?versionId=v-9031');
   });
 
   it('is closed without every HUB_* and sends nothing', async () => {
@@ -188,7 +194,7 @@ describe('#1118 U4 — fetching a version from Hub', () => {
   });
 
   it('answers a status other than 200 with its code: a 5xx or 429 is retryable, a 404 is not', async () => {
-    for (const [status, retryable] of [[404, false], [403, false], [500, true], [503, true], [429, true], [204, false]] as const) {
+    for (const [status, retryable] of [[404, false], [403, false], [500, true], [503, true], [408, true], [429, true], [204, false]] as const) {
       hub.current = (_req, res) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(status === 204 ? undefined : '{"error":"x"}'); };
       expect(await fetchHubContent(ref(), { config }), String(status)).toEqual({ ok: false, failure: 'http_status', status, retryable });
     }
@@ -229,6 +235,8 @@ describe('#1118 U4 — fetching a version from Hub', () => {
       ['AC1006', null],
       ['  0\nSECTION\n  2\nHEADER\n', 'image/vnd.dxf'],
       ['999\r\nmade by Hub\r\n  0\r\nSECTION\r\n', 'image/vnd.dxf'],
+      ['999\nfirst comment\n999\nsecond comment\n  0\nSECTION\n', 'image/vnd.dxf'],
+      ['999\nonly a comment\n', null],
       [Buffer.from('AutoCAD Binary DXF\r\n\x1a\x00rest', 'latin1'), 'image/vnd.dxf'],
       [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]), 'image/png'],
       [Buffer.from([0xff, 0xd8, 0xff, 0xe0]), 'image/jpeg'],

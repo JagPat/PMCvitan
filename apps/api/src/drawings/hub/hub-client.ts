@@ -59,17 +59,19 @@ export type HubContentRef = { fileId: string; versionId: string; contentPath: un
 
 /** URL-safe as written (RFC 3986 unreserved), so a path built from it needs no encoding. */
 const HUB_ID = /^[A-Za-z0-9._~-]{1,256}$/;
+/** `.` and `..` are dot segments: a URL drops or climbs them, so the request would go to another Hub path */
+const DOT_SEGMENT = /^\.\.?$/;
 
 /** The one path PMC fetches a version from, or null when an id isn't URL-safe. */
 export function hubContentPath(fileId: string, versionId: string): string | null {
-  if (!HUB_ID.test(fileId) || !HUB_ID.test(versionId)) return null;
+  if (!HUB_ID.test(fileId) || !HUB_ID.test(versionId) || DOT_SEGMENT.test(fileId) || DOT_SEGMENT.test(versionId)) return null;
   return `/api/v2/drawings/${fileId}/content?versionId=${versionId}`;
 }
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const BINARY_DXF = Buffer.from('AutoCAD Binary DXF\r\n\x1a\x00', 'latin1');
-// an ASCII DXF opens with its first section (`0` / `SECTION`), after an optional `999` comment
-const ASCII_DXF = /^[ \t]*(?:999\r?\n[^\r\n]*\r?\n[ \t]*)?0\r?\n[ \t]*SECTION[ \t]*\r?\n/;
+// an ASCII DXF opens with its first section (`0` / `SECTION`), after any number of `999` comments
+const ASCII_DXF = /^[ \t]*(?:999\r?\n[^\r\n]*\r?\n[ \t]*)*0\r?\n[ \t]*SECTION[ \t]*\r?\n/;
 
 /** The drawing type of `bytes`, read from their first bytes; null for anything else. */
 export function sniffDrawingType(bytes: Buffer): HubContentType | null {
@@ -129,7 +131,8 @@ export async function fetchHubContent(ref: HubContentRef, options: HubFetchOptio
     }
     if (res.status !== 200) {
       await res.body?.cancel();
-      return fail('http_status', res.status >= 500 || res.status === 429, res.status);
+      // a 5xx, 408 (request timeout) or 429 (rate limited) may pass on a later try
+      return fail('http_status', res.status >= 500 || res.status === 408 || res.status === 429, res.status);
     }
     const declared = res.headers.get('content-length');
     if (declared !== null && Number(declared) > maxBytes) {
