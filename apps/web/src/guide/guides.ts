@@ -3,8 +3,8 @@ import type { GuideTip, GuideTitle } from './words';
 import { guidedPhotoPicksOf, type GuideOutcome } from './outcomes';
 import { useGuideState } from './guideState';
 import { inspectionFrozen, useStore } from '@/store/store';
-import { dailyLogCommandInFlight, dailyLogSendPending } from '@/store/dailyLogPending';
-import { selectDecisionsNeedingViewer } from '@/store/selectors';
+import { dailyLogSendPending } from '@/store/dailyLogPending';
+import { dailyLogSettledForLinks, selectDecisionsNeedingViewer } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
 import { ownOpenVisitNoted } from './visitFacts';
 
@@ -304,10 +304,11 @@ function siteVisitRecordable(): boolean {
   return !!API_BASE && can('siteVisit.start', s.role);
 }
 
-/** Today's log is open, not sent and not on its way: the engineer can check in and send it */
+/** Today's log is open, not sent and not on its way, and its read has settled (under module read-ownership the screen
+ *  locks Submit until the log's own read succeeds, Codex 4402751573): the engineer can check in and send it */
 function dailyLogSendable(): boolean {
   const s = useStore.getState();
-  return !!s.dailyLog && !s.dailyLog.submitted && !dailyLogCommandInFlight(s);
+  return !!s.dailyLog && !s.dailyLog.submitted && dailyLogSettledForLinks(s);
 }
 
 function dailyLogCheckedIn(): boolean {

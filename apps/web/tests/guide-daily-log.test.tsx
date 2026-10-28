@@ -171,6 +171,19 @@ describe('the daily log guide (#482 step 3c)', () => {
     await tipAt('1');
   });
 
+  it('under module read-ownership, is offered only once the log\'s own read has succeeded (Codex 4402751573)', async () => {
+    const { useStore, guide } = await open(log({ checkedIn: true, checkinTime: '09:00' }), null);
+    expect(guide.available!()).toBe(true);
+    vi.stubEnv('VITE_DAILYLOG_READ', 'moduleQuery');
+    // a failed read keeps the last log on screen with Submit locked: not offered
+    act(() => { useStore.setState({ dailyLogLoad: 'error' }); });
+    expect(guide.available!()).toBe(false);
+    act(() => { useStore.setState({ dailyLogLoad: 'loading' }); });
+    expect(guide.available!()).toBe(false);
+    act(() => { useStore.setState({ dailyLogLoad: 'ready' }); });
+    expect(guide.available!()).toBe(true);
+  });
+
   it('is not offered once the log is sent, or with no log today', async () => {
     const { useStore, guide } = await open(log({ checkedIn: true, submitted: true }), null);
     expect(guide.available!()).toBe(false);
