@@ -5812,9 +5812,9 @@ assert "SV2: after the replay the visit-file record keeps its four triggers, its
   "4|1|1"
 # #1179 R1 — the replay re-ran the removal-line migration (on ALWAYS_EXECUTE) too: its four triggers, its CHECK and
 # the guard it adds on the visit-file table stand enabled.
-assert "#1179 R1: after the replay the removal line keeps its four triggers and its CHECK, and the visit-file table its removal guard" \
-  "SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"SiteVisitFileRemoval\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('SiteVisitFileRemoval_insert','SiteVisitFileRemoval_done','SiteVisitFileRemoval_frozen','SiteVisitFileRemoval_no_truncate'))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conname = 'SiteVisitFileRemoval_shape_check')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"SiteVisitMedia\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname = 'SiteVisitMedia_removal_recorded')::text;" \
-  "4|1|1"
+assert "#1179 R1: after the replay the removal line keeps its four triggers and its CHECK, and the visit-file table its two removal guards" \
+  "SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"SiteVisitFileRemoval\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('SiteVisitFileRemoval_insert','SiteVisitFileRemoval_done','SiteVisitFileRemoval_frozen','SiteVisitFileRemoval_no_truncate'))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"SiteVisitFileRemoval\"'::regclass AND conname = 'SiteVisitFileRemoval_shape_check')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"SiteVisitMedia\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('SiteVisitMedia_removal_recorded','SiteVisitMedia_not_removed'))::text;" \
+  "4|1|2"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \

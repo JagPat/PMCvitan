@@ -11,8 +11,8 @@
 --
 -- THE ROW IS A RECORD. What the database guarantees for every writer, raw SQL included:
 --   R1  Copied from the link. "visitId", "addedById", "addedByRole", "addedByName" and "addedAt" are taken from the
---       file's live "SiteVisitMedia" row, share-locked under its visit's row lock, whatever the writer sent; a file not
---       on a visit is refused.
+--       file's live "SiteVisitMedia" row, share-locked under its visit's row lock and the file's own row lock, whatever
+--       the writer sent; a file not on a visit is refused.
 --   R2  The kind is the file's. "fileKind" is read from the media module's contract, `media_mime_of`: photo, voice,
 --       video, or file for anything else, whatever the writer sent.
 --   R3  Who removed it, as they stood. The writer names the role the remover acts in; the insert checks that they hold
@@ -30,6 +30,8 @@
 --       already gone) is untouched, and so is the sanctioned reset.
 --   R8  Frozen. A row is never changed, never deleted on its own (it goes with its visit), never truncated outside the
 --       sanctioned reset.
+--   R9  Removed once, for good. A file that has a record is never put on a visit again ("SiteVisitMedia_not_removed"),
+--       so a file id recreated after its removal cannot borrow the old record to leave without its own line.
 --
 -- PREVIOUS RELEASE. The serving release refuses every delete of a file that is on a visit, in its server
 -- (`SiteVisitFilesParticipant.assertMediaDisposable`), before any statement; R7's refusal sits on a path it never takes,
@@ -62,20 +64,20 @@ BEGIN
   );
   CREATE INDEX IF NOT EXISTS "SiteVisitFileRemoval_projectId_visitId_idx" ON public."SiteVisitFileRemoval"("projectId", "visitId");
   CREATE UNIQUE INDEX IF NOT EXISTS "SiteVisitFileRemoval_projectId_mediaId_key" ON public."SiteVisitFileRemoval"("projectId", "mediaId");
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SiteVisitFileRemoval_projectId_visitId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public."SiteVisitFileRemoval"'::regclass AND conname = 'SiteVisitFileRemoval_projectId_visitId_fkey') THEN
     ALTER TABLE public."SiteVisitFileRemoval" ADD CONSTRAINT "SiteVisitFileRemoval_projectId_visitId_fkey"
       FOREIGN KEY ("projectId", "visitId") REFERENCES public."SiteVisit"("projectId", "id") ON DELETE CASCADE ON UPDATE NO ACTION;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SiteVisitFileRemoval_addedById_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public."SiteVisitFileRemoval"'::regclass AND conname = 'SiteVisitFileRemoval_addedById_fkey') THEN
     ALTER TABLE public."SiteVisitFileRemoval" ADD CONSTRAINT "SiteVisitFileRemoval_addedById_fkey"
       FOREIGN KEY ("addedById") REFERENCES public."User"("id") ON DELETE RESTRICT ON UPDATE NO ACTION;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SiteVisitFileRemoval_removedById_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public."SiteVisitFileRemoval"'::regclass AND conname = 'SiteVisitFileRemoval_removedById_fkey') THEN
     ALTER TABLE public."SiteVisitFileRemoval" ADD CONSTRAINT "SiteVisitFileRemoval_removedById_fkey"
       FOREIGN KEY ("removedById") REFERENCES public."User"("id") ON DELETE RESTRICT ON UPDATE NO ACTION;
   END IF;
   -- R2, R3 and R5, with the whitespace set the SV1-a and SV2 shape checks use
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SiteVisitFileRemoval_shape_check') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public."SiteVisitFileRemoval"'::regclass AND conname = 'SiteVisitFileRemoval_shape_check') THEN
     ALTER TABLE public."SiteVisitFileRemoval" ADD CONSTRAINT "SiteVisitFileRemoval_shape_check" CHECK (
       "fileKind" IN ('photo', 'voice', 'video', 'file')
       AND btrim("addedByRole", E' \t\n\x0B\f\r') <> ''
@@ -96,8 +98,10 @@ RETURNS TEXT LANGUAGE sql STABLE SET search_path = pg_catalog, public, pg_temp A
 $$;
 
 -- R1 to R4, in the order every other write on a visit takes its locks: the visit row FOR UPDATE first (as a file's add,
--- an attendee's or a place's does, under the visit lock), then the file's link, then the remover's standing, the
--- project row and identity (`site_visits_standing_name`). Taking the project row or identity before the visit would
+-- an attendee's or a place's does, under the visit lock), then the file's "Media" row FOR UPDATE, then the file's link,
+-- then the remover's standing, the project row and identity (`site_visits_standing_name`). The "Media" row comes before
+-- the link because a delete of the file locks it first and then cascades to the link: holding the link first would
+-- wait on that delete while it waited on the link (Codex, round 1), even though R7 would refuse that delete. Taking the project row or identity before the visit would
 -- invert that order and deadlock against another write on the same visit (gap-check F2). The link's visit is read
 -- unlocked to find which visit to lock; a link is frozen, so its visit cannot change after. A second removal of the
 -- same file waits on the visit, then finds no link and is refused.
@@ -109,6 +113,7 @@ BEGIN
   IF FOUND THEN
     PERFORM 1 FROM public."SiteVisit" WHERE "projectId" = NEW."projectId" AND "id" = v_visit FOR UPDATE;
   END IF;
+  PERFORM 1 FROM public."Media" WHERE "projectId" = NEW."projectId" AND "id" = NEW."mediaId" FOR UPDATE;
   SELECT "visitId", "addedById", "addedByRole", "addedByName", "addedAt" INTO v_link
     FROM public."SiteVisitMedia" WHERE "projectId" = NEW."projectId" AND "mediaId" = NEW."mediaId" FOR SHARE;
   IF NOT FOUND THEN
@@ -194,3 +199,19 @@ DROP TRIGGER IF EXISTS "SiteVisitMedia_removal_recorded" ON public."SiteVisitMed
 CREATE TRIGGER "SiteVisitMedia_removal_recorded"
   BEFORE DELETE ON public."SiteVisitMedia"
   FOR EACH ROW EXECUTE FUNCTION public.site_visits_media_removal_recorded();
+
+-- R9: a removed file is never linked again. A raw writer can recreate a "Media" row under a removed file's id; without
+-- this, its new link would find the old record in R7 and cascade away with no line of its own.
+CREATE OR REPLACE FUNCTION public.site_visits_media_not_removed() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public."SiteVisitFileRemoval" WHERE "mediaId" = NEW."mediaId") THEN
+    RAISE EXCEPTION 'site-visits: the file % was removed from a site visit and is not added to one again', NEW."mediaId";
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "SiteVisitMedia_not_removed" ON public."SiteVisitMedia";
+CREATE TRIGGER "SiteVisitMedia_not_removed"
+  BEFORE INSERT ON public."SiteVisitMedia"
+  FOR EACH ROW EXECUTE FUNCTION public.site_visits_media_not_removed();

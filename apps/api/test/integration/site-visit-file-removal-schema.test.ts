@@ -268,6 +268,55 @@ describe('#1179 R1 — a visit file\'s removal line (live PG)', () => {
     expect(await t.prisma.siteVisitFileRemoval.count({ where: { mediaId: x.id } })).toBe(1);
   });
 
+  const waitUntilBlockedOn = async (pattern: string) => {
+    for (let i = 0; i < 200; i++) {
+      const [row] = await t.prisma.$queryRawUnsafe<Array<{ c: number }>>(
+        `SELECT count(*)::int AS c FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND state = 'active' AND query ILIKE $1`, pattern);
+      if (Number(row!.c) >= 1) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error(`no statement like ${pattern} ever blocked`);
+  };
+
+  it('a removal written before an unrecorded delete of the same file starts: the delete waits on the file, the removal commits (no deadlock)', async () => {
+    const m = await onVisit();
+    const recorded = gate();
+    const release = gate();
+    // a raw writer's removal that takes no lock of its own before the line
+    const removing = t.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        INSERT INTO "SiteVisitFileRemoval" ("projectId","visitId","mediaId","removedById","removedByRole","reason")
+        VALUES (${f.projectA.id}, ${visitA}, ${m.id}, ${f.memberUser.id}, 'pmc', 'Recorded')`;
+      recorded.open();
+      await release.promise;
+      await tx.$executeRaw`DELETE FROM "Media" WHERE "id" = ${m.id}`;
+    }, { timeout: 20_000 });
+    await recorded.promise;
+    // a delete with no record: it locks the file, then its cascade reaches the link
+    const bare = reflect(t.prisma.$executeRaw`DELETE FROM "Media" WHERE "id" = ${m.id} AND 'svrm-bare' = 'svrm-bare'`);
+    await waitUntilBlockedOn('%svrm-bare%');
+    release.open();
+    await removing;
+    const out = await bare;
+    expect(out.ok ? out.value : String(out.reason)).toBe(0);
+    expect(await t.prisma.siteVisitFileRemoval.count({ where: { mediaId: m.id } })).toBe(1);
+  });
+
+  it('a removed file id recreated by a raw writer is never put on a visit again, so it cannot leave on the old line (R9)', async () => {
+    const m = await onVisit({ mime: 'audio/webm' });
+    await remove(m.id, f.memberUser.id, 'pmc', null);
+    await t.prisma.media.create({
+      data: { id: m.id, projectId: f.projectA.id, kind: 'visit', mime: 'audio/webm', data: Buffer.from([0x00]), sizeBytes: 1, uploadedBy: f.memberUser.id },
+    });
+    await expect(t.prisma.siteVisitMedia.create({
+      data: { projectId: f.projectA.id, visitId: visitA, mediaId: m.id, addedById: f.memberUser.id, addedByRole: 'pmc' },
+    })).rejects.toThrow(/was removed from a site visit and is not added to one again/);
+    await expect(t.prisma.$executeRaw`
+      INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","addedById","addedByRole")
+      VALUES (${f.projectA.id}, ${visitB}, ${m.id}, ${f.memberUser.id}, 'pmc')`).rejects.toThrow(/is not added to one again/);
+    await t.prisma.media.delete({ where: { id: m.id } });
+  });
+
   const url = (process.env.DATABASE_URL ?? '').split('?')[0]!;
   const replay = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url, '-f', MIGRATION], { stdio: 'pipe' });
 
@@ -279,17 +328,24 @@ describe('#1179 R1 — a visit file\'s removal line (live PG)', () => {
     // what Prisma's `db push` creates: the table and its keys, no triggers and no CHECK
     for (const [table, trigger] of [['SiteVisitFileRemoval', 'SiteVisitFileRemoval_insert'], ['SiteVisitFileRemoval', 'SiteVisitFileRemoval_done'],
       ['SiteVisitFileRemoval', 'SiteVisitFileRemoval_frozen'], ['SiteVisitFileRemoval', 'SiteVisitFileRemoval_no_truncate'],
-      ['SiteVisitMedia', 'SiteVisitMedia_removal_recorded']]) {
+      ['SiteVisitMedia', 'SiteVisitMedia_removal_recorded'], ['SiteVisitMedia', 'SiteVisitMedia_not_removed']]) {
       await t.prisma.$executeRawUnsafe(`DROP TRIGGER "${trigger}" ON "${table}"`);
     }
     await t.prisma.$executeRawUnsafe(`ALTER TABLE "SiteVisitFileRemoval" DROP CONSTRAINT "SiteVisitFileRemoval_shape_check"`);
-    replay();
+    // another table holding a constraint of the same name (a recovery copy) does not stand in for this one's
+    await t.prisma.$executeRawUnsafe(`CREATE TABLE "SvrmDecoy_${run}" ("x" TEXT, CONSTRAINT "SiteVisitFileRemoval_shape_check" CHECK ("x" <> ''))`);
+    try {
+      replay();
+    } finally {
+      await t.prisma.$executeRawUnsafe(`DROP TABLE "SvrmDecoy_${run}"`);
+    }
     const triggers = async (table: string) => (await t.prisma.$queryRawUnsafe<Array<{ n: string }>>(
       `SELECT tgname AS n FROM pg_trigger WHERE tgrelid = $1::regclass AND NOT tgisinternal AND tgenabled = 'O' ORDER BY tgname`, `"${table}"`)).map((r) => r.n);
     expect(await triggers('SiteVisitFileRemoval')).toEqual(['SiteVisitFileRemoval_done', 'SiteVisitFileRemoval_frozen', 'SiteVisitFileRemoval_insert', 'SiteVisitFileRemoval_no_truncate']);
-    expect(await triggers('SiteVisitMedia')).toContain('SiteVisitMedia_removal_recorded');
+    expect(await triggers('SiteVisitMedia')).toEqual(expect.arrayContaining(['SiteVisitMedia_removal_recorded', 'SiteVisitMedia_not_removed']));
     const [{ d }] = await t.prisma.$queryRaw<Array<{ d: string }>>`
-      SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conname = 'SiteVisitFileRemoval_shape_check'`;
+      SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint
+       WHERE conrelid = '"SiteVisitFileRemoval"'::regclass AND conname = 'SiteVisitFileRemoval_shape_check'`;
     expect(d).toMatch(/btrim/);
     // the visit key cascades, so the line goes with its visit's project and nothing else
     const [{ del }] = await t.prisma.$queryRaw<Array<{ del: string }>>`
