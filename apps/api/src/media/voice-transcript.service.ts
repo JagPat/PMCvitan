@@ -51,6 +51,8 @@ export const TRANSCRIPT_TEXT_MAX = 20_000;
 export const TRANSCRIPT_CORRECTION_MAX = 20_000;
 const ERROR_MAX = 500;
 const LANGUAGE = /^[a-z]{2,3}(-[A-Z]{2})?$/;
+/** A job id the database keeps (VT1a: not blank, at most 200 characters): Sarvam's are UUIDs. */
+const JOB_ID = /^[\x21-\x7e]{1,200}$/;
 /** A half of a surrogate pair standing alone: no character at all, and PostgreSQL's UTF-8 text cannot hold it. */
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 const LONE_SURROGATES = new RegExp(LONE_SURROGATE.source, 'g');
@@ -204,14 +206,21 @@ export class VoiceTranscriptService {
         // the job's id is stored before anything else is sent, so a failure from here on carries on with this job and
         // never pays for a second one; nothing matches once the note is gone or the lease lost, and the step ends
         const jobId = await provider.createJob();
+        // an id the database would refuse is the provider's fault, and no later try mends it
+        if (!JOB_ID.test(jobId)) throw new SpeechProviderError('The speech service gave an unusable job id', true);
         if (!(await this.recordJob(projectId, note.id, token, jobId))) return;
-        await this.begin(provider, note, projectId, token, jobId);
+        await this.begin(provider, note, projectId, token, jobId, { lastError: null });
         return;
       }
       const state: SpeechJobState = await provider.checkJob(row.providerJobId);
       if (state.state === 'waiting') {
-        // made, but the provider never heard its start (a failed send, or a step that ended first): start it now
-        await this.begin(provider, note, projectId, token, row.providerJobId);
+        // made, but the provider has not heard its start (a failed send, or a step that ended first). Starting it again
+        // is a try, paced and bounded like any other, so a job the provider keeps reporting unstarted ends failed (H6)
+        if (row.attempts >= TRANSCRIPT_MAX_ATTEMPTS) {
+          await this.writeBack(projectId, note.id, token, { status: 'failed', lastError: 'Sarvam never started the job' });
+          return;
+        }
+        await this.begin(provider, note, projectId, token, row.providerJobId, { attempts: row.attempts + 1, lastError: 'Sarvam had not started the job' });
       } else if (state.state === 'running') {
         await this.writeBack(projectId, note.id, token, { lastError: null });
       } else if (state.state === 'done') {
@@ -230,11 +239,11 @@ export class VoiceTranscriptService {
     }
   }
 
-  /** Send a made job its recording and start it. */
-  private async begin(provider: SpeechProvider, note: Note, projectId: string, token: string, jobId: string): Promise<void> {
+  /** Send a made job its recording and start it; then write `set`. */
+  private async begin(provider: SpeechProvider, note: Note, projectId: string, token: string, jobId: string, set: Prisma.VoiceTranscriptUpdateManyMutationInput): Promise<void> {
     const audio = await this.audio(note);
     await provider.startJob(jobId, audio, note.mime, fileName(note));
-    await this.writeBack(projectId, note.id, token, { lastError: null });
+    await this.writeBack(projectId, note.id, token, set);
   }
 
   /** The new job's id, stored under the step's lease (which it keeps): false when the note is gone or the lease lost.

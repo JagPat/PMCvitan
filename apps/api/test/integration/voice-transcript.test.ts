@@ -32,9 +32,13 @@ class FakeProvider implements SpeechProvider {
   startError: SpeechProviderError | Error | null = null;
   checkError: SpeechProviderError | null = null;
   state: SpeechJobState = { state: 'running' };
+  /** a provider that hears every start yet keeps reporting the job unstarted */
+  neverBegins = false;
+  /** the id the next made job is given, in place of `job-N` */
+  nextId: string | null = null;
 
   async createJob(): Promise<string> {
-    this.created.push(`job-${this.created.length + 1}`);
+    this.created.push(this.nextId ?? `job-${this.created.length + 1}`);
     return this.created[this.created.length - 1]!;
   }
 
@@ -46,7 +50,7 @@ class FakeProvider implements SpeechProvider {
     this.startGate = null;
     if (waitFor) await waitFor.wait;
     if (this.startError) throw this.startError;
-    this.begun.add(jobId);
+    if (!this.neverBegins) this.begun.add(jobId);
   }
 
   async checkJob(jobId: string): Promise<SpeechJobState> {
@@ -57,6 +61,7 @@ class FakeProvider implements SpeechProvider {
 
   reset(): void {
     this.created = []; this.started = []; this.begun = new Set(); this.checked = []; this.startGate = null; this.entered = null; this.startError = null; this.checkError = null;
+    this.neverBegins = false; this.nextId = null;
     this.state = { state: 'running' };
   }
 }
@@ -342,6 +347,32 @@ describe('#1177 VT2 — a voice note written out (live PG, fake provider)', () =
     await age(m);
     expect(await service.advance(f.projectA.id, m, recorder)).toMatchObject({ status: 'done', canCorrect: true });
     expect(await service.correct(f.projectA.id, m, recorder, 'words said', 0)).toMatchObject({ correction: { text: 'words said', byId: contractorId } });
+  });
+
+  it('a job the provider keeps reporting unstarted is started again only within the bounded tries, then ends failed', async () => {
+    const m = await note();
+    provider.neverBegins = true;
+    expect((await advance(pmc, m)).body.status).toBe('running');
+    // each start again is a try, paced like any other: a view inside the pause starts nothing
+    for (let i = 1; i <= TRANSCRIPT_MAX_ATTEMPTS; i++) {
+      expect((await advance(pmc, m)).body.status).toBe('running');
+      expect(provider.started).toHaveLength(i);
+      await age(m);
+      expect((await advance(pmc, m)).body.status).toBe('running');
+      expect(provider.started).toHaveLength(i + 1);
+    }
+    await age(m);
+    expect((await advance(pmc, m)).body).toMatchObject({ status: 'failed', canRetry: true });
+    expect(provider.started).toHaveLength(TRANSCRIPT_MAX_ATTEMPTS + 1);
+    expect(provider.created).toEqual(['job-1']);
+  });
+
+  it('a job id the database would refuse is never stored, and fails the note at once', async () => {
+    const m = await note();
+    provider.nextId = 'j'.repeat(201);
+    expect((await advance(pmc, m)).body.status).toBe('failed');
+    expect(provider.started).toHaveLength(0);
+    expect(await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: m } })).toMatchObject({ providerJobId: null, attempts: 1 });
   });
 
   it('a final refusal fails the note at once', async () => {

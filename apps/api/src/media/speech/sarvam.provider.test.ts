@@ -14,7 +14,7 @@ const BASE = 'https://sarvam.test';
 const UPLOAD = 'https://blob.test/in/note.webm?sig=1';
 const DOWNLOAD = 'https://blob.test/out/note.json?sig=2';
 
-type Call = { url: string; method: string; headers: Record<string, string>; body: unknown };
+type Call = { url: string; method: string; headers: Record<string, string>; body: unknown; redirect?: RequestRedirect };
 type Answer = { status?: number; json?: unknown; raw?: string } | Error;
 
 function fake(answers: Record<string, Answer>) {
@@ -24,7 +24,7 @@ function fake(answers: Record<string, Answer>) {
     const method = init?.method ?? 'GET';
     const headers = (init?.headers ?? {}) as Record<string, string>;
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body;
-    calls.push({ url, method, headers, body });
+    calls.push({ url, method, headers, body, redirect: init?.redirect });
     const key = `${method} ${url.replace(BASE, '')}`;
     const answer = answers[key];
     if (!answer) throw new Error(`unexpected ${key}`);
@@ -70,7 +70,8 @@ describe('SarvamSpeechProvider', () => {
     expect(calls[2]!.headers).toEqual({ 'x-ms-blob-type': 'BlockBlob', 'Content-Type': 'audio/webm' });
     expect(calls[2]!.body).toBe(audio);
     // the key goes to Sarvam's API only, never to the blob store
-    for (const c of [calls[0]!, calls[1]!, calls[3]!]) expect(c.headers['api-subscription-key']).toBe(KEY);
+    // and never follows a redirect, which would carry the key to another host
+    for (const c of [calls[0]!, calls[1]!, calls[3]!]) expect(c).toMatchObject({ headers: { 'api-subscription-key': KEY }, redirect: 'error' });
     expect(JSON.stringify(calls[2]!.headers)).not.toContain(KEY);
   });
 
@@ -80,9 +81,9 @@ describe('SarvamSpeechProvider', () => {
     expect((await refusal(fake({ ...START, ...plain }).provider.startJob('job-7', Buffer.from('x'), 'audio/webm', 'm1.webm'))).final).toBe(false);
   });
 
-  it('may try again after 429, 5xx or no answer; any other 4xx, a bad key\'s 401 or 403 too, ends the note', async () => {
+  it('may try again after 408, 429, 5xx or no answer; any other 4xx, a bad key\'s 401 or 403 too, ends the note', async () => {
     const cases: Array<[Answer, boolean]> = [
-      [{ status: 429 }, false], [{ status: 503 }, false], [{ status: 401 }, true], [{ status: 403 }, true],
+      [{ status: 408 }, false], [{ status: 429 }, false], [{ status: 503 }, false], [{ status: 401 }, true], [{ status: 403 }, true],
       [new Error('socket hang up'), false], [{ status: 400 }, true], [{ status: 422 }, true],
     ];
     for (const [answer, final] of cases) {
@@ -131,6 +132,15 @@ describe('SarvamSpeechProvider', () => {
       [`GET ${DOWNLOAD}`]: { raw: '{"transcript":"પાઇપ' },
     });
     expect((await refusal(provider.checkJob('job-7'))).final).toBe(false);
+  });
+
+  it('an output far beyond any note\'s words is not kept: the job ends failed', async () => {
+    const { provider } = fake({
+      ...status('Completed', [{ file_name: 'm1.json' }]),
+      'POST /speech-to-text/job/v1/download-files': { json: { download_urls: { 'm1.json': { file_url: DOWNLOAD } } } },
+      [`GET ${DOWNLOAD}`]: { raw: JSON.stringify({ transcript: 'x'.repeat(1_000_001) }) },
+    });
+    expect(await provider.checkJob('job-7')).toEqual({ state: 'failed', reason: 'Sarvam output was too large' });
   });
 
   it('a completed output without words is a failed job', async () => {

@@ -22,6 +22,8 @@ export const SARVAM_BASE_URL = 'https://api.sarvam.ai';
 export const SARVAM_JOB_PARAMETERS = { model: 'saaras:v3', mode: 'transcribe', language_code: 'unknown' } as const;
 /** One exchange with Sarvam or its blob storage is given this long before it counts as a failed try. */
 export const SARVAM_TIMEOUT_MS = 20_000;
+/** The most of a job's output read: a 120 s note's words are a few kilobytes. */
+const OUTPUT_MAX_BYTES = 1_000_000;
 
 type Fetch = typeof fetch;
 
@@ -74,8 +76,15 @@ export class SarvamSpeechProvider implements SpeechProvider {
     if (!downloadUrl) throw new SpeechProviderError('Sarvam did not return a download link', false);
     const res = await this.exchange(downloadUrl, { method: 'GET' });
     if (!res.ok) throw failure('download', res.status);
+    // an output far beyond any note's words is not read at all; the note ends failed, with its one "Try again"
+    if (Number(res.headers.get('content-length') ?? 0) > OUTPUT_MAX_BYTES) {
+      await res.body?.cancel().catch(() => undefined);
+      return { state: 'failed', reason: 'Sarvam output was too large' };
+    }
     // a body cut short or garbled on the way is not the job's end: the job keeps its output, and it is read again
-    const body = (await res.json().catch(() => undefined)) as { transcript?: unknown; language_code?: unknown } | null | undefined;
+    const text = await res.text().catch(() => undefined);
+    if (text !== undefined && text.length > OUTPUT_MAX_BYTES) return { state: 'failed', reason: 'Sarvam output was too large' };
+    const body = parsed(text) as { transcript?: unknown; language_code?: unknown } | null | undefined;
     if (body === undefined) throw new SpeechProviderError('Sarvam output could not be read', false);
     if (!body || typeof body.transcript !== 'string') return { state: 'failed', reason: 'Sarvam output had no transcript' };
     return { state: 'done', text: body.transcript, languageCode: typeof body.language_code === 'string' ? body.language_code : null };
@@ -86,6 +95,8 @@ export class SarvamSpeechProvider implements SpeechProvider {
     const res = await this.exchange(`${this.baseUrl}${path}`, {
       method,
       headers: { 'api-subscription-key': this.apiKey, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      // fetch keeps a custom header across a redirect to another host: the key is never sent anywhere but Sarvam's API
+      redirect: 'error',
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     if (!res.ok) throw failure(path.split('/').slice(-1)[0] ?? 'call', res.status);
@@ -102,6 +113,16 @@ export class SarvamSpeechProvider implements SpeechProvider {
       // a network failure or a timeout: worth one more try, and nothing of the request is echoed
       throw new SpeechProviderError('Sarvam could not be reached', false);
     }
+  }
+}
+
+/** JSON text read, or undefined when there is none to read. */
+function parsed(text: string | undefined): unknown {
+  if (text === undefined) return undefined;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
   }
 }
 
@@ -124,10 +145,10 @@ function outputName(details: unknown): string | null {
   return null;
 }
 
-/** A refused exchange. 429 and 5xx may be tried again. Any other 4xx is final for that note: a refused file, a
+/** A refused exchange. 408, 429 and 5xx may be tried again. Any other 4xx is final for that note: a refused file, a
  *  malformed request, and a bad or missing key (401, 403) too, which no later try mends until the key is fixed; the
  *  note's one "Try again" is left for then. */
 function failure(step: string, status: number): SpeechProviderError {
-  const retryable = status === 429 || status >= 500;
+  const retryable = status === 408 || status === 429 || status >= 500;
   return new SpeechProviderError(`Sarvam ${step} answered ${status}`, !retryable);
 }
