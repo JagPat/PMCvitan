@@ -30,6 +30,9 @@ export interface IssuedDrawing {
   revisionId: string;
 }
 
+/** Where a presigned (direct-to-bucket) drawing upload lands; only keys under it are recorded (#995 nosniff). */
+const DIRECT_UPLOAD_KIND = 'drawings/typed';
+
 export type RevisionBytes = { mime: string; bytes: Buffer };
 export type RevisionRedirect = { redirect: string };
 
@@ -60,7 +63,7 @@ export class DrawingsService {
   /** A presigned direct-to-bucket upload target for a large drawing (Slice 3), or
    *  `{ presign: null }` with no bucket configured — the client then posts base64. */
   async presign(projectId: string, mime: string): Promise<{ uploadUrl: string; storageKey: string } | { presign: null }> {
-    const key = this.storage.keyFor(projectId, 'drawings', mime);
+    const key = this.storage.keyFor(projectId, DIRECT_UPLOAD_KIND, mime);
     const res = await this.storage.presignPut(key, mime);
     return res ? { uploadUrl: res.uploadUrl, storageKey: key } : { presign: null };
   }
@@ -137,6 +140,17 @@ export class DrawingsService {
       // can't point a revision at (and later serve) another project's object.
       if (!input.storageKey.startsWith(`${projectId}/drawings/`)) {
         throw new BadRequestException('storageKey does not belong to this project');
+      }
+      // Only a key minted by this release's presign: its upload link signs the type, so the object can
+      // never be rewritten as another one. A link from before (type unsigned) stays usable until it expires,
+      // and could overwrite its key after any check, so its keys are never recorded (#995 nosniff).
+      if (!input.storageKey.startsWith(`${projectId}/${DIRECT_UPLOAD_KIND}/`)) {
+        throw new BadRequestException('This upload link is out of date. Upload the file again.');
+      }
+      // The object itself must hold the type the revision records: an upload URL minted before the PUT's
+      // type was signed let the uploader choose it (text/html included), and the bucket serves what it stored.
+      if ((await this.storage.storedType(input.storageKey)) !== input.mime) {
+        throw new BadRequestException('The uploaded file was not found, or is not of the type given');
       }
       key = input.storageKey;
       data = null;

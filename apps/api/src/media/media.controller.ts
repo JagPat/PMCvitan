@@ -63,6 +63,7 @@ export class MediaController {
   @Public()
   @Get('media/:id/poster')
   async servePoster(@Param('id') id: string, @Query('t') token: string | undefined, @Res() res: Response): Promise<void> {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     if (!this.signed.verify('poster', id, token)) throw new ForbiddenException('Invalid or expired file link');
     const out = await this.media.fetchPoster(id);
     if (!out) throw new NotFoundException(MEDIA_NOT_FOUND_MESSAGE);
@@ -74,11 +75,13 @@ export class MediaController {
    * authorized snapshot/upload (a bad or missing token is 403 — no more "public because
    * the cuid is unguessable"). Dev stub returns inline bytes; S3/R2 returns a 302 to a
    * short-lived presigned GET (bucket stays private). Marked @Public at the route level
-   * because `<img>` can't send a bearer — the token IS the authorization.
+   * because `<img>` can't send a bearer — the token IS the authorization. Every answer, errors and redirects
+   * included, says `nosniff`: a browser takes the stored file as its checked type, never as a page (#995).
    */
   @Public()
   @Get('media/:id')
   async serve(@Param('id') id: string, @Query('t') token: string | undefined, @Res() res: Response): Promise<void> {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     if (!this.signed.verify('media', id, token)) throw new ForbiddenException('Invalid or expired file link');
     const out = await this.media.fetch(id);
     if (!out) throw new NotFoundException('Media not found');
