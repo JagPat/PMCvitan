@@ -778,7 +778,10 @@ export function useSiteVisits() {
   };
 
   return {
-    visits: shown.visits, waiting: shown.waiting, markup, markupNotice, queued: queued.length, load, hasMore, busy, error, notice, pings, notSent, held,
+    visits: shown.visits, waiting: shown.waiting,
+    /** the visits as the server last gave them (its reads and its answers), without the acts still queued here */
+    read: rows,
+    markup, markupNotice, queued: queued.length, load, hasMore, busy, error, notice, pings, notSent, held,
     /** Send a held visit's acts without waiting for a photo the phone cannot read just now (this page load only). */
     sendAnyway: (visitId: string) => useStore.getState().sendSiteVisitAnyway(visitId),
     /** The person has read why a photo was not sent: the phone lets go of it. */
