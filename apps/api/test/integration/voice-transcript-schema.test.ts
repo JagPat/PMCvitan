@@ -10,6 +10,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
  * PostgreSQL holds on every writer (V1-V5 in the migration), and that the file re-runs.
  */
 const MIGRATION = join(__dirname, '../../prisma/migrations/20280126000000_voice_transcript/migration.sql');
+const STAMP = join(__dirname, '../../prisma/migrations/20280129000000_voice_transcript_stamp/migration.sql');
 const CORRECTIONS = join(__dirname, '../../prisma/migrations/20280128000000_voice_transcript_correction/migration.sql');
 
 describe('#1177 voice-note transcripts (live PG)', () => {
@@ -35,6 +36,7 @@ describe('#1177 voice-note transcripts (live PG)', () => {
   const url = () => (process.env.DATABASE_URL ?? '').split('?')[0]!;
   const replay = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url(), '-f', MIGRATION], { stdio: 'pipe' });
   const replayCorrections = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url(), '-f', CORRECTIONS], { stdio: 'pipe' });
+  const replayStamp = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url(), '-f', STAMP], { stdio: 'pipe' });
   const voice = async (projectId: string) =>
     (await t.prisma.media.create({ data: { projectId, kind: 'visit', mime: 'audio/webm', uploadedBy: f.memberUser.id, durationSec: 30 } })).id;
   const insert = (projectId: string, mediaId: string, extra = '', values = '') =>
@@ -62,12 +64,25 @@ describe('#1177 voice-note transcripts (live PG)', () => {
       await expect(insert(f.projectA.id, await voice(f.projectA.id), `, ${column}`, `, ${value}`)).rejects.toThrow(bare);
     }
     await expect(t.prisma.voiceTranscript.create({ data: { projectId: f.projectA.id, mediaId: await voice(f.projectA.id), status: 'done', text: '' } })).rejects.toThrow(bare);
-    // its creation time is the database's, whatever the writer sends
+    // its creation time is the database clock's UTC time, whatever the writer sends (#1177 VT1c)
+    const utcNow = `date_trunc('milliseconds', clock_timestamp() AT TIME ZONE 'UTC')`;
+    const fresh = async (mediaId: string) => (await t.prisma.$queryRawUnsafe<Array<{ fresh: boolean }>>(
+      `SELECT "createdAt" > ${utcNow} - interval '1 hour' AND "createdAt" <= ${utcNow} AS fresh FROM "VoiceTranscript" WHERE "mediaId" = $1`, mediaId))[0]!.fresh;
     const m = await voice(f.projectA.id);
     await insert(f.projectA.id, m, ', "createdAt"', `, '2001-01-01'`);
-    const [{ fresh }] = await t.prisma.$queryRawUnsafe<Array<{ fresh: boolean }>>(
-      `SELECT "createdAt" > LOCALTIMESTAMP - interval '1 hour' AS fresh FROM "VoiceTranscript" WHERE "mediaId" = $1`, m);
-    expect(fresh).toBe(true);
+    expect(await fresh(m)).toBe(true);
+    // nor is it moved by the session's time zone (fourteen hours ahead of UTC here), and it is never before its
+    // transaction began (that the stamp is the clock read, not the transaction start, the replay test checks by source)
+    const n = await voice(f.projectA.id);
+    const before = await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL TimeZone = 'Pacific/Kiritimati'`);
+      const [{ began }] = await tx.$queryRawUnsafe<Array<{ began: Date }>>(`SELECT date_trunc('milliseconds', now() AT TIME ZONE 'UTC')::TIMESTAMP(3) AS began`);
+      await tx.voiceTranscript.create({ data: { projectId: f.projectA.id, mediaId: n } });
+      return began;
+    });
+    expect(await fresh(n)).toBe(true);
+    const row = await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: n } });
+    expect(row.createdAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
   });
 
   it('is written only for a voice note (V2)', async () => {
@@ -243,7 +258,13 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     replay();
     // VT1b replaces this file's delete guard (Codex #1213, 4401865953), and runs after it on every deploy; so does it here
     replayCorrections();
+    replayStamp();
     expect(await shape()).toEqual(before);
+    // and the stamp that stands after the replay is VT1c's clock read, not VT1a's transaction start
+    const [{ src }] = await t.prisma.$queryRawUnsafe<Array<{ src: string }>>(
+      `SELECT prosrc AS src FROM pg_proc WHERE oid = 'public.media_voice_transcript_insert()'::regprocedure`);
+    expect(src).toContain(`clock_timestamp() AT TIME ZONE 'UTC'`);
+    expect(src).not.toContain('LOCALTIMESTAMP');
     expect(await onMedia()).toEqual(media);
   });
 });
