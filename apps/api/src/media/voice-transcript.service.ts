@@ -51,6 +51,9 @@ export const TRANSCRIPT_TEXT_MAX = 20_000;
 export const TRANSCRIPT_CORRECTION_MAX = 20_000;
 const ERROR_MAX = 500;
 const LANGUAGE = /^[a-z]{2,3}(-[A-Z]{2})?$/;
+/** A half of a surrogate pair standing alone: no character at all, and PostgreSQL's UTF-8 text cannot hold it. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+const LONE_SURROGATES = new RegExp(LONE_SURROGATE.source, 'g');
 /** The roles that may correct any voice note's words; the member who recorded a note may correct their own. */
 const CORRECTOR_ROLES = new Set(['pmc', 'engineer']);
 
@@ -65,6 +68,8 @@ export interface VoiceTranscriptDto {
   languageCode: string | null;
   /** A person's correction, shown in place of `text`, with who wrote it and when. */
   correction: { text: string; byId: string; at: string } | null;
+  /** The place of the newest correction (0: none yet, VT1b's `seq`). A correction names the one it was made on. */
+  correctionSeq: number;
   /** The viewer may correct the words, or ask once more after a failure. */
   canCorrect: boolean;
   canRetry: boolean;
@@ -78,7 +83,7 @@ interface Row {
   attempts: number;
   retried: boolean;
   /** the newest correction, if any (VT1b): its words, or null when it took the correction back */
-  corrections: Array<{ text: string | null; correctedById: string; createdAt: Date }>;
+  corrections: Array<{ seq: number; text: string | null; correctedById: string; createdAt: Date }>;
 }
 
 interface Note {
@@ -90,7 +95,7 @@ interface Note {
 
 const ROW_SELECT = {
   status: true, providerJobId: true, text: true, languageCode: true, attempts: true, retried: true,
-  corrections: { orderBy: { seq: 'desc' }, take: 1, select: { text: true, correctedById: true, createdAt: true } },
+  corrections: { orderBy: { seq: 'desc' }, take: 1, select: { seq: true, text: true, correctedById: true, createdAt: true } },
 } as const;
 
 @Injectable()
@@ -141,32 +146,47 @@ export class VoiceTranscriptService {
     return this.advance(projectId, mediaId, user);
   }
 
-  /** A person's correction of the words, or `null` to take it back. Only on a note whose words are written out. Each
-   *  change is a new row (VT1b): the newest is shown, so two people correcting at once are both kept, in order. */
-  async correct(projectId: string, mediaId: string, user: AuthUser, text: string | null): Promise<VoiceTranscriptDto> {
+  /** A person's correction of the words, or `null` to take it back, made on the correction `basedOn` (its place; 0 when
+   *  there was none). Only on a note whose words are written out. Each change is a new row (VT1b): the newest is shown.
+   *  A correction made on words someone else has changed since is refused, so a screen left open never silently
+   *  replaces a newer correction it did not show. */
+  async correct(projectId: string, mediaId: string, user: AuthUser, text: string | null, basedOn: number): Promise<VoiceTranscriptDto> {
     const note = await this.visibleNote(projectId, mediaId, user);
     this.assertCorrector(note, user);
     const value = text === null ? null : text.trim();
     if (value !== null && value === '') throw new BadRequestException('A correction holds some words');
-    if (value !== null && value.includes('\u0000')) throw new BadRequestException('A correction cannot contain that character');
+    if (value !== null && (value.includes('\u0000') || LONE_SURROGATE.test(value))) {
+      throw new BadRequestException('A correction cannot contain that character');
+    }
     if (value !== null && Array.from(value).length > TRANSCRIPT_CORRECTION_MAX) {
       throw new BadRequestException('A correction is at most 20,000 characters');
     }
-    const before = await this.read(projectId, mediaId);
-    if (before?.status !== 'done') throw new ConflictException('This voice note has no words to correct yet');
-    // the words already shown change nothing: the correction standing keeps its author and time
-    const shown = before.corrections[0]?.text ?? null;
-    if (shown !== value) {
-      try {
-        // the database numbers the row, stamps its time and refuses it unless the words are heard (VT1b C2, C3)
-        await this.prisma.voiceTranscriptCorrection.create({ data: { projectId, mediaId, text: value, correctedById: user.sub } });
-      } catch (error) {
+    // READ COMMITTED, as the database requires of a correction (VT1b C3). The transcript row is locked first, as the
+    // insert trigger locks it, so the newest correction read here is still the newest when this one is added after it.
+    await this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<Array<{ status: string; text: string | null }>>`
+        SELECT v."status", v."text" FROM public."VoiceTranscript" v
+         WHERE v."projectId" = ${projectId} AND v."mediaId" = ${mediaId} FOR NO KEY UPDATE`;
+      const heard = locked[0];
+      if (!heard) {
         // the note went meanwhile (its transcript with it): answered as not found, as a deleted note is everywhere
-        if (isForeignKeyViolation(error)) throw new NotFoundException('Media not found');
-        throw error;
+        if (!(await tx.media.findFirst({ where: { projectId, id: mediaId }, select: { id: true } }))) throw new NotFoundException('Media not found');
+        throw new ConflictException('This voice note has no words to correct yet');
       }
-    }
-    return this.dto(note, user, await this.read(projectId, mediaId));
+      if (heard.status !== 'done') throw new ConflictException('This voice note has no words to correct yet');
+      const newest = await tx.voiceTranscriptCorrection.findFirst({
+        where: { projectId, mediaId }, orderBy: { seq: 'desc' }, select: { seq: true, text: true },
+      });
+      if ((newest?.seq ?? 0) !== basedOn) throw new ConflictException('Someone else changed these words just now');
+      // the words already shown change nothing: the correction standing (or the words heard) keeps its author and time
+      const standing = newest?.text ?? null;
+      if (value === null ? standing === null : value === (standing ?? heard.text?.trim())) return;
+      // the database numbers the row and stamps its time (VT1b C2, C3)
+      await tx.voiceTranscriptCorrection.create({ data: { projectId, mediaId, text: value, correctedById: user.sub } });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 10_000, timeout: 30_000 });
+    const after = await this.read(projectId, mediaId);
+    if (!after) throw new NotFoundException('Media not found');
+    return this.dto(note, user, after);
   }
 
   // ── the step ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -218,7 +238,7 @@ export class VoiceTranscriptService {
   }
 
   /** Take the row for one step: a pending row, or a running one not checked in the last few seconds, whose lease (if
-   *  any) has run out; after a failed try, not before the pause. One statement, so two claimants cannot both win. Null
+   *  any) has run out; while its last try stands failed, not before the pause. One statement, so two claimants cannot both win. Null
    *  when there is nothing to do now. */
   private async claim(projectId: string, mediaId: string, token: string): Promise<{ providerJobId: string | null; attempts: number } | null> {
     const now = Date.now();
@@ -226,9 +246,10 @@ export class VoiceTranscriptService {
       where: {
         projectId, mediaId,
         OR: [
-          { status: 'pending', attempts: 0 },
-          { status: 'running', attempts: 0, updatedAt: { lt: new Date(now - TRANSCRIPT_CHECK_EVERY_SECONDS * 1000) } },
-          { status: { in: ['pending', 'running'] }, attempts: { gt: 0 }, updatedAt: { lt: new Date(now - TRANSCRIPT_RETRY_PAUSE_SECONDS * 1000) } },
+          { status: 'pending', lastError: null },
+          // a check that answered clears the last error, so one failed try does not slow every later check
+          { status: 'running', lastError: null, updatedAt: { lt: new Date(now - TRANSCRIPT_CHECK_EVERY_SECONDS * 1000) } },
+          { status: { in: ['pending', 'running'] }, lastError: { not: null }, updatedAt: { lt: new Date(now - TRANSCRIPT_RETRY_PAUSE_SECONDS * 1000) } },
         ],
         AND: [{ OR: [{ leaseUntil: null }, { leaseUntil: { lt: new Date(now) } }] }],
       },
@@ -287,6 +308,7 @@ export class VoiceTranscriptService {
       correction: row?.status === 'done' && row.corrections[0]?.text != null
         ? { text: row.corrections[0].text, byId: row.corrections[0].correctedById, at: row.corrections[0].createdAt.toISOString() }
         : null,
+      correctionSeq: row?.corrections[0]?.seq ?? 0,
       canCorrect: corrector && status === 'done',
       canRetry: corrector && status === 'failed' && row?.retried === false,
     };
@@ -308,10 +330,10 @@ function fileName(note: Note): string {
   return `${note.id}.${ext}`;
 }
 
-/** A provider value cut to the database's bound by characters (never through a surrogate pair), without NULs, which
- *  PostgreSQL text cannot hold. */
-function fit(value: string, max: number): string {
-  const chars = Array.from(value.replace(/\u0000/g, ''));
+/** A provider value cut to the database's bound by characters (never through a surrogate pair), without NULs and with
+ *  a lone surrogate half shown as U+FFFD: PostgreSQL text can hold neither. */
+export function fit(value: string, max: number): string {
+  const chars = Array.from(value.replace(/\u0000/g, '').replace(LONE_SURROGATES, '\uFFFD'));
   return chars.length > max ? chars.slice(0, max).join('') : chars.join('');
 }
 

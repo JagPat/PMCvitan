@@ -14,7 +14,7 @@ import { SpeechProviderError, type SpeechJobState, type SpeechProvider } from '.
  *   GET  <file_url>                                                              -> { transcript, language_code }
  *
  * The key travels only in the `api-subscription-key` header and never appears in an error, a log or a result. Sarvam
- * answers a bad key with 403. A 401, 403, 429 or 5xx may be tried again; any other 4xx is final for that note.
+ * answers a bad key with 403. A 429 or 5xx may be tried again; any other 4xx (401 and 403 too) is final for that note.
  */
 
 export const SARVAM_BASE_URL = 'https://api.sarvam.ai';
@@ -115,10 +115,10 @@ function outputName(details: unknown): string | null {
   return null;
 }
 
-/** A refused exchange. 429 and 5xx may be tried again, and so may 401 and 403: a bad or missing key is the server's
- *  configuration, not the note's fault, so it costs a try rather than ending the note. Any other 4xx (a refused file,
- *  a malformed request) is final for that note. */
+/** A refused exchange. 429 and 5xx may be tried again. Any other 4xx is final for that note: a refused file, a
+ *  malformed request, and a bad or missing key (401, 403) too, which no later try mends until the key is fixed; the
+ *  note's one "Try again" is left for then. */
 function failure(step: string, status: number): SpeechProviderError {
-  const retryable = status === 429 || status >= 500 || status === 401 || status === 403;
+  const retryable = status === 429 || status >= 500;
   return new SpeechProviderError(`Sarvam ${step} answered ${status}`, !retryable);
 }

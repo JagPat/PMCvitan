@@ -100,7 +100,7 @@ export class MediaController {
     @CurrentUser() user: AuthUser,
     @Body(new ZodPipe(correctTranscriptSchema)) body: CorrectTranscriptInput,
   ) {
-    return this.transcripts.correct(projectId, mediaId, user, body.text);
+    return this.transcripts.correct(projectId, mediaId, user, body.text, body.basedOn);
   }
 
   /** #995 V1b — serve a clip's still frame, on its own `?t=` token (a clip's token does not open it): a 302 to a

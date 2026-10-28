@@ -27,6 +27,7 @@ class FakeProvider implements SpeechProvider {
   /** signalled once startJob has been entered (a test waits on it, never on a clock) */
   entered: Gate | null = null;
   startError: SpeechProviderError | Error | null = null;
+  checkError: SpeechProviderError | null = null;
   state: SpeechJobState = { state: 'running' };
 
   async startJob(audio: Buffer, mime: string, fileName: string): Promise<string> {
@@ -44,11 +45,12 @@ class FakeProvider implements SpeechProvider {
 
   async checkJob(jobId: string): Promise<SpeechJobState> {
     this.checked.push(jobId);
+    if (this.checkError) throw this.checkError;
     return this.state;
   }
 
   reset(): void {
-    this.started = []; this.checked = []; this.startGate = null; this.entered = null; this.startError = null;
+    this.started = []; this.checked = []; this.startGate = null; this.entered = null; this.startError = null; this.checkError = null;
     this.state = { state: 'running' };
   }
 }
@@ -71,10 +73,12 @@ describe('#1177 VT2 — a voice note written out (live PG, fake provider)', () =
   const get = (token: string, mediaId: string, projectId?: string) => http().get(path(mediaId, projectId)).set('Authorization', `Bearer ${token}`);
   const advance = (token: string, mediaId: string, projectId?: string) => http().post(path(mediaId, projectId)).set('Authorization', `Bearer ${token}`).send({});
   const retry = (token: string, mediaId: string) => http().post(`${path(mediaId)}/retry`).set('Authorization', `Bearer ${token}`).send({});
-  const correct = (token: string, mediaId: string, text: string | null) =>
-    http().post(`${path(mediaId)}/correction`).set('Authorization', `Bearer ${token}`).send({ text });
+  /** `basedOn`: the place of the correction the screen showed (0: none) */
+  const correct = (token: string, mediaId: string, text: string | null, basedOn: number) =>
+    http().post(`${path(mediaId)}/correction`).set('Authorization', `Bearer ${token}`).send({ text, basedOn });
   /** a running row was last looked at long enough ago to be checked again */
-  const age = (mediaId: string) => t.prisma.$executeRaw`UPDATE "VoiceTranscript" SET "updatedAt" = now() - interval '1 minute' WHERE "mediaId" = ${mediaId}`;
+  const age = (mediaId: string, seconds = 60) =>
+    t.prisma.$executeRaw`UPDATE "VoiceTranscript" SET "updatedAt" = now() - make_interval(secs => ${seconds}) WHERE "mediaId" = ${mediaId}`;
   const note = async (uploadedBy = f.memberUser.id, projectId = f.projectA.id, mime = 'audio/webm') =>
     (await t.prisma.media.create({
       data: { projectId, kind: 'visit', mime, uploadedBy, durationSec: 12, data: Buffer.from('a recording') },
@@ -264,45 +268,108 @@ describe('#1177 VT2 — a voice note written out (live PG, fake provider)', () =
 
   it('keeps the words heard beside a correction that names who wrote it, by the people allowed to', async () => {
     const m = await note(contractorId);
-    expect((await correct(pmc, m, 'too early')).status).toBe(409);
+    expect((await correct(pmc, m, 'too early', 0)).status).toBe(409);
     // the provider's language is kept in the database's shape, whatever case it wrote it in
     provider.state = { state: 'done', text: 'pipe line goes from hear', languageCode: 'EN_in' };
     await advance(pmc, m);
     await age(m);
-    expect((await advance(pmc, m)).body).toMatchObject({ status: 'done', languageCode: 'en-IN' });
+    expect((await advance(pmc, m)).body).toMatchObject({ status: 'done', languageCode: 'en-IN', correctionSeq: 0 });
 
-    expect((await correct(client, m, 'not mine')).status).toBe(403);
-    expect((await correct(engineer, m, '   ')).status).toBe(400);
+    expect((await correct(client, m, 'not mine', 0)).status).toBe(403);
+    expect((await correct(engineer, m, '   ', 0)).status).toBe(400);
     // spaces outside ASCII (ideographic, no-break) are blank too
-    expect((await correct(engineer, m, '\u3000\u00a0 ')).status).toBe(400);
-    expect((await correct(engineer, m, 'x'.repeat(20_001))).status).toBe(400);
-    expect((await correct(engineer, m, 'a\u0000b')).status).toBe(400);
+    expect((await correct(engineer, m, '\u3000\u00a0 ', 0)).status).toBe(400);
+    expect((await correct(engineer, m, 'x'.repeat(20_001), 0)).status).toBe(400);
+    expect((await correct(engineer, m, 'a\u0000b', 0)).status).toBe(400);
+    // half a surrogate pair is no character, and PostgreSQL cannot hold it
+    expect((await correct(engineer, m, 'a\ud800b', 0)).status).toBe(400);
+    expect((await correct(engineer, m, 'a\udc00', 0)).status).toBe(400);
+    // the words heard, sent back as they are, are no correction
+    expect((await correct(engineer, m, ' pipe line goes from hear ', 0)).body).toMatchObject({ correction: null, correctionSeq: 0 });
     expect(await t.prisma.voiceTranscriptCorrection.count({ where: { mediaId: m } })).toBe(0);
 
-    const byEngineer = await correct(engineer, m, '  Pipe line goes from here ');
+    const byEngineer = await correct(engineer, m, '  Pipe line goes from here 😀', 0);
     expect(byEngineer.status).toBe(200);
-    expect(byEngineer.body).toMatchObject({ status: 'done', text: 'pipe line goes from hear', correction: { text: 'Pipe line goes from here', byId: engineerId } });
+    expect(byEngineer.body).toMatchObject({ status: 'done', text: 'pipe line goes from hear', correction: { text: 'Pipe line goes from here 😀', byId: engineerId }, correctionSeq: 1 });
     const at = byEngineer.body.correction.at as string;
 
     // the same words again change nothing, not even who wrote them
-    expect((await correct(contractor, m, 'Pipe line goes from here')).body.correction).toEqual({ text: 'Pipe line goes from here', byId: engineerId, at });
+    expect((await correct(contractor, m, 'Pipe line goes from here 😀', 1)).body.correction).toEqual({ text: 'Pipe line goes from here 😀', byId: engineerId, at });
+    // a screen still showing the words heard does not replace the newer correction it never showed
+    const stale = await correct(contractor, m, 'Pipe line starts there', 0);
+    expect(stale.status).toBe(409);
+    expect(stale.body.message).toBe('Someone else changed these words just now');
     // the person who recorded it may correct it
-    expect((await correct(contractor, m, 'Pipe line starts here')).body.correction).toMatchObject({ text: 'Pipe line starts here', byId: contractorId });
+    expect((await correct(contractor, m, 'Pipe line starts here', 1)).body).toMatchObject({ correction: { text: 'Pipe line starts here', byId: contractorId }, correctionSeq: 2 });
     // and the correction can be taken back
-    expect((await correct(pmc, m, null)).body).toMatchObject({ text: 'pipe line goes from hear', correction: null });
-    // taking it back again changes nothing
-    expect((await correct(pmc, m, null)).body).toMatchObject({ correction: null });
+    expect((await correct(pmc, m, null, 2)).body).toMatchObject({ text: 'pipe line goes from hear', correction: null, correctionSeq: 3 });
+    // taking it back again changes nothing, nor do the words heard sent back unchanged
+    expect((await correct(pmc, m, null, 3)).body).toMatchObject({ correction: null, correctionSeq: 3 });
+    expect((await correct(pmc, m, 'pipe line goes from hear', 3)).body).toMatchObject({ correction: null, correctionSeq: 3 });
 
     // every change is its own row, in order, by whom it was made; the same words again added none (VT1b)
     const kept = await t.prisma.voiceTranscriptCorrection.findMany({ where: { mediaId: m }, orderBy: { seq: 'asc' } });
     expect(kept.map((r) => [r.seq, r.text, r.correctedById])).toEqual([
-      [1, 'Pipe line goes from here', engineerId], [2, 'Pipe line starts here', contractorId], [3, null, f.memberUser.id],
+      [1, 'Pipe line goes from here 😀', engineerId], [2, 'Pipe line starts here', contractorId], [3, null, f.memberUser.id],
     ]);
     // the words heard are as heard
     expect((await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: m } })).text).toBe('pipe line goes from hear');
 
     // the client reads the words but may not change them
-    expect((await get(client, m)).body).toMatchObject({ status: 'done', canCorrect: false });
+    expect((await get(client, m)).body).toMatchObject({ status: 'done', canCorrect: false, correctionSeq: 3 });
+  });
+
+  it('two people correcting the same words at once: one is kept, the other is told', async () => {
+    const m = await note();
+    provider.state = { state: 'done', text: 'words heard', languageCode: 'en-IN' };
+    await advance(pmc, m);
+    await age(m);
+    expect((await advance(pmc, m)).body.status).toBe('done');
+    const answers = await Promise.all([correct(pmc, m, 'first words', 0), correct(engineer, m, 'second words', 0)]);
+    expect(answers.map((r) => r.status).sort()).toEqual([200, 409]);
+    const kept = await t.prisma.voiceTranscriptCorrection.findMany({ where: { mediaId: m } });
+    expect(kept).toHaveLength(1);
+    expect((await get(pmc, m)).body).toMatchObject({ correction: { text: kept[0]!.text }, correctionSeq: 1 });
+  });
+
+  it('words heard with spaces about them, sent back as shown, are no correction', async () => {
+    const m = await note();
+    provider.state = { state: 'done', text: '  padded heard words \n', languageCode: 'en-IN' };
+    await advance(pmc, m);
+    await age(m);
+    expect((await advance(pmc, m)).body.status).toBe('done');
+    expect((await correct(engineer, m, '  padded heard words \n', 0)).body).toMatchObject({ correction: null, correctionSeq: 0 });
+    expect(await t.prisma.voiceTranscriptCorrection.count({ where: { mediaId: m } })).toBe(0);
+  });
+
+  it('a lone surrogate half in the words heard is kept as a replacement character', async () => {
+    const m = await note();
+    provider.state = { state: 'done', text: 'a\ud800b\udc00', languageCode: 'en-IN' };
+    await advance(pmc, m);
+    await age(m);
+    expect((await advance(pmc, m)).body).toMatchObject({ status: 'done', text: 'a\ufffdb\ufffd' });
+  });
+
+  it('after a check that failed once, a check that answers puts the job back on the short interval', async () => {
+    const m = await note();
+    await advance(pmc, m);
+    provider.checkError = new SpeechProviderError('Sarvam status answered 503', false);
+    await age(m);
+    expect((await advance(pmc, m)).body.status).toBe('running');
+    expect(provider.checked).toHaveLength(1);
+    // a failed try waits out the longer pause
+    await age(m, 10);
+    await advance(pmc, m);
+    expect(provider.checked).toHaveLength(1);
+    provider.checkError = null;
+    await age(m);
+    await advance(pmc, m);
+    expect(provider.checked).toHaveLength(2);
+    // answered: back to a check every few seconds, though a try once failed
+    await age(m, 10);
+    await advance(pmc, m);
+    expect(provider.checked).toHaveLength(3);
+    expect(await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: m } })).toMatchObject({ attempts: 1, lastError: null });
   });
 
   it('a note filed on another member\'s private draft place is not found by others', async () => {
@@ -313,7 +380,7 @@ describe('#1177 VT2 — a voice note written out (live PG, fake provider)', () =
     })).id;
     expect((await get(engineer, m)).status).toBe(404);
     expect((await advance(engineer, m)).status).toBe(404);
-    expect((await correct(engineer, m, 'words')).status).toBe(404);
+    expect((await correct(engineer, m, 'words', 0)).status).toBe(404);
     expect(provider.started).toHaveLength(0);
     expect((await get(pmc, m)).status).toBe(200);
   });

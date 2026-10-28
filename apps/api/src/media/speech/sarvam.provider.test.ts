@@ -77,9 +77,9 @@ describe('SarvamSpeechProvider', () => {
     expect((await refusal(fake({ ...START, ...plain }).provider.startJob(Buffer.from('x'), 'audio/webm', 'm1.webm'))).final).toBe(false);
   });
 
-  it('may try again after 429, 5xx, 401, 403 or no answer; any other 4xx ends the note', async () => {
+  it('may try again after 429, 5xx or no answer; any other 4xx, a bad key\'s 401 or 403 too, ends the note', async () => {
     const cases: Array<[Answer, boolean]> = [
-      [{ status: 429 }, false], [{ status: 503 }, false], [{ status: 401 }, false], [{ status: 403 }, false],
+      [{ status: 429 }, false], [{ status: 503 }, false], [{ status: 401 }, true], [{ status: 403 }, true],
       [new Error('socket hang up'), false], [{ status: 400 }, true], [{ status: 422 }, true],
     ];
     for (const [answer, final] of cases) {

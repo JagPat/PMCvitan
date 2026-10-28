@@ -302,8 +302,11 @@ export type RemoveVisitFileInput = z.infer<typeof removeVisitFileSchema>;
 // #1177 VT2 — a person's correction of a voice note's written-out words, or null to take the correction back. The
 // server trims it; a correction holds some words and at most 20,000 characters (the database's bound, VT1b C4), which
 // the service counts by character; this bound is in UTF-16 units, so it lets every such correction through.
+// `basedOn` is the place of the correction the person saw (the read's `correctionSeq`, 0 when there was none): a newer
+// one since is answered 409, never silently replaced.
 export const correctTranscriptSchema = z.object({
   text: z.string().max(40_000).nullable(),
+  basedOn: z.number().int().min(0).max(2_147_483_647),
 }).strict();
 export type CorrectTranscriptInput = z.infer<typeof correctTranscriptSchema>;
 
