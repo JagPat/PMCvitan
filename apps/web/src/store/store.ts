@@ -3072,19 +3072,20 @@ export const useStore = create<Store>()(
     /** One dispatch of a member act in the CURRENT scope: refuse a second attempt while the first is
      *  unanswered; mint or reuse the act's key; settle exactly that key on a success or a terminal refusal;
      *  keep it on a transient failure for the user's retry; run the UI effects only while the attempt's
-     *  scope is still live. `label` names the act in the "already in progress" notice. */
+     *  scope is still live. `label` names the act in the "already in progress" notice. False when it was not
+     *  sent (that notice). */
     const dispatchMemberAct = (
       act: string,
       label: string,
       send: (key: string) => Promise<unknown>,
       onOk: () => void,
       onFail: () => void,
-    ): void => {
+    ): boolean => {
       const scope = currentScope();
       const boundAct = memberAct(scope, act);
       if (memberActsInFlight.has(boundAct)) {
         get().flash(label + ' — already in progress.');
-        return;
+        return false;
       }
       const key = memberActKey(boundAct);
       memberActsInFlight.set(boundAct, key);
@@ -3095,6 +3096,7 @@ export const useStore = create<Store>()(
           if (scopeStillCurrent(scope)) onFail();
         })
         .finally(() => { if (memberActsInFlight.get(boundAct) === key) memberActsInFlight.delete(boundAct); });
+      return true;
     };
     /** The add act is the REQUEST as the server hashes it (`MembersService.add`: name, role, the email
      *  lower-cased, the phone, the discipline only for a consultant) — a keyed replay with a different
@@ -5983,17 +5985,23 @@ export const useStore = create<Store>()(
     // identity on the same project is neither blocked by nor touched by this one's requests.
     addMember: (input) => {
       const g = gateway;
+      // #482 step 3c — the team guide's Add ends on this add's own answer (the run it was pressed under)
+      const guideRun = guideRunToken();
+      const reportAdd = (ok: boolean) => emitGuideOutcome(ok ? 'member-added' : 'member-add-failed', null, guideRun);
       if (!g) {
         get().flash('Managing the team needs the server.');
+        reportAdd(false);
         return;
       }
-      dispatchMemberAct(
+      const sent = dispatchMemberAct(
         addMemberAct(input),
         'Adding ' + input.name,
         (key) => g.addMember(input, key),
-        () => { get().loadTeam(); get().flash(input.name + ' added to the team.'); },
-        () => { get().flash('Could not add the member — check the details / your access.'); },
+        () => { get().loadTeam(); get().flash(input.name + ' added to the team.'); reportAdd(true); },
+        () => { get().flash('Could not add the member — check the details / your access.'); reportAdd(false); },
       );
+      // the same add already on its way was pressed before this run: its answer is not this run's
+      if (!sent) reportAdd(false);
     },
     updateMemberRole: (userId, role, discipline) => {
       const g = gateway;

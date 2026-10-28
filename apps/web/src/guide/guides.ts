@@ -214,6 +214,22 @@ export const GUIDES: readonly Guide[] = [
     ],
   },
   {
+    // the PMC adds someone to the project team: their name and email or phone, then (their role checked) Add. Add ends on the add's own
+    // answer; one that did not go through goes back to the form (Add empties it either way)
+    id: 'invite-team-member',
+    title: 'inviteTeam',
+    roles: ['pmc'],
+    screen: 'team',
+    available: teamManageable,
+    steps: [
+      // the form step ends once the name and a whole email or phone are in; Add is pointed at only then, so a box emptied
+      // again takes the tip back to the form. The role is checked on the Add step (a step of its own would miss an Add
+      // pressed while the role already reads right)
+      { target: 'member-form', tip: 'teamForm', until: 'done' },
+      { target: 'add-member', tip: 'teamAdd', until: 'outcome', outcome: { ok: 'member-added', failed: 'member-add-failed' }, retryFrom: 0 },
+    ],
+  },
+  {
     // the client answers a choice put to them: Approve on the option they want, then confirm. Each Approve carries its
     // decision's id, so the confirm step and its outcome follow that one decision, not another approved meanwhile.
     id: 'approve-decision-client',
@@ -361,6 +377,11 @@ function reviewAwaitingDecision(): boolean {
  *  only undecided reviews) */
 function guidedReviewDecided(key: string | null): boolean {
   return key !== null && !useStore.getState().reviews.some((r) => r.id === key && !r.decided);
+}
+
+/** Adding to the team needs the server (the demo has none) */
+function teamManageable(): boolean {
+  return !!API_BASE;
 }
 
 /** The register has settled, so Issue drawing is open (it is locked while a module read loads or failed) */

@@ -112,6 +112,16 @@ export const GUIDE_TIPS = {
     hi: 'जाँच लें, फिर साइट टीम को भेजने के लिए ‘जारी करें’ दबाएँ।',
     gu: 'તપાસી લો, પછી સાઇટ ટીમને મોકલવા ‘જારી કરો’ દબાવો.',
   },
+  teamForm: {
+    en: 'Type their name and their email or phone.',
+    hi: 'उनका नाम और ईमेल या फ़ोन लिखें।',
+    gu: 'તેમનું નામ અને ઈમેલ અથવા ફોન લખો.',
+  },
+  teamAdd: {
+    en: 'Check the role they hold on this project, then tap Add. They can then sign in with that email or phone.',
+    hi: 'इस प्रोजेक्ट में उनकी भूमिका जाँच लें, फिर यहाँ दबाएँ। इसके बाद वे उसी ईमेल या फ़ोन से साइन इन कर सकते हैं।',
+    gu: 'આ પ્રોજેક્ટમાં તેમની ભૂમિકા તપાસી લો, પછી અહીં દબાવો. ત્યાર બાદ તેઓ એ જ ઈમેલ અથવા ફોનથી સાઇન ઇન કરી શકે છે.',
+  },
   approveConfirm: {
     en: 'Check your choice, then tap here to confirm it.',
     hi: 'अपना चुनाव जाँचें, फिर पक्का करने के लिए यहाँ दबाएँ।',
@@ -197,6 +207,11 @@ export const GUIDE_TITLES = {
     en: 'Publish a drawing',
     hi: 'ड्रॉइंग जारी करें',
     gu: 'ડ્રોઇંગ જારી કરો',
+  },
+  inviteTeam: {
+    en: 'Add someone to the team',
+    hi: 'टीम में किसी को जोड़ें',
+    gu: 'ટીમમાં કોઈને ઉમેરો',
   },
   approveDecision: {
     en: 'Approve a choice',
