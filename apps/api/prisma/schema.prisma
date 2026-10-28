@@ -1196,6 +1196,8 @@ model Media {
   measurements               Measurement[]
   // Site Visits #792 SV2 — the visit this file was added on, if any (at most one)
   siteVisit                  SiteVisitMedia?
+  // #1177 VT1 (20280126000000) — a voice note's words, when the project's `voice-text` switch wrote them out
+  voiceTranscript            VoiceTranscript?
   // Stage 1 media (markup, voice, video). A marked-up copy is a NEW image pointing at the
   // photo it was drawn on, which keeps its bytes, camera time and place. The database
   // clears the link with ON DELETE SET NULL ("sourceMediaId") when the original goes (a
@@ -1216,6 +1218,29 @@ model Media {
   @@index([projectId, uploadedBy, createdAt]) // #482: a member's own photos still inside their delete hour
   @@index([nodeId])
   @@index([inspectionId])
+}
+
+// #1177 VT1a (20280126000000): a voice note's words, as the speech provider heard them. At most one per voice note; it
+// goes with the note (ON DELETE CASCADE) and never on its own. A person's corrections are kept apart (VT1b), never
+// written over these words. The checks and triggers (a voice note only; keys fixed; a done row frozen) are raw SQL in
+// the migration, which Prisma cannot express.
+model VoiceTranscript {
+  media         Media     @relation(fields: [projectId, mediaId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId     String
+  mediaId       String    @id
+  status        String    @default("pending") // pending | running | done | failed
+  providerJobId String?
+  languageCode  String?
+  text          String? // the provider's words, exactly when done
+  attempts      Int       @default(0)
+  retried       Boolean   @default(false)
+  lastError     String?
+  leaseToken    String?
+  leaseUntil    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([projectId, mediaId])
 }
 
 // #482 site photos (20280117): one row per (project, clientKey) whose photo was deleted, written by a database trigger

@@ -5815,6 +5815,11 @@ assert "SV2: after the replay the visit-file record keeps its four triggers, its
 assert "#1179 R1: after the replay the removal line keeps its four triggers and its CHECK, and the visit-file table its two removal guards and its visit lock" \
   "SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"SiteVisitFileRemoval\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('SiteVisitFileRemoval_insert','SiteVisitFileRemoval_done','SiteVisitFileRemoval_frozen','SiteVisitFileRemoval_no_truncate'))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"SiteVisitFileRemoval\"'::regclass AND conname = 'SiteVisitFileRemoval_shape_check')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"SiteVisitMedia\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('SiteVisitMedia_removal_recorded','SiteVisitMedia_not_removed','SiteVisitMedia_00_visit_lock'))::text;" \
   "4|1|3"
+# #1177 VT1a — the replay re-ran the transcripts migration (on ALWAYS_EXECUTE) too: its four triggers and its CHECK
+# stand enabled, and so does the guard it adds on "Media" that keeps a transcribed file a voice note.
+assert "#1177 VT1a: after the replay the transcripts table keeps its four triggers and its CHECK, and the media table its voice-note guard" \
+  "SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"VoiceTranscript\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('VoiceTranscript_insert','VoiceTranscript_keys_fixed','VoiceTranscript_no_delete','VoiceTranscript_no_truncate'))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"VoiceTranscript\"'::regclass AND conname = 'VoiceTranscript_shape_check')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"Media\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname = 'Media_voice_transcript_note_kept')::text;" \
+  "4|1|1"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \
