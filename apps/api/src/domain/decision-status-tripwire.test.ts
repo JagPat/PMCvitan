@@ -334,6 +334,8 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/web/src/store/store.ts :: d.status === 'change'": 'excludes: the demo change-withdrawal’s compare-and-set from an open change request',
     "apps/web/src/store/store.ts :: d.status === 'pending'": 'excludes: the demo withdraw’s compare-and-set, only from a never-approved pending decision',
     "apps/web/src/store/store.ts :: o.status === 'pending'": 'excludes: the demo withdraw’s legacy-text ambiguity guard, mirroring the service’s (a sibling awaiting its countersign no longer carries a live pending demand)',
+    // #482 step 3 client guide (#1193): the choice is answered once approved or awaiting its countersign
+    "apps/web/src/guide/guides.ts :: d?.status === 'approved' || d?.status === 'awaiting_countersign'": 'answered',
   };
 
   /** Whether the object literal around `idx`, or one enclosing it, is a Prisma filter: the value of
