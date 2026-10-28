@@ -122,7 +122,7 @@ export class SiteVisitFilesParticipant {
   /**
    * #1179 (Jagrut, 27 Oct 2026) — take a file off its visit, under {@link lockForRemoval}'s locks and the file row's: the
    * person who added it may, within an hour of the server taking it (by the database's clock) and while the visit is
-   * not closed; the project's PMC may remove any file at any time, saying why unless it is their own within that hour.
+   * open (Jagrut's card: not once its visitor ended it or the PMC closed it; Codex 4397416722); the project's PMC may remove any file at any time, saying why unless it is their own within that hour.
    * Writes the visit's removal line, which the database stamps and completes; the caller then deletes the file.
    */
   async recordRemoval(
@@ -146,6 +146,7 @@ export class SiteVisitFilesParticipant {
     } else {
       if (link.addedById !== userId) throw new ForbiddenException('Only the person who added this file, or the PMC, may remove it');
       if (link.status === 'closed') throw new ConflictException('This site visit was closed by the PMC; ask the PMC to remove the file');
+      if (link.status !== 'open') throw new ConflictException('This site visit has ended; ask the PMC to remove the file');
       if (!ownInHour) throw new ForbiddenException('A file can be removed only within an hour of adding it; ask the PMC');
     }
     try {

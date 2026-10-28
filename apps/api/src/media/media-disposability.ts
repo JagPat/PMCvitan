@@ -85,4 +85,20 @@ export class MediaDisposability {
     ]);
     return new Set(ids.filter((id) => !pinned.some((set) => set.has(id))));
   }
+
+  /** #1179 — which of these site-visit files another record still cites, so that a removal from the visit (which asks
+   *  {@link assertDisposable} as staff, past the visit's own link) would refuse them: the visit's offer leaves them out
+   *  (Codex 4397416732). Batched and read without locks, as {@link disposable}; the removal asks again. */
+  async citedElsewhere(projectId: string, ids: string[], actorUserId: string): Promise<Set<string>> {
+    if (ids.length === 0) return new Set();
+    const db = this.prisma as unknown as Prisma.TransactionClient;
+    const pinned = await Promise.all([
+      this.inventoryParticipant.pinnedMedia(db, projectId, ids),
+      this.labourParticipant.pinnedMedia(db, projectId, ids),
+      this.activityParticipant.pinnedMedia(db, projectId, ids),
+      this.commercialParticipant.pinnedMedia(db, projectId, ids),
+      this.inspectionParticipant.pinnedEvidence(db, { projectId, mediaIds: ids, actorUserId }),
+    ]);
+    return new Set(ids.filter((id) => pinned.some((set) => set.has(id))));
+  }
 }

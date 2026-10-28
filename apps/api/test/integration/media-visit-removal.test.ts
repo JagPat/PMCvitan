@@ -189,6 +189,21 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
     expect((await visit(own)).removals).toEqual([expect.objectContaining({ mediaId: id, reason: 'Wrong visit' })]);
   });
 
+  it('once its visitor ends the visit, the person who added a file can no longer remove it; the PMC still can (Codex 4397416722)', async () => {
+    const own = randomUUID();
+    expect((await http().post(visits()).set('Authorization', `Bearer ${consultantToken}`).send({ id: own, claimedAt: ago(10) })).status).toBe(201);
+    const id = await voice(consultantToken, own);
+    const ended = await http().post(`${visits()}/${own}/end`).set('Authorization', `Bearer ${consultantToken}`).send({ claimedAt: new Date().toISOString() });
+    expect(ended.status, ended.text).toBe(201);
+    expect((await visit(own, consultantToken)).status).toBe('ended');
+    expect((await visit(own, consultantToken)).files[0].removable).toBeNull();
+    const refused = await removeIt(id, consultantToken);
+    expect(refused.status).toBe(409);
+    expect(refused.body.message).toMatch(/has ended/);
+    expect(await t.prisma.siteVisitFileRemoval.count({ where: { mediaId: id } })).toBe(0);
+    expect((await removeIt(id, pmcToken, { reason: 'Wrong visit' })).status).toBe(200);
+  });
+
   it('a clip goes with its still frame, read under the clip\'s row lock; a frame sent after the removal is refused as not found', async () => {
     const id = await clip();
     const framed = await http().post(`/projects/${f.projectA.id}/media/${id}/poster`).set('Authorization', `Bearer ${pmcToken}`).send({ mime: 'image/jpeg', data: jpeg });
@@ -240,8 +255,72 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
 
   it('two removals of one file at once: one succeeds, the other is not found, and one line stands', async () => {
     const id = await voice();
-    const [a, b] = await Promise.all([removeIt(id, pmcToken, { reason: 'First' }), removeIt(id, pmcToken, { reason: 'Second' })]);
+    // a barrier: hold the visit's row, so both removals are in flight at once, queued on it or on each other, before
+    // either reaches its line (Codex 4397416724)
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let holder = 0;
+    const held = t.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT 1 FROM "SiteVisit" WHERE "projectId" = ${f.projectA.id} AND "id" = ${visitId} FOR UPDATE`;
+      holder = Number((await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS "pid"`)[0]!.pid);
+      await gate;
+    }, { timeout: 60_000 });
+    const waiting = async (): Promise<number> => Number((await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `WITH w AS (SELECT pid, pg_blocking_pids(pid) AS b FROM pg_stat_activity WHERE datname = current_database())
+       SELECT count(*)::bigint AS n FROM w
+        WHERE $1::int = ANY(w.b) OR w.b && ARRAY(SELECT pid FROM w WHERE $1::int = ANY(w.b))`, holder))[0]!.n);
+    const until = async (probe: () => Promise<boolean>, what: string): Promise<void> => {
+      const deadline = Date.now() + 20_000;
+      while (Date.now() < deadline) {
+        if (await probe()) return;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      throw new Error(`barrier not reached: ${what}`);
+    };
+    await until(async () => holder > 0, 'the visit row is held');
+    const both = Promise.all([removeIt(id, pmcToken, { reason: 'First' }), removeIt(id, pmcToken, { reason: 'Second' })]);
+    await until(async () => (await waiting()) >= 2, 'both removals wait behind the held visit');
+    // neither has written its line while the visit is held
+    expect(await t.prisma.siteVisitFileRemoval.count({ where: { mediaId: id } })).toBe(0);
+    release();
+    await held;
+    const [a, b] = await both;
     expect([a.status, b.status].sort()).toEqual([200, 404]);
     expect(await t.prisma.siteVisitFileRemoval.count({ where: { mediaId: id } })).toBe(1);
+  });
+
+  it('a file another record cites as evidence is not offered for removal, and its removal is refused (Codex 4397416732)', async () => {
+    const id = await voice();
+    const activityId = `${f.projectA.id}-svr-act-${run}`;
+    await t.prisma.activity.create({ data: { id: activityId, projectId: f.projectA.id, name: 'Slab', zone: 'GF', plannedStart: 0, plannedEnd: 1 } });
+    const override = await t.prisma.gateOverride.create({
+      data: { projectId: f.projectA.id, activityId, gate: 'material', state: 'ok', reason: 'the voice note confirms the delivery', actorId: f.memberUser.id, actorName: 'PMC', expiresAt: new Date(Date.now() + 7 * 864e5), evidenceMediaId: id },
+    });
+    try {
+      expect((await visit()).files.find((x: { mediaId: string }) => x.mediaId === id).removable).toBeNull();
+      expect((await removeIt(id, pmcToken, { reason: 'Recorded by mistake' })).status).toBe(409);
+      expect(await t.prisma.siteVisitFileRemoval.count({ where: { mediaId: id } })).toBe(0);
+    } finally {
+      await t.prisma.gateOverride.deleteMany({ where: { id: override.id } });
+      await t.prisma.activity.deleteMany({ where: { id: activityId } });
+    }
+    // once nothing cites it, it is offered again
+    expect((await visit()).files.find((x: { mediaId: string }) => x.mediaId === id).removable).toEqual({ reasonRequired: false, until: expect.any(String) });
+  });
+
+  it('the offer judges the hour on the database\'s clock, as the removal does, not the API\'s (Codex 4397416735)', async () => {
+    const id = await voice(consultantToken);
+    await backdate(id);
+    // the API's clock two hours behind the database's: by its own clock the hour has not run out
+    const behind = Date.now() - 2 * 60 * 60 * 1000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(behind);
+    let offer: unknown;
+    try {
+      offer = (await visit(visitId, consultantToken)).files.find((x: { mediaId: string }) => x.mediaId === id).removable;
+    } finally {
+      clock.mockRestore();
+    }
+    expect(offer).toBeNull();
+    expect((await removeIt(id, consultantToken)).status).toBe(403);
   });
 });

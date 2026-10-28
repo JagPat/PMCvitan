@@ -88,7 +88,7 @@ export interface SiteVisitFileDto {
   addedAt: string;
   /** #1179 — whether the viewer may remove this file now, as the server's rule reads at this read: the PMC always (a
    *  reason needed unless it is their own within the hour), the person who added it until `until` while the visit is
-   *  not closed. Null when the viewer may not. The removal asks again and is the authority. */
+   *  open (not ended or closed). Null when the viewer may not. The removal asks again and is the authority. */
   removable: { reasonRequired: boolean; until: string | null } | null;
 }
 
@@ -128,7 +128,7 @@ type Row = Prisma.SiteVisitGetPayload<{ include: typeof withChildren }>;
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 
 /** What the media module says about a visit's file (`MediaQueryService.fileFacts`). */
-type FileFacts = Map<string, { mime: string; takenAt: string | null; clientKey: string | null; durationSec: number | null; sourceMediaId: string | null; poster: boolean }>;
+type FileFacts = Map<string, { mime: string; takenAt: string | null; clientKey: string | null; durationSec: number | null; sourceMediaId: string | null; poster: boolean; cited: boolean }>;
 
 /** #1179 — how long the person who added a file may remove it themselves (the database's CHECK on a line with no reason). */
 export const SITE_VISIT_OWN_REMOVAL_MS = 60 * 60 * 1000;
@@ -140,15 +140,16 @@ export interface SiteVisitViewer {
 }
 
 function removableBy(
-  viewer: SiteVisitViewer | undefined, status: string, addedById: string, addedAt: Date, now: number,
+  viewer: SiteVisitViewer | undefined, status: string, addedById: string, addedAt: Date, now: number, cited: boolean,
 ): SiteVisitFileDto['removable'] {
-  if (!viewer) return null;
+  // a file another record cites as evidence is refused by the removal (409) for everyone (Codex 4397416732)
+  if (!viewer || cited) return null;
   const until = addedAt.getTime() + SITE_VISIT_OWN_REMOVAL_MS;
   // inclusive at the hour, as the server judges it (`addedAt + 1 hour >= now` on the database's clock)
   const ownInHour = addedById === viewer.id && now <= until;
   // the PMC's own file within the hour: no reason until `until`, then a reason
   if (viewer.role === 'pmc') return { reasonRequired: !ownInHour, until: ownInHour ? new Date(until).toISOString() : null };
-  if (ownInHour && status !== 'closed') return { reasonRequired: false, until: new Date(until).toISOString() };
+  if (ownInHour && status === 'open') return { reasonRequired: false, until: new Date(until).toISOString() };
   return null;
 }
 
@@ -192,7 +193,7 @@ export function toSiteVisitDto(
       sourceMediaId: facts.get(f.mediaId)?.sourceMediaId ?? null, posterUrl: facts.get(f.mediaId)?.poster ? posterUrl(f.mediaId) : null,
       note: f.note, rating: f.rating, place: f.placeName !== '' ? { nodeId: f.nodeId, name: f.placeName } : null,
       addedById: f.addedById, addedByName: f.addedByName, addedByRole: f.addedByRole, addedAt: f.addedAt.toISOString(),
-      removable: removableBy(viewer, v.status, f.addedById, f.addedAt, now),
+      removable: removableBy(viewer, v.status, f.addedById, f.addedAt, now, facts.get(f.mediaId)?.cited ?? false),
     })),
     removals: v.removals.map((r) => ({
       mediaId: r.mediaId, kind: r.fileKind as SiteVisitRemovalDto['kind'], addedByName: r.addedByName, addedByRole: r.addedByRole,
@@ -218,7 +219,11 @@ export class SiteVisitsQueryService {
   private async toDtos(projectId: string, rows: Row[], viewerId: string, viewerRole?: string): Promise<SiteVisitDto[]> {
     const facts = await this.media.fileFacts(projectId, rows.flatMap((r) => r.media.map((f) => f.mediaId)), viewerId);
     const viewer = viewerRole !== undefined ? { id: viewerId, role: viewerRole } : undefined;
-    return rows.map((row) => toSiteVisitDto(row, (id) => this.signed.mediaPath(id), facts, (id) => this.signed.posterPath(id), viewer));
+    // the hour is judged on the database's clock, as the removal judges it (Codex 4397416735)
+    const now = viewer && facts.size > 0
+      ? (await this.prisma.$queryRaw<Array<{ now: Date }>>`SELECT site_visits_now() AS "now"`)[0]!.now.getTime()
+      : Date.now();
+    return rows.map((row) => toSiteVisitDto(row, (id) => this.signed.mediaPath(id), facts, (id) => this.signed.posterPath(id), viewer, now));
   }
 
   /**
