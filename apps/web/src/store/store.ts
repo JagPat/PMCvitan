@@ -2910,16 +2910,16 @@ export const useStore = create<Store>()(
       const stored = () => storedNow([op]);
       const stillThere = madeHere();
       const key = 'idempotencyKey' in op ? op.idempotencyKey : undefined;
+      // watched online and offline alike: the signal can come back before an offline act's write runs, and the flush
+      // that then sends it is the one that knows how it went (Codex 4398620511)
+      const watch = report && key ? (how: 'sent' | 'failed' | 'pending') => {
+        actWatches.delete(key);
+        // left to send again: kept on this phone or not, once its write has run (the signal can go before it does)
+        if (how === 'pending') void written.then(() => { if (stillThere()) report(stored() ? 'queued' : 'not-kept'); });
+        else if (stillThere()) report(how);
+      } : undefined;
+      if (watch && key) { writingKeys.add(key); actWatches.set(key, watch); }
       if (get().online) {
-        if (report && key) {
-          writingKeys.add(key);
-          actWatches.set(key, (how) => {
-            actWatches.delete(key);
-            // left to send again: kept on this phone or not, once its write has run (the signal can go before it does)
-            if (how === 'pending') void written.then(() => { if (stillThere()) report(stored() ? 'queued' : 'not-kept'); });
-            else if (stillThere()) report(how);
-          });
-        }
         // sent once its write has run; one that write could not store is said not saved, and sent from memory with its
         // ask's made record on this phone (#1113 r1 re-check: never held from the server)
         void written.then(() => {
@@ -2931,9 +2931,12 @@ export const useStore = create<Store>()(
         });
       } else {
         void written.then(() => {
-          if (!stillThere()) return;
+          if (key) writingKeys.delete(key);
+          if (!stillThere()) { if (key) actWatches.delete(key); return; }
           get().flash(stored() ? (offlineMsg ?? label + ' — saved offline, will sync when you reconnect.') : QW.notSavedYet[get().lang]);
-          report?.(stored() ? 'queued' : 'not-kept');
+          // still offline and taken by no flush: told now; back online, the flush the reconnect started tells it
+          if (!key) report?.(stored() ? 'queued' : 'not-kept');
+          else if (actWatches.get(key) === watch && !get().online && !flushingKeys.has(key)) watch?.('pending');
         });
       }
       return true;

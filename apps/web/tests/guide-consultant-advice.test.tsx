@@ -335,6 +335,17 @@ describe('the store reports a sent advice\'s outcome for the guide', () => {
     await settles(() => seen.length > 0);
     expect(seen).toEqual([['advice-sent', 'DL-1:c-DL-1']]);
   });
+  it('offline, and the signal back before the advice is written: the reconnect\'s flush tells it, a refusal is failed (Codex 4398620511)', async () => {
+    const { seen, send } = await store(false);
+    const { useStore } = await import('@/store/store');
+    useStore.getState()._setGateway({ respondToConsultation: vi.fn().mockRejectedValue(Object.assign(new Error('closed'), { status: 409 })) } as never);
+    send();
+    // at once, before the write-ahead has run
+    useStore.getState().toggleOnline();
+    expect(seen).toEqual([]);
+    await settles(() => seen.length > 0);
+    expect(seen).toEqual([['advice-send-failed', 'DL-1:c-DL-1']]);
+  });
 });
 
 describe('Codex rounds on #1198', () => {
