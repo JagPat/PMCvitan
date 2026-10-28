@@ -271,7 +271,7 @@ export function DailyLogScreen() {
           </div>
         ) : runsTheDay && (
           <>
-            <button onClick={checkIn} disabled={sending} data-testid="check-in" style={{ width: '100%', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 15, padding: 18, fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 15, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9 }}>
+            <button onClick={checkIn} disabled={sending} data-testid="check-in" data-guide="check-in" style={{ width: '100%', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 15, padding: 18, fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 15, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9 }}>
               <Crosshair size={18} /> {L.checkIn[lang]}
             </button>
             {/* the PRESENCE PROOF is not an eyebrow: it tells the worker what this button is about to
@@ -448,6 +448,7 @@ export function DailyLogScreen() {
           onClick={submitDailyLog}
           disabled={actionsLocked || inFlight || dailyLog.submitted}
           data-testid="submit-daily-log"
+          data-guide="submit-daily-log"
           style={{ width: '100%', maxWidth: 460, margin: '0 auto', display: 'block', padding: 15, borderRadius: 12, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, cursor: actionsLocked || inFlight ? 'not-allowed' : 'pointer', opacity: actionsLocked || inFlight ? 0.6 : 1, border: 'none', background: dailyLog.submitted ? 'var(--green-chip)' : 'var(--ink)', color: dailyLog.submitted ? 'var(--green-text)' : 'var(--sidebar-text)' }}
         >
           {dailyLog.submitted ? L.submitted[lang] : sending ? L.sending[lang] : L.submit[lang]}

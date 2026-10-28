@@ -3,7 +3,7 @@ import type { GuideTip, GuideTitle } from './words';
 import { guidedPhotoPicksOf, type GuideOutcome } from './outcomes';
 import { useGuideState } from './guideState';
 import { inspectionFrozen, useStore } from '@/store/store';
-import { dailyLogSendPending } from '@/store/dailyLogPending';
+import { dailyLogCommandInFlight, dailyLogSendPending } from '@/store/dailyLogPending';
 import { selectDecisionsNeedingViewer } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
 import { ownOpenVisitNoted } from './visitFacts';
@@ -46,8 +46,8 @@ export interface GuideStep {
    * failure (its answer can be lost after the server took it), so it only says true for this run's own action.
    */
   settled?: (key: string | null) => boolean;
-  /** true when what this step asks for is already done (a visit already open): the run passes over it. Only for a
-   *  step whose control is then not on screen, so a run stepping back never lands on it */
+  /** true when what this step asks for is already done (checked in earlier today, a visit already open): the run passes
+   *  over it. Only for a step whose control is then not on screen, so a run stepping back never lands on it */
   skip?: () => boolean;
   /** For `until: 'outcome'`: the step a failed report goes back to (the box the attempt emptied), instead of staying here */
   retryFrom?: number;
@@ -144,6 +144,26 @@ export const GUIDES: readonly Guide[] = [
       { target: 'sv-start', tip: 'visitStart', until: 'outcome', outcome: { ok: 'visit-started', failed: 'visit-start-failed' }, skip: ownOpenVisitNoted },
       // only the viewer's own open visit (the one just started) carries this target
       { target: 'sv-add-photo', tip: 'visitPhoto', until: 'outcome', outcome: { ok: 'visit-photo-added', failed: 'visit-photo-add-failed' } },
+    ],
+  },
+  {
+    // the engineer sends the day's log to the PMC: check in (passed over when already checked in), then send. Send ends
+    // only on the server's answer (or, without signal, once the log is kept on this phone to send), or when a refresh
+    // shows the log sent
+    id: 'send-daily-log',
+    title: 'sendDailyLog',
+    roles: ['engineer'],
+    screen: 'daily-log',
+    available: dailyLogSendable,
+    steps: [
+      { target: 'check-in', tip: 'logCheckIn', skip: dailyLogCheckedIn },
+      {
+        target: 'submit-daily-log',
+        tip: 'logSend',
+        until: 'outcome',
+        outcome: { ok: 'daily-log-sent', failed: 'daily-log-send-failed', held: 'daily-log-not-kept' },
+        settled: dailyLogSubmitted,
+      },
     ],
   },
   {
@@ -279,6 +299,21 @@ function sitePhotoButtonUsable(): boolean {
 function siteVisitRecordable(): boolean {
   const s = useStore.getState();
   return !!API_BASE && can('siteVisit.start', s.role);
+}
+
+/** Today's log is open, not sent and not on its way: the engineer can check in and send it */
+function dailyLogSendable(): boolean {
+  const s = useStore.getState();
+  return !!s.dailyLog && !s.dailyLog.submitted && !dailyLogCommandInFlight(s);
+}
+
+function dailyLogCheckedIn(): boolean {
+  return !!useStore.getState().dailyLog?.checkedIn;
+}
+
+/** the log shows sent (its own send's answer, or a refresh that brought it first) */
+function dailyLogSubmitted(): boolean {
+  return !!useStore.getState().dailyLog?.submitted;
 }
 
 /** A photo picked under this run of the guide is in the project's photos (the viewer's own photos carry their upload key). */

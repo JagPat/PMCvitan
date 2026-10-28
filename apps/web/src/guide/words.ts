@@ -82,6 +82,16 @@ export const GUIDE_TIPS = {
     hi: 'इस विज़िट में जो दिखे उसकी फ़ोटो जोड़ने के लिए यहाँ दबाएँ: नई खींचें या फ़ोन से चुनें।',
     gu: 'આ મુલાકાતમાં જે દેખાય તેનો ફોટો ઉમેરવા અહીં દબાવો: નવો પાડો અથવા ફોનમાંથી પસંદ કરો.',
   },
+  logCheckIn: {
+    en: 'First, tap here to check in at site.',
+    hi: 'पहले, साइट पर हाज़िरी लगाने के लिए यहाँ दबाएँ।',
+    gu: 'પહેલાં, સાઇટ પર હાજરી પૂરવા અહીં દબાવો.',
+  },
+  logSend: {
+    en: "Fill in today's crew and photos, then tap here to send the daily log to the PMC.",
+    hi: 'आज के कारीगर और फ़ोटो भरें, फिर रोज़ का लॉग PMC को भेजने के लिए यहाँ दबाएँ।',
+    gu: 'આજના કારીગરો અને ફોટા ભરો, પછી રોજનો લૉગ PMC ને મોકલવા અહીં દબાવો.',
+  },
   approveConfirm: {
     en: 'Check your choice, then tap here to confirm it.',
     hi: 'अपना चुनाव जाँचें, फिर पक्का करने के लिए यहाँ दबाएँ।',
@@ -152,6 +162,11 @@ export const GUIDE_TITLES = {
     en: 'Record a site visit',
     hi: 'साइट विज़िट दर्ज करें',
     gu: 'સાઇટ મુલાકાત નોંધો',
+  },
+  sendDailyLog: {
+    en: 'Send the daily log',
+    hi: 'रोज़ का लॉग भेजें',
+    gu: 'રોજનો લૉગ મોકલો',
   },
   approveDecision: {
     en: 'Approve a choice',

@@ -6359,7 +6359,11 @@ export const useStore = create<Store>()(
       // network call (online too), so a lost response is retried under the SAME key, submitting once.
       const submitKey = newIdempotencyKey();
       const lang = get().lang;
-      if (runWriteAhead({ t: 'submitDailyLog', log: logPayload, idempotencyKey: submitKey }, DLC.submit.en, () => DLT.sent[get().lang], DLX.savedOffline(DLC.submit[lang], lang))) return;
+      // #482: how the send went, for the guide, told by the flush that settles it (as the advice guide's)
+      const guideRun = guideRunToken();
+      const reportSend = (result: ActReport) =>
+        emitGuideOutcome(result === 'sent' || result === 'queued' ? 'daily-log-sent' : result === 'failed' ? 'daily-log-send-failed' : 'daily-log-not-kept', null, guideRun);
+      if (runWriteAhead({ t: 'submitDailyLog', log: logPayload, idempotencyKey: submitKey }, DLC.submit.en, () => DLT.sent[get().lang], DLX.savedOffline(DLC.submit[lang], lang), [], reportSend)) return;
       set((s) => {
         if (!s.dailyLog) return;
         s.dailyLog.submitted = true;
@@ -6368,6 +6372,8 @@ export const useStore = create<Store>()(
       persistDailyLogDraft();
       get().record('Daily log submit');
       get().flash(get().online ? DLT.sent[lang] : DLT.sentOffline[lang]);
+      // the demo (no server) records the log sent here, so the guide's step is done
+      reportSend('sent');
     },
     flagMismatch: (idx) => {
       const mat = get().dailyLog?.materials[idx];

@@ -184,7 +184,8 @@ export function GuideHost() {
         return;
       }
       const current = guide.steps[step]!;
-      // a step already done before the run reached it (a visit already open) is passed over, unpressed
+      // a step already done before the run reached it (checked in earlier today, a visit already open) is passed over,
+      // unpressed
       if (!g.run.pressed && current.skip?.()) {
         completeStep(key, g, null);
         return;
