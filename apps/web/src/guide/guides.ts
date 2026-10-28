@@ -59,6 +59,8 @@ export interface Guide {
   title: GuideTitle;
   roles: readonly Role[];
   screen: ScreenKey;
+  /** other screens showing the same controls (the client's register renders their Decisions screen too) */
+  alsoOn?: readonly ScreenKey[];
   steps: readonly GuideStep[];
   /** false while the project has nothing yet to show this guide on (no checklist out on site), so the welcome's
    *  "Show me around" picks another one; leave it out for a guide that can always start */
@@ -160,6 +162,8 @@ export const GUIDES: readonly Guide[] = [
     title: 'answerAdvice',
     roles: ['client'],
     screen: 'client-decisions',
+    // a request's link opens the client's register (`decision-log`), which shows the same Decisions screen
+    alsoOn: ['decision-log'],
     available: adviceWaitingOnViewer,
     steps: answerAdviceSteps(),
   },
@@ -265,7 +269,12 @@ export function guidesForRole(role: Role): readonly Guide[] {
   return GUIDES.filter((g) => g.roles.includes(role));
 }
 
+/** The guide's controls are on this screen: its own, or one showing the same controls. */
+export function guideOnScreen(guide: Guide, screen: string): boolean {
+  return guide.screen === screen || (guide.alsoOn ?? []).some((s) => s === screen);
+}
+
 /** The guides this role can be shown on this screen, in order. */
 export function guidesFor(role: Role, screen: ScreenKey): readonly Guide[] {
-  return GUIDES.filter((g) => g.screen === screen && g.roles.includes(role));
+  return GUIDES.filter((g) => guideOnScreen(g, screen) && g.roles.includes(role));
 }
