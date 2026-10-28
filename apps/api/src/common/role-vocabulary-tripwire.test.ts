@@ -115,6 +115,8 @@ describe('the role vocabulary tripwire (4d-ii-a / A5a)', () => {
     // 4d-ii-b / B2 — the Team screen's list and label map are gone: its pickers read the store's
     // rollout-aware `selectRoles` and the shared `ROLE_LABEL` (registered above), so nothing there is a
     // hand-written vocabulary any more
+    // #482 (#1185) — the first-time welcome's line for each role, every member role answered
+    'apps/web/src/guide/words.ts :: map WELCOME_ROLE': 'answered',
     'apps/web/src/screens/PortfolioScreen.tsx :: map ROLE_LABEL': 'answered',
     'apps/web/src/screens/DrawingsScreen.tsx :: map ROLE_SHORT': 'answered',
     'apps/web/src/screens/TeamScreen.tsx :: map COMPANY_KIND_LABEL': 'not a role: a firm’s kind, a different axis that already spells `architect` (§A.1, untouched)',
