@@ -289,6 +289,7 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     // B4 — the consultation surface's open set (the server's `CONSULTATION_OPEN_STATUSES`) and the approval's
     // success copy read from the returned snapshot.
     "apps/web/src/components/ConsultationThread.tsx :: decision.status === 'pending' || decision.status === 'change' || decision.status === 'awaiting_countersign'": 'answered',
+    "apps/web/src/guide/guides.ts :: d?.status === 'approved' || d?.status === 'awaiting_countersign'": 'answered',
     // 4d-ii-b / B5b — the chain's controls: Forward hands over an OPEN decision (an awaiting one is the architect's,
     // handed on through `disagree` / `forward_on`); the architect's countersign controls sit on the awaiting row
     "apps/web/src/screens/AwaitingClientList.tsx :: d.status === 'pending'": 'excludes: the demo-seed fallback of the "Awaiting client" list keeps only a NEW decision open for the CLIENT; an awaiting one waits on the architect (#482 QA)',
@@ -334,8 +335,6 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/web/src/store/store.ts :: d.status === 'change'": 'excludes: the demo change-withdrawal’s compare-and-set from an open change request',
     "apps/web/src/store/store.ts :: d.status === 'pending'": 'excludes: the demo withdraw’s compare-and-set, only from a never-approved pending decision',
     "apps/web/src/store/store.ts :: o.status === 'pending'": 'excludes: the demo withdraw’s legacy-text ambiguity guard, mirroring the service’s (a sibling awaiting its countersign no longer carries a live pending demand)',
-    // #482 step 3 client guide (#1193): the choice is answered once approved or awaiting its countersign
-    "apps/web/src/guide/guides.ts :: d?.status === 'approved' || d?.status === 'awaiting_countersign'": 'answered',
   };
 
   /** Whether the object literal around `idx`, or one enclosing it, is a Prisma filter: the value of

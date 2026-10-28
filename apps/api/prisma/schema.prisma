@@ -1196,7 +1196,7 @@ model Media {
   measurements               Measurement[]
   // Site Visits #792 SV2 — the visit this file was added on, if any (at most one)
   siteVisit                  SiteVisitMedia?
-  // #1177 VT1 (20280124000000) — a voice note's words, when the project's `voice-text` switch wrote them out
+  // #1177 VT1 (20280126000000) — a voice note's words, when the project's `voice-text` switch wrote them out
   voiceTranscript            VoiceTranscript?
   // Stage 1 media (markup, voice, video). A marked-up copy is a NEW image pointing at the
   // photo it was drawn on, which keeps its bytes, camera time and place. The database
@@ -1224,7 +1224,7 @@ model Media {
 // on "Media" in the delete's own statement. A later send under that key is answered "deleted" and stores nothing, so a copy of the send still
 // queued on another device cannot bring the photo back. Never changed, never deleted on its own (database triggers);
 // it goes only with its project.
-// #1177 VT1 (20280124000000): a voice note's words, written out by the speech provider and correctable by a person. At
+// #1177 VT1 (20280126000000): a voice note's words, written out by the speech provider and correctable by a person. At
 // most one per voice note; it goes with the note (ON DELETE CASCADE). The checks and the two triggers (a voice note only;
 // keys and createdAt never move) are raw SQL in the migration, which Prisma cannot express.
 model VoiceTranscript {
@@ -1556,8 +1556,10 @@ model User {
   siteVisitAttendeesRetired SiteVisitAttendee[]    @relation("siteVisitAttendeeRetiredBy")
   siteVisitPlacesAdded      SiteVisitPlace[]       @relation("siteVisitPlaceAddedBy")
   siteVisitMediaAdded       SiteVisitMedia[]       @relation("siteVisitMediaAddedBy")
-  // #1177 VT1 (20280124000000) — the voice-note transcripts this person corrected
+  // #1177 VT1 (20280126000000) — the voice-note transcripts this person corrected
   voiceTranscriptsEdited    VoiceTranscript[]      @relation("voiceTranscriptEditedBy")
+  siteVisitRemovalsAdded    SiteVisitFileRemoval[] @relation("siteVisitFileRemovalAddedBy")
+  siteVisitRemovalsMade     SiteVisitFileRemoval[] @relation("siteVisitFileRemovalRemovedBy")
   siteVisitPlacesRetired    SiteVisitPlace[]       @relation("siteVisitPlaceRetiredBy")
   // Phase 6 task 4b (§A.3) — push subscriptions currently linked to this user for targeted delivery
   pushSubscriptionsLinked   PushSubscription[]     @relation("pushSubscriptionsLinked")
@@ -5330,6 +5332,7 @@ model SiteVisit {
   attendees SiteVisitAttendee[]
   places    SiteVisitPlace[]
   media     SiteVisitMedia[]
+  removals  SiteVisitFileRemoval[]
 
   @@unique([projectId, id])
   @@index([projectId])
@@ -5400,6 +5403,35 @@ model SiteVisitMedia {
   @@unique([projectId, mediaId])
   @@index([projectId, visitId])
   @@index([nodeId])
+}
+
+// #1179 R1 — a file taken off a visit (Jagrut, 27 Oct 2026: the adder within the hour, the PMC any time with a
+// reason). One row per removed file, frozen; it outlives the file (no key to Media) and goes with its visit's project.
+// The insert trigger copies the visit and the adder from the file's link, the kind from the file's type, the remover's
+// name as they stood, and stamps the time; a link is not cascaded away without its record (20280125000000).
+model SiteVisitFileRemoval {
+  visit         SiteVisit @relation(fields: [projectId, visitId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId     String
+  visitId       String
+  mediaId       String
+  // photo | voice | video | file, from the file's type
+  fileKind      String    @default("file")
+  addedBy       User      @relation("siteVisitFileRemovalAddedBy", fields: [addedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  addedById     String
+  addedByRole   String    @default("")
+  addedByName   String    @default("")
+  addedAt       DateTime  @default(now())
+  removedBy     User      @relation("siteVisitFileRemovalRemovedBy", fields: [removedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  removedById   String
+  removedByRole String
+  removedByName String    @default("")
+  // required unless the adder removes their own file within the hour; never blank
+  reason        String?   @db.VarChar(300)
+  removedAt     DateTime  @default(now())
+
+  @@id([mediaId])
+  @@unique([projectId, mediaId])
+  @@index([projectId, visitId])
 }
 
 model SiteVisitPlace {

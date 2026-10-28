@@ -5,11 +5,11 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 
 /**
- * #1177 VT1, the database half of "voice note to text": `20280124000000_voice_transcript` adds "VoiceTranscript", at most
+ * #1177 VT1, the database half of "voice note to text": `20280126000000_voice_transcript` adds "VoiceTranscript", at most
  * one row per voice note, holding the provider job's progress, its words and a person's correction. This proves what
  * PostgreSQL holds on every writer (V1-V4 in the migration), and that the file re-runs.
  */
-const MIGRATION = join(__dirname, '../../prisma/migrations/20280124000000_voice_transcript/migration.sql');
+const MIGRATION = join(__dirname, '../../prisma/migrations/20280126000000_voice_transcript/migration.sql');
 
 describe('#1177 voice-note transcripts (live PG)', () => {
   let t: TestApp;

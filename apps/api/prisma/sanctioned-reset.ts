@@ -114,6 +114,8 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   { table: 'SiteVisitAttendee', trigger: 'SiteVisitAttendee_no_truncate' },
   { table: 'SiteVisitPlace', trigger: 'SiteVisitPlace_no_truncate' },
   { table: 'SiteVisitMedia', trigger: 'SiteVisitMedia_no_truncate' },
+  // #1179 R1 — a visit's removal lines reference the visit, so the same CASCADE reaches them.
+  { table: 'SiteVisitFileRemoval', trigger: 'SiteVisitFileRemoval_no_truncate' },
   // Phase 6 unit 4d-i (#582's review round 24, the sweep behind finding 2) — the STREAM. Every
   // 4d correspondence, claim and actor binding is a statement about a row in it, judged once at
   // write time, and the derived registers around it (`Notification`, the claim table,

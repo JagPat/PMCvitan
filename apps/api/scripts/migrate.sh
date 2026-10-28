@@ -591,7 +591,10 @@ if echo "$out" | grep -q "P3005"; then
   # checks, triggers, generated columns, a partial unique and deferrable binding keys, which a db-push baseline does not
   # have. The file is guarded and re-runnable.
   #
-  # Voice-note transcripts (#1177 VT1, 20280124000000) are here because their rules are a check and two triggers, which a
+  # A visit file's removal line (#1179 R1, 20280125000000) is here because its rules are checks, triggers and a
+  # deferred constraint trigger, which a db-push baseline does not have. The file is guarded and re-runnable.
+  #
+  # Voice-note transcripts (#1177 VT1, 20280126000000) are here because their rules are a check and two triggers, which a
   # db-push baseline does not have. The file is guarded and re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
@@ -640,7 +643,8 @@ if echo "$out" | grep -q "P3005"; then
 20280121300000_hub_link
 20280122000000_hub_drawing_identity
 20280123000000_hub_receipts
-20280124000000_voice_transcript"
+20280125000000_site_visit_file_removal
+20280126000000_voice_transcript"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
