@@ -167,4 +167,36 @@ CREATE TRIGGER "VoiceTranscript_keys_fixed"
   BEFORE UPDATE ON public."VoiceTranscript"
   FOR EACH ROW EXECUTE FUNCTION public.media_voice_transcript_keys_fixed();
 
+-- V5, on delete: a transcript goes only with its voice note (or that note's project). Those are foreign-key cascades,
+-- which run below trigger depth 1; a direct DELETE is depth 1 and is refused, so heard words are never erased and then
+-- written again with other words or another corrector (Codex round 2, 4397618560). `project:remove` switches this
+-- trigger off with the others on the tables it clears.
+CREATE OR REPLACE FUNCTION public.media_voice_transcript_no_delete() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  IF pg_trigger_depth() = 1 THEN
+    RAISE EXCEPTION 'media: the transcript of voice note % goes only with that note', OLD."mediaId"
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN OLD;
+END $$;
+
+DROP TRIGGER IF EXISTS "VoiceTranscript_no_delete" ON public."VoiceTranscript";
+CREATE TRIGGER "VoiceTranscript_no_delete"
+  BEFORE DELETE ON public."VoiceTranscript"
+  FOR EACH ROW EXECUTE FUNCTION public.media_voice_transcript_no_delete();
+
+-- A TRUNCATE fires no row trigger, so it is refused by its own statement seal; the sanctioned reset lifts it by name.
+CREATE OR REPLACE FUNCTION public.media_voice_transcript_no_truncate() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  RAISE EXCEPTION 'media: voice-note transcripts are never truncated; they go with their notes'
+    USING ERRCODE = 'check_violation';
+END $$;
+
+DROP TRIGGER IF EXISTS "VoiceTranscript_no_truncate" ON public."VoiceTranscript";
+CREATE TRIGGER "VoiceTranscript_no_truncate"
+  BEFORE TRUNCATE ON public."VoiceTranscript"
+  FOR EACH STATEMENT EXECUTE FUNCTION public.media_voice_transcript_no_truncate();
+
 COMMIT;

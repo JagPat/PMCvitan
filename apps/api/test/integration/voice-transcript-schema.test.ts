@@ -7,7 +7,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 /**
  * #1177 VT1, the database half of "voice note to text": `20280126000000_voice_transcript` adds "VoiceTranscript", at most
  * one row per voice note, holding the provider job's progress, its words and a person's correction. This proves what
- * PostgreSQL holds on every writer (V1-V4 in the migration), and that the file re-runs.
+ * PostgreSQL holds on every writer (V1-V5 in the migration), and that the file re-runs.
  */
 const MIGRATION = join(__dirname, '../../prisma/migrations/20280126000000_voice_transcript/migration.sql');
 
@@ -75,6 +75,23 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     expect(await raw(`UPDATE "VoiceTranscript" SET "status" = 'done', "text" = 'late' WHERE "mediaId" = $1`, m)).toBe(0);
   });
 
+  it('is never deleted on its own, so heard words cannot be erased and written again (V5)', async () => {
+    const m = await voice(f.projectA.id);
+    await t.prisma.voiceTranscript.create({ data: { projectId: f.projectA.id, mediaId: m, status: 'done', text: 'પાઇપ લાઇન' } });
+    const alone = /goes only with that note/;
+    await expect(raw(`DELETE FROM "VoiceTranscript" WHERE "mediaId" = $1`, m)).rejects.toThrow(alone);
+    await expect(t.prisma.voiceTranscript.deleteMany({ where: { mediaId: m } })).rejects.toThrow(alone);
+    // an unfinished row is held the same way: only its note takes it
+    const n = await voice(f.projectA.id);
+    await t.prisma.voiceTranscript.create({ data: { projectId: f.projectA.id, mediaId: n } });
+    await expect(raw(`DELETE FROM "VoiceTranscript" WHERE "mediaId" = $1`, n)).rejects.toThrow(alone);
+    await expect(raw(`TRUNCATE "VoiceTranscript"`)).rejects.toThrow(/never truncated/);
+    expect(await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: m } })).toMatchObject({ status: 'done', text: 'પાઇપ લાઇન' });
+    // the note's own delete still takes it (a cascade, below trigger depth 1)
+    await raw(`DELETE FROM "Media" WHERE "id" IN ($1, $2)`, m, n);
+    expect(await t.prisma.voiceTranscript.count({ where: { mediaId: { in: [m, n] } } })).toBe(0);
+  });
+
   it('is well formed (V3)', async () => {
     const m = await voice(f.projectA.id);
     await t.prisma.voiceTranscript.create({ data: { projectId: f.projectA.id, mediaId: m } });
@@ -137,7 +154,7 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     expect(before.map((r) => r.k)).toEqual([
       'c:VoiceTranscript_editedById_fkey', 'c:VoiceTranscript_pkey', 'c:VoiceTranscript_projectId_mediaId_fkey', 'c:VoiceTranscript_shape_check',
       'i:"VoiceTranscript_pkey"', 'i:"VoiceTranscript_projectId_mediaId_key"',
-      't:VoiceTranscript_insert', 't:VoiceTranscript_keys_fixed',
+      't:VoiceTranscript_insert', 't:VoiceTranscript_keys_fixed', 't:VoiceTranscript_no_delete', 't:VoiceTranscript_no_truncate',
     ]);
     expect(before.find((r) => r.k === 'c:VoiceTranscript_projectId_mediaId_fkey')?.d).toMatch(/ON DELETE CASCADE/);
     replay();
