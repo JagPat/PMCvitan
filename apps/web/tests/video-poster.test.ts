@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { POSTER_AT_SEC, POSTER_MAX_WIDTH, POSTER_QUALITY, drawPoster } from '@/lib/videoPoster';
+import { POSTER_AT_SEC, POSTER_DRAW_WAIT_MS, POSTER_MAX_WIDTH, POSTER_QUALITY, drawPoster } from '@/lib/videoPoster';
+import * as timers from '@/lib/clampedTimer';
 import { POSTER_MAX_BASE64 } from '@/data/queueContracts';
 
 /**
@@ -95,8 +96,12 @@ describe('#995 V2b-2: drawPoster', () => {
   it('gives no frame, and lets the clip go, when this browser cannot play it, never loads it, has no picture or writes no JPEG', async () => {
     clip = 'fails';
     expect(await drawPoster(clipBlob)).toBeNull();
+    // never loads: the bound gives up on it (the timer fired here at once, not waited for)
     clip = 'never';
-    expect(await drawPoster(clipBlob, 20)).toBeNull();
+    const bound = vi.spyOn(timers, 'setClampedTimeout').mockImplementation((fn: () => void) => { queueMicrotask(fn); return { clear: () => {} }; });
+    expect(await drawPoster(clipBlob)).toBeNull();
+    expect(bound).toHaveBeenCalledWith(expect.any(Function), POSTER_DRAW_WAIT_MS);
+    bound.mockRestore();
     clip = 'loads';
     video.videoWidth = 0;
     expect(await drawPoster(clipBlob)).toBeNull();

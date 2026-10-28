@@ -8,7 +8,7 @@ import {
   type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitOp,
   type SiteVisitRating,
 } from '@/data/apiGateway';
-import { deleteVisitPhoto, listVisitPhotos, putVisitPhoto, settleFiledVisitPhotos, storageAvailable, visitPhotoScope, withinWait, VisitPhotoUnconfirmed, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { deleteVisitPhoto, listVisitPhotos, posterWaits, putVisitPhoto, settleFiledVisitPhotos, storageAvailable, visitPhotoScope, withinWait, VisitPhotoUnconfirmed, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import type { MarkedCopy } from '@/components/PhotoMarkup';
 import { setClampedTimeout } from './clampedTimer';
 import { captureStamp } from './captureStamp';
@@ -700,10 +700,16 @@ export function useSiteVisits() {
     const taken = filed.filter((r) => !queuedKeys.has(r.op.idempotencyKey)).map((r) => r.op);
     return withQueued(rows, [...queued, ...taken], me, previews, new Set(taken.map((o) => o.file.id)));
   }, [rows, queued, me, previews, filed]);
-  // while one waits for that read, the read is tried again on the visit photo retry (Codex 4321558427)
+  // while one waits for that read, the read is tried again on the visit photo retry (Codex 4321558427). A clip the
+  // server already lists whose still frame is still to send waits for no read: its frame goes with the next flush made
+  // for any other reason, so a server that keeps refusing the frame is not asked again on the retry's beat (V2b-2)
+  const awaited = useMemo(() => {
+    const listed = new Set(rows.flatMap((v) => (v.files ?? []).map((f) => f.clientKey)));
+    return filed.filter((r) => !(posterWaits(r) && listed.has(r.clientKey)));
+  }, [filed, rows]);
   useEffect(() => {
-    if (filed.length > 0) useStore.getState().retrySiteVisits();
-  }, [filed, filedReads]);
+    if (awaited.length > 0) useStore.getState().retrySiteVisits();
+  }, [awaited, filedReads]);
   // the photos' signed links expire: read again before the soonest one shown does, so a thumbnail or full photo never
   // opens dead; each read brings fresh links and sets the next read. The next is set only once a read settles, so reads
   // never overlap, and a read that fails (no signal) leaves the rows as they were, so the timer is set again from the

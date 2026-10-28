@@ -2663,8 +2663,9 @@ export const useStore = create<Store>()(
       const created = new Map(rows.map((r) => [r.op.idempotencyKey, r.createdAt]));
       const takenAt = (o: SiteVisitAddFileOp): number => created.get(o.idempotencyKey) ?? (o.queuedAt ? Date.parse(o.queuedAt) : NaN);
       // V2b-2: a sent clip whose still frame is still to send has its act put back too, last, to send the frame alone
-      // (its row is filed: the clip is never uploaded again). It starts no flush of its own: the next flush sends it,
-      // so a server that keeps failing it is never asked again in a loop
+      // (its row is filed: the clip is never uploaded again). It starts no flush of its own, nor, once the server lists
+      // its clip, the Site Visits screen's retry: the next flush made for any other reason sends it, so a server that
+      // keeps failing the frame is not asked again on a beat of its own
       const posters: OutboxOp[] = [];
       set((s) => {
         const queued = new Set(s.outbox.filter(isSiteVisitOp).map((o) => o.idempotencyKey));

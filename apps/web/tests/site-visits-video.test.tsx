@@ -6,7 +6,8 @@ import type { Lang, ProjectMember, ProjectNode, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import type { ApiGateway, OutboxOp, SiteVisit } from '@/data/apiGateway';
-import { getVisitPhoto, listVisitPhotos, visitPhotoScope } from '@/data/visitPhotoStore';
+import { fileVisitPhoto, getVisitPhoto, listVisitPhotos, putVisitPhoto, visitPhotoScope, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
+import { tellSiteVisits } from '@/data/apiGateway';
 import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
 
 // #995 V2b-2: drawing a clip's still frame needs a browser that decodes video (jsdom has none); `video-poster.test.ts`
@@ -485,6 +486,84 @@ describe('#995 V2b-2: a clip’s still frame', () => {
     await flushAgain();
     expect(again).toHaveBeenCalledWith('m-9', FRAME);
     expect(upload2).not.toHaveBeenCalled();
+  });
+
+  it('asks no read again for a frame alone once the server lists its clip: a server that keeps refusing it is not asked on a beat', async () => {
+    for (const frame of [FRAME, null]) {
+      withRecorder();
+      still.frame = frame;
+      let key = '';
+      const uploadMedia = vi.fn(async (input: { clientKey: string }) => { key = input.clientKey; return { id: 'm-9', url: '/media/m-9' }; });
+      const addVisitPoster = vi.fn().mockRejectedValue(refusal(503, 'Busy'));
+      const gw = fakeGateway([visit()], { uploadMedia, addVisitPoster });
+      await mount('consultant', CONSULTANT, gw);
+      let arms = 0;
+      const retry = useStore.getState().retrySiteVisits;
+      useStore.setState({ retrySiteVisits: () => { arms += 1; retry(); } });
+      await record(screen.getByTestId('sv-visit-v-1'), 3_000);
+      await settled();
+      // what the armed retry does: the screen reads again, and the queue is sent
+      const fire = async () => {
+        const s = useStore.getState();
+        await act(async () => { tellSiteVisits({ kind: 'retry', project: s.activeProjectId, generation: s.projectScopeGeneration }); await s.flushOutbox(); });
+        await settled();
+      };
+      // sent, not yet listed: each read is tried again, frame or none
+      const before = arms;
+      await fire();
+      expect(arms).toBeGreaterThan(before);
+      gw.listSiteVisits!.mockImplementation(async () => [visit({ files: [clipFile({ mediaId: 'm-9', clientKey: key, addedById: CONSULTANT })] })]);
+      await fire();
+      const listedAt = arms;
+      const posts = addVisitPoster.mock.calls.length;
+      await fire();
+      await fire();
+      // listed: nothing arms the retry again, so the frame is not sent on its beat
+      expect(arms).toBe(listedAt);
+      expect(addVisitPoster.mock.calls.length - posts).toBe(frame ? 2 : 0);
+      const [row] = await keptRows();
+      if (frame) expect(row).toMatchObject({ poster: FRAME, mediaId: 'm-9' });
+      else expect(row).toBeUndefined();
+      cleanup();
+      await flushesEnded();
+      await new Promise((done) => { const q = indexedDB.deleteDatabase('vitan-visit-photos'); q.onsuccess = q.onerror = q.onblocked = () => done(null); });
+    }
+  });
+
+  it('puts a waiting frame’s act back once on a load, and starts no send of its own: the next flush sends it', async () => {
+    useStore.setState({ ...getInitialState(), role: 'consultant', sessionUserId: CONSULTANT, nodes: NODES, members: MEMBERS });
+    const addVisitPoster = vi.fn(async (id: string) => ({ id, posterUrl: `/media/${id}/poster?t=x` }));
+    addVisitPoster.mockRejectedValueOnce(refusal(503, 'Busy')).mockRejectedValueOnce(refusal(503, 'Busy'));
+    const uploadMedia = vi.fn();
+    const gw = fakeGateway([visit()], { addVisitPoster, uploadMedia });
+    (gw as { project?: string }).project = useStore.getState().activeProjectId;
+    useStore.getState()._setGateway(tracked(gw) as unknown as ApiGateway);
+    const s = useStore.getState();
+    const scope = visitPhotoScope(s.sessionToken, s.sessionUserId);
+    const clip: SiteVisitAddFileOp = {
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: 'k-c', scope, file: { id: 'c-1', mime: 'video/webm' },
+      by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: '2026-10-14T04:50:00.000Z',
+    };
+    await putVisitPhoto(scope, s.activeProjectId, clip, 'AQID', null, undefined, FRAME);
+    await fileVisitPhoto(scope, s.activeProjectId, 'c-1', 'm-9');
+    // a load, then a second read of the kept rows meeting it: the act is queued once, and nothing is sent
+    useStore.getState().hydrateOutbox();
+    await settled();
+    useStore.getState().hydrateOutbox();
+    await settled();
+    expect(useStore.getState().outbox.filter((o) => o.t === 'siteVisitAddFile')).toHaveLength(1);
+    expect(addVisitPoster).not.toHaveBeenCalled();
+    // each flush sends it once (a busy server, twice), and then once more, taken
+    await flushAgain();
+    expect(addVisitPoster).toHaveBeenCalledTimes(1);
+    await flushAgain();
+    expect(addVisitPoster).toHaveBeenCalledTimes(2);
+    await flushAgain();
+    expect(addVisitPoster).toHaveBeenCalledTimes(3);
+    expect(addVisitPoster).toHaveBeenLastCalledWith('m-9', FRAME);
+    await flushAgain();
+    expect(addVisitPoster).toHaveBeenCalledTimes(3);
+    expect(uploadMedia).not.toHaveBeenCalled();
   });
 
   it('shows the clip’s still frame above Play when the server has one, and leaves out one that does not load', async () => {
