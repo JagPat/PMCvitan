@@ -180,6 +180,15 @@ export const createMediaSchema = z.object({
   path: ['durationSec'],
 });
 
+// #995 V1b — a video clip's still frame: a JPEG the recording phone draws from the clip, added after the clip by its
+// own request, so the clip's upload keeps its shape. A 640 × 360 frame at quality 0.8 is 30 to 60 KB; the cap is about
+// 225 KB decoded. The bytes are read whole by `media/jpeg-still.ts` before anything is stored.
+export const POSTER_MAX_BASE64 = 300_000;
+export const addPosterSchema = z.object({
+  mime: z.literal('image/jpeg'),
+  data: z.string().min(1).max(POSTER_MAX_BASE64, 'file too large'),
+}).strict();
+
 // Re-file an existing photo or drawing onto a location-tree node (or null to unfile).
 // Shared by PATCH /media/:id/node and /drawings/:id/node — "manage & modify" from the tree.
 export const setNodeSchema = z.object({ nodeId: z.string().trim().min(1).nullable() });

@@ -355,7 +355,7 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
             {/* a voice note or a video plays where a photo shows; one the phone no longer has (its row is gone) shows without a player */}
             {recordingKind(f.mime) ? (
               <div className={styles.voice}>
-                {f.url ? <MediaPlayer url={f.url} mime={f.mime} label={f.note ?? fileName(f.mime, lang)} words={playWords(lang, f.mime)} /> : null}
+                {f.url ? <MediaPlayer url={f.url} mime={f.mime} label={f.note ?? fileName(f.mime, lang)} words={playWords(lang, f.mime)} poster={f.posterUrl ?? undefined} /> : null}
               </div>
             ) : /* a queued photo the phone no longer has a picture of (its row is gone) shows without one until read again */ f.url ? (
               <a href={resolveMediaUrl(f.url)} target="_blank" rel="noreferrer" aria-label={SV.photoOpen[lang]}>

@@ -5,8 +5,16 @@ import { render, cleanup, fireEvent, act, screen, within } from '@testing-librar
 import type { Lang, ProjectMember, ProjectNode, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
+import { MediaPlayer } from '@/components/MediaPlayer';
 import type { ApiGateway, OutboxOp, SiteVisit } from '@/data/apiGateway';
+import { POSTER_WAIT_MS, fileVisitPhoto, getVisitPhoto, listVisitPhotos, putVisitPhoto, visitPhotoScope, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
+import { tellSiteVisits } from '@/data/apiGateway';
 import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
+
+// #995 V2b-2: drawing a clip's still frame needs a browser that decodes video (jsdom has none); `video-poster.test.ts`
+// tests the drawing itself. Here each recording is given the frame the test says, none by default
+const still = vi.hoisted(() => ({ frame: null as string | null }));
+vi.mock('@/lib/videoPoster', () => ({ drawPoster: vi.fn(async () => still.frame) }));
 
 /**
  * #995 V2b, video clips on a visit: the visitor and anyone present record a clip of up to a minute in the app, with the
@@ -97,6 +105,7 @@ beforeEach(() => {
   writes = null;
   supported = new Set(['video/webm;codecs=vp8,opus', 'video/webm', 'audio/webm;codecs=opus', 'audio/webm']);
   bytes = new Uint8Array([1, 2, 3]);
+  still.frame = null;
   vi.spyOn(Date, 'now').mockImplementation(() => now);
   vi.spyOn(performance, 'now').mockImplementation(() => now);
   tracks = [{ stop: vi.fn() }];
@@ -359,5 +368,259 @@ describe('#995 V2b: video clips on a visit', () => {
       status: 'ended', files: [clipFile(), photo('m-p'), { ...photo('m-copy'), sourceMediaId: 'm-p' }],
     })]));
     expect(screen.getByTestId('sv-file-m-copy').textContent).toContain('Marked-up copy of photo 1');
+  });
+});
+
+describe('#995 V2b-2: a clip’s still frame', () => {
+  const FRAME = '/9j/AAAA';
+  const keptRows = () => { const s = useStore.getState(); return listVisitPhotos(visitPhotoScope(s.sessionToken, s.sessionUserId), s.activeProjectId); };
+  const keptRow = (key: string) => { const s = useStore.getState(); return getVisitPhoto(visitPhotoScope(s.sessionToken, s.sessionUserId), s.activeProjectId, key); };
+  const flushAgain = async () => { await act(async () => { await useStore.getState().flushOutbox(); }); await settled(); };
+
+  it('keeps the frame drawn from the clip with it, and sends it to the clip the server holds right after the clip', async () => {
+    withRecorder();
+    still.frame = FRAME;
+    const order: string[] = [];
+    const uploadMedia = vi.fn(async () => { order.push('clip'); return { id: 'm-9', url: '/media/m-9' }; });
+    const addVisitPoster = vi.fn(async (id: string) => { order.push('frame'); return { id, posterUrl: `/media/${id}/poster?t=x` }; });
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia, addVisitPoster }));
+    await record(screen.getByTestId('sv-visit-v-1'), 3_000);
+    await settled();
+    expect(order).toEqual(['clip', 'frame']);
+    expect(addVisitPoster).toHaveBeenCalledWith('m-9', FRAME);
+    // the frame is never part of the clip's upload
+    expect(JSON.stringify(uploadMedia.mock.calls[0])).not.toContain(FRAME);
+    // taken: it leaves the row, which then goes as any sent file's does
+    const [row] = await keptRows();
+    expect(row).toMatchObject({ state: 'filed' });
+    expect(row).not.toHaveProperty('poster');
+    expect(row).not.toHaveProperty('mediaId');
+    expect(useStore.getState().outbox).toHaveLength(0);
+    await flushAgain();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(addVisitPoster).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends a clip this phone drew no frame from alone, and a voice note never draws one', async () => {
+    withRecorder();
+    const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
+    const addVisitPoster = vi.fn();
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia, addVisitPoster }));
+    await record(screen.getByTestId('sv-visit-v-1'), 3_000);
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(addVisitPoster).not.toHaveBeenCalled();
+    still.frame = FRAME;
+    await record(screen.getByTestId('sv-visit-v-1'), 3_000, { record: 'Record voice note', stop: 'Stop and add' });
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(2);
+    expect((uploadMedia.mock.calls[1] as unknown as [Record<string, unknown>])[0]).toMatchObject({ mime: 'audio/webm' });
+    expect(addVisitPoster).not.toHaveBeenCalled();
+  });
+
+  it('lets a frame the server refuses for good go, never sent again: the clip keeps its plain play tile', async () => {
+    withRecorder();
+    still.frame = FRAME;
+    const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
+    const addVisitPoster = vi.fn().mockRejectedValue(refusal(400, 'This file is not a still frame the app can show'));
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia, addVisitPoster }));
+    await record(screen.getByTestId('sv-visit-v-1'), 3_000);
+    await settled();
+    expect(addVisitPoster).toHaveBeenCalledTimes(1);
+    const [row] = await keptRows();
+    expect(row).toMatchObject({ state: 'filed' });
+    expect(row).not.toHaveProperty('poster');
+    // nothing is said: the clip went
+    expect(screen.queryByTestId('sv-not-sent')).toBeNull();
+    await flushAgain();
+    expect(addVisitPoster).toHaveBeenCalledTimes(1);
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a frame that met no answer on the row, lets the visit’s later acts go, and sends the frame alone on the next flush', async () => {
+    withRecorder();
+    still.frame = FRAME;
+    const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
+    const addVisitPoster = vi.fn(async (id: string) => ({ id, posterUrl: `/media/${id}/poster?t=x` }));
+    addVisitPoster.mockRejectedValueOnce(new TypeError('Failed to fetch')).mockRejectedValueOnce(refusal(503, 'Busy'));
+    const endSiteVisit = vi.fn(async () => visit({ status: 'ended', endedAt: '2026-10-14T05:00:00.000Z' }));
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia, addVisitPoster, endSiteVisit }));
+    await record(screen.getByTestId('sv-visit-v-1'), 3_000);
+    await settled();
+    expect(addVisitPoster).toHaveBeenCalledTimes(1);
+    // the clip's act went: the frame holds nothing
+    expect(useStore.getState().outbox).toHaveLength(0);
+    let [row] = await keptRows();
+    expect(row).toMatchObject({ state: 'filed', poster: FRAME, mediaId: 'm-9' });
+    // the visit's next act goes; the flush that sends it sends the frame again, alone (a busy server: kept again)
+    await act(async () => { fireEvent.click(within(screen.getByTestId('sv-visit-v-1')).getByRole('button', { name: 'End visit' })); });
+    await settled();
+    expect(endSiteVisit).toHaveBeenCalledTimes(1);
+    expect(addVisitPoster).toHaveBeenCalledTimes(2);
+    [row] = await keptRows();
+    expect(row).toMatchObject({ poster: FRAME, mediaId: 'm-9' });
+    await flushAgain();
+    expect(addVisitPoster).toHaveBeenCalledTimes(3);
+    expect(addVisitPoster).toHaveBeenLastCalledWith('m-9', FRAME);
+    // the clip itself is never sent again
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(await keptRow(row.clientKey)).not.toHaveProperty('poster');
+    await flushAgain();
+    expect(addVisitPoster).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps a frame that met no answer through a reload, and sends it then', async () => {
+    withRecorder();
+    still.frame = FRAME;
+    const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
+    const addVisitPoster = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia, addVisitPoster }));
+    await record(screen.getByTestId('sv-visit-v-1'), 3_000);
+    await settled();
+    expect(addVisitPoster).toHaveBeenCalledTimes(1);
+    cleanup();
+    // a fresh page: memory is gone, the row is kept
+    const again = vi.fn(async (id: string) => ({ id, posterUrl: `/media/${id}/poster?t=x` }));
+    const upload2 = vi.fn();
+    await mount('consultant', CONSULTANT, fakeGateway([visit({ files: [clipFile({ mediaId: 'm-9', addedById: CONSULTANT })] })], { uploadMedia: upload2, addVisitPoster: again }));
+    await settled();
+    await flushAgain();
+    expect(again).toHaveBeenCalledWith('m-9', FRAME);
+    expect(upload2).not.toHaveBeenCalled();
+  });
+
+  it('asks no read again for a frame alone once the server lists its clip: a server that keeps refusing it is not asked on a beat', async () => {
+    for (const frame of [FRAME, null]) {
+      withRecorder();
+      still.frame = frame;
+      let key = '';
+      const uploadMedia = vi.fn(async (input: { clientKey: string }) => { key = input.clientKey; return { id: 'm-9', url: '/media/m-9' }; });
+      const addVisitPoster = vi.fn().mockRejectedValue(refusal(503, 'Busy'));
+      const gw = fakeGateway([visit()], { uploadMedia, addVisitPoster });
+      await mount('consultant', CONSULTANT, gw);
+      let arms = 0;
+      const retry = useStore.getState().retrySiteVisits;
+      useStore.setState({ retrySiteVisits: () => { arms += 1; retry(); } });
+      await record(screen.getByTestId('sv-visit-v-1'), 3_000);
+      await settled();
+      // what the armed retry does: the screen reads again, and the queue is sent
+      const fire = async () => {
+        const s = useStore.getState();
+        await act(async () => { tellSiteVisits({ kind: 'retry', project: s.activeProjectId, generation: s.projectScopeGeneration }); await s.flushOutbox(); });
+        await settled();
+      };
+      // sent, not yet listed: each read is tried again, frame or none
+      const before = arms;
+      await fire();
+      expect(arms).toBeGreaterThan(before);
+      gw.listSiteVisits!.mockImplementation(async () => [visit({ files: [clipFile({ mediaId: 'm-9', clientKey: key, addedById: CONSULTANT })] })]);
+      await fire();
+      const listedAt = arms;
+      const posts = addVisitPoster.mock.calls.length;
+      await fire();
+      await fire();
+      // listed: nothing arms the retry again, so the frame is not sent on its beat
+      expect(arms).toBe(listedAt);
+      expect(addVisitPoster.mock.calls.length - posts).toBe(frame ? 2 : 0);
+      const [row] = await keptRows();
+      if (frame) expect(row).toMatchObject({ poster: FRAME, mediaId: 'm-9' });
+      else expect(row).toBeUndefined();
+      cleanup();
+      await flushesEnded();
+      await new Promise((done) => { const q = indexedDB.deleteDatabase('vitan-visit-photos'); q.onsuccess = q.onerror = q.onblocked = () => done(null); });
+    }
+  });
+
+  it('puts a waiting frame’s act back once on a load, and starts no send of its own: the next flush sends it', async () => {
+    useStore.setState({ ...getInitialState(), role: 'consultant', sessionUserId: CONSULTANT, nodes: NODES, members: MEMBERS });
+    const addVisitPoster = vi.fn(async (id: string) => ({ id, posterUrl: `/media/${id}/poster?t=x` }));
+    addVisitPoster.mockRejectedValueOnce(refusal(503, 'Busy')).mockRejectedValueOnce(refusal(503, 'Busy'));
+    const uploadMedia = vi.fn();
+    const gw = fakeGateway([visit()], { addVisitPoster, uploadMedia });
+    (gw as { project?: string }).project = useStore.getState().activeProjectId;
+    useStore.getState()._setGateway(tracked(gw) as unknown as ApiGateway);
+    const s = useStore.getState();
+    const scope = visitPhotoScope(s.sessionToken, s.sessionUserId);
+    const clip: SiteVisitAddFileOp = {
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: 'k-c', scope, file: { id: 'c-1', mime: 'video/webm' },
+      by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: '2026-10-14T04:50:00.000Z',
+    };
+    await putVisitPhoto(scope, s.activeProjectId, clip, 'AQID', null, undefined, FRAME);
+    await fileVisitPhoto(scope, s.activeProjectId, 'c-1', 'm-9');
+    // a load, then a second read of the kept rows meeting it: the act is queued once, and nothing is sent
+    useStore.getState().hydrateOutbox();
+    await settled();
+    useStore.getState().hydrateOutbox();
+    await settled();
+    expect(useStore.getState().outbox.filter((o) => o.t === 'siteVisitAddFile')).toHaveLength(1);
+    expect(addVisitPoster).not.toHaveBeenCalled();
+    // each flush sends it once (a busy server, twice), and then once more, taken
+    await flushAgain();
+    expect(addVisitPoster).toHaveBeenCalledTimes(1);
+    await flushAgain();
+    expect(addVisitPoster).toHaveBeenCalledTimes(2);
+    await flushAgain();
+    expect(addVisitPoster).toHaveBeenCalledTimes(3);
+    expect(addVisitPoster).toHaveBeenLastCalledWith('m-9', FRAME);
+    await flushAgain();
+    expect(addVisitPoster).toHaveBeenCalledTimes(3);
+    expect(uploadMedia).not.toHaveBeenCalled();
+  });
+
+  it('never puts back or sends a frame that waited past its day, and lets it go with no Site Visits read (Codex 4400008717)', async () => {
+    useStore.setState({ ...getInitialState(), role: 'consultant', sessionUserId: CONSULTANT, nodes: NODES, members: MEMBERS });
+    const addVisitPoster = vi.fn(async (id: string) => ({ id, posterUrl: `/media/${id}/poster?t=x` }));
+    const uploadMedia = vi.fn();
+    const gw = fakeGateway([visit()], { addVisitPoster, uploadMedia });
+    (gw as { project?: string }).project = useStore.getState().activeProjectId;
+    useStore.getState()._setGateway(tracked(gw) as unknown as ApiGateway);
+    const s = useStore.getState();
+    const scope = visitPhotoScope(s.sessionToken, s.sessionUserId);
+    const clip = (key: string): SiteVisitAddFileOp => ({
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: `k-${key}`, scope, file: { id: key, mime: 'video/webm' },
+      by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: '2026-10-14T04:50:00.000Z',
+    });
+    await putVisitPhoto(scope, s.activeProjectId, clip('c-old'), 'AQID', null, undefined, FRAME);
+    await putVisitPhoto(scope, s.activeProjectId, clip('c-new'), 'AQID', null, undefined, FRAME);
+    // c-old was sent a day ago; c-new a moment ago
+    const at = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(at - POSTER_WAIT_MS);
+    await fileVisitPhoto(scope, s.activeProjectId, 'c-old', 'm-old');
+    clock.mockRestore();
+    await fileVisitPhoto(scope, s.activeProjectId, 'c-new', 'm-new');
+    // the screen is never mounted: no read settles either row
+    useStore.getState().hydrateOutbox();
+    await settled();
+    expect(useStore.getState().outbox.map((o) => ('idempotencyKey' in o ? o.idempotencyKey : null))).toEqual(['k-c-new']);
+    expect(await keptRow('c-old')).not.toHaveProperty('poster');
+    expect(await keptRow('c-old')).not.toHaveProperty('mediaId');
+    await flushAgain();
+    expect(addVisitPoster.mock.calls).toEqual([['m-new', FRAME]]);
+    await flushAgain();
+    expect(addVisitPoster).toHaveBeenCalledTimes(1);
+    expect(uploadMedia).not.toHaveBeenCalled();
+  });
+
+  it('shows the clip’s still frame above Play when the server has one, and leaves out one that does not load', async () => {
+    await mount('client', 'u-client', fakeGateway([visit({
+      status: 'ended', files: [clipFile({ posterUrl: '/media/m-c/poster?t=x' }), clipFile({ mediaId: 'm-d', posterUrl: null })],
+    })]));
+    const tile = screen.getByTestId('sv-file-m-c').querySelector('img')!;
+    expect(tile.getAttribute('src')).toContain('/media/m-c/poster?t=x');
+    expect(tile.getAttribute('alt')).toBe('');
+    expect(screen.getByTestId('sv-file-m-c').querySelector('video')!.getAttribute('poster')).toContain('/media/m-c/poster?t=x');
+    expect(screen.getByTestId('sv-file-m-d').querySelector('img')).toBeNull();
+    await act(async () => { fireEvent.error(tile); });
+    expect(screen.getByTestId('sv-file-m-c').querySelector('img')).toBeNull();
+    expect(within(screen.getByTestId('sv-file-m-c')).getByRole('button', { name: 'Play: Crack by the column' })).not.toBeNull();
+  });
+
+  it('tries a frame again when a later read brings it a fresh link (Codex 4399442176)', async () => {
+    const words = { play: 'Play', failed: 'failed', retry: 'Try again' };
+    const view = render(<MediaPlayer url="/media/m-c?sig=x" mime="video/webm" label="Clip" words={words} poster="/media/m-c/poster?t=old" />);
+    await act(async () => { fireEvent.error(view.container.querySelector('img')!); });
+    expect(view.container.querySelector('img')).toBeNull();
+    view.rerender(<MediaPlayer url="/media/m-c?sig=y" mime="video/webm" label="Clip" words={words} poster="/media/m-c/poster?t=new" />);
+    expect(view.container.querySelector('img')!.getAttribute('src')).toContain('/media/m-c/poster?t=new');
   });
 });

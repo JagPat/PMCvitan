@@ -43,6 +43,31 @@ export interface VisitPhotoRow {
   createdAt: number;
   /** when the server confirmed the upload (`filed` only) */
   filedAt?: number;
+  /** #995 V2b-2: a video clip's still frame, base64 JPEG drawn on this phone from the clip, kept in the same write as
+   *  the clip and sent right after it; gone once the server took it or refused it for good. Absent on a row a release
+   *  before it wrote, and on every photo and voice note. */
+  poster?: string;
+  /** the clip's id on the server, from its upload's answer: set on a filed row whose still frame is still to send */
+  mediaId?: string;
+}
+
+/** How long a sent clip's row waits for its still frame to go, once filed: after that it is settled as any sent file is,
+ *  and the clip keeps its plain play tile. */
+export const POSTER_WAIT_MS = 24 * 60 * 60 * 1000;
+
+/** A sent clip whose still frame is still to send: its act is put back, to send the frame alone (`putBackVisitPhotos`). */
+export function posterWaits(row: VisitPhotoRow, now = Date.now()): row is VisitPhotoRow & { poster: string; mediaId: string } {
+  return posterKept(row) && now - (row.filedAt ?? 0) < POSTER_WAIT_MS;
+}
+
+/** A sent clip's still frame still on its row past `POSTER_WAIT_MS`: it is not sent, and the frame is let go
+ *  (`clearVisitPoster`), whether or not the Site Visits screen is ever opened again. */
+export function posterLapsed(row: VisitPhotoRow, now = Date.now()): boolean {
+  return posterKept(row) && !posterWaits(row, now);
+}
+
+function posterKept(row: VisitPhotoRow): boolean {
+  return row.state === 'filed' && typeof row.poster === 'string' && typeof row.mediaId === 'string';
 }
 
 const DB_NAME = 'vitan-visit-photos';
@@ -222,11 +247,11 @@ export function visitsHeldByPhotos(userScope: string, projectId: string): Readon
  *  rejects with `VisitPhotoUnconfirmed`; a save that lands later calls `onLateCommit` (the row is then kept and queued). */
 export function putVisitPhoto(
   userScope: string, projectId: string, op: SiteVisitAddFileOp, data: string, start: SiteVisitStartOp | null = null,
-  onLateCommit?: () => void,
+  onLateCommit?: () => void, poster: string | null = null,
 ): Promise<void> {
   const row: VisitPhotoRow = {
     key: keyOf(userScope, projectId, op.file.id), userScope, projectId, clientKey: op.file.id, op, start, data,
-    state: 'queued', reason: null, createdAt: Date.now(),
+    state: 'queued', reason: null, createdAt: Date.now(), ...(poster ? { poster } : {}),
   };
   let held = false;
   let late = false;
@@ -315,14 +340,18 @@ export type CommittedPhoto = { state: 'filed' | 'failed'; reason: string | null 
 
 /** The server confirmed this row's own upload (a 2xx for it, and only then): kept as `filed`, to be shown until a read
  *  sent after now answers. A row another tab marked as refused is marked filed too: the server holds the photo (Codex
- *  4322430064). One the person dismissed stays gone, and one already filed keeps its time. Read and written in one
+ *  4322430064). One the person dismissed stays gone, and one already filed keeps its time. A clip with a still frame to
+ *  send keeps `mediaId`, the id the upload answered with, which the frame is sent to (V2b-2). Read and written in one
  *  transaction; resolves with the state committed. */
-export function fileVisitPhoto(userScope: string, projectId: string, clientKey: string): Promise<CommittedPhoto> {
+export function fileVisitPhoto(userScope: string, projectId: string, clientKey: string, mediaId?: string): Promise<CommittedPhoto> {
   return tx<CommittedPhoto>('readwrite', (s, done) => {
     const req = s.get(keyOf(userScope, projectId, clientKey));
     req.onsuccess = () => {
       const row = req.result as VisitPhotoRow | undefined;
-      if (row && row.state !== 'filed') s.put({ ...row, state: 'filed', reason: null, filedAt: Date.now() });
+      const named = row && mediaId && typeof row.poster === 'string' && row.mediaId === undefined ? { mediaId } : null;
+      if (row && (row.state !== 'filed' || named)) {
+        s.put({ ...row, state: 'filed', reason: null, filedAt: row.state === 'filed' ? row.filedAt : Date.now(), ...named });
+      }
       done(row ? { state: 'filed', reason: null } : null);
     };
   }).then((committed) => { letGoOf(userScope, projectId, [clientKey]); return committed; }); // no longer queued, whatever it was
@@ -340,11 +369,29 @@ export function settleFiledVisitPhotos(
   return tx<void>('readwrite', (s, done) => {
     eachRow(s, userScope, projectId, (row, cursor) => {
       if (row.state !== 'filed' || !((row.filedAt ?? 0) < readAt || heard.has(row.clientKey))) return;
+      // a clip whose still frame is still to send stays for it, up to its bound (V2b-2)
+      if (posterWaits(row)) return;
       // only a read that lists it, or that read its visit with the visit's files and found it gone: an older server's
       // answer (no files), or one that did not read its visit, says nothing of it (Codex 4323247753)
       if (listed.has(row.clientKey) || spoken.has(row.op.visitId)) { cursor.delete(); gone.push(row.clientKey); }
     }, () => done(undefined));
   }).then(() => letGoOf(userScope, projectId, gone));
+}
+
+/** A clip's still frame was taken by the server, or refused for good: it leaves the row, which is then settled as any
+ *  filed row is (V2b-2). Read and written in one transaction. */
+export function clearVisitPoster(userScope: string, projectId: string, clientKey: string): Promise<void> {
+  return tx<void>('readwrite', (s) => {
+    const req = s.get(keyOf(userScope, projectId, clientKey));
+    req.onsuccess = () => {
+      const row = req.result as VisitPhotoRow | undefined;
+      if (!row || (row.poster === undefined && row.mediaId === undefined)) return;
+      const rest: VisitPhotoRow = { ...row };
+      delete rest.poster;
+      delete rest.mediaId;
+      s.put(rest);
+    };
+  });
 }
 
 /** Refused for good: kept, with the reason, until the person dismisses it. Never a row already filed: another tab's
