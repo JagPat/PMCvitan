@@ -57,6 +57,16 @@ export const GUIDE_TIPS = {
     hi: 'साइट की फ़ोटो जोड़ने के लिए यहाँ दबाएँ: नई खींचें या फ़ोन से चुनें।',
     gu: 'સાઇટનો ફોટો ઉમેરવા અહીં દબાવો: નવો પાડો અથવા ફોનમાંથી પસંદ કરો.',
   },
+  approvePick: {
+    en: 'Look at the choices, then tap Approve on the one you want.',
+    hi: 'विकल्प देखें, फिर जो चाहिए उसके नीचे का बटन दबाएँ।',
+    gu: 'વિકલ્પો જુઓ, પછી જે જોઈએ તેની નીચેનું બટન દબાવો.',
+  },
+  approveConfirm: {
+    en: 'Check your choice, then tap here to confirm it.',
+    hi: 'अपना चुनाव जाँचें, फिर पक्का करने के लिए यहाँ दबाएँ।',
+    gu: 'તમારી પસંદગી તપાસો, પછી પાકી કરવા અહીં દબાવો.',
+  },
 } satisfies Record<string, Words>;
 
 export type GuideTip = keyof typeof GUIDE_TIPS;
@@ -112,6 +122,11 @@ export const GUIDE_TITLES = {
     en: 'Add a site photo',
     hi: 'साइट की फ़ोटो जोड़ें',
     gu: 'સાઇટનો ફોટો ઉમેરો',
+  },
+  approveDecision: {
+    en: 'Approve a choice',
+    hi: 'कोई विकल्प मंज़ूर करें',
+    gu: 'કોઈ વિકલ્પ મંજૂર કરો',
   },
 } satisfies Record<string, Words>;
 
