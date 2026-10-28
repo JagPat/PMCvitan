@@ -130,14 +130,19 @@ describe('the daily log guide (#482 step 3c)', () => {
     expect(useStore.getState().dailyLog?.submitted).toBe(true);
   });
 
-  it('a log this phone would not keep ends the run unfinished, so it is offered again', async () => {
-    const { useGuideState, guide, outcomes } = await open(log({ checkedIn: true, checkinTime: '09:00' }), { submitDailyLog: vi.fn(() => new Promise(() => {})) });
+  it('without signal, a log this phone would not keep ends the run unfinished, so it is offered again', async () => {
+    const submitDailyLog = vi.fn();
+    const { useStore, useGuideState, guide, seen } = await open(log({ checkedIn: true, checkinTime: '09:00' }), { submitDailyLog }, false);
     act(() => { useGuideState.getState().start(guide); });
     await tipAt('1');
+    // the phone's storage refuses every write, so the queued send is not kept
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
     press('submit-daily-log');
-    act(() => outcomes.emitGuideOutcome('daily-log-not-kept', null, outcomes.guideRunToken()));
-    await vi.waitFor(() => { if (useGuideState.getState().run !== null) throw new Error('still running'); });
-    expect(done()).not.toContain('send-daily-log');
+    await vi.waitFor(() => { if (seen.length === 0) throw new Error('not told'); });
+    expect(seen).toEqual(['daily-log-not-kept']);
+    expect(useGuideState.getState().run).toBeNull();
+    expect(submitDailyLog).not.toHaveBeenCalled();
+    expect(useStore.getState().dailyLog?.submitted).toBe(false);
   });
 
   it('checked out before Submit: the send is refused at once and told, so the guide does not wait', async () => {
@@ -151,6 +156,19 @@ describe('the daily log guide (#482 step 3c)', () => {
     expect(submitDailyLog).not.toHaveBeenCalled();
     expect(useGuideState.getState().run?.waiting ?? false).toBe(false);
     expect(done()).not.toContain('send-daily-log');
+    // the guide goes back to Check in, which is on screen again
+    await tipAt('0');
+  });
+
+  it('a send the server refuses while checked in stays on Submit, not Check in (not on screen)', async () => {
+    const submitDailyLog = vi.fn(async () => { throw Object.assign(new Error('closed'), { status: 409 }); });
+    const { useGuideState, guide } = await open(log({ checkedIn: true, checkinTime: '09:00' }), { submitDailyLog });
+    act(() => { useGuideState.getState().start(guide); });
+    await tipAt('1');
+    expect(document.querySelector('[data-testid="check-in"]')).toBeNull();
+    press('submit-daily-log');
+    await vi.waitFor(() => { if (useGuideState.getState().run?.waiting !== false) throw new Error('waiting'); });
+    await tipAt('1');
   });
 
   it('is not offered once the log is sent, or with no log today', async () => {

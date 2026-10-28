@@ -49,8 +49,9 @@ export interface GuideStep {
   /** true when what this step asks for is already done (checked in earlier today, a visit already open): the run passes
    *  over it. Only for a step whose control is then not on screen, so a run stepping back never lands on it */
   skip?: () => boolean;
-  /** For `until: 'outcome'`: the step a failed report goes back to (the box the attempt emptied), instead of staying here */
-  retryFrom?: number;
+  /** For `until: 'outcome'`: the step a failed report goes back to (the box the attempt emptied), instead of staying here;
+   *  a function says it when the report comes (undefined: stay here) */
+  retryFrom?: number | (() => number | undefined);
   /** point at the control carrying the same `data-guide-key` as the one pressed in an earlier step
    *  (the photo button of the item just failed, not of another failed item), or the key of the record
    *  it belongs to (that checklist's Submit); an `outcome` for another record does not count */
@@ -163,6 +164,8 @@ export const GUIDES: readonly Guide[] = [
         until: 'outcome',
         outcome: { ok: 'daily-log-sent', failed: 'daily-log-send-failed', held: 'daily-log-not-kept' },
         settled: dailyLogSubmitted,
+        // a send refused for want of a check-in (checked out meanwhile) goes back to Check in, on screen again
+        retryFrom: () => (dailyLogCheckedIn() ? undefined : 0),
       },
     ],
   },
