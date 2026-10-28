@@ -7,7 +7,7 @@
  */
 import {
   OPUS_HEAD, WEBM, box, dinf, ebml, fullBox, ftyp, hdlr, mdhd, mvhd, simpleBlock, stco, stsc, stsd, stsz, stts, tkhd, trak,
-  trex, webmCluster, webmHeader, webmInfo, webmTrack,
+  trex, webmCluster, webmClusterAt, webmHeader, webmInfo, webmTrack,
 } from './voice-files';
 
 const u16 = (...values: number[]) => {
@@ -156,10 +156,12 @@ export const clipFragmented = (o: { pictures?: number; index?: boolean; mfra?: (
   return Buffer.concat([head, moof, media, ...index]);
 };
 
-/** an Opus sound trak with an empty sample table (its samples are in fragments) */
-export const soundTrakOpus = (id: number) =>
-  box('trak', [tkhd(id), box('mdia', [mdhd(), hdlr('soun'), box('minf', [fullBox('smhd', 0, 0, u32(0)), dinf(),
-    box('stbl', [stsd('Opus'), stts(0), stsc(0), stsz([]), stco(0, 0)])])])]);
+/** a sound trak (Opus, or AAC with `entry` mp4a) with an empty sample table (its samples are in fragments); `extra` after tkhd */
+export const soundTrakOpus = (id: number, extra: Buffer[] = [], entry = 'Opus') =>
+  box('trak', [tkhd(id), ...extra, box('mdia', [mdhd(), hdlr('soun'), box('minf', [fullBox('smhd', 0, 0, u32(0)), dinf(),
+    box('stbl', [stsd(entry), stts(0), stsc(0), stsz([]), stco(0, 0)])])])]);
+/** an edts of one media edit at rate 1: `duration` movie ticks of the media from `mediaTime` (media ticks), version 0 */
+export const editOf = (duration: number, mediaTime: number) => box('edts', fullBox('elst', 0, 0, [u32(1, duration, mediaTime), u16(1, 0)]));
 
 /** a tfra (version 1, one-byte numbers) for `trackId` with one entry per moof offset, at time 0 */
 export const tfra = (trackId: number, moofs: number[], o: { version?: number; sizes?: number; flags?: number } = {}) => {
@@ -174,3 +176,99 @@ export const mfra = (kids: Buffer[], size?: number) => {
 };
 /** the mfra Chromium writes: a tfra for the picture track, pointing at the one moof */
 export const mfraFor = (moofAt: number) => mfra([tfra(1, [moofAt])]);
+
+// ── The layouts phones record (V2a) ──────────────────────────────────────────────────────────
+
+/** an Opus packet of one 20 ms frame (TOC 0xfc: CELT fullband, 20 ms, code 0) */
+export const OPUS_20MS = Buffer.from([0xfc, 0xff, 0xfe]);
+const CUES_ID = 0x1c53bb6b;
+/** a CuePoint: its CueTime (ms) and one CueTrackPositions of CueTrack and CueClusterPosition, with any other fields */
+export const cuePoint = (o: { time?: number; track?: number; cluster: number; extra?: Buffer[]; fields?: Buffer[] }) =>
+  ebml(0xbb, Buffer.concat(o.fields ?? [
+    ...(o.time !== undefined ? [ebml(0xb3, u32(o.time))] : []),
+    ebml(0xb7, Buffer.concat([ebml(0xf7, Buffer.from([o.track ?? 1])), ebml(0xf1, u32(o.cluster)), ...(o.extra ?? [])])),
+  ]));
+export const cuesOf = (points: Buffer[]) => ebml(CUES_ID, Buffer.concat(points));
+
+/**
+ * A clip in the layout Safari records WebM in (WebKit's libwebm writer in file mode, iOS 18.4 and later): a picture
+ * track (VP8, with a TrackUID, as libwebm writes it) and an Opus sound track, then a Cluster of known size a second,
+ * each holding 30 picture blocks 33 ms apart with no duration and 50 sound blocks of 20 ms; then the Cues, one point a
+ * Cluster on the picture track (or `cues` built from the Clusters' positions, from the Segment's data; `first` puts
+ * them before the Tracks; `unknown` writes the Clusters with an unknown size).
+ */
+export const safariClipWebm = (seconds: number, o: { cues?: (clusters: number[]) => Buffer; first?: boolean; tracks?: Buffer[]; unknown?: boolean } = {}): Buffer => {
+  const uid = ebml(0x73c5, Buffer.from([0x2a, 0x91, 0x07, 0x3c, 0x5e, 0x11, 0x42]));
+  const picture = ebml(WEBM.trackEntry, Buffer.concat([ebml(WEBM.trackNumber, Buffer.from([1])), uid, ebml(WEBM.trackType, Buffer.from([1])),
+    ebml(WEBM.codecId, 'V_VP8'), videoElement(640, 480)]));
+  const tracks = ebml(WEBM.tracks, Buffer.concat(o.tracks ?? [picture, soundTrack(2)]));
+  // `unknown`: Clusters of unknown size, as Chrome writes them, each ending where the next Segment child starts
+  const cluster = (ms: number, blocks: Buffer[]) => (o.unknown ? ebml(WEBM.cluster, Buffer.concat([ebml(WEBM.timestamp, u32(ms)), ...blocks]), true) : webmClusterAt(ms, blocks));
+  const clusters = Array.from({ length: seconds }, (_, s) => cluster(s * 1000, [
+    ...Array.from({ length: 30 }, (_, i) => pictureBlock(1, i * 33)),
+    ...Array.from({ length: 50 }, (_, i) => {
+      const block = simpleBlock(2, OPUS_20MS);
+      block.writeInt16BE(i * 20, block.length - OPUS_20MS.length - 3);
+      return block;
+    }),
+  ]));
+  const cues = o.cues ?? ((at: number[]) => cuesOf(at.map((cluster, s) => cuePoint({ time: s * 1000, cluster }))));
+  const head = (lead: number) => Buffer.concat([webmInfo(), ...(o.first ? [cues(positions(lead))] : []), tracks]);
+  const positions = (lead: number) => {
+    const out: number[] = [];
+    let at = webmInfo().length + lead + tracks.length;
+    for (const c of clusters) {
+      out.push(at);
+      at += c.length;
+    }
+    return out;
+  };
+  // the Cues' own length moves the Clusters on when they come first; their offsets do not change that length
+  const lead = o.first ? cues(positions(0)).length : 0;
+  return Buffer.concat([webmHeader(), ebml(WEBM.segment, Buffer.concat([head(lead), ...clusters, ...(o.first ? [] : [cues(positions(0))])]))]);
+};
+
+/** one traf's run: its track, its tfdt (media ticks) when given, its samples' bytes and durations, and any composition offsets */
+export interface FragmentRun { track: number; time?: number; data: Buffer[]; durations: number[]; offsets?: number[]; version?: number; sampleFlags?: boolean }
+const runOf = (r: FragmentRun, dataOffset: number) => {
+  const flags = 0x1 | 0x100 | 0x200 | (r.sampleFlags ? 0x400 : 0) | (r.offsets ? 0x800 : 0);
+  // sample flags as an encoder writes them: the first a sync sample, the rest depending on others
+  const rows = r.data.map((d, i) => u32(r.durations[i]!, d.length, ...(r.sampleFlags ? [i === 0 ? 0x02000000 : 0x01010000] : []), ...(r.offsets ? [r.offsets[i]!] : [])));
+  return fullBox('trun', r.version ?? 0, flags, [u32(r.data.length, dataOffset), ...rows]);
+};
+/** a moof of one traf a run (tfhd default-base-is-moof, tfdt version 1 when timed, trun), then one mdat of their data */
+export const fragmentOf = (sequence: number, runs: FragmentRun[]): Buffer => {
+  const trafs = (base: number) => {
+    let at = base;
+    return runs.map((r) => {
+      const traf = [tfhdMoof(r.track), ...(r.time !== undefined ? [fullBox('tfdt', 1, 0, u32(Math.floor(r.time / 2 ** 32), r.time % 2 ** 32))] : []), runOf(r, at)];
+      at += r.data.reduce((n, d) => n + d.length, 0);
+      return traf;
+    });
+  };
+  const size = moofOf(sequence, trafs(0)).length;
+  return Buffer.concat([moofOf(sequence, trafs(size + 8)), box('mdat', runs.flatMap((r) => r.data))]);
+};
+
+/**
+ * A clip in the fragmented layout Safari's MP4 recorder writes: ftyp (mp42), a moov first with empty tables for the
+ * H.264 picture (track 1) and AAC sound (track 2) and their trex, then a moof and mdat a second. Each traf gives its
+ * tfdt; the picture's run is 30 samples of 1,600 ticks at 48 kHz with sample flags and version 1 composition offsets
+ * (all 0 unless `offsets` gives them), the sound's the second's 1,024-sample AAC frames. `sound` changes each sound run.
+ */
+export const safariClipMp4 = (seconds: number, o: { offsets?: (s: number) => number[]; sound?: (run: FragmentRun, s: number) => FragmentRun; soundExtra?: Buffer[] } = {}): Buffer => {
+  const head = Buffer.concat([ftyp('mp42'), box('moov', [mvhd(), pictureTrak(1, []), soundTrakOpus(2, o.soundExtra ?? [], 'mp4a'), box('mvex', [trex(1), trex(2)])])]);
+  const frame = (n: number) => Math.floor((n * 48_000) / 1024); // the AAC frames that start before n seconds
+  const fragments = Array.from({ length: seconds }, (_, s) => {
+    const sound: FragmentRun = {
+      track: 2, time: frame(s) * 1024, data: Array.from({ length: frame(s + 1) - frame(s) }, () => Buffer.alloc(6, 0x21)),
+      durations: Array.from({ length: frame(s + 1) - frame(s) }, () => 1024),
+    };
+    return fragmentOf(s + 1, [
+      { track: 1, time: s * 48_000, data: Array.from({ length: 30 }, () => NAL_SAMPLE), durations: Array.from({ length: 30 }, () => 1600),
+        offsets: o.offsets?.(s) ?? Array.from({ length: 30 }, () => 0), version: 1, sampleFlags: true },
+      o.sound ? o.sound(sound, s) : sound,
+    ]);
+  });
+  return Buffer.concat([head, ...fragments]);
+};
