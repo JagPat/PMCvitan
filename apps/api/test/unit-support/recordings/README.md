@@ -28,10 +28,28 @@ rec.stop(); // the file is new Blob(parts) once onstop fires
 
 This Chromium build does not record AAC (`audio/mp4;codecs=mp4a.40.2` is unsupported).
 
+## As the app records them
+
+The two above used a one-second timeslice. The app's recorder (`apps/web/src/lib/mediaRecorder.ts`) calls
+`start()` with none, and the browsers write a different file then: Chromium indexes the Segment with a SeekHead and
+writes Cues after the Cluster; Firefox writes an empty SeekHead, an unknown-size Segment and a CodecName in the
+TrackEntry. The live site refused both WebM shapes (28 Oct). These four came through the app's own code:
+
+| File | Recorder | Type asked for | Length |
+| --- | --- | --- | --- |
+| `chromium-141-app-opus.webm` | Chromium 141.0.7390.37, headless, Linux | `audio/webm;codecs=opus` | 3 s |
+| `chromium-141-app-opus.mp4` | Chromium 141.0.7390.37, headless, Linux | `audio/mp4` | 3 s |
+| `firefox-142-app-opus.webm` | Firefox 142.0.1 (Playwright build 1495), headless, Linux | `audio/webm;codecs=opus` | 3 s |
+| `firefox-142-app-opus.ogg` | Firefox 142.0.1 (Playwright build 1495), headless, Linux | `audio/ogg;codecs=opus` | 3 s |
+
+The recorder module was bundled with esbuild and served from `http://localhost`. Chromium ran with the fake-device
+flags above; Firefox with the prefs `media.navigator.streams.fake` and `media.navigator.permission.disabled`. The page
+called `startRecording('audio', type, 60000)`, waited 3 s and called `stop()`.
+
 ## What these recordings do not cover
 
-There are no Firefox (Ogg) or iOS Safari (fragmented MP4, AAC) recordings here. The voice web unit must add real
-recordings from both browsers, and prove the parser accepts them, before any client uploads voice notes.
+There are no iOS Safari (fragmented MP4, AAC) recordings here. The voice web unit must add real ones, and prove the
+parser accepts them, before any client uploads voice notes from an iPhone.
 
 # Video recordings from a real browser
 

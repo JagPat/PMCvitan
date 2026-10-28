@@ -6,7 +6,7 @@ import { projectDataUsable } from '@/store/projectScope';
 import { guidesFor, type Guide } from './guides';
 import { readGuidesDone, markGuideDone, clearGuidesDone } from './guideDone';
 import { useGuideState } from './guideState';
-import { findGuideTarget, findStepTarget, guideKeyMatches, GUIDE_ARRIVE_MS, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
+import { findStepTarget, guideKeyMatches, guideStartable, GUIDE_ARRIVE_MS, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
 import { subscribeGuideOutcome } from './outcomes';
 import { GUIDE_TIPS, GUIDE_WORDS, HELP_WORDS } from './words';
 import styles from './Guide.module.css';
@@ -33,8 +33,6 @@ function replayOffer(ready: readonly Guide[], done: ReadonlySet<string>, lastSta
   const last = ready.findIndex((g) => g.id === lastStarted);
   return ready[(last + 1) % ready.length] ?? null;
 }
-
-const enabled = (el: HTMLElement | null): el is HTMLElement => el !== null && !(el as HTMLButtonElement).disabled;
 
 function sameBox(a: Box | null, b: Box | null): boolean {
   return a === b || (!!a && !!b && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height && a.dialog === b.dialog && a.vw === b.vw && a.vh === b.vh);
@@ -118,7 +116,7 @@ export function GuideHost() {
       if (!g.run) {
         setBox(null);
         missing.current = null;
-        const startable = (guide: Guide) => enabled(findGuideTarget(guide.steps[0]!.target));
+        const startable = guideStartable;
         const done = readGuidesDone(key);
         g.setOffer(replayOffer(guides.filter(startable), done, g.lastStarted));
         // read from the store, not this effect's `screen`: Help asks and then moves to the guide's screen in one
@@ -147,6 +145,8 @@ export function GuideHost() {
           return;
         }
         arrive.current = null;
+        // the first-time welcome asks first: nothing starts by itself under it, nor after "Not now" on this visit
+        if (g.welcomeOpen) autoUsed.current = true;
         if (autoUsed.current) return;
         const next = guides.find((guide) => !done.has(guide.id));
         if (next && startable(next)) {

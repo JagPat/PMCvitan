@@ -103,7 +103,7 @@ describe('the Help sheet', () => {
     press(byTestId('help-open')!);
     expect(byTestId('help-no-guides')?.textContent).toBe('No step-by-step help for your role yet.');
     expect(document.querySelectorAll('[data-testid^="help-guide-"]')).toHaveLength(0);
-    expect(byTestId('help-tips-again')).toBeNull();
+    expect(byTestId('help-tips-again')).toBeTruthy();
   });
 
   it.each(['hi', 'gu'] as const)('reads in %s with no English left over, for every role', async (lang) => {

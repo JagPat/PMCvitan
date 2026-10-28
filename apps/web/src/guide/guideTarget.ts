@@ -1,4 +1,4 @@
-import type { GuideStep } from './guides';
+import type { Guide, GuideStep } from './guides';
 
 /** how often the overlay re-finds its control (it also re-measures on every scroll and resize) */
 export const GUIDE_TICK_MS = 300;
@@ -47,3 +47,9 @@ export function findStepTarget(step: GuideStep, key: string | null): HTMLElement
   return findGuideTarget(step.target, step.keyed ? key : null);
 }
 
+
+/** A guide can start here now: its first control is on screen and pressable (the overlay and the welcome both ask this). */
+export function guideStartable(guide: Guide): boolean {
+  const el = findGuideTarget(guide.steps[0]!.target);
+  return el !== null && !(el as HTMLButtonElement).disabled;
+}
