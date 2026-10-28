@@ -6,8 +6,9 @@
 --
 -- WHAT. One function body replaced: public.media_voice_transcript_insert(), the "VoiceTranscript_insert" trigger's. It is
 -- VT1a's body with one change: "createdAt" is date_trunc('milliseconds', clock_timestamp() AT TIME ZONE 'UTC'), as
--- `site_visits_now()` gives, set after the note's "Media" row is share-locked. The rules it holds (a bare claim, a voice
--- note only, read under a share lock) are unchanged, word for word.
+-- `site_visits_now()` gives, set after the note's "Media" row is share-locked, and never earlier than the moment its
+-- transaction began (in UTC), even if the server's clock stepped back meanwhile (Codex #1221, 4404642570). The rules it
+-- holds (a bare claim, a voice note only, read under a share lock) are unchanged, word for word.
 --
 -- SAFE UNDER THE PREVIOUS RELEASE. The previous release never inserts a transcript; the trigger, its name and its
 -- messages are unchanged.
@@ -33,9 +34,10 @@ BEGIN
   END IF;
   SELECT m."mime" INTO v_mime FROM public."Media" m
    WHERE m."projectId" = NEW."projectId" AND m."id" = NEW."mediaId" FOR SHARE;
-  -- the creation time is the database clock's, in UTC, read after the lock, whatever the writer sent, the session's time
-  -- zone or when its transaction began (#1177 VT1c)
-  NEW."createdAt" := date_trunc('milliseconds', pg_catalog.clock_timestamp() AT TIME ZONE 'UTC')::TIMESTAMP(3);
+  -- the creation time is the database clock's, in UTC, read after the lock, whatever the writer sent or the session's
+  -- time zone (#1177 VT1c); never before its transaction began, even after the server's clock steps back
+  NEW."createdAt" := GREATEST(date_trunc('milliseconds', pg_catalog.clock_timestamp() AT TIME ZONE 'UTC'),
+                              date_trunc('milliseconds', pg_catalog.now() AT TIME ZONE 'UTC'))::TIMESTAMP(3);
   IF NOT FOUND THEN
     RETURN NEW; -- no such file in the project: the composite foreign key refuses the row with its own error
   END IF;

@@ -5875,10 +5875,10 @@ assert "#1177 VT1a: after the replay the transcripts table keeps its four trigge
 assert "#1177 VT1b: after the replay the corrections table keeps its four triggers and its CHECK, and the transcript its note-keyed delete guard" \
   "SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"VoiceTranscriptCorrection\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('VoiceTranscriptCorrection_insert','VoiceTranscriptCorrection_frozen','VoiceTranscriptCorrection_no_delete','VoiceTranscriptCorrection_no_truncate'))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"VoiceTranscriptCorrection\"'::regclass AND conname = 'VoiceTranscriptCorrection_shape_check')::text || '|' || (SELECT count(*) FROM pg_proc WHERE proname = 'media_voice_transcript_no_delete' AND prosrc LIKE '%public.\"Media\"%' AND prosrc NOT LIKE '%pg_trigger_depth%')::text;" \
   "4|1|1"
-# #1177 VT1c — the transcripts' insert stamp (on ALWAYS_EXECUTE, after VT1a's file) is the UTC clock read, not VT1a's
-# transaction-start LOCALTIMESTAMP.
-assert "#1177 VT1c: after the replay the transcripts' insert stamps the database clock's UTC time" \
-  "SELECT count(*)::text FROM pg_proc WHERE proname = 'media_voice_transcript_insert' AND prosrc LIKE '%clock_timestamp() AT TIME ZONE ''UTC''%' AND prosrc NOT LIKE '%LOCALTIMESTAMP%';" \
+# #1177 VT1c — the transcripts' insert stamp (on ALWAYS_EXECUTE, after VT1a's file) is the UTC clock read, floored at
+# the transaction's start in UTC, not VT1a's transaction-start LOCALTIMESTAMP.
+assert "#1177 VT1c: after the replay the transcripts' insert stamps the database clock's UTC time, floored at the transaction's start" \
+  "SELECT count(*)::text FROM pg_proc WHERE proname = 'media_voice_transcript_insert' AND prosrc LIKE '%clock_timestamp() AT TIME ZONE ''UTC''%' AND prosrc LIKE '%now() AT TIME ZONE ''UTC''%' AND prosrc NOT LIKE '%LOCALTIMESTAMP%';" \
   "1"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.

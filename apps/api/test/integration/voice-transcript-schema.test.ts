@@ -264,6 +264,8 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     const [{ src }] = await t.prisma.$queryRawUnsafe<Array<{ src: string }>>(
       `SELECT prosrc AS src FROM pg_proc WHERE oid = 'public.media_voice_transcript_insert()'::regprocedure`);
     expect(src).toContain(`clock_timestamp() AT TIME ZONE 'UTC'`);
+    // with the transaction's start as its floor, should the server's clock step back (Codex #1221, 4404642570)
+    expect(src).toContain(`pg_catalog.now() AT TIME ZONE 'UTC'`);
     expect(src).not.toContain('LOCALTIMESTAMP');
     expect(await onMedia()).toEqual(media);
   });
