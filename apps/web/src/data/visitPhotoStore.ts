@@ -56,7 +56,17 @@ export interface VisitPhotoRow {
 export const POSTER_WAIT_MS = 24 * 60 * 60 * 1000;
 
 /** A sent clip whose still frame is still to send: its act is put back, to send the frame alone (`putBackVisitPhotos`). */
-export function posterWaits(row: VisitPhotoRow): row is VisitPhotoRow & { poster: string; mediaId: string } {
+export function posterWaits(row: VisitPhotoRow, now = Date.now()): row is VisitPhotoRow & { poster: string; mediaId: string } {
+  return posterKept(row) && now - (row.filedAt ?? 0) < POSTER_WAIT_MS;
+}
+
+/** A sent clip's still frame still on its row past `POSTER_WAIT_MS`: it is not sent, and the frame is let go
+ *  (`clearVisitPoster`), whether or not the Site Visits screen is ever opened again. */
+export function posterLapsed(row: VisitPhotoRow, now = Date.now()): boolean {
+  return posterKept(row) && !posterWaits(row, now);
+}
+
+function posterKept(row: VisitPhotoRow): boolean {
   return row.state === 'filed' && typeof row.poster === 'string' && typeof row.mediaId === 'string';
 }
 
@@ -360,7 +370,7 @@ export function settleFiledVisitPhotos(
     eachRow(s, userScope, projectId, (row, cursor) => {
       if (row.state !== 'filed' || !((row.filedAt ?? 0) < readAt || heard.has(row.clientKey))) return;
       // a clip whose still frame is still to send stays for it, up to its bound (V2b-2)
-      if (posterWaits(row) && Date.now() - (row.filedAt ?? 0) < POSTER_WAIT_MS) return;
+      if (posterWaits(row)) return;
       // only a read that lists it, or that read its visit with the visit's files and found it gone: an older server's
       // answer (no files), or one that did not read its visit, says nothing of it (Codex 4323247753)
       if (listed.has(row.clientKey) || spoken.has(row.op.visitId)) { cursor.delete(); gone.push(row.clientKey); }

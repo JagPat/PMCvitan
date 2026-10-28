@@ -98,7 +98,7 @@ import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isMediaNotFound, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
-import { clearVisitPhotoStart, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, posterWaits, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { clearVisitPhotoStart, clearVisitPoster, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, posterLapsed, posterWaits, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { parseLocation } from '@/lib/screens';
 import { setClampedTimeout, type ClampedTimer } from '@/lib/clampedTimer';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
@@ -2677,6 +2677,11 @@ export const useStore = create<Store>()(
       // its clip, the Site Visits screen's retry: the next flush made for any other reason sends it, so a server that
       // keeps failing the frame is not asked again on a beat of its own
       const posters: OutboxOp[] = [];
+      // one whose frame waited past its bound is not put back, and its frame is let go here, so the bound holds when
+      // the Site Visits screen (whose reads settle rows) is never opened again (Codex 4400008717)
+      for (const row of rows) {
+        if (posterLapsed(row)) void withinWait(() => clearVisitPoster(row.userScope, row.projectId, row.clientKey)).catch(() => {});
+      }
       set((s) => {
         const queued = new Set(s.outbox.filter(isSiteVisitOp).map((o) => o.idempotencyKey));
         for (const row of rows) {

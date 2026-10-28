@@ -7,7 +7,7 @@ import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { MediaPlayer } from '@/components/MediaPlayer';
 import type { ApiGateway, OutboxOp, SiteVisit } from '@/data/apiGateway';
-import { fileVisitPhoto, getVisitPhoto, listVisitPhotos, putVisitPhoto, visitPhotoScope, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
+import { POSTER_WAIT_MS, fileVisitPhoto, getVisitPhoto, listVisitPhotos, putVisitPhoto, visitPhotoScope, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
 import { tellSiteVisits } from '@/data/apiGateway';
 import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
 
@@ -564,6 +564,40 @@ describe('#995 V2b-2: a clip’s still frame', () => {
     expect(addVisitPoster).toHaveBeenLastCalledWith('m-9', FRAME);
     await flushAgain();
     expect(addVisitPoster).toHaveBeenCalledTimes(3);
+    expect(uploadMedia).not.toHaveBeenCalled();
+  });
+
+  it('never puts back or sends a frame that waited past its day, and lets it go with no Site Visits read (Codex 4400008717)', async () => {
+    useStore.setState({ ...getInitialState(), role: 'consultant', sessionUserId: CONSULTANT, nodes: NODES, members: MEMBERS });
+    const addVisitPoster = vi.fn(async (id: string) => ({ id, posterUrl: `/media/${id}/poster?t=x` }));
+    const uploadMedia = vi.fn();
+    const gw = fakeGateway([visit()], { addVisitPoster, uploadMedia });
+    (gw as { project?: string }).project = useStore.getState().activeProjectId;
+    useStore.getState()._setGateway(tracked(gw) as unknown as ApiGateway);
+    const s = useStore.getState();
+    const scope = visitPhotoScope(s.sessionToken, s.sessionUserId);
+    const clip = (key: string): SiteVisitAddFileOp => ({
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: `k-${key}`, scope, file: { id: key, mime: 'video/webm' },
+      by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: '2026-10-14T04:50:00.000Z',
+    });
+    await putVisitPhoto(scope, s.activeProjectId, clip('c-old'), 'AQID', null, undefined, FRAME);
+    await putVisitPhoto(scope, s.activeProjectId, clip('c-new'), 'AQID', null, undefined, FRAME);
+    // c-old was sent a day ago; c-new a moment ago
+    const at = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(at - POSTER_WAIT_MS);
+    await fileVisitPhoto(scope, s.activeProjectId, 'c-old', 'm-old');
+    clock.mockRestore();
+    await fileVisitPhoto(scope, s.activeProjectId, 'c-new', 'm-new');
+    // the screen is never mounted: no read settles either row
+    useStore.getState().hydrateOutbox();
+    await settled();
+    expect(useStore.getState().outbox.map((o) => ('idempotencyKey' in o ? o.idempotencyKey : null))).toEqual(['k-c-new']);
+    expect(await keptRow('c-old')).not.toHaveProperty('poster');
+    expect(await keptRow('c-old')).not.toHaveProperty('mediaId');
+    await flushAgain();
+    expect(addVisitPoster.mock.calls).toEqual([['m-new', FRAME]]);
+    await flushAgain();
+    expect(addVisitPoster).toHaveBeenCalledTimes(1);
     expect(uploadMedia).not.toHaveBeenCalled();
   });
 

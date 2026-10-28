@@ -1,9 +1,10 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
-  POSTER_WAIT_MS, clearVisitPoster, fileVisitPhoto, getVisitPhoto, posterWaits, putVisitPhoto, settleFiledVisitPhotos,
+  POSTER_WAIT_MS, clearVisitPoster, fileVisitPhoto, getVisitPhoto, posterLapsed, posterWaits, putVisitPhoto, settleFiledVisitPhotos,
   type SiteVisitAddFileOp,
 } from '@/data/visitPhotoStore';
+import { ApiGateway, POSTER_SEND_WAIT_MS, isTerminalOutboxError } from '@/data/apiGateway';
 
 /**
  * #995 V2b-2: a clip's still frame is kept on the clip's own row (`visitPhotoStore`), in the same write, and waits there
@@ -89,5 +90,43 @@ describe('#995 V2b-2: the still frame on its clip’s row', () => {
     now += 1;
     await settleFiledVisitPhotos(SCOPE, PROJECT, now, new Set(), listed, new Set());
     expect(await getVisitPhoto(SCOPE, PROJECT, 'c-1')).toBeNull();
+  });
+
+  it('waits a day at most: past it the frame is lapsed, not waiting, whether or not any read settles the row (Codex 4400008717)', async () => {
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    await putVisitPhoto(SCOPE, PROJECT, op('c-1'), 'AQID', null, undefined, FRAME);
+    await putVisitPhoto(SCOPE, PROJECT, op('c-2'), 'AQID');
+    await fileVisitPhoto(SCOPE, PROJECT, 'c-1', 'm-1');
+    await fileVisitPhoto(SCOPE, PROJECT, 'c-2', 'm-2');
+    const clip = (await getVisitPhoto(SCOPE, PROJECT, 'c-1'))!;
+    expect([posterWaits(clip, now + POSTER_WAIT_MS - 1), posterLapsed(clip, now + POSTER_WAIT_MS - 1)]).toEqual([true, false]);
+    expect([posterWaits(clip, now + POSTER_WAIT_MS), posterLapsed(clip, now + POSTER_WAIT_MS)]).toEqual([false, true]);
+    // a row with no frame is never lapsed, nor one not yet sent
+    expect(posterLapsed((await getVisitPhoto(SCOPE, PROJECT, 'c-2'))!, now + POSTER_WAIT_MS)).toBe(false);
+    await putVisitPhoto(SCOPE, PROJECT, op('c-3'), 'AQID', null, undefined, FRAME);
+    expect(posterLapsed((await getVisitPhoto(SCOPE, PROJECT, 'c-3'))!, now + POSTER_WAIT_MS)).toBe(false);
+  });
+});
+
+describe('#995 V2b-2: the still frame’s send is bounded (Codex 4400008727)', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('a server that takes the frame and never answers fails it for now, after its bound, with no status', async () => {
+    expect(POSTER_SEND_WAIT_MS).toBe(30_000);
+    // the limit is AbortSignal.timeout's; stand it in with a signal the test fires, as the clock would
+    const limit = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(limit.signal);
+    const fetch = vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+    }));
+    vi.stubGlobal('fetch', fetch);
+    const send = new ApiGateway('http://api.test', PROJECT).addVisitPoster('m-1', FRAME);
+    expect(timeout).toHaveBeenCalledWith(POSTER_SEND_WAIT_MS);
+    expect(fetch.mock.calls[0][1]).toMatchObject({ method: 'POST', signal: limit.signal });
+    limit.abort(new DOMException('The operation timed out.', 'TimeoutError'));
+    const err = await send.then(() => null, (e: unknown) => e);
+    expect(err).toMatchObject({ name: 'TimeoutError' });
+    // no status: kept for a later flush, never let go as a refusal
+    expect(isTerminalOutboxError(err)).toBe(false);
   });
 });

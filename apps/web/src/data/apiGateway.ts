@@ -551,6 +551,9 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
  *  rather than showing "Loading…" for as long as a stalled connection stays open. */
 export const AWAITING_CLIENT_TIMEOUT_MS = 15_000;
 
+/** #995 V2b-2 — how long a clip's still frame (at most ~225 KB) may take to send before the flush goes on without it. */
+export const POSTER_SEND_WAIT_MS = 30_000;
+
 /** A signal that aborts with a TimeoutError after `ms`. Browsers without AbortSignal.timeout (Mobile Safari
  *  before 16.4) get the same behaviour from a controller and a timer, so the read still fails instead of throwing. */
 export function timeoutSignal(ms: number): AbortSignal {
@@ -1377,6 +1380,9 @@ export class ApiGateway {
     return this.req<{ id: string; posterUrl: string }>(`/projects/${this.projectId}/media/${encodeURIComponent(mediaId)}/poster`, {
       method: 'POST',
       body: JSON.stringify({ mime: 'image/jpeg', data }),
+      // bounded: the frame is never worth holding the queue for, so a server that takes it and never answers is one
+      // that failed it for now (no status: kept for a later flush)
+      signal: timeoutSignal(POSTER_SEND_WAIT_MS),
     });
   }
 
