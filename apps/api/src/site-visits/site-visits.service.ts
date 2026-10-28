@@ -69,7 +69,7 @@ export class SiteVisitsService {
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const requestHash = hashRequest(dto);
     if (await peekReplay(this.prisma, scope, actor.actorId, 'site-visits.start', idempotencyKey, requestHash)) {
-      return this.query.get(projectId, dto.id, user.sub);
+      return this.query.get(projectId, dto.id, user.sub, user.role);
     }
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'site-visits.start', idempotencyKey, requestHash,
@@ -100,7 +100,7 @@ export class SiteVisitsService {
       },
     });
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
-    return this.query.get(projectId, dto.id, user.sub);
+    return this.query.get(projectId, dto.id, user.sub, user.role);
   }
 
   /**
@@ -112,7 +112,7 @@ export class SiteVisitsService {
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const requestHash = hashRequest({ visitId, ...dto });
     if (await peekReplay(this.prisma, scope, actor.actorId, 'site-visits.end', idempotencyKey, requestHash)) {
-      return this.query.get(projectId, visitId, user.sub);
+      return this.query.get(projectId, visitId, user.sub, user.role);
     }
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'site-visits.end', idempotencyKey, requestHash,
@@ -138,7 +138,7 @@ export class SiteVisitsService {
       },
     });
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
-    return this.query.get(projectId, visitId, user.sub);
+    return this.query.get(projectId, visitId, user.sub, user.role);
   }
 
   /** The PMC closes a visit left open (S1), with a reason. */
@@ -147,7 +147,7 @@ export class SiteVisitsService {
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const requestHash = hashRequest({ visitId, ...dto });
     if (await peekReplay(this.prisma, scope, actor.actorId, 'site-visits.close', idempotencyKey, requestHash)) {
-      return this.query.get(projectId, visitId, user.sub);
+      return this.query.get(projectId, visitId, user.sub, user.role);
     }
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'site-visits.close', idempotencyKey, requestHash,
@@ -164,7 +164,7 @@ export class SiteVisitsService {
       },
     });
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
-    return this.query.get(projectId, visitId, user.sub);
+    return this.query.get(projectId, visitId, user.sub, user.role);
   }
 
   /**
@@ -261,7 +261,7 @@ export class SiteVisitsService {
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const requestHash = hashRequest(request);
     if (await peekReplay(this.prisma, scope, actor.actorId, commandType, idempotencyKey, requestHash)) {
-      return this.query.get(projectId, visitId, user.sub);
+      return this.query.get(projectId, visitId, user.sub, user.role);
     }
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType, idempotencyKey, requestHash,
@@ -271,7 +271,7 @@ export class SiteVisitsService {
       },
     });
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
-    return this.query.get(projectId, visitId, user.sub);
+    return this.query.get(projectId, visitId, user.sub, user.role);
   }
 
   /** The visit row, locked; only its visitor edits it, and a closed visit takes no edit (SV1-a, V4). */
