@@ -3,7 +3,7 @@ import type { Response } from 'express';
 import { MediaService } from './media.service';
 import { SignedUrlService } from './signed-url.service';
 import { ZodPipe } from '../common/zod.pipe';
-import { addPosterSchema, createMediaSchema, setNodeSchema, type AddPosterInput, type CreateMediaInput, type SetNodeInput } from '../contracts';
+import { addPosterSchema, createMediaSchema, removeVisitFileSchema, setNodeSchema, type AddPosterInput, type CreateMediaInput, type RemoveVisitFileInput, type SetNodeInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { Public, RolesFor, RolesGuard } from '../common/roles';
 import { MEDIA_NOT_FOUND_MESSAGE } from '@vitan/shared';
@@ -92,6 +92,22 @@ export class MediaController {
     res.setHeader('Content-Type', out.mime);
     res.setHeader('Cache-Control', `private, max-age=${this.signed.cacheMaxAge()}`);
     res.send(out.bytes);
+  }
+
+  /** #1179 — take a file off its site visit and delete it: the person who added it within the hour while the visit is
+   *  open, or the PMC at any time with a reason. The visit keeps a line saying who removed it, when and why. */
+  @Post('projects/:projectId/media/:mediaId/visit-removal')
+  @HttpCode(200)
+  @UseGuards(JwtGuard, RolesGuard)
+  @RolesFor('media.delete')
+  async removeFromVisit(
+    @Param('projectId') projectId: string,
+    @Param('mediaId') mediaId: string,
+    @CurrentUser() user: AuthUser,
+    @Body(new ZodPipe(removeVisitFileSchema)) body: RemoveVisitFileInput,
+  ): Promise<{ ok: true }> {
+    await this.media.removeFromVisit(projectId, mediaId, user, body.reason ?? null);
+    return { ok: true };
   }
 
   /** Delete a photo (bucket object + row). Scoped to the caller's project. The PMC and the site engineer delete
