@@ -89,6 +89,16 @@ const PINNED_PROOFS = [
              'say "F11. the decisions.inbox writer fence is dropped — the deploy must ABORT"',
              'G. COUPLING'],
   },
+  {
+    script: 'apps/api/scripts/ledger-lost-runner-proof.sh',
+    // The only execution of the production `migrate.sh` over a database restored WITHOUT its ledger
+    // that carries the later catalog generations (#1118 U5m): the path where the runner resolves the
+    // superseded catalog owners as applied. `upgrade-proof.sh` only mirrors that rule.
+    verdicts: [/ledger-lost runner proof: PASSED/u, /ledger-lost runner proof: FAILED/u],
+    // A. the ledger lost after U5m (resolve, then execute U5m) · B. the rule removed from a copy (the
+    // deploy must fail: the coupling) · C. the ledger lost before U5m (SV1-a replays, U5m applies).
+    states: ['say "A. THE LEDGER LOST AFTER U5m', 'say "B. THE RULE REMOVED', 'say "C. THE LEDGER LOST BEFORE U5m'],
+  },
 ];
 
 /** The `jobs:` block, split per job, preserving each job's own lines. */

@@ -394,8 +394,9 @@ jobs:
     # Budget arithmetic, not a round number, and the dominant term is RUNNER VARIANCE.
     #
     # This job carries the whole API battery AND every production-runner proof: setup + unit + the
-    # ~100-file integration battery over real PostgreSQL + typecheck + build, then three runner
-    # proofs (schedule B1, schema enforcement, Phase 6 4c-iii-r). Two heads of the same PR, two
+    # ~100-file integration battery over real PostgreSQL + typecheck + build, then four runner
+    # proofs (schedule B1, schema enforcement, Phase 6 4c-iii-r, and the ledger-lost restore #1118
+    # U5m added). Two heads of the same PR, two
     # hours apart, differing only in this file and a test -- so what moved is the runner:
     #
     #   deb9b2f  battery 48 min, B1 10 min  -> CANCELLED at 60, mid schema-enforcement proof
@@ -409,9 +410,10 @@ jobs:
     # step bound so a genuinely hung proof still fails fast rather than eating the job.
     #
     # `scripts/ci-workflow-timeouts.test.mjs` holds the floor this violated: a job's budget must
-    # at least cover the budgets of the steps inside it (75 here). That is a necessary condition,
-    # not a sufficient one -- it ignores the battery, which is most of the wall clock.
-    timeout-minutes: 100
+    # at least cover the budgets of the steps inside it (115 here). That is a necessary condition,
+    # not a sufficient one -- it ignores the battery, which is most of the wall clock. #1118 U5m's
+    # fourth proof added its own 40-minute step bound, and the job budget rose by the same 40.
+    timeout-minutes: 140
     services:
       postgres:
         image: postgres:16
@@ -539,6 +541,21 @@ jobs:
         if: needs.battery-plan.outputs.runner_proofs == 'true'
         timeout-minutes: 25
         run: bash apps/api/scripts/phase6-4c-iiir-production-runner-proof.sh
+
+      # Hub #1118 U5m — the only execution of the production `migrate.sh` over a database restored
+      # WITHOUT its ledger that carries the later catalog generations. On that path the runner resolves
+      # each superseded catalog owner as applied (A7d, SV1-a, U5m rules), because their immutable
+      # foreign-generation audits would refuse the newer generations on a restore that never served.
+      # `upgrade-proof.sh` only mirrors the rule; the other runner proofs never build a database that
+      # carries A7d. Its state B mutates a COPY of migrate.sh to prove the RUNNER is coupled to the
+      # rule; the step itself is pinned by `scripts/ci-baseline-proof-wiring.test.mjs`.
+      # 40 minutes, not the others' 25: it runs the runner's baseline path three times, and that path
+      # resolves every migration with its own Prisma call. Measured at 15 minutes on an idle machine,
+      # and the runner variance above is up to 3x.
+      - name: Ledger-lost restore production-runner proof (the real migrate.sh over the catalog generations)
+        if: needs.battery-plan.outputs.runner_proofs == 'true'
+        timeout-minutes: 40
+        run: bash apps/api/scripts/ledger-lost-runner-proof.sh
 
   # Server-associated identity for the exact pull-request merge tree exercised by this CI run.
   # The trusted shadow publisher accepts it only when this workflow file is unchanged from the

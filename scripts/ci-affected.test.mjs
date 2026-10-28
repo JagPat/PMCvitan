@@ -140,7 +140,7 @@ test('ci.yml launches each product job only when the plan lists it, and proofs o
       `${job} is gated on the affected products`,
     );
   }
-  assert.equal((ci.match(/if: needs\.battery-plan\.outputs\.runner_proofs == 'true'/gu) ?? []).length, 3);
+  assert.equal((ci.match(/if: needs\.battery-plan\.outputs\.runner_proofs == 'true'/gu) ?? []).length, 4);
   assert.match(ci, /products: \$\{\{ steps\.plan\.outputs\.products \}\}/u);
 });
 
