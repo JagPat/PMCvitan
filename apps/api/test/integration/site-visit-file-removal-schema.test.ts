@@ -302,6 +302,35 @@ describe('#1179 R1 — a visit file\'s removal line (live PG)', () => {
     expect(await t.prisma.siteVisitFileRemoval.count({ where: { mediaId: m.id } })).toBe(1);
   });
 
+  it('a raw link insert by the remover, waiting on a removal that holds the visit, queues behind it (no deadlock, L1)', async () => {
+    const a = await onVisit();
+    const b = await file();
+    const locked = gate();
+    const release = gate();
+    // the removal as the server unit writes it: the visit first, then (released) the line and the delete
+    const removing = t.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT 1 FROM "SiteVisit" WHERE "projectId" = ${f.projectA.id} AND "id" = ${visitA} FOR UPDATE`;
+      locked.open();
+      await release.promise;
+      await tx.$executeRaw`
+        INSERT INTO "SiteVisitFileRemoval" ("projectId","visitId","mediaId","removedById","removedByRole","reason")
+        VALUES (${f.projectA.id}, ${visitA}, ${a.id}, ${f.memberUser.id}, 'pmc', 'Queued')`;
+      await tx.media.delete({ where: { id: a.id } });
+    }, { timeout: 20_000 });
+    await locked.promise;
+    // a raw writer adding another file to the same visit as the same person, with no visit lock of its own
+    const linking = reflect(t.prisma.$executeRaw`
+      INSERT INTO "SiteVisitMedia" ("projectId","visitId","mediaId","addedById","addedByRole")
+      VALUES (${f.projectA.id}, ${visitA}, ${b.id}, ${f.memberUser.id}, 'pmc')`);
+    await waitUntilBlockedOn('%INSERT INTO "SiteVisitMedia"%');
+    release.open();
+    await removing;
+    const out = await linking;
+    expect(out.ok ? 'linked' : String(out.reason)).toBe('linked');
+    expect(await t.prisma.siteVisitFileRemoval.count({ where: { mediaId: a.id } })).toBe(1);
+    expect(await t.prisma.siteVisitMedia.count({ where: { mediaId: b.id } })).toBe(1);
+  });
+
   it('a removed file id recreated by a raw writer is never put on a visit again, so it cannot leave on the old line (R9)', async () => {
     const m = await onVisit({ mime: 'audio/webm' });
     await remove(m.id, f.memberUser.id, 'pmc', null);
@@ -328,7 +357,7 @@ describe('#1179 R1 — a visit file\'s removal line (live PG)', () => {
     // what Prisma's `db push` creates: the table and its keys, no triggers and no CHECK
     for (const [table, trigger] of [['SiteVisitFileRemoval', 'SiteVisitFileRemoval_insert'], ['SiteVisitFileRemoval', 'SiteVisitFileRemoval_done'],
       ['SiteVisitFileRemoval', 'SiteVisitFileRemoval_frozen'], ['SiteVisitFileRemoval', 'SiteVisitFileRemoval_no_truncate'],
-      ['SiteVisitMedia', 'SiteVisitMedia_removal_recorded'], ['SiteVisitMedia', 'SiteVisitMedia_not_removed']]) {
+      ['SiteVisitMedia', 'SiteVisitMedia_removal_recorded'], ['SiteVisitMedia', 'SiteVisitMedia_not_removed'], ['SiteVisitMedia', 'SiteVisitMedia_00_visit_lock']]) {
       await t.prisma.$executeRawUnsafe(`DROP TRIGGER "${trigger}" ON "${table}"`);
     }
     await t.prisma.$executeRawUnsafe(`ALTER TABLE "SiteVisitFileRemoval" DROP CONSTRAINT "SiteVisitFileRemoval_shape_check"`);
@@ -342,7 +371,7 @@ describe('#1179 R1 — a visit file\'s removal line (live PG)', () => {
     const triggers = async (table: string) => (await t.prisma.$queryRawUnsafe<Array<{ n: string }>>(
       `SELECT tgname AS n FROM pg_trigger WHERE tgrelid = $1::regclass AND NOT tgisinternal AND tgenabled = 'O' ORDER BY tgname`, `"${table}"`)).map((r) => r.n);
     expect(await triggers('SiteVisitFileRemoval')).toEqual(['SiteVisitFileRemoval_done', 'SiteVisitFileRemoval_frozen', 'SiteVisitFileRemoval_insert', 'SiteVisitFileRemoval_no_truncate']);
-    expect(await triggers('SiteVisitMedia')).toEqual(expect.arrayContaining(['SiteVisitMedia_removal_recorded', 'SiteVisitMedia_not_removed']));
+    expect(await triggers('SiteVisitMedia')).toEqual(expect.arrayContaining(['SiteVisitMedia_00_visit_lock', 'SiteVisitMedia_removal_recorded', 'SiteVisitMedia_not_removed']));
     const [{ d }] = await t.prisma.$queryRaw<Array<{ d: string }>>`
       SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint
        WHERE conrelid = '"SiteVisitFileRemoval"'::regclass AND conname = 'SiteVisitFileRemoval_shape_check'`;

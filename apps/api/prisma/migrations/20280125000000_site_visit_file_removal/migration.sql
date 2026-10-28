@@ -30,6 +30,10 @@
 --       already gone) is untouched, and so is the sanctioned reset.
 --   R8  Frozen. A row is never changed, never deleted on its own (it goes with its visit), never truncated outside the
 --       sanctioned reset.
+--   L1  One lock order for every writer. A file's link insert waits for its visit's row (FOR KEY SHARE, what its
+--       foreign key takes anyway) before any other lock ("SiteVisitMedia_00_visit_lock", first in name order), so a
+--       raw writer that never locks the visit itself still queues behind a removal holding it rather than taking the
+--       adder's identity first and deadlocking against that removal's standing check (Codex round 2).
 --   R9  Removed once, for good. A file that has a record is never put on a visit again ("SiteVisitMedia_not_removed"),
 --       so a file id recreated after its removal cannot borrow the old record to leave without its own line.
 --
@@ -215,3 +219,18 @@ DROP TRIGGER IF EXISTS "SiteVisitMedia_not_removed" ON public."SiteVisitMedia";
 CREATE TRIGGER "SiteVisitMedia_not_removed"
   BEFORE INSERT ON public."SiteVisitMedia"
   FOR EACH ROW EXECUTE FUNCTION public.site_visits_media_not_removed();
+
+-- L1: a link insert takes its visit's row before its own trigger takes a place, a file or the adder's identity, so
+-- it waits behind a removal (or any write) holding the visit FOR UPDATE instead of forming a cycle with it. The
+-- server already holds the visit FOR UPDATE here, so for it this is a no-op.
+CREATE OR REPLACE FUNCTION public.site_visits_media_visit_lock() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  PERFORM 1 FROM public."SiteVisit" WHERE "projectId" = NEW."projectId" AND "id" = NEW."visitId" FOR KEY SHARE;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "SiteVisitMedia_00_visit_lock" ON public."SiteVisitMedia";
+CREATE TRIGGER "SiteVisitMedia_00_visit_lock"
+  BEFORE INSERT ON public."SiteVisitMedia"
+  FOR EACH ROW EXECUTE FUNCTION public.site_visits_media_visit_lock();

@@ -345,7 +345,7 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
     const triggers = await t.prisma.$queryRaw<Array<{ n: string }>>`
       SELECT tgname AS n FROM pg_trigger WHERE tgrelid = '"SiteVisitMedia"'::regclass AND NOT tgisinternal ORDER BY tgname`;
     // #1179 R1's removal guard is its own file's trigger, which this replay leaves standing
-    expect(triggers.map((r) => r.n)).toEqual(['SiteVisitMedia_insert', 'SiteVisitMedia_no_delete', 'SiteVisitMedia_no_truncate', 'SiteVisitMedia_not_removed', 'SiteVisitMedia_removal_recorded', 'SiteVisitMedia_update']);
+    expect(triggers.map((r) => r.n)).toEqual(['SiteVisitMedia_00_visit_lock', 'SiteVisitMedia_insert', 'SiteVisitMedia_no_delete', 'SiteVisitMedia_no_truncate', 'SiteVisitMedia_not_removed', 'SiteVisitMedia_removal_recorded', 'SiteVisitMedia_update']);
     const fks = await t.prisma.$queryRaw<Array<{ n: bigint }>>`
       SELECT count(*) AS n FROM pg_constraint WHERE conrelid = '"SiteVisitMedia"'::regclass AND contype = 'f'`;
     expect(Number(fks[0].n)).toBe(4);
