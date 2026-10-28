@@ -5680,7 +5680,10 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20280111000000_site_visits_sv1a_catalog
 20280112000000_site_visits_sv1a_record
 20280114000000_site_visits_sv2_visit_media
-20280127000000_hub_catalog_generation"
+20280126000000_voice_transcript
+20280127000000_hub_catalog_generation
+20280128000000_voice_transcript_correction
+20280129000000_voice_transcript_stamp"
 # 4d-ii-a / A7d — THE RUNNER'S RULE, MIRRORED (scripts/migrate.sh, the P3005 baseline path): on a database
 # that CARRIES A7d (its two claimant seals and the re-issued actor seal standing beside 4d-i's own seal
 # functions) 4d-i's two halves and 4d-i-b U3 are resolved as applied rather than replayed, because each
@@ -5872,6 +5875,11 @@ assert "#1177 VT1a: after the replay the transcripts table keeps its four trigge
 assert "#1177 VT1b: after the replay the corrections table keeps its four triggers and its CHECK, and the transcript its note-keyed delete guard" \
   "SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"VoiceTranscriptCorrection\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('VoiceTranscriptCorrection_insert','VoiceTranscriptCorrection_frozen','VoiceTranscriptCorrection_no_delete','VoiceTranscriptCorrection_no_truncate'))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"VoiceTranscriptCorrection\"'::regclass AND conname = 'VoiceTranscriptCorrection_shape_check')::text || '|' || (SELECT count(*) FROM pg_proc WHERE proname = 'media_voice_transcript_no_delete' AND prosrc LIKE '%public.\"Media\"%' AND prosrc NOT LIKE '%pg_trigger_depth%')::text;" \
   "4|1|1"
+# #1177 VT1c — the transcripts' insert stamp (on ALWAYS_EXECUTE, after VT1a's file) is the UTC clock read, floored at
+# the transaction's start in UTC, not VT1a's transaction-start LOCALTIMESTAMP.
+assert "#1177 VT1c: after the replay the transcripts' insert stamps the database clock's UTC time, floored at the transaction's start" \
+  "SELECT count(*)::text FROM pg_proc WHERE proname = 'media_voice_transcript_insert' AND prosrc LIKE '%clock_timestamp() AT TIME ZONE ''UTC''%' AND prosrc LIKE '%now() AT TIME ZONE ''UTC''%' AND prosrc NOT LIKE '%LOCALTIMESTAMP%';" \
+  "1"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \
