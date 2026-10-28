@@ -1239,8 +1239,29 @@ model VoiceTranscript {
   leaseUntil    DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
+  // #1177 VT1b (20280128000000) — what people said the note says, newest last
+  corrections   VoiceTranscriptCorrection[]
 
   @@unique([projectId, mediaId])
+}
+
+// #1177 VT1b (20280128000000): a person's correction of a voice note's heard words, added and never changed. The newest
+// ("seq" highest) is the one shown; a row with no text goes back to the heard words. It goes with its transcript (ON
+// DELETE CASCADE) and never on its own. The checks and triggers (only of a done transcript; "seq" and "createdAt" set by
+// the database; no update, no direct delete) are raw SQL in the migration, which Prisma cannot express.
+model VoiceTranscriptCorrection {
+  transcript    VoiceTranscript @relation(fields: [projectId, mediaId], references: [projectId, mediaId], onDelete: Cascade, onUpdate: NoAction)
+  id            String          @id @default(cuid())
+  projectId     String
+  mediaId       String
+  seq           Int             @default(0) // set by the database: 1, 2, 3 ... per transcript
+  text          String? // NULL means back to what was heard
+  correctedBy   User            @relation("voiceTranscriptCorrectedBy", fields: [correctedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  correctedById String
+  createdAt     DateTime        @default(now())
+
+  @@unique([projectId, mediaId, seq])
+  @@index([correctedById])
 }
 
 // #482 site photos (20280117): one row per (project, clientKey) whose photo was deleted, written by a database trigger
@@ -1555,6 +1576,8 @@ model User {
   siteVisitMediaAdded       SiteVisitMedia[]       @relation("siteVisitMediaAddedBy")
   siteVisitRemovalsAdded    SiteVisitFileRemoval[] @relation("siteVisitFileRemovalAddedBy")
   siteVisitRemovalsMade     SiteVisitFileRemoval[] @relation("siteVisitFileRemovalRemovedBy")
+  // #1177 VT1b — the voice-note corrections this person made
+  voiceTranscriptCorrections VoiceTranscriptCorrection[] @relation("voiceTranscriptCorrectedBy")
   siteVisitPlacesRetired    SiteVisitPlace[]       @relation("siteVisitPlaceRetiredBy")
   // Phase 6 task 4b (§A.3) — push subscriptions currently linked to this user for targeted delivery
   pushSubscriptionsLinked   PushSubscription[]     @relation("pushSubscriptionsLinked")
