@@ -218,7 +218,7 @@ describe('4d-ii-a / A7d — the catalog change: the widened generation, the froz
     const gens = await t.prisma.$queryRawUnsafe<Array<{ v: string; n: number }>>(`SELECT "coverageVersion" AS v, count(*)::int AS n FROM "ExternalEffectCatalog" GROUP BY 1 ORDER BY 1`);
     // Site Visits SV1-a (20280111) seeded a FIFTH generation beside A7d's: the compiled catalog is now
     // A7d's plus the eight site-visit keys, and A7d's widened generation stays for the drain. Hub
-    // U5m (20280126) seeded a SIXTH ahead of the code that compiles it: the compiled catalog plus the
+    // U5m (20280127) seeded a SIXTH ahead of the code that compiles it: the compiled catalog plus the
     // two Hub keys, which nothing reads yet.
     expect(gens).toHaveLength(6);
     expect(gens.find((g) => g.v === effectCoverageVersion())?.n).toBe(Object.keys(EXTERNAL_EFFECTS).length);

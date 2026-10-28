@@ -37,7 +37,7 @@ const MIGRATION_4D_II_A7D = join(MIGRATIONS, '20280104000000_phase6_t4d_ii_a7d_c
 const MIGRATION_SV1A = join(MIGRATIONS, '20280111000000_site_visits_sv1a_catalog', 'migration.sql');
 /** Hub #1118 U5m's seed: the NEXT generation, seeded ahead of the code that compiles it — SV1-a's plus
  *  exactly the two Hub keys. U5k compiles them, and then this literal becomes the current one. */
-const MIGRATION_HUB_U5M = join(MIGRATIONS, '20280126000000_hub_catalog_generation', 'migration.sql');
+const MIGRATION_HUB_U5M = join(MIGRATIONS, '20280127000000_hub_catalog_generation', 'migration.sql');
 
 /**
  * Phase 6 unit 4d-i-b — TWO LITERALS, TWO GENERATIONS, ONE SOURCE. 4d-i's literal may not be

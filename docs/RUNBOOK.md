@@ -1602,7 +1602,7 @@ No consumer contract version moves, so nothing else in this section changes.
 
 **Hub #1118 U5m seeds the next generation AHEAD of it** — `63679450…`: SV1-a's keys plus
 `drawing.superseded_hub` and `drawing.relinked` (invalidate, never push, no pairing claim).
-`20280126000000_hub_catalog_generation` seeds it beside SV1-a's, and the U5m build compiles
+`20280127000000_hub_catalog_generation` seeds it beside SV1-a's, and the U5m build compiles
 the same catalog as the build before it, so deploying U5m needs NO reseal. The later build that
 compiles the two keys (U5k) moves `f9ebcd07…` → `63679450…` and takes the three steps above.
 

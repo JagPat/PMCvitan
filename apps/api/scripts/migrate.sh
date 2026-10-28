@@ -594,7 +594,10 @@ if echo "$out" | grep -q "P3005"; then
   # A visit file's removal line (#1179 R1, 20280125000000) is here because its rules are checks, triggers and a
   # deferred constraint trigger, which a db-push baseline does not have. The file is guarded and re-runnable.
   #
-  # The Hub catalog generation (#1118 U5m, 20280126000000) is here for SV1-a's reason: its rows are sealed raw writes
+  # Voice-note transcripts (#1177 VT1a, 20280126000000) are here because their rules are a check and five triggers, which a
+  # db-push baseline does not have. The file is guarded and re-runnable.
+  #
+  # The Hub catalog generation (#1118 U5m, 20280127000000) is here for SV1-a's reason: its rows are sealed raw writes
   # under the catalog gate, which a db-push baseline does not seed. It is audited and re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
@@ -644,7 +647,8 @@ if echo "$out" | grep -q "P3005"; then
 20280122000000_hub_drawing_identity
 20280123000000_hub_receipts
 20280125000000_site_visit_file_removal
-20280126000000_hub_catalog_generation"
+20280126000000_voice_transcript
+20280127000000_hub_catalog_generation"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
@@ -803,7 +807,7 @@ if echo "$out" | grep -q "P3005"; then
   # immutable foreign-generation audit admits the five generations it knew, gated on the retirement marker or the
   # serving witness; on a database migrated through U5m that never served (no lease), its replay refuses U5m's
   # generation (`63679450…`) and the deploy aborts. A database holding U5m's generation evidences SV1-a's catalog
-  # file ran to completion (20280126's prerequisite is SV1-a's generation, and SV1-a's own readback verified it).
+  # file ran to completion (20280127's prerequisite is SV1-a's generation, and SV1-a's own readback verified it).
   # So on such a database SV1-a's catalog file is RESOLVED as applied. It installs no function, so no other replay
   # depends on it; SV1-a's record file (20280112) carries no catalog audit and replays as before.
   # `scripts/upgrade-proof.sh` mirrors this rule in its ledger-lost replays.

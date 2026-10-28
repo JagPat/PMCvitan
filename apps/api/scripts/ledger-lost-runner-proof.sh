@@ -16,7 +16,7 @@
 #   B. THE RULE REMOVED — the same database, with a temp copy of migrate.sh that does not resolve SV1-a's
 #      catalog file: the deploy must FAIL on that file (its audit refuses U5m's generation). This is what
 #      couples the proof to the rule: delete the rule and state A turns into state B;
-#   C. THE LEDGER LOST BEFORE U5m — every migration through 20280125: SV1-a's catalog file must stay
+#   C. THE LEDGER LOST BEFORE U5m — every migration before U5m's file: SV1-a's catalog file must stay
 #      PENDING and replay, and U5m's file must then apply, leaving six generations.
 #
 # DESTRUCTIVE for the scratch databases only.
@@ -32,7 +32,8 @@ URL="$BARE?schema=public"
 PSQL="psql -v ON_ERROR_STOP=1 -X -q $BARE"
 API="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SV1A="20280111000000_site_visits_sv1a_catalog"
-U5M="20280126000000_hub_catalog_generation"
+U5M="20280127000000_hub_catalog_generation"
+U5M_AT="${U5M%%_*}"
 NEXT="63679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848"
 FAIL=0
 
@@ -42,7 +43,7 @@ ok()  { printf 'ok      %s\n' "$1"; }
 bad() { printf 'FAILED  %s\n' "$1"; FAIL=1; }
 q()   { psql -X -tA "$BARE" -c "$1" | tr -d '[:space:]'; }
 
-# The restored database BEFORE U5m, built once as a template: every deployed migration through 20280125
+# The restored database BEFORE U5m, built once as a template: every deployed migration ordered before U5m's file,
 # applied in ledger order, each as Prisma applies it (one transaction, stop on error), with no ledger
 # table and no lease. Every state copies it; "after" then applies U5m's file and every later one on the
 # copy, in ledger order, which is exactly what a database restored after them holds.
@@ -52,7 +53,7 @@ build_template() {
   psql -v ON_ERROR_STOP=1 -X -q "$ADMIN" -c "CREATE DATABASE \"$TMPL\"" >/dev/null
   for d in $(ls -d prisma/migrations/*/ | sort); do
     s="$(basename "$d")"; s="${s%%_*}"
-    [ "$s" -gt 20280125999999 ] && continue
+    [ "$s" -ge "$U5M_AT" ] && continue
     psql -v ON_ERROR_STOP=1 -X -q --single-transaction "$tbare" -f "$d/migration.sql" >/tmp/ledger-lost-base.log 2>&1 \
       || { bad "the restored database did not build at $(basename "$d")"; tail -5 /tmp/ledger-lost-base.log; return 1; }
   done
@@ -66,7 +67,7 @@ restored() {
     local d s
     for d in $(ls -d prisma/migrations/*/ | sort); do
       s="$(basename "$d")"; s="${s%%_*}"
-      [ "$s" -le 20280125999999 ] && continue
+      [ "$s" -lt "$U5M_AT" ] && continue
       psql -v ON_ERROR_STOP=1 -X -q --single-transaction "$BARE" -f "$d/migration.sql" >/tmp/ledger-lost-base.log 2>&1 \
         || { bad "the restored copy did not apply $(basename "$d")"; tail -5 /tmp/ledger-lost-base.log; return 1; }
     done
@@ -113,7 +114,7 @@ else
 fi
 rm -f "$MUT"
 
-say "C. THE LEDGER LOST BEFORE U5m — every migration through 20280125, no lease"
+say "C. THE LEDGER LOST BEFORE U5m — every migration before its file, no lease"
 restored before || exit 1
 shape=$(q "SELECT count(DISTINCT \"coverageVersion\")::text FROM \"ExternalEffectCatalog\"")
 [ "$shape" = "5" ] && ok "five generations before the deploy" || bad "unexpected generations before the deploy: $shape (expected 5)"

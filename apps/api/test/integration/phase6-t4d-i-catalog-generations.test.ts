@@ -56,7 +56,7 @@ const CURRENT = effectCoverageVersion();
  *  out of the migration text; `licences the seeds` asserts it is this catalog plus the two Hub keys. */
 const NEXT = (() => {
   const sql = readFileSync(join(__dirname, '..', '..', 'prisma', 'migrations',
-    '20280126000000_hub_catalog_generation', 'migration.sql'), 'utf8');
+    '20280127000000_hub_catalog_generation', 'migration.sql'), 'utf8');
   const m = sql.match(/INSERT INTO "_hub_catalog_seed"[^\n]*\n\s+\('([0-9a-f]{64})'/);
   if (!m?.[1]) throw new Error('the Hub U5m coverage generation could not be read from its migration');
   return m[1]!;

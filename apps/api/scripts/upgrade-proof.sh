@@ -4893,7 +4893,7 @@ SQL
 # with its activation head from A6a's catalog-INSERT trigger; the three claimants and the re-issued
 # kernel actor seal standing. Then the replay a restored database takes: a 4c-ii-era `webpush.notify`
 # row (version 2) is moved to 3, a second replay is a no-op, and the effects row is not re-registered.
-# Site Visits SV1-a (20280111) seeds a FIFTH generation beside these four and Hub U5m (20280126) a SIXTH,
+# Site Visits SV1-a (20280111) seeds a FIFTH generation beside these four and Hub U5m (20280127) a SIXTH,
 # so the distinct count is 6; A7d's generation itself is unchanged.
 assert "4d-ii-a / A7d: six coverage generations (SV1-a's the fifth, Hub U5m's the sixth), the widened one over U3's keys plus exactly the three A7d adds" \
   "SELECT (SELECT count(DISTINCT \"coverageVersion\") FROM \"ExternalEffectCatalog\")::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c')::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '7dac2bd5646fa8b1a4062d0b844f2514179cf13ce7f59d345d837fd634aa3a61')::text || '|' || (SELECT string_agg(\"effectKey\", ',' ORDER BY \"effectKey\" COLLATE \"C\") FROM \"ExternalEffectCatalog\" a WHERE a.\"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c' AND NOT EXISTS (SELECT 1 FROM \"ExternalEffectCatalog\" b WHERE b.\"coverageVersion\" = '7dac2bd5646fa8b1a4062d0b844f2514179cf13ce7f59d345d837fd634aa3a61' AND b.\"effectKey\" = a.\"effectKey\"));" \
@@ -4933,8 +4933,8 @@ assert "Hub U5m: every shared key equal to SV1-a's in every column; the two adde
   "0|2|17|decision.awaiting_countersign,decision.forwarded"
 # U5m is on ALWAYS_EXECUTE: it replays over a database that already carries it (no lease here, so its
 # own foreign-generation audit RUNS and admits the six generations it knows), twice, moving nothing.
-if $PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280126000000_hub_catalog_generation/migration.sql" >/dev/null 2>&1 \
-   && $PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280126000000_hub_catalog_generation/migration.sql" >/dev/null 2>&1; then
+if $PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280127000000_hub_catalog_generation/migration.sql" >/dev/null 2>&1 \
+   && $PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280127000000_hub_catalog_generation/migration.sql" >/dev/null 2>&1; then
   echo "ok      Hub U5m: the catalog-generation migration replays twice over a database that already carries it"
 else
   echo "FAILED  Hub U5m: the catalog-generation migration did not replay (it is on ALWAYS_EXECUTE, so a baseline would abort here)"; FAIL=1
@@ -5200,8 +5200,8 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # pairing claim, and refuse to apply without them, so they are excluded with their prerequisites.
   # Site Visits SV2's visit-media table (20280114) references SV1-a's visit table, so it is excluded with it.
   # #1179 R1's visit file removal line (20280125) references SV1-a's visit table and SV2's files, so it is excluded with them.
-  # Hub U5m's catalog generation (20280126) extends SV1-a's and refuses to apply without it, so it is excluded with it.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*|20280106000000_*|20280107000000_*|20280111000000_*|20280112000000_*|20280114000000_*|20280125000000_*|20280126000000_*) continue ;; esac
+  # Hub U5m's catalog generation (20280127) extends SV1-a's and refuses to apply without it, so it is excluded with it.
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*|20280106000000_*|20280107000000_*|20280111000000_*|20280112000000_*|20280114000000_*|20280125000000_*|20280127000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5680,7 +5680,7 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20280111000000_site_visits_sv1a_catalog
 20280112000000_site_visits_sv1a_record
 20280114000000_site_visits_sv2_visit_media
-20280126000000_hub_catalog_generation"
+20280127000000_hub_catalog_generation"
 # 4d-ii-a / A7d — THE RUNNER'S RULE, MIRRORED (scripts/migrate.sh, the P3005 baseline path): on a database
 # that CARRIES A7d (its two claimant seals and the re-issued actor seal standing beside 4d-i's own seal
 # functions) 4d-i's two halves and 4d-i-b U3 are resolved as applied rather than replayed, because each
@@ -5764,7 +5764,7 @@ else
   echo "FAILED  4d-ii-a / A7d: the database does not read as carrying A7d although 20280104 ran on it — the runner would replay 4d-i and its catalog audit would refuse A7d's generation"; FAIL=1
 fi
 if t4d_out="$(t4d_replay)"; then
-  echo "ok      4d-ii-a / A7d: a ledger-lost replay with NO lease runs 20271222–20280126 through on a database carrying A7d, SV1-a and Hub U5m (4d-i, U3, and — for SV1-a — U1, A7a and A7d, and — for U5m — SV1-a's catalog file resolved as applied, as the runner does)"
+  echo "ok      4d-ii-a / A7d: a ledger-lost replay with NO lease runs 20271222–20280127 through on a database carrying A7d, SV1-a and Hub U5m (4d-i, U3, and — for SV1-a — U1, A7a and A7d, and — for U5m — SV1-a's catalog file resolved as applied, as the runner does)"
 else
   echo "FAILED  4d-ii-a / A7d: the lease-less replay on a database carrying A7d failed; got: $(printf '%s' "$t4d_out" | tail -3 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
 fi
@@ -5807,7 +5807,7 @@ else
   echo "FAILED  4d-ii-a / A7d: the served database does not read as carrying A7d — the runner would replay 4d-i and its catalog audit would refuse A7d's generation"; FAIL=1
 fi
 if t4d_out="$(t4d_replay)"; then
-  echo "ok      4d-ii-a: once this release has served, the ledger-lost replay runs 20271222–20280126 through (4d-i, U3, U1, A7a, A7d and SV1-a's catalog file resolved as applied, as the runner does)"
+  echo "ok      4d-ii-a: once this release has served, the ledger-lost replay runs 20271222–20280127 through (4d-i, U3, U1, A7a, A7d and SV1-a's catalog file resolved as applied, as the runner does)"
 else
   echo "FAILED  4d-ii-a: the replay refused a database this release served; got: $(printf '%s' "$t4d_out" | tail -3 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
 fi
@@ -5862,6 +5862,11 @@ assert "SV2: after the replay the visit-file record keeps its four triggers, its
 assert "#1179 R1: after the replay the removal line keeps its four triggers and its CHECK, and the visit-file table its two removal guards and its visit lock" \
   "SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"SiteVisitFileRemoval\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('SiteVisitFileRemoval_insert','SiteVisitFileRemoval_done','SiteVisitFileRemoval_frozen','SiteVisitFileRemoval_no_truncate'))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"SiteVisitFileRemoval\"'::regclass AND conname = 'SiteVisitFileRemoval_shape_check')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"SiteVisitMedia\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('SiteVisitMedia_removal_recorded','SiteVisitMedia_not_removed','SiteVisitMedia_00_visit_lock'))::text;" \
   "4|1|3"
+# #1177 VT1a — the replay re-ran the transcripts migration (on ALWAYS_EXECUTE) too: its four triggers and its CHECK
+# stand enabled, and so does the guard it adds on "Media" that keeps a transcribed file a voice note.
+assert "#1177 VT1a: after the replay the transcripts table keeps its four triggers and its CHECK, and the media table its voice-note guard" \
+  "SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"VoiceTranscript\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('VoiceTranscript_insert','VoiceTranscript_keys_fixed','VoiceTranscript_no_delete','VoiceTranscript_no_truncate'))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"VoiceTranscript\"'::regclass AND conname = 'VoiceTranscript_shape_check')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"Media\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname = 'Media_voice_transcript_note_kept')::text;" \
+  "4|1|1"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \
