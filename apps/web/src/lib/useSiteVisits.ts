@@ -17,6 +17,7 @@ import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto
 import { acceptedType, blobBase64, type Recorded, type RecordKind } from './mediaRecorder';
 import { VIDEO_CLIP_MIMES, VOICE_NOTE_MIMES } from '@/data/queueContracts';
 import { refusalWords, SV } from './siteVisitWords';
+import { guideRunToken, recordGuidedPhotoPick } from '@/guide/outcomes';
 
 /**
  * Site Visits SV1-c (#792, QA item 6): the screen's own state. The visits are read a page at a time from the
@@ -812,6 +813,8 @@ export function useSiteVisits() {
      *  reload, a sign-in and leaving the screen, and one taken on a visit started without signal goes after that start.
      *  A phone that cannot keep it is told so and nothing is sent. */
     addPhoto: async (visitId: string, file: File, extra: { note?: string; rating?: SiteVisitRating; nodeId?: string; placeName?: string | null }): Promise<boolean> => {
+      // #482: the guide run it was picked under, taken before the file is read (a run started meanwhile is not its)
+      const guideRun = guideRunToken();
       const state = useStore.getState();
       if (!state.serverGateway()) { setError(SV.needsServer[state.lang]); return false; }
       const scope = projectScopeOf(state);
@@ -847,6 +850,7 @@ export function useSiteVisits() {
           },
           by: { name: s.userName ?? '', role: s.role }, placeName: extra.placeName ?? null, queuedAt: now(),
         };
+        recordGuidedPhotoPick(guideRun, op.file.id);
         return await keepAndQueue(scope, op, m[2], say);
       } finally {
         if (live(scope)) setBusy(false);
