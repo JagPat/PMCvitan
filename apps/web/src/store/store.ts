@@ -1641,6 +1641,8 @@ export const useStore = create<Store>()(
     let okWaiting: { okMsg: string | (() => string); key: string; queue: string }[] = [];
     /** #482 — a write-ahead act the in-app guide waits on, by its key: the flush that settles it tells it (`runWriteAhead`) */
     const actWatches = new Map<string, (how: 'sent' | 'failed' | 'pending') => void>();
+    /** #482 — the keys of the acts the flush now running has taken: that flush tells their watches, also after the signal goes */
+    let flushingKeys: ReadonlySet<string> = new Set();
     const scopeCoordinators = new Map<string, ScopeCoordinator>();
     const scopeKey = (scope: ProjectScope): string => `${scope.projectId}::${scope.generation}`;
     /** Drop coordinators for scopes we've LEFT that have no pull in flight — a scope
@@ -3596,7 +3598,8 @@ export const useStore = create<Store>()(
       }
       set((s) => { s.modal = { type: null }; });
       get().flash(DTX.advised[get().lang]);
-      reportAdvice('sent');
+      // demo: nothing is recorded (the server owns the thread), so the guide does not count it answered
+      reportAdvice('not-kept');
     },
     // ── Phase 6 task 4d-ii-b / B5a — the four countersign-chain commands. Each is one write-ahead act
     //    under ONE fresh key (`dispatchChainAct`): coalesced while an equivalent act on the same decision
@@ -6369,8 +6372,9 @@ export const useStore = create<Store>()(
       const goingOnline = !get().online;
       set((s) => { s.online = goingOnline; });
       if (!goingOnline) {
-        // #482 — a write-ahead act the guide waits on now waits for the signal: kept on this phone or not, as offline
-        for (const watch of [...actWatches.values()]) watch('pending');
+        // #482 — a write-ahead act the guide waits on now waits for the signal: kept on this phone or not, as offline. One
+        // the running flush has taken is told by that flush: its request is out, and the server may still refuse it
+        for (const [k, watch] of [...actWatches]) if (!flushingKeys.has(k)) watch('pending');
         get().flash(DLT.signalLost[get().lang]);
         return;
       }
@@ -6410,6 +6414,8 @@ export const useStore = create<Store>()(
       // so a command persisted mid-flush is still sent. Idempotency keys make an overlap harmless.
       if (outboxFlushing) { outboxFlushQueued = true; return notRun(); }
       outboxFlushing = true;
+      // #482 — what this flush may send: the queue as it starts (narrowed to what it takes once it takes it)
+      flushingKeys = new Set(get().outbox.flatMap((o) => ('idempotencyKey' in o ? [o.idempotencyKey] : [])));
       try {
       // SV2: every kept visit photo's act is put back first, from the phone's own record of it, so a close can never
       // overtake its photo. When that record could not be read (a failed or too slow read), the rest of the queue
@@ -6475,6 +6481,7 @@ export const useStore = create<Store>()(
       const lateAt = waited ? queued.findIndex((o) => !waited.has(o)) : -1;
       if (lateAt >= 0) outboxFlushQueued = true;
       const ops = lateAt >= 0 ? queued.slice(0, lateAt) : queued.slice();
+      flushingKeys = new Set(ops.flatMap((o) => ('idempotencyKey' in o ? [o.idempotencyKey] : [])));
       // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
       // take its own acts out of `ops` as it goes)
       const taken = ops.length;
@@ -6664,7 +6671,11 @@ export const useStore = create<Store>()(
         const visitAct = ops[i];
         if (photoHeld && isSiteVisitOp(visitAct) && visitAct.t !== 'siteVisitAddFile') withheldVisits.add(siteVisitOf(visitAct));
         if (photoHeld || withheldHere) { heldVisits.push(ops[i]); continue; }
-        if (settleDone(ops[i])) continue;
+        if (settleDone(ops[i])) {
+          // #482 — another tab sent it: the server has it, so a guide waiting on it is told so
+          const k = keyOf(ops[i]); if (k) actWatches.get(k)?.('sent');
+          continue;
+        }
         const mat = isMaterialsOp(ops[i]);
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);
@@ -7013,6 +7024,10 @@ export const useStore = create<Store>()(
       return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys, word: handBack };
       } finally {
         outboxFlushing = false;
+        flushingKeys = new Set();
+        // #482 — offline, no rerun follows: an act the guide waits on that this flush did not settle (taken after it began,
+        // or left out of it) waits for the signal, as going offline says
+        if (!get().online) for (const watch of [...actWatches.values()]) watch('pending');
         // a visit photo reconciliation this flush overtook reads again now, against the settled queue (SV2)
         if (visitPhotoRecheck) {
           visitPhotoRecheck = false;

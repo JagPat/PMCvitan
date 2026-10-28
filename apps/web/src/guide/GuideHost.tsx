@@ -188,7 +188,7 @@ export function GuideHost() {
       const current = guide.steps[step]!;
       if (current.until === 'focus' && document.activeElement instanceof Element) {
         const focused = document.activeElement.closest(`[data-guide="${current.target}"]`);
-        if (focused && (!current.keyed || guideKeyMatches(focused.getAttribute('data-guide-key'), runKey))) {
+        if (focused && (!current.keyed || runKey === null || guideKeyMatches(focused.getAttribute('data-guide-key'), runKey))) {
           completeStep(key, g, focused.getAttribute('data-guide-key'));
           return;
         }
@@ -264,7 +264,8 @@ export function GuideHost() {
       const target = e.target instanceof Element ? e.target : null;
       const pressed = target?.closest(`[data-guide="${current.target}"]`);
       if (!pressed) return;
-      if (current.keyed && !guideKeyMatches(pressed.getAttribute('data-guide-key'), g.run.key)) return;
+      // (a keyed first step has no key yet: any of its controls starts it)
+      if (current.keyed && g.run.key !== null && !guideKeyMatches(pressed.getAttribute('data-guide-key'), g.run.key)) return;
       // an action that can fail waits for the store's report (this runs before the control's own
       // handler, so even a report made at once, as in demo mode, finds the wait in place)
       if (current.until === 'outcome') {
@@ -282,7 +283,8 @@ export function GuideHost() {
       const target = e.target instanceof Element ? e.target : null;
       const reached = target?.closest(`[data-guide="${current.target}"]`);
       if (!reached) return;
-      if (current.keyed && !guideKeyMatches(reached.getAttribute('data-guide-key'), g.run.key)) return;
+      // the first step has no key yet: any of its boxes starts it
+      if (current.keyed && g.run.key !== null && !guideKeyMatches(reached.getAttribute('data-guide-key'), g.run.key)) return;
       completeStep(key, g, reached.getAttribute('data-guide-key'));
     };
     document.addEventListener('click', onClick, true);
@@ -310,7 +312,10 @@ export function GuideHost() {
         const notOk = outcome === current.outcome.failed || outcome === current.outcome.held;
         if (outcome === current.outcome.ok || (notOk && g.run.pressed && current.settled?.(g.run.key))) completeStep(key, g, null);
         else if (outcome === current.outcome.held) g.stop();
-        else if (outcome === current.outcome.failed) g.setWait(false);
+        else if (outcome === current.outcome.failed) {
+          if (current.retryFrom !== undefined) g.setStep(current.retryFrom);
+          else g.setWait(false);
+        }
       }),
     [key],
   );

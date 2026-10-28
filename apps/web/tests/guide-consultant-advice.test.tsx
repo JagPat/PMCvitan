@@ -87,9 +87,10 @@ async function atSend(decisions = [asked('DL-1'), asked('DL-2')]) {
 }
 
 describe('the consultant is guided through answering a request for advice', () => {
-  it('shows itself the first time, walks the advice box → Send, and is done once the advice is sent (demo)', async () => {
+  it('shows itself the first time, walks the advice box → Send, and is done once the advice is sent', async () => {
     vi.useFakeTimers();
-    await start([asked('DL-1'), asked('DL-2')]);
+    const { useStore, outcomes } = await start([asked('DL-1'), asked('DL-2')]);
+    act(() => { useStore.getState()._setGateway(silentServer() as never); });
     tick();
     expect(tip()?.getAttribute('data-guide-id')).toBe('answer-advice');
     expect(tip()?.textContent).toContain('You were asked for your advice on this. Write it here.');
@@ -100,9 +101,23 @@ describe('the consultant is guided through answering a request for advice', () =
     expect(tip()?.textContent).toContain('Then tap here to send it.');
     write('DL-2', 'Quartz holds up better here.');
     press(byTestId('consultation-send-advice-DL-2')!);
+    act(() => outcomes.emitGuideOutcome('advice-sent', 'DL-2:c-DL-2', outcomes.guideRunToken()));
     tick();
     expect(tip()).toBeNull();
     expect(done()).toEqual(['answer-advice']);
+  });
+
+  it('demo: the advice is not recorded, so the run ends unfinished and is offered again (Codex r2)', async () => {
+    vi.useFakeTimers();
+    const { useGuideState } = await start([asked('DL-1')]);
+    tick();
+    press(box('DL-1'));
+    tick();
+    write('DL-1', 'Quartz.');
+    press(byTestId('consultation-send-advice-DL-1')!);
+    tick();
+    expect(useGuideState.getState().run).toBeNull();
+    expect(done()).toEqual([]);
   });
 
   it('the Send step follows the decision written in: advice sent on another decision does not finish it', async () => {
@@ -112,8 +127,12 @@ describe('the consultant is guided through answering a request for advice', () =
     expect(useGuideState.getState().run?.step).toBe(1);
     act(() => outcomes.emitGuideOutcome('advice-send-failed', 'DL-2:c-DL-2', outcomes.guideRunToken()));
     tick();
-    expect(useGuideState.getState().run?.step).toBe(1);
+    // refused: back to writing it (Codex r2), still on DL-2
+    expect(useGuideState.getState().run?.step).toBe(0);
     expect(done()).toEqual([]);
+    press(box('DL-2'));
+    tick();
+    expect(useGuideState.getState().run?.step).toBe(1);
     act(() => outcomes.emitGuideOutcome('advice-sent', 'DL-2:c-DL-2', outcomes.guideRunToken()));
     tick();
     expect(useGuideState.getState().run).toBeNull();
@@ -208,10 +227,10 @@ describe('the store reports a sent advice\'s outcome for the guide', () => {
     return { useStore, seen, send };
   }
 
-  it('demo: sent', async () => {
+  it('demo: nothing is recorded, so it is not counted answered (Codex r2)', async () => {
     const { seen, send } = await store();
     send();
-    expect(seen).toEqual([['advice-sent', 'DL-1:c-DL-1']]);
+    expect(seen).toEqual([['advice-not-kept', 'DL-1:c-DL-1']]);
   });
 
   it('online: taken by the server is sent', async () => {
@@ -239,16 +258,34 @@ describe('the store reports a sent advice\'s outcome for the guide', () => {
     expect(useStore.getState().outbox).toHaveLength(1);
   });
 
-  it('online, then the signal is lost before the act settles: kept on this phone is queued (sent)', async () => {
+  it('online, then the signal is lost while the request is out: the flush tells it, a lost answer is queued (sent)', async () => {
     const { useStore, seen, send } = await store();
-    const respond = vi.fn(() => new Promise(() => {}));
+    let fail!: (e: unknown) => void;
+    const respond = vi.fn(() => new Promise((_, reject) => { fail = reject; }));
     useStore.getState()._setGateway({ respondToConsultation: respond } as never);
     send();
     // the request is on the wire before the signal goes (signals, not clocks)
     await settles(() => respond.mock.calls.length === 1);
     useStore.getState().toggleOnline();
+    // the request is still out: nothing is said yet
+    await Promise.resolve();
+    expect(seen).toEqual([]);
+    fail(new Error('network'));
     await settles(() => seen.length > 0);
     expect(seen).toEqual([['advice-sent', 'DL-1:c-DL-1']]);
+  });
+
+  it('online, then the signal is lost while the request is out, and the server refuses it: failed, not queued (Codex r2)', async () => {
+    const { useStore, seen, send } = await store();
+    let fail!: (e: unknown) => void;
+    const respond = vi.fn(() => new Promise((_, reject) => { fail = reject; }));
+    useStore.getState()._setGateway({ respondToConsultation: respond } as never);
+    send();
+    await settles(() => respond.mock.calls.length === 1);
+    useStore.getState().toggleOnline();
+    fail(Object.assign(new Error('closed'), { status: 409 }));
+    await settles(() => seen.length > 0);
+    expect(seen).toEqual([['advice-send-failed', 'DL-1:c-DL-1']]);
   });
 
   it('the signal lost before the advice is written on this phone waits for the write: kept is queued (sent)', async () => {
@@ -262,6 +299,25 @@ describe('the store reports a sent advice\'s outcome for the guide', () => {
     expect(seen).toEqual([['advice-sent', 'DL-1:c-DL-1']]);
   });
 
+  it('an act made after a running flush took its acts, then the signal goes: told queued, not left to a rerun that never comes', async () => {
+    const { useStore, seen, send } = await store();
+    let fail!: (e: unknown) => void;
+    const respond = vi.fn(() => new Promise((_, reject) => { fail = reject; }));
+    useStore.getState()._setGateway({ respondToConsultation: respond } as never);
+    // a first act holds the flush open
+    useStore.getState().respondToConsultation('DL-1', 'c-other', 'First.');
+    await settles(() => respond.mock.calls.length === 1);
+    // this act joins while it runs (its flush is coalesced into a rerun)
+    send();
+    await settles(() => useStore.getState().outbox.length === 2);
+    // the signal goes: the running flush took only the first act, so this one is told now (no rerun runs offline);
+    // the first is told by its flush
+    useStore.getState().toggleOnline();
+    fail(new Error('network'));
+    await settles(() => seen.some(([, k]) => k === 'DL-1:c-DL-1'));
+    expect(seen.filter(([, k]) => k === 'DL-1:c-DL-1')).toEqual([['advice-sent', 'DL-1:c-DL-1']]);
+  });
+
   it('offline: kept on this phone is queued (sent)', async () => {
     const { seen, send } = await store(false);
     const { useStore } = await import('@/store/store');
@@ -272,10 +328,30 @@ describe('the store reports a sent advice\'s outcome for the guide', () => {
   });
 });
 
-describe('Codex round 1 on #1198', () => {
+describe('Codex rounds on #1198', () => {
+  it('a refused send goes back to the same request\'s box, whose Send the attempt emptied (Codex r2)', async () => {
+    const { useStore, useGuideState, outcomes } = await atSend();
+    act(() => { useStore.getState()._setGateway(silentServer() as never); });
+    press(byTestId('consultation-send-advice-DL-2')!);
+    act(() => outcomes.emitGuideOutcome('advice-send-failed', 'DL-2:c-DL-2', outcomes.guideRunToken()));
+    tick();
+    expect(useGuideState.getState().run?.step).toBe(0);
+    // it points at DL-2's box, not the first one on the screen
+    expect(tip()?.textContent).toContain('Write it here.');
+    const spot = document.querySelector<HTMLElement>('[data-testid="guide-spot"]');
+    expect(spot).not.toBeNull();
+    // the box of another request does not move it on; this one's does
+    act(() => { box('DL-1').focus(); });
+    expect(useGuideState.getState().run?.step).toBe(0);
+    act(() => { box('DL-2').focus(); });
+    expect(useGuideState.getState().run?.step).toBe(1);
+    expect(useGuideState.getState().run?.key).toBe('DL-2:c-DL-2');
+  });
+
   it('a box already focused before the guide started counts as reached: the guide moves on to Send', async () => {
     vi.useFakeTimers();
-    const { useGuideState } = await start([asked('DL-1'), asked('DL-2')]);
+    const { useStore, useGuideState, outcomes } = await start([asked('DL-1'), asked('DL-2')]);
+    act(() => { useStore.getState()._setGateway(silentServer() as never); });
     const { guidesFor } = await import('@/guide/guides');
     // no run yet when the box is tapped (the tip had not come up): no later focusin will say so
     act(() => { useGuideState.getState().stop(); });
@@ -289,6 +365,7 @@ describe('Codex round 1 on #1198', () => {
     // and it follows the decision whose box has the focus
     write('DL-2', 'Quartz holds up better here.');
     press(byTestId('consultation-send-advice-DL-2')!);
+    act(() => outcomes.emitGuideOutcome('advice-sent', 'DL-2:c-DL-2', outcomes.guideRunToken()));
     tick();
     expect(done()).toEqual(['answer-advice']);
   });
@@ -311,6 +388,8 @@ describe('Codex round 1 on #1198', () => {
       sessionUserId: 'u-cli',
       decisions: [asked('DL-1', 'u-cli')],
     } as never);
+    useStore.getState()._setGateway(silentServer() as never);
+    const outcomes = await import('@/guide/outcomes');
     const { GuideHost } = await import('@/guide/GuideHost');
     const { ClientDecisionsScreen } = await import('@/screens/ClientDecisionsScreen');
     render(<><GuideHost /><ClientDecisionsScreen /></>);
@@ -321,6 +400,7 @@ describe('Codex round 1 on #1198', () => {
     expect(step()).toBe('1');
     write('DL-1', 'Quartz, please.');
     press(byTestId('consultation-send-advice-DL-1')!);
+    act(() => outcomes.emitGuideOutcome('advice-sent', 'DL-1:c-DL-1', outcomes.guideRunToken()));
     tick();
     expect(tip()).toBeNull();
     expect(JSON.parse(localStorage.getItem('vitan.guide.done.v1:user:u-cli') ?? '[]')).toContain('answer-advice-client');

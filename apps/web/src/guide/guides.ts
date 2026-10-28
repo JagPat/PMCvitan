@@ -45,6 +45,8 @@ export interface GuideStep {
    * failure (its answer can be lost after the server took it), so it only says true for this run's own action.
    */
   settled?: (key: string | null) => boolean;
+  /** For `until: 'outcome'`: the step a failed report goes back to (the box the attempt emptied), instead of staying here */
+  retryFrom?: number;
   /** point at the control carrying the same `data-guide-key` as the one pressed in an earlier step
    *  (the photo button of the item just failed, not of another failed item), or the key of the record
    *  it belongs to (that checklist's Submit); an `outcome` for another record does not count */
@@ -166,7 +168,8 @@ export const GUIDES: readonly Guide[] = [
 /** Write the advice, then send it: the same two steps wherever the advice box shows. */
 function answerAdviceSteps(): GuideStep[] {
   return [
-    { target: 'advice-write', tip: 'adviceWrite', until: 'focus' },
+    // keyed: any box starts it; after a refused send it points back at the same request's box
+    { target: 'advice-write', tip: 'adviceWrite', until: 'focus', keyed: true },
     {
       target: 'advice-send',
       tip: 'adviceSend',
@@ -174,6 +177,8 @@ function answerAdviceSteps(): GuideStep[] {
       until: 'outcome',
       outcome: { ok: 'advice-sent', failed: 'advice-send-failed', held: 'advice-not-kept' },
       settled: adviceAnswered,
+      // Send empties the box, so a refused send goes back to writing it again
+      retryFrom: 0,
     },
   ];
 }
