@@ -109,6 +109,30 @@ describe('the inspection review guide (#482 step 3c)', () => {
     await tipAt('0');
   });
 
+  it('while a decision sent online is unanswered, no review is pointed at (Codex 4403491374); a refusal points again', async () => {
+    let refuse!: (e: unknown) => void;
+    const decideReview = vi.fn(() => new Promise((_, reject) => { refuse = reject; }));
+    const { useStore, useGuideState, guide } = await open({ decideReview });
+    act(() => { useGuideState.getState().start(guide); });
+    await tipAt('0');
+    press('send-reinspection');
+    await vi.waitFor(() => { if (decideReview.mock.calls.length !== 1) throw new Error('not sent'); });
+    // the buttons stay, but pressing again would decide it twice: nothing is pointed at, nor offered
+    expect(document.querySelector('[data-testid="send-reinspection"]')).not.toBeNull();
+    expect(guided()).toEqual([]);
+    expect(guide.available!()).toBe(false);
+    // nor on another review the PMC turns to meanwhile
+    act(() => { useStore.setState((s) => ({ reviews: [...s.reviews, { ...s.reviews[0]!, id: 'INSP-OTHER', decided: false }], activeReviewId: 'INSP-OTHER' })); });
+    expect(document.querySelector('[data-testid="send-reinspection"]')).not.toBeNull();
+    expect(guided()).toEqual([]);
+    expect(guide.available!()).toBe(false);
+    await act(async () => { refuse(Object.assign(new Error('closed'), { status: 409 })); });
+    expect(useStore.getState().reviewDecisionsSending).toBe(0);
+    await vi.waitFor(() => { if (guided().length === 0) throw new Error('not pointed at'); });
+    expect(guided()).toEqual(['send-reinspection']);
+    expect(guide.available!()).toBe(true);
+  });
+
   it('a refusal whose review a refresh already shows decided (gone from the queue) still finishes it', async () => {
     let refuse!: (e: unknown) => void;
     const decideReview = vi.fn(() => new Promise((_, reject) => { refuse = reject; }));

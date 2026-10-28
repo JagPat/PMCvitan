@@ -448,6 +448,10 @@ export interface AppState {
   /** #482 site photos — the upload keys of this tab's site photo uploads sent online and not yet answered (an answer of
    *  any kind, or a network error, ends one); memory only, as the request itself is */
   photoUploadsSending: string[];
+  /** #482 (Codex 4403491374) — how many review decisions this tab sent online and has no answer for yet; memory only,
+   *  as the request itself is. The review guide points at no decide control while one is on its way
+   *  (`reviewDecisionWaits`), so a second press is never guided into a second decision */
+  reviewDecisionsSending: number;
   /** FAILED evidence (terminal non-dedupe rejection) awaiting the user's Retry/Delete (Task 4),
    *  each row still carrying WHICH work it belongs to. `inspectionId` /
    *  `inspectionItemId` are kept because Delete on this list is the one non-server path that drops
@@ -1324,6 +1328,13 @@ function releaseCommercialKeys(
 }
 
 /** The cap reservation a commercial op holds, or null if it spends no line authority. */
+/** #482 — the review guide waits on a decision already on its way: this review's, queued on this phone to send, or any
+ *  sent online with no answer yet (Codex 4403491374: the run waits on that answer, and must not lead a press on this
+ *  review or another meanwhile). It neither offers nor points at a review then (pressing again would decide twice) */
+export function reviewDecisionWaits(s: Pick<AppState, 'outbox' | 'reviewDecisionsSending'>, reviewId: string): boolean {
+  return s.reviewDecisionsSending > 0 || s.outbox.some((o) => o.t === 'decideReview' && o.inspectionId === reviewId);
+}
+
 export function capReservationOf(op: unknown): { lineId: string; qty: string } | null {
   const o = op as {
     t?: unknown; labourPoLineId?: unknown; input?: { labourPoLineId?: unknown; quantity?: unknown };
@@ -1478,6 +1489,7 @@ export function getInitialState(): AppState {
     siteVisitsSentAnyway: [],
     photoUploadsInFlight: [],
     photoUploadsSending: [],
+    reviewDecisionsSending: 0,
     failedEvidence: [],
     pendingEvidenceCount: 0,
     pendingEvidenceKeys: null,
@@ -2857,6 +2869,11 @@ export const useStore = create<Store>()(
       return (result: ActReport) =>
         emitGuideOutcome(result === 'sent' || result === 'queued' ? 'review-decided' : result === 'failed' ? 'review-decide-failed' : 'review-decide-not-kept', null, guideRun);
     };
+    /** the online send of a review decision, marked as on its way until any answer (or a network error) ends it */
+    const sendingDecision = (call: () => Promise<ApiSnapshot>) => (): Promise<ApiSnapshot> => {
+      set((s) => { s.reviewDecisionsSending += 1; });
+      return call().finally(() => { set((s) => { s.reviewDecisionsSending -= 1; }); });
+    };
     const runRemoteOrQueue = (
       op: OutboxOp,
       label: string,
@@ -4167,7 +4184,7 @@ export const useStore = create<Store>()(
       // and any offline replay reach the server under it, so a lost-response retry decides once.
       const approveReviewKey = newIdempotencyKey();
       const decidedBy = get().sessionUserId;
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, IRL.approveQueued.en, () => gateway!.decideReview(review.id, true, [], approveReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), () => approvedMsg(get().lang), DLX.savedOffline(IRL.approveQueued[lang], lang), reportDecide)) return;
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, IRL.approveQueued.en, sendingDecision(() => gateway!.decideReview(review.id, true, [], approveReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; })), () => approvedMsg(get().lang), DLX.savedOffline(IRL.approveQueued[lang], lang), reportDecide)) return;
       set((s) => {
         const j = s.reviews.findIndex((r) => r.id === review.id);
         if (j >= 0) {
@@ -4204,7 +4221,7 @@ export const useStore = create<Store>()(
       // Task 10 (Module 3) correction — the rejection decision carries its own stable idempotency key.
       const rejectReviewKey = newIdempotencyKey();
       const decidedBy = get().sessionUserId;
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds, idempotencyKey: rejectReviewKey }, IRL.sendBackQueued.en, () => gateway!.decideReview(review.id, false, rejectedIds, rejectReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), () => IRT.reinspectionsToast(n, get().lang), DLX.savedOffline(IRL.sendBackQueued[lang], lang), reportDecide)) return;
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds, idempotencyKey: rejectReviewKey }, IRL.sendBackQueued.en, sendingDecision(() => gateway!.decideReview(review.id, false, rejectedIds, rejectReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; })), () => IRT.reinspectionsToast(n, get().lang), DLX.savedOffline(IRL.sendBackQueued[lang], lang), reportDecide)) return;
       set((s) => {
         s.reinspectionCreated = true;
         const j = s.reviews.findIndex((r) => r.id === review.id);

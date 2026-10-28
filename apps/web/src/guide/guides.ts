@@ -2,7 +2,7 @@ import { can, viewerIsConsultee, type Decision, type Role, type ScreenKey } from
 import type { GuideTip, GuideTitle } from './words';
 import { guidedPhotoPicksOf, guidedReviewOf, type GuideOutcome } from './outcomes';
 import { useGuideState } from './guideState';
-import { inspectionFrozen, useStore } from '@/store/store';
+import { inspectionFrozen, reviewDecisionWaits, useStore } from '@/store/store';
 import { dailyLogSendPending } from '@/store/dailyLogPending';
 import { dailyLogSettledForLinks, inspectionsSettledForLinks, selectActiveReview, selectDecisionsNeedingViewer } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
@@ -322,13 +322,13 @@ function siteVisitRecordable(): boolean {
   return !!API_BASE && can('siteVisit.start', s.role);
 }
 
-/** The review the screen shows waits on the PMC's decision, with none on its way for it, on a settled read (the screen
- *  shows no decision controls while its read loads or failed: `inspectionsSettledForLinks` holds neither, nor on a
- *  review already decided, kept on screen as its record) */
+/** The review the screen shows waits on the PMC's decision, with no decision on its way (`reviewDecisionWaits`), on a
+ *  settled read (the screen shows no decision controls while its read loads or failed: `inspectionsSettledForLinks`
+ *  holds neither, nor on a review already decided, kept on screen as its record) */
 function reviewAwaitingDecision(): boolean {
   const s = useStore.getState();
   const r = selectActiveReview(s);
-  return inspectionsSettledForLinks(s) && !!r && !r.decided && !s.outbox.some((o) => o.t === 'decideReview' && o.inspectionId === r.id);
+  return inspectionsSettledForLinks(s) && !!r && !r.decided && !reviewDecisionWaits(s, r.id);
 }
 
 /** the review this run decided shows decided, or has left the queue (the server's queue holds only undecided reviews) */

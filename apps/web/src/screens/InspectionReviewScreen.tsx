@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useStore } from '@/store/store';
+import { reviewDecisionWaits, useStore } from '@/store/store';
 import { selectActiveReview } from '@/store/selectors';
 import { Eyebrow, ResultChip, Button, LocationContext, EditState, ItemNotFound, ConfirmDialog } from '@/components';
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
@@ -15,9 +15,9 @@ import styles from './responsive.module.css';
 export function InspectionReviewScreen() {
   const reviews = useStore(useShallow((s) => s.reviews));
   const active = useStore(selectActiveReview);
-  // #482: a review whose decision is already waiting to send is not the guide's to point at (pressing again would queue
-  // a second decision)
-  const decisionQueued = useStore((s) => !!active && s.outbox.some((o) => o.t === 'decideReview' && o.inspectionId === active.id));
+  // #482: while a decision is already on its way (this review's queued to send, or any sent online with no answer yet:
+  // Codex 4403491374) the guide points at nothing (pressing again would decide twice)
+  const decisionWaits = useStore((s) => !!active && reviewDecisionWaits(s, active.id));
   const setActiveReview = useStore((s) => s.setActiveReview);
   const toggleReject = useStore((s) => s.toggleReject);
   const approveInspection = useStore((s) => s.approveInspection);
@@ -52,9 +52,9 @@ export function InspectionReviewScreen() {
   // (the predicate the bell judges by, so the two cannot disagree)
   // (a module read that has not yet landed — `idle` before its first pull — is not settled either)
   const settled = useStore(inspectionsSliceSettled) && !reading;
-  // #482: the guide points at no decision while it waits to send, nor on a retained review whose read is loading or
+  // #482: the guide points at no decision while one is on its way, nor on a retained review whose read is loading or
   // failed (Codex 4403491383): the same settled read its offer needs
-  const guideOff = decisionQueued || !settled;
+  const guideOff = decisionWaits || !settled;
   const routeReview = routeItem !== null && reviews.some((r) => r.id === routeItem) ? routeItem : null;
   const routeChecklist = routeItem !== null && openChecklists.some((c) => c.id === routeItem) ? routeItem : null;
   // Codex 4209321867 / 4209988812 — a decision ends the route's claim on its review only once it has
@@ -345,7 +345,7 @@ export function InspectionReviewScreen() {
         ) : (
           <>
             {/* #482: the guide points at the controls that decide. With a failed item Approve asks first, so its
-                confirm is the one, and while it asks Send back behind it is not. None once a decision waits to send, or on an unsettled read */}
+                confirm is the one, and while it asks Send back behind it is not. None while a decision is on its way, or on an unsettled read */}
             {failedCount > 0 ? (
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                 <Button variant="danger" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" data-guide={guideOff || confirmApproveId === review.id ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
