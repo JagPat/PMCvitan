@@ -4,11 +4,12 @@ import { describe, it, expect } from 'vitest';
 import { clipSeconds, readVideoClip } from './video-container';
 import { readVoiceRecording } from './voice-container';
 import {
-  WEBM, box, ebml, fullBox, ftyp, mp4File, mp4Fragmented, mvhd, sampleEntry, simpleBlock, trak, webmCluster, webmClusterAt, webmFile, webmInfo, webmTrack,
+  WEBM, box, ebml, fullBox, ftyp, lacedBlock, mp4File, mp4Fragmented, mvhd, sampleEntry, simpleBlock, trak, webmCluster, webmClusterAt, webmFile, webmInfo, webmTrack,
 } from '../../test/unit-support/voice-files';
 import {
-  AVCC_BODY, CLIP_WEBM, NAL_SAMPLE, avcC, btrt, clipFragmented, clipMp4, clipWebm, clipWebmTimed, colr, fixedTable, mfra, mfraFor, SMHD_BOX, VMHD_BOX, moofOf, pasp, pictureBlock,
-  pictureTrack, pictureTrak, silentClipWebm, soundTrack, soundTrakOpus, tfhdMoof, tfra, trakOf, trunTimed, videoElement, visualEntry, visualFields, vpcC,
+  AVCC_BODY, CLIP_WEBM, NAL_SAMPLE, OPUS_20MS, OPUS_HEAD, avcC, btrt, clipFragmented, clipMp4, clipWebm, clipWebmTimed, colr, cuePoint, cuesOf, editOf, fixedTable, fragmentOf, mfra, mfraFor,
+  SMHD_BOX, VMHD_BOX, moofOf, pasp, pictureBlock, pictureTrack, pictureTrak, safariClipMp4, safariClipWebm, silentClipWebm, soundTrack, soundTrakOpus, tfhdMoof, tfra, trakOf,
+  trunTimed, videoElement, visualEntry, visualFields, vpcC,
 } from '../../test/unit-support/video-files';
 
 /**
@@ -135,7 +136,7 @@ describe('readVideoClip — WebM', () => {
 
   it('the length is the longest of Info\'s Duration and where the latest block ends, picture or sound', () => {
     expect(webm(clipWebmTimed(42))).toBe(42);
-    // picture blocks with no Duration, as Chrome writes them: the latest is held for the longest interval between them
+    // picture blocks with no Duration, as Chrome writes them: the latest is held for the median interval between them
     expect(webm(clipWebm({ clusters: [webmClusterAt(59_533, [pictureBlock(), pictureBlock(1, 33)])] }))).toBeCloseTo(59.599, 6);
     // a picture block's BlockDuration counts, as a sound block's does
     const lasting = ebml(WEBM.blockGroup, Buffer.concat([ebml(WEBM.block, Buffer.concat([Buffer.from([0x81, 0, 0, 0x80]), Buffer.from([1, 2, 3])])), ebml(CLIP_WEBM.blockDuration, Buffer.from([0x75, 0x30]))]));
@@ -150,10 +151,10 @@ describe('readVideoClip — WebM', () => {
     expect(webm(clipWebm({ clusters: [webmClusterAt(0, [pictureBlock(), pictureBlock(1, 33), ...stacked])] }))).toBeCloseTo(2, 6);
   });
 
-  it('Codex round 2 on #1158: a latest picture block with no duration is held for the longest interval, or refused', () => {
+  it('Codex round 2 on #1158: a latest picture block with no duration is held for an interval between pictures, or refused', () => {
     // frames at 59.4 s and 60.4 s: the last one is held for a second, to 61.4 s, which the upload refuses
     expect(webm(clipWebm({ clusters: [webmClusterAt(59_400, [pictureBlock()]), webmClusterAt(60_400, [pictureBlock()])] }))).toBeCloseTo(61.4, 6);
-    // the longest interval, wherever it falls, and on the picture track only: sound blocks do not shorten it
+    // the median interval (the longer middle one of two), on the picture track only: sound blocks do not shorten it
     const opus = Buffer.from([0xfc, 0xff, 0xfe]);
     expect(webm(clipWebm({ clusters: [webmClusterAt(0, [pictureBlock(), pictureBlock(1, 900), simpleBlock(2, opus), pictureBlock(1, 1_000)])] }))).toBeCloseTo(1.9, 6);
     // one picture block, or several at one time, with no duration and no Duration: the end is unknown
@@ -185,7 +186,7 @@ describe('readVideoClip — WebM frames', () => {
     const build = (pictures: number, sounds: number) => clipWebm({
       tracks: [pictureTrack(), soundTrack()],
       clusters: [webmCluster([
-        ...Array.from({ length: pictures }, (_, i) => pictureBlock(1, i % 2 ? 33 : 0)),
+        ...Array.from({ length: pictures }, (_, i) => pictureBlock(1, Math.floor(i / 2))), // two pictures a millisecond, in order
         ...Array.from({ length: sounds }, () => simpleBlock(2, opus)),
       ])],
     });
@@ -490,6 +491,191 @@ describe('readVideoClip — MP4', () => {
   });
 });
 
+describe('readVideoClip — V2a: the layouts phones record, and sound read as a voice note\'s', () => {
+  /** a picture-only clip whose untimed picture blocks start at these milliseconds, one sized Cluster each 10 s */
+  const picturesAt = (ms: number[]) => {
+    const clusters = new Map<number, Buffer[]>();
+    for (const t of ms) {
+      const base = Math.floor(t / 10_000) * 10_000;
+      clusters.set(base, [...(clusters.get(base) ?? []), pictureBlock(1, t - base)]);
+    }
+    return clipWebm({ tracks: [pictureTrack()], clusters: [...clusters].map(([base, blocks]) => webmClusterAt(base, blocks)) });
+  };
+  /** 30 frames a second (33 ms apart within each second) from `from` s up to `to` s */
+  const frames = (from: number, to: number) => {
+    const out: number[] = [];
+    for (let s = from; s < to; s++) for (let i = 0; i < 30; i++) out.push(s * 1000 + i * 33);
+    return out;
+  };
+
+  it('WebM: passes the layout Safari records (libwebm in file mode), Clusters of known size and the Cues after them', () => {
+    // 10 s: the last picture starts at 9.957 s and is held 33 ms, the last 20 ms sound frame ends at 10 s
+    expect(webm(safariClipWebm(10))).toBe(10);
+    expect(readVideoClip('video/webm', safariClipWebm(58))).toEqual({ seconds: 58, durationSec: 58 });
+    // without its Cues it is a sized-Cluster clip, which passes as before
+    expect(webm(safariClipWebm(10, { cues: () => Buffer.alloc(0) }))).toBe(10);
+    // and Cues after Clusters of unknown size end the last of them, as a Segment child does
+    expect(webm(safariClipWebm(10, { unknown: true }))).toBe(10);
+  });
+
+  it('WebM: reads the Cues whole: one, after the Tracks, each point on a listed track at a Cluster\'s start', () => {
+    const at = (points: (c: number[]) => Buffer[]) => safariClipWebm(3, { cues: (c) => cuesOf(points(c)) });
+    expect(webm(at((c) => [cuePoint({ time: 0, cluster: c[0]! })]))).toBe(3);
+    // a cue on the sound track points into the same Clusters
+    expect(webm(at((c) => [cuePoint({ time: 0, track: 2, cluster: c[0]! })]))).toBe(3);
+    // CueRelativePosition, CueDuration and CueBlockNumber, as the voice reader allows
+    expect(webm(at((c) => [cuePoint({ time: 0, cluster: c[0]!, extra: [ebml(0xf0, u32(4)), ebml(0xb2, u32(20)), ebml(0x5378, uint(1))] })]))).toBe(3);
+    // Void between the points
+    expect(webm(at((c) => [cuePoint({ time: 0, cluster: c[0]! }), ebml(WEBM.void, Buffer.alloc(2)), cuePoint({ time: 1000, cluster: c[1]! })]))).toBe(3);
+    for (const [why, file] of [
+      ['a cue on a track the file does not list', at((c) => [cuePoint({ time: 0, track: 3, cluster: c[0]! })])],
+      ['a cue at no Cluster\'s start', at((c) => [cuePoint({ time: 0, cluster: c[0]! + 1 })])],
+      ['a cue past the last Cluster', at((c) => [cuePoint({ time: 0, cluster: c[2]! + 10_000 })])],
+      ['no CueTime', at((c) => [cuePoint({ cluster: c[0]! })])],
+      ['no CueTrackPositions', at(() => [cuePoint({ cluster: 0, fields: [ebml(0xb3, u32(0))] })])],
+      ['no CueTrack', at((c) => [cuePoint({ cluster: 0, fields: [ebml(0xb3, u32(0)), ebml(0xb7, ebml(0xf1, u32(c[0]!)))] })])],
+      ['no CueClusterPosition', at(() => [cuePoint({ cluster: 0, fields: [ebml(0xb3, u32(0)), ebml(0xb7, ebml(0xf7, uint(1)))] })])],
+      ['two CueTrackPositions', at((c) => [cuePoint({ cluster: 0, fields: [ebml(0xb3, u32(0)), ebml(0xb7, Buffer.concat([ebml(0xf7, uint(1)), ebml(0xf1, u32(c[0]!))])), ebml(0xb7, Buffer.concat([ebml(0xf7, uint(2)), ebml(0xf1, u32(c[0]!))]))] })])],
+      ['a CueCodecState', at((c) => [cuePoint({ time: 0, cluster: c[0]!, extra: [ebml(0xea, uint(0))] })])],
+      ['a CueReference', at((c) => [cuePoint({ time: 0, cluster: c[0]!, extra: [ebml(0xdb, ebml(0x96, uint(0)))] })])],
+      ['an unknown element in a CuePoint', at((c) => [cuePoint({ cluster: 0, fields: [ebml(0xb3, u32(0)), ebml(0xb7, Buffer.concat([ebml(0xf7, uint(1)), ebml(0xf1, u32(c[0]!))])), ebml(0xbf, uint(0))] })])],
+      ['an empty Cues', at(() => [])],
+      ['two Cues', safariClipWebm(3, { cues: (c) => Buffer.concat([cuesOf([cuePoint({ time: 0, cluster: c[0]! })]), cuesOf([cuePoint({ time: 0, cluster: c[0]! })])]) })],
+      // the Cues before the Tracks that name its tracks, with its positions moved on by its own length
+      ['Cues before the Tracks', safariClipWebm(3, { first: true })],
+    ] as Array<[string, Buffer]>) {
+      expect(webm(file), why).toBeNull();
+    }
+  });
+
+  it('WebM: a track whose FlagLacing is 0 holds no laced block, picture or sound (#1154, as voice)', () => {
+    const lacing = (n: number) => ebml(0x9c, uint(n));
+    const picture = (flag?: number) => pictureTrack(1, 'V_VP8', [videoElement(), ...(flag !== undefined ? [lacing(flag)] : [])]);
+    const sound = (flag?: number) => ebml(WEBM.trackEntry, Buffer.concat([ebml(WEBM.trackNumber, uint(2)), ebml(WEBM.trackType, uint(2)), ebml(WEBM.codecId, 'A_OPUS'),
+      ebml(WEBM.codecPrivate, OPUS_HEAD), ...(flag !== undefined ? [lacing(flag)] : [])]));
+    // two picture frames, or two 20 ms sound frames, in one fixed-size laced block
+    const lacedPicture = lacedBlock(1, 2, 2, Buffer.alloc(0), Buffer.concat([Buffer.from([1, 2, 3]), Buffer.from([4, 5, 6])]));
+    const lacedSound = lacedBlock(2, 2, 2, Buffer.alloc(0), Buffer.concat([OPUS_20MS, OPUS_20MS]));
+    const file = (tracks: Buffer[], blocks: Buffer[]) => clipWebm({ tracks, clusters: [webmCluster([pictureBlock(), ...blocks, pictureBlock(1, 33)])] });
+    expect(webm(file([picture(), soundTrack()], [lacedPicture, lacedSound]))).not.toBeNull();
+    expect(webm(file([picture(1), sound(1)], [lacedPicture, lacedSound]))).not.toBeNull();
+    expect(webm(file([picture(0), sound(0)], [simpleBlock(2, OPUS_20MS)]))).not.toBeNull();
+    expect(webm(file([picture(0), soundTrack()], [lacedPicture]))).toBeNull();
+    expect(webm(file([picture(), sound(0)], [lacedSound]))).toBeNull();
+  });
+
+  it('WebM: the untimed last picture is held for the median interval (at most a second) or the last interval, if longer (V2 plan, decision 3)', () => {
+    // 30 s at 30 frames a second with a 3 s freeze mid-clip: 30 s, where the longest interval made it 32.97 s
+    const stalled = [...frames(0, 14), ...frames(17, 30)];
+    expect(webm(picturesAt(stalled))).toBeCloseTo(29.99, 6);
+    // the same near the cap: 58 s with a 3 s freeze is a 58 s clip (61 s, and refused, before)
+    expect(readVideoClip('video/webm', picturesAt([...frames(0, 20), ...frames(23, 58)]))?.durationSec).toBe(58);
+    // the median is at most a second: a long stall early does not set it
+    expect(webm(picturesAt([0, 2000, 4000, 4100, 4200]))).toBeCloseTo(5.2, 6);
+    // the longer middle interval of an even count, and blocks starting together are one picture time
+    expect(webm(picturesAt([0, 500, 600]))).toBeCloseTo(1.1, 6);
+    expect(webm(picturesAt([0, 0, 0, 300]))).toBeCloseTo(0.6, 6);
+    // the last interval, if longer, as Firefox plays it (Stage 1's gap-check of c9e1fc72: these read 60.4 s and 60.0 s,
+    // and play 118.8 s and 61.9 s): a lone frame at 59.4 s after one at 0, and a frame at 59.95 s after 58 s at 30 fps
+    expect(webm(picturesAt([0, 59_400]))).toBeCloseTo(118.8, 6);
+    expect(readVideoClip('video/webm', picturesAt([...frames(0, 58), 59_950]))?.durationSec).toBe(62);
+    // a picture placed back in the file is refused (Stage 1's r2 check of 87e7468c: sorted, these read 60.4 s and
+    // Firefox played 118.8 s); pictures starting together are not placed back
+    expect(webm(clipWebm({ tracks: [pictureTrack()], clusters: [webmClusterAt(0, [pictureBlock()]), webmClusterAt(59_400, [pictureBlock()]), webmClusterAt(59_390, [pictureBlock()])] }))).toBeNull();
+    expect(webm(clipWebm({ tracks: [pictureTrack()], clusters: [webmClusterAt(0, [pictureBlock(), pictureBlock(1, 33), pictureBlock(1, 20)])] }))).toBeNull();
+    expect(webm(clipWebm({ tracks: [pictureTrack()], clusters: [webmClusterAt(0, [pictureBlock(), pictureBlock(1, 33), pictureBlock(1, 33)])] }))).toBeCloseTo(0.066, 6);
+    // and a freeze just before the last frame: pictures 2 s apart end 2 s after the last
+    expect(webm(picturesAt([0, 2000, 4000]))).toBeCloseTo(6, 6);
+    expect(webm(picturesAt([0, 33, 66, 99, 5000]))).toBeCloseTo(9.901, 6);
+  });
+
+  it('MP4: passes the fragmented layout Safari records, moov first and a moof and mdat a second, the picture with composition offsets', () => {
+    expect(mp4(safariClipMp4(10))).toBeCloseTo(10, 6);
+    expect(readVideoClip('video/mp4', safariClipMp4(58))).toEqual({ seconds: 58, durationSec: 58 });
+    // the picture keeps its composition offsets (H.264 may reorder), counted where its latest sample is presented
+    const reordered = () => Array.from({ length: 30 }, (_, i) => (i % 2 ? 3200 : 0));
+    expect(mp4(safariClipMp4(10, { offsets: reordered }))).toBeCloseTo(10 + 3200 / 48_000, 6);
+    expect(mp4(safariClipMp4(10, { offsets: (s) => Array.from({ length: 30 }, (_, i) => (s === 9 && i === 29 ? 48_000 * 5 : 0)) }))).toBeCloseTo(15, 6);
+  });
+
+  it('MP4: a sound run presenting a frame other than at its decode time is refused, as a voice note\'s is (#1165)', () => {
+    // offsets that are all 0 change nothing
+    expect(mp4(safariClipMp4(3, { sound: (r) => ({ ...r, offsets: r.data.map(() => 0) }) }))).toBeCloseTo(3, 1);
+    expect(mp4(safariClipMp4(3, { sound: (r, s) => ({ ...r, offsets: r.data.map((_, i) => (s === 1 && i === 3 ? 1024 : 0)) }) }))).toBeNull();
+    expect(mp4(safariClipMp4(3, { sound: (r) => ({ ...r, version: 1, offsets: r.data.map((_, i) => (i === 5 ? -1024 : 0)) }) }))).toBeNull();
+  });
+
+  it('MP4: a clip\'s sound frames play one after another from where each run sits, as a voice note\'s (#1097, #1165)', () => {
+    // Opus frames whose durations the file gives as 0, placed 45 s in: 1,000 of 20 ms end at 65 s, which the upload
+    // refuses; on c12e348 they read 45 s
+    const moov = Buffer.concat([ftyp('isom'), box('moov', [mvhd(), pictureTrak(1, []), soundTrakOpus(2), box('mvex', [
+      fullBox('trex', 0, 0, u32(1, 1, 0, 0, 0)), fullBox('trex', 0, 0, u32(2, 1, 0, 0, 0))])])]);
+    const picture = { track: 1, time: 0, data: [NAL_SAMPLE, NAL_SAMPLE], durations: [1600, 1600] };
+    const silent = (count: number) => Array.from({ length: count }, () => OPUS_20MS);
+    const zero = (count: number) => Array.from({ length: count }, () => 0);
+    expect(mp4(Buffer.concat([moov, fragmentOf(1, [picture, { track: 2, time: 48_000 * 45, data: silent(1000), durations: zero(1000) }])]))).toBeCloseTo(65, 6);
+    // split into runs of one frame each, after the first: the same
+    const split = [{ track: 2, time: 48_000 * 45, data: silent(1), durations: zero(1) }, ...Array.from({ length: 999 }, () => ({ track: 2, data: silent(1), durations: zero(1) }))];
+    expect(mp4(Buffer.concat([moov, fragmentOf(1, [picture, ...split])]))).toBeCloseTo(65, 6);
+  });
+
+  it('MP4: the sound\'s media edit selects some decoded sound (#1141, #1165)', () => {
+    // a plain clip: the picture, and two AAC frames (42.7 ms) of sound with an edit from `mediaTime`
+    const edited = (mediaTime: number, duration = 40) => {
+      const head = (o: number) => Buffer.concat([ftyp('isom'), box('moov', [mvhd(),
+        pictureTrak(1, [NAL_SAMPLE.length, NAL_SAMPLE.length], o),
+        trak('soun', 2, [4, 4], o + 2 * NAL_SAMPLE.length, 0, [editOf(duration, mediaTime)])])]);
+      return Buffer.concat([head(head(0).length + 8), box('mdat', [NAL_SAMPLE, NAL_SAMPLE, Buffer.alloc(8, 7)])]);
+    };
+    expect(mp4(edited(0))).not.toBeNull();
+    expect(mp4(edited(1024))).not.toBeNull();
+    expect(mp4(edited(2047))).not.toBeNull();
+    expect(mp4(edited(2048))).toBeNull(); // where the sound ends
+    expect(mp4(edited(48_000 * 10))).toBeNull();
+    expect(mp4(edited(48_000 * 10, 0))).toBeNull(); // to the end, from past it
+    // a duration of 0 runs to the end only in a movie that declares fragments: in a plain one it selects nothing
+    // (Codex P2 on #1186: these passed at da3d1cb7)
+    expect(mp4(edited(0, 0))).toBeNull();
+    expect(mp4(edited(1024, 0))).toBeNull();
+    // fragmented: sound at 0 s and at 10 s, an edit inside the gap selects none of it
+    const fragmented = (mediaTime: number) => {
+      const moov = Buffer.concat([ftyp('isom'), box('moov', [mvhd(), pictureTrak(1, []), soundTrakOpus(2, [editOf(1000, mediaTime)]), box('mvex', [
+        fullBox('trex', 0, 0, u32(1, 1, 0, 0, 0)), fullBox('trex', 0, 0, u32(2, 1, 0, 0, 0))])])]);
+      return Buffer.concat([moov, fragmentOf(1, [
+        { track: 1, time: 0, data: [NAL_SAMPLE, NAL_SAMPLE], durations: [1600, 1600] },
+        { track: 2, time: 0, data: [OPUS_20MS], durations: [960] },
+        { track: 2, time: 48_000 * 10, data: [OPUS_20MS], durations: [960] },
+      ])]);
+    };
+    expect(mp4(fragmented(0))).not.toBeNull();
+    // there, a duration of 0 runs on to the fragments' sound
+    const open = (mediaTime: number) => {
+      const moov = Buffer.concat([ftyp('isom'), box('moov', [mvhd(), pictureTrak(1, []), soundTrakOpus(2, [editOf(0, mediaTime)]), box('mvex', [
+        fullBox('trex', 0, 0, u32(1, 1, 0, 0, 0)), fullBox('trex', 0, 0, u32(2, 1, 0, 0, 0))])])]);
+      return Buffer.concat([moov, fragmentOf(1, [
+        { track: 1, time: 0, data: [NAL_SAMPLE, NAL_SAMPLE], durations: [1600, 1600] },
+        { track: 2, time: 0, data: [OPUS_20MS], durations: [960] },
+      ])]);
+    };
+    expect(mp4(open(0))).not.toBeNull();
+    expect(mp4(open(960))).toBeNull(); // from where the sound ends
+    expect(mp4(fragmented(48_000 * 10))).not.toBeNull();
+    expect(mp4(fragmented(48_000 * 5))).toBeNull();
+    // a run with no frames holds no sound: one at 5 s does not make an edit from 4.9 s select any (Stage 1's gap-check)
+    const empty = (mediaTime: number) => {
+      const moov = Buffer.concat([ftyp('isom'), box('moov', [mvhd(), pictureTrak(1, []), soundTrakOpus(2, [editOf(1000, mediaTime)]), box('mvex', [
+        fullBox('trex', 0, 0, u32(1, 1, 0, 0, 0)), fullBox('trex', 0, 0, u32(2, 1, 0, 0, 0))])])]);
+      return Buffer.concat([moov, fragmentOf(1, [
+        { track: 1, time: 0, data: [NAL_SAMPLE, NAL_SAMPLE], durations: [1600, 1600] },
+        { track: 2, time: 0, data: [OPUS_20MS], durations: [960] },
+        { track: 2, time: 48_000 * 5, data: [], durations: [] },
+      ])]);
+    };
+    expect(mp4(empty(0))).not.toBeNull();
+    expect(mp4(empty(48_000 * 4.9))).toBeNull();
+  });
+});
+
 describe('readVideoClip — the seek index and CodecName the voice fix shares (#482, 28 Oct)', () => {
   const seek = (id: number) => ebml(0x4dbb, Buffer.concat([ebml(0x53ab, u32(id)), ebml(0x53ac, uint(1))]));
   const seekHead = (...ids: number[]) => ebml(0x114d9b74, Buffer.concat(ids.map(seek)));
@@ -507,10 +693,19 @@ describe('readVideoClip — the seek index and CodecName the voice fix shares (#
     expect(webm(indexed(ebml(0x114d9b74, Buffer.alloc(0))))).toBe(plain);
   });
 
-  it('refuses a SeekHead with a junk body, one pointing at Tags or Cues (a clip walk takes neither), and two', () => {
+  it('passes a SeekHead pointing at the Cues, which a clip walk takes (V2a), as Chrome indexes a clip recorded with no timeslice', () => {
+    expect(webm(indexed(seekHead(0x1549a966, 0x1654ae6b, 0x1c53bb6b)))).toBe(webm(recording('chromium-153-vp8-opus.webm')));
+    // Chromium's own: start() with no timeslice, as the app records, writes a SeekHead first and the Cues last
+    const app = recording('chromium-153-app-vp8-opus.webm');
+    expect(app.indexOf(Buffer.from([0x11, 0x4d, 0x9b, 0x74]))).toBeGreaterThan(0);
+    expect(app.lastIndexOf(Buffer.from([0x1c, 0x53, 0xbb, 0x6b]))).toBeGreaterThan(app.lastIndexOf(Buffer.from([0x1f, 0x43, 0xb6, 0x75])));
+    expect(webm(app)).toBeGreaterThan(1.9);
+    expect(webm(app)).toBeLessThan(2.2);
+  });
+
+  it('refuses a SeekHead with a junk body, one pointing at Tags (a clip walk does not take them), and two', () => {
     expect(webm(indexed(ebml(0x114d9b74, Buffer.from([0xde, 0xad, 0xbe, 0xef]))))).toBeNull();
     expect(webm(indexed(seekHead(0x1254c367)))).toBeNull(); // Tags
-    expect(webm(indexed(seekHead(0x1c53bb6b)))).toBeNull(); // Cues: Chrome's no-timeslice clip, V2 decides
     expect(webm(indexed(Buffer.concat([seekHead(0x1549a966), seekHead(0x1549a966)])))).toBeNull();
     expect(webm(indexed(seekHead(0x1549a966, 0x1549a966)))).toBeNull(); // a target twice
     // the clip's Segment is of unknown size, so it runs to the file's end, which bounds a SeekPosition

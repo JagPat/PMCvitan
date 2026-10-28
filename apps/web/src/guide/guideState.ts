@@ -41,7 +41,10 @@ interface GuideState {
    * screen (the sheet moves there first), and is dropped when the person goes elsewhere or it cannot start
    */
   requested: Guide | null;
-  request: (guide: Guide | null) => void;
+  /** guides to ask for in turn when the requested one cannot start on its screen ("Show me around" offers the next
+   *  one rather than a note); empty for a guide the person picked by name */
+  fallbacks: readonly Guide[];
+  request: (guide: Guide | null, fallbacks?: readonly Guide[]) => void;
   /** bumped when the person asks for the first-time tips again: the overlay allows a new automatic start */
   tipsEpoch: number;
   /** the guide key those tips were reset for: a sign-in still settling can move the person to another key,
@@ -64,8 +67,9 @@ export const useGuideState = create<GuideState>()((set) => ({
   setWait: (waiting) => set((s) => (s.run ? { run: { ...s.run, waiting, pressed: s.run.pressed || waiting } } : s)),
   setOffer: (offer) => set((s) => (s.offer === offer ? s : { offer })),
   requested: null,
+  fallbacks: [],
   // a new request ends whatever runs now: the person asked for this one
-  request: (requested) => set(requested ? { requested, run: null } : { requested }),
+  request: (requested, fallbacks = []) => set(requested ? { requested, fallbacks, run: null } : { requested, fallbacks: [] }),
   tipsEpoch: 0,
   tipsResetKey: null,
   tipsAgain: (key) => set((s) => ({ tipsEpoch: s.tipsEpoch + 1, tipsResetKey: key })),

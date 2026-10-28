@@ -88,7 +88,7 @@ describe('the Help sheet', () => {
     }
   });
 
-  it('lists the PMC its tasks, and a client that there is no step-by-step help yet', async () => {
+  it('lists the PMC its tasks, and a consultant that there is no step-by-step help yet', async () => {
     const pmc = await setup('pmc', 'decision-log');
     render(<pmc.HelpButton />);
     press(byTestId('help-open')!);
@@ -98,8 +98,8 @@ describe('the Help sheet', () => {
     expect(byTestId('help-no-guides')).toBeNull();
     cleanup();
 
-    const client = await setup('client', 'client-decisions');
-    render(<client.HelpButton />);
+    const consultant = await setup('consultant', 'decision-log');
+    render(<consultant.HelpButton />);
     press(byTestId('help-open')!);
     expect(byTestId('help-no-guides')?.textContent).toBe('No step-by-step help for your role yet.');
     expect(document.querySelectorAll('[data-testid^="help-guide-"]')).toHaveLength(0);
