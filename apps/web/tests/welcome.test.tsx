@@ -167,6 +167,26 @@ describe('the first-time welcome', () => {
     expect(frozen.useGuideState.getState().requested?.id).toBe('add-site-photo');
   });
 
+  it('from another screen, a checklist whose items are all failed already has nothing to mark failed: the photo guide', async () => {
+    const all = (state: 'fail' | null) => ({
+      id: 'INSP-1', title: 'Rebar', zone: 'Ground floor', date: 'today', submitted: false,
+      items: [{ id: 'i1', name: 'Cover blocks', state, photos: 0, note: '', evidence: [] }],
+    });
+    const failed = await setup('engineer', 'site-visits');
+    failed.useStore.setState({ openChecklists: [all('fail')] });
+    render(<failed.Welcome />);
+    press(byTestId('welcome-tour')!);
+    expect(failed.useGuideState.getState().requested?.id).toBe('add-site-photo');
+    cleanup();
+    localStorage.clear();
+
+    const open = await setup('engineer', 'site-visits');
+    open.useStore.setState({ openChecklists: [all(null)] });
+    render(<open.Welcome />);
+    press(byTestId('welcome-tour')!);
+    expect(open.useGuideState.getState().requested?.id).toBe('raise-issue-engineer');
+  });
+
   it('closes even where the browser refuses to store it', async () => {
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new DOMException('blocked', 'SecurityError');

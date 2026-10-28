@@ -2,7 +2,7 @@ import type { Role, ScreenKey } from '@vitan/shared';
 import type { GuideTip, GuideTitle } from './words';
 import { guidedPhotoPicksOf, type GuideOutcome } from './outcomes';
 import { useGuideState } from './guideState';
-import { useStore } from '@/store/store';
+import { inspectionFrozen, useStore } from '@/store/store';
 
 /**
  * #482 (board decision 14 Oct) — the in-app guide: coach marks on the live screen.
@@ -128,10 +128,12 @@ function checklistSubmitted(key: string | null): boolean {
   return !open;
 }
 
-/** The engineer has a checklist out on site to mark an item failed on. */
+/** The engineer has a checklist out on site with an item still to mark failed: one not frozen by a submit, with an
+ *  item not already failed (the checklist screen offers Fail as a guide target only there). */
 function checklistOutOnSite(): boolean {
   const s = useStore.getState();
-  return s.openChecklists.length > 0 || (s.checklist !== null && !s.checklist.submitted);
+  const lists = s.checklist && !s.openChecklists.some((c) => c.id === s.checklist!.id) ? [...s.openChecklists, s.checklist] : s.openChecklists;
+  return lists.some((c) => !inspectionFrozen(s, c) && c.items.some((it) => it.state !== 'fail'));
 }
 
 /** A photo picked under this run of the guide is in the project's photos (the viewer's own photos carry their upload key). */
