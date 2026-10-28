@@ -185,9 +185,9 @@ export function toSiteVisitDto(
       id: a.id, kind: a.userId !== null ? 'member' : 'guest', userId: a.userId, role: a.role, name: a.displayName,
       addedAt: a.addedAt.toISOString(), retiredAt: iso(a.retiredAt),
     })),
-    // a linked file always exists (the link is frozen, and a file's delete takes its link only with its removal line); the
-    // fallback is only types
-    files: v.media.map((f) => ({
+    // a file the media module no longer has was removed after this visit was read (its line comes with the next read):
+    // it is left out, never served as an empty file with a dead link and a removal offer (Codex 4398005586)
+    files: v.media.filter((f) => facts.has(f.mediaId)).map((f) => ({
       mediaId: f.mediaId, url: fileUrl(f.mediaId), mime: facts.get(f.mediaId)?.mime ?? '', clientKey: facts.get(f.mediaId)?.clientKey ?? null,
       takenAt: facts.get(f.mediaId)?.takenAt ?? null, durationSec: facts.get(f.mediaId)?.durationSec ?? null,
       sourceMediaId: facts.get(f.mediaId)?.sourceMediaId ?? null, posterUrl: facts.get(f.mediaId)?.poster ? posterUrl(f.mediaId) : null,

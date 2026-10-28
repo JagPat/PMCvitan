@@ -7,6 +7,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { StorageService } from '../../src/media/storage.service';
+import { MediaQueryService } from '../../src/media/media.query';
 import { base64, webmTimed } from '../unit-support/voice-files';
 import { clipWebmTimed } from '../unit-support/video-files';
 import { SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
@@ -126,6 +127,25 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
       kind: 'voice', addedByName: 'Sam (consultant)', removedById: consultant, removedByName: 'Sam (consultant)', removedByRole: 'consultant', reason: null,
     });
     expect(await t.prisma.domainEvent.count({ where: { entityId: id, eventType: 'media.removed' } })).toBe(1);
+  });
+
+  it('a file removed between the visit\'s read and its files\' facts is left out, not served empty (Codex 4398005586)', async () => {
+    const id = await voice();
+    const kept = await voice();
+    const media = t.app.get(MediaQueryService);
+    const original = media.fileFacts.bind(media);
+    // the removal commits after the visit and its links are read, before the media module is asked about them
+    const spy = vi.spyOn(media, 'fileFacts').mockImplementationOnce(async (...args) => {
+      expect((await removeIt(id, pmcToken, { reason: 'Recorded by mistake' })).status).toBe(200);
+      return original(...args);
+    });
+    const files = (await visit()).files as Array<{ mediaId: string; mime: string }>;
+    spy.mockRestore();
+    expect(files.map((x) => x.mediaId)).not.toContain(id);
+    expect(files.find((x) => x.mediaId === kept)?.mime).toBe('audio/webm');
+    expect(files.every((x) => x.mime !== '')).toBe(true);
+    // the next read has the removal line
+    expect((await visit()).removals.map((r: { mediaId: string }) => r.mediaId)).toContain(id);
   });
 
   it('a reason sent by someone other than the PMC is not kept, so the database\'s CHECK still judges their hour at the line\'s own stamp (Codex 4397768832)', async () => {
