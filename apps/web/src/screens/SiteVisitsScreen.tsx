@@ -42,7 +42,7 @@ export function SiteVisitsScreen() {
   );
   const mineOpen = sv.visits.some((v) => v.visitorId === me && v.status === 'open');
   // #482: the visit guide's reports, from what this screen shows
-  const guideReports = useVisitGuideReports(sv.visits, sv.waiting, sv.notSent, me, sv.load !== 'loading');
+  const guideReports = useVisitGuideReports(sv.visits, sv.read, sv.waiting, sv.notSent, me, sv.load !== 'loading');
   // the member list is the Team screen's; read it when this viewer can name someone on a visit, and again whenever
   // the server says the project changed (a member removed, re-roled or newly joined). A read that failed, even
   // with an older list on hand, makes the picker offer a retry

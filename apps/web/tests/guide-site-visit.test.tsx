@@ -10,6 +10,7 @@ import { useGuideState } from '@/guide/guideState';
 import type { ApiGateway, SiteVisit } from '@/data/apiGateway';
 import { MAX_PHOTO_BASE64 } from '@/lib/shrinkPhoto';
 import { noteOwnOpenVisit } from '@/guide/visitFacts';
+import { refreshSiteVisits } from '@/lib/useSiteVisits';
 import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
 
 /**
@@ -172,6 +173,30 @@ describe('the site visit guide (#482 step 3c)', () => {
     await vi.waitFor(() => { if (!done().includes('record-site-visit')) throw new Error('not done'); });
   });
 
+  it('a photo the server took whose answer was lost finishes the guide once a refresh lists it (Codex 4401864958)', async () => {
+    let calls = 0;
+    const gw = server([visit()]);
+    const upload = gw.uploadMedia!.getMockImplementation() as (input: never) => Promise<unknown>;
+    // the first send is filed on the server but its answer never comes back; every later send finds no signal
+    gw.uploadMedia!.mockImplementation(async (input: never) => {
+      calls += 1;
+      if (calls === 1) await upload(input);
+      throw new Error('network');
+    });
+    await mount(gw);
+    act(() => { useGuideState.getState().start(GUIDE); useGuideState.getState().setStep(1); });
+    await tipAt('1');
+    fireEvent.click(document.querySelector('[data-guide="sv-add-photo"]')!);
+    await pick('v-1');
+    expect(useStore.getState().outbox).toHaveLength(1);
+    expect(done()).not.toContain('record-site-visit');
+    // a refresh reads the photo back while its send still waits in the outbox
+    await act(async () => { refreshSiteVisits(); });
+    await settled();
+    expect(useStore.getState().outbox).toHaveLength(1);
+    await vi.waitFor(() => { if (!done().includes('record-site-visit')) throw new Error('not done'); });
+  });
+
   it('a photo this phone will not keep or send (too large) leaves the guide on Add photo, unfinished', async () => {
     vi.stubGlobal('createImageBitmap', undefined);
     const gw = server([visit()]);
@@ -251,6 +276,12 @@ describe('the site visit guide (#482 step 3c)', () => {
     await tipAt('1');
     expect(useGuideState.getState().run?.pressed).toBe(false);
     expect(document.querySelector('[data-testid="sv-visit-v-1"] [data-guide="sv-add-photo"]')).not.toBeNull();
+    // asked for from Help, as a person would: it starts, and is offered again, though Start visit is not on screen
+    act(() => { useGuideState.getState().stop(); useGuideState.getState().request(GUIDE); });
+    await vi.waitFor(() => { if (useGuideState.getState().run?.guide.id !== 'record-site-visit') throw new Error('not started'); });
+    await tipAt('1');
+    act(() => { useGuideState.getState().stop(); });
+    await vi.waitFor(() => { if (useGuideState.getState().offer?.id !== 'record-site-visit') throw new Error('not offered'); });
     cleanup();
     // with none open, it starts at Start visit
     await mount(server([visit({ visitorId: 'u-other', visitorName: 'Kiran Rao', visitorRole: 'consultant' })]));
