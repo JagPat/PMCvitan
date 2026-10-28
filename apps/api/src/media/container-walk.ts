@@ -5,6 +5,7 @@
  * `voice-container.ts` and what a video clip is in `video-container.ts`; each reads its file with these parts, so a
  * clip's sound and structures are read exactly as a voice note's are.
  */
+import { isUtf8 } from 'node:buffer';
 
 /**
  * the most steps one walk takes, so no crafted file can spin the check: a step is a WebM element, a laced WebM frame,
@@ -94,7 +95,7 @@ const VOID = 0xec;
 
 /**
  * What an element holds, so every one is read by its type (#1013 replacement review): an unsigned or signed integer of
- * at most 8 bytes, a float of 0, 4 or 8 bytes, a text of at most 64 bytes (a codec or document type, at most 16), a
+ * at most 8 bytes, a float of 0, 4 or 8 bytes, a UTF-8 text of at most 64 bytes (a codec or document type, at most 16), a
  * SegmentUUID of exactly 16 bytes, a date of exactly 8; a container (one that may repeat, a CuePoint, is an `entry`), a
  * block or the OpusHead, each read by its caller;
  * or Void, padding no player reads, counted against the file's padding cap. CRC-32 is refused everywhere (Chrome
@@ -109,8 +110,20 @@ const CODE_MAX = 16;
 const EBML_HEADER_CHILDREN = new Map<number, Kind>([
   [0x4286, 'uint'], [0x42f7, 'uint'], [0x42f2, 'uint'], [0x42f3, 'uint'], [DOC_TYPE, 'code'], [0x4287, 'uint'], [0x4285, 'uint'], [VOID, 'void'],
 ]);
-/** Info, Tracks, Cluster: what Chrome writes; no SeekHead, Cues or Tags (which can carry a picture), Attachments or Chapters */
-const SEGMENT_CHILDREN = new Set([INFO, TRACKS, CLUSTER, VOID]);
+/**
+ * SeekHead, the index of where the Segment's top-level elements sit: Chromium writes one when it records with no
+ * timeslice, as the app does, and Firefox writes an empty one (#482: their voice notes were refused for it). It holds
+ * only seek pointers, never content: Seeks, each one SeekID naming an element the reader takes and one SeekPosition
+ * inside the Segment (`seekHead`), and Void
+ */
+const SEEK_HEAD = 0x114d9b74;
+const SEEK = 0x4dbb;
+const SEEK_ID = 0x53ab;
+const SEEK_POSITION = 0x53ac;
+const SEEK_HEAD_CHILDREN = new Map<number, Kind>([[SEEK, 'entry'], [VOID, 'void']]);
+const SEEK_CHILDREN = new Map<number, Kind>([[SEEK_ID, 'uint'], [SEEK_POSITION, 'uint'], [VOID, 'void']]);
+/** SeekHead, Info, Tracks, Cluster: what Chrome writes; no Tags (which can carry a picture), Attachments or Chapters */
+const SEGMENT_CHILDREN = new Set([SEEK_HEAD, INFO, TRACKS, CLUSTER, VOID]);
 /** TimestampScale, Duration, MuxingApp, WritingApp, SegmentUUID, DateUTC, Title */
 const INFO_CHILDREN = new Map<number, Kind>([
   [0x2ad7b1, 'uint'], [0x4489, 'float'], [0x4d80, 'text'], [0x5741, 'text'], [0x73a4, 'uuid'], [0x4461, 'date'], [0x7ba9, 'text'], [VOID, 'void'],
@@ -119,11 +132,12 @@ const INFO_CHILDREN = new Map<number, Kind>([
 const TRACKS_CHILDREN = new Map<number, Kind>([[TRACK_ENTRY, 'master'], [VOID, 'void']]);
 /**
  * TrackNumber, TrackUID, TrackType, FlagEnabled, FlagDefault, FlagForced, FlagLacing, DefaultDuration, CodecID,
- * CodecPrivate, CodecDelay, SeekPreRoll, Name, Language, LanguageBCP47, Audio; no Video, ContentEncodings or other
+ * CodecPrivate, CodecDelay, SeekPreRoll, CodecName (Firefox writes "OPUS"), Name, Language, LanguageBCP47, Audio; no
+ * Video, ContentEncodings or other
  */
 const TRACK_ENTRY_CHILDREN = new Map<number, Kind>([
   [TRACK_NUMBER, 'uint'], [0x73c5, 'uint'], [TRACK_TYPE, 'uint'], [0xb9, 'uint'], [0x88, 'uint'], [0x55aa, 'uint'], [0x9c, 'uint'],
-  [0x23e383, 'uint'], [CODEC_ID, 'code'], [0x63a2, 'opushead'], [0x56aa, 'uint'], [0x56bb, 'uint'], [0x536e, 'text'], [0x22b59c, 'text'],
+  [0x23e383, 'uint'], [CODEC_ID, 'code'], [0x63a2, 'opushead'], [0x56aa, 'uint'], [0x56bb, 'uint'], [0x258688, 'text'], [0x536e, 'text'], [0x22b59c, 'text'],
   [0x22b59d, 'text'], [AUDIO, 'master'], [VOID, 'void'],
 ]);
 /** SamplingFrequency, Channels, BitDepth, OutputSamplingFrequency */
@@ -210,7 +224,7 @@ function checkChild(b: Buffer, e: Element, allowed: Map<number, Kind>, seen: Set
   // an integer's value is read where it is used (a TrackUID is a random 64-bit number past what a Number holds)
   if ((kind === 'uint' || kind === 'int') && width > 8) fail();
   else if (kind === 'float') floatOf(b, e);
-  else if (kind === 'text' && width > TEXT_MAX) fail();
+  else if (kind === 'text' && (width > TEXT_MAX || !isUtf8(b.subarray(e.dataStart, e.dataEnd)))) fail();
   else if (kind === 'code' && width > CODE_MAX) fail();
   else if (kind === 'uuid' && width !== 16) fail();
   else if (kind === 'date' && width !== 8) fail();
@@ -248,6 +262,29 @@ function uintOf(b: Buffer, e: Element): number {
   for (let i = e.dataStart; i < e.dataEnd; i++) value = value * 256 + b[i]!;
   if (!Number.isSafeInteger(value)) fail();
   return value;
+}
+
+/**
+ * A SeekHead, read whole: Seeks and Void only, each Seek exactly one SeekID of 1 to 4 bytes naming one of `targets`
+ * (the Segment-level elements the reader takes), each target at most once, and exactly one SeekPosition inside the
+ * Segment's `length` bytes (to the file's end when its size is unknown, as Firefox writes it). So a SeekHead holds a
+ * handful of small Seeks and no room for anything else. The pointers are never followed: the walk reads the Segment in
+ * order.
+ */
+function seekHead(b: Buffer, e: Element, steps: Walk, targets: ReadonlySet<number>, length: number): void {
+  const seen = new Set<number>();
+  for (const seek of elements(b, e.dataStart, e.dataEnd, steps, SEEK_HEAD_CHILDREN)) {
+    if (seek.id === VOID) continue;
+    const fields = new Map<number, Element>();
+    for (const f of elements(b, seek.dataStart, seek.dataEnd, steps, SEEK_CHILDREN)) fields.set(f.id, f);
+    const id = fields.get(SEEK_ID);
+    const position = fields.get(SEEK_POSITION);
+    if (!id || !position) return fail();
+    const target = id.dataEnd - id.dataStart < 1 || id.dataEnd - id.dataStart > 4 ? undefined : uintOf(b, id);
+    if (target === undefined || !targets.has(target) || seen.has(target)) return fail();
+    seen.add(target);
+    if (uintOf(b, position) >= length) fail();
+  }
 }
 
 /**
@@ -843,7 +880,7 @@ function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: numbe
 export type { Walk, Kind, Element, Box, MediaRanges, SampleRanges };
 export {
   MAX_STEPS, MAX_PADDING, padding, charge, Malformed, fail, OPUS_RATE, opusPacketSamples, isOpusHead, EBML_HEADER,
-  DOC_TYPE, SEGMENT, INFO, TRACKS, CUES, CUE_POINT, CUE_TIME, CUE_TRACK_POSITIONS, CUE_TRACK, CUE_CLUSTER_POSITION,
+  DOC_TYPE, SEGMENT, SEEK_HEAD, seekHead, INFO, TRACKS, CUES, CUE_POINT, CUE_TIME, CUE_TRACK_POSITIONS, CUE_TRACK, CUE_CLUSTER_POSITION,
   CUES_CHILDREN, CUE_POINT_CHILDREN, CUE_TRACK_POSITIONS_CHILDREN, TRACK_ENTRY, TRACK_NUMBER, TRACK_TYPE, CODEC_ID, AUDIO, CLUSTER, SIMPLE_BLOCK,
   BLOCK_GROUP, BLOCK, VOID, TEXT_MAX, CODE_MAX, EBML_HEADER_CHILDREN, SEGMENT_CHILDREN, INFO_CHILDREN,
   TRACKS_CHILDREN, TRACK_ENTRY_CHILDREN, AUDIO_CHILDREN, CLUSTER_CHILDREN, BLOCK_GROUP_CHILDREN, TIMESTAMP_SCALE,
