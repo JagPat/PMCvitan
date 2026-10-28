@@ -8,13 +8,14 @@ import {
   type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitOp,
   type SiteVisitRating,
 } from '@/data/apiGateway';
-import { deleteVisitPhoto, listVisitPhotos, putVisitPhoto, settleFiledVisitPhotos, storageAvailable, visitPhotoScope, withinWait, VisitPhotoUnconfirmed, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { deleteVisitPhoto, listVisitPhotos, posterWaits, putVisitPhoto, settleFiledVisitPhotos, storageAvailable, visitPhotoScope, withinWait, VisitPhotoUnconfirmed, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import type { MarkedCopy } from '@/components/PhotoMarkup';
 import { setClampedTimeout } from './clampedTimer';
 import { captureStamp } from './captureStamp';
 import { photoDecodes } from './photoDecodes';
 import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto';
 import { acceptedType, blobBase64, type Recorded, type RecordKind } from './mediaRecorder';
+import { drawPoster } from './videoPoster';
 import { VIDEO_CLIP_MIMES, VOICE_NOTE_MIMES } from '@/data/queueContracts';
 import { refusalWords, SV } from './siteVisitWords';
 
@@ -699,10 +700,16 @@ export function useSiteVisits() {
     const taken = filed.filter((r) => !queuedKeys.has(r.op.idempotencyKey)).map((r) => r.op);
     return withQueued(rows, [...queued, ...taken], me, previews, new Set(taken.map((o) => o.file.id)));
   }, [rows, queued, me, previews, filed]);
-  // while one waits for that read, the read is tried again on the visit photo retry (Codex 4321558427)
+  // while one waits for that read, the read is tried again on the visit photo retry (Codex 4321558427). A clip the
+  // server already lists whose still frame is still to send waits for no read: its frame goes with the next flush made
+  // for any other reason, so a server that keeps refusing the frame is not asked again on the retry's beat (V2b-2)
+  const awaited = useMemo(() => {
+    const listed = new Set(rows.flatMap((v) => (v.files ?? []).map((f) => f.clientKey)));
+    return filed.filter((r) => !(posterWaits(r) && listed.has(r.clientKey)));
+  }, [filed, rows]);
   useEffect(() => {
-    if (filed.length > 0) useStore.getState().retrySiteVisits();
-  }, [filed, filedReads]);
+    if (awaited.length > 0) useStore.getState().retrySiteVisits();
+  }, [awaited, filedReads]);
   // the photos' signed links expire: read again before the soonest one shown does, so a thumbnail or full photo never
   // opens dead; each read brings fresh links and sets the next read. The next is set only once a read settles, so reads
   // never overlap, and a read that fails (no signal) leaves the rows as they were, so the timer is set again from the
@@ -736,7 +743,7 @@ export function useSiteVisits() {
    *  of what it is, and nothing is sent. */
   const keepAndQueue = async (
     scope: ProjectScope, op: SiteVisitAddFileOp, data: string, say: (text: (typeof SV)[keyof typeof SV]) => void,
-    words: KeepWords = PHOTO_KEEP,
+    words: KeepWords = PHOTO_KEEP, poster: string | null = null,
   ): Promise<boolean> => {
     if (!storageAvailable()) { say(words.noStorage); return false; }
     const s = useStore.getState();
@@ -753,7 +760,7 @@ export function useSiteVisits() {
       void useStore.getState().flushOutbox();
     };
     try {
-      await putVisitPhoto(op.scope, s.activeProjectId, op, data, start, lateCommit);
+      await putVisitPhoto(op.scope, s.activeProjectId, op, data, start, lateCommit, poster);
     } catch (err) {
       say(err instanceof VisitPhotoUnconfirmed ? words.maybeNotKept : words.notKept);
       return false;
@@ -856,7 +863,8 @@ export function useSiteVisits() {
      *  same people while the visit is not closed (the server asks again). It goes the way a photo goes: kept on the
      *  phone with the one act that sends it, then queued, so it waits through no signal, a reload and a sign-in. Only
      *  a type the upload takes (its codecs too), at least a second and under two minutes long and within the upload's size, is kept. Its length is not sent:
-     *  the server reads it from the file and stores that. #995 V2b: a video clip goes the same way, under a minute. */
+     *  the server reads it from the file and stores that. #995 V2b: a video clip goes the same way, under a minute, with
+     *  the still frame this phone draws from it, when it can (V2b-2). */
     addRecording: async (kind: RecordKind, visitId: string, rec: Recorded, extra: { note?: string; rating?: SiteVisitRating; nodeId?: string; placeName?: string | null }): Promise<boolean> => {
       const rule = RECORDING[kind];
       const state = useStore.getState();
@@ -874,6 +882,8 @@ export function useSiteVisits() {
         const data = await blobBase64(rec.blob).catch(() => null);
         if (!data) { say(rule.words.unreadable); return false; }
         if (data.length > MAX_PHOTO_BASE64) { say(rule.words.tooBig); return false; }
+        // V2b-2: a clip's still frame, drawn here and kept with it; a clip this phone cannot draw one from is kept without
+        const poster = kind === 'video' ? await drawPoster(rec.blob).catch(() => null) : null;
         if (!live(scope)) return false;
         // the place is checked as the visit is now shown, as a photo's is
         const v = shownRef.current.find((x) => x.id === visitId);
@@ -888,7 +898,7 @@ export function useSiteVisits() {
           },
           by: { name: s.userName ?? '', role: s.role }, placeName: extra.placeName ?? null, queuedAt: now(),
         };
-        return await keepAndQueue(scope, op, data, say, rule.keep);
+        return await keepAndQueue(scope, op, data, say, rule.keep, poster);
       } finally {
         if (live(scope)) setBusy(false);
       }
