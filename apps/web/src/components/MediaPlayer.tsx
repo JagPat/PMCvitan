@@ -22,7 +22,8 @@ function tryPlay(el: HTMLMediaElement) {
  * iPhone browsers play media only from a source that does. A file still waiting on the phone (a `data:` URL) plays as
  * it is. The fetch sends no credentials: the signed link is the permission. The copy is let go when the player goes. A
  * file this browser cannot play says so, with Try again. A video clip with a still frame (#995 V2b-2) shows it above
- * Play, and the player shows it until the clip plays; a frame that does not load is left out.
+ * Play, and the player shows it until the clip plays; a frame that does not load is left out until a fresh link
+ * for it comes.
  */
 export function MediaPlayer({ url, mime, label, words, poster }: {
   url: string;
@@ -35,7 +36,8 @@ export function MediaPlayer({ url, mime, label, words, poster }: {
 }) {
   const local = url.startsWith('data:');
   const [phase, setPhase] = useState<'idle' | 'loading' | 'ready' | 'failed'>(local ? 'ready' : 'idle');
-  const [posterGone, setPosterGone] = useState(false);
+  // the frame link that did not load: a fresh link (a later read signs a new one) is tried again
+  const [posterGone, setPosterGone] = useState<string | null>(null);
   const media = useRef<HTMLMediaElement | null>(null);
   const run = useRef<AbortController | null>(null);
   const owned = useRef<string | null>(null);
@@ -78,7 +80,7 @@ export function MediaPlayer({ url, mime, label, words, poster }: {
   // does nothing; the silence played on the tap is not the file
   const failed = () => { if (phase === 'ready') setPhase('failed'); };
   const Player = mime.startsWith('video/') ? 'video' : 'audio';
-  const still = Player === 'video' && poster && !posterGone ? resolveMediaUrl(poster) : null;
+  const still = Player === 'video' && poster && posterGone !== poster ? resolveMediaUrl(poster) : null;
   const play = (
     <Button variant="light" disabled={phase === 'loading'} aria-label={`${words.play}: ${label}`} onClick={() => void load()}>
       {words.play}
@@ -101,7 +103,7 @@ export function MediaPlayer({ url, mime, label, words, poster }: {
       {(phase === 'idle' || phase === 'loading') && (still ? (
         <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
           <img
-            src={still} alt="" loading="lazy" onError={() => setPosterGone(true)}
+            src={still} alt="" loading="lazy" onError={() => setPosterGone(poster ?? null)}
             style={{ display: 'block', width: 240, maxWidth: '100%', borderRadius: 10, background: '#000' }}
           />
           {play}

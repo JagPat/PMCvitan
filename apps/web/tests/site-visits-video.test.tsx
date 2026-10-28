@@ -5,6 +5,7 @@ import { render, cleanup, fireEvent, act, screen, within } from '@testing-librar
 import type { Lang, ProjectMember, ProjectNode, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
+import { MediaPlayer } from '@/components/MediaPlayer';
 import type { ApiGateway, OutboxOp, SiteVisit } from '@/data/apiGateway';
 import { fileVisitPhoto, getVisitPhoto, listVisitPhotos, putVisitPhoto, visitPhotoScope, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
 import { tellSiteVisits } from '@/data/apiGateway';
@@ -578,5 +579,14 @@ describe('#995 V2b-2: a clip’s still frame', () => {
     await act(async () => { fireEvent.error(tile); });
     expect(screen.getByTestId('sv-file-m-c').querySelector('img')).toBeNull();
     expect(within(screen.getByTestId('sv-file-m-c')).getByRole('button', { name: 'Play: Crack by the column' })).not.toBeNull();
+  });
+
+  it('tries a frame again when a later read brings it a fresh link (Codex 4399442176)', async () => {
+    const words = { play: 'Play', failed: 'failed', retry: 'Try again' };
+    const view = render(<MediaPlayer url="/media/m-c?sig=x" mime="video/webm" label="Clip" words={words} poster="/media/m-c/poster?t=old" />);
+    await act(async () => { fireEvent.error(view.container.querySelector('img')!); });
+    expect(view.container.querySelector('img')).toBeNull();
+    view.rerender(<MediaPlayer url="/media/m-c?sig=y" mime="video/webm" label="Clip" words={words} poster="/media/m-c/poster?t=new" />);
+    expect(view.container.querySelector('img')!.getAttribute('src')).toContain('/media/m-c/poster?t=new');
   });
 });
