@@ -117,9 +117,8 @@ describe('the role vocabulary tripwire (4d-ii-a / A5a)', () => {
     // hand-written vocabulary any more
     'apps/web/src/screens/PortfolioScreen.tsx :: map ROLE_LABEL': 'answered',
     'apps/web/src/screens/DrawingsScreen.tsx :: map ROLE_SHORT': 'answered',
-    // #482 first-time welcome (#1185): what Vitan is for, per role
-    'apps/web/src/guide/words.ts :: map WELCOME_ROLE': 'answered',
     'apps/web/src/screens/TeamScreen.tsx :: map COMPANY_KIND_LABEL': 'not a role: a firm’s kind, a different axis that already spells `architect` (§A.1, untouched)',
+    'apps/web/src/guide/words.ts :: map WELCOME_ROLE': 'answered',
   };
 
   it('every role list, union and role-keyed map naming the member vocabulary is registered with a verdict it bears out', () => {
