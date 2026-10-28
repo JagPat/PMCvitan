@@ -512,6 +512,13 @@ describe('readVideoClip — the seek index and CodecName the voice fix shares (#
     expect(webm(indexed(seekHead(0x1254c367)))).toBeNull(); // Tags
     expect(webm(indexed(seekHead(0x1c53bb6b)))).toBeNull(); // Cues: Chrome's no-timeslice clip, V2 decides
     expect(webm(indexed(Buffer.concat([seekHead(0x1549a966), seekHead(0x1549a966)])))).toBeNull();
+    expect(webm(indexed(seekHead(0x1549a966, 0x1549a966)))).toBeNull(); // a target twice
+    // the clip's Segment is of unknown size, so it runs to the file's end, which bounds a SeekPosition
+    const at = (position: number) => ebml(0x114d9b74, ebml(0x4dbb, Buffer.concat([ebml(0x53ab, u32(0x1549a966)), ebml(0x53ac, u32(position))])));
+    const length = indexed(at(0)).length - recording('chromium-153-vp8-opus.webm').indexOf(Buffer.from([0x18, 0x53, 0x80, 0x67])) - 12;
+    expect(webm(indexed(at(length - 1)))).not.toBeNull();
+    expect(webm(indexed(at(length)))).toBeNull();
+    expect(webm(indexed(at(0xffffffff)))).toBeNull();
   });
 
   it('refuses a SeekHead after Info, and, in a Segment of known size, a SeekPosition at or past its end', () => {

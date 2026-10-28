@@ -1916,9 +1916,13 @@ describe('Chrome\'s and Firefox\'s WebM as the app records it: no timeslice (ref
     expect(webm(segment([head(), ...body()]))).toBe(true); // empty, as Firefox writes it
     expect(webm(segment([head(seek(info, Buffer.from([0x10])), ebml(WEBM.void, Buffer.alloc(3))), ...body()]))).toBe(true);
     expect(webm(segment([head(seek(idOf(0x1c53bb6b), Buffer.from([0x10])), seek(idOf(WEBM.cluster), Buffer.from([0x30]))), ...body()]))).toBe(true);
-    expect(webm(segment([head(seek(info, Buffer.from([0xff, 0xff, 0xff, 0xff]))), ...body()], true))).toBe(true); // a Segment of unknown size bounds no position
     const length = Buffer.concat([head(seek(info, Buffer.from([0]))), ...body()]).length;
     expect(webm(segment([head(seek(info, Buffer.from([length - 1]))), ...body()]))).toBe(true);
+    // a Segment of unknown size (Firefox's) runs to the file's end, which bounds the position the same way
+    expect(webm(segment([head(seek(info, Buffer.from([length - 1]))), ...body()], true))).toBe(true);
+    // every target the voice walk takes, once each: six Seeks at most
+    const every = [WEBM.info, WEBM.tracks, WEBM.cluster, 0x1c53bb6b, SEEK_HEAD, WEBM.void].map((id) => seek(idOf(id), Buffer.from([0x10])));
+    expect(webm(segment([head(...every), ...body()]))).toBe(true);
     for (const [why, bad] of [
       ['a junk body', segment([ebml(SEEK_HEAD, Buffer.alloc(8)), ...body()])],
       ['a Seek with no SeekPosition', segment([head(seek(info, null)), ...body()])],
@@ -1930,6 +1934,11 @@ describe('Chrome\'s and Firefox\'s WebM as the app records it: no timeslice (ref
       ['a SeekID naming Attachments', segment([head(seek(idOf(0x1941a469), Buffer.from([0x10]))), ...body()])],
       ['a SeekID naming Chapters', segment([head(seek(idOf(0x1043a770), Buffer.from([0x10]))), ...body()])],
       ['a SeekPosition at the Segment\'s end', segment([head(seek(info, Buffer.from([length]))), ...body()])],
+      ['a SeekPosition at the file\'s end, in a Segment of unknown size', segment([head(seek(info, Buffer.from([length]))), ...body()], true)],
+      ['a SeekPosition far past the file, in a Segment of unknown size', segment([head(seek(info, Buffer.from([0xff, 0xff, 0xff, 0xff]))), ...body()], true)],
+      ['a target named twice', segment([head(seek(info, Buffer.from([0x10])), seek(info, Buffer.from([0x20]))), ...body()])],
+      ['seven Seeks (one target twice)', segment([head(...every, seek(info, Buffer.from([0x10]))), ...body()])],
+      ['20,000 Seeks', segment([head(...Array.from({ length: 20_000 }, () => seek(info, Buffer.alloc(8, 0x7f)))), ...body()], true)],
       ['a 9-byte SeekPosition', segment([head(seek(info, Buffer.alloc(9))), ...body()], true)],
       ['two SeekHeads', segment([head(), head(), ...body()])],
       ['a SeekHead after Info', segment([webmInfo(), head(), ebml(WEBM.tracks, webmTrack(1, 2, 'A_OPUS')), webmCluster(undefined, false)])],

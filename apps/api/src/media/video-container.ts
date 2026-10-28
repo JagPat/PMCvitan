@@ -271,7 +271,7 @@ function webmSeconds(b: Buffer): number | null {
       // pointing only at what this walk takes
       if (seek || info || tracks !== undefined) return null;
       seek = true;
-      seekHead(b, e, steps, SEGMENT_CHILDREN, segment.unknownSize ? undefined : segment.dataEnd - segment.dataStart);
+      seekHead(b, e, steps, SEGMENT_CHILDREN, segment.dataEnd - segment.dataStart);
     } else if (e.id === INFO) {
       if (info) return null; // one Info
       info = true;

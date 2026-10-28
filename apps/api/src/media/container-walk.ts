@@ -266,10 +266,13 @@ function uintOf(b: Buffer, e: Element): number {
 
 /**
  * A SeekHead, read whole: Seeks and Void only, each Seek exactly one SeekID of 1 to 4 bytes naming one of `targets`
- * (the Segment-level elements the reader takes) and exactly one SeekPosition inside the Segment's `length` bytes, which
- * may be unknown (Firefox's Segment). The pointers are never followed: the walk reads the Segment in order.
+ * (the Segment-level elements the reader takes), each target at most once, and exactly one SeekPosition inside the
+ * Segment's `length` bytes (to the file's end when its size is unknown, as Firefox writes it). So a SeekHead holds a
+ * handful of small Seeks and no room for anything else. The pointers are never followed: the walk reads the Segment in
+ * order.
  */
-function seekHead(b: Buffer, e: Element, steps: Walk, targets: ReadonlySet<number>, length: number | undefined): void {
+function seekHead(b: Buffer, e: Element, steps: Walk, targets: ReadonlySet<number>, length: number): void {
+  const seen = new Set<number>();
   for (const seek of elements(b, e.dataStart, e.dataEnd, steps, SEEK_HEAD_CHILDREN)) {
     if (seek.id === VOID) continue;
     const fields = new Map<number, Element>();
@@ -277,8 +280,10 @@ function seekHead(b: Buffer, e: Element, steps: Walk, targets: ReadonlySet<numbe
     const id = fields.get(SEEK_ID);
     const position = fields.get(SEEK_POSITION);
     if (!id || !position) return fail();
-    if (id.dataEnd - id.dataStart < 1 || id.dataEnd - id.dataStart > 4 || !targets.has(uintOf(b, id))) fail();
-    if (length !== undefined && uintOf(b, position) >= length) fail();
+    const target = id.dataEnd - id.dataStart < 1 || id.dataEnd - id.dataStart > 4 ? undefined : uintOf(b, id);
+    if (target === undefined || !targets.has(target) || seen.has(target)) return fail();
+    seen.add(target);
+    if (uintOf(b, position) >= length) fail();
   }
 }
 
