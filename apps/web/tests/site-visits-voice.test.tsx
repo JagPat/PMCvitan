@@ -240,6 +240,16 @@ describe('Stage 1 voice notes on a visit', () => {
     );
   });
 
+  it('keeps a note of a minute and a half: a voice note’s limit is two minutes, not a video’s one', async () => {
+    withRecorder();
+    const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
+    await record(screen.getByTestId('sv-visit-v-1'), 90_000);
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect((uploadMedia.mock.calls[0] as unknown as [Record<string, unknown>])[0]).toMatchObject({ mime: 'audio/webm' });
+  });
+
   it('does not keep a recording that ran two minutes or more, though the cap should have stopped it', async () => {
     withRecorder();
     const uploadMedia = vi.fn();

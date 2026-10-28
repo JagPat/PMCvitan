@@ -14,8 +14,8 @@ import { setClampedTimeout } from './clampedTimer';
 import { captureStamp } from './captureStamp';
 import { photoDecodes } from './photoDecodes';
 import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto';
-import { acceptedType, blobBase64, type Recorded } from './mediaRecorder';
-import { VOICE_NOTE_MIMES } from '@/data/queueContracts';
+import { acceptedType, blobBase64, type Recorded, type RecordKind } from './mediaRecorder';
+import { VIDEO_CLIP_MIMES, VOICE_NOTE_MIMES } from '@/data/queueContracts';
 import { refusalWords, SV } from './siteVisitWords';
 
 /**
@@ -226,11 +226,32 @@ export const VOICE_MIN_MS = 1_000;
 /** and one that ran this long or longer is not kept either: the recorder's cap should have stopped it, so a recording
  *  past it (a recorder that ignored its timer) is refused here before it is kept, never at the server */
 export const VOICE_LIMIT_MS = 120_000;
+/** #995 V2b: a video clip stops itself here, half a second inside the server's minute (it refuses a clip that reads
+ *  60.5 s or more), and is kept on the same terms as a voice note: at least a second, and never one that ran a minute */
+export const VIDEO_MAX_MS = 59_500;
+export const VIDEO_MIN_MS = 1_000;
+export const VIDEO_LIMIT_MS = 60_000;
 
 /** What the person is told when a visit file is not kept on the phone, in the words of what it is. */
 type KeepWords = Record<'noStorage' | 'notKept' | 'maybeNotKept', (typeof SV)[keyof typeof SV]>;
 const PHOTO_KEEP: KeepWords = { noStorage: SV.photoNoStorage, notKept: SV.photoNotKept, maybeNotKept: SV.photoMaybeNotKept };
 const VOICE_KEEP: KeepWords = { noStorage: SV.voiceNoStorage, notKept: SV.voiceNotKept, maybeNotKept: SV.voiceMaybeNotKept };
+const VIDEO_KEEP: KeepWords = { noStorage: SV.videoNoStorage, notKept: SV.videoNotKept, maybeNotKept: SV.videoMaybeNotKept };
+
+/** A recording of each kind: the base types the upload takes for it, how long it may be, and the words for each refusal. */
+const RECORDING: Record<RecordKind, {
+  mimes: readonly string[]; minMs: number; limitMs: number; keep: KeepWords;
+  words: Record<'format' | 'tooShort' | 'tooLong' | 'unreadable' | 'tooBig' | 'placeGone', (typeof SV)[keyof typeof SV]>;
+}> = {
+  audio: {
+    mimes: VOICE_NOTE_MIMES, minMs: VOICE_MIN_MS, limitMs: VOICE_LIMIT_MS, keep: VOICE_KEEP,
+    words: { format: SV.voiceFormat, tooShort: SV.voiceTooShort, tooLong: SV.voiceTooLong, unreadable: SV.voiceUnreadable, tooBig: SV.voiceTooBig, placeGone: SV.voicePlaceGone },
+  },
+  video: {
+    mimes: VIDEO_CLIP_MIMES, minMs: VIDEO_MIN_MS, limitMs: VIDEO_LIMIT_MS, keep: VIDEO_KEEP,
+    words: { format: SV.videoFormat, tooShort: SV.voiceTooShort, tooLong: SV.videoTooLong, unreadable: SV.voiceUnreadable, tooBig: SV.videoTooBig, placeGone: SV.videoPlaceGone },
+  },
+};
 
 /** How an open for marking ended: the photo, ready to draw on; why it did not open; or `moved`, when the person went on
  *  (Cancel, another photo, a sign-out or another project), which says nothing. */
@@ -835,8 +856,9 @@ export function useSiteVisits() {
      *  same people while the visit is not closed (the server asks again). It goes the way a photo goes: kept on the
      *  phone with the one act that sends it, then queued, so it waits through no signal, a reload and a sign-in. Only
      *  a type the upload takes (its codecs too), at least a second and under two minutes long and within the upload's size, is kept. Its length is not sent:
-     *  the server reads it from the file and stores that. */
-    addVoice: async (visitId: string, rec: Recorded, extra: { note?: string; rating?: SiteVisitRating; nodeId?: string; placeName?: string | null }): Promise<boolean> => {
+     *  the server reads it from the file and stores that. #995 V2b: a video clip goes the same way, under a minute. */
+    addRecording: async (kind: RecordKind, visitId: string, rec: Recorded, extra: { note?: string; rating?: SiteVisitRating; nodeId?: string; placeName?: string | null }): Promise<boolean> => {
+      const rule = RECORDING[kind];
       const state = useStore.getState();
       if (!state.serverGateway()) { setError(SV.needsServer[state.lang]); return false; }
       const scope = projectScopeOf(state);
@@ -846,16 +868,16 @@ export function useSiteVisits() {
       setNotice(null);
       try {
         // the base type and the codecs the recorder named: both must be ones the server reads
-        if (!(VOICE_NOTE_MIMES as readonly string[]).includes(rec.mime) || !acceptedType('audio', rec.type)) { say(SV.voiceFormat); return false; }
-        if (rec.ms < VOICE_MIN_MS || rec.blob.size === 0) { say(SV.voiceTooShort); return false; }
-        if (rec.ms >= VOICE_LIMIT_MS) { say(SV.voiceTooLong); return false; }
+        if (!rule.mimes.includes(rec.mime) || !acceptedType(kind, rec.type)) { say(rule.words.format); return false; }
+        if (rec.ms < rule.minMs || rec.blob.size === 0) { say(rule.words.tooShort); return false; }
+        if (rec.ms >= rule.limitMs) { say(rule.words.tooLong); return false; }
         const data = await blobBase64(rec.blob).catch(() => null);
-        if (!data) { say(SV.voiceUnreadable); return false; }
-        if (data.length > MAX_PHOTO_BASE64) { say(SV.voiceTooBig); return false; }
+        if (!data) { say(rule.words.unreadable); return false; }
+        if (data.length > MAX_PHOTO_BASE64) { say(rule.words.tooBig); return false; }
         if (!live(scope)) return false;
         // the place is checked as the visit is now shown, as a photo's is
         const v = shownRef.current.find((x) => x.id === visitId);
-        if (extra.nodeId && !v?.places.some((p) => p.nodeId === extra.nodeId && !p.retiredAt)) { say(SV.voicePlaceGone); return false; }
+        if (extra.nodeId && !v?.places.some((p) => p.nodeId === extra.nodeId && !p.retiredAt)) { say(rule.words.placeGone); return false; }
         const s = useStore.getState();
         const note = extra.note?.trim();
         const op: SiteVisitAddFileOp = {
@@ -866,7 +888,7 @@ export function useSiteVisits() {
           },
           by: { name: s.userName ?? '', role: s.role }, placeName: extra.placeName ?? null, queuedAt: now(),
         };
-        return await keepAndQueue(scope, op, data, say, VOICE_KEEP);
+        return await keepAndQueue(scope, op, data, say, rule.keep);
       } finally {
         if (live(scope)) setBusy(false);
       }

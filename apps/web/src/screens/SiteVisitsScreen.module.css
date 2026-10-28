@@ -208,3 +208,17 @@
   background: #e3f1e5;
   color: #1e5b2a;
 }
+/* #995 V2b: a video plays at the card's width at most, and what the camera sees while recording takes a line of its own */
+.voice video {
+  width: 240px;
+  max-width: 100%;
+  border-radius: 10px;
+  background: #000;
+}
+.preview {
+  flex-basis: 100%;
+  width: 240px;
+  max-width: 100%;
+  border-radius: 10px;
+  background: #000;
+}
