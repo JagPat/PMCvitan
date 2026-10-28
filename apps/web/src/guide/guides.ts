@@ -1,5 +1,5 @@
 import type { Role, ScreenKey } from '@vitan/shared';
-import type { GuideTip } from './words';
+import type { GuideTip, GuideTitle } from './words';
 import { guidedPhotoPicksOf, type GuideOutcome } from './outcomes';
 import { useGuideState } from './guideState';
 import { useStore } from '@/store/store';
@@ -49,6 +49,8 @@ export interface GuideStep {
 
 export interface Guide {
   id: string;
+  /** its name in the Help sheet's "Show me how" list */
+  title: GuideTitle;
   roles: readonly Role[];
   screen: ScreenKey;
   steps: readonly GuideStep[];
@@ -58,6 +60,7 @@ export const GUIDES: readonly Guide[] = [
   {
     // the app's "open issue" is a failed checklist item: the engineer raises it on the checklist
     id: 'raise-issue-engineer',
+    title: 'raiseIssueEngineer',
     roles: ['engineer'],
     screen: 'engineer-check',
     steps: [
@@ -76,6 +79,7 @@ export const GUIDES: readonly Guide[] = [
   {
     // the PMC raises one by asking the engineer to check it: + → "Check something here" → issue
     id: 'raise-issue-pmc',
+    title: 'raiseIssuePmc',
     roles: ['pmc'],
     screen: 'dashboard',
     steps: [
@@ -88,6 +92,7 @@ export const GUIDES: readonly Guide[] = [
     // the PMC puts a decision to its decider (the client, by default): + → "Something to decide here" → Publish. It shares
     // the Dashboard with the guide above, so it starts by itself on the next visit, not on top of it.
     id: 'record-decision-pmc',
+    title: 'recordDecision',
     roles: ['pmc'],
     screen: 'dashboard',
     steps: [
@@ -101,6 +106,7 @@ export const GUIDES: readonly Guide[] = [
     // store has the photo (sent, kept on this phone to send, or on record from a live refresh before the upload's own
     // answer), so a cancelled picker leaves the tip where it is.
     id: 'add-site-photo',
+    title: 'addSitePhoto',
     roles: ['pmc', 'engineer'],
     screen: 'dashboard',
     steps: [
@@ -126,6 +132,11 @@ function guidedPhotoOnRecord(): boolean {
   if (picks.size === 0) return false;
   const s = useStore.getState();
   return [...s.photos, ...s.myDeletablePhotos].some((p) => p.clientKey !== undefined && picks.has(p.clientKey));
+}
+
+/** Every guide this role can be shown, on any screen, in order (the Help sheet's list). */
+export function guidesForRole(role: Role): readonly Guide[] {
+  return GUIDES.filter((g) => g.roles.includes(role));
 }
 
 /** The guides this role can be shown on this screen, in order. */
