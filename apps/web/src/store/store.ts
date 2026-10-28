@@ -107,7 +107,7 @@ import { COMMERCIAL_OP_PERMISSION, advanceCoalesceKey, budgetCoalesceKey, costHe
 import { checkinClock, todayCivil } from '@/lib/civilDate';
 import { hasStamp, type CaptureStamp } from '@/lib/captureStamp';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
-import { emitGuideOutcome, guideRunToken, recordGuidedPhotoPick, recordGuidedReview } from '@/guide/outcomes';
+import { emitGuideOutcome, guideRunToken, recordGuidedDrawing, recordGuidedPhotoPick } from '@/guide/outcomes';
 import { saveSession, clearSession, loadSession } from '@/lib/sessionPersist';
 import { readDeviceLang } from '@/lib/langPreference';
 
@@ -448,11 +448,13 @@ export interface AppState {
   /** #482 site photos — the upload keys of this tab's site photo uploads sent online and not yet answered (an answer of
    *  any kind, or a network error, ends one); memory only, as the request itself is */
   photoUploadsSending: string[];
-  /** #482 (Codex 4403491374, 4403818412) — how many review decisions this tab sent and has not settled yet: sent online
-   *  with no answer, or replayed from the queue by a flush that has not ended (its row leaves the queue before the
-   *  flush's snapshot is taken); memory only, as the request itself is. The review guide points at no decide control while one is on its way
-   *  (`reviewDecisionWaits`), so a second press is never guided into a second decision */
-  reviewDecisionsSending: number;
+  /** #482 (Codex 4403491374, 4403818412) — the review decisions this tab sent and has not settled yet, one entry each,
+   *  named by the project and person they were sent for (`reviewSendingScope`): sent online with no answer, or replayed from
+   *  the queue by a flush that has not ended (its row leaves the queue before the flush's snapshot is taken); memory only,
+   *  as the request itself is. The review guide points at no decide control while one of the current scope's is on its
+   *  way (`reviewDecisionWaits`), so a second press is never guided into a second decision; one sent for another project
+   *  or person holds nothing back here (#1220), while one for this project still does after a switch away and back */
+  reviewDecisionsSending: string[];
   /** FAILED evidence (terminal non-dedupe rejection) awaiting the user's Retry/Delete (Task 4),
    *  each row still carrying WHICH work it belongs to. `inspectionId` /
    *  `inspectionItemId` are kept because Delete on this list is the one non-server path that drops
@@ -1328,13 +1330,25 @@ function releaseCommercialKeys(
   }
 }
 
-/** The cap reservation a commercial op holds, or null if it spends no line authority. */
+/** #482 (#1220) — the project and person a review decision on its way was sent for (`reviewDecisionsSending`). Not the
+ *  scope's generation: a switch away and back starts a new one while that decision is still on its way */
+export const reviewSendingScope = (s: Pick<AppState, 'activeProjectId' | 'sessionUserId'>): string => `${s.activeProjectId}\u0000${s.sessionUserId ?? ''}`;
+
 /** #482 — the review guide waits on a decision already on its way: this review's, queued on this phone to send, or any
- *  sent online, or replayed from the queue, not settled yet (Codex 4403491374, 4403818412: the run waits on that answer, and must not lead a press on this
- *  review or another meanwhile). It neither offers nor points at a review then (pressing again would decide twice) */
-export function reviewDecisionWaits(s: Pick<AppState, 'outbox' | 'reviewDecisionsSending'>, reviewId: string): boolean {
-  return s.reviewDecisionsSending > 0 || s.outbox.some((o) => o.t === 'decideReview' && o.inspectionId === reviewId);
+ *  sent online, or replayed from the queue, in this project scope and not settled yet (Codex 4403491374, 4403818412: the
+ *  run waits on that answer, and must not lead a press on this review or another meanwhile; #1220: one sent in a scope
+ *  since left is not this one's). It neither offers nor points at a review then (pressing again would decide twice) */
+export function reviewDecisionWaits(s: Pick<AppState, 'outbox' | 'reviewDecisionsSending' | 'activeProjectId' | 'sessionUserId'>, reviewId: string): boolean {
+  return s.reviewDecisionsSending.includes(reviewSendingScope(s)) || s.outbox.some((o) => o.t === 'decideReview' && o.inspectionId === reviewId);
 }
+
+/** take one entry back by value (the first): the others, this scope's or another's, stay */
+function dropOne(list: string[], entry: string): void {
+  const at = list.indexOf(entry);
+  if (at >= 0) list.splice(at, 1);
+}
+
+/** The cap reservation a commercial op holds, or null if it spends no line authority. */
 
 export function capReservationOf(op: unknown): { lineId: string; qty: string } | null {
   const o = op as {
@@ -1490,7 +1504,7 @@ export function getInitialState(): AppState {
     siteVisitsSentAnyway: [],
     photoUploadsInFlight: [],
     photoUploadsSending: [],
-    reviewDecisionsSending: 0,
+    reviewDecisionsSending: [],
     failedEvidence: [],
     pendingEvidenceCount: 0,
     pendingEvidenceKeys: null,
@@ -1637,6 +1651,8 @@ export const useStore = create<Store>()(
       commandAfterSequence: number | null; // a committed generic command owed confirmed truth
       commandOwed: Set<ReconcileSlice>;     // the slices it is still owed for (cleared slice by slice)
       submit: SubmitObligation | null;      // a frozen submit owed confirmation
+      /** #482 — told once a pull that began after they asked has settled (`afterFreshPull`) */
+      afterPull?: (() => void)[];
     }
     type ReconcileObligation =
       | { kind: 'command'; createdAfterSequence: number; modulesOnly?: boolean }
@@ -2196,6 +2212,15 @@ export const useStore = create<Store>()(
       const sub = get().submission;
       return sub.status === 'submitting' && sub.inspectionId === ob.inspectionId && sub.attempt === ob.attempt;
     };
+    /** #482 — settles once a pull of this scope that began after this call has settled (applied or failed): one now, or,
+     *  while one is already on its way (it may predate what the caller needs it to show), the rerun queued after it */
+    const afterFreshPull = (scope: ProjectScope): Promise<void> => new Promise((resolve) => {
+      if (!gateway) { resolve(); return; }
+      const c = coordinatorFor(scope);
+      if (!c.refreshInFlight) { void requestFreshSnapshot(scope).catch(() => undefined).finally(resolve); return; }
+      (c.afterPull ??= []).push(resolve);
+      c.refreshQueued = true;
+    });
     const requestFreshSnapshot = async (scope: ProjectScope = currentScope()): Promise<void> => {
       if (!gateway) return;
       const c = coordinatorFor(scope);
@@ -2308,8 +2333,12 @@ export const useStore = create<Store>()(
         // failed / unconfirmed mandatory reconcile nothing re-queues, so we wait for Retry.
         const rerun = c.refreshQueued && scopeStillCurrent(scope);
         c.refreshQueued = false;
-        if (rerun) void requestFreshSnapshot(scope);
-        else pruneScopeCoordinators();
+        // #482 — those waiting for a pull that began after they asked hear when the rerun settles (it begins after them),
+        // or now when none follows (the scope was left: they check it themselves)
+        const waiters = c.afterPull?.splice(0) ?? [];
+        const tell = () => { for (const w of waiters) w(); };
+        if (rerun) void requestFreshSnapshot(scope).catch(() => undefined).finally(tell);
+        else { tell(); pruneScopeCoordinators(); }
       }
     };
 
@@ -2858,23 +2887,26 @@ export const useStore = create<Store>()(
       && get().activeProjectId === ctx.projectId
       && outboxKey() === ctx.storageKey;
 
+    /** #482 — a review decision's outcome for the review guide, under the run it is made in (taken before anything else,
+     *  so a later run never hears it) */
+    const reviewDecideReport = (reviewId: string | null) => {
+      const guideRun = guideRunToken();
+      // keyed by the review decided (#1220): the guide follows the review its own press decided, not another
+      return (result: ActReport) =>
+        emitGuideOutcome(result === 'sent' || result === 'queued' ? 'review-decided' : result === 'failed' ? 'review-decide-failed' : 'review-decide-not-kept', reviewId, guideRun);
+    };
+    /** the online send of a review decision, marked as on its way, in the scope it was sent in, until any answer (or a
+     *  network error) ends it */
+    const sendingDecision = (call: () => Promise<ApiSnapshot>) => (): Promise<ApiSnapshot> => {
+      const entry = reviewSendingScope(get());
+      set((s) => { s.reviewDecisionsSending.push(entry); });
+      return call().finally(() => { set((s) => { dropOne(s.reviewDecisionsSending, entry); }); });
+    };
     /**
      * Route a mutation through the gateway when online, or queue it (Phase 8
      * offline outbox) when offline. Returns true when the action was handled
      * here (remote or queued); false means "no gateway — do the local mutation".
      */
-    /** #482 — a review decision's outcome for the review guide, under the run it is made in (taken before anything else,
-     *  so a later run never hears it) */
-    const reviewDecideReport = () => {
-      const guideRun = guideRunToken();
-      return (result: ActReport) =>
-        emitGuideOutcome(result === 'sent' || result === 'queued' ? 'review-decided' : result === 'failed' ? 'review-decide-failed' : 'review-decide-not-kept', null, guideRun);
-    };
-    /** the online send of a review decision, marked as on its way until any answer (or a network error) ends it */
-    const sendingDecision = (call: () => Promise<ApiSnapshot>) => (): Promise<ApiSnapshot> => {
-      set((s) => { s.reviewDecisionsSending += 1; });
-      return call().finally(() => { set((s) => { s.reviewDecisionsSending -= 1; }); });
-    };
     const runRemoteOrQueue = (
       op: OutboxOp,
       label: string,
@@ -4170,11 +4202,10 @@ export const useStore = create<Store>()(
       }),
     approveInspection: () => {
       // #482: how the decision went, for the review guide, under the run it was made in
-      const reportDecide = reviewDecideReport();
       const i = activeReviewIdx();
+      const reportDecide = reviewDecideReport(i < 0 ? null : get().reviews[i]!.id);
       if (i < 0) { reportDecide('failed'); return; }
       const review = get().reviews[i];
-      recordGuidedReview(guideRunToken(), review.id);
       // Task 5: approving a CLOSING review is the sign-off that completes its activity
       // #482 V-1018-2 — what the decision says back, in the viewer's language when it is said (names and ids are
       // data): an online decision's toast reads the language at settlement (Codex 4307111788)
@@ -4204,8 +4235,8 @@ export const useStore = create<Store>()(
       reportDecide('sent');
     },
     sendReinspection: () => {
-      const reportDecide = reviewDecideReport();
       const i = activeReviewIdx();
+      const reportDecide = reviewDecideReport(i < 0 ? null : get().reviews[i]!.id);
       if (i < 0) { reportDecide('failed'); return; }
       const review = get().reviews[i];
       const n = review.items.filter((it) => it.rejected || it.result === 'FAIL').length;
@@ -4216,7 +4247,6 @@ export const useStore = create<Store>()(
         reportDecide('failed');
         return;
       }
-      recordGuidedReview(guideRunToken(), review.id);
       // gate finding 3: rejection names exact ROWS by server id (labels are not unique)
       const rejectedIds = review.items.filter((it) => it.rejected && it.id).map((it) => it.id!);
       // Task 10 (Module 3) correction — the rejection decision carries its own stable idempotency key.
@@ -4240,9 +4270,16 @@ export const useStore = create<Store>()(
 
     // ---- drawings register ----
     issueDrawing: (input) => {
+      // #482 — a publish's outcome for the drawing guide, under the run it is made in (a draft saved is not one)
+      const guideRun = guideRunToken();
+      // a revision already in the register under this number and label is not this publish's (the server refuses a label
+      // used before): the guide is never finished by seeing it
+      const labelTaken = get().drawings.some((d) => d.number === input.number && d.revisions.some((r) => r.rev === input.rev));
+      if (input.publish && !labelTaken) recordGuidedDrawing(guideRun, input.number, input.rev);
+      const reportPublish = (ok: boolean) => { if (input.publish) emitGuideOutcome(ok ? 'drawing-published' : 'drawing-publish-failed', null, guideRun); };
       if (gateway) {
         // Task 10 correction (C3) — never issue against a register whose module read hasn't settled.
-        if (drawingMutationsBlocked(get())) { get().flash(DWT.stillLoading[get().lang]); return; }
+        if (drawingMutationsBlocked(get())) { get().flash(DWT.stillLoading[get().lang]); reportPublish(false); return; }
         const gw = gateway;
         // gate round 12: capture the scope BEFORE the request and guard EVERY continuation on it.
         const scope = currentScope();
@@ -4257,7 +4294,7 @@ export const useStore = create<Store>()(
             // retry NEVER re-runs this — it would re-presign a new storageKey / re-upload the bytes.
             prepared = await gw.prepareIssue(input);
           } catch {
-            if (scopeStillCurrent(scope)) get().flash(DWT.prepareFailed[get().lang]);
+            if (scopeStillCurrent(scope)) { get().flash(DWT.prepareFailed[get().lang]); reportPublish(false); }
             return;
           }
           // PHASE 2 (bounded same-key retry): the register-write. A transient failure (network / 5xx /
@@ -4270,7 +4307,7 @@ export const useStore = create<Store>()(
               committed = true;
             } catch (err) {
               if (isTerminalOutboxError(err)) {
-                if (scopeStillCurrent(scope)) get().flash(DWT.rejected[get().lang]);
+                if (scopeStillCurrent(scope)) { get().flash(DWT.rejected[get().lang]); reportPublish(false); }
                 return;
               }
               // transient — keep the SAME key + prepared body and retry
@@ -4279,6 +4316,7 @@ export const useStore = create<Store>()(
           if (!scopeStillCurrent(scope)) return;
           if (committed) {
             get().flash(DWX.issued(input.number, input.rev, get().lang));
+            reportPublish(true);
             requestFreshSnapshot(scope); // one coalesced, coordinator-ordered refresh for THIS scope
             return;
           }
@@ -4286,7 +4324,10 @@ export const useStore = create<Store>()(
           // from fresh state BEFORE any failure message (never a premature "please try again"): the ledger
           // dedupes, so if it landed the register now shows the ONE revision; if it truly never committed it
           // simply isn't there and the user can re-issue. No false-failure toast either way.
-          requestFreshSnapshot(scope);
+          // #482 — the drawing guide is told not published once a refresh that began after this has settled (a pull already
+          // on its way may predate the publish): a revision it brings finishes the guide all the same (its `settled` is
+          // looked at on a failure report), and otherwise it goes back to Issue drawing
+          void afterFreshPull(scope).then(() => { if (scopeStillCurrent(scope)) reportPublish(false); });
         })();
         return;
       }
@@ -4336,6 +4377,7 @@ export const useStore = create<Store>()(
           ? DWX.issuedDemo(input.number, input.rev, get().lang)
           : DWX.draftSavedDemo(input.number, get().lang),
       );
+      reportPublish(true);
     },
     publishDrawing: (drawingId) => {
       const d = get().drawings.find((x) => x.id === drawingId);
@@ -6486,6 +6528,7 @@ export const useStore = create<Store>()(
       if (outboxFlushing) { outboxFlushQueued = true; return notRun(); }
       outboxFlushing = true;
       let replayingDecisions = 0;
+      let replayScope = '';
       // #482 — what this flush may send: the queue as it starts (narrowed to what it takes once it takes it)
       flushingKeys = new Set(get().outbox.flatMap((o) => ('idempotencyKey' in o && o.idempotencyKey ? [o.idempotencyKey] : [])));
       try {
@@ -6557,7 +6600,8 @@ export const useStore = create<Store>()(
       // #482 (Codex 4403818412) — a review decision this flush replays is on its way until the flush ends: its row leaves
       // the queue before the flush's snapshot is taken, and the review guide must not point at that review meanwhile
       replayingDecisions = ops.filter((o) => o.t === 'decideReview').length;
-      if (replayingDecisions > 0) set((s) => { s.reviewDecisionsSending += replayingDecisions; });
+      replayScope = reviewSendingScope(get());
+      if (replayingDecisions > 0) set((s) => { for (let k = 0; k < replayingDecisions; k++) s.reviewDecisionsSending.push(replayScope); });
       // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
       // take its own acts out of `ops` as it goes)
       const taken = ops.length;
@@ -7101,7 +7145,7 @@ export const useStore = create<Store>()(
       } finally {
         outboxFlushing = false;
         flushingKeys = new Set();
-        if (replayingDecisions > 0) { const n = replayingDecisions; set((s) => { s.reviewDecisionsSending -= n; }); }
+        if (replayingDecisions > 0) { const n = replayingDecisions; set((s) => { for (let k = 0; k < n; k++) dropOne(s.reviewDecisionsSending, replayScope); }); }
         // #482 — offline, no rerun follows: an act the guide waits on that this flush did not settle (taken after it began,
         // or left out of it) waits for the signal, as going offline says
         if (!get().online) for (const [k, watch] of [...actWatches]) if (!writingKeys.has(k)) watch('pending');
