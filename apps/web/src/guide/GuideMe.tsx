@@ -15,11 +15,9 @@ export function GuideMe() {
   const start = useGuideState((s) => s.start);
   if (!offer || running) return null;
   return (
-    <div className={styles.guideMeRow}>
-      <button type="button" className={styles.guideMe} onClick={() => start(offer)} data-testid="guide-me">
-        <span aria-hidden="true" className={styles.guideMeMark}>?</span>
-        {GUIDE_WORDS.guideMe[lang]}
-      </button>
-    </div>
+    <button type="button" className={styles.guideMe} onClick={() => start(offer)} data-testid="guide-me">
+      <span aria-hidden="true" className={styles.guideMeMark}>?</span>
+      {GUIDE_WORDS.guideMe[lang]}
+    </button>
   );
 }
