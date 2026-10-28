@@ -593,6 +593,9 @@ if echo "$out" | grep -q "P3005"; then
   #
   # A visit file's removal line (#1179 R1, 20280125000000) is here because its rules are checks, triggers and a
   # deferred constraint trigger, which a db-push baseline does not have. The file is guarded and re-runnable.
+  #
+  # The Hub catalog generation (#1118 U5m, 20280126000000) is here for SV1-a's reason: its rows are sealed raw writes
+  # under the catalog gate, which a db-push baseline does not seed. It is audited and re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -640,7 +643,8 @@ if echo "$out" | grep -q "P3005"; then
 20280121300000_hub_link
 20280122000000_hub_drawing_identity
 20280123000000_hub_receipts
-20280125000000_site_visit_file_removal"
+20280125000000_site_visit_file_removal
+20280126000000_hub_catalog_generation"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
@@ -795,8 +799,40 @@ if echo "$out" | grep -q "P3005"; then
     esac
   fi
 
+  # Hub #1118 U5m — THE SAME RULE, ONE GENERATION LATER AGAIN. SV1-a's catalog file is on ALWAYS_EXECUTE and its
+  # immutable foreign-generation audit admits the five generations it knew, gated on the retirement marker or the
+  # serving witness; on a database migrated through U5m that never served (no lease), its replay refuses U5m's
+  # generation (`63679450…`) and the deploy aborts. A database holding U5m's generation evidences SV1-a's catalog
+  # file ran to completion (20280126's prerequisite is SV1-a's generation, and SV1-a's own readback verified it).
+  # So on such a database SV1-a's catalog file is RESOLVED as applied. It installs no function, so no other replay
+  # depends on it; SV1-a's record file (20280112) carries no catalog audit and replays as before.
+  # `scripts/upgrade-proof.sh` mirrors this rule in its ledger-lost replays.
+  T4D_HUB_SUPERSEDED="20280111000000_site_visits_sv1a_catalog"
+  CARRIES_HUB_U5M=0
+  if [ "$CARRIES_SV1A" -eq 1 ]; then
+    hub_u5m_out=$(node -e '
+      const { PrismaClient } = require("@prisma/client");
+      const prisma = new PrismaClient();
+      prisma.$queryRawUnsafe(
+        "SELECT EXISTS (SELECT 1 FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = \x2763679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848\x27) AS hub"
+      ).then((rows) => { console.log(rows[0] && rows[0].hub === true ? "carries" : "before"); })
+        .catch((e) => { console.log("error " + (e && e.message ? e.message.split("\n")[0] : e)); })
+        .finally(() => prisma.$disconnect());
+    ' 2>/dev/null)
+    case "$hub_u5m_out" in
+      carries) CARRIES_HUB_U5M=1; echo "[migrate] this database CARRIES Hub U5m's catalog generation — SV1-a's catalog file will be resolved as applied rather than replayed (its catalog audit would refuse U5m's generation)" ;;
+      before) echo "[migrate] this database does not carry Hub U5m's catalog generation — SV1-a's catalog file stays pending" ;;
+      *) echo "[migrate] could not read Hub U5m's catalog generation ($hub_u5m_out) — SV1-a's catalog file stays pending" ;;
+    esac
+  fi
+
   for dir in prisma/migrations/*/; do
     name=$(basename "$dir")
+    if [ "$CARRIES_HUB_U5M" -eq 1 ] && printf '%s\n' "$T4D_HUB_SUPERSEDED" | grep -qx "$name"; then
+      echo "[migrate] resolving $name as applied: a database carrying Hub U5m's generation ran it (docs/RUNBOOK.md §P6T4D)"
+      npx prisma migrate resolve --applied "$name" || exit 1
+      continue
+    fi
     if [ "$CARRIES_SV1A" -eq 1 ] && printf '%s\n' "$T4D_SV1A_SUPERSEDED" | grep -qx "$name"; then
       echo "[migrate] resolving $name as applied: a database carrying Site Visits SV1-a's generation ran it (docs/RUNBOOK.md §P6T4D)"
       npx prisma migrate resolve --applied "$name" || exit 1

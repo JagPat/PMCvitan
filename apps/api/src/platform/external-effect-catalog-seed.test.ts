@@ -35,6 +35,9 @@ const MIGRATION_4D_II_A7D = join(MIGRATIONS, '20280104000000_phase6_t4d_ii_a7d_c
 /** Site Visits #792 SV1-a's seed: the generation THIS source compiles — A7d's plus exactly the eight
  *  site-visit keys (invalidate, never push, pairing-required). */
 const MIGRATION_SV1A = join(MIGRATIONS, '20280111000000_site_visits_sv1a_catalog', 'migration.sql');
+/** Hub #1118 U5m's seed: the NEXT generation, seeded ahead of the code that compiles it — SV1-a's plus
+ *  exactly the two Hub keys. U5k compiles them, and then this literal becomes the current one. */
+const MIGRATION_HUB_U5M = join(MIGRATIONS, '20280126000000_hub_catalog_generation', 'migration.sql');
 
 /**
  * Phase 6 unit 4d-i-b — TWO LITERALS, TWO GENERATIONS, ONE SOURCE. 4d-i's literal may not be
@@ -71,6 +74,17 @@ const ADDED_BY_SV1A = new Set([
   'sitevisit.started', 'sitevisit.ended', 'sitevisit.closed', 'sitevisit.late_end_recorded',
   'sitevisit.place_added', 'sitevisit.place_retired', 'sitevisit.attendee_added', 'sitevisit.attendee_retired',
 ]);
+
+/**
+ * Hub #1118 U5m — FIVE LITERALS NOW, and the newest is AHEAD of the source. U5m seeds the generation U5k
+ * will compile, so it is DERIVED from this source with the two Hub keys ADDED (the eight-element preimage
+ * is unchanged), and the source is asserted NOT to carry them yet. When U5k adds them, `HUB_KEYS` moves
+ * into `EXTERNAL_EFFECTS`, the tripwire below fails on purpose, and U5m's literal becomes 'current'.
+ */
+const HUB_KEYS: Record<string, Def> = {
+  'drawing.superseded_hub': { eventType: 'drawing.revised', invalidate: true, push: null },
+  'drawing.relinked': { eventType: 'drawing.refiled', invalidate: true, push: null },
+};
 
 type Row = {
   coverageVersion: string;
@@ -144,12 +158,13 @@ function seededRows(migration: string, seedTable: string): Row[] {
  * (the five-element preimage the 4d-i release hashed, the flag false everywhere) — the two
  * generations whose literals ship, both derived from ONE source.
  */
-type Generation = 'current' | 'a7d' | 'pairing' | 'previous';
+type Generation = 'next' | 'current' | 'a7d' | 'pairing' | 'previous';
 
 /** The catalog as a PREVIOUS generation saw it: SV1-a's keys removed; before A7d, A7d's keys removed
  *  and its role widening undone. */
 function catalogBefore(generation: Generation): Record<string, Def> {
   const catalog = EXTERNAL_EFFECTS as Record<string, Def>;
+  if (generation === 'next') return { ...catalog, ...HUB_KEYS };
   if (generation === 'current') return catalog;
   const out: Record<string, Def> = {};
   for (const k of Object.keys(catalog)) {
@@ -207,19 +222,21 @@ function compiledRows(generation: Generation): Row[] {
  *  sixth element. `phase6-t4d-i-catalog-generations.test.ts` pins the same derivation against
  *  the migration's own `_t4d_catalog_incoming` literal; here it is what the 4d-i literal is
  *  compared to, key by key. */
-function previousCoverageVersion(generation: 'a7d' | 'pairing' | 'previous'): string {
+function previousCoverageVersion(generation: 'next' | 'a7d' | 'pairing' | 'previous'): string {
   const catalog = catalogBefore(generation);
   const preimage = JSON.stringify(Object.keys(catalog).sort().map((k) => {
     const d = catalog[k]!;
     const five = [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(), d.pushFamily ?? null];
-    // SV1-a — A7d's generation is this source's EIGHT-element preimage over its own keys.
-    if (generation === 'a7d') return [...five, d.pairingRequired === true, d.frozenAudience === true, d.pushBody ?? null];
+    // SV1-a — A7d's generation is this source's EIGHT-element preimage over its own keys; Hub U5m's
+    // NEXT generation is the same preimage over this source's keys plus the two Hub keys.
+    if (generation === 'a7d' || generation === 'next') return [...five, d.pairingRequired === true, d.frozenAudience === true, d.pushBody ?? null];
     return generation === 'pairing' ? [...five, d.pairingRequired === true] : five;
   }));
   return createHash('sha256').update(preimage).digest('hex');
 }
 
 const GENERATIONS = [
+  ['hub U5m (next)', MIGRATION_HUB_U5M, '_hub_catalog_seed', 'next'],
   ['site-visits SV1-a (current)', MIGRATION_SV1A, '_sv1a_catalog_seed', 'current'],
   ['4d-ii-a A7d', MIGRATION_4D_II_A7D, '_t4dii_catalog_seed', 'a7d'],
   ['4d-i-b (pairing)', MIGRATION_4D_I_B, '_t4dib_catalog_seed', 'pairing'],
@@ -341,5 +358,53 @@ describe('site visits #792 SV1-a — the new literal is A7d\'s plus exactly the 
     expect(cur[0]!.coverageVersion).not.toBe(prev.values().next().value!.coverageVersion);
     expect(cur[0]!.coverageVersion).toBe(effectCoverageVersion());
     expect(prev.values().next().value!.coverageVersion).toBe('23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c');
+  });
+});
+
+describe('hub #1118 U5m — the next literal is SV1-a\'s plus exactly the two Hub keys, seeded ahead of the code', () => {
+  it('two keys added (an existing drawing event type, invalidate, never push, no pairing claim), every shared key equal in every column but the version', () => {
+    const prev = new Map(seededRows(MIGRATION_SV1A, '_sv1a_catalog_seed').map((r) => [r.effectKey, r]));
+    const next = seededRows(MIGRATION_HUB_U5M, '_hub_catalog_seed');
+    expect(Object.keys(HUB_KEYS)).toHaveLength(2);
+    expect(next.length).toBe(prev.size + 2);
+    expect(next.filter((r) => !prev.has(r.effectKey)).map((r) => r.effectKey).sort()).toEqual(Object.keys(HUB_KEYS).sort());
+    expect(new Set(next.map((r) => r.coverageVersion)).size, 'one literal is one generation').toBe(1);
+    for (const row of next) {
+      const before = prev.get(row.effectKey);
+      const hub = HUB_KEYS[row.effectKey];
+      if (hub) {
+        expect(before, `${row.effectKey} is NEW with U5m`).toBeUndefined();
+        expect(row).toEqual({
+          coverageVersion: row.coverageVersion,
+          effectKey: row.effectKey,
+          eventType: hub.eventType,
+          invalidate: true,
+          push: null,
+          pushFamily: null,
+          frozenAudience: false,
+          requiresPush: false,
+          audience: null,
+          pushBody: null,
+          pairingRequired: false,
+        });
+        // the event type is one the catalog already carries, so the projection rule does not move
+        expect(Object.values(EXTERNAL_EFFECTS as Record<string, Def>).some((d) => d.eventType === hub.eventType)).toBe(true);
+        continue;
+      }
+      expect(before, `SV1-a seeds no row for ${row.effectKey}`).toBeDefined();
+      const { coverageVersion: _v, ...policyNow } = row;
+      const { coverageVersion: _u, ...policyThen } = before!;
+      expect(policyNow, `${row.effectKey}: a shared key moved between SV1-a and U5m`).toEqual(policyThen);
+    }
+    expect(next[0]!.coverageVersion).toBe('63679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848');
+    expect(prev.values().next().value!.coverageVersion).toBe(effectCoverageVersion());
+  });
+
+  it('this release does NOT compile the Hub keys yet — U5k does, and that change must turn U5m\'s literal into the current one', () => {
+    // The tripwire for the hand-over: the day a Hub key lands in `EXTERNAL_EFFECTS`, the compiled version
+    // must equal U5m's seeded one (or the envelope seal refuses every event of that release), and this
+    // suite must be re-pointed: 'next' becomes 'current', SV1-a's becomes the previous generation.
+    for (const k of Object.keys(HUB_KEYS)) expect(k in EXTERNAL_EFFECTS, `${k} is compiled already`).toBe(false);
+    expect(previousCoverageVersion('next')).not.toBe(effectCoverageVersion());
   });
 });
