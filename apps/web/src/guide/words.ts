@@ -1,4 +1,4 @@
-import { sitePhotoLabels, type Lang, type ScreenKey } from '@vitan/shared';
+import { sitePhotoLabels, type Lang, type Role, type ScreenKey } from '@vitan/shared';
 
 /**
  * #482 — the guide's words, one short line per step, in English, Hindi and Gujarati. No long text:
@@ -57,6 +57,16 @@ export const GUIDE_TIPS = {
     hi: 'साइट की फ़ोटो जोड़ने के लिए यहाँ दबाएँ: नई खींचें या फ़ोन से चुनें।',
     gu: 'સાઇટનો ફોટો ઉમેરવા અહીં દબાવો: નવો પાડો અથવા ફોનમાંથી પસંદ કરો.',
   },
+  approvePick: {
+    en: 'Look at the choices, then tap Approve on the one you want.',
+    hi: 'विकल्प देखें, फिर जो चाहिए उसके नीचे का बटन दबाएँ।',
+    gu: 'વિકલ્પો જુઓ, પછી જે જોઈએ તેની નીચેનું બટન દબાવો.',
+  },
+  approveConfirm: {
+    en: 'Check your choice, then tap here to confirm it.',
+    hi: 'अपना चुनाव जाँचें, फिर पक्का करने के लिए यहाँ दबाएँ।',
+    gu: 'તમારી પસંદગી તપાસો, પછી પાકી કરવા અહીં દબાવો.',
+  },
 } satisfies Record<string, Words>;
 
 export type GuideTip = keyof typeof GUIDE_TIPS;
@@ -112,6 +122,11 @@ export const GUIDE_TITLES = {
     en: 'Add a site photo',
     hi: 'साइट की फ़ोटो जोड़ें',
     gu: 'સાઇટનો ફોટો ઉમેરો',
+  },
+  approveDecision: {
+    en: 'Approve a choice',
+    hi: 'कोई विकल्प मंज़ूर करें',
+    gu: 'કોઈ વિકલ્પ મંજૂર કરો',
   },
 } satisfies Record<string, Words>;
 
@@ -244,4 +259,50 @@ export const HELP_WORDS = {
     hi: 'अभी यह नहीं दिखा सकते: यहाँ अभी इसके लिए कुछ नहीं है।',
     gu: 'હમણાં આ બતાવી શકાતું નથી: અહીં હજી આ માટે કંઈ નથી.',
   },
+} satisfies Record<string, Words>;
+
+/** #482 — the first-time welcome: what Vitan is for, for this role, and where help lives. */
+export const WELCOME_ROLE: Record<Role, Words> = {
+  pmc: {
+    en: 'Run the site from here: send checks to the engineer, put decisions to the client and keep the daily record.',
+    hi: 'साइट यहीं से चलाएँ: इंजीनियर को जाँच भेजें, क्लाइंट से फ़ैसले करवाएँ और रोज़ का रिकॉर्ड रखें।',
+    gu: 'સાઇટ અહીંથી ચલાવો: ઇજનેરને તપાસ મોકલો, ક્લાયન્ટ પાસે નિર્ણય કરાવો અને રોજનો રેકોર્ડ રાખો.',
+  },
+  engineer: {
+    en: 'Your checklists, site photos and daily record are here. Check each item and send it back.',
+    hi: 'आपकी चेकलिस्ट, साइट की फ़ोटो और रोज़ का रिकॉर्ड यहाँ हैं। हर चीज़ जाँचें और वापस भेजें।',
+    gu: 'તમારી ચેકલિસ્ટ, સાઇટના ફોટા અને રોજનો રેકોર્ડ અહીં છે. દરેક વસ્તુ તપાસો અને પાછી મોકલો.',
+  },
+  client: {
+    en: 'See how your project is going, and answer the choices put to you.',
+    hi: 'देखें आपका प्रोजेक्ट कैसा चल रहा है, और जो फ़ैसले आपका इंतज़ार कर रहे हैं उनका जवाब दें।',
+    gu: 'જુઓ તમારો પ્રોજેક્ટ કેવો ચાલે છે, અને જે નિર્ણયો તમારી રાહ જુએ છે તેનો જવાબ આપો.',
+  },
+  consultant: {
+    en: "See the project's drawings, decisions and progress, and answer what is sent to you.",
+    hi: 'प्रोजेक्ट की ड्रॉइंग, फ़ैसले और प्रगति देखें, और जो आपको भेजा गया है उसका जवाब दें।',
+    gu: 'પ્રોજેક્ટના ડ્રોઇંગ, નિર્ણયો અને પ્રગતિ જુઓ, અને તમને જે મોકલ્યું છે તેનો જવાબ આપો.',
+  },
+  contractor: {
+    en: 'See the work planned on site and what is waiting on you.',
+    hi: 'साइट पर तय काम देखें और क्या आपका इंतज़ार कर रहा है।',
+    gu: 'સાઇટ પર નક્કી કામ જુઓ અને શું તમારી રાહ જુએ છે.',
+  },
+  architect: {
+    en: "See the project's drawings and decisions, and sign off what is sent to you.",
+    hi: 'प्रोजेक्ट की ड्रॉइंग और फ़ैसले देखें, और जो आपको भेजा गया है उसे मंज़ूर करें।',
+    gu: 'પ્રોજેક્ટના ડ્રોઇંગ અને નિર્ણયો જુઓ, અને તમને જે મોકલ્યું છે તે મંજૂર કરો.',
+  },
+};
+
+export const WELCOME_WORDS = {
+  title: { en: 'Welcome to Vitan', hi: 'Vitan में आपका स्वागत है', gu: 'Vitan માં તમારું સ્વાગત છે' },
+  help: {
+    en: 'Help is at the top of every screen. Tap it whenever you are stuck.',
+    hi: 'हर स्क्रीन के ऊपर मदद है। जब भी अटकें, उसे दबाएँ।',
+    gu: 'દરેક સ્ક્રીનની ઉપર મદદ છે. જ્યારે પણ અટકો, તેને દબાવો.',
+  },
+  showMeAround: { en: 'Show me around', hi: 'मुझे घुमाएँ', gu: 'મને ફેરવો' },
+  notNow: { en: 'Not now', hi: 'अभी नहीं', gu: 'હમણાં નહીં' },
+  gotIt: { en: 'Got it', hi: 'ठीक है', gu: 'બરાબર' },
 } satisfies Record<string, Words>;
