@@ -564,19 +564,24 @@ describe('readVideoClip — V2a: the layouts phones record, and sound read as a 
     expect(webm(file([picture(), sound(0)], [lacedSound]))).toBeNull();
   });
 
-  it('WebM: the untimed last picture is held for the median interval, at most a second (V2 plan, decision 3)', () => {
+  it('WebM: the untimed last picture is held for the median interval (at most a second) or the last interval, if longer (V2 plan, decision 3)', () => {
     // 30 s at 30 frames a second with a 3 s freeze mid-clip: 30 s, where the longest interval made it 32.97 s
     const stalled = [...frames(0, 14), ...frames(17, 30)];
     expect(webm(picturesAt(stalled))).toBeCloseTo(29.99, 6);
     // the same near the cap: 58 s with a 3 s freeze is a 58 s clip (61 s, and refused, before)
     expect(readVideoClip('video/webm', picturesAt([...frames(0, 20), ...frames(23, 58)]))?.durationSec).toBe(58);
-    // at most a second: pictures 2 s apart end a second after the last
-    expect(webm(picturesAt([0, 2000, 4000]))).toBeCloseTo(5, 6);
+    // the median is at most a second: a long stall early does not set it
+    expect(webm(picturesAt([0, 2000, 4000, 4100, 4200]))).toBeCloseTo(5.2, 6);
     // the longer middle interval of an even count, and blocks starting together are one picture time
-    expect(webm(picturesAt([0, 100, 600]))).toBeCloseTo(1.1, 6);
+    expect(webm(picturesAt([0, 500, 600]))).toBeCloseTo(1.1, 6);
     expect(webm(picturesAt([0, 0, 0, 300]))).toBeCloseTo(0.6, 6);
-    // never shorter than a normal gap: one long gap among short ones does not pull it below them
-    expect(webm(picturesAt([0, 33, 66, 99, 5000]))).toBeCloseTo(5.033, 6);
+    // the last interval, if longer, as Firefox plays it (Stage 1's gap-check of c9e1fc72: these read 60.4 s and 60.0 s,
+    // and play 118.8 s and 61.9 s): a lone frame at 59.4 s after one at 0, and a frame at 59.95 s after 58 s at 30 fps
+    expect(webm(picturesAt([0, 59_400]))).toBeCloseTo(118.8, 6);
+    expect(readVideoClip('video/webm', picturesAt([...frames(0, 58), 59_950]))?.durationSec).toBe(62);
+    // and a freeze just before the last frame: pictures 2 s apart end 2 s after the last
+    expect(webm(picturesAt([0, 2000, 4000]))).toBeCloseTo(6, 6);
+    expect(webm(picturesAt([0, 33, 66, 99, 5000]))).toBeCloseTo(9.901, 6);
   });
 
   it('MP4: passes the fragmented layout Safari records, moov first and a moof and mdat a second, the picture with composition offsets', () => {
@@ -636,5 +641,17 @@ describe('readVideoClip — V2a: the layouts phones record, and sound read as a 
     expect(mp4(fragmented(0))).not.toBeNull();
     expect(mp4(fragmented(48_000 * 10))).not.toBeNull();
     expect(mp4(fragmented(48_000 * 5))).toBeNull();
+    // a run with no frames holds no sound: one at 5 s does not make an edit from 4.9 s select any (Stage 1's gap-check)
+    const empty = (mediaTime: number) => {
+      const moov = Buffer.concat([ftyp('isom'), box('moov', [mvhd(), pictureTrak(1, []), soundTrakOpus(2, [editOf(1000, mediaTime)]), box('mvex', [
+        fullBox('trex', 0, 0, u32(1, 1, 0, 0, 0)), fullBox('trex', 0, 0, u32(2, 1, 0, 0, 0))])])]);
+      return Buffer.concat([moov, fragmentOf(1, [
+        { track: 1, time: 0, data: [NAL_SAMPLE, NAL_SAMPLE], durations: [1600, 1600] },
+        { track: 2, time: 0, data: [OPUS_20MS], durations: [960] },
+        { track: 2, time: 48_000 * 5, data: [], durations: [] },
+      ])]);
+    };
+    expect(mp4(empty(0))).not.toBeNull();
+    expect(mp4(empty(48_000 * 4.9))).toBeNull();
   });
 });

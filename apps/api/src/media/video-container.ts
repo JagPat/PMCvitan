@@ -16,7 +16,7 @@
  *    a listed track at a Cluster's start. BlockAdditions (an alpha channel) stay refused, as every BlockGroup child but
  *    the voice ones is. A block's end is its timestamp plus, for sound, the longest of its Opus frames, its
  *    BlockDuration and DefaultDuration a frame, and for the picture the last two; the latest picture block with
- *    neither is held for the median interval between picture starts, at most a second.
+ *    neither is held for the median interval between picture starts (at most a second), or the last interval if longer.
  *  - `video/mp4`: the voice MP4 rules, with one or two traks: exactly one `vide` track (a `vmhd` with its one defined
  *    flag; one `avc1` entry with one avcC, or one `vp09` with one version-1 vpcC with no initialization data; at most
  *    one pasp, btrt and nclx colr each; the visual entry's fixed fields as ISO 14496-12 defines them) and at most one
@@ -125,7 +125,7 @@ const COLOUR_CHILDREN = new Map<number, Kind>([
 interface ClipTrack { number: number; frameNs: number; sound: boolean; lacing: boolean }
 /** every picture block's start, in seconds, and the latest start of a block that does not say how long it lasts */
 interface Pictures { starts: number[]; untimed: number }
-/** the longest an untimed last picture is held (decision 3 of the V2 plan): a second */
+/** the longest the median holds an untimed last picture (decision 3 of the V2 plan): a second */
 const HOLD_MAX = 1;
 
 /**
@@ -331,9 +331,10 @@ function webmSeconds(b: Buffer): number | null {
   if (tracks === undefined || !picture) return null;
   if (cued && !cued.every((p) => clusters.has(p))) return null; // a cue at no Cluster's start
   // Chromium writes no durations for picture blocks. The latest one is held for the median interval between picture
-  // blocks, at most a second, whatever else starts with it or after it, unless Info's Duration reaches past its start
-  // (V2 plan, decision 3: one stall mid-clip no longer lengthens it, and a frame is still held at least a normal gap).
-  // With no interval to go by, the end is unknown: refused
+  // blocks (at most a second), or the last interval if that is longer, whatever else starts with it or after it, unless
+  // Info's Duration reaches past its start (V2 plan, decision 3: one stall mid-clip no longer lengthens it). Firefox
+  // holds the last picture for the last interval, so the length is never less than it plays. With no interval to go
+  // by, the end is unknown: refused
   if (pictures.untimed >= 0 && (duration * scale) / 1e9 <= pictures.untimed) {
     const hold = heldFor(pictures.starts);
     if (hold === 0) return null;
@@ -344,16 +345,19 @@ function webmSeconds(b: Buffer): number | null {
 
 /**
  * How long an untimed last picture is held: the median of the intervals between successive picture starts (the longer
- * middle one of an even count), at most HOLD_MAX; 0 when no two pictures start apart. Blocks that start together are
- * one picture time, so no zero interval pulls the median down.
+ * middle one of an even count), at most HOLD_MAX, or the last interval, the one before the latest start, if that is
+ * longer (Firefox plays the last picture for it: a lone frame at 59.4 s after one at 0 plays to 118.8 s, so it reads
+ * that long and is refused); 0 when no two pictures start apart. Blocks that start together are one picture time, so
+ * no zero interval pulls the median down or stands as the last.
  */
 function heldFor(starts: number[]): number {
   const sorted = [...starts].sort((x, y) => x - y);
   const gaps: number[] = [];
   for (let i = 1; i < sorted.length; i++) if (sorted[i]! > sorted[i - 1]!) gaps.push(sorted[i]! - sorted[i - 1]!);
   if (gaps.length === 0) return 0;
+  const lastGap = gaps[gaps.length - 1]!;
   gaps.sort((x, y) => x - y);
-  return Math.min(gaps[Math.floor(gaps.length / 2)]!, HOLD_MAX);
+  return Math.max(Math.min(gaps[Math.floor(gaps.length / 2)]!, HOLD_MAX), lastGap);
 }
 
 // ── MP4 (ISO BMFF) ───────────────────────────────────────────────────────────────────────────
