@@ -83,10 +83,27 @@ describe('the first-time welcome', () => {
     expect(useGuideState.getState().requested?.id).toBe('record-decision-pmc');
   });
 
-  it('a role with no guide yet gets one "Got it"', async () => {
-    const { Welcome } = await setup('consultant', 'decision-log');
+  it('a client on their register (decision-log) asked for advice is shown around there, not sent to another screen', async () => {
+    localStorage.setItem('vitan.guide.done.v1:user:u-1', JSON.stringify(['approve-decision-client']));
+    const { Welcome, useStore, useGuideState } = await setup('client', 'decision-log');
+    useStore.setState({ decisions: [{
+      id: 'DL-1', title: 'Title DL-1', room: 'Kitchen', status: 'pending', deciderKind: 'architect', photoSwatch: 'tile', approvalCycle: 0, ageDays: 1,
+      options: [{ label: 'A', key: 'a', material: 'Granite', delta: 0, swatch: 'tile' }, { label: 'B', key: 'b', material: 'Quartz', delta: 0, swatch: 'tile' }],
+      consultations: [{ id: 'c-DL-1', consulteeMembershipId: 'm-u-1', consulteeUserId: 'u-1', requestedById: 'u-pmc', question: 'Which holds up?', openCycle: 0, requestedAt: new Date().toISOString() }],
+    }] } as never);
     render(<Welcome />);
-    expect(byTestId('welcome')?.textContent).toContain('answer what is sent to you');
+    press(byTestId('welcome-tour')!);
+    expect(useGuideState.getState().requested?.id).toBe('answer-advice-client');
+    expect(useStore.getState().screen).toBe('decision-log');
+  });
+
+  it('a role with no guide yet gets one "Got it"', async () => {
+    // every role has a guide today: a role without one is a guide list with none for it
+    vi.doMock('@/guide/guides', async (load) => ({ ...(await load<typeof import('@/guide/guides')>()), guidesForRole: () => [], guidesFor: () => [] }));
+    const { Welcome } = await setup('contractor', 'decision-log');
+    vi.doUnmock('@/guide/guides');
+    render(<Welcome />);
+    expect(byTestId('welcome')?.textContent).toContain('See the work planned on site');
     expect(byTestId('welcome-tour')).toBeNull();
     expect(byTestId('welcome-close')?.textContent).toBe('Got it');
   });

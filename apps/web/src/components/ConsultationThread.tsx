@@ -93,6 +93,8 @@ export function ConsultationThread({ decision, lang = 'en' }: { decision: Decisi
         <div style={{ marginTop: 10 }} data-testid={`consultation-respond-${decision.id}`}>
           <textarea
             aria-label={L.yourAdvice[lang]}
+            data-guide="advice-write"
+            data-guide-key={`${decision.id}:${mine.id}`}
             value={advice}
             onChange={(e) => setAdvice(e.target.value)}
             rows={2}
@@ -119,6 +121,8 @@ export function ConsultationThread({ decision, lang = 'en' }: { decision: Decisi
             )}
             <Button
               data-testid={`consultation-send-advice-${decision.id}`}
+              data-guide="advice-send"
+              data-guide-key={`${decision.id}:${mine.id}`}
               disabled={!advice.trim()}
               onClick={() => {
                 respondToConsultation(decision.id, mine.id, advice, recommend === '' ? undefined : recommend);
