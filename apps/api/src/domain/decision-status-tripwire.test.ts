@@ -289,6 +289,7 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     // B4 — the consultation surface's open set (the server's `CONSULTATION_OPEN_STATUSES`) and the approval's
     // success copy read from the returned snapshot.
     "apps/web/src/components/ConsultationThread.tsx :: decision.status === 'pending' || decision.status === 'change' || decision.status === 'awaiting_countersign'": 'answered',
+    "apps/web/src/guide/guides.ts :: d?.status === 'approved' || d?.status === 'awaiting_countersign'": 'answered',
     // 4d-ii-b / B5b — the chain's controls: Forward hands over an OPEN decision (an awaiting one is the architect's,
     // handed on through `disagree` / `forward_on`); the architect's countersign controls sit on the awaiting row
     "apps/web/src/screens/AwaitingClientList.tsx :: d.status === 'pending'": 'excludes: the demo-seed fallback of the "Awaiting client" list keeps only a NEW decision open for the CLIENT; an awaiting one waits on the architect (#482 QA)',
