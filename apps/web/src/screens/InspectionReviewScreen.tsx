@@ -345,7 +345,9 @@ export function InspectionReviewScreen() {
         ) : (
           <>
             {/* #482: the guide points at the controls that decide. With a failed item Approve asks first, so its
-                confirm is the one, and while it asks Send back behind it is not. None while a decision is on its way, or on an unsettled read */}
+                confirm is the one, and while it asks Send back behind it is not. With an item marked Reject item (and none failed)
+                Approve would decide past the PMC's own mark without asking, so only Send back is (Codex 4403818425). None while
+                a decision is on its way, or on an unsettled read */}
             {failedCount > 0 ? (
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                 <Button variant="danger" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" data-guide={guideOff || confirmApproveId === review.id ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
@@ -353,7 +355,7 @@ export function InspectionReviewScreen() {
               </div>
             ) : (
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <Button variant="success" onClick={() => decide(approveInspection)} data-testid="approve-inspection" data-guide={guideOff ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.approve[lang]}</Button>
+                <Button variant="success" onClick={() => decide(approveInspection)} data-testid="approve-inspection" data-guide={guideOff || rejectedCount > 0 ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.approve[lang]}</Button>
                 <Button variant="dangerOutline" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" data-guide={guideOff ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
               </div>
             )}

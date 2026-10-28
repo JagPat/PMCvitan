@@ -162,6 +162,27 @@ describe('the inspection review guide (#482 step 3c)', () => {
     expect(guide.available!()).toBe(false);
   });
 
+  it('a queued decision the flush replays is on its way until the flush ends: its review is never pointed at meanwhile (Codex 4403818412)', async () => {
+    const decideReview = vi.fn(async () => snapshot());
+    const { useStore, useGuideState, guide, id } = await open({ decideReview }, { online: false, passing: true });
+    const { reviewDecisionWaits } = await import('@/store/store');
+    act(() => { useGuideState.getState().start(guide); });
+    await tipAt('0');
+    press('approve-inspection');
+    await isDone();
+    // every state the flush passes through: the review still undecided on screen is always one with a decision on its way
+    const open_: string[] = [];
+    const stop = useStore.subscribe((s) => {
+      if (s.reviews.some((r) => r.id === id && !r.decided) && !reviewDecisionWaits(s, id)) open_.push(`outbox ${s.outbox.length}`);
+    });
+    act(() => { useStore.setState({ online: true }); });
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    stop();
+    expect(decideReview).toHaveBeenCalledTimes(1);
+    expect(open_).toEqual([]);
+    expect(useStore.getState().reviewDecisionsSending).toBe(0);
+  });
+
   it('without signal, a decision this phone would not keep ends the run unfinished', async () => {
     const { useGuideState, guide, seen } = await open({ decideReview: vi.fn() }, { online: false, passing: true });
     act(() => { useGuideState.getState().start(guide); });
@@ -173,6 +194,17 @@ describe('the inspection review guide (#482 step 3c)', () => {
     expect(seen).toEqual(['review-decide-not-kept']);
     expect(useGuideState.getState().run).toBeNull();
     expect(done()).not.toContain('review-inspection');
+  });
+
+  it('nothing failed but an item marked Reject item: only Send back is pointed at, never Approve past the mark (Codex 4403818425)', async () => {
+    const { useStore, useGuideState, guide } = await open(null, { passing: true });
+    act(() => { useGuideState.getState().start(guide); });
+    await tipAt('0');
+    expect(guided()).toEqual(['approve-inspection', 'send-reinspection']);
+    act(() => { useStore.getState().toggleReject(0); });
+    expect(guided()).toEqual(['send-reinspection']);
+    act(() => { useStore.getState().toggleReject(0); });
+    expect(guided()).toEqual(['approve-inspection', 'send-reinspection']);
   });
 
   it('Send back with nothing marked or failed is refused at once and told, so the guide does not wait', async () => {

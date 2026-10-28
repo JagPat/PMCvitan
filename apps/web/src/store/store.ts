@@ -448,8 +448,9 @@ export interface AppState {
   /** #482 site photos — the upload keys of this tab's site photo uploads sent online and not yet answered (an answer of
    *  any kind, or a network error, ends one); memory only, as the request itself is */
   photoUploadsSending: string[];
-  /** #482 (Codex 4403491374) — how many review decisions this tab sent online and has no answer for yet; memory only,
-   *  as the request itself is. The review guide points at no decide control while one is on its way
+  /** #482 (Codex 4403491374, 4403818412) — how many review decisions this tab sent and has not settled yet: sent online
+   *  with no answer, or replayed from the queue by a flush that has not ended (its row leaves the queue before the
+   *  flush's snapshot is taken); memory only, as the request itself is. The review guide points at no decide control while one is on its way
    *  (`reviewDecisionWaits`), so a second press is never guided into a second decision */
   reviewDecisionsSending: number;
   /** FAILED evidence (terminal non-dedupe rejection) awaiting the user's Retry/Delete (Task 4),
@@ -1329,7 +1330,7 @@ function releaseCommercialKeys(
 
 /** The cap reservation a commercial op holds, or null if it spends no line authority. */
 /** #482 — the review guide waits on a decision already on its way: this review's, queued on this phone to send, or any
- *  sent online with no answer yet (Codex 4403491374: the run waits on that answer, and must not lead a press on this
+ *  sent online, or replayed from the queue, not settled yet (Codex 4403491374, 4403818412: the run waits on that answer, and must not lead a press on this
  *  review or another meanwhile). It neither offers nor points at a review then (pressing again would decide twice) */
 export function reviewDecisionWaits(s: Pick<AppState, 'outbox' | 'reviewDecisionsSending'>, reviewId: string): boolean {
   return s.reviewDecisionsSending > 0 || s.outbox.some((o) => o.t === 'decideReview' && o.inspectionId === reviewId);
@@ -6484,6 +6485,7 @@ export const useStore = create<Store>()(
       // so a command persisted mid-flush is still sent. Idempotency keys make an overlap harmless.
       if (outboxFlushing) { outboxFlushQueued = true; return notRun(); }
       outboxFlushing = true;
+      let replayingDecisions = 0;
       // #482 — what this flush may send: the queue as it starts (narrowed to what it takes once it takes it)
       flushingKeys = new Set(get().outbox.flatMap((o) => ('idempotencyKey' in o && o.idempotencyKey ? [o.idempotencyKey] : [])));
       try {
@@ -6552,6 +6554,10 @@ export const useStore = create<Store>()(
       if (lateAt >= 0) outboxFlushQueued = true;
       const ops = lateAt >= 0 ? queued.slice(0, lateAt) : queued.slice();
       flushingKeys = new Set(ops.flatMap((o) => ('idempotencyKey' in o && o.idempotencyKey ? [o.idempotencyKey] : [])));
+      // #482 (Codex 4403818412) — a review decision this flush replays is on its way until the flush ends: its row leaves
+      // the queue before the flush's snapshot is taken, and the review guide must not point at that review meanwhile
+      replayingDecisions = ops.filter((o) => o.t === 'decideReview').length;
+      if (replayingDecisions > 0) set((s) => { s.reviewDecisionsSending += replayingDecisions; });
       // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
       // take its own acts out of `ops` as it goes)
       const taken = ops.length;
@@ -7095,6 +7101,7 @@ export const useStore = create<Store>()(
       } finally {
         outboxFlushing = false;
         flushingKeys = new Set();
+        if (replayingDecisions > 0) { const n = replayingDecisions; set((s) => { s.reviewDecisionsSending -= n; }); }
         // #482 — offline, no rerun follows: an act the guide waits on that this flush did not settle (taken after it began,
         // or left out of it) waits for the signal, as going offline says
         if (!get().online) for (const [k, watch] of [...actWatches]) if (!writingKeys.has(k)) watch('pending');
