@@ -6415,7 +6415,7 @@ export const useStore = create<Store>()(
       if (outboxFlushing) { outboxFlushQueued = true; return notRun(); }
       outboxFlushing = true;
       // #482 — what this flush may send: the queue as it starts (narrowed to what it takes once it takes it)
-      flushingKeys = new Set(get().outbox.flatMap((o) => ('idempotencyKey' in o ? [o.idempotencyKey] : [])));
+      flushingKeys = new Set(get().outbox.flatMap((o) => ('idempotencyKey' in o && o.idempotencyKey ? [o.idempotencyKey] : [])));
       try {
       // SV2: every kept visit photo's act is put back first, from the phone's own record of it, so a close can never
       // overtake its photo. When that record could not be read (a failed or too slow read), the rest of the queue
@@ -6481,7 +6481,7 @@ export const useStore = create<Store>()(
       const lateAt = waited ? queued.findIndex((o) => !waited.has(o)) : -1;
       if (lateAt >= 0) outboxFlushQueued = true;
       const ops = lateAt >= 0 ? queued.slice(0, lateAt) : queued.slice();
-      flushingKeys = new Set(ops.flatMap((o) => ('idempotencyKey' in o ? [o.idempotencyKey] : [])));
+      flushingKeys = new Set(ops.flatMap((o) => ('idempotencyKey' in o && o.idempotencyKey ? [o.idempotencyKey] : [])));
       // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
       // take its own acts out of `ops` as it goes)
       const taken = ops.length;
