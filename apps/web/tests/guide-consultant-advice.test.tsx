@@ -288,15 +288,24 @@ describe('the store reports a sent advice\'s outcome for the guide', () => {
     expect(seen).toEqual([['advice-send-failed', 'DL-1:c-DL-1']]);
   });
 
-  it('the signal lost before the advice is written on this phone waits for the write: kept is queued (sent)', async () => {
+  it('the signal lost before the advice is written on this phone: the flush called once it is written tells it, a lost answer is queued (sent)', async () => {
     const { useStore, seen, send } = await store();
-    useStore.getState()._setGateway({ respondToConsultation: vi.fn(() => new Promise(() => {})) } as never);
+    useStore.getState()._setGateway({ respondToConsultation: vi.fn().mockRejectedValue(new Error('network')) } as never);
     send();
     // at once, before the write-ahead has run
     useStore.getState().toggleOnline();
     expect(seen).toEqual([]);
     await settles(() => seen.length > 0);
     expect(seen).toEqual([['advice-sent', 'DL-1:c-DL-1']]);
+  });
+
+  it('the signal lost before the advice is written, and the server then refuses it: failed, not queued (Codex r3)', async () => {
+    const { useStore, seen, send } = await store();
+    useStore.getState()._setGateway({ respondToConsultation: vi.fn().mockRejectedValue(Object.assign(new Error('closed'), { status: 409 })) } as never);
+    send();
+    useStore.getState().toggleOnline();
+    await settles(() => seen.length > 0);
+    expect(seen).toEqual([['advice-send-failed', 'DL-1:c-DL-1']]);
   });
 
   it('an act made after a running flush took its acts, then the signal goes: told queued, not left to a rerun that never comes', async () => {
@@ -326,9 +335,42 @@ describe('the store reports a sent advice\'s outcome for the guide', () => {
     await settles(() => seen.length > 0);
     expect(seen).toEqual([['advice-sent', 'DL-1:c-DL-1']]);
   });
+  it('offline, and the signal back before the advice is written: the reconnect\'s flush tells it, a refusal is failed (Codex 4398620511)', async () => {
+    const { seen, send } = await store(false);
+    const { useStore } = await import('@/store/store');
+    useStore.getState()._setGateway({ respondToConsultation: vi.fn().mockRejectedValue(Object.assign(new Error('closed'), { status: 409 })) } as never);
+    send();
+    // at once, before the write-ahead has run
+    useStore.getState().toggleOnline();
+    expect(seen).toEqual([]);
+    await settles(() => seen.length > 0);
+    expect(seen).toEqual([['advice-send-failed', 'DL-1:c-DL-1']]);
+  });
 });
 
 describe('Codex rounds on #1198', () => {
+  it('the client is guided on their register too (decision-log), where a request\'s link opens (Codex r3)', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('vitan.guide.done.v1:user:u-cli', JSON.stringify(['approve-decision-client']));
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    const scope = await import('@/store/projectScope');
+    useStore.setState(getInitialState());
+    useStore.setState({
+      ...scope.emptyProjectData(),
+      activeProjectId: 'project-a', projectScopeGeneration: 1, projectLoadState: 'ready',
+      role: 'client', screen: 'decision-log', lang: 'en', sessionUserId: 'u-cli',
+      decisions: [{ ...asked('DL-1', 'u-cli'), deciderKind: 'architect' }],
+    } as never);
+    const { guidesFor } = await import('@/guide/guides');
+    expect(guidesFor('client', 'decision-log').map((g) => g.id)).toContain('answer-advice-client');
+    const { GuideHost } = await import('@/guide/GuideHost');
+    const { ClientDecisionsScreen } = await import('@/screens/ClientDecisionsScreen');
+    render(<><GuideHost /><ClientDecisionsScreen /></>);
+    tick();
+    expect(tip()?.getAttribute('data-guide-id')).toBe('answer-advice-client');
+  });
+
   it('a refused send goes back to the same request\'s box, whose Send the attempt emptied (Codex r2)', async () => {
     const { useStore, useGuideState, outcomes } = await atSend();
     act(() => { useStore.getState()._setGateway(silentServer() as never); });

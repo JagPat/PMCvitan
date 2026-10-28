@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useStore } from '@/store/store';
 import { langPreferenceKey } from '@/lib/langPreference';
 import { projectDataUsable } from '@/store/projectScope';
-import { guidesFor, type Guide } from './guides';
+import { guidesFor, guideOnScreen, type Guide } from './guides';
 import { readGuidesDone, markGuideDone, clearGuidesDone } from './guideDone';
 import { useGuideState } from './guideState';
 import { findStepTarget, guideKeyMatches, guideStartable, GUIDE_ARRIVE_MS, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
@@ -88,7 +88,7 @@ export function GuideHost() {
   // a guide asked for from Help belongs to the visit to its screen: going elsewhere, or another person, drops it
   useEffect(() => {
     const asked = useGuideState.getState().requested;
-    if (asked && asked.screen !== screen) useGuideState.getState().request(null);
+    if (asked && !guideOnScreen(asked, screen)) useGuideState.getState().request(null);
   }, [screen]);
   useEffect(() => () => useGuideState.getState().request(null), [key]);
 
@@ -126,7 +126,7 @@ export function GuideHost() {
         if (asked && !asked.roles.includes(useStore.getState().role)) {
           arrive.current = null;
           g.request(null);
-        } else if (asked && asked.screen === useStore.getState().screen) {
+        } else if (asked && guideOnScreen(asked, useStore.getState().screen)) {
           if (startable(asked)) {
             arrive.current = null;
             autoUsed.current = true;

@@ -5,7 +5,7 @@ import { CircleHelp, ChevronRight, RefreshCw } from '@/lib/icons';
 import { MobileSheet } from '@/layout/MobileSheet';
 import sheetStyles from '@/layout/MobileSheet.module.css';
 import { useNavItems } from '@/layout/useNavItems';
-import { guidesForRole, type Guide } from './guides';
+import { guidesForRole, guideOnScreen, type Guide } from './guides';
 import { clearGuidesDone } from './guideDone';
 import { useGuideState } from './guideState';
 import { GuideMe } from './GuideMe';
@@ -61,14 +61,14 @@ export function HelpSheet({ onClose }: { onClose: () => void }) {
   const userId = useStore((s) => s.sessionUserId);
   const setScreen = useStore((s) => s.setScreen);
   const reachable = new Set(useNavItems().map((n) => n.key));
-  const guides = guidesForRole(role).filter((g) => g.screen === screen || reachable.has(g.screen));
+  const guides = guidesForRole(role).filter((g) => guideOnScreen(g, screen) || reachable.has(g.screen));
 
   const show = (guide: Guide) => {
     onClose();
     useGuideState.getState().request(guide);
     // also on the screen already open: a nav visit starts at the screen's list, never at a record left open
     // (a checklist that is not there shows no Fail button to point at)
-    setScreen(guide.screen);
+    setScreen(guideOnScreen(guide, screen) ? screen : guide.screen);
   };
   const tipsAgain = () => {
     const key = langPreferenceKey(userId, role);
