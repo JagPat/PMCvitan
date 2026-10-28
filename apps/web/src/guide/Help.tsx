@@ -98,12 +98,11 @@ export function HelpSheet({ onClose }: { onClose: () => void }) {
           <ChevronRight size={16} aria-hidden="true" />
         </button>
       ))}
-      {guides.length > 0 && (
-        <button type="button" className={sheetStyles.row} onClick={tipsAgain} data-testid="help-tips-again">
-          <RefreshCw size={16} aria-hidden="true" />
-          <span className={sheetStyles.rowLabel} style={{ whiteSpace: 'normal' }}>{HELP_WORDS.tipsAgain[lang]}</span>
-        </button>
-      )}
+      {/* for every role: it also brings back the first-time welcome, which a role with no guide has too */}
+      <button type="button" className={sheetStyles.row} onClick={tipsAgain} data-testid="help-tips-again">
+        <RefreshCw size={16} aria-hidden="true" />
+        <span className={sheetStyles.rowLabel} style={{ whiteSpace: 'normal' }}>{HELP_WORDS.tipsAgain[lang]}</span>
+      </button>
     </MobileSheet>
   );
 }

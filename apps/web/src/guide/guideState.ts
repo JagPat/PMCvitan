@@ -49,6 +49,9 @@ interface GuideState {
   tipsResetKey: string | null;
   tipsAgain: (key: string) => void;
   clearTipsReset: () => void;
+  /** the first-time welcome is on screen: no guide starts by itself while the person has not chosen yet */
+  welcomeOpen: boolean;
+  setWelcomeOpen: (open: boolean) => void;
 }
 
 export const useGuideState = create<GuideState>()((set) => ({
@@ -67,4 +70,6 @@ export const useGuideState = create<GuideState>()((set) => ({
   tipsResetKey: null,
   tipsAgain: (key) => set((s) => ({ tipsEpoch: s.tipsEpoch + 1, tipsResetKey: key })),
   clearTipsReset: () => set({ tipsResetKey: null }),
+  welcomeOpen: false,
+  setWelcomeOpen: (welcomeOpen) => set((s) => (s.welcomeOpen === welcomeOpen ? s : { welcomeOpen })),
 }));

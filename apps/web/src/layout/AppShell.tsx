@@ -15,6 +15,7 @@ import { AuthGate } from './AuthGate';
 import { LangPreference } from './LangPreference';
 import { GuideHost } from '@/guide/GuideHost';
 import { HelpRow } from '@/guide/Help';
+import { Welcome } from '@/guide/Welcome';
 import styles from './AppShell.module.css';
 
 export function AppShell() {
@@ -42,6 +43,8 @@ export function AppShell() {
             <QueueUnreadable />
             {/* #482 — Help on every screen of every project, and "Guide me" where this screen has a guide */}
             <HelpRow />
+            {/* #482 — the first-time welcome, once per person, once the project's data is on screen */}
+            <Welcome />
             {/* On a project transition the previous project's records are ALREADY cleared;
                 the boundary covers the gap until the new project's snapshot lands, and a
                 failed transition shows a recoverable error — never stale records. */}
