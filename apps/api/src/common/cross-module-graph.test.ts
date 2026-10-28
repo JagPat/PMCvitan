@@ -228,7 +228,7 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   'site-visits/site-visits.service.ts': { domain: 'site-visits', foreign: {}, dispatch: 4 },
   // edge 7 (node unfiling across five domains) → FK SET NULL (nodeId); decisions stay a guarded NO ACTION
   'nodes/nodes.service.ts': { domain: 'nodes', foreign: {}, dispatch: 1 },
-  'media/media.service.ts': { domain: 'media', foreign: {}, dispatch: 3 },
+  'media/media.service.ts': { domain: 'media', foreign: {}, dispatch: 4 }, // #1179 R2: + a file's removal from its site visit
   // edge 8 (project-init structure) → node/activity/inspection init participants
   'orgs/orgs.service.ts': { domain: 'orgs', foreign: {}, dispatch: 0 },
   // Phase 4 Task 3 (§H) — the orgs-owned WorkerDevice→Worker binding. A roster surface like Task-1
@@ -435,7 +435,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   'orgs/companies.controller.ts': ['Post()', "Patch(':companyId')", "Delete(':companyId')"],
   // Phase 4 Task 3 (§H) — the orgs-owned WorkerDevice binding route
   'orgs/worker-devices.controller.ts': ["Post('worker-devices/:deviceId/bind')"],
-  'media/media.controller.ts': ["Post('projects/:projectId/media')", "Patch('projects/:projectId/media/:mediaId/node')", "Post('projects/:projectId/media/:mediaId/poster')", "Delete('media/:id')"],
+  'media/media.controller.ts': ["Post('projects/:projectId/media')", "Patch('projects/:projectId/media/:mediaId/node')", "Post('projects/:projectId/media/:mediaId/poster')", "Post('projects/:projectId/media/:mediaId/visit-removal')", "Delete('media/:id')"],
   'inspections/inspections.controller.ts': ['Post()', "Post(':inspectionId/submit')", "Post(':inspectionId/decide')"],
   'activities/phases.controller.ts': ['Post()', "Delete(':phaseId')"],
   'activities/requirements.controller.ts': ['Post()', "Post(':requirementId/revise')", "Post(':requirementId/cancel')"],
@@ -638,7 +638,7 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
     it('84 external-effect dispatch sites total across the pillar services (82 + Phase-6 unit 4c-ii request/respond consultation)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(92); // +3: Site Visits SV1-b start, end, close; +1: SV1-b unit 2's one shared site for the visitor's edits
+      expect(total).toBe(93); // +3: Site Visits SV1-b start, end, close; +1: SV1-b unit 2's one shared site for the visitor's edits; +1: #1179 R2 a file's removal from its visit
     });
   });
 
@@ -649,12 +649,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only; +1 #995 V1b a video clip\'s still frame; +1 #1118 U3 Hub webhook deliveries)', () => {
+    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only; +1 #995 V1b a video clip\'s still frame; +1 #1118 U3 Hub webhook deliveries; +1 #1179 R2 a file\'s removal from its site visit)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(190);
+      expect(total).toBe(191);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(190);
+      expect(live).toBe(191);
     });
   });
 
