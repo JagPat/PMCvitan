@@ -25,13 +25,17 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllEnvs();
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.resetModules();
 });
 
-async function setup(role: Role, screen: ScreenKey = 'dashboard', lang: Lang = 'en', sessionUserId: string | null = 'u-1') {
+async function setup(role: Role, screen: ScreenKey = 'dashboard', lang: Lang = 'en', sessionUserId: string | null = 'u-1', api = true) {
   vi.resetModules();
+  // the Dashboard's "Add site photo" exists only against the server
+  if (api) vi.stubEnv('VITE_API_URL', 'http://api.test');
+  else vi.unstubAllEnvs();
   const { useStore, getInitialState } = await import('@/store/store');
   const scope = await import('@/store/projectScope');
   useStore.setState(getInitialState());
@@ -195,6 +199,38 @@ describe('the first-time welcome', () => {
     render(<Welcome />);
     press(byTestId('welcome-close')!);
     expect(byTestId('welcome')).toBeNull();
+  });
+
+  it('"Show me around" moves on to the next guide when the one it picked cannot start once on its screen', async () => {
+    vi.useFakeTimers();
+    const { Welcome, useStore, useGuideState } = await setup('engineer', 'site-visits');
+    // a checklist out on site with an item to fail, but the checklist screen shows none to press (another one is open)
+    useStore.setState({
+      openChecklists: [{ id: 'INSP-2', title: 'Plaster', zone: 'First floor', date: 'today', submitted: false, items: [{ id: 'i1', name: 'Level', state: null, photos: 0, note: '', evidence: [] }] }],
+    });
+    const { GuideHost } = await import('@/guide/GuideHost');
+    const { GUIDE_ARRIVE_MS, GUIDE_TICK_MS } = await import('@/guide/guideTarget');
+    render(<><Welcome /><GuideHost /><button type="button" data-guide="add-site-photo">Add site photo</button></>);
+    press(byTestId('welcome-tour')!);
+    expect(useGuideState.getState().requested?.id).toBe('raise-issue-engineer');
+    expect(useStore.getState().screen).toBe('engineer-check');
+    await act(async () => { await vi.advanceTimersByTimeAsync(GUIDE_ARRIVE_MS + GUIDE_TICK_MS * 3); });
+    expect(useStore.getState().screen).toBe('dashboard');
+    expect(byTestId('guide-tip')?.getAttribute('data-guide-id')).toBe('add-site-photo');
+    expect(useStore.getState().toast).toBeNull();
+  });
+
+  it('in demo mode (no "Add site photo") with no checklist to work on, there is nothing to show yet: Help says so', async () => {
+    vi.useFakeTimers();
+    const { Welcome, useStore, useGuideState } = await setup('engineer', 'site-visits', 'en', 'u-1', false);
+    const { GuideHost } = await import('@/guide/GuideHost');
+    const { GUIDE_ARRIVE_MS, GUIDE_TICK_MS } = await import('@/guide/guideTarget');
+    render(<><Welcome /><GuideHost /></>);
+    press(byTestId('welcome-tour')!);
+    expect(useGuideState.getState().fallbacks).toEqual([]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(GUIDE_ARRIVE_MS + GUIDE_TICK_MS * 3); });
+    expect(byTestId('guide-tip')).toBeNull();
+    expect(useStore.getState().toast).toBe("Can't show that right now: there is nothing here to do it on yet.");
   });
 
   it.each(['hi', 'gu'] as const)('reads in %s with no English left over, for every role', async (lang) => {
