@@ -15,6 +15,9 @@ export type GuideOutcome =
   | 'decision-approved'
   | 'decision-approve-failed'
   | 'decision-approve-not-kept'
+  | 'advice-sent'
+  | 'advice-send-failed'
+  | 'advice-not-kept'
   | 'site-photo-added'
   | 'site-photo-add-failed'
   | 'site-photo-not-kept';
