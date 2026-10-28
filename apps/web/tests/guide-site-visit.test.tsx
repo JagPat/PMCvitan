@@ -14,11 +14,27 @@ import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
 
 /**
  * #482 step 3c (Jagrut, 27 Oct: hold people's hands wherever they ask for help): the site visit guide. Start visit,
- * then Add photo on the visit just started. Start ends once the visit shows; the photo step ends only once the server
- * has the photo, so a refused photo, or one still waiting for signal, leaves the guide unfinished.
+ * then Add photo on the visit just started. Start ends once the visit shows (and is passed over when one is already
+ * open); the photo step ends only once the server has the photo, so a refused photo, or one still waiting for signal,
+ * leaves the guide unfinished.
  */
 
 vi.mock('@/data/apiGateway', async (load) => ({ ...(await load<typeof import('@/data/apiGateway')>()), API_BASE: 'http://api.test' }));
+// a phone whose save is refused, or neither confirmed nor refused in time, when a test says so
+const keep = vi.hoisted(() => ({ next: null as 'refused' | 'unconfirmed' | null }));
+vi.mock('@/data/visitPhotoStore', async (load) => {
+  const real = await load<typeof import('@/data/visitPhotoStore')>();
+  return {
+    ...real,
+    putVisitPhoto: (...args: Parameters<typeof real.putVisitPhoto>) => {
+      const how = keep.next;
+      keep.next = null;
+      if (how === 'refused') return Promise.reject(new Error('QuotaExceededError'));
+      if (how === 'unconfirmed') return Promise.reject(new real.VisitPhotoUnconfirmed());
+      return real.putVisitPhoto(...args);
+    },
+  };
+});
 
 const PMC = 'u-pmc';
 const DONE_KEY = `vitan.guide.done.v1:user:${PMC}`;
@@ -171,6 +187,34 @@ describe('the site visit guide (#482 step 3c)', () => {
     expect(done()).not.toContain('record-site-visit');
   });
 
+  it('a photo this phone refused to keep leaves the guide on Add photo, unfinished', async () => {
+    const gw = server([visit()]);
+    await mount(gw);
+    act(() => { useGuideState.getState().start(GUIDE); useGuideState.getState().setStep(1); });
+    await tipAt('1');
+    fireEvent.click(document.querySelector('[data-guide="sv-add-photo"]')!);
+    keep.next = 'refused';
+    await pick('v-1');
+    await vi.waitFor(() => { if (useGuideState.getState().run?.waiting !== false) throw new Error('still waiting'); });
+    expect(gw.uploadMedia).not.toHaveBeenCalled();
+    expect(done()).not.toContain('record-site-visit');
+  });
+
+  it('a photo whose save this phone neither confirmed nor refused keeps the guide waiting on it (Codex 4399847403)', async () => {
+    const gw = server([visit()]);
+    await mount(gw);
+    act(() => { useGuideState.getState().start(GUIDE); useGuideState.getState().setStep(1); });
+    await tipAt('1');
+    fireEvent.click(document.querySelector('[data-guide="sv-add-photo"]')!);
+    keep.next = 'unconfirmed';
+    await pick('v-1');
+    expect(keep.next).toBeNull();
+    expect(screen.getByRole('alert')).not.toBeNull();
+    // it may still be kept and sent: the guide does not ask for another photo
+    expect(useGuideState.getState().run?.waiting).toBe(true);
+    expect(done()).not.toContain('record-site-visit');
+  });
+
   it('a photo on another person\'s visit the viewer is present on does not finish it, and is not pointed at', async () => {
     const theirs = visit({ id: 'v-2', visitorId: 'u-other', visitorName: 'Kiran Rao', visitorRole: 'consultant', startedAt: '2026-10-14T05:30:00.000Z',
       attendees: [{ id: 'a-1', kind: 'member', userId: PMC, role: 'pmc', name: 'Priya Shah', addedAt: '2026-10-14T05:31:00.000Z', retiredAt: null }] });
@@ -186,32 +230,40 @@ describe('the site visit guide (#482 step 3c)', () => {
     expect(useGuideState.getState().run).not.toBeNull();
   });
 
-  it('is offered only to someone who may start a visit and has none open on the screen', async () => {
+  it('with a visit already open (a run left before its photo went), it goes straight to Add photo on it (Codex 4399847415)', async () => {
     await mount(server([visit()]));
-    expect(GUIDE.available!()).toBe(false);
-    cleanup();
-    await mount(server([visit({ visitorId: 'u-other', visitorName: 'Kiran Rao', visitorRole: 'consultant' })]));
     expect(GUIDE.available!()).toBe(true);
+    expect(screen.queryByTestId('sv-start')).toBeNull();
+    act(() => { useGuideState.getState().start(GUIDE); });
+    await tipAt('1');
+    expect(useGuideState.getState().run?.pressed).toBe(false);
+    expect(document.querySelector('[data-testid="sv-visit-v-1"] [data-guide="sv-add-photo"]')).not.toBeNull();
+    cleanup();
+    // with none open, it starts at Start visit
+    await mount(server([visit({ visitorId: 'u-other', visitorName: 'Kiran Rao', visitorRole: 'consultant' })]));
+    act(() => { useGuideState.getState().start(GUIDE); });
+    await tipAt('0');
     // an engineer is not shown Start visit
     expect(GUIDE.roles).not.toContain('engineer');
   });
 
   it('what the screen noted counts only for the same person and project, and only once the visits are read', async () => {
+    const opened = GUIDE.steps[0]!.skip!;
     await mount(server([visit()]));
-    expect(GUIDE.available!()).toBe(false);
+    expect(opened()).toBe(true);
     cleanup();
     // read again, the list not back yet: what was noted stands (nothing is assumed while loading)
     const held = vi.fn(() => new Promise(() => {}));
     await mount(server([], { listSiteVisits: held }), 'pmc', false);
     expect(held).toHaveBeenCalled();
-    expect(GUIDE.available!()).toBe(false);
+    expect(opened()).toBe(true);
     // another project, or another person, is not what was noted
     act(() => { useStore.setState({ activeProjectId: 'project-b' }); });
-    expect(GUIDE.available!()).toBe(true);
+    expect(opened()).toBe(false);
     act(() => { useStore.setState({ activeProjectId: getInitialState().activeProjectId }); });
-    expect(GUIDE.available!()).toBe(false);
+    expect(opened()).toBe(true);
     act(() => { useStore.setState({ sessionUserId: 'u-someone' }); });
-    expect(GUIDE.available!()).toBe(true);
+    expect(opened()).toBe(false);
     act(() => { noteOwnOpenVisit(false); });
   });
 });

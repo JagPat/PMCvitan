@@ -12,7 +12,7 @@ import { UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
 import { refusalWords, SV, visitTime } from '@/lib/siteVisitWords';
 import { stampText } from '@/lib/captureStamp';
 import { resolveMediaUrl, type SiteVisit, type SiteVisitRating } from '@/data/apiGateway';
-import { emitGuideOutcome, guideRunToken } from '@/guide/outcomes';
+import { guideRunToken } from '@/guide/outcomes';
 import { useVisitGuideReports } from '@/guide/visitGuideReports';
 import styles from './SiteVisitsScreen.module.css';
 
@@ -410,13 +410,9 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
               const file = e.target.files?.[0];
               e.target.value = '';
               if (!file) return;
-              const guideRun = guideRunToken();
+              // #482: a photo not kept tells the guide from addPhoto itself
               void sv.addPhoto(v.id, file, { note: photoNote, ...(photoRating ? { rating: photoRating } : {}), ...(photoAt ? { nodeId: photoAt.nodeId!, placeName: photoAt.name } : {}) })
-                .then((ok) => {
-                  sent(ok);
-                  // #482: not kept or sent at all (unreadable, too big, not kept on this phone)
-                  if (!ok) emitGuideOutcome('visit-photo-add-failed', null, guideRun);
-                });
+                .then(sent);
             }}
           />
           {/* #482: the visit guide points at the Add photo of the viewer's own open visit (the one it started) */}

@@ -17,7 +17,7 @@ import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto
 import { acceptedType, blobBase64, type Recorded, type RecordKind } from './mediaRecorder';
 import { VIDEO_CLIP_MIMES, VOICE_NOTE_MIMES } from '@/data/queueContracts';
 import { refusalWords, SV } from './siteVisitWords';
-import { guideRunToken, recordGuidedPhotoPick } from '@/guide/outcomes';
+import { emitGuideOutcome, guideRunToken, recordGuidedPhotoPick } from '@/guide/outcomes';
 
 /**
  * Site Visits SV1-c (#792, QA item 6): the screen's own state. The visits are read a page at a time from the
@@ -737,7 +737,7 @@ export function useSiteVisits() {
    *  of what it is, and nothing is sent. */
   const keepAndQueue = async (
     scope: ProjectScope, op: SiteVisitAddFileOp, data: string, say: (text: (typeof SV)[keyof typeof SV]) => void,
-    words: KeepWords = PHOTO_KEEP,
+    words: KeepWords = PHOTO_KEEP, unconfirmed?: () => void,
   ): Promise<boolean> => {
     if (!storageAvailable()) { say(words.noStorage); return false; }
     const s = useStore.getState();
@@ -757,6 +757,7 @@ export function useSiteVisits() {
       await putVisitPhoto(op.scope, s.activeProjectId, op, data, start, lateCommit);
     } catch (err) {
       say(err instanceof VisitPhotoUnconfirmed ? words.maybeNotKept : words.notKept);
+      if (err instanceof VisitPhotoUnconfirmed) unconfirmed?.();
       return false;
     }
     // the person signed out or moved to another project while it was written: the row stays, kept for the user and
@@ -822,36 +823,43 @@ export function useSiteVisits() {
       setBusy(true);
       setError(null);
       setNotice(null);
+      // #482: a save the phone neither confirmed nor refused in time may still land and be sent, so the guide keeps
+      // waiting on it; any other photo not kept tells the guide it failed (Codex 4399847403)
+      let uncertain = false;
       try {
-        const read = await readFile(file);
-        // the stamp is the original's: a redrawn photo carries no EXIF
-        const stamp = read ? captureStamp(read) : {};
-        const shrunk = read ? await shrinkPhoto(read) : null;
-        const m = shrunk ? /^data:([^;]+);base64,(.*)$/.exec(shrunk) : null;
-        // only a type and size the upload takes: anything else is refused here, before it is kept or sent
-        if (!m || !UPLOAD_IMAGE_MIMES.includes(m[1])) { say(SV.photoUnreadable); return false; }
-        if (m[2].length > MAX_PHOTO_BASE64) { say(SV.photoTooBig); return false; }
-        if (!live(scope)) return false;
-        // the place is checked as the visit is now shown: one removed while the photo was being read is not kept
-        // (Codex 4319531896). A removal this phone has not heard of yet does not stop it: the place was walked when the
-        // photo was taken, and the photo keeps it (Codex 4319699338)
-        const v = shownRef.current.find((x) => x.id === visitId);
-        if (extra.nodeId && !v?.places.some((p) => p.nodeId === extra.nodeId && !p.retiredAt)) { say(SV.photoPlaceGone); return false; }
-        const s = useStore.getState();
-        const owner = visitPhotoScope(s.sessionToken, s.sessionUserId);
-        const note = extra.note?.trim();
-        // a fresh key for every photo picked: nothing about one pick is ever reused for another (Codex 4319699330,
-        // 4319699341)
-        const op: SiteVisitAddFileOp = {
-          t: 'siteVisitAddFile', visitId, idempotencyKey: newIdempotencyKey(), scope: owner,
-          file: {
-            id: newIdempotencyKey(), mime: m[1], ...stamp,
-            ...(extra.nodeId ? { nodeId: extra.nodeId } : {}), ...(note ? { note } : {}), ...(extra.rating ? { rating: extra.rating } : {}),
-          },
-          by: { name: s.userName ?? '', role: s.role }, placeName: extra.placeName ?? null, queuedAt: now(),
-        };
-        recordGuidedPhotoPick(guideRun, op.file.id);
-        return await keepAndQueue(scope, op, m[2], say);
+        const ok = await (async (): Promise<boolean> => {
+          const read = await readFile(file);
+          // the stamp is the original's: a redrawn photo carries no EXIF
+          const stamp = read ? captureStamp(read) : {};
+          const shrunk = read ? await shrinkPhoto(read) : null;
+          const m = shrunk ? /^data:([^;]+);base64,(.*)$/.exec(shrunk) : null;
+          // only a type and size the upload takes: anything else is refused here, before it is kept or sent
+          if (!m || !UPLOAD_IMAGE_MIMES.includes(m[1])) { say(SV.photoUnreadable); return false; }
+          if (m[2].length > MAX_PHOTO_BASE64) { say(SV.photoTooBig); return false; }
+          if (!live(scope)) return false;
+          // the place is checked as the visit is now shown: one removed while the photo was being read is not kept
+          // (Codex 4319531896). A removal this phone has not heard of yet does not stop it: the place was walked when the
+          // photo was taken, and the photo keeps it (Codex 4319699338)
+          const v = shownRef.current.find((x) => x.id === visitId);
+          if (extra.nodeId && !v?.places.some((p) => p.nodeId === extra.nodeId && !p.retiredAt)) { say(SV.photoPlaceGone); return false; }
+          const s = useStore.getState();
+          const owner = visitPhotoScope(s.sessionToken, s.sessionUserId);
+          const note = extra.note?.trim();
+          // a fresh key for every photo picked: nothing about one pick is ever reused for another (Codex 4319699330,
+          // 4319699341)
+          const op: SiteVisitAddFileOp = {
+            t: 'siteVisitAddFile', visitId, idempotencyKey: newIdempotencyKey(), scope: owner,
+            file: {
+              id: newIdempotencyKey(), mime: m[1], ...stamp,
+              ...(extra.nodeId ? { nodeId: extra.nodeId } : {}), ...(note ? { note } : {}), ...(extra.rating ? { rating: extra.rating } : {}),
+            },
+            by: { name: s.userName ?? '', role: s.role }, placeName: extra.placeName ?? null, queuedAt: now(),
+          };
+          recordGuidedPhotoPick(guideRun, op.file.id);
+          return await keepAndQueue(scope, op, m[2], say, undefined, () => { uncertain = true; });
+        })();
+        if (!ok && !uncertain) emitGuideOutcome('visit-photo-add-failed', null, guideRun);
+        return ok;
       } finally {
         if (live(scope)) setBusy(false);
       }
