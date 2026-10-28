@@ -789,8 +789,6 @@ describe('isAudioOnlyRecording, review of the #1013 replacement', () => {
     expect(seconds('audio/mp4', withTrak([edts(elst(0, [[5000, 0]]))]))).toBe(5);
     expect(seconds('audio/mp4', withTrak([edts(elst(0, [[2000, -1], [5000, 0]]))]))).toBe(7); // 2 s of delay, then 5 s
     expect(seconds('audio/mp4', withTrak([edts(elst(1, [[2000, -1], [5000, 1024]]))]))).toBe(7);
-    // the delay comes before the media's own length when the media edit gives none
-    expect(seconds('audio/mp4', withTrak([edts(elst(0, [[2000, -1], [0, 0]]))]))).toBeCloseTo(2 + 2048 / 48_000, 9);
     for (const [why, bad] of [
       ['the media twice', [edts(elst(0, [[5000, 0], [5000, 0]]))]],
       ['rate 2', [edts(elst(0, [[5000, 0, 2]]))]],
@@ -798,6 +796,9 @@ describe('isAudioOnlyRecording, review of the #1013 replacement', () => {
       ['rate 0 (a still)', [edts(elst(0, [[5000, 0, 0]]))]],
       ['only an empty edit', [edts(elst(0, [[2000, -1]]))]],
       ['an empty edit after the media', [edts(elst(0, [[5000, 0], [2000, -1]]))]],
+      // a media edit of duration 0 runs to the end only in a fragmented movie: in this plain one it selects nothing
+      ['a media edit of no length', [edts(elst(0, [[0, 0]]))]],
+      ['a delay, then a media edit of no length', [edts(elst(0, [[2000, -1], [0, 0]]))]],
       ['two empty edits', [edts(elst(0, [[2000, -1], [2000, -1]]))]],
       ['three entries', [edts(elst(0, [[2000, -1], [5000, 0], [5000, 0]]))]],
       ['no entries', [edts(elst(0, []))]],
@@ -1654,7 +1655,14 @@ describe('parser follow-ups from #1025 (#1097, #1141, #1154)', () => {
     };
     expect(mp4(stated(0))).toBe(true);
     expect(mp4(stated(48_000 * 50))).toBe(false);
-    expect(mp4(stated(2047))).toBe(true);
+    // each frame sits at its own decode time (#1168): sound at 0 to 21 ms and at 30 s to 30.021 s, silence between
+    expect(mp4(stated(1023))).toBe(true); // inside the first frame
+    expect(mp4(stated(1024))).toBe(false); // from where it ends: main read the two as one 43 ms stretch and passed it
+    expect(mp4(stated(2047))).toBe(false);
+    expect(mp4(stated(48_000 * 20))).toBe(false); // ends at 25 s, before the second frame
+    expect(mp4(stated(48_000 * 30 - 48_000 * 5 + 1))).toBe(true); // 25 s and a tick to 30 s and a tick: the second frame's start
+    expect(mp4(stated(48_000 * 30 + 1023))).toBe(true); // inside the second frame
+    expect(mp4(stated(48_000 * 30 + 1024))).toBe(false);
   });
 
   it('Codex P1 on #1165: frames decoded one after another carry across runs, so splitting them among runs changes nothing', () => {
@@ -1709,6 +1717,23 @@ describe('parser follow-ups from #1025 (#1097, #1141, #1154)', () => {
     ]);
     expect(mp4(carried)).toBe(true);
     expect(recordingSeconds('audio/mp4', carried)).toBeCloseTo((200 * 1024) / 48_000, 6);
+    // #1168: in one run, two AAC frames whose trun durations say 30 s each are sound near 0 and near 30 s, with
+    // silence between (main read them as one 43 ms stretch at 0, so an edit at 30 s was refused and one at 21 ms passed)
+    const spaced = (at: number) => {
+      const elst = Buffer.alloc(12);
+      elst.writeUInt32BE(5000);
+      elst.writeInt32BE(at, 4);
+      elst.writeInt16BE(1, 8);
+      const run = (o: number) => fullBox('trun', 0, 0x000301, [be(2), be(o), be(48_000 * 30), be(4), be(48_000 * 30), be(4)]);
+      return Buffer.concat([ftyp('iso5'), box('moov', [mvhd(0, 1000), trak('soun', 1, [], 0, 0, [box('edts', fullBox('elst', 0, 0, [be(1), elst]))]),
+        box('mvex', trex(1))]), fragment(1, (o) => [tfhd(1), fullBox('tfdt', 0, 0, be(0)), run(o)]), mdat(8)]);
+    };
+    expect(mp4(spaced(0))).toBe(true);
+    expect(mp4(spaced(1024))).toBe(false); // from where the first frame ends, 5 s of silence
+    expect(mp4(spaced(48_000 * 20))).toBe(false);
+    expect(mp4(spaced(48_000 * 30))).toBe(true); // the second frame
+    expect(mp4(spaced(48_000 * 30 + 1024))).toBe(false);
+    expect(recordingSeconds('audio/mp4', spaced(0))).toBe(60); // the length is unchanged: the durations the file states
   });
 
   it('Codex P2 on #1165 round 2: a run with no frames moves nothing; a run with a non-zero composition offset is refused', () => {
@@ -1962,5 +1987,106 @@ describe('Chrome\'s and Firefox\'s WebM as the app records it: no timeslice (ref
     expect(webm(segment(body(named(Buffer.from([0xc3])))))).toBe(false); // a cut UTF-8 sequence
     const twice = ebml(WEBM.trackEntry, Buffer.concat([webmTrack(1, 2, 'A_OPUS').subarray(2), ebml(CODEC_NAME, 'OPUS'), ebml(CODEC_NAME, 'OPUS')]));
     expect(webm(segment(body(twice)))).toBe(false);
+  });
+});
+
+/**
+ * #1168 and its gap-check: each frame sits at its own decode time, exactly, and the length counts where they end.
+ * Built as Stage 1's probes build them (notes/coordinator/voice-followups-1168-probes/).
+ */
+describe('voice MP4: every frame at its own decode time (#1168)', () => {
+  const be = (n: number) => {
+    const out = Buffer.alloc(4);
+    out.writeUInt32BE(n >>> 0);
+    return out;
+  };
+  const mp4 = (b: Buffer) => isAudioOnlyRecording('audio/mp4', b);
+  const S = 48_000;
+  const elst = (mediaTime: number, ms = 5000) => {
+    const e = Buffer.alloc(12);
+    e.writeUInt32BE(ms);
+    e.writeInt32BE(mediaTime, 4);
+    e.writeInt16BE(1, 8);
+    return box('edts', fullBox('elst', 0, 0, [be(1), e]));
+  };
+  const sttsOf = (entries: Array<[number, number]>) => fullBox('stts', 0, 0, [be(entries.length), ...entries.map(([n, d]) => Buffer.concat([be(n), be(d)]))]);
+  // a plain movie: n AAC frames of 4 bytes, timed by `entries`, in chunks of `perChunk`
+  const plain = (n: number, entries: Array<[number, number]>, edit?: Buffer, perChunk = n, scale = 48_000) => {
+    const chunks = Math.ceil(n / perChunk);
+    const stscBox = fullBox('stsc', 0, 0, [be(1), be(1), be(perChunk), be(1)]);
+    return Buffer.concat([laidOut((o) => Buffer.concat([ftyp(), box('moov', [mvhd(0, 1000), box('trak', [tkhd(1), ...(edit ? [edit] : []), box('mdia', [mdhd(0, scale), hdlr('soun'),
+      box('minf', [fullBox('smhd', 0, 0, be(0)), dinf(), box('stbl', [stsd('mp4a'), sttsOf(entries), stscBox, stsz(Array(n).fill(4)),
+        fullBox('stco', 0, 0, [be(chunks), ...Array.from({ length: chunks }, (_, c) => be(o + c * perChunk * 4))])])])])])])])), mdat(4 * n)]);
+  };
+  // a fragmented movie, with `moovFrames` AAC frames of 1,024 ticks in moov, then one moof at `tfdt` of runs whose
+  // frames last `durations`
+  const frag = (runs: number[][], edit?: Buffer, tfdt = 0, moovFrames = 0) => {
+    const total = runs.reduce((a, r) => a + r.length, 0);
+    const runBox = (o: number, durations: number[]) => fullBox('trun', 0, 0x000301, [be(durations.length), be(o), ...durations.flatMap((d) => [be(d), be(4)])]);
+    const stbl = (o: number) => moovFrames === 0
+      ? [stsd('mp4a'), sttsOf([]), fullBox('stsc', 0, 0, be(0)), stsz([]), fullBox('stco', 0, 0, be(0))]
+      : [stsd('mp4a'), sttsOf([[moovFrames, 1024]]), fullBox('stsc', 0, 0, [be(1), be(1), be(moovFrames), be(1)]), stsz(Array(moovFrames).fill(4)), fullBox('stco', 0, 0, [be(1), be(o)])];
+    const head = laidOut((o) => Buffer.concat([ftyp('iso5'), box('moov', [mvhd(0, 1000), box('trak', [tkhd(1), ...(edit ? [edit] : []), box('mdia', [mdhd(), hdlr('soun'),
+      box('minf', [fullBox('smhd', 0, 0, be(0)), dinf(), box('stbl', stbl(o))])])]), box('mvex', trex(1))])]));
+    return Buffer.concat([head, ...(moovFrames > 0 ? [mdat(4 * moovFrames)] : []),
+      fragment(1, (o) => {
+        let at = o;
+        return [tfhd(1), fullBox('tfdt', 0, 0, be(tfdt)), ...runs.map((r) => {
+          const run = runBox(at, r);
+          at += 4 * r.length;
+          return run;
+        })];
+      }), mdat(4 * total)]);
+  };
+
+  it('reads stts entry by entry: two frames 1,024 ticks apart, then one 30 s on; and an entry of no samples', () => {
+    // frames at 0, 30 s, 30 s + 1,024 and 30 s + 2,048, in two chunks
+    const four: Array<[number, number]> = [[1, S * 30], [3, 1024]];
+    expect(mp4(plain(4, four, elst(0), 2))).toBe(true);
+    expect(mp4(plain(4, four, elst(1024), 2))).toBe(false); // silence after the first frame
+    expect(mp4(plain(4, four, elst(S * 30), 2))).toBe(true);
+    expect(mp4(plain(4, four, elst(S * 30 + 2 * 1024), 2))).toBe(true); // the fourth frame
+    // exactly where the fourth frame ends: nothing left to play (G2 of the gap-check: float sums let this pass)
+    expect(mp4(plain(4, four, elst(S * 30 + 3 * 1024), 2))).toBe(false);
+    // frames at 0 and 1,024, then one 2,048 on, 30 s before its own end
+    const three: Array<[number, number]> = [[2, 1024], [1, S * 30]];
+    expect(mp4(plain(3, three, elst(2048)))).toBe(true);
+    expect(mp4(plain(3, three, elst(3072)))).toBe(false);
+    // an entry of no samples times none of them
+    expect(mp4(plain(2, [[0, 99], [1, S * 30], [1, 1024]], elst(S * 30)))).toBe(true);
+    expect(mp4(plain(2, [[0, 99], [1, S * 30], [1, 1024]], elst(S * 30 + 1024)))).toBe(false);
+  });
+
+  it('places by the media timescale and the audio rate, each where it belongs: a 44,100-tick track of 48 kHz AAC', () => {
+    // two frames 30 s apart; the first's 1,024 samples at 48 kHz end at 21.333 ms, which is 940.8 ticks at 44,100
+    const two = (at: number) => plain(2, [[2, 44_100 * 30]], elst(at), 2, 44_100);
+    expect(mp4(two(940))).toBe(true); // 21.315 ms: inside the first frame
+    expect(mp4(two(941))).toBe(false); // 21.338 ms: past it (read at 44,100 samples a second, it would end at 23.2 ms)
+    expect(mp4(two(44_100 * 30))).toBe(true);
+    expect(recordingSeconds('audio/mp4', two(0))).toBe(60);
+  });
+
+  it('reads each trun sample\'s own duration, across runs', () => {
+    // run A: frames at 0 and 30 s; run B: one frame at 60 s
+    expect(mp4(frag([[S * 30, S * 30], [1024]], elst(S * 30)))).toBe(true);
+    expect(mp4(frag([[S * 30, S * 30], [1024]], elst(S * 60)))).toBe(true);
+    expect(mp4(frag([[S * 30, S * 30], [1024]], elst(S * 45)))).toBe(false);
+    // unequal durations in one run: frames at 0, 10 s and 40 s
+    expect(mp4(frag([[S * 10, S * 30, 1024]], elst(S * 10)))).toBe(true);
+    expect(mp4(frag([[S * 10, S * 30, 1024]], elst(S * 20)))).toBe(false);
+    expect(mp4(frag([[S * 10, S * 30, 1024]], elst(S * 40)))).toBe(true);
+    // moov's frames are placed once: two of them at 0 and 1,024, then a run of one frame at 30 s. An edit from just after
+    // that frame has nothing to play (placing moov's frames again with the run's would put sound there)
+    expect(mp4(frag([[1024]], elst(S * 30), S * 30, 2))).toBe(true);
+    expect(mp4(frag([[1024]], elst(S * 30 + 1024), S * 30, 2))).toBe(false);
+  });
+
+  it('counts where the frames end in the length: 1,000 frames of no duration after one of 59 s play to 80.3 s', () => {
+    const seconds = 59 + (1001 * 1024) / S - 1024 / S; // the first frame's 21 ms sits inside its 59 s
+    const tail: Array<[number, number]> = [[1, S * 59], [1000, 0]];
+    // G1 of the gap-check: 5ce211a read both as 59 s and passed the edit at 75 s; main read 59 s and refused it
+    expect(recordingSeconds('audio/mp4', plain(1001, tail))).toBeCloseTo(seconds, 6);
+    expect(recordingSeconds('audio/mp4', frag([[S * 59, ...Array<number>(1000).fill(0)]]))).toBeCloseTo(seconds, 6);
+    expect(mp4(plain(1001, tail, elst(S * 75, 1000)))).toBe(true); // 75 s is sound, and the file is 80.3 s long
   });
 });

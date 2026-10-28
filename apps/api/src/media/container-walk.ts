@@ -587,9 +587,10 @@ function trackId(b: Buffer, tkhd: Box): number {
  * on #1013): stsz gives each sample's size, stsc how many samples each chunk holds (and which sample entry they use,
  * which must be the one stsd lists), and stco or co64 where each chunk starts. Every table is bounds-checked against
  * its box, the sample count is capped, and the chunks must hold exactly the samples stsz lists. `sample` sees each
- * sample's place and size, and stts must time exactly those samples: their durations' sum, in media ticks, is returned.
+ * sample's place and size, and stts must time exactly those samples: their durations' sum, in media ticks, is returned,
+ * and stts's (sample count, sample delta) entries, which place each sample on the track's timeline.
  */
-function sampleTable(b: Buffer, stbl: Box, media: MediaRanges, ranges: SampleRanges, steps: Walk, sample: (at: number, size: number) => void): { bytes: number; count: number; ticks: number } {
+function sampleTable(b: Buffer, stbl: Box, media: MediaRanges, ranges: SampleRanges, steps: Walk, sample: (at: number, size: number) => void): { bytes: number; count: number; ticks: number; timing: Array<[number, number]> } {
   // every table is version 0 and ends exactly at its last entry (#1013 replacement review)
   const table = (box: Box | undefined) => {
     if (!box || box.dataStart + 8 > box.end || b.readUInt32BE(box.dataStart) !== 0) fail();
@@ -608,10 +609,13 @@ function sampleTable(b: Buffer, stbl: Box, media: MediaRanges, ranges: SampleRan
   if (timings > MAX_SAMPLES || stts.dataStart + 8 + 8 * timings !== stts.end) fail();
   let timed = 0;
   let ticks = 0;
+  const timing: Array<[number, number]> = [];
   for (let i = 0; i < timings; i++) {
     const n = b.readUInt32BE(stts.dataStart + 8 + 8 * i);
+    const delta = b.readUInt32BE(stts.dataStart + 12 + 8 * i);
     timed += n;
-    ticks += n * b.readUInt32BE(stts.dataStart + 12 + 8 * i);
+    ticks += n * delta;
+    timing.push([n, delta]);
   }
   if (timed !== count) fail();
   // stsc and stco or co64 are read whole even when empty (a fragmented file's moov lists no samples)
@@ -627,7 +631,7 @@ function sampleTable(b: Buffer, stbl: Box, media: MediaRanges, ranges: SampleRan
   if (runs > MAX_SAMPLES || stsc.dataStart + 8 + 12 * runs !== stsc.end) fail();
   if (count === 0) {
     if (runs !== 0 || chunks !== 0) fail(); // no chunks of no samples
-    return { bytes: 0, count: 0, ticks: 0 };
+    return { bytes: 0, count: 0, ticks: 0, timing };
   }
   if (runs === 0) fail();
   const sizeOf = (i: number) => (fixed !== 0 ? fixed : b.readUInt32BE(at + 8 + 4 * i));
@@ -665,7 +669,7 @@ function sampleTable(b: Buffer, stbl: Box, media: MediaRanges, ranges: SampleRan
     }
   }
   if (n !== count) fail();
-  return { bytes, count, ticks };
+  return { bytes, count, ticks, timing };
 }
 
 /**
@@ -836,10 +840,10 @@ function timeHeader(b: Buffer, box: Box, sizes: number[]): { scale: number; dura
 /**
  * One trun: its sample count, its data_offset if it gives one (signed), its bytes and ticks with the defaults applied,
  * where its latest sample ends as presented (after its composition offset), whether any sample has a non-zero composition offset,
- * and each sample's size. A count above `left` (the samples the file may still list) is refused before any sample is
+ * and each sample's size and duration. A count above `left` (the samples the file may still list) is refused before any sample is
  * read: with default sizes and durations a run's samples take no bytes of their own.
  */
-function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: number }, left: number): { count: number; dataOffset: number | undefined; bytes: number; ticks: number; reach: number; shifted: boolean; sizeOf: (i: number) => number } {
+function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: number }, left: number): { count: number; dataOffset: number | undefined; bytes: number; ticks: number; reach: number; shifted: boolean; sizeOf: (i: number) => number; durationOf: (i: number) => number } {
   const { version, flags } = fullBoxHead(b, trun);
   if (version > 1 || flags & ~TRUN_FLAGS) fail(); // version 1 differs only in signed composition offsets
   let at = trun.dataStart + 4;
@@ -874,7 +878,7 @@ function trunRun(b: Buffer, trun: Box, defaults: { duration: number; size: numbe
     if (shiftOf(i) !== 0) shifted = true;
     ticks += duration;
   }
-  return { count, dataOffset, bytes, ticks, reach, shifted, sizeOf };
+  return { count, dataOffset, bytes, ticks, reach, shifted, sizeOf, durationOf };
 }
 
 export type { Walk, Kind, Element, Box, MediaRanges, SampleRanges };
