@@ -71,6 +71,8 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
       id: hubHomeId, orgId: hubOrgId, name: hubHomeId, short: 'Home', descriptor: '', stage: 'x', siteCode: 'HOM', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0,
     } });
     await t.prisma.user.create({ data: { id: hubActorId, projectId: hubHomeId, role: 'pmc', name: 'Hub actor', email: `rm.hub.${run}@test.local` } });
+    // the voice note's correction (#1177 VT1b), sealed like its transcript, by a person whose home the removal keeps
+    await t.prisma.voiceTranscriptCorrection.create({ data: { projectId: a, mediaId: `it-rm-voice-${run}`, text: 'said', correctedById: hubActorId } });
     await t.prisma.$transaction([
       t.prisma.drawingHubLink.create({ data: { projectId: a, orgId: f.orgA.id } }),
       t.prisma.drawingHubLinkEvent.create({ data: { projectId: a, seq: 1, kind: 'linked', hubProjectId: `it-rm-hp-${run}`, byUserId: hubActorId } }),
@@ -238,12 +240,12 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     const r = await removeProject(t.prisma, o);
     expect(r.failures).toEqual([]);
     expect(r).toMatchObject({ ok: true, mode: 'dry-run', outcome: 'rolled back' });
-    for (const table of ['Project', 'ProjectNode', 'CrewRow', 'DailyLog', 'Media', 'MediaTombstone', 'VoiceTranscript', 'DomainEvent', 'OutboxDelivery', 'ProcessedEvent',
+    for (const table of ['Project', 'ProjectNode', 'CrewRow', 'DailyLog', 'Media', 'MediaTombstone', 'VoiceTranscript', 'VoiceTranscriptCorrection', 'DomainEvent', 'OutboxDelivery', 'ProcessedEvent',
       'HubFetchedBlob', 'DrawingHubLink', 'DrawingHubLinkEvent', 'Drawing', 'DrawingRevision', 'HubDrawing', 'HubRevision', 'HubGoverningMark', 'HubWebhookReceipt', 'HubVersionTombstone']) {
       expect(r.removed[table], table).toEqual(o.inventory.keys[table]);
     }
     // the Hub drawing's rows are listed, one each (#1118 U1b)
-    for (const table of ['HubDrawing', 'HubRevision', 'HubGoverningMark', 'VoiceTranscript']) expect(o.inventory.keys[table], table).toHaveLength(1);
+    for (const table of ['HubDrawing', 'HubRevision', 'HubGoverningMark', 'VoiceTranscript', 'VoiceTranscriptCorrection']) expect(o.inventory.keys[table], table).toHaveLength(1);
     // the applied receipt and its tombstone are listed; the org's refused receipt naming no project is not (#1118 U1a-1)
     for (const table of ['HubWebhookReceipt', 'HubVersionTombstone']) expect(o.inventory.keys[table], table).toHaveLength(1);
     expect(Object.keys(r.added)).toEqual([]);
@@ -262,7 +264,7 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
       expect(r.unlinked.find((u) => u.table === table), table).toMatchObject({ unchanged: true });
     }
     expect(r.protected).toEqual([expect.objectContaining({ projectId: f.projectB.id, removed: [], keysUnchanged: true })]);
-    expect(r.triggers.disabled.map((d) => d.name)).toEqual(expect.arrayContaining(['DomainEvent_append_only', 'MediaTombstone_immutable', 'Media_tombstone_on_delete', 'VoiceTranscript_no_delete',
+    expect(r.triggers.disabled.map((d) => d.name)).toEqual(expect.arrayContaining(['DomainEvent_append_only', 'MediaTombstone_immutable', 'Media_tombstone_on_delete', 'VoiceTranscript_no_delete', 'VoiceTranscriptCorrection_no_delete',
       'DrawingHubLink_sealed', 'DrawingHubLinkEvent_sealed', 'HubDrawing_sealed', 'HubRevision_sealed', 'HubGoverningMark_sealed',
       'HubWebhookReceipt_sealed', 'HubVersionTombstone_sealed']));
     expect(r.triggers.restored).toBe(true);
@@ -289,6 +291,7 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     expect(await t.prisma.crewRow.count({ where: { dailyLogId: logId } })).toBe(0);
     expect(await t.prisma.mediaTombstone.count({ where: { projectId: f.projectA.id } })).toBe(0);
     expect(await t.prisma.voiceTranscript.count({ where: { projectId: f.projectA.id } })).toBe(0);
+    expect(await t.prisma.voiceTranscriptCorrection.count({ where: { projectId: f.projectA.id } })).toBe(0);
     expect(await t.prisma.hubFetchedBlob.count({ where: { projectId: f.projectA.id } })).toBe(0);
     expect(await t.prisma.drawingHubLink.count({ where: { projectId: f.projectA.id } })).toBe(0);
     expect(await t.prisma.drawingHubLinkEvent.count({ where: { projectId: f.projectA.id } })).toBe(0);
