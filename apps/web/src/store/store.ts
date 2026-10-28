@@ -3059,7 +3059,8 @@ export const useStore = create<Store>()(
     const memberActKeys = new Map<string, string>();
     const memberActsInFlight = new Map<string, string>();
     /** #482 step 3c — the guide run each add on its way was pressed under (bound act → run), so the same add pressed again
-     *  in that run keeps the guide waiting on the first one's answer */
+     *  in that run keeps the guide waiting on the first one's answer, and a refusal while another add of the run is on its
+     *  way leaves the guide waiting for that one */
     const addRunsInFlight = new Map<string, number>();
     const memberAct = (scope: ProjectScope, act: string): string => `${scope.projectId}:${scope.generation}:${act}`;
     const memberActKey = (boundAct: string): string => {
@@ -6005,7 +6006,11 @@ export const useStore = create<Store>()(
           return g.addMember(input, key).finally(() => { if (addRunsInFlight.get(boundAdd) === guideRun) addRunsInFlight.delete(boundAdd); });
         },
         () => { get().loadTeam(); get().flash(input.name + ' added to the team.'); reportAdd(true); },
-        () => { get().flash('Could not add the member — check the details / your access.'); reportAdd(false); },
+        () => {
+          get().flash('Could not add the member — check the details / your access.');
+          // another add pressed in this run is still on its way (this one's entry is already cleared): its answer decides
+          if (![...addRunsInFlight.values()].includes(guideRun)) reportAdd(false);
+        },
       );
       // the same add already on its way: pressed in this run, its own answer tells the guide; pressed before it, that
       // answer is not this run's

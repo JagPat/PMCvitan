@@ -189,6 +189,45 @@ describe('the team guide (#482 step 3c)', () => {
     expect(seen).toEqual(['member-added']);
   });
 
+  it('a refusal while another add of the run is on its way waits for that one: its success finishes it (Codex 4405810968)', async () => {
+    const answers: { ok: (m: unknown) => void; no: (e: unknown) => void }[] = [];
+    const addMember = vi.fn(() => new Promise((ok, no) => { answers.push({ ok, no }); }));
+    const { useGuideState, guide, seen } = await open({ addMember });
+    act(() => { useGuideState.getState().start(guide); });
+    await fillForm();
+    press('add-member');
+    type('member-name', 'Priya');
+    type('member-contact', 'priya@vitan.in');
+    await tipAt('1');
+    press('add-member');
+    expect(addMember).toHaveBeenCalledTimes(2);
+    await act(async () => { answers[0]!.no(Object.assign(new Error('refused'), { status: 400 })); });
+    expect(seen).toEqual([]);
+    expect(useGuideState.getState().run?.step).toBe(1);
+    await act(async () => { answers[1]!.ok({ ...member, userId: 'u-p', name: 'Priya' }); });
+    await isDone();
+    expect(seen).toEqual(['member-added']);
+  });
+
+  it('two adds of the run both refused: back to the form once the last answer comes', async () => {
+    const answers: ((e: unknown) => void)[] = [];
+    const addMember = vi.fn(() => new Promise((_ok, no) => { answers.push(no); }));
+    const { useGuideState, guide, seen } = await open({ addMember });
+    act(() => { useGuideState.getState().start(guide); });
+    await fillForm();
+    press('add-member');
+    type('member-name', 'Priya');
+    type('member-contact', 'priya@vitan.in');
+    await tipAt('1');
+    press('add-member');
+    await act(async () => { answers[0]!(Object.assign(new Error('refused'), { status: 400 })); });
+    expect(seen).toEqual([]);
+    await act(async () => { answers[1]!(Object.assign(new Error('refused'), { status: 400 })); });
+    expect(seen).toEqual(['member-add-failed']);
+    await tipAt('0');
+    expect(done()).not.toContain('invite-team-member');
+  });
+
   it('while the guide runs, Add waits for a whole contact; without the guide it does not (Codex 4405412367)', async () => {
     const addMember = vi.fn(async () => member);
     const { useGuideState, guide } = await open({ addMember });
