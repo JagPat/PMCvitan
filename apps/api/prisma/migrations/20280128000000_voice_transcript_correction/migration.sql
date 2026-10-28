@@ -25,8 +25,8 @@
 --       "seq" to one past the transcript's highest, so two people correcting at once are put one after the other and
 --       the newest is never in doubt. After that lock it sets "createdAt" to the database clock's UTC time at that
 --       moment (as `site_visits_now()` does), whatever the writer sent and whatever the session's time zone or start
---       time, so a correction's time is finite, never in the future, and never earlier than one before it (Codex
---       #1182, 4398744254). The count is read anew only at READ COMMITTED, so an insert at a fixed snapshot is refused
+--       time, so a correction's time is finite (Codex #1182, 4398744254). It is never earlier than the one before it,
+--       even after the server's clock steps back: it is then the earlier correction's time (Codex #1213 round 2). The count is read anew only at READ COMMITTED, so an insert at a fixed snapshot is refused
 --       (as the "Media" type guard of VT1a refuses one); the unique key on (projectId, mediaId, seq) backs this.
 --   C4  Well formed. A text, when given, is not blank and is at most the provider's 20,000 characters; "seq" from 1.
 --   C5  Added, never changed. An UPDATE is refused, so a correction keeps its words, its person and its time. Clearing
@@ -105,7 +105,7 @@ END $vt1b_keys$;
 -- delete of the note waits for this insert to commit (and then takes the row with it).
 CREATE OR REPLACE FUNCTION public.media_voice_transcript_correction_insert() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
-DECLARE v_status TEXT;
+DECLARE v_status TEXT; v_seq INT; v_last TIMESTAMP(3);
 BEGIN
   -- the count below must see a correction committed while this insert waited for the lock; only READ COMMITTED reads
   -- anew per statement, so a fixed-snapshot writer is refused here rather than given a place it cannot check
@@ -115,8 +115,8 @@ BEGIN
   END IF;
   SELECT v."status" INTO v_status FROM public."VoiceTranscript" v
    WHERE v."projectId" = NEW."projectId" AND v."mediaId" = NEW."mediaId" FOR NO KEY UPDATE;
-  -- the place and the time are the database's, whatever the writer sent: the time is read after the lock, in UTC, so it
-  -- is never earlier than a correction before it, whenever this transaction began and whatever its session's time zone
+  -- the place and the time are the database's, whatever the writer sent: the time is read after the lock, in UTC,
+  -- whenever this transaction began and whatever its session's time zone
   NEW."createdAt" := date_trunc('milliseconds', pg_catalog.clock_timestamp() AT TIME ZONE 'UTC')::TIMESTAMP(3);
   IF NOT FOUND THEN
     NEW."seq" := 1;
@@ -126,8 +126,12 @@ BEGIN
     RAISE EXCEPTION 'media: voice note % is corrected only once its words are heard, and it is %', NEW."mediaId", v_status
       USING ERRCODE = 'check_violation';
   END IF;
-  NEW."seq" := 1 + COALESCE((SELECT max(c."seq") FROM public."VoiceTranscriptCorrection" c
-                              WHERE c."projectId" = NEW."projectId" AND c."mediaId" = NEW."mediaId"), 0);
+  SELECT max(c."seq"), max(c."createdAt") INTO v_seq, v_last FROM public."VoiceTranscriptCorrection" c
+   WHERE c."projectId" = NEW."projectId" AND c."mediaId" = NEW."mediaId";
+  NEW."seq" := 1 + COALESCE(v_seq, 0);
+  -- never earlier than a correction before it, even when the server's clock has stepped back since (an NTP or manual
+  -- correction): the lock orders the rows, and the time follows that order
+  NEW."createdAt" := GREATEST(NEW."createdAt", v_last);
   RETURN NEW;
 END $$;
 

@@ -106,21 +106,48 @@ describe('#1177 voice-note corrections (live PG)', () => {
         await released;
         return row;
       }, { timeout: 60_000 });
-      await firstMade;
-      const second = correct(m, 'second', f.projectA.id, f.ownerUser.id).then((row) => row);
-      // the second waits on the transcript's lock (a signal from the server, not a clock)
-      for (;;) {
-        const [{ waiting }] = await other.$queryRawUnsafe<Array<{ waiting: boolean }>>(
-          `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'
-                            AND query LIKE '%VoiceTranscriptCorrection%') AS waiting`);
-        if (waiting) break;
+      first.catch(() => made()); // a first that fails before it is made lets the test go on to report it
+      try {
+        await firstMade;
+        let settled = false;
+        const second = correct(m, 'second', f.projectA.id, f.ownerUser.id);
+        second.then(() => { settled = true; }, () => { settled = true; });
+        // the second waits on the transcript's lock (a signal from the server, not a clock); a second that finishes
+        // without waiting, or never shows waiting in a bounded number of looks, fails the test instead of polling on
+        let waiting = false;
+        for (let look = 0; look < 5_000 && !waiting && !settled; look += 1) {
+          [{ waiting }] = await other.$queryRawUnsafe<Array<{ waiting: boolean }>>(
+            `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'
+                              AND query LIKE '%VoiceTranscriptCorrection%') AS waiting`);
+        }
+        expect(settled).toBe(false);
+        expect(waiting).toBe(true);
+        release();
+        expect((await first).seq).toBe(1);
+        expect((await second).seq).toBe(2);
+      } finally {
+        release(); // the holder is let go on every path, so a failed look never leaves its transaction open
+        await first.catch(() => undefined);
       }
-      release();
-      expect((await first).seq).toBe(1);
-      expect((await second).seq).toBe(2);
     } finally {
       await other.$disconnect();
     }
+  });
+
+  it('never stamps a correction earlier than the one before it, even after the clock steps back (C3)', async () => {
+    const m = await heard(f.projectA.id);
+    // a correction stamped ahead of the clock stands in for a server clock stepped back since it was made: the insert
+    // guard is switched off for this one row only, inside the transaction that adds it
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`ALTER TABLE "VoiceTranscriptCorrection" DISABLE TRIGGER "VoiceTranscriptCorrection_insert"`);
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "VoiceTranscriptCorrection" ("id", "projectId", "mediaId", "seq", "text", "correctedById", "createdAt")
+         VALUES (gen_random_uuid()::text, $1, $2, 1, 'ahead', $3, '2100-01-01 00:00:00')`, f.projectA.id, m, f.memberUser.id);
+      await tx.$executeRawUnsafe(`ALTER TABLE "VoiceTranscriptCorrection" ENABLE TRIGGER "VoiceTranscriptCorrection_insert"`);
+    });
+    const next = await correct(m, 'after');
+    expect(next.seq).toBe(2);
+    expect(next.createdAt.toISOString()).toBe('2100-01-01T00:00:00.000Z');
   });
 
   it('stamps the database clock\'s UTC time after the lock, whatever the session\'s zone or start (C3)', async () => {
@@ -147,13 +174,19 @@ describe('#1177 voice-note corrections (live PG)', () => {
         await proceed;
         return tx.voiceTranscriptCorrection.create({ data: { projectId: f.projectA.id, mediaId: m, text: 'late', correctedById: f.ownerUser.id } });
       }, { timeout: 60_000 });
-      await hasBegun;
-      const meanwhile = await correct(m, 'meanwhile');
-      go();
-      const row = await late;
-      expect([meanwhile.seq, row.seq]).toEqual([2, 3]);
-      expect(row.createdAt.getTime()).toBeGreaterThanOrEqual(meanwhile.createdAt.getTime());
-      expect(meanwhile.createdAt.getTime()).toBeGreaterThanOrEqual(ahead.createdAt.getTime());
+      late.catch(() => began()); // a late transaction that fails before it begins lets the test go on to report it
+      try {
+        await hasBegun;
+        const meanwhile = await correct(m, 'meanwhile');
+        go();
+        const row = await late;
+        expect([meanwhile.seq, row.seq]).toEqual([2, 3]);
+        expect(row.createdAt.getTime()).toBeGreaterThanOrEqual(meanwhile.createdAt.getTime());
+        expect(meanwhile.createdAt.getTime()).toBeGreaterThanOrEqual(ahead.createdAt.getTime());
+      } finally {
+        go(); // the late transaction is let go on every path, so a failed step never leaves it open
+        await late.catch(() => undefined);
+      }
     } finally {
       await other.$disconnect();
     }
