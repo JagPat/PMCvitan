@@ -739,6 +739,8 @@ describe('readVideoClip — every sound frame at its own decode time (#1168, #11
     expect(mp4(two(44_100 * 30))).not.toBeNull();
     expect(mp4(two(44_100 * 30 + 941))).toBeNull();
     expect(mp4(plain(2, [[2, 44_100 * 30]], undefined, 2, 44_100))).toBe(60);
+    // and the length counts where the frames end on that track: 1,000 zero-duration frames after one of 50 s
+    expect(mp4(plain(1001, [[1, 44_100 * 50], [1000, 0]], undefined, 1001, 44_100))).toBeCloseTo(50 + (1000 * 1024) / S, 6);
   });
 
   it('reads each trun sample\'s own duration, across runs', () => {
@@ -767,9 +769,9 @@ describe('readVideoClip — every sound frame at its own decode time (#1168, #11
     expect(webm(recording('chromium-153-vp8-opus.webm'))).toBe(1.988);
     expect(webm(recording('chromium-153-app-vp8-opus.webm'))).toBe(1.98);
     expect(webm(recording('chromium-153-vp9.webm'))).toBe(1.949);
-    // this one's 33 Opus packets are 60 ms each, and the trun gives the last a duration of 1,008 ticks (21 ms), where the
-    // recording stopped: it sits at 1.94 s and decodes to 2.0 s. Main read the packets back to back from 0, 1.98 s.
-    // Stored as 2 s either way
+    // this one's 33 Opus packets are 60 ms each, and the trun gives the ninth a duration of 3,840 ticks (80 ms: 20 ms of
+    // silence after it), so the last sits at 31 × 2,880 + 3,840 = 93,120 ticks (1.94 s) and decodes to 2.0 s. Main read
+    // the packets back to back from 0, 1.98 s. Stored as 2 s either way
     expect(mp4(recording('chromium-153-vp9-opus.mp4'))).toBe(2);
     expect(readVideoClip('video/mp4', recording('chromium-153-vp9-opus.mp4'))).toEqual({ seconds: 2, durationSec: 2 });
   });
