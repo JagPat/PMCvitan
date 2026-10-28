@@ -139,8 +139,15 @@ export function GuideHost() {
             arrive.current = { guide: asked, since: now };
           } else if (now - arrive.current.since >= GUIDE_ARRIVE_MS) {
             arrive.current = null;
-            g.request(null);
-            useStore.getState().flash(HELP_WORDS.notHere[useStore.getState().lang]);
+            const [next, ...rest] = g.fallbacks;
+            if (next) {
+              // "Show me around": nothing to show this one on yet, so the next one, on its own screen
+              g.request(next, rest);
+              useStore.getState().setScreen(next.screen);
+            } else {
+              g.request(null);
+              useStore.getState().flash(HELP_WORDS.notHere[useStore.getState().lang]);
+            }
           }
           return;
         }
