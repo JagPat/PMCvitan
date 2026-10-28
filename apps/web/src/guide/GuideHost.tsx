@@ -183,9 +183,15 @@ export function GuideHost() {
         completeStep(key, g, null);
         return;
       }
+      const current = guide.steps[step]!;
+      // a step already done before the run reached it (checked in earlier today, a visit already open) is passed over,
+      // unpressed
+      if (!g.run.pressed && current.skip?.()) {
+        completeStep(key, g, null);
+        return;
+      }
       // a text box already focused when its step began (tapped before the guide started) is reached: no later
       // `focusin` would say so
-      const current = guide.steps[step]!;
       if (current.until === 'focus' && document.activeElement instanceof Element) {
         const focused = document.activeElement.closest(`[data-guide="${current.target}"]`);
         if (focused && (!current.keyed || runKey === null || guideKeyMatches(focused.getAttribute('data-guide-key'), runKey))) {
@@ -313,7 +319,8 @@ export function GuideHost() {
         if (outcome === current.outcome.ok || (notOk && g.run.pressed && current.settled?.(g.run.key))) completeStep(key, g, null);
         else if (outcome === current.outcome.held) g.stop();
         else if (outcome === current.outcome.failed) {
-          if (current.retryFrom !== undefined) g.setStep(current.retryFrom);
+          const back = typeof current.retryFrom === 'function' ? current.retryFrom() : current.retryFrom;
+          if (back !== undefined) g.setStep(back);
           else g.setWait(false);
         }
       }),

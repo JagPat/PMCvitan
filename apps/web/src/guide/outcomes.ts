@@ -20,7 +20,14 @@ export type GuideOutcome =
   | 'advice-not-kept'
   | 'site-photo-added'
   | 'site-photo-add-failed'
-  | 'site-photo-not-kept';
+  | 'site-photo-not-kept'
+  | 'visit-started'
+  | 'visit-start-failed'
+  | 'visit-photo-added'
+  | 'visit-photo-add-failed'
+  | 'daily-log-sent'
+  | 'daily-log-send-failed'
+  | 'daily-log-not-kept';
 
 /** `key`: which record the outcome is about (the submitted inspection's id), so a guide following one
  *  checklist ignores the submit of another. `run`: the guide run the request was sent under (see

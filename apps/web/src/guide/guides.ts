@@ -4,8 +4,9 @@ import { guidedPhotoPicksOf, type GuideOutcome } from './outcomes';
 import { useGuideState } from './guideState';
 import { inspectionFrozen, useStore } from '@/store/store';
 import { dailyLogSendPending } from '@/store/dailyLogPending';
-import { selectDecisionsNeedingViewer } from '@/store/selectors';
+import { dailyLogSettledForLinks, selectDecisionsNeedingViewer } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
+import { ownOpenVisitNoted } from './visitFacts';
 
 /**
  * #482 (board decision 14 Oct) — the in-app guide: coach marks on the live screen.
@@ -45,8 +46,12 @@ export interface GuideStep {
    * failure (its answer can be lost after the server took it), so it only says true for this run's own action.
    */
   settled?: (key: string | null) => boolean;
-  /** For `until: 'outcome'`: the step a failed report goes back to (the box the attempt emptied), instead of staying here */
-  retryFrom?: number;
+  /** true when what this step asks for is already done (checked in earlier today, a visit already open): the run passes
+   *  over it. Only for a step whose control is then not on screen, so a run stepping back never lands on it */
+  skip?: () => boolean;
+  /** For `until: 'outcome'`: the step a failed report goes back to (the box the attempt emptied), instead of staying here;
+   *  a function says it when the report comes (undefined: stay here) */
+  retryFrom?: number | (() => number | undefined);
   /** point at the control carrying the same `data-guide-key` as the one pressed in an earlier step
    *  (the photo button of the item just failed, not of another failed item), or the key of the record
    *  it belongs to (that checklist's Submit); an `outcome` for another record does not count */
@@ -124,6 +129,44 @@ export const GUIDES: readonly Guide[] = [
     available: sitePhotoButtonUsable,
     steps: [
       { target: 'add-site-photo', tip: 'photoAdd', until: 'outcome', outcome: { ok: 'site-photo-added', failed: 'site-photo-add-failed', held: 'site-photo-not-kept' }, settled: guidedPhotoOnRecord },
+    ],
+  },
+  {
+    // a site visit: start it, then add a photo to it. Start ends once the visit shows on the screen (sent, or waiting to
+    // send: a photo can be added to a visit still waiting to send); the photo step ends only once the server has the
+    // photo, so a photo still waiting for signal leaves the guide unfinished. The Site visits screen reports both from
+    // what it shows (`useVisitGuideReports`)
+    id: 'record-site-visit',
+    title: 'recordSiteVisit',
+    roles: ['pmc', 'consultant'],
+    screen: 'site-visits',
+    available: siteVisitRecordable,
+    steps: [
+      { target: 'sv-start', tip: 'visitStart', until: 'outcome', outcome: { ok: 'visit-started', failed: 'visit-start-failed' }, skip: ownOpenVisitNoted },
+      // only the viewer's own open visit (the one just started) carries this target
+      { target: 'sv-add-photo', tip: 'visitPhoto', until: 'outcome', outcome: { ok: 'visit-photo-added', failed: 'visit-photo-add-failed' } },
+    ],
+  },
+  {
+    // the engineer sends the day's log to the PMC: check in (passed over when already checked in), then send. Send ends
+    // only on the server's answer, once the log is kept on this phone to send (offline, or a send left to retry), or when
+    // a refresh shows the log sent
+    id: 'send-daily-log',
+    title: 'sendDailyLog',
+    roles: ['engineer'],
+    screen: 'daily-log',
+    available: dailyLogSendable,
+    steps: [
+      { target: 'check-in', tip: 'logCheckIn', skip: dailyLogCheckedIn },
+      {
+        target: 'submit-daily-log',
+        tip: 'logSend',
+        until: 'outcome',
+        outcome: { ok: 'daily-log-sent', failed: 'daily-log-send-failed', held: 'daily-log-not-kept' },
+        settled: dailyLogSubmitted,
+        // a send refused for want of a check-in (checked out meanwhile) goes back to Check in, on screen again
+        retryFrom: () => (dailyLogCheckedIn() ? undefined : 0),
+      },
     ],
   },
   {
@@ -252,6 +295,29 @@ function checklistOutOnSite(): boolean {
 function sitePhotoButtonUsable(): boolean {
   const s = useStore.getState();
   return !!API_BASE && can('media.upload', s.role) && !dailyLogSendPending(s);
+}
+
+/** The viewer may record a visit on their Site visits screen, against the server. One with a visit already open (a run
+ *  left before its photo went, Codex 4399847415) is taken straight to Add photo on it */
+function siteVisitRecordable(): boolean {
+  const s = useStore.getState();
+  return !!API_BASE && can('siteVisit.start', s.role);
+}
+
+/** Today's log is open, not sent and not on its way, and its read has settled (under module read-ownership the screen
+ *  locks Submit until the log's own read succeeds, Codex 4402751573): the engineer can check in and send it */
+function dailyLogSendable(): boolean {
+  const s = useStore.getState();
+  return !!s.dailyLog && !s.dailyLog.submitted && dailyLogSettledForLinks(s);
+}
+
+function dailyLogCheckedIn(): boolean {
+  return !!useStore.getState().dailyLog?.checkedIn;
+}
+
+/** the log shows sent (its own send's answer, or a refresh that brought it first) */
+function dailyLogSubmitted(): boolean {
+  return !!useStore.getState().dailyLog?.submitted;
 }
 
 /** A photo picked under this run of the guide is in the project's photos (the viewer's own photos carry their upload key). */
