@@ -59,10 +59,22 @@ export async function createTestApp(options: TestAppOptions = {}): Promise<TestA
   const app = moduleRef.createNestApplication<NestExpressApplication>();
   configureApp(app);
   await app.init();
-  // 4d-ii-a / A6e — the harness opens no listener; the process counts as serving once initialized,
+  // 4d-ii-a / A6e — the harness never calls `app.listen()`; the process counts as serving once initialized,
   // so release the server-generation admission `OutboxBootstrap` held through boot (`main.ts` does
   // this after `app.listen()`), or the row's SHARE lock would outlive the suite's boot.
   app.get(OutboxBootstrap).releaseAdmission();
+  // #1210 residual — given a server that is not listening, supertest listens for the first request and
+  // closes the shared server when THAT request ends, so a concurrent request still connecting is refused
+  // or reset and never reaches the app. Listening here first means no request owns the server. This is
+  // the raw http server's listen, which skips Nest's listen hooks. `app.close()` closes it.
+  const server = app.getHttpServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
   const prisma = app.get(PrismaService);
   const jwt = app.get(JwtService);
   return {
