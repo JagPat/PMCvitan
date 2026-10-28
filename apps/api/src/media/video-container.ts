@@ -542,12 +542,41 @@ interface Mp4Track {
   bytes: number;
   opusSamples: number;
   /**
-   * for sound: where its frames end as decoded, in seconds (moov's from 0, then each fragment run's from where it sits
-   * and no earlier than the frames before it end), and each stretch of decoded sound, [from, to), for the edit's check
+   * for sound, as a voice note's (#1168): each frame's sound as decoded, in audio samples, until `placeSound` puts the
+   * samples read since on the timeline; each stretch of decoded sound, [from, to), for the edit's check; and where the
+   * last one ends. Exact, in units of 1 / (media timescale × audio rate) seconds, so a media tick and an audio sample
+   * are both whole units and nothing rounds
    */
-  heard: number;
-  sounds: Array<[number, number]>;
+  pieces: number[];
+  sounds: Array<[bigint, bigint]>;
+  soundEnd: bigint;
   sample: (at: number, size: number) => void;
+}
+
+/** the audio rate a sound track's frames decode at: Opus's 48 kHz, or the AAC entry's rate */
+function soundRate(track: Mp4Track): number {
+  return track.opus ? OPUS_RATE : track.aacRate;
+}
+
+/**
+ * Put a sound track's samples read since the last call on its timeline, from `start` (media ticks), as a voice note's
+ * are (#1168): each plays from its own decode time, the run's or table's start plus the durations before it, and no
+ * earlier than the frames decoded ahead of it end, since a decoder plays them one after another. So a duration longer
+ * than its frame leaves silence after it (two AAC frames 30 s apart are sound near 0 and near 30 s, not one 43 ms
+ * stretch), and frames whose durations are 0 play back to back (#1097, #1165: placed late, they play past where they
+ * sit, in one run or split among many). A run with no frames moves nothing.
+ */
+function placeSound(track: Mp4Track, start: number, durationOf: (i: number) => number): void {
+  const tickUnits = BigInt(soundRate(track));
+  const sampleUnits = BigInt(track.scale);
+  let t = BigInt(start);
+  for (let i = 0; i < track.pieces.length; i++) {
+    const from = t * tickUnits > track.soundEnd ? t * tickUnits : track.soundEnd;
+    track.soundEnd = from + BigInt(track.pieces[i]!) * sampleUnits; // never empty: every sample holds a frame
+    track.sounds.push([from, track.soundEnd]);
+    t += BigInt(durationOf(i));
+  }
+  track.pieces = [];
 }
 
 /**
@@ -593,10 +622,14 @@ function readTrak(b: Buffer, trak: Box, movieScale: number, media: MediaRanges, 
   const sound = picture ? { opus: false, rate: 0 } : audioSampleEntry(b, only(st, 'stsd'), steps);
   const track: Mp4Track = {
     id: trackId(b, tkhd), picture, opus: sound.opus, aacRate: sound.rate, edits, scale: mdhd.scale, duration: mdhd.duration,
-    trex: undefined, ticks: 0, timeline: 0, summed: 0, frames: 0, bytes: 0, opusSamples: 0, heard: 0, sounds: [],
+    trex: undefined, ticks: 0, timeline: 0, summed: 0, frames: 0, bytes: 0, opusSamples: 0, pieces: [], sounds: [], soundEnd: 0n,
     sample: (at, size) => {
       if (size < 1) fail(); // every sample holds at least one byte
-      if (track.opus) track.opusSamples += opusPacketSamples(b, at, size);
+      if (track.opus) {
+        const n = opusPacketSamples(b, at, size);
+        track.opusSamples += n;
+        track.pieces.push(n);
+      } else if (!track.picture) track.pieces.push(1024);
       if (nal > 0) nalUnits(b, at, size, nal, steps);
     },
   };
@@ -605,8 +638,17 @@ function readTrak(b: Buffer, trak: Box, movieScale: number, media: MediaRanges, 
   track.frames = table.count;
   track.bytes = table.bytes;
   if (!picture) {
-    track.heard = decodedSeconds(track, table.count, track.opusSamples);
-    if (table.count > 0) track.sounds.push([0, track.heard]);
+    // moov's samples, from 0, each stts entry's delta for its count of samples, in order
+    let entry = 0;
+    let used = 0;
+    placeSound(track, 0, () => {
+      while (used >= table.timing[entry]![0]) {
+        entry++;
+        used = 0;
+      }
+      used++;
+      return table.timing[entry]![1];
+    });
   }
   return track;
 }
@@ -750,18 +792,11 @@ function mp4Seconds(b: Buffer): number | null {
           if (!inMedia(media, cursor, run.bytes)) fail();
           ranges.push({ at: cursor, bytes: run.bytes });
         }
-        const before = track.opusSamples;
         for (let i = 0, p = cursor; i < run.count; p += run.sizeOf(i), i++) track.sample(p, run.sizeOf(i));
         track.bytes += run.bytes;
         const runStart = track.timeline;
-        // a sound run's frames play one after another from its start, no earlier than the frames before it end, and a run
-        // with none moves nothing, as a voice note's (#1165: zero-duration frames placed late play past where they sit)
-        const decoded = track.picture ? 0 : decodedSeconds(track, run.count, track.opusSamples - before);
-        if (decoded > 0) {
-          const from = Math.max(runStart / track.scale, track.heard);
-          track.heard = from + decoded;
-          track.sounds.push([from, track.heard]);
-        }
+        // a sound run's frames, each from its own decode time in the run (#1168)
+        if (!track.picture) placeSound(track, runStart, run.durationOf);
         track.timeline += run.ticks;
         track.summed += run.ticks;
         if (!Number.isSafeInteger(track.timeline) || !Number.isSafeInteger(track.summed)) fail();
@@ -775,24 +810,26 @@ function mp4Seconds(b: Buffer): number | null {
   // a clip has a picture, and no mdat holds a byte that is not some track's sample
   if (!list.some((t) => t.picture && t.bytes > 0) || !tilesMedia(media, ranges)) return null;
   // the sound's media edit plays some of its sound, as a voice note's (#1141, #1165): the media it selects, from its
-  // media_time for its duration, overlaps a stretch of decoded frames. A duration of 0 runs to the end only in a movie
-  // that declares fragments (ISO/IEC 14496-12 §8.6.6.1: the fragments supply its media); in a plain movie it is an edit
-  // of no length, which selects nothing (Codex P2 on #1186). Durations the file states past its frames are silence, so
-  // they never count as sound here
+  // media_time for its duration, overlaps a stretch of decoded frames (#1168: not one between two frames whose
+  // durations leave silence). A duration of 0 runs to the end only in a movie that declares fragments (ISO/IEC 14496-12
+  // §8.6.6.1: the fragments supply its media); in a plain movie it is an edit of no length, which selects nothing (Codex
+  // P2 on #1186). Durations the file states past its frames are silence, so they never count as sound here
   const fragmentable = (moov.get('mvex') ?? []).length > 0;
   for (const t of list) {
     if (t.picture || !t.edits) continue;
-    const start = t.edits.start / t.scale;
     if (t.edits.edit === 0 && !fragmentable) return null;
-    const end = t.edits.edit > 0 ? start + t.edits.edit / movie.scale : Infinity;
-    if (!t.sounds.some(([from, to]) => from < end && to > start)) return null;
+    // compared in sound units × the movie timescale, since the edit's duration is in movie ticks
+    const movieTicks = BigInt(movie.scale);
+    const start = BigInt(t.edits.start) * BigInt(soundRate(t)) * movieTicks;
+    const end = t.edits.edit > 0 ? start + BigInt(t.edits.edit) * BigInt(soundRate(t)) * BigInt(t.scale) : undefined;
+    if (!t.sounds.some(([from, to]) => (end === undefined || from * movieTicks < end) && to * movieTicks > start)) return null;
   }
   // each track's length as a voice note's is reckoned (the edit list, the media header, the timeline and the summed
   // durations, and for sound what its frames hold), the longest of them, and the movie's own
   let longest = 0;
   for (const t of list) {
-    // for sound, where its frames end as decoded: each run's from where it sits, and all of them from 0
-    const held = t.picture ? 0 : Math.max(t.heard, decodedSeconds(t, t.frames, t.opusSamples));
+    // for sound, where its frames end as decoded: each frame's from where it sits, and all of them from 0
+    const held = t.picture ? 0 : Math.max(Number(t.soundEnd) / (t.scale * soundRate(t)), decodedSeconds(t, t.frames, t.opusSamples));
     const played = Math.max(
       t.edits ? t.edits.edit / movie.scale : 0,
       t.duration !== null ? t.duration / t.scale : 0,
