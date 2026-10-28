@@ -660,3 +660,69 @@ describe('readVideoClip — V2a: the layouts phones record, and sound read as a 
     expect(mp4(empty(48_000 * 4.9))).toBeNull();
   });
 });
+
+describe('readVideoClip — the seek index and CodecName the voice fix shares (#482, 28 Oct)', () => {
+  const seek = (id: number) => ebml(0x4dbb, Buffer.concat([ebml(0x53ab, u32(id)), ebml(0x53ac, uint(1))]));
+  const seekHead = (...ids: number[]) => ebml(0x114d9b74, Buffer.concat(ids.map(seek)));
+  // a SeekHead first in the Segment, after its 12-byte head (an unknown size, as Chrome writes it)
+  const indexed = (head: Buffer) => {
+    const b = recording('chromium-153-vp8-opus.webm');
+    const at = b.indexOf(Buffer.from([0x18, 0x53, 0x80, 0x67])) + 12;
+    return Buffer.concat([b.subarray(0, at), head, b.subarray(at)]);
+  };
+
+  it('passes a SeekHead pointing at Info, Tracks and Cluster, and an empty one, at the clip\'s own 2 s', () => {
+    const plain = webm(recording('chromium-153-vp8-opus.webm'));
+    expect(plain).not.toBeNull();
+    expect(webm(indexed(seekHead(0x1549a966, 0x1654ae6b, 0x1f43b675)))).toBe(plain);
+    expect(webm(indexed(ebml(0x114d9b74, Buffer.alloc(0))))).toBe(plain);
+  });
+
+  it('passes a SeekHead pointing at the Cues, which a clip walk takes (V2a), as Chrome indexes a clip recorded with no timeslice', () => {
+    expect(webm(indexed(seekHead(0x1549a966, 0x1654ae6b, 0x1c53bb6b)))).toBe(webm(recording('chromium-153-vp8-opus.webm')));
+    // Chromium's own: start() with no timeslice, as the app records, writes a SeekHead first and the Cues last
+    const app = recording('chromium-153-app-vp8-opus.webm');
+    expect(app.indexOf(Buffer.from([0x11, 0x4d, 0x9b, 0x74]))).toBeGreaterThan(0);
+    expect(app.lastIndexOf(Buffer.from([0x1c, 0x53, 0xbb, 0x6b]))).toBeGreaterThan(app.lastIndexOf(Buffer.from([0x1f, 0x43, 0xb6, 0x75])));
+    expect(webm(app)).toBeGreaterThan(1.9);
+    expect(webm(app)).toBeLessThan(2.2);
+  });
+
+  it('refuses a SeekHead with a junk body, one pointing at Tags (a clip walk does not take them), and two', () => {
+    expect(webm(indexed(ebml(0x114d9b74, Buffer.from([0xde, 0xad, 0xbe, 0xef]))))).toBeNull();
+    expect(webm(indexed(seekHead(0x1254c367)))).toBeNull(); // Tags
+    expect(webm(indexed(Buffer.concat([seekHead(0x1549a966), seekHead(0x1549a966)])))).toBeNull();
+    expect(webm(indexed(seekHead(0x1549a966, 0x1549a966)))).toBeNull(); // a target twice
+    // the clip's Segment is of unknown size, so it runs to the file's end, which bounds a SeekPosition
+    const at = (position: number) => ebml(0x114d9b74, ebml(0x4dbb, Buffer.concat([ebml(0x53ab, u32(0x1549a966)), ebml(0x53ac, u32(position))])));
+    const length = indexed(at(0)).length - recording('chromium-153-vp8-opus.webm').indexOf(Buffer.from([0x18, 0x53, 0x80, 0x67])) - 12;
+    expect(webm(indexed(at(length - 1)))).not.toBeNull();
+    expect(webm(indexed(at(length)))).toBeNull();
+    expect(webm(indexed(at(0xffffffff)))).toBeNull();
+  });
+
+  it('refuses a SeekHead after Info, and, in a Segment of known size, a SeekPosition at or past its end', () => {
+    // a hand-built clip's Segment, rebuilt with `head` first and a known size
+    const known = (head: Buffer) => {
+      const b = clipWebm();
+      const at = b.indexOf(Buffer.from([0x18, 0x53, 0x80, 0x67]));
+      return Buffer.concat([b.subarray(0, at), ebml(WEBM.segment, Buffer.concat([head, b.subarray(at + 12)]))]);
+    };
+    const pointing = (position: number) => ebml(0x114d9b74, ebml(0x4dbb, Buffer.concat([ebml(0x53ab, u32(0x1549a966)), ebml(0x53ac, u32(position))])));
+    const length = pointing(0).length + clipWebm().length - clipWebm().indexOf(Buffer.from([0x18, 0x53, 0x80, 0x67])) - 12;
+    expect(webm(known(pointing(length - 1)))).not.toBeNull();
+    expect(webm(known(pointing(length)))).toBeNull();
+    const b = recording('chromium-153-vp8-opus.webm');
+    const info = b.indexOf(Buffer.from([0x15, 0x49, 0xa9, 0x66]));
+    const tracks = b.indexOf(Buffer.from([0x16, 0x54, 0xae, 0x6b]));
+    expect(webm(Buffer.concat([b.subarray(0, tracks), seekHead(0x1549a966), b.subarray(tracks)]))).toBeNull(); // between Info and Tracks
+    expect(info).toBeLessThan(tracks);
+  });
+
+  it('passes a CodecName on either track, UTF-8 and at most 64 bytes', () => {
+    const named = (name: Buffer) => ebml(0x258688, name);
+    expect(webm(clipWebm({ tracks: [pictureTrack(1, 'V_VP8', [videoElement(), named(Buffer.from('VP8'))]), soundTrack()] }))).not.toBeNull();
+    expect(webm(clipWebm({ tracks: [pictureTrack(1, 'V_VP8', [videoElement(), named(Buffer.alloc(65, 0x41))]), soundTrack()] }))).toBeNull();
+    expect(webm(clipWebm({ tracks: [pictureTrack(1, 'V_VP8', [videoElement(), named(Buffer.from([0xff]))]), soundTrack()] }))).toBeNull();
+  });
+});

@@ -39,7 +39,7 @@ import {
   EBML_HEADER, DOC_TYPE, SEGMENT, INFO, TRACKS, TRACK_ENTRY, TRACK_NUMBER, TRACK_TYPE, CODEC_ID, AUDIO, CLUSTER, SIMPLE_BLOCK,
   CUES, CUES_CHILDREN, CUE_POINT_CHILDREN, CUE_TIME, CUE_TRACK_POSITIONS, CUE_TRACK_POSITIONS_CHILDREN, CUE_TRACK, CUE_CLUSTER_POSITION,
   BLOCK_GROUP, BLOCK, VOID, TIMESTAMP_SCALE, DURATION, CLUSTER_TIMESTAMP, BLOCK_DURATION, DEFAULT_DURATION,
-  EBML_HEADER_CHILDREN, SEGMENT_CHILDREN, INFO_CHILDREN, TRACK_ENTRY_CHILDREN, AUDIO_CHILDREN, CLUSTER_CHILDREN,
+  EBML_HEADER_CHILDREN, SEGMENT_CHILDREN, SEEK_HEAD, seekHead, INFO_CHILDREN, TRACK_ENTRY_CHILDREN, AUDIO_CHILDREN, CLUSTER_CHILDREN,
   BLOCK_GROUP_CHILDREN, vint, readElement, checkChild, elements, codeOf, uintOf, floatOf, opusTrack, trackFlags, blockTrack,
   boxes, u64, isPadding, MP4_CHILDREN, children, only, tilesMedia, inMedia, fullBoxHead, exactBox,
   MVHD, TKHD, MDHD, MEHD, TFDT, SMHD, MFHD, TREX, TKHD_FLAGS, HANDLER_NAME_MAX, trackId, sampleTable, selfContained,
@@ -290,6 +290,7 @@ function webmSeconds(b: Buffer): number | null {
   let tracks: Map<number, ClipTrack> | undefined; // from the one Segment-level Tracks
   let picture = false;
   let info = false;
+  let seek = false; // one SeekHead
   let scale = 1_000_000; // nanoseconds per tick, TimestampScale's default
   let duration = 0; // Info's Duration, in ticks
   let last = 0; // where the latest block ends, in seconds
@@ -316,6 +317,12 @@ function webmSeconds(b: Buffer): number | null {
     if (e.id === TRACKS) {
       if (tracks !== undefined) return null; // one track table
       tracks = clipTracks(b, e, steps);
+    } else if (e.id === SEEK_HEAD) {
+      // the seek index, read whole and never followed: once, first (Chromium and Firefox write it before Info), and
+      // pointing only at what this walk takes (the Cues too, which Chromium indexes when it records with no timeslice)
+      if (seek || info || tracks !== undefined) return null;
+      seek = true;
+      seekHead(b, e, steps, CLIP_SEGMENT_CHILDREN, segment.dataEnd - segment.dataStart);
     } else if (e.id === CUES) {
       // the seek index: one, after the track table it names tracks from; it times nothing, so it is not in the length
       if (cued !== undefined || tracks === undefined) return null;
