@@ -74,6 +74,8 @@ const MODEL_OWNER: Record<string, string> = {
   drawing: 'drawings', drawingRevision: 'drawings', drawingRecipient: 'drawings', drawingAck: 'drawings',
   // #1118 U3 — Hub's delivery receipts (U1a-1's ledger), written by the Hub webhook receiver
   hubWebhookReceipt: 'drawings',
+  // #1118 U4 — the ledger of Hub blobs fetched into storage (U1a-3), written by the Hub blob fetcher
+  hubFetchedBlob: 'drawings',
   dailyLog: 'daily-log', crewRow: 'daily-log', siteMaterial: 'daily-log',
   // Phase 3 Task 5 (§E) — the append-only mismatch resolution register, written only by
   // daily-log.resolveMismatch (one per observation; the observation row is never edited)
@@ -216,6 +218,9 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // #1118 U3 — Hub's webhook receiver records refused and ignored deliveries in the drawings-owned receipt ledger (and
   // audits a refusal through `recordAudit`); it emits no domain event, so it dispatches nothing
   'drawings/hub/hub-receiver.service.ts': { domain: 'drawings', foreign: {}, dispatch: 0 },
+  // #1118 U4 — the Hub blob fetcher writes only the drawings-owned fetched-blob ledger (the bytes go to StorageService);
+  // it emits no domain event, so it dispatches nothing
+  'drawings/hub/hub-blob.service.ts': { domain: 'drawings', foreign: {}, dispatch: 0 },
   // edge 4 (material mismatch block) → activity.participant.blockForMaterialMismatch;
   // Phase 3 Task 5 adds resolveMismatch (the inverse edge → clearMaterialMismatchBlock)
   'daily-log/daily-log.service.ts': { domain: 'daily-log', foreign: {}, dispatch: 5 },
