@@ -898,4 +898,40 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     const planted = await t.prisma.decisionApprovalRevision.findUniqueOrThrow({ where: { id: legacyId } });
     expect(planted.sourceCommandId, 'history is left incomplete, never invented').toBeNull();
   });
+
+  // ── #1074 — the settle helper, forced ───────────────────────────────────────────────────────
+
+  /**
+   * #1074 / #1144 — `settle` (#1148) keeps a refusal's own readiness key from refusing the suite's
+   * NEXT write. The real window, a refused statement's backend still holding the key after its
+   * error reached the client, lasts only until PostgreSQL aborts that transaction and cannot be held
+   * open from outside, so a third session holding the same key stands in for it. This pins the
+   * helper: it waits for that holder's release (a lock wait PostgreSQL reports, never a clock), and
+   * once it returns the seals' try-lock finds the key free.
+   */
+  it('#1074: settle waits for a still-held readiness key, and the next write then finds it free', async () => {
+    const tryReadiness = async (): Promise<boolean> =>
+      (await t.prisma.$queryRawUnsafe<Array<{ ok: boolean }>>(`SELECT phase6_try_readiness($1) AS ok`, projectId))[0]!.ok;
+    const holder = holdingTx(other, async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, readinessLockKey(projectId));
+    });
+    try {
+      await holder.ready;
+      // the refusal #1074 saw: while another session holds the key, the seals' try-lock fails
+      expect(await tryReadiness(), 'a held key refuses the try-lock').toBe(false);
+
+      let settled = false;
+      const settling = settle().then(() => { settled = true; });
+      await waitUntilBlocked('unnest($1::text[]) AS k');
+      expect(settled, 'settle returned while the key was still held').toBe(false);
+
+      holder.release();
+      expect(await holder.done, 'the holder commits').toBeUndefined();
+      await settling;
+      expect(await tryReadiness(), 'after settle the key is free').toBe(true);
+    } finally {
+      holder.release();
+      await holder.done;
+    }
+  });
 });
