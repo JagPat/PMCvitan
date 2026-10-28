@@ -83,7 +83,7 @@ export function ApproveModal() {
           <Button variant="outline" style={{ flex: 1 }} onClick={closeModal}>
             {L.cancel[lang]}
           </Button>
-          <Button variant="success" style={{ flex: 1.4 }} onClick={confirmApprove} data-testid="approve-lock">
+          <Button variant="success" style={{ flex: 1.4 }} onClick={confirmApprove} data-testid="approve-lock" data-guide="approve-confirm" data-guide-key={modal.decId ?? undefined}>
             {countersignRequired ? L.approveCountersign[lang] : L.approveLock[lang]}
           </Button>
         </div>
