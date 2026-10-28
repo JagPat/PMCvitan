@@ -11,9 +11,9 @@
  * end-to-end in CI (the sandbox has no Postgres). Validate it once the API is
  * deployed and `VITE_API_URL` points at it.
  */
-import { failVisitPhoto, fileVisitPhoto, getVisitPhoto, withinWait, type CommittedPhoto } from './visitPhotoStore';
+import { deleteVisitPhoto, failVisitPhoto, fileVisitPhoto, getVisitPhoto, withinWait, type CommittedPhoto } from './visitPhotoStore';
 import { deleteEvidence, getEvidence, markEvidenceFailed } from './evidenceStore';
-import { MEDIA_NOT_FOUND_MESSAGE, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
+import { MEDIA_NOT_FOUND_MESSAGE, NOT_A_VISIT_FILE_MESSAGE, SITE_PHOTO_DELETED_MESSAGE, VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
 import type {
   Activity,
   AppNotification,
@@ -1522,6 +1522,14 @@ export class ApiGateway {
   retireSiteVisitAttendee(visitId: string, attendeeId: string, idempotencyKey: string): Promise<SiteVisit> {
     return this.visitAct(`/${visitId}/attendees/${attendeeId}/retire`, undefined, idempotencyKey);
   }
+  /** #1179 — take a file off its visit and delete it, online only: the person who added it within the hour while the
+   *  visit is open, or the PMC with a reason. The visit read then carries the removal line. */
+  removeSiteVisitFile(mediaId: string, reason?: string): Promise<{ ok: true }> {
+    return this.req<{ ok: true }>(`/projects/${this.projectId}/media/${mediaId}/visit-removal`, {
+      method: 'POST',
+      body: JSON.stringify(reason === undefined ? {} : { reason }),
+    });
+  }
   private visitAct(path: string, body: unknown, idempotencyKey: string): Promise<SiteVisit> {
     return this.req<SiteVisit>(`/projects/${this.projectId}/site-visits${path}`, {
       method: 'POST',
@@ -1555,6 +1563,22 @@ export interface SiteVisit {
   attendees: { id: string; kind: 'member' | 'guest'; userId: string | null; role: string | null; name: string; addedAt: string; retiredAt: string | null }[];
   /** The files added on the visit (SV2), oldest first; absent from an API older than SV2. */
   files?: SiteVisitFile[];
+  /** #1179 — the files taken off the visit, oldest removal first; absent from an API before removals. */
+  removals?: SiteVisitRemoval[];
+}
+/** #1179 — a file taken off a visit (`SiteVisitRemovalDto`): what it was, who added it, who removed it, when and why. */
+export interface SiteVisitRemoval {
+  mediaId: string;
+  kind: 'photo' | 'voice' | 'video' | 'file';
+  addedByName: string;
+  addedByRole: string;
+  addedAt: string;
+  removedById: string;
+  removedByName: string;
+  removedByRole: string;
+  /** null when the person who added it removed it within the hour */
+  reason: string | null;
+  removedAt: string;
 }
 export type SiteVisitRating = 'fine' | 'concern' | 'action_needed';
 /** A file on a visit (`SiteVisitFileDto`): `url` is a short-lived signed path, resolved against the API base. */
@@ -1579,6 +1603,10 @@ export interface SiteVisitFile {
   addedByName: string;
   addedByRole: string;
   addedAt: string;
+  /** #1179 — whether the viewer may remove it now, as the server read its rule: a reason is needed, and until when the
+   *  offer lasts (the end of the viewer's hour on their own file; null for the PMC's offer on anyone's). Null when the
+   *  viewer may not; absent from an API before removals and on a file the phone still holds. */
+  removable?: { reasonRequired: boolean; until: string | null } | null;
 }
 /** A photo queued for a visit: the upload's own fields, under its `clientKey` (`id`), so a replay is the same file. The
  *  bytes are not here: they wait in `visitPhotoStore` beside this act (localStorage cannot hold photos). */
@@ -1976,6 +2004,14 @@ export function isMediaNotFound(err: unknown): boolean {
   return (err as { status?: number } | null)?.status === 404 && refusalMessage(err) === MEDIA_NOT_FOUND_MESSAGE;
 }
 
+/** #1179 — the server's own "not found" for a removal of a visit file it no longer holds, by its exact text: an earlier
+ *  removal whose answer was lost, or someone else's, took it. A route's or a proxy's 404 is not taken for a removal. */
+export function isVisitFileGone(err: unknown): boolean {
+  if ((err as { status?: number } | null)?.status !== 404) return false;
+  const said = refusalMessage(err);
+  return said === VISIT_FILE_GONE_MESSAGE || said === NOT_A_VISIT_FILE_MESSAGE || said === MEDIA_NOT_FOUND_MESSAGE;
+}
+
 export function isTerminalOutboxError(err: unknown): boolean {
   const status = (err as { status?: number } | null)?.status;
   if (typeof status !== 'number') return false; // network / unknown → transient, retry later
@@ -2086,6 +2122,14 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
             siteVisit: { visitId: op.visitId, ...(note ? { note } : {}), ...(rating ? { rating } : {}) },
           });
         } catch (err) {
+          // #1179: an earlier send of this key landed (its answer lost) and the file was then taken off the visit, by the
+          // person who added it or the PMC. It is settled, never refused: its bytes go, and nothing says it was not sent.
+          // A row the phone could not remove keeps its act (no status: transient), to be answered and removed again
+          if (isDeletedPhoto(err)) {
+            await withinWait(() => deleteVisitPhoto(op.scope, gw.project, id)).catch(() => { throw new Error('the removed file kept on this phone could not be let go'); });
+            tellSiteVisits({ kind: 'retry', project: gw.project, generation });
+            return null;
+          }
           // refused for good: the flush drops the act, and the row stays with the server's words, so the screen can
           // say which photo was not sent and why whenever it is next opened. The act goes only once the row says so:
           // a row the phone could not mark keeps its act, to be sent and marked again (Codex 4320122168)
