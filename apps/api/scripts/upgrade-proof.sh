@@ -5680,7 +5680,10 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20280111000000_site_visits_sv1a_catalog
 20280112000000_site_visits_sv1a_record
 20280114000000_site_visits_sv2_visit_media
-20280127000000_hub_catalog_generation"
+20280126000000_voice_transcript
+20280127000000_hub_catalog_generation
+20280128000000_voice_transcript_correction
+20280129000000_voice_transcript_stamp"
 # 4d-ii-a / A7d — THE RUNNER'S RULE, MIRRORED (scripts/migrate.sh, the P3005 baseline path): on a database
 # that CARRIES A7d (its two claimant seals and the re-issued actor seal standing beside 4d-i's own seal
 # functions) 4d-i's two halves and 4d-i-b U3 are resolved as applied rather than replayed, because each
