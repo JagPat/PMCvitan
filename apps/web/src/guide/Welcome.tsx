@@ -3,7 +3,7 @@ import { useStore } from '@/store/store';
 import { langPreferenceKey } from '@/lib/langPreference';
 import { projectDataUsable } from '@/store/projectScope';
 import { useNavItems } from '@/layout/useNavItems';
-import { guidesForRole, type Guide } from './guides';
+import { guidesForRole, guideOnScreen, type Guide } from './guides';
 import { guideStartable } from './guideTarget';
 import { markWelcomeSeen, readGuidesDone, readWelcomeSeen } from './guideDone';
 import { useGuideState } from './guideState';
@@ -26,6 +26,7 @@ export function Welcome() {
   const userId = useStore((s) => s.sessionUserId);
   const ready = useStore((s) => projectDataUsable(s.projectLoadState));
   const setScreen = useStore((s) => s.setScreen);
+  const screen = useStore((s) => s.screen);
   const tipsEpoch = useGuideState((s) => s.tipsEpoch);
   const reachable = new Set(useNavItems().map((n) => n.key));
   const key = langPreferenceKey(userId, role);
@@ -54,14 +55,16 @@ export function Welcome() {
     closedUnder.current = key;
     setRead((n) => n + 1);
   };
-  const guides = guidesForRole(role).filter((g) => reachable.has(g.screen));
+  // as Help: a guide also on the screen open now counts as reachable there (a client's register on decision-log)
+  const guides = guidesForRole(role).filter((g) => guideOnScreen(g, screen) || reachable.has(g.screen));
   const first = guides[0] ?? null;
   const showMeAround = () => {
-    const [pick, ...fallbacks] = tourOrder(guides, readGuidesDone(key), useStore.getState().screen);
+    const now = useStore.getState().screen;
+    const [pick, ...fallbacks] = tourOrder(guides, readGuidesDone(key), now);
     if (!pick) return;
     close();
     useGuideState.getState().request(pick, fallbacks);
-    setScreen(pick.screen);
+    setScreen(guideOnScreen(pick, now) ? now : pick.screen);
   };
 
   return (
@@ -97,7 +100,7 @@ export function Welcome() {
  * to show it on yet.
  */
 function tourOrder(guides: readonly Guide[], done: ReadonlySet<string>, screen: string): Guide[] {
-  const canStart = (g: Guide) => (g.screen === screen ? guideStartable(g) : (g.available?.() ?? true));
+  const canStart = (g: Guide) => (guideOnScreen(g, screen) ? guideStartable(g) : (g.available?.() ?? true));
   const ordered = [...guides.filter((g) => !done.has(g.id)), ...guides.filter((g) => done.has(g.id))];
   const tries = ordered.filter(canStart);
   return tries.length > 0 ? tries : ordered.slice(0, 1);

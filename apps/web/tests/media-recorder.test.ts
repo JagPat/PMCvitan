@@ -65,8 +65,18 @@ describe('Stage 1 voice notes: the shared recorder', () => {
     expect(pickRecordType('audio')).toBe('audio/mp4');
     supported = new Set(['audio/wav']);
     expect(pickRecordType('audio')).toBeNull();
-    // video is not offered until the video web unit lists its types
-    supported = new Set(['video/webm']);
+    // #995 V2b: a video clip is WebM (VP8, then VP9) where the recorder writes it, else MP4 (H.264 with AAC)
+    supported = new Set(['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/mp4']);
+    expect(pickRecordType('video')).toBe('video/webm;codecs=vp8,opus');
+    supported = new Set(['video/webm;codecs=vp9,opus', 'video/mp4']);
+    expect(pickRecordType('video')).toBe('video/webm;codecs=vp9,opus');
+    supported = new Set(['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4']);
+    expect(pickRecordType('video')).toBe('video/mp4;codecs=avc1.42E01E,mp4a.40.2');
+    // never H.264 in WebM, which Chromium writes as Matroska (refused), nor a type the server does not read
+    supported = new Set(['video/webm;codecs=h264', 'video/x-matroska;codecs=avc1', 'video/quicktime']);
+    expect(pickRecordType('video')).toBeNull();
+    // and a voice type is never a video's
+    supported = new Set(['audio/webm']);
     expect(pickRecordType('video')).toBeNull();
     supported = new Set(['audio/webm']);
     Object.defineProperty(navigator, 'mediaDevices', { value: undefined, configurable: true });
@@ -252,7 +262,72 @@ describe('Stage 1 voice notes: the shared recorder', () => {
     expect(acceptedType('audio', 'audio/ogg;codecs=vorbis')).toBe(false);
     expect(acceptedType('audio', 'audio/ogg;codecs=opus,vorbis')).toBe(false);
     expect(acceptedType('audio', 'audio/wav')).toBe(false);
-    expect(acceptedType('video', 'video/webm')).toBe(false);
+    // #995 V1's video allow-list: VP8 or VP9 with Opus in WebM; H.264 (avc1, any profile) or VP9 with AAC-LC or Opus in MP4
+    expect(acceptedType('video', 'video/webm')).toBe(true);
+    expect(acceptedType('video', 'video/webm;codecs=vp8,opus')).toBe(true);
+    expect(acceptedType('video', 'video/webm;codecs=vp9')).toBe(true);
+    expect(acceptedType('video', 'video/webm;codecs=vp09.00.10.08,opus')).toBe(true);
+    expect(acceptedType('video', 'video/webm;codecs=h264')).toBe(false);
+    expect(acceptedType('video', 'video/webm;codecs=avc1.42E01E,opus')).toBe(false);
+    expect(acceptedType('video', 'video/webm;codecs=av1,opus')).toBe(false);
+    expect(acceptedType('video', 'video/webm;codecs=vp8,vorbis')).toBe(false);
+    expect(acceptedType('video', 'video/mp4')).toBe(true);
+    expect(acceptedType('video', 'video/mp4;codecs=avc1.64001F,mp4a.40.2')).toBe(true);
+    expect(acceptedType('video', 'video/mp4;codecs=avc1,opus')).toBe(true);
+    expect(acceptedType('video', 'video/mp4;codecs=vp09.00.10.08')).toBe(true);
+    // as Chromium 153 names what it writes for a plain `video/mp4`
+    expect(acceptedType('video', 'video/mp4;codecs=vp9,opus')).toBe(true);
+    expect(acceptedType('video', 'video/mp4;codecs=avc3.64001F')).toBe(false);
+    expect(acceptedType('video', 'video/mp4;codecs=avc1.')).toBe(false);
+    expect(acceptedType('video', 'video/mp4;codecs=avc12')).toBe(false);
+    expect(acceptedType('video', 'video/mp4;codecs=hvc1.1.6.L93.B0')).toBe(false);
+    expect(acceptedType('video', 'video/mp4;codecs=av01.0.04M.08')).toBe(false);
+    expect(acceptedType('video', 'video/mp4;codecs=avc1.64001F,mp4a.40.5')).toBe(false);
+    expect(acceptedType('video', 'video/x-matroska;codecs=avc1')).toBe(false);
+    expect(acceptedType('video', 'audio/webm')).toBe(false);
+    expect(acceptedType('audio', 'video/webm')).toBe(false);
+  });
+
+  it('records a video clip picture only when the microphone is refused, and says no when the camera is', async () => {
+    const both = { audio: true, video: { facingMode: 'environment' } };
+    const picture = { video: { facingMode: 'environment' } };
+    const no = Object.assign(new Error('no'), { name: 'NotAllowedError' });
+    getUserMedia.mockImplementation(async (media?: MediaStreamConstraints) => {
+      if (media?.audio) throw no;
+      return { getTracks: () => tracks };
+    });
+    const r = await startRecording('video', 'video/webm;codecs=vp8,opus', 59_500, {
+      bits: { videoBitsPerSecond: 1_000_000, audioBitsPerSecond: 64_000 }, media: both, fallback: picture,
+    });
+    expect(getUserMedia.mock.calls).toEqual([[both], [picture]]);
+    expect(FakeRecorder.last!.options).toMatchObject({ mimeType: 'video/webm;codecs=vp8,opus', videoBitsPerSecond: 1_000_000, audioBitsPerSecond: 64_000 });
+    // what is recorded, live, for the screen to show
+    expect(r.stream.getTracks()).toBe(tracks);
+    vi.advanceTimersByTime(2_000);
+    expect(await r.stop()).toMatchObject({ mime: 'video/webm', ms: 2_000 });
+    // a camera refused too: the fallback's answer is the one that counts
+    getUserMedia.mockReset();
+    getUserMedia.mockImplementation(async () => { throw no; });
+    await expect(startRecording('video', 'video/webm', 59_500, { media: both, fallback: picture })).rejects.toMatchObject({ reason: 'denied' });
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    // a phone with no camera at all
+    getUserMedia.mockReset();
+    getUserMedia.mockImplementation(async (media?: MediaStreamConstraints) => {
+      throw Object.assign(new Error('none'), { name: media?.audio ? 'NotAllowedError' : 'NotFoundError' });
+    });
+    await expect(startRecording('video', 'video/webm', 59_500, { media: both, fallback: picture })).rejects.toMatchObject({ reason: 'unavailable' });
+    // and with no fallback asked for, the first answer stands (voice)
+    getUserMedia.mockReset();
+    getUserMedia.mockImplementation(async () => { throw no; });
+    await expect(startRecording('audio', 'audio/webm', 1_000)).rejects.toMatchObject({ reason: 'denied' });
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops a video recorder that writes H.264 in Matroska before anything is kept', async () => {
+    writes = 'video/x-matroska;codecs=avc1';
+    await expect(startRecording('video', 'video/webm;codecs=vp8,opus', 59_500)).rejects.toMatchObject({ reason: 'format' });
+    expect(FakeRecorder.last!.state).toBe('inactive');
+    expect(tracks[0].stop).toHaveBeenCalled();
   });
 
   it('passes a kind’s bit rates and devices to the recorder', async () => {

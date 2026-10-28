@@ -210,6 +210,10 @@ export interface SnapshotLease {
  *  `droppedKeys` (terminally rejected — a 4xx, discarded), `pendingKeys` (still queued: transient
  *  stop / scope-moved remainder / offline). `ran` is false when this call coalesced behind an
  *  in-flight flush (deferred to that flush's rerun) or there was no gateway / nothing to flush. */
+/** #482 — how an act went, as the in-app guide hears it: taken by the server, refused, or (offline, or left to send again)
+ *  kept on this phone to send, or not kept */
+type ActReport = 'sent' | 'failed' | 'queued' | 'not-kept';
+
 export interface OutboxFlushResult {
   ran: boolean;
   scopeMoved: boolean;
@@ -1635,6 +1639,12 @@ export const useStore = create<Store>()(
      *  queue it is in, from its flush call until a flush settles that act: the flush the server accepts it in says the
      *  line, one that refuses it for good drops it, and one that leaves it queued (held, offline, a failed send) keeps it */
     let okWaiting: { okMsg: string | (() => string); key: string; queue: string }[] = [];
+    /** #482 — a write-ahead act the in-app guide waits on, by its key: the flush that settles it tells it (`runWriteAhead`) */
+    const actWatches = new Map<string, (how: 'sent' | 'failed' | 'pending') => void>();
+    /** #482 — the keys of the acts the flush now running has taken: that flush tells their watches, also after the signal goes */
+    let flushingKeys: ReadonlySet<string> = new Set();
+    /** #482 — online acts whose write-ahead has not run yet: the flush called once it has runs and tells them */
+    const writingKeys = new Set<string>();
     const scopeCoordinators = new Map<string, ScopeCoordinator>();
     const scopeKey = (scope: ProjectScope): string => `${scope.projectId}::${scope.generation}`;
     /** Drop coordinators for scopes we've LEFT that have no pull in flight — a scope
@@ -2831,7 +2841,7 @@ export const useStore = create<Store>()(
       offlineMsg?: string,
       // #482 — how it went, for the in-app guide: `sent` (the server took it), `failed`, or, offline, `queued` with
       // whether this phone kept it. Told only while the scope it was made in is still current
-      report?: (result: 'sent' | 'failed' | 'queued' | 'not-kept') => void,
+      report?: (result: ActReport) => void,
     ): boolean => {
       if (!gateway) return false;
       if (get().online) {
@@ -2887,7 +2897,10 @@ export const useStore = create<Store>()(
     // okMsg may be a function: it is then read when the result is shown, so a translated success line
     // follows a language the viewer switched to while the command was on its way (#835)
     // `inRow`: acts a kept photo's row (IndexedDB) already holds, so on this phone before any key's write
-    const runWriteAhead = (op: OutboxOp, label: string, okMsg: string | (() => string), offlineMsg?: string, inRow: OutboxOp[] = []): boolean => {
+    // #482 `report`: how the act went, for the in-app guide, told once and only in the scope it was made in: online, by
+    // the flush that settles it (`sent`, `failed` when refused for good, or, left waiting to send again, `queued` when this
+    // phone keeps it and `not-kept` when it does not); offline, once its write has run (`queued` or `not-kept`)
+    const runWriteAhead = (op: OutboxOp, label: string, okMsg: string | (() => string), offlineMsg?: string, inRow: OutboxOp[] = [], report?: (result: ActReport) => void): boolean => {
       if (!gateway) return false;
       set((s) => { s.outbox.push(op); if (!s.online) s.syncQueue.push(label); });
       storedHere(inRow);
@@ -2896,12 +2909,35 @@ export const useStore = create<Store>()(
       // on this phone once its own key's write holds it, or a photo's row does, whatever the other key's write does
       const stored = () => storedNow([op]);
       const stillThere = madeHere();
+      const key = 'idempotencyKey' in op ? op.idempotencyKey : undefined;
+      // watched online and offline alike: the signal can come back before an offline act's write runs, and the flush
+      // that then sends it is the one that knows how it went (Codex 4398620511)
+      const watch = report && key ? (how: 'sent' | 'failed' | 'pending') => {
+        actWatches.delete(key);
+        // left to send again: kept on this phone or not, once its write has run (the signal can go before it does)
+        if (how === 'pending') void written.then(() => { if (stillThere()) report(stored() ? 'queued' : 'not-kept'); });
+        else if (stillThere()) report(how);
+      } : undefined;
+      if (watch && key) { writingKeys.add(key); actWatches.set(key, watch); }
       if (get().online) {
         // sent once its write has run; one that write could not store is said not saved, and sent from memory with its
         // ask's made record on this phone (#1113 r1 re-check: never held from the server)
-        void written.then(() => { if (!stillThere()) return; if (!stored()) get().flash(QW.notSavedYet[get().lang]); void get().flushOutbox({ okMsg, act: op }); });
+        void written.then(() => {
+          // the flush below takes it at once (or, coalesced, the running flush's end tells it if offline)
+          if (key) writingKeys.delete(key);
+          if (!stillThere()) { if (key) actWatches.delete(key); return; }
+          if (!stored()) get().flash(QW.notSavedYet[get().lang]);
+          void get().flushOutbox({ okMsg, act: op });
+        });
       } else {
-        void written.then(() => { if (stillThere()) get().flash(stored() ? (offlineMsg ?? label + ' — saved offline, will sync when you reconnect.') : QW.notSavedYet[get().lang]); });
+        void written.then(() => {
+          if (key) writingKeys.delete(key);
+          if (!stillThere()) { if (key) actWatches.delete(key); return; }
+          get().flash(stored() ? (offlineMsg ?? label + ' — saved offline, will sync when you reconnect.') : QW.notSavedYet[get().lang]);
+          // still offline and taken by no flush: told now; back online, the flush the reconnect started tells it
+          if (!key) report?.(stored() ? 'queued' : 'not-kept');
+          else if (actWatches.get(key) === watch && !get().online && !flushingKeys.has(key)) watch?.('pending');
+        });
       }
       return true;
     };
@@ -3488,7 +3524,7 @@ export const useStore = create<Store>()(
       const approveKey = newIdempotencyKey();
       // #482 — the guide's confirm step follows this decision under the run it was confirmed in
       const guideRun = guideRunToken();
-      const reportApprove = (result: 'sent' | 'failed' | 'queued' | 'not-kept') =>
+      const reportApprove = (result: ActReport) =>
         emitGuideOutcome(result === 'sent' || result === 'queued' ? 'decision-approved' : result === 'failed' ? 'decision-approve-failed' : 'decision-approve-not-kept', decId, guideRun);
       if (runRemoteOrQueue({ t: 'approve', decisionId: decId, optionIndex: optIdx, idempotencyKey: approveKey }, 'Approve ' + decId, () => gateway!.approveDecision(decId, optIdx, approveKey), approveOutcomeCopy(decId), queuedLine(DTX.approveLabel, decId), reportApprove)) return;
       const src = get().decisions.find((x) => x.id === decId);
@@ -3551,12 +3587,18 @@ export const useStore = create<Store>()(
       const text = response.trim();
       if (!text) return;
       const key = newIdempotencyKey();
+      // #482 — the guide's Send step follows this one consultation (`<decision>:<consultation>`) under the run it was sent in
+      const guideRun = guideRunToken();
+      const reportAdvice = (result: ActReport) =>
+        emitGuideOutcome(result === 'sent' || result === 'queued' ? 'advice-sent' : result === 'failed' ? 'advice-send-failed' : 'advice-not-kept', `${decId}:${consultationId}`, guideRun);
       if (
         runWriteAhead(
           { t: 'consultationRespond', decisionId: decId, consultationId, response: text, ...(recommendedOptionIndex !== undefined ? { recommendedOptionIndex } : {}), idempotencyKey: key },
           'Advise ' + decId,
           () => DTX.advised[get().lang],
           queuedLine(DTX.adviseLabel, decId),
+          [],
+          reportAdvice,
         )
       ) {
         set((s) => { s.modal = { type: null }; });
@@ -3564,6 +3606,8 @@ export const useStore = create<Store>()(
       }
       set((s) => { s.modal = { type: null }; });
       get().flash(DTX.advised[get().lang]);
+      // demo: nothing is recorded (the server owns the thread), so the guide does not count it answered
+      reportAdvice('not-kept');
     },
     // ── Phase 6 task 4d-ii-b / B5a — the four countersign-chain commands. Each is one write-ahead act
     //    under ONE fresh key (`dispatchChainAct`): coalesced while an equivalent act on the same decision
@@ -6336,6 +6380,10 @@ export const useStore = create<Store>()(
       const goingOnline = !get().online;
       set((s) => { s.online = goingOnline; });
       if (!goingOnline) {
+        // #482 — a write-ahead act the guide waits on now waits for the signal: kept on this phone or not, as offline. One
+        // the running flush has taken is told by that flush: its request is out, and the server may still refuse it
+        // the same for one still being written: the flush called once it is written sends it and tells it
+        for (const [k, watch] of [...actWatches]) if (!flushingKeys.has(k) && !writingKeys.has(k)) watch('pending');
         get().flash(DLT.signalLost[get().lang]);
         return;
       }
@@ -6375,6 +6423,8 @@ export const useStore = create<Store>()(
       // so a command persisted mid-flush is still sent. Idempotency keys make an overlap harmless.
       if (outboxFlushing) { outboxFlushQueued = true; return notRun(); }
       outboxFlushing = true;
+      // #482 — what this flush may send: the queue as it starts (narrowed to what it takes once it takes it)
+      flushingKeys = new Set(get().outbox.flatMap((o) => ('idempotencyKey' in o && o.idempotencyKey ? [o.idempotencyKey] : [])));
       try {
       // SV2: every kept visit photo's act is put back first, from the phone's own record of it, so a close can never
       // overtake its photo. When that record could not be read (a failed or too slow read), the rest of the queue
@@ -6440,6 +6490,7 @@ export const useStore = create<Store>()(
       const lateAt = waited ? queued.findIndex((o) => !waited.has(o)) : -1;
       if (lateAt >= 0) outboxFlushQueued = true;
       const ops = lateAt >= 0 ? queued.slice(0, lateAt) : queued.slice();
+      flushingKeys = new Set(ops.flatMap((o) => ('idempotencyKey' in o && o.idempotencyKey ? [o.idempotencyKey] : [])));
       // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
       // take its own acts out of `ops` as it goes)
       const taken = ops.length;
@@ -6629,7 +6680,11 @@ export const useStore = create<Store>()(
         const visitAct = ops[i];
         if (photoHeld && isSiteVisitOp(visitAct) && visitAct.t !== 'siteVisitAddFile') withheldVisits.add(siteVisitOf(visitAct));
         if (photoHeld || withheldHere) { heldVisits.push(ops[i]); continue; }
-        if (settleDone(ops[i])) continue;
+        if (settleDone(ops[i])) {
+          // #482 — another tab sent it: the server has it, so a guide waiting on it is told so
+          const k = keyOf(ops[i]); if (k) actWatches.get(k)?.('sent');
+          continue;
+        }
         const mat = isMaterialsOp(ops[i]);
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);
@@ -6797,6 +6852,8 @@ export const useStore = create<Store>()(
         await keepUnsentLocked(queueKeys, storage, flushKey, remaining.filter((o) => !isSiteVisitOp(o)), flushed.filter((o) => !isSiteVisitOp(o)), (l) => l, (o) => !isSiteVisitOp(o));
         // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
         await keepUnsentLocked(queueKeys, storage, siteVisitKeyOf(flushKey), remaining.filter(isStoredVisitOp), flushed.filter(isStoredVisitOp), (l) => remapVisits(l).filter(isStoredVisitOp), isStoredVisitOp);
+        // a guide waiting on one of these acts belonged to the scope left behind
+        for (const o of [...ops, ...remaining]) { const k = keyOf(o); if (k) actWatches.delete(k); }
         return { ran: true, scopeMoved: true, succeededKeys, droppedKeys, pendingKeys };
       }
 
@@ -6838,6 +6895,9 @@ export const useStore = create<Store>()(
       // queue waits for a later flush (#1134 r1 4376641813); one whose act left it, sent or refused, is done
       const succeeded = new Set(succeededKeys);
       const stillQueued = new Set(get().outbox.flatMap((o) => keyOf(o) ?? []));
+      for (const k of succeededKeys) actWatches.get(k)?.('sent');
+      for (const k of droppedKeys) actWatches.get(k)?.('failed');
+      for (const k of pendingKeys) actWatches.get(k)?.('pending');
       const said = okWaiting.filter((w) => succeeded.has(w.key));
       okWaiting = okWaiting.filter((w) => w.queue !== flushKey || stillQueued.has(w.key));
       // #1134 r2 (4377928188, root-cause audit in notes/site-visits/web-02-U3/u3b/r2/fix.md): a flush sends 0..N commands'
@@ -6973,6 +7033,10 @@ export const useStore = create<Store>()(
       return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys, word: handBack };
       } finally {
         outboxFlushing = false;
+        flushingKeys = new Set();
+        // #482 — offline, no rerun follows: an act the guide waits on that this flush did not settle (taken after it began,
+        // or left out of it) waits for the signal, as going offline says
+        if (!get().online) for (const [k, watch] of [...actWatches]) if (!writingKeys.has(k)) watch('pending');
         // a visit photo reconciliation this flush overtook reads again now, against the settled queue (SV2)
         if (visitPhotoRecheck) {
           visitPhotoRecheck = false;
