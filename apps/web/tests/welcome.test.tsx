@@ -157,6 +157,14 @@ describe('the first-time welcome', () => {
     press(byTestId('welcome-tour')!);
     expect(onChecklists.useGuideState.getState().requested?.id).toBe('add-site-photo');
     expect(onChecklists.useStore.getState().screen).toBe('dashboard');
+    cleanup();
+    localStorage.clear();
+
+    // a checklist on screen whose controls are frozen (pressable by nobody) has nothing to show the guide on either
+    const frozen = await setup('engineer', 'engineer-check');
+    render(<><frozen.Welcome /><button type="button" data-guide="mark-fail" disabled>Fail</button></>);
+    press(byTestId('welcome-tour')!);
+    expect(frozen.useGuideState.getState().requested?.id).toBe('add-site-photo');
   });
 
   it('closes even where the browser refuses to store it', async () => {

@@ -4,7 +4,7 @@ import { langPreferenceKey } from '@/lib/langPreference';
 import { projectDataUsable } from '@/store/projectScope';
 import { useNavItems } from '@/layout/useNavItems';
 import { guidesForRole, type Guide } from './guides';
-import { findGuideTarget } from './guideTarget';
+import { guideStartable } from './guideTarget';
 import { markWelcomeSeen, readGuidesDone, readWelcomeSeen } from './guideDone';
 import { useGuideState } from './guideState';
 import { WELCOME_ROLE, WELCOME_WORDS } from './words';
@@ -91,12 +91,12 @@ export function Welcome() {
 
 /**
  * The guide "Show me around" starts: the first one not done yet that can start, i.e. on this screen with its first
- * control there now, or on another screen with something to show it on; failing that the first that can start at
+ * control there and pressable now, or on another screen with something to show it on; failing that the first that can start at
  * all, done or not; failing that the first not done (Help's note then says there is nothing to show it on yet).
  */
 function pickGuide(guides: readonly Guide[], done: ReadonlySet<string>, screen: string): Guide | null {
   const canStart = (g: Guide) =>
-    g.screen === screen ? findGuideTarget(g.steps[0]!.target) !== null : (g.available?.() ?? true);
+    g.screen === screen ? guideStartable(g) : (g.available?.() ?? true);
   const notDone = guides.filter((g) => !done.has(g.id));
   return notDone.find(canStart) ?? guides.find(canStart) ?? notDone[0] ?? guides[0] ?? null;
 }
