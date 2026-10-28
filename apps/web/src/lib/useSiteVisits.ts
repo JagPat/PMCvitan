@@ -814,9 +814,12 @@ export function useSiteVisits() {
      *  reload, a sign-in and leaving the screen, and one taken on a visit started without signal goes after that start.
      *  A phone that cannot keep it is told so and nothing is sent. */
     addPhoto: async (visitId: string, file: File, extra: { note?: string; rating?: SiteVisitRating; nodeId?: string; placeName?: string | null }): Promise<boolean> => {
-      // #482: the guide run it was picked under, taken before the file is read (a run started meanwhile is not its)
-      const guideRun = guideRunToken();
       const state = useStore.getState();
+      // #482: the guide run it was picked under, taken before the file is read (a run started meanwhile is not its). Only
+      // a photo on the viewer's own open visit is the guide's task: one on an ended visit, or one they are present on,
+      // is not told to it (Codex 4400234136)
+      const target = shownRef.current.find((x) => x.id === visitId);
+      const guideRun = target?.visitorId === state.sessionUserId && target.status === 'open' ? guideRunToken() : null;
       if (!state.serverGateway()) { setError(SV.needsServer[state.lang]); return false; }
       const scope = projectScopeOf(state);
       const say = (text: (typeof SV)[keyof typeof SV]) => { if (live(scope)) setError(text[useStore.getState().lang]); };
@@ -855,10 +858,10 @@ export function useSiteVisits() {
             },
             by: { name: s.userName ?? '', role: s.role }, placeName: extra.placeName ?? null, queuedAt: now(),
           };
-          recordGuidedPhotoPick(guideRun, op.file.id);
+          if (guideRun !== null) recordGuidedPhotoPick(guideRun, op.file.id);
           return await keepAndQueue(scope, op, m[2], say, undefined, () => { uncertain = true; });
         })();
-        if (!ok && !uncertain) emitGuideOutcome('visit-photo-add-failed', null, guideRun);
+        if (!ok && !uncertain && guideRun !== null) emitGuideOutcome('visit-photo-add-failed', null, guideRun);
         return ok;
       } finally {
         if (live(scope)) setBusy(false);

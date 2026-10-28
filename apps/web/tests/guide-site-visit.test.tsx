@@ -230,6 +230,19 @@ describe('the site visit guide (#482 step 3c)', () => {
     expect(useGuideState.getState().run).not.toBeNull();
   });
 
+  it('a photo on the viewer\'s own ended visit does not finish it (Codex 4400234136)', async () => {
+    const ended = visit({ id: 'v-0', status: 'ended', startedAt: '2026-10-13T04:30:00.000Z', endedAt: '2026-10-13T06:30:00.000Z', endTimeAdjusted: false });
+    const gw = server([visit(), ended]);
+    await mount(gw);
+    act(() => { useGuideState.getState().start(GUIDE); useGuideState.getState().setStep(1); });
+    await tipAt('1');
+    await pick('v-0');
+    expect(gw.uploadMedia).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('sv-visit-v-0').querySelector('[data-testid^="sv-file-"]')).not.toBeNull();
+    expect(done()).not.toContain('record-site-visit');
+    expect(useGuideState.getState().run?.step).toBe(1);
+  });
+
   it('with a visit already open (a run left before its photo went), it goes straight to Add photo on it (Codex 4399847415)', async () => {
     await mount(server([visit()]));
     expect(GUIDE.available!()).toBe(true);
