@@ -8,9 +8,6 @@
   "src/commercial/commercial.contract.test.ts": {
     "TS2741: Property 'lifecycleVersion' is missing in type '{ id: string; vendorId: string; vendorBillNumber: string; documentDate: string; status: \"certified\"; statusChangedAt: string; statusReason: null; disputeReason: null; createdAt: string; createdById: string; versions: VendorBillVersionDto[]; }' but required in type 'VendorBillDto'.": 1
   },
-  "src/common/route-policy.test.ts": {
-    "TS2352: Conversion of type 'AuthController | OrgsController | MembersController | ActivitiesController | PhasesController | ... 24 more ... | NodesController' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.": 1
-  },
   "src/daily-log/daily-log.service.test.ts": {
     "TS2554: Expected 8 arguments, but got 6.": 1
   },

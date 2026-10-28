@@ -1866,3 +1866,101 @@ describe('Safari\'s WebM: an iPhone voice note (refused on the live site, 27 Oct
     expect(webm(Buffer.concat([note, ebml(0x1254c367, Buffer.alloc(0))]))).toBe(false);
   });
 });
+
+describe('Chrome\'s and Firefox\'s WebM as the app records it: no timeslice (refused on the live site, 28 Oct)', () => {
+  const webm = (b: Buffer) => isAudioOnlyRecording('audio/webm', b);
+  const recording = (name: string) => readFileSync(join(__dirname, '..', '..', 'test', 'unit-support', 'recordings', name));
+  const SEEK_HEAD = 0x114d9b74;
+  const SEEK = 0x4dbb;
+  const SEEK_ID = 0x53ab;
+  const SEEK_POSITION = 0x53ac;
+  const CODEC_NAME = 0x258688;
+  /** an element's ID as its bytes, as a SeekID holds it */
+  const idOf = (id: number) => Buffer.from(id.toString(16).padStart(id > 0xffffff ? 8 : id > 0xffff ? 6 : id > 0xff ? 4 : 2, '0'), 'hex');
+  const seek = (id: Buffer | null, position: Buffer | null, ...extra: Buffer[]) =>
+    ebml(SEEK, Buffer.concat([...(id ? [ebml(SEEK_ID, id)] : []), ...(position ? [ebml(SEEK_POSITION, position)] : []), ...extra]));
+  const head = (...kids: Buffer[]) => ebml(SEEK_HEAD, Buffer.concat(kids));
+  const body = (track = webmTrack(1, 2, 'A_OPUS')) => [webmInfo(), ebml(WEBM.tracks, track), webmCluster(undefined, false)];
+  const segment = (children: Buffer[], unknown = false) => Buffer.concat([webmHeader(), ebml(WEBM.segment, Buffer.concat(children), unknown)]);
+  const named = (name: Buffer) => ebml(WEBM.trackEntry, Buffer.concat([webmTrack(1, 2, 'A_OPUS').subarray(2), ebml(CODEC_NAME, name)]));
+
+  it('passes what the app records in Chromium 141 and Firefox 142, through mediaRecorder.ts with no timeslice', () => {
+    // Chromium: a SeekHead of four Seeks (Info, Tracks, Cluster, Cues) and a Void before Info, Cues after the Cluster.
+    // Firefox: an empty SeekHead, an unknown-size Segment, and a CodecName in the TrackEntry. Both were refused on main
+    const chrome = recording('chromium-141-app-opus.webm');
+    const firefox = recording('firefox-142-app-opus.webm');
+    const at = (b: Buffer, id: number) => b.indexOf(idOf(id));
+    expect(at(chrome, SEEK_HEAD)).toBe(at(chrome, WEBM.segment) + 12);
+    expect(chrome.includes('Chrome', 0, 'latin1')).toBe(true);
+    expect(at(firefox, SEEK_HEAD)).toBe(at(firefox, WEBM.segment) + 12);
+    expect(firefox.subarray(at(firefox, SEEK_HEAD) + 4, at(firefox, SEEK_HEAD) + 12).toString('hex')).toBe('0100000000000000'); // empty, an 8-byte size
+    expect(firefox.toString('latin1', at(firefox, CODEC_NAME) + 4, at(firefox, CODEC_NAME) + 8)).toBe('OPUS');
+    expect(readVoiceRecording('audio/webm', chrome)?.durationSec).toBe(3);
+    expect(readVoiceRecording('audio/webm', firefox)?.durationSec).toBe(3);
+    expect(recordingSeconds('audio/webm', chrome)).toBeCloseTo(3, 1);
+    expect(recordingSeconds('audio/webm', firefox)).toBeCloseTo(3, 1);
+    // and the app's other types from the same recorders, as before
+    expect(readVoiceRecording('audio/mp4', recording('chromium-141-app-opus.mp4'))?.durationSec).toBe(3);
+    expect(readVoiceRecording('audio/ogg', recording('firefox-142-app-opus.ogg'))?.durationSec).toBe(3);
+    // Chromium's SeekHead read whole: a Seek pointing at Tags instead of Info is refused
+    const tagged = Buffer.from(chrome);
+    idOf(0x1254c367).copy(tagged, tagged.indexOf(idOf(WEBM.info), at(chrome, SEEK_HEAD)));
+    expect(webm(tagged)).toBe(false);
+    // Tags after the last Cluster are still refused (Firefox's Segment is of unknown size)
+    expect(webm(Buffer.concat([firefox, ebml(0x1254c367, Buffer.alloc(8))]))).toBe(false);
+  });
+
+  it('reads a SeekHead whole: once, first, only Seeks of one SeekID naming what the walk takes and one SeekPosition inside the Segment', () => {
+    const info = idOf(WEBM.info);
+    expect(webm(segment([head(seek(info, Buffer.from([0x10])), seek(idOf(WEBM.tracks), Buffer.from([0x20]))), ...body()]))).toBe(true);
+    expect(webm(segment([head(), ...body()]))).toBe(true); // empty, as Firefox writes it
+    expect(webm(segment([head(seek(info, Buffer.from([0x10])), ebml(WEBM.void, Buffer.alloc(3))), ...body()]))).toBe(true);
+    expect(webm(segment([head(seek(idOf(0x1c53bb6b), Buffer.from([0x10])), seek(idOf(WEBM.cluster), Buffer.from([0x30]))), ...body()]))).toBe(true);
+    const length = Buffer.concat([head(seek(info, Buffer.from([0]))), ...body()]).length;
+    expect(webm(segment([head(seek(info, Buffer.from([length - 1]))), ...body()]))).toBe(true);
+    // a Segment of unknown size (Firefox's) runs to the file's end, which bounds the position the same way
+    expect(webm(segment([head(seek(info, Buffer.from([length - 1]))), ...body()], true))).toBe(true);
+    // every target the voice walk takes, once each: six Seeks at most
+    const every = [WEBM.info, WEBM.tracks, WEBM.cluster, 0x1c53bb6b, SEEK_HEAD, WEBM.void].map((id) => seek(idOf(id), Buffer.from([0x10])));
+    expect(webm(segment([head(...every), ...body()]))).toBe(true);
+    for (const [why, bad] of [
+      ['a junk body', segment([ebml(SEEK_HEAD, Buffer.alloc(8)), ...body()])],
+      ['a Seek with no SeekPosition', segment([head(seek(info, null)), ...body()])],
+      ['a Seek with no SeekID', segment([head(seek(null, Buffer.from([0x10]))), ...body()])],
+      ['a Seek with two SeekIDs', segment([head(seek(info, Buffer.from([0x10]), ebml(SEEK_ID, info))), ...body()])],
+      ['an empty SeekID', segment([head(seek(Buffer.alloc(0), Buffer.from([0x10]))), ...body()])],
+      ['a 5-byte SeekID', segment([head(seek(Buffer.from([0, 0x15, 0x49, 0xa9, 0x66]), Buffer.from([0x10]))), ...body()])],
+      ['a SeekID naming Tags', segment([head(seek(idOf(0x1254c367), Buffer.from([0x10]))), ...body()])],
+      ['a SeekID naming Attachments', segment([head(seek(idOf(0x1941a469), Buffer.from([0x10]))), ...body()])],
+      ['a SeekID naming Chapters', segment([head(seek(idOf(0x1043a770), Buffer.from([0x10]))), ...body()])],
+      ['a SeekPosition at the Segment\'s end', segment([head(seek(info, Buffer.from([length]))), ...body()])],
+      ['a SeekPosition at the file\'s end, in a Segment of unknown size', segment([head(seek(info, Buffer.from([length]))), ...body()], true)],
+      ['a SeekPosition far past the file, in a Segment of unknown size', segment([head(seek(info, Buffer.from([0xff, 0xff, 0xff, 0xff]))), ...body()], true)],
+      ['a target named twice', segment([head(seek(info, Buffer.from([0x10])), seek(info, Buffer.from([0x20]))), ...body()])],
+      ['seven Seeks (one target twice)', segment([head(...every, seek(info, Buffer.from([0x10]))), ...body()])],
+      ['20,000 Seeks', segment([head(...Array.from({ length: 20_000 }, () => seek(info, Buffer.alloc(8, 0x7f)))), ...body()], true)],
+      ['a 9-byte SeekPosition', segment([head(seek(info, Buffer.alloc(9))), ...body()], true)],
+      ['two SeekHeads', segment([head(), head(), ...body()])],
+      ['a SeekHead after Info', segment([webmInfo(), head(), ebml(WEBM.tracks, webmTrack(1, 2, 'A_OPUS')), webmCluster(undefined, false)])],
+      ['a SeekHead after Tracks', segment([...body().slice(0, 2), head(), webmCluster(undefined, false)])],
+      ['a SeekHead after the Cluster', segment([...body(), head()])],
+      ['Tags in a SeekHead', segment([head(ebml(0x1254c367, Buffer.alloc(0))), ...body()])],
+      ['CRC-32 in a SeekHead', segment([head(ebml(0xbf, Buffer.alloc(4))), ...body()])],
+      ['CRC-32 in a Seek', segment([head(seek(info, Buffer.from([0x10]), ebml(0xbf, Buffer.alloc(4)))), ...body()])],
+      ['Tags, which can carry a picture', segment([...body(), ebml(0x1254c367, Buffer.alloc(0))])],
+    ] as const) {
+      expect(webm(bad), why).toBe(false);
+    }
+  });
+
+  it('reads a CodecName as UTF-8 text of at most 64 bytes, once', () => {
+    expect(webm(segment(body(named(Buffer.from('OPUS')))))).toBe(true);
+    expect(webm(segment(body(named(Buffer.from('Ópus', 'utf8')))))).toBe(true);
+    expect(webm(segment(body(named(Buffer.alloc(64, 0x41)))))).toBe(true);
+    expect(webm(segment(body(named(Buffer.alloc(65, 0x41)))))).toBe(false); // over the text cap
+    expect(webm(segment(body(named(Buffer.from([0x4f, 0xff, 0x53])))))).toBe(false); // not UTF-8
+    expect(webm(segment(body(named(Buffer.from([0xc3])))))).toBe(false); // a cut UTF-8 sequence
+    const twice = ebml(WEBM.trackEntry, Buffer.concat([webmTrack(1, 2, 'A_OPUS').subarray(2), ebml(CODEC_NAME, 'OPUS'), ebml(CODEC_NAME, 'OPUS')]));
+    expect(webm(segment(body(twice)))).toBe(false);
+  });
+});

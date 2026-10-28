@@ -42,6 +42,8 @@ export const drawingsManifest: ModuleManifest = {
     'POST /projects/:projectId/drawings/rev/:revId/ack',
     'PATCH /projects/:projectId/drawings/:drawingId/node',
     'DELETE /drawings/:id',
+    // #1118 U3 — Hub's webhook deliveries (signed by Hub; no user)
+    'POST /integrations/hub/:orgId/events',
   ],
   permissions: ['pmc', 'engineer', 'contractor'],
 };
