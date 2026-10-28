@@ -147,6 +147,8 @@ export function GuideHost() {
           return;
         }
         arrive.current = null;
+        // the first-time welcome asks first: nothing starts by itself under it, nor after "Not now" on this visit
+        if (g.welcomeOpen) autoUsed.current = true;
         if (autoUsed.current) return;
         const next = guides.find((guide) => !done.has(guide.id));
         if (next && startable(next)) {

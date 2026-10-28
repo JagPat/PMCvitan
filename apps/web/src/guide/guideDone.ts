@@ -8,6 +8,8 @@
  */
 const PREFIX = 'vitan.guide.done.v1:';
 const WELCOME_PREFIX = 'vitan.guide.welcome.v1:';
+// the welcomes closed while this page is open: closing one holds even where storage drops the write
+const welcomeClosedHere = new Set<string>();
 
 export function readGuidesDone(key: string): ReadonlySet<string> {
   try {
@@ -33,6 +35,7 @@ export function markGuideDone(key: string, guideId: string): void {
 /** "Show the first-time tips again": this person's guides all count as not done in this browser, and the
  *  first-time welcome shows again. */
 export function clearGuidesDone(key: string): void {
+  welcomeClosedHere.delete(key);
   try {
     globalThis.localStorage?.removeItem(PREFIX + key);
     globalThis.localStorage?.removeItem(WELCOME_PREFIX + key);
@@ -43,6 +46,7 @@ export function clearGuidesDone(key: string): void {
 
 /** #482 — whether this person has closed the first-time welcome in this browser (keyed as above). */
 export function readWelcomeSeen(key: string): boolean {
+  if (welcomeClosedHere.has(key)) return true;
   try {
     return globalThis.localStorage?.getItem(WELCOME_PREFIX + key) === '1';
   } catch {
@@ -51,9 +55,10 @@ export function readWelcomeSeen(key: string): boolean {
 }
 
 export function markWelcomeSeen(key: string): void {
+  welcomeClosedHere.add(key);
   try {
     globalThis.localStorage?.setItem(WELCOME_PREFIX + key, '1');
   } catch {
-    /* storage unavailable — the welcome may show again next time, nothing worse */
+    /* storage unavailable — closed for as long as this page is open; it may show again next time, nothing worse */
   }
 }

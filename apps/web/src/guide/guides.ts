@@ -54,6 +54,9 @@ export interface Guide {
   roles: readonly Role[];
   screen: ScreenKey;
   steps: readonly GuideStep[];
+  /** false while the project has nothing yet to show this guide on (no checklist out on site), so the welcome's
+   *  "Show me around" picks another one; leave it out for a guide that can always start */
+  available?: () => boolean;
 }
 
 export const GUIDES: readonly Guide[] = [
@@ -63,6 +66,7 @@ export const GUIDES: readonly Guide[] = [
     title: 'raiseIssueEngineer',
     roles: ['engineer'],
     screen: 'engineer-check',
+    available: checklistOutOnSite,
     steps: [
       { target: 'mark-fail', tip: 'issueMarkFail' },
       { target: 'fail-photo', tip: 'issueFailPhoto', keyed: true, until: 'done' },
@@ -122,6 +126,12 @@ function checklistSubmitted(key: string | null): boolean {
   const s = useStore.getState();
   const open = s.openChecklists.some((c) => c.id === id) || (s.checklist?.id === id && !s.checklist.submitted);
   return !open;
+}
+
+/** The engineer has a checklist out on site to mark an item failed on. */
+function checklistOutOnSite(): boolean {
+  const s = useStore.getState();
+  return s.openChecklists.length > 0 || (s.checklist !== null && !s.checklist.submitted);
 }
 
 /** A photo picked under this run of the guide is in the project's photos (the viewer's own photos carry their upload key). */

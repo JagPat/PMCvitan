@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/store';
 import { langPreferenceKey } from '@/lib/langPreference';
 import { projectDataUsable } from '@/store/projectScope';
 import { useNavItems } from '@/layout/useNavItems';
-import { guidesForRole } from './guides';
+import { guidesForRole, type Guide } from './guides';
+import { findGuideTarget } from './guideTarget';
 import { markWelcomeSeen, readGuidesDone, readWelcomeSeen } from './guideDone';
 import { useGuideState } from './guideState';
 import { WELCOME_ROLE, WELCOME_WORDS } from './words';
@@ -39,21 +40,28 @@ export function Welcome() {
     setRead((n) => n + 1);
   }, [key, tipsEpoch]);
 
-  if (!ready || readWelcomeSeen(key)) return null;
+  const open = ready && !readWelcomeSeen(key);
+  // set before the overlay's first look (a layout effect runs ahead of its passive one), so no guide starts under the card
+  useLayoutEffect(() => {
+    useGuideState.getState().setWelcomeOpen(open);
+  }, [open]);
+  useLayoutEffect(() => () => useGuideState.getState().setWelcomeOpen(false), []);
+
+  if (!open) return null;
 
   const close = () => {
     markWelcomeSeen(key);
     closedUnder.current = key;
     setRead((n) => n + 1);
   };
-  const done = readGuidesDone(key);
   const guides = guidesForRole(role).filter((g) => reachable.has(g.screen));
-  const first = guides.find((g) => !done.has(g.id)) ?? guides[0] ?? null;
+  const first = guides[0] ?? null;
   const showMeAround = () => {
-    if (!first) return;
+    const pick = pickGuide(guides, readGuidesDone(key), useStore.getState().screen);
+    if (!pick) return;
     close();
-    useGuideState.getState().request(first);
-    setScreen(first.screen);
+    useGuideState.getState().request(pick);
+    setScreen(pick.screen);
   };
 
   return (
@@ -79,4 +87,16 @@ export function Welcome() {
       </div>
     </section>
   );
+}
+
+/**
+ * The guide "Show me around" starts: the first one not done yet that can start, i.e. on this screen with its first
+ * control there now, or on another screen with something to show it on; failing that the first that can start at
+ * all, done or not; failing that the first not done (Help's note then says there is nothing to show it on yet).
+ */
+function pickGuide(guides: readonly Guide[], done: ReadonlySet<string>, screen: string): Guide | null {
+  const canStart = (g: Guide) =>
+    g.screen === screen ? findGuideTarget(g.steps[0]!.target) !== null : (g.available?.() ?? true);
+  const notDone = guides.filter((g) => !done.has(g.id));
+  return notDone.find(canStart) ?? guides.find(canStart) ?? notDone[0] ?? guides[0] ?? null;
 }

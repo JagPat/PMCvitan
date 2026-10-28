@@ -13,14 +13,20 @@ import { warmImports } from './warm-imports';
 const ROLES: Role[] = ['pmc', 'engineer', 'client', 'consultant', 'contractor', 'architect'];
 const SEEN = (key: string) => `vitan.guide.welcome.v1:${key}`;
 
-await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/guide/Welcome'), () => import('@/guide/guideState'), () => import('@/guide/guideDone'));
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/guide/Welcome'), () => import('@/guide/guideState'), () => import('@/guide/guideDone'), () => import('@/guide/GuideHost'), () => import('@/guide/guideTarget'));
 
 beforeEach(() => {
   localStorage.clear();
+  // jsdom lays nothing out: a connected control counts as on screen
+  vi.spyOn(Element.prototype, 'getClientRects').mockImplementation(function (this: Element) {
+    return (this.isConnected ? [new DOMRect(0, 0, 40, 40)] : []) as unknown as DOMRectList;
+  });
 });
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.resetModules();
 });
 
@@ -111,6 +117,56 @@ describe('the first-time welcome', () => {
     expect(byTestId('welcome')).toBeNull();
     act(() => useStore.setState({ sessionUserId: 'u-2' }));
     expect(byTestId('welcome')).toBeTruthy();
+  });
+
+  it('no guide starts by itself under the welcome, nor after "Not now" on that visit', async () => {
+    vi.useFakeTimers();
+    const { Welcome } = await setup('pmc');
+    const { GuideHost } = await import('@/guide/GuideHost');
+    const { GUIDE_TICK_MS } = await import('@/guide/guideTarget');
+    render(<><Welcome /><GuideHost /><button type="button" data-guide="add">+</button></>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(GUIDE_TICK_MS * 2); });
+    expect(byTestId('welcome')).toBeTruthy();
+    expect(byTestId('guide-tip')).toBeNull();
+    press(byTestId('welcome-close')!);
+    await act(async () => { await vi.advanceTimersByTimeAsync(GUIDE_TICK_MS * 2); });
+    expect(byTestId('guide-tip')).toBeNull();
+  });
+
+  it('with the welcome already closed, the first guide still starts by itself', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(SEEN('user:u-1'), '1');
+    const { Welcome } = await setup('pmc');
+    const { GuideHost } = await import('@/guide/GuideHost');
+    const { GUIDE_TICK_MS } = await import('@/guide/guideTarget');
+    render(<><Welcome /><GuideHost /><button type="button" data-guide="add">+</button></>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(GUIDE_TICK_MS * 2); });
+    expect(byTestId('guide-tip')?.getAttribute('data-guide-id')).toBe('raise-issue-pmc');
+  });
+
+  it('"Show me around" passes over a guide with nothing to show it on: an engineer with no checklist gets the photo guide', async () => {
+    const onDashboard = await setup('engineer');
+    render(<><onDashboard.Welcome /><button type="button" data-guide="add-site-photo">Add site photo</button></>);
+    press(byTestId('welcome-tour')!);
+    expect(onDashboard.useGuideState.getState().requested?.id).toBe('add-site-photo');
+    cleanup();
+    localStorage.clear();
+
+    const onChecklists = await setup('engineer', 'engineer-check');
+    render(<onChecklists.Welcome />);
+    press(byTestId('welcome-tour')!);
+    expect(onChecklists.useGuideState.getState().requested?.id).toBe('add-site-photo');
+    expect(onChecklists.useStore.getState().screen).toBe('dashboard');
+  });
+
+  it('closes even where the browser refuses to store it', async () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+    const { Welcome } = await setup('client', 'client-decisions');
+    render(<Welcome />);
+    press(byTestId('welcome-close')!);
+    expect(byTestId('welcome')).toBeNull();
   });
 
   it.each(['hi', 'gu'] as const)('reads in %s with no English left over, for every role', async (lang) => {
