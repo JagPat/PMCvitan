@@ -116,6 +116,14 @@ model Project {
   media                      Media[]
   // #482 site photos (20280117): the keys of this project's deleted photos, so a late copy of a send is not stored again
   mediaTombstones            MediaTombstone[]
+  // #1118 U1a-3 (20280121200000): the Hub blobs fetched into storage for this project, the ledger the sweep walks
+  hubFetchedBlobs            HubFetchedBlob[]
+  // #1118 U1a-2 (20280121300000): the project's Hub link and its history. A list only because the link's key is
+  // (orgId, id); its primary key keeps it to one row.
+  drawingHubLinks            DrawingHubLink[]
+  // #1118 U1a-1 (20280123000000): the Hub deliveries judged for this project, and the Hub versions withdrawn in it
+  hubWebhookReceipts         HubWebhookReceipt[]
+  hubVersionTombstones       HubVersionTombstone[]
   pushSubs                   PushSubscription[]
   drawings                   Drawing[]
   phases                     Phase[]
@@ -982,13 +990,13 @@ model ProjectPartyVendorSource {
 // An Org/Account (an architecture practice, e.g. "Vitan Architecture") — owns
 // projects and the people who administer them. Multi-tenant foundation.
 model Org {
-  id                String             @id @default(cuid())
+  id                String              @id @default(cuid())
   name              String
-  slug              String             @unique
-  createdAt         DateTime           @default(now())
+  slug              String              @unique
+  createdAt         DateTime            @default(now())
   // #482 QA company lock (20280116): a QA-only company holds only QA accounts, and a QA account belongs only to
   // QA-only companies. Database triggers enforce both; an operator marks the QA company.
-  qaOnly            Boolean            @default(false)
+  qaOnly            Boolean             @default(false)
   projects          Project[]
   members           OrgMembership[]
   modules           TemplateModule[]
@@ -997,7 +1005,9 @@ model Org {
   vendors           Vendor[]
   // Phase 6 unit 6.1a (§A) — the canonical external firms this org collaborates with.
   externalParties   ExternalParty[]
-  promotedParties   ExternalParty[]    @relation("externalPartyPromotedTo")
+  promotedParties   ExternalParty[]     @relation("externalPartyPromotedTo")
+  // #1118 U1a-1 (20280123000000): every judgement of a Hub delivery to this org
+  hubReceipts       HubWebhookReceipt[]
 }
 
 // Templates Slice 3 (docs/TEMPLATES.md): a named PRESET — an ordered selection of modules
@@ -1186,6 +1196,8 @@ model Media {
   measurements               Measurement[]
   // Site Visits #792 SV2 — the visit this file was added on, if any (at most one)
   siteVisit                  SiteVisitMedia?
+  // #1177 VT1 (20280126000000) — a voice note's words, when the project's `voice-text` switch wrote them out
+  voiceTranscript            VoiceTranscript?
   // Stage 1 media (markup, voice, video). A marked-up copy is a NEW image pointing at the
   // photo it was drawn on, which keeps its bytes, camera time and place. The database
   // clears the link with ON DELETE SET NULL ("sourceMediaId") when the original goes (a
@@ -1206,6 +1218,29 @@ model Media {
   @@index([projectId, uploadedBy, createdAt]) // #482: a member's own photos still inside their delete hour
   @@index([nodeId])
   @@index([inspectionId])
+}
+
+// #1177 VT1a (20280126000000): a voice note's words, as the speech provider heard them. At most one per voice note; it
+// goes with the note (ON DELETE CASCADE) and never on its own. A person's corrections are kept apart (VT1b), never
+// written over these words. The checks and triggers (a voice note only; keys fixed; a done row frozen) are raw SQL in
+// the migration, which Prisma cannot express.
+model VoiceTranscript {
+  media         Media     @relation(fields: [projectId, mediaId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId     String
+  mediaId       String    @id
+  status        String    @default("pending") // pending | running | done | failed
+  providerJobId String?
+  languageCode  String?
+  text          String? // the provider's words, exactly when done
+  attempts      Int       @default(0)
+  retried       Boolean   @default(false)
+  lastError     String?
+  leaseToken    String?
+  leaseUntil    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([projectId, mediaId])
 }
 
 // #482 site photos (20280117): one row per (project, clientKey) whose photo was deleted, written by a database trigger
@@ -1254,9 +1289,17 @@ model Drawing {
   authorId    String?
   createdAt   DateTime          @default(now())
   revisions   DrawingRevision[]
+  // #1118 U1b (20280122000000): 'pmc' (PMC's own) or 'hub' (from Hub), fixed when the row is written
+  // ("Drawing_source_known", "Drawing_source_fixed"). A 'hub' drawing commits only with its HubDrawing (deferred
+  // constraint trigger "Drawing_hub_record"). Each revision's source is its drawing's: a raw-SQL key
+  // "DrawingRevision_projectId_drawingId_source_fkey" to the (projectId, id, source) unique below, cascading as
+  // "revisions" does, kept out of this schema so a nested `revisions: { create }` stays a plain one-relation create.
+  source      String            @default("pmc")
+  hub         HubDrawing[] // at most one (its primary key); only on a 'hub' drawing
 
   @@unique([projectId, number])
   @@unique([projectId, id]) // composite identity — tenant-safe containment target (Phase 1 Task 3)
+  @@unique([projectId, id, source]) // #1118 U1b: the target of the source keys
   @@index([projectId])
   @@index([nodeId])
 }
@@ -1295,10 +1338,170 @@ model DrawingRevision {
   createdAt          DateTime           @default(now())
   acks               DrawingAck[]
   recipients         DrawingRecipient[]
+  // #1118 U1b (20280122000000): 'pmc' or 'hub', always its drawing's (see Drawing.source) and fixed when written
+  // ("DrawingRevision_source_known", "DrawingRevision_source_fixed"). A 'hub' revision commits only with its HubRevision
+  // (deferred constraint trigger "DrawingRevision_hub_record").
+  source             String             @default("pmc")
+  hub                HubRevision[] // at most one (its primary key); only on a 'hub' revision
 
   @@unique([projectId, id]) // composite identity — tenant-safe reference target (Task 3)
+  @@unique([projectId, drawingId, id, source]) // #1118 U1b: HubRevision's key target
   @@unique([drawingId, rev]) // one Rev B per drawing — a duplicate label is a 409
   @@index([drawingId])
+}
+
+// #1118 U1a-3 (20280121200000_hub_fetched_blob): one per storage key a Hub fetch wrote, the ledger the sweep walks. Its
+// id and Hub version hold more than whitespace ("HubFetchedBlob_id_present", "_hubVersionId_present"), and its key is
+// exactly "<projectId>/hub/<uuid>.<ext>", what StorageService.keyFor(projectId, 'hub', mime) makes, with no '/' in the
+// project id ("HubFetchedBlob_storageKey_shape"), so no native drawing or media key is ever one. A row is never changed
+// ("HubFetchedBlob_sealed") or truncated ("HubFetchedBlob_no_truncate"); the sweep's DELETE is its one designed delete.
+// Prisma cannot express the checks or the triggers (raw SQL); see the migration's B1-B5.
+model HubFetchedBlob {
+  id           String   @id @default(cuid())
+  storageKey   String   @unique
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  projectId    String
+  hubVersionId String
+  fetchedAt    DateTime @default(now())
+
+  @@index([projectId])
+}
+
+// #1118 U1a-2 (20280121300000_hub_link): a project's Hub link and its history. Each row is written once and never
+// changed: UPDATE, a direct DELETE and TRUNCATE are refused by triggers ("<Model>_sealed", "<Model>_no_truncate"), and each
+// goes only with its project. A link commits only with its event 1 (deferred constraint trigger
+// "DrawingHubLink_first_event"). Prisma cannot express the triggers or the checks (raw SQL); see the migration's L1-L6.
+
+// one per project ever linked to Hub; its org is the project's own (composite key to Project (orgId, id)). The Hub
+// project, the lifecycle and who linked or unlinked it, when, are in its events alone.
+model DrawingHubLink {
+  project   Project               @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId String                @id
+  orgId     String
+  events    DrawingHubLinkEvent[]
+}
+
+// the project's link history in order: event 1 links, links and unlinks alternate, and each event names the one before
+// it (checks "DrawingHubLinkEvent_chain", "_kind_alternates", "_hubProjectId_on_link"). The active link is the latest
+// event when it is a link.
+model DrawingHubLinkEvent {
+  link         DrawingHubLink        @relation(fields: [projectId], references: [projectId], onDelete: Cascade, onUpdate: NoAction)
+  projectId    String
+  seq          Int
+  prev         DrawingHubLinkEvent?  @relation("hubLinkEventChain", fields: [projectId, prevSeq], references: [projectId, seq], onDelete: NoAction, onUpdate: NoAction)
+  prevSeq      Int?
+  next         DrawingHubLinkEvent[] @relation("hubLinkEventChain")
+  kind         String // linked | unlinked
+  hubProjectId String? // the Hub project, on a link only
+  at           DateTime              @default(now())
+  // the user who linked or unlinked (NO ACTION, as every actor key); whether they may is the linking command's check
+  by           User                  @relation("hubLinkEventsBy", fields: [byUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  byUserId     String
+
+  @@id([projectId, seq])
+  @@index([byUserId])
+}
+
+// #1118 U1b (20280122000000_hub_drawing_identity): the Hub records of a Hub drawing, its versions and its governing
+// marks. Each row is written once and never changed: UPDATE, a direct DELETE and TRUNCATE are refused by triggers
+// ("<Model>_sealed", "<Model>_no_truncate"), and each goes only with its project, through `project:remove`. Every key is
+// RESTRICT both ways, so a Hub drawing or revision is never deleted while its record exists and no key ever moves.
+// Prisma cannot express the checks or the triggers (raw SQL); see the migration's I1-I7.
+
+// one per Hub drawing: the Hub file it follows (one drawing per Hub file in a project) and the Hub project it came from.
+// Its source is fixed at 'hub' ("HubDrawing_source_hub"), so it belongs only to a 'hub' drawing.
+model HubDrawing {
+  drawing      Drawing       @relation(fields: [projectId, drawingId, source], references: [projectId, id, source], onDelete: Restrict, onUpdate: Restrict)
+  projectId    String
+  drawingId    String
+  source       String        @default("hub")
+  hubFileId    String
+  hubProjectId String
+  revisions    HubRevision[]
+
+  @@id([projectId, drawingId])
+  @@unique([projectId, hubFileId])
+}
+
+// one per Hub revision: the Hub version it holds (one revision per version in a project) and that version's order on
+// its file (one revision per order on a drawing). It belongs to a Hub drawing and to a 'hub' revision of that drawing.
+model HubRevision {
+  drawing         HubDrawing         @relation(fields: [projectId, drawingId], references: [projectId, drawingId], onDelete: Restrict, onUpdate: Restrict)
+  revision        DrawingRevision    @relation(fields: [projectId, drawingId, revisionId, source], references: [projectId, drawingId, id, source], onDelete: Restrict, onUpdate: Restrict)
+  projectId       String
+  drawingId       String
+  revisionId      String
+  source          String             @default("hub")
+  hubVersionId    String
+  hubVersionOrder Int
+  // #1118 U1a-1 (20280123000000): the applied receipt of the delivery that wrote this row, NULL for a re-sync's
+  sourceReceiptId BigInt?
+  marks           HubGoverningMark[]
+
+  @@id([projectId, revisionId])
+  @@unique([projectId, hubVersionId])
+  @@unique([projectId, drawingId, hubVersionOrder])
+  // what a webhook receipt names (U1a-1): the mark it claims is this version's own
+  @@unique([projectId, hubVersionId, drawingId, hubVersionOrder], map: "HubRevision_version_drawing_order_key") // the default name is past 63 characters
+  @@unique([projectId, hubVersionId, sourceReceiptId], map: "HubRevision_source_key") // #1118 U1a-1: a receipt's key target
+}
+
+// one per Hub version written for construction on a drawing, naming that version by its order. The drawing's mark is
+// the highest order; a mark is never removed while its drawing exists, so the mark only rises.
+model HubGoverningMark {
+  revision        HubRevision @relation(fields: [projectId, drawingId, order], references: [projectId, drawingId, hubVersionOrder], onDelete: Restrict, onUpdate: Restrict)
+  projectId       String
+  drawingId       String
+  order           Int
+  at              DateTime    @default(now())
+  // #1118 U1a-1 (20280123000000): the applied receipt of the delivery that wrote this row, NULL for a re-sync's
+  sourceReceiptId BigInt?
+
+  @@id([projectId, drawingId, order])
+  @@unique([projectId, drawingId, order, sourceReceiptId], map: "HubGoverningMark_source_key") // #1118 U1a-1: a receipt's key target
+}
+
+// #1118 U1a-1 (20280123000000_hub_receipts): Hub's webhook deliveries and the versions Hub withdrew. Each row is written
+// once and never changed: UPDATE, a direct DELETE and TRUNCATE are refused by triggers ("<Model>_sealed",
+// "<Model>_no_truncate"), and each goes only with its project or org. Prisma cannot express the checks, the triggers, the
+// partial unique "HubWebhookReceipt_one_applied" (one applied receipt per delivery), the receipt's three generated
+// columns ("tombstoneVersionId", "revisionVersionId", "writtenVersionId", left out here: no writer sets them) or the
+// deferrable keys that bind an applied receipt and the fact its delivery wrote to each other; see the migration's W1-W6.
+
+// one row per judgement of a Hub delivery. Applied exactly when it names a project, a Hub version and the fact it wrote
+// ('tombstone', 'revision' or 'mark', with the mark's drawing and order); at most one applied row per (org, webhookId).
+model HubWebhookReceipt {
+  id            BigInt   @id @default(autoincrement())
+  org           Org      @relation(fields: [orgId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  orgId         String
+  webhookId     String
+  eventType     String
+  outcome       String
+  receivedAt    DateTime @default(now())
+  project       Project? @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId     String?
+  hubVersionId  String?
+  appliedFact   String?
+  markDrawingId String?
+  markOrder     Int?
+
+  @@index([orgId, webhookId])
+  @@index([orgId, projectId])
+}
+
+// one per (project, Hub version) Hub withdrew, with its file and, when Hub sent one, its order. Its source is the
+// applied receipt of the delivery that wrote it, NULL for a re-sync's.
+model HubVersionTombstone {
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  projectId       String
+  hubVersionId    String
+  hubFileId       String
+  versionSeq      Int?
+  withdrawnAt     DateTime @default(now())
+  sourceReceiptId BigInt?
+
+  @@id([projectId, hubVersionId])
+  @@unique([projectId, hubVersionId, sourceReceiptId], map: "HubVersionTombstone_source_key") // a receipt's key target
 }
 
 // WHO a revision was issued to — frozen at issue time (Phase 1 Task 3). The rows
@@ -1350,6 +1553,8 @@ model User {
   siteVisitAttendeesRetired SiteVisitAttendee[]    @relation("siteVisitAttendeeRetiredBy")
   siteVisitPlacesAdded      SiteVisitPlace[]       @relation("siteVisitPlaceAddedBy")
   siteVisitMediaAdded       SiteVisitMedia[]       @relation("siteVisitMediaAddedBy")
+  siteVisitRemovalsAdded    SiteVisitFileRemoval[] @relation("siteVisitFileRemovalAddedBy")
+  siteVisitRemovalsMade     SiteVisitFileRemoval[] @relation("siteVisitFileRemovalRemovedBy")
   siteVisitPlacesRetired    SiteVisitPlace[]       @relation("siteVisitPlaceRetiredBy")
   // Phase 6 task 4b (§A.3) — push subscriptions currently linked to this user for targeted delivery
   pushSubscriptionsLinked   PushSubscription[]     @relation("pushSubscriptionsLinked")
@@ -1441,6 +1646,7 @@ model User {
   paymentsRecorded             Payment[]                      @relation("paymentsRecorded")
   paymentsReversed             PaymentReversal[]              @relation("paymentsReversed")
   advancesPaid                 VendorAdvance[]                @relation("advancesPaid")
+  hubLinkEvents                DrawingHubLinkEvent[]          @relation("hubLinkEventsBy")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -5121,6 +5327,7 @@ model SiteVisit {
   attendees SiteVisitAttendee[]
   places    SiteVisitPlace[]
   media     SiteVisitMedia[]
+  removals  SiteVisitFileRemoval[]
 
   @@unique([projectId, id])
   @@index([projectId])
@@ -5191,6 +5398,35 @@ model SiteVisitMedia {
   @@unique([projectId, mediaId])
   @@index([projectId, visitId])
   @@index([nodeId])
+}
+
+// #1179 R1 — a file taken off a visit (Jagrut, 27 Oct 2026: the adder within the hour, the PMC any time with a
+// reason). One row per removed file, frozen; it outlives the file (no key to Media) and goes with its visit's project.
+// The insert trigger copies the visit and the adder from the file's link, the kind from the file's type, the remover's
+// name as they stood, and stamps the time; a link is not cascaded away without its record (20280125000000).
+model SiteVisitFileRemoval {
+  visit         SiteVisit @relation(fields: [projectId, visitId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId     String
+  visitId       String
+  mediaId       String
+  // photo | voice | video | file, from the file's type
+  fileKind      String    @default("file")
+  addedBy       User      @relation("siteVisitFileRemovalAddedBy", fields: [addedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  addedById     String
+  addedByRole   String    @default("")
+  addedByName   String    @default("")
+  addedAt       DateTime  @default(now())
+  removedBy     User      @relation("siteVisitFileRemovalRemovedBy", fields: [removedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  removedById   String
+  removedByRole String
+  removedByName String    @default("")
+  // required unless the adder removes their own file within the hour; never blank
+  reason        String?   @db.VarChar(300)
+  removedAt     DateTime  @default(now())
+
+  @@id([mediaId])
+  @@unique([projectId, mediaId])
+  @@index([projectId, visitId])
 }
 
 model SiteVisitPlace {

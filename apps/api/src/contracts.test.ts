@@ -25,6 +25,53 @@ describe('createMediaSchema — P2-5 raster allowlist + size cap', () => {
   });
 });
 
+describe('createMediaSchema — Stage 1 voice notes', () => {
+  const visit = { kind: 'visit' as const, data: 'AAAA', siteVisit: { visitId: '00000000-0000-4000-8000-000000000001' } };
+
+  it('accepts the three recorder types with a length of 1 to 120 seconds', () => {
+    for (const mime of ['audio/webm', 'audio/mp4', 'audio/ogg']) {
+      expect(createMediaSchema.safeParse({ ...visit, mime, durationSec: 1 }).success).toBe(true);
+      expect(createMediaSchema.safeParse({ ...visit, mime, durationSec: 120 }).success).toBe(true);
+    }
+  });
+
+  it('takes a voice note with or without the length its recorder counted; refuses one over two minutes, and a photo with one', () => {
+    // the length stored is read from the file (Codex P2 on #1013 round 3); one sent is only checked against it
+    expect(createMediaSchema.safeParse({ ...visit, mime: 'audio/webm' }).success).toBe(true);
+    expect(createMediaSchema.safeParse({ ...visit, mime: 'audio/webm', durationSec: 121 }).success).toBe(false);
+    expect(createMediaSchema.safeParse({ ...visit, mime: 'audio/webm', durationSec: 2.5 }).success).toBe(false);
+    expect(createMediaSchema.safeParse({ ...visit, mime: 'image/png', durationSec: 5 }).success).toBe(false);
+  });
+
+  it('refuses other audio types, and a type with a codecs parameter', () => {
+    for (const mime of ['audio/mpeg', 'audio/wav', 'audio/webm;codecs=opus']) {
+      expect(createMediaSchema.safeParse({ ...visit, mime, durationSec: 5 }).success).toBe(false);
+    }
+  });
+});
+
+describe('createMediaSchema — Stage 1 video clips (#995)', () => {
+  const visit = { kind: 'visit' as const, data: 'AAAA', siteVisit: { visitId: '00000000-0000-4000-8000-000000000001' } };
+
+  it('accepts WebM and MP4 with or without a length of 1 to 60 seconds, and refuses a longer one', () => {
+    for (const mime of ['video/webm', 'video/mp4']) {
+      expect(createMediaSchema.safeParse({ ...visit, mime }).success).toBe(true);
+      expect(createMediaSchema.safeParse({ ...visit, mime, durationSec: 1 }).success).toBe(true);
+      expect(createMediaSchema.safeParse({ ...visit, mime, durationSec: 60 }).success).toBe(true);
+      expect(createMediaSchema.safeParse({ ...visit, mime, durationSec: 61 }).success).toBe(false);
+      expect(createMediaSchema.safeParse({ ...visit, mime, durationSec: 0 }).success).toBe(false);
+    }
+    // a voice note keeps its two minutes
+    expect(createMediaSchema.safeParse({ ...visit, mime: 'audio/webm', durationSec: 90 }).success).toBe(true);
+  });
+
+  it('refuses other video types, and a type with a codecs parameter', () => {
+    for (const mime of ['video/quicktime', 'video/x-matroska', 'video/3gpp', 'video/webm;codecs=vp8,opus', 'video/mp4;codecs=avc1']) {
+      expect(createMediaSchema.safeParse({ ...visit, mime }).success).toBe(false);
+    }
+  });
+});
+
 describe('issueDrawingSchema — P2-5 MIME allowlist', () => {
   const base = { number: 'A-201', title: 'Plan', discipline: 'architectural' as const, rev: 'A', data: 'AAAA' };
   it('accepts PDF and CAD/raster types', () => {

@@ -3,12 +3,12 @@ import { createPortal } from 'react-dom';
 import { useStore } from '@/store/store';
 import { langPreferenceKey } from '@/lib/langPreference';
 import { projectDataUsable } from '@/store/projectScope';
-import { guidesFor, type Guide } from './guides';
-import { readGuidesDone, markGuideDone } from './guideDone';
+import { guidesFor, guideOnScreen, type Guide } from './guides';
+import { readGuidesDone, markGuideDone, clearGuidesDone } from './guideDone';
 import { useGuideState } from './guideState';
-import { findGuideTarget, findStepTarget, guideKeyMatches, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
+import { findStepTarget, guideKeyMatches, guideStartable, GUIDE_ARRIVE_MS, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
 import { subscribeGuideOutcome } from './outcomes';
-import { GUIDE_TIPS, GUIDE_WORDS } from './words';
+import { GUIDE_TIPS, GUIDE_WORDS, HELP_WORDS } from './words';
 import styles from './Guide.module.css';
 
 /** Move the run past its current step (finishing the guide after the last one). */
@@ -34,8 +34,6 @@ function replayOffer(ready: readonly Guide[], done: ReadonlySet<string>, lastSta
   return ready[(last + 1) % ready.length] ?? null;
 }
 
-const enabled = (el: HTMLElement | null): el is HTMLElement => el !== null && !(el as HTMLButtonElement).disabled;
-
 function sameBox(a: Box | null, b: Box | null): boolean {
   return a === b || (!!a && !!b && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height && a.dialog === b.dialog && a.vw === b.vw && a.vh === b.vh);
 }
@@ -59,6 +57,9 @@ function sameBox(a: Box | null, b: Box | null): boolean {
  *   latest earlier step whose control is still there, so the person can pick the task up again; with
  *   none left (the first control itself went away) the run ends, not done, and "Guide me" offers it.
  *   While a pressed action's outcome is awaited it neither steps back nor ends.
+ * - A guide asked for from the Help sheet starts once its first control is on its screen, ahead of any
+ *   automatic start. When that control does not come (nothing to do it on yet), the ask is dropped with a
+ *   short note, so the press is never silently lost.
  */
 export function GuideHost() {
   const role = useStore((s) => s.role);
@@ -74,12 +75,32 @@ export function GuideHost() {
   const autoUsed = useRef(false);
   // when the running step's control was first found missing (see the step-back rule in `tick`)
   const missing = useRef<{ guideId: string; step: number; since: number } | null>(null);
+  // when a guide asked for from Help was first found unable to start on its screen
+  const arrive = useRef<{ guide: Guide; since: number } | null>(null);
+  const tipsEpoch = useGuideState((s) => s.tipsEpoch);
 
   // a new visit, a new person or a project reload: end the run (not done) and allow one auto start
   useEffect(() => {
     autoUsed.current = false;
     useGuideState.getState().stop();
-  }, [screen, key, ready]);
+  }, [screen, key, ready, tipsEpoch]);
+
+  // a guide asked for from Help belongs to the visit to its screen: going elsewhere, or another person, drops it
+  useEffect(() => {
+    const asked = useGuideState.getState().requested;
+    if (asked && !guideOnScreen(asked, screen)) useGuideState.getState().request(null);
+  }, [screen]);
+  useEffect(() => () => useGuideState.getState().request(null), [key]);
+
+  // "first-time tips again" pressed before a dev-auth sign-in settled reset the persona's key; once the
+  // signed-in key arrives it is the same person, so it is reset too. Any other change of person drops it.
+  useEffect(() => {
+    const g = useGuideState.getState();
+    const from = g.tipsResetKey;
+    if (from === null || from === key) return;
+    if (from.startsWith('persona:') && key.startsWith('user:')) clearGuidesDone(key);
+    g.clearTipsReset();
+  }, [key]);
 
   useEffect(() => {
     if (!ready) {
@@ -95,9 +116,44 @@ export function GuideHost() {
       if (!g.run) {
         setBox(null);
         missing.current = null;
-        const startable = (guide: Guide) => enabled(findGuideTarget(guide.steps[0]!.target));
+        const startable = guideStartable;
         const done = readGuidesDone(key);
         g.setOffer(replayOffer(guides.filter(startable), done, g.lastStarted));
+        // read from the store, not this effect's `screen`: Help asks and then moves to the guide's screen in one
+        // press, and a tick queued by that ask runs before this effect is rebuilt for the new screen
+        const asked = g.requested;
+        // asked for under another role (a project switch can change it): never point this role at that task
+        if (asked && !asked.roles.includes(useStore.getState().role)) {
+          arrive.current = null;
+          g.request(null);
+        } else if (asked && guideOnScreen(asked, useStore.getState().screen)) {
+          if (startable(asked)) {
+            arrive.current = null;
+            autoUsed.current = true;
+            g.request(null);
+            g.start(asked);
+            return;
+          }
+          const now = Date.now();
+          if (!arrive.current || arrive.current.guide !== asked) {
+            arrive.current = { guide: asked, since: now };
+          } else if (now - arrive.current.since >= GUIDE_ARRIVE_MS) {
+            arrive.current = null;
+            const [next, ...rest] = g.fallbacks;
+            if (next) {
+              // "Show me around": nothing to show this one on yet, so the next one, on its own screen
+              g.request(next, rest);
+              useStore.getState().setScreen(next.screen);
+            } else {
+              g.request(null);
+              useStore.getState().flash(HELP_WORDS.notHere[useStore.getState().lang]);
+            }
+          }
+          return;
+        }
+        arrive.current = null;
+        // the first-time welcome asks first: nothing starts by itself under it, nor after "Not now" on this visit
+        if (g.welcomeOpen) autoUsed.current = true;
         if (autoUsed.current) return;
         const next = guides.find((guide) => !done.has(guide.id));
         if (next && startable(next)) {
@@ -119,11 +175,23 @@ export function GuideHost() {
         setBox((prev) => (sameBox(prev, next) ? prev : next));
       };
       // a pressed action the store has since confirmed some other way (a live refresh that showed the
-      // checklist submitted before the request's own answer arrived) is done
+      // checklist submitted before the request's own answer arrived) is done, also after that answer said it failed:
+      // the request can fail on the way back after the server took it, and the store's record wins over the reply.
+      // Only after this run pressed the control: another tab's submit is not this run's act
       const settled = guide.steps[step]!.settled;
-      if (g.run.waiting && settled?.(runKey)) {
+      if (g.run.pressed && settled?.(runKey)) {
         completeStep(key, g, null);
         return;
+      }
+      // a text box already focused when its step began (tapped before the guide started) is reached: no later
+      // `focusin` would say so
+      const current = guide.steps[step]!;
+      if (current.until === 'focus' && document.activeElement instanceof Element) {
+        const focused = document.activeElement.closest(`[data-guide="${current.target}"]`);
+        if (focused && (!current.keyed || runKey === null || guideKeyMatches(focused.getAttribute('data-guide-key'), runKey))) {
+          completeStep(key, g, focused.getAttribute('data-guide-key'));
+          return;
+        }
       }
       const here = findStepTarget(guide.steps[step]!, runKey);
       if (here) {
@@ -196,7 +264,8 @@ export function GuideHost() {
       const target = e.target instanceof Element ? e.target : null;
       const pressed = target?.closest(`[data-guide="${current.target}"]`);
       if (!pressed) return;
-      if (current.keyed && !guideKeyMatches(pressed.getAttribute('data-guide-key'), g.run.key)) return;
+      // (a keyed first step has no key yet: any of its controls starts it)
+      if (current.keyed && g.run.key !== null && !guideKeyMatches(pressed.getAttribute('data-guide-key'), g.run.key)) return;
       // an action that can fail waits for the store's report (this runs before the control's own
       // handler, so even a report made at once, as in demo mode, finds the wait in place)
       if (current.until === 'outcome') {
@@ -205,8 +274,25 @@ export function GuideHost() {
       }
       completeStep(key, g, pressed.getAttribute('data-guide-key'));
     };
+    // a text box (`focus`) is reached by a tap or from the keyboard alike
+    const onFocus = (e: FocusEvent) => {
+      const g = useGuideState.getState();
+      if (!g.run) return;
+      const current = g.run.guide.steps[g.run.step]!;
+      if (current.until !== 'focus') return;
+      const target = e.target instanceof Element ? e.target : null;
+      const reached = target?.closest(`[data-guide="${current.target}"]`);
+      if (!reached) return;
+      // the first step has no key yet: any of its boxes starts it
+      if (current.keyed && g.run.key !== null && !guideKeyMatches(reached.getAttribute('data-guide-key'), g.run.key)) return;
+      completeStep(key, g, reached.getAttribute('data-guide-key'));
+    };
     document.addEventListener('click', onClick, true);
-    return () => document.removeEventListener('click', onClick, true);
+    document.addEventListener('focusin', onFocus, true);
+    return () => {
+      document.removeEventListener('click', onClick, true);
+      document.removeEventListener('focusin', onFocus, true);
+    };
   }, [key]);
 
   // the store's report on an `outcome` step: success moves the guide on; failure ends the wait, so a
@@ -222,8 +308,14 @@ export function GuideHost() {
         if (current.until !== 'outcome' || !current.outcome) return;
         // a keyed step follows one record: another checklist's submit is not this guide's
         if (current.keyed && !guideKeyMatches(outcomeKey, g.run.key)) return;
-        if (outcome === current.outcome.ok) completeStep(key, g, null);
-        else if (outcome === current.outcome.failed) g.setWait(false);
+        // a failure report never undoes what the store already shows done (a refresh that showed it first)
+        const notOk = outcome === current.outcome.failed || outcome === current.outcome.held;
+        if (outcome === current.outcome.ok || (notOk && g.run.pressed && current.settled?.(g.run.key))) completeStep(key, g, null);
+        else if (outcome === current.outcome.held) g.stop();
+        else if (outcome === current.outcome.failed) {
+          if (current.retryFrom !== undefined) g.setStep(current.retryFrom);
+          else g.setWait(false);
+        }
       }),
     [key],
   );

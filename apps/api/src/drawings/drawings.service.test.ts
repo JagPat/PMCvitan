@@ -185,6 +185,7 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
     publicUrl: vi.fn((k: string) => `https://cdn.vitan.in/${k}`),
     presignPut: vi.fn(async () => (storagePutUrl ? { uploadUrl: 'https://cdn.vitan.in/upload?sig=x', url: storagePutUrl } : null)),
     remove: vi.fn(async () => {}),
+    storedType: vi.fn(async (_key: string): Promise<string | null> => 'application/pdf'),
   };
   const dispatcher = { dispatchCommitted: vi.fn() };
   const snapshot = { build: vi.fn(async () => ({ ok: true })) };
@@ -256,12 +257,34 @@ describe('DrawingsService.issue', () => {
 
   it('accepts a presigned storageKey (skips put, records the bucket pointer, stores no public url)', async () => {
     const { svc, draws, storage } = make();
-    await svc.issue('ambli', drawUser, { ...base, data: undefined as never, storageKey: 'ambli/drawings/big.pdf', sizeBytes: 9_000_000 });
+    await svc.issue('ambli', drawUser, { ...base, data: undefined as never, storageKey: 'ambli/drawings/typed/big.pdf', sizeBytes: 9_000_000 });
     expect(storage.put).not.toHaveBeenCalled();
     const rev = draws[0].revisions[0];
-    expect(rev.storageKey).toBe('ambli/drawings/big.pdf');
+    expect(rev.storageKey).toBe('ambli/drawings/typed/big.pdf');
     expect(rev.url).toBeNull(); // private delivery: never persist the public bucket url
     expect(rev.data).toBeNull();
+  });
+
+  it('refuses a presigned storageKey whose stored object is missing or of another type (#995 nosniff)', async () => {
+    for (const stored of [null, 'text/html', 'application/octet-stream']) {
+      const { svc, draws, storage } = make();
+      storage.storedType.mockResolvedValueOnce(stored);
+      await expect(
+        svc.issue('ambli', drawUser, { ...base, data: undefined as never, storageKey: 'ambli/drawings/typed/big.pdf', sizeBytes: 9_000_000 }),
+        String(stored),
+      ).rejects.toThrow(/not of the type given/);
+      expect(storage.storedType).toHaveBeenCalledWith('ambli/drawings/typed/big.pdf');
+      expect(draws).toHaveLength(0);
+    }
+  });
+
+  it('refuses a key from an upload link minted before the type was signed, whatever the object holds (#995 nosniff)', async () => {
+    const { svc, draws, storage } = make();
+    await expect(
+      svc.issue('ambli', drawUser, { ...base, data: undefined as never, storageKey: 'ambli/drawings/3f2a9c1e.pdf', sizeBytes: 9_000_000 }),
+    ).rejects.toThrow(/out of date/);
+    expect(storage.storedType).not.toHaveBeenCalled();
+    expect(draws).toHaveLength(0);
   });
 
   it('rejects a storageKey that belongs to another project (cross-project drawing read)', async () => {
@@ -269,6 +292,18 @@ describe('DrawingsService.issue', () => {
     await expect(
       svc.issue('ambli', drawUser, { ...base, data: undefined as never, storageKey: 'villa/drawings/secret.pdf', sizeBytes: 100 }),
     ).rejects.toThrow(/does not belong to this project/);
+  });
+
+  it('rejects every Hub-ledger key (#1118 U1a-3): a Hub blob is never a native revision, so the sweep never deletes one', async () => {
+    // the ledger's key is exactly "<projectId>/hub/<uuid>.<ext>" with no '/' in the project id (HubFetchedBlob_storageKey_shape)
+    const { svc } = make();
+    const uuid = '3f2a9c1e-5b7d-4e2f-8a6c-0d1e2f3a4b5c';
+    for (const storageKey of [`ambli/hub/${uuid}.pdf`, `ambli/hub/${uuid}.bin`, `villa/hub/${uuid}.pdf`]) {
+      await expect(
+        svc.issue('ambli', drawUser, { ...base, data: undefined as never, storageKey, sizeBytes: 100 }),
+        storageKey,
+      ).rejects.toThrow(/does not belong to this project/);
+    }
   });
 
   it('S3 mode drops the bytes and stores no public url; dev stub keeps the bytes', async () => {
@@ -381,6 +416,9 @@ describe('DrawingsService — controlled lifecycle (Phase 1 Task 3)', () => {
 describe('DrawingsService.presign', () => {
   it('returns a presigned upload target in S3 mode', async () => {
     const { svc } = make('https://cdn.vitan.in/ambli/drawings/x.pdf');
+    const { svc: s3, storage } = make('https://cdn.vitan.in/ambli/drawings/x.pdf');
+    await s3.presign('ambli', 'application/pdf');
+    expect(storage.keyFor).toHaveBeenCalledWith('ambli', 'drawings/typed', 'application/pdf'); // the only keys issue() records
     const res = await svc.presign('ambli', 'application/pdf');
     expect(res).toMatchObject({ storageKey: 'ambli/drawings/x.pdf', uploadUrl: expect.stringContaining('upload') });
   });

@@ -91,13 +91,14 @@ import {
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
 } from './projectCreateHold';
 import { createQueueKeyGuard, queueActIdent, type QueueWrite } from '@/store/queueKeyGuard';
+import { isDone } from '@/store/queueLedger';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isMediaNotFound, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
-import { clearVisitPhotoStart, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { clearVisitPhotoStart, clearVisitPoster, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, posterLapsed, posterWaits, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { parseLocation } from '@/lib/screens';
 import { setClampedTimeout, type ClampedTimer } from '@/lib/clampedTimer';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
@@ -106,7 +107,7 @@ import { COMMERCIAL_OP_PERMISSION, advanceCoalesceKey, budgetCoalesceKey, costHe
 import { checkinClock, todayCivil } from '@/lib/civilDate';
 import { hasStamp, type CaptureStamp } from '@/lib/captureStamp';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
-import { emitGuideOutcome, guideRunToken } from '@/guide/outcomes';
+import { emitGuideOutcome, guideRunToken, recordGuidedPhotoPick } from '@/guide/outcomes';
 import { saveSession, clearSession, loadSession } from '@/lib/sessionPersist';
 import { readDeviceLang } from '@/lib/langPreference';
 
@@ -209,12 +210,19 @@ export interface SnapshotLease {
  *  `droppedKeys` (terminally rejected — a 4xx, discarded), `pendingKeys` (still queued: transient
  *  stop / scope-moved remainder / offline). `ran` is false when this call coalesced behind an
  *  in-flight flush (deferred to that flush's rerun) or there was no gateway / nothing to flush. */
+/** #482 — how an act went, as the in-app guide hears it: taken by the server, refused, or (offline, or left to send again)
+ *  kept on this phone to send, or not kept */
+type ActReport = 'sent' | 'failed' | 'queued' | 'not-kept';
+
 export interface OutboxFlushResult {
   ran: boolean;
   scopeMoved: boolean;
   succeededKeys: string[];
   droppedKeys: string[];
   pendingKeys: string[];
+  /** What this flush had to say, held for a caller that says its own acts' word (`ownWord`): the other commands' lines,
+   *  then the counts and refusals. Set only on that caller's own run, in the scope it ran in (#1134 residual) */
+  word?: string;
 }
 
 /** The read slices a committed command's reconcile can be owed for (live bug 1b). */
@@ -829,7 +837,8 @@ export interface AppActions {
    * with `pickedIn` for the same reason: a same-project refresh can replace the log before the read resolves.
    * Omitted, the log on screen now is used.
    */
-  addProgressPhoto: (dataUrl: string, nodeId?: string | null, stamp?: CaptureStamp, pickedIn?: ProjectScope, pickedForLog?: string | null) => void;
+  /** `guideRun`: the in-app guide run the photo was chosen under (taken before the file was read); now when not given */
+  addProgressPhoto: (dataUrl: string, nodeId?: string | null, stamp?: CaptureStamp, pickedIn?: ProjectScope, pickedForLog?: string | null, guideRun?: number) => void;
   /** #482 site photos — delete a site photo the viewer added, within the hour (needs a connection). Settles when the
    *  server has answered; a second ask for the same photo while one is on its way joins it. */
   deleteSitePhoto: (photoId: string) => Promise<void>;
@@ -838,10 +847,16 @@ export interface AppActions {
   record: (label: string) => void;
   toggleOnline: () => void;
   /** Replay the durable outbox in order. `okMsg` (write-ahead command path) announces the command's
-   *  success on a clean flush instead of the batch "N synced" summary. Resolves a structured
+   *  success instead of the batch "N synced" summary. Resolves a structured
    *  `OutboxFlushResult` so a caller can confirm ITS OWN ops by key (queue absence ≠ success — a
-   *  terminal 4xx also removes the op). */
-  flushOutbox: (opts?: { okMsg?: string | (() => string) }) => Promise<OutboxFlushResult>;
+   *  terminal 4xx also removes the op). `act` is the command's act: its `okMsg` waits for the flush that sends that act,
+   *  this one or a later one, whichever call it came with (#1133); a line always comes with its act (#1134 r2).
+   *  `ownWord` lists acts whose word is the caller's: when this call runs the flush, those acts are left out of its counts
+   *  and the flush says nothing itself, handing back the rest of its line (`word`) for the caller's one flash. A caller that
+   *  cannot say it when the flush ends (`saysNow` false: another of its requests is still out) has the flush say it then,
+   *  in the flush's own scope, as any flush does. */
+  flushOutbox: (opts?: { okMsg: string | (() => string); act: OutboxOp; ownWord?: never; saysNow?: never }
+    | { ownWord: string[]; saysNow?: () => boolean; okMsg?: never; act?: never }) => Promise<OutboxFlushResult>;
   /** Site Visits SV1-c unit 2 (#792, F53): put one site-visit act in the durable outbox and send it (write-ahead,
    *  as the Daily Log does); `offlineMsg` is what the viewer is told when the app is offline. False without the server. */
   queueSiteVisitAct: (op: OutboxOp, offlineMsg: string) => boolean;
@@ -886,6 +901,9 @@ export interface AppActions {
    *  still running when it ends: a test waits for it to settle before the next begins, or the next test's flushes are
    *  coalesced into it. */
   _outboxFlushing: () => boolean;
+  /** Tests only: settles once every queue-key release so far has asked its flush (or found the app offline). A test waits
+   *  on it, the flushes and the queue's locks, never on a count of turns or a clock. */
+  _queueReleased: () => Promise<void>;
   /** adopt the session this tab saved before a reload, if one is still valid; true when one was adopted */
   restoreSession: () => boolean;
   /** Site Visits SV1-c (#792) — the gateway a screen that keeps its own state (the Site Visits screen) sends
@@ -1617,6 +1635,16 @@ export const useStore = create<Store>()(
     // but serializing keeps ordering and avoids redundant sends.
     let outboxFlushing = false;
     let outboxFlushQueued = false;
+    /** #1133 (Codex 4374997251, #1134 r1 4376641813): each command's success line, by its act's idempotency key and the
+     *  queue it is in, from its flush call until a flush settles that act: the flush the server accepts it in says the
+     *  line, one that refuses it for good drops it, and one that leaves it queued (held, offline, a failed send) keeps it */
+    let okWaiting: { okMsg: string | (() => string); key: string; queue: string }[] = [];
+    /** #482 — a write-ahead act the in-app guide waits on, by its key: the flush that settles it tells it (`runWriteAhead`) */
+    const actWatches = new Map<string, (how: 'sent' | 'failed' | 'pending') => void>();
+    /** #482 — the keys of the acts the flush now running has taken: that flush tells their watches, also after the signal goes */
+    let flushingKeys: ReadonlySet<string> = new Set();
+    /** #482 — online acts whose write-ahead has not run yet: the flush called once it has runs and tells them */
+    const writingKeys = new Set<string>();
     const scopeCoordinators = new Map<string, ScopeCoordinator>();
     const scopeKey = (scope: ProjectScope): string => `${scope.projectId}::${scope.generation}`;
     /** Drop coordinators for scopes we've LEFT that have no pull in flight — a scope
@@ -2113,7 +2141,8 @@ export const useStore = create<Store>()(
       // a committed daily-log command is reflected once a pull that BEGAN after it carries the
       // daily-log module read — success shows the new log, failure the read's own error state
       const after = get().dailyLogReconcileAfter;
-      if (after !== null && dailyLogResult !== undefined && lease.sequence > after) {
+      // (a send another tab made sets it under snapshot reads too: the snapshot carries the log, U2)
+      if (after !== null && (dailyLogResult !== undefined || dailyLogReadMode() === 'snapshot') && lease.sequence > after) {
         set((s) => { s.dailyLogReconcileAfter = null; s.dailyLogReconcileKind = null; });
       }
       // #482 site photos — the day's photo count after a delete is the server's, read by a pull that began after the
@@ -2471,10 +2500,18 @@ export const useStore = create<Store>()(
      *  release before it, which replays every `siteVisit…` act it finds and has no case for a photo, never meets one,
      *  and this lane is stored exactly as before (Codex 4320122193, 4320404449, 4320404441). */
     const isStoredVisitOp = (o: OutboxOp): boolean => isSiteVisitOp(o) && o.t !== 'siteVisitAddFile';
+    /** the release drains asked so far, settled once each has asked its flush or found the app offline (tests wait on it,
+     *  `_queueReleased`, #1134 r1 4376641821) */
+    let releaseDrains: Promise<void> = Promise.resolve();
     /** WEB-02 step A: both queue keys are read and written only through `queueKeys`, which never writes a key this
      *  release cannot read; each read of this scope's keys lists such a key in the strip */
     const strip = queueStrip({ get, set, scope: () => [outboxKey(), siteVisitKeyOf(outboxKey())], keys: () => queueKeys, writes: () => queueWrites() });
-    const queueKeys = createQueueKeyGuard(strip.noteRead, (key) => queueKeyScopes.get(key));
+    // a queue-key hold let go (the key heard readable or cleared, or written) resumes sending, as a kept photo put back
+    // does: once, after the write or event that let it go, and a flush running then runs again (#1132 r2, 4374538874)
+    const queueKeys = createQueueKeyGuard(strip.noteRead, (key) => queueKeyScopes.get(key), () => {
+      const drain = Promise.resolve().then(() => { if (get().online) void get().flushOutbox(); });
+      releaseDrains = Promise.all([releaseDrains, drain]).then(() => undefined);
+    });
     /** Every scope change (an auth result, a persona switch, a sign-out, and each load of a scope's queue) ends the old
      *  scope's queue-key memory and its strip list here, first, before any storage access: a storage that throws can
      *  then never leave the old scope's list on the next one (Codex 4351952392, the third such leak's root cause) */
@@ -2532,9 +2569,13 @@ export const useStore = create<Store>()(
     /** an offline act is said saved only once the locked write of its own key holds it (Codex 4344812898, 4344270659,
      *  4367242052); its write is tracked as a write-ahead's is, so no flush sends it first (Codex 4367242045). The line
      *  is shown only while the scope, person and key it was made in still hold (#1099 r3, Codex 4360928308) */
-    const flashSaved = (msg: string, acts: OutboxOp[]): void => {
+    const flashSaved = (msg: string, acts: OutboxOp[], onWritten?: (stored: boolean) => void): void => {
       const stillThere = madeHere();
-      void writeAhead(acts).then(() => { if (stillThere()) get().flash(storedNow(acts) ? msg : QW.notSavedYet[get().lang]); });
+      void writeAhead(acts).then(() => {
+        const stored = storedNow(acts);
+        onWritten?.(stored);
+        if (stillThere()) get().flash(stored ? msg : QW.notSavedYet[get().lang]);
+      });
     };
     /** the scope, person and key an act is made in: a write that returns after any of them moved says nothing and starts
      *  nothing there (#1099 r2, Codex 4358855946) */
@@ -2542,10 +2583,11 @@ export const useStore = create<Store>()(
       const made = { scope: currentScope(), token: get().sessionToken, key: outboxKey() };
       return () => scopeStillCurrent(made.scope) && get().sessionToken === made.token && outboxKey() === made.key;
     };
-    /** another tab's write of this scope's queue key is read and listed, never answered (`null`: storage cleared) */
+    /** another tab's write of this scope's queue key is read and listed, never written back (`null`: storage cleared);
+     *  memory's acts for it go with it, for the guard to copy aside or hold (U3) */
     globalThis.addEventListener?.('storage', (e: StorageEvent) => {
       const storage = globalThis.localStorage;
-      if (storage && e.storageArea === storage && get().sessionUserId) for (const k of [outboxKey(), siteVisitKeyOf(outboxKey())]) if (e.key === null || e.key === k) queueKeys.heard(storage, k);
+      if (storage && e.storageArea === storage && get().sessionUserId) for (const w of queueWrites()) if (e.key === null || e.key === w.key) queueKeys.heard(storage, w.key, w.mine);
     });
 
     // Evidence bytes share the outbox's user scope (WEB-02): the IndexedDB entries are
@@ -2630,9 +2672,27 @@ export const useStore = create<Store>()(
       // when each queued photo was taken: its row's creation time, else when its act was queued
       const created = new Map(rows.map((r) => [r.op.idempotencyKey, r.createdAt]));
       const takenAt = (o: SiteVisitAddFileOp): number => created.get(o.idempotencyKey) ?? (o.queuedAt ? Date.parse(o.queuedAt) : NaN);
+      // V2b-2: a sent clip whose still frame is still to send has its act put back too, last, to send the frame alone
+      // (its row is filed: the clip is never uploaded again). It starts no flush of its own, nor, once the server lists
+      // its clip, the Site Visits screen's retry: the next flush made for any other reason sends it, so a server that
+      // keeps failing the frame is not asked again on a beat of its own
+      const posters: OutboxOp[] = [];
+      // one whose frame waited past its bound is not put back, and its frame is let go here, so the bound holds when
+      // the Site Visits screen (whose reads settle rows) is never opened again (Codex 4400008717)
+      for (const row of rows) {
+        if (posterLapsed(row)) void withinWait(() => clearVisitPoster(row.userScope, row.projectId, row.clientKey)).catch(() => {});
+      }
       set((s) => {
         const queued = new Set(s.outbox.filter(isSiteVisitOp).map((o) => o.idempotencyKey));
         for (const row of rows) {
+          if (posterWaits(row)) {
+            if (!queued.has(row.op.idempotencyKey)) {
+              s.outbox.push(row.op);
+              queued.add(row.op.idempotencyKey);
+              posters.push(row.op);
+            }
+            continue;
+          }
           if (row.state !== 'queued') continue;
           // the start it needs, when the queue lost it, goes back ahead of it even when the photo's own act is still
           // queued (one kept just after its start was settled, then queued alone: Codex 4321998492). A start the
@@ -2675,6 +2735,7 @@ export const useStore = create<Store>()(
       });
       // a kept photo's row holds its act and the start it needs: their retry record is on this phone
       for (const row of rows) if (row.state === 'queued') storedHere([row.op, ...(row.start ? [row.start] : [])]);
+      storedHere(posters);
       if (rebuilt) void persistOutbox();
       return rebuilt;
     };
@@ -2797,20 +2858,31 @@ export const useStore = create<Store>()(
       // #827: a translated caller's queued line in the viewer's language; it also gets the network-failure
       // line in that language. Without it, the label plus the standard English lines, as before
       offlineMsg?: string,
+      // #482 — how it went, for the in-app guide: `sent` (the server took it), `failed`, or, offline, `queued` with
+      // whether this phone kept it. Told only while the scope it was made in is still current
+      report?: (result: ActReport) => void,
     ): boolean => {
       if (!gateway) return false;
       if (get().online) {
         // #482 F-C4.2 — a refusal says the server's reason, never "Could not reach the server": a translated
         // caller in the viewer's language, every other in English, as the network line already does
         const lang = () => (offlineMsg !== undefined ? get().lang : 'en');
-        runRemote(call, okMsg, (why) => SRV.refused(why, lang()), offlineMsg !== undefined ? () => DTX.unreachable[get().lang] : undefined);
+        const scope = currentScope();
+        // an answer for another project is not this act taken (the guide's issue and publish steps read it so too)
+        let answered: ApiSnapshot | null = null;
+        const sent = () => call().then((snap) => { answered = snap; return snap; });
+        void runRemote(sent, okMsg, (why) => SRV.refused(why, lang()), offlineMsg !== undefined ? () => DTX.unreachable[get().lang] : undefined).then((ok) => {
+          if (scopeStillCurrent(scope)) report?.(ok && answered?.project.id === scope.projectId ? 'sent' : 'failed');
+        });
         return true;
       }
       set((s) => {
         s.outbox.push(op);
         s.syncQueue.push(label);
       });
-      flashSaved(offlineMsg ?? label + ' — saved offline, will sync when you reconnect.', [op]); // said once the locked write holds it
+      const stillThere = madeHere();
+      // said once the locked write holds it
+      flashSaved(offlineMsg ?? label + ' — saved offline, will sync when you reconnect.', [op], report && ((stored) => { if (stillThere()) report(stored ? 'queued' : 'not-kept'); }));
       return true;
     };
 
@@ -2844,7 +2916,10 @@ export const useStore = create<Store>()(
     // okMsg may be a function: it is then read when the result is shown, so a translated success line
     // follows a language the viewer switched to while the command was on its way (#835)
     // `inRow`: acts a kept photo's row (IndexedDB) already holds, so on this phone before any key's write
-    const runWriteAhead = (op: OutboxOp, label: string, okMsg: string | (() => string), offlineMsg?: string, inRow: OutboxOp[] = []): boolean => {
+    // #482 `report`: how the act went, for the in-app guide, told once and only in the scope it was made in: online, by
+    // the flush that settles it (`sent`, `failed` when refused for good, or, left waiting to send again, `queued` when this
+    // phone keeps it and `not-kept` when it does not); offline, once its write has run (`queued` or `not-kept`)
+    const runWriteAhead = (op: OutboxOp, label: string, okMsg: string | (() => string), offlineMsg?: string, inRow: OutboxOp[] = [], report?: (result: ActReport) => void): boolean => {
       if (!gateway) return false;
       set((s) => { s.outbox.push(op); if (!s.online) s.syncQueue.push(label); });
       storedHere(inRow);
@@ -2853,12 +2928,35 @@ export const useStore = create<Store>()(
       // on this phone once its own key's write holds it, or a photo's row does, whatever the other key's write does
       const stored = () => storedNow([op]);
       const stillThere = madeHere();
+      const key = 'idempotencyKey' in op ? op.idempotencyKey : undefined;
+      // watched online and offline alike: the signal can come back before an offline act's write runs, and the flush
+      // that then sends it is the one that knows how it went (Codex 4398620511)
+      const watch = report && key ? (how: 'sent' | 'failed' | 'pending') => {
+        actWatches.delete(key);
+        // left to send again: kept on this phone or not, once its write has run (the signal can go before it does)
+        if (how === 'pending') void written.then(() => { if (stillThere()) report(stored() ? 'queued' : 'not-kept'); });
+        else if (stillThere()) report(how);
+      } : undefined;
+      if (watch && key) { writingKeys.add(key); actWatches.set(key, watch); }
       if (get().online) {
         // sent once its write has run; one that write could not store is said not saved, and sent from memory with its
         // ask's made record on this phone (#1113 r1 re-check: never held from the server)
-        void written.then(() => { if (!stillThere()) return; if (!stored()) get().flash(QW.notSavedYet[get().lang]); void get().flushOutbox({ okMsg }); });
+        void written.then(() => {
+          // the flush below takes it at once (or, coalesced, the running flush's end tells it if offline)
+          if (key) writingKeys.delete(key);
+          if (!stillThere()) { if (key) actWatches.delete(key); return; }
+          if (!stored()) get().flash(QW.notSavedYet[get().lang]);
+          void get().flushOutbox({ okMsg, act: op });
+        });
       } else {
-        void written.then(() => { if (stillThere()) get().flash(stored() ? (offlineMsg ?? label + ' — saved offline, will sync when you reconnect.') : QW.notSavedYet[get().lang]); });
+        void written.then(() => {
+          if (key) writingKeys.delete(key);
+          if (!stillThere()) { if (key) actWatches.delete(key); return; }
+          get().flash(stored() ? (offlineMsg ?? label + ' — saved offline, will sync when you reconnect.') : QW.notSavedYet[get().lang]);
+          // still offline and taken by no flush: told now; back online, the flush the reconnect started tells it
+          if (!key) report?.(stored() ? 'queued' : 'not-kept');
+          else if (actWatches.get(key) === watch && !get().online && !flushingKeys.has(key)) watch?.('pending');
+        });
       }
       return true;
     };
@@ -3141,6 +3239,7 @@ export const useStore = create<Store>()(
       gateway = g;
     },
     _outboxFlushing: () => outboxFlushing,
+    _queueReleased: () => releaseDrains,
     restoreSession: () => {
       // #482 6227430525 — a reload adopts the session this tab saved, through the one adoption path, so a
       // reload lands back where the person was instead of on the sign-in screen. Never under dev auth.
@@ -3442,7 +3541,11 @@ export const useStore = create<Store>()(
       // one stable idempotency key for this approval — the online send and any offline replay
       // reach the server under it, so a lost-response retry re-locks once (Phase 2 Task 5).
       const approveKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'approve', decisionId: decId, optionIndex: optIdx, idempotencyKey: approveKey }, 'Approve ' + decId, () => gateway!.approveDecision(decId, optIdx, approveKey), approveOutcomeCopy(decId), queuedLine(DTX.approveLabel, decId))) return;
+      // #482 — the guide's confirm step follows this decision under the run it was confirmed in
+      const guideRun = guideRunToken();
+      const reportApprove = (result: ActReport) =>
+        emitGuideOutcome(result === 'sent' || result === 'queued' ? 'decision-approved' : result === 'failed' ? 'decision-approve-failed' : 'decision-approve-not-kept', decId, guideRun);
+      if (runRemoteOrQueue({ t: 'approve', decisionId: decId, optionIndex: optIdx, idempotencyKey: approveKey }, 'Approve ' + decId, () => gateway!.approveDecision(decId, optIdx, approveKey), approveOutcomeCopy(decId), queuedLine(DTX.approveLabel, decId), reportApprove)) return;
       const src = get().decisions.find((x) => x.id === decId);
       const material = src ? src.options[optIdx].material : '';
       const title = src ? src.title : '';
@@ -3467,6 +3570,7 @@ export const useStore = create<Store>()(
         s.modal = { type: null };
       });
       get().flash(DTX.approvedDemo[get().lang]);
+      reportApprove('sent');
     },
     // Both consultation commands take the WRITE-AHEAD path (review finding F4), not
     // `runRemoteOrQueue`. The distinction matters here precisely because a consultation is an
@@ -3502,12 +3606,18 @@ export const useStore = create<Store>()(
       const text = response.trim();
       if (!text) return;
       const key = newIdempotencyKey();
+      // #482 — the guide's Send step follows this one consultation (`<decision>:<consultation>`) under the run it was sent in
+      const guideRun = guideRunToken();
+      const reportAdvice = (result: ActReport) =>
+        emitGuideOutcome(result === 'sent' || result === 'queued' ? 'advice-sent' : result === 'failed' ? 'advice-send-failed' : 'advice-not-kept', `${decId}:${consultationId}`, guideRun);
       if (
         runWriteAhead(
           { t: 'consultationRespond', decisionId: decId, consultationId, response: text, ...(recommendedOptionIndex !== undefined ? { recommendedOptionIndex } : {}), idempotencyKey: key },
           'Advise ' + decId,
           () => DTX.advised[get().lang],
           queuedLine(DTX.adviseLabel, decId),
+          [],
+          reportAdvice,
         )
       ) {
         set((s) => { s.modal = { type: null }; });
@@ -3515,6 +3625,8 @@ export const useStore = create<Store>()(
       }
       set((s) => { s.modal = { type: null }; });
       get().flash(DTX.advised[get().lang]);
+      // demo: nothing is recorded (the server owns the thread), so the guide does not count it answered
+      reportAdvice('not-kept');
     },
     // ── Phase 6 task 4d-ii-b / B5a — the four countersign-chain commands. Each is one write-ahead act
     //    under ONE fresh key (`dispatchChainAct`): coalesced while an equivalent act on the same decision
@@ -4223,7 +4335,8 @@ export const useStore = create<Store>()(
       const dwgIds = get().drawings.filter((d) => d.draft).map((d) => d.id);
       const total = decIds.length + dwgIds.length;
       if (total === 0) return;
-      const done = () => get().flash(`Published ${total} draft${total === 1 ? '' : 's'} — the team has been notified.`);
+      const doneMsg = `Published ${total} draft${total === 1 ? '' : 's'} — the team has been notified.`;
+      const done = () => get().flash(doneMsg);
       // API mode: decisions publish directly (preserved); DRAWINGS are write-ahead + drained by the flush.
       if (gateway) {
         // Task 10 correction (C3) — when drawing drafts are in the batch, don't publish from a register
@@ -4244,6 +4357,7 @@ export const useStore = create<Store>()(
         // is confirmed only when every targeted key is reported succeeded by the flush.
         const drawingKeys = dwgIds.map(() => newIdempotencyKey());
         let flushDone: Promise<OutboxFlushResult | undefined> = Promise.resolve(undefined);
+        let decisionsOut = decIds.length > 0;
         if (dwgIds.length > 0) {
           set((s) => {
             dwgIds.forEach((id, i) => {
@@ -4254,7 +4368,8 @@ export const useStore = create<Store>()(
           });
           // no flush sends these while their locked write is still running (`aheadWrites`)
           void writeAhead(get().outbox.filter((o) => o.t === 'publishDrawing' && drawingKeys.includes((o as { idempotencyKey?: string }).idempotencyKey ?? '')));
-          if (get().online) flushDone = get().flushOutbox();
+          // the flush's word waits for the publish's only while no decision publish is still out (#1134 residual, gap-check Q4)
+          if (get().online) flushDone = get().flushOutbox({ ownWord: drawingKeys, saysNow: () => !decisionsOut });
         }
         void (async () => {
           // Decisions: the existing direct publish + reconcile (behavior preserved). Drawings are handled
@@ -4274,6 +4389,7 @@ export const useStore = create<Store>()(
             } catch {
               decOk = false;
             }
+            decisionsOut = false;
           }
           // Let the drawing flush finish draining before judging success.
           const flushRes = await flushDone.catch(() => undefined);
@@ -4285,22 +4401,25 @@ export const useStore = create<Store>()(
           const targeted = new Set(drawingKeys);
           const droppedMine = flushRes ? flushRes.droppedKeys.filter((k) => targeted.has(k)) : [];
           const dwgPending = get().outbox.some((o) => o.t === 'publishDrawing' && targeted.has(o.idempotencyKey));
+          // the flush that sent these said nothing itself: its word (other commands' lines, its counts) follows the
+          // publish's own in one flash, so neither replaces the other (#1134 residual)
+          const say = (msg: string) => get().flash(flushRes?.word ? `${msg} ${flushRes.word}` : msg);
           if (droppedMine.length > 0) {
             // A terminal rejection is NEVER overwritten by "Published N": report the honest (partial) failure.
             const n = droppedMine.length;
-            get().flash(n === dwgIds.length
+            say(n === dwgIds.length
               ? `${n === 1 ? 'The drawing draft was' : `All ${n} drawing drafts were`} rejected and not published — please review and try again.`
               : `${n} drawing draft${n === 1 ? '' : 's'} ${n === 1 ? 'was' : 'were'} rejected and not published — the rest went through. Please review and retry.`);
           } else if (!decOk) {
-            get().flash('Could not publish every draft — some may still be drafts. Please try again.');
+            say('Could not publish every draft — some may still be drafts. Please try again.');
           } else if (dwgPending) {
             // NEVER claim complete success while a targeted drawing op is still queued (offline, transient).
-            get().flash(get().online
+            say(get().online
               ? 'Publishing… drawing drafts are still syncing and will finish shortly.'
               : 'Saved — drawing drafts will publish when you reconnect.');
           } else {
             // decisions OK AND every targeted drawing op confirmed succeeded (or there were no drawings).
-            done();
+            say(doneMsg);
           }
         })();
         return;
@@ -6042,14 +6161,17 @@ export const useStore = create<Store>()(
       persistDailyLogDraft();
       get().record('Progress photo');
     },
-    addProgressPhoto: (dataUrl, nodeId, stamp, pickedIn, pickedForLog) => {
+    addProgressPhoto: (dataUrl, nodeId, stamp, pickedIn, pickedForLog, pickedInRun) => {
       // The file was chosen BEFORE the read that produced this data URL, and a project switch
       // (or sign-out, or re-auth) in between makes this photo — and its `photoNode` — belong
       // to a project we have left. Uploading it through whichever gateway is installed now
       // would file A's evidence under B. Same silent drop as every other scope guard here.
       if (pickedIn && !scopeStillCurrent(pickedIn)) return;
+      // #482 in-app guide: the run this photo was chosen under, so a late read or reply cannot finish a later run
+      const guideRun = pickedInRun ?? guideRunToken();
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {
+        emitGuideOutcome('site-photo-add-failed', null, guideRun);
         get().flash(DLT.photoUnreadable[get().lang]);
         return;
       }
@@ -6075,6 +6197,8 @@ export const useStore = create<Store>()(
         // after its first attempt committed but its reply was lost is the same photo, not a second one.
         const clientKey = newIdempotencyKey();
         const pickSeq = ++photoPickSeq;
+        // #482 in-app guide: a live refresh that shows this photo before the upload's answer also finishes the guide
+        recordGuidedPhotoPick(guideRun, clientKey);
         const input = {
           kind: 'progress' as const, mime, data: base64, clientKey, ...stamped,
           ...(nodeId ? { nodeId } : {}), ...(dailyLogId ? { dailyLogId } : {}),
@@ -6096,7 +6220,10 @@ export const useStore = create<Store>()(
             }
           });
           persistDailyLogDraft();
-          flashSaved(DLT.photoOffline[get().lang], [upload]); // the photo's bytes live only in this act: said once it is written
+          // the photo's bytes live only in this act: said once it is written, and the guide's step is done only then. One
+          // not kept on this phone is still sent from memory but lost on a reload: the guide ends unfinished (offered again
+          // later) rather than asking for the same photo twice
+          flashSaved(DLT.photoOffline[get().lang], [upload], (stored) => emitGuideOutcome(stored ? 'site-photo-added' : 'site-photo-not-kept', null, guideRun));
           return;
         }
         // raw-DTO reconcile: pin the reply to the scope that uploaded it — a late
@@ -6158,6 +6285,7 @@ export const useStore = create<Store>()(
               recordDraftPhoto(s);
             });
             persistDailyLogDraft();
+            emitGuideOutcome('site-photo-added', null, guideRun);
             // #482 site photos: the snapshot says until when the new photo is the viewer's to delete
             void requestFreshSnapshot(scope);
             // say what the photo actually carried, not what the feature is called
@@ -6167,6 +6295,7 @@ export const useStore = create<Store>()(
           })
           .catch(() => {
             set((s) => settle(s, false));
+            emitGuideOutcome('site-photo-add-failed', null, guideRun);
             get().flash(DLT.photoUploadFailed[get().lang]);
           })
           .finally(() => { set((s) => { s.photoUploadsSending = s.photoUploadsSending.filter((k) => k !== clientKey); }); });
@@ -6193,6 +6322,7 @@ export const useStore = create<Store>()(
       });
       persistDailyLogDraft();
       get().record('Progress photo');
+      emitGuideOutcome('site-photo-added', null, guideRun);
       if (!get().online) {
         get().flash(DLT.photoOffline[get().lang]);
       } else {
@@ -6269,6 +6399,10 @@ export const useStore = create<Store>()(
       const goingOnline = !get().online;
       set((s) => { s.online = goingOnline; });
       if (!goingOnline) {
+        // #482 — a write-ahead act the guide waits on now waits for the signal: kept on this phone or not, as offline. One
+        // the running flush has taken is told by that flush: its request is out, and the server may still refuse it
+        // the same for one still being written: the flush called once it is written sends it and tells it
+        for (const [k, watch] of [...actWatches]) if (!flushingKeys.has(k) && !writingKeys.has(k)) watch('pending');
         get().flash(DLT.signalLost[get().lang]);
         return;
       }
@@ -6299,11 +6433,17 @@ export const useStore = create<Store>()(
       // `ran:false`/empty so a caller confirming its own ops never mistakes "not run" for "succeeded".
       const notRun = (): OutboxFlushResult => ({ ran: false, scopeMoved: false, succeededKeys: [], droppedKeys: [], pendingKeys: [] });
       if (!gateway) return notRun();
+      // a site visit act's word is the Site Visits screen's, never a line here, and it is not in the batch count either
+      const own = opts?.ownWord ? new Set(opts.ownWord) : null;
+      const okKey = opts?.act && !isSiteVisitOp(opts.act) && 'idempotencyKey' in opts.act ? opts.act.idempotencyKey : undefined;
+      if (opts?.okMsg && okKey && !okWaiting.some((w) => w.key === okKey)) okWaiting.push({ okMsg: opts.okMsg, key: okKey, queue: outboxKey() });
       // finding 1 — serialize flushes: a write-ahead command fires a flush per command, so one may be
       // in flight already. Coalesce (mark + return); the in-flight flush re-runs once after it settles,
       // so a command persisted mid-flush is still sent. Idempotency keys make an overlap harmless.
       if (outboxFlushing) { outboxFlushQueued = true; return notRun(); }
       outboxFlushing = true;
+      // #482 — what this flush may send: the queue as it starts (narrowed to what it takes once it takes it)
+      flushingKeys = new Set(get().outbox.flatMap((o) => ('idempotencyKey' in o && o.idempotencyKey ? [o.idempotencyKey] : [])));
       try {
       // SV2: every kept visit photo's act is put back first, from the phone's own record of it, so a close can never
       // overtake its photo. When that record could not be read (a failed or too slow read), the rest of the queue
@@ -6369,6 +6509,7 @@ export const useStore = create<Store>()(
       const lateAt = waited ? queued.findIndex((o) => !waited.has(o)) : -1;
       if (lateAt >= 0) outboxFlushQueued = true;
       const ops = lateAt >= 0 ? queued.slice(0, lateAt) : queued.slice();
+      flushingKeys = new Set(ops.flatMap((o) => ('idempotencyKey' in o && o.idempotencyKey ? [o.idempotencyKey] : [])));
       // how many ops this flush took from the outbox: the prefix replaced below (a refused site visit start may
       // take its own acts out of `ops` as it goes)
       const taken = ops.length;
@@ -6476,7 +6617,67 @@ export const useStore = create<Store>()(
       // closed before this flush writes its key without it never sends it again
       let markStore: Storage | null = null;
       try { markStore = globalThis.localStorage ?? null; } catch { markStore = null; }
-      const settle = (o: OutboxOp): void => { queueKeys.settled(markStore, isSiteVisitOp(o) ? siteVisitKeyOf(flushKey) : flushKey, o); };
+      const laneOf = (o: OutboxOp): string => (isSiteVisitOp(o) ? siteVisitKeyOf(flushKey) : flushKey);
+      const settle = (o: OutboxOp, refused = false): void => { queueKeys.settled(markStore, laneOf(o), o, refused); };
+      /** An act the server accepted, by this flush's send or, with no snapshot, by another tab's (its done fact): every
+       *  effect of the success that does not read the server's answer, one function for both (xtab-drain U2 r1 root
+       *  cause: a copy of these effects drifted, 4384591499/4384591507/4384591508). The 410 of an upload is read only by
+       *  the send's own answer, so an upload is never settled by its fact. The start's photo clear is returned to wait on */
+      const afterSent = (o: OutboxOp, snap: ApiSnapshot | null): Promise<unknown> | null => {
+        settle(o);
+        if (snap) { lastSnap = snap; lastSnapStale = false; } else if (lastSnap && isSiteVisitOp(o)) lastSnapStale = true;
+        // an evidence send settled with its refresh failed (its bytes are gone, so it is never sent again): the pull it
+        // owes is asked for once the flush is done, as a 410's is (#482)
+        if (!snap && o.t === 'uploadEvidence') photoSettledGone = true;
+        // a site visit's answer shows on its own screen, so it is not counted in the "synced" line; one that went
+        // through starts the visit photo retry's wait over
+        if (!isSiteVisitOp(o)) synced += 1;
+        else visitPhotoRetryMs = VISIT_PHOTO_WAIT_MS;
+        if (o.t === 'decideReview') refreshBriefAfterReview(flushedBy);
+        if (o.t === 'startDailyLog') dailyLogCommitted = 'start';
+        else if (o.t === 'submitDailyLog') dailyLogCommitted = 'send';
+        const k = keyOf(o); if (k) succeededKeys.push(k);
+        if (isMaterialsOp(o)) { materialsAttempted = true; const ck = coalesceKeyOf(o); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
+        if (isLabourOp(o)) { labourAttempted = true; const ck = coalesceKeyOf(o); if (ck) resolvedLabourCoalesceKeys.push(ck); }
+        if (isCommercialOp(o)) { commercialAttempted = true; commercialWritesSettled += 1; }
+        // SV2: a visit started: its kept photos stop carrying the start, so it is not put back and sent again. Not
+        // written (the phone's database failed): the start may be sent again ahead of them, and the server answers
+        // that replay with the same visit, so nothing is lost or doubled. Bounded, as every write of the rows in a
+        // flush is: one that fails or never answers keeps the rows' start, lets the flush go on, and is made again by
+        // the next flush (Codex 4324453897)
+        return o.t === 'siteVisitStart'
+          ? withinWait(() => clearVisitPhotoStart(visitPhotoScope(flushToken, flushedBy), flushGateway.project, o.body.id)).catch(() => retryVisitPhotos())
+          : null;
+      };
+      // xtab-drain redesign U2 (plan rev 3 §2.2): an act another tab's flush sent (its done fact) is not sent. It leaves
+      // through `afterSent`, as if this tab had sent it, with no snapshot: the read after it is asked for once the flush
+      // is done (`doneElsewhere`; a visit act's screen reads again, `visitDoneElsewhere`), and a daily-log start or send
+      // keeps the log read-only until that read lands. Only a success has a fact (r1, 4384591505): a refusal is sent
+      // again, so its path runs here with the server's words, and so is an act whose success reads the server's answer
+      // (a visit photo's row, an upload's 410)
+      let doneElsewhere = false;
+      let dailyLogDoneElsewhere = false;
+      let visitDoneElsewhere = false;
+      /** the bounded clears of the kept photos of starts settled here, waited for once the queue is settled */
+      const doneWaits: Promise<unknown>[] = [];
+      const settleDone = (o: OutboxOp): boolean => {
+        if (o.t === 'siteVisitAddFile' || o.t === 'uploadMedia') return false;
+        if (!markStore || !isDone(markStore, laneOf(o), o)) return false;
+        const clear = afterSent(o, null);
+        if (clear) doneWaits.push(clear);
+        if (o.t === 'startDailyLog' || o.t === 'submitDailyLog') dailyLogDoneElsewhere = true;
+        if (isSiteVisitOp(o)) visitDoneElsewhere = true; else doneElsewhere = true;
+        return true;
+      };
+      const withheldVisits = new Set<string>();
+      let generalWithheld = false;
+      const withheldNow = (op: OutboxOp): boolean => {
+        const visit = isSiteVisitOp(op);
+        if (visit ? withheldVisits.has(siteVisitOf(op)) : generalWithheld) return true;
+        if (!queueKeys.withholds(visit ? siteVisitKeyOf(flushKey) : flushKey, op)) return false;
+        if (visit) withheldVisits.add(siteVisitOf(op)); else generalWithheld = true;
+        return true;
+      };
       for (let i = 0; i < ops.length; i++) {
         // live check BEFORE each replay: if the project or session changed while a
         // previous op was in flight, the rest of this queue belongs to the OLD
@@ -6486,7 +6687,23 @@ export const useStore = create<Store>()(
           scopeMoved = true;
           break;
         }
-        if (holds(ops[i])) { heldVisits.push(ops[i]); continue; }
+        // U3 (Codex 4353751507): an act its key withholds (another tab made the key unreadable) stays here, unsent, and
+        // so does every later act that may depend on it: the rest of its visit, or the rest of the general queue (a
+        // later act sent alone would be refused for good and dropped: Stage 1 gap check of 3302f45, gap 1). It is asked
+        // first, so an act the photo hold also holds still latches its visit (#1122 r2, 4370280911)
+        const withheldHere = withheldNow(ops[i]);
+        const photoHeld = holds(ops[i]);
+        // U3b (4370280911): a visit act the photo hold holds latches its visit for the rest of this flush, so Send anyway
+        // tapped during a later await sends none of its later acts ahead of it; it takes effect at the next flush. A
+        // photo's own act latches nothing: only its row sends it, and Send anyway is for the visit's other acts
+        const visitAct = ops[i];
+        if (photoHeld && isSiteVisitOp(visitAct) && visitAct.t !== 'siteVisitAddFile') withheldVisits.add(siteVisitOf(visitAct));
+        if (photoHeld || withheldHere) { heldVisits.push(ops[i]); continue; }
+        if (settleDone(ops[i])) {
+          // #482 — another tab sent it: the server has it, so a guide waiting on it is told so
+          const k = keyOf(ops[i]); if (k) actWatches.get(k)?.('sent');
+          continue;
+        }
         const mat = isMaterialsOp(ops[i]);
         const lab = isLabourOp(ops[i]);
         const com = isCommercialOp(ops[i]);
@@ -6494,11 +6711,7 @@ export const useStore = create<Store>()(
           let photoGone = false;
           let goneEvidence: { url: string; inspectionId?: string; inspectionItemId?: string } | undefined;
           const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation, (local) => { photoGone = true; goneEvidence = local; });
-          settle(ops[i]);
-          if (snap) { lastSnap = snap; lastSnapStale = false; } else if (lastSnap && isSiteVisitOp(ops[i])) lastSnapStale = true;
-          // an evidence send settled with its refresh failed (its bytes are gone, so it is never sent again): the pull it
-          // owes is asked for once the flush is done, as a 410's is (#482)
-          if (!snap && ops[i].t === 'uploadEvidence') photoSettledGone = true;
+          const startCleared = afterSent(ops[i], snap);
           // #482: a photo settled by the server's 410 is settled as a delete is (settleDeleted). Its local copies leave at
           // once, matched by the send's own key: one an earlier pull recorded is never shown past the server's word (Codex
           // 4340333337), and a pull begun before this answer, which may still hold it, is superseded. The day's count on
@@ -6532,27 +6745,7 @@ export const useStore = create<Store>()(
               });
             }
           }
-          // a site visit's answer shows on its own screen, so it is not counted in the "synced" line; one that went
-          // through starts the visit photo retry's wait over
-          if (!isSiteVisitOp(ops[i])) synced += 1;
-          else visitPhotoRetryMs = VISIT_PHOTO_WAIT_MS;
-          if (ops[i].t === 'decideReview') refreshBriefAfterReview(flushedBy);
-          // SV2: a visit started: its kept photos stop carrying the start, so it is not put back and sent again. Not
-          // written (the phone's database failed): the start may be sent again ahead of them, and the server answers
-          // that replay with the same visit, so nothing is lost or doubled
-          const started = ops[i];
-          // Bounded, as every write of the rows in a flush is: one that fails or never answers keeps the rows' start,
-          // lets the flush go on, and is made again by the next flush (Codex 4324453897)
-          if (started.t === 'siteVisitStart') {
-            await withinWait(() => clearVisitPhotoStart(visitPhotoScope(flushToken, flushedBy), flushGateway.project, started.body.id))
-              .catch(() => retryVisitPhotos());
-          }
-          if (ops[i].t === 'startDailyLog') dailyLogCommitted = 'start';
-          else if (ops[i].t === 'submitDailyLog') dailyLogCommitted = 'send';
-          const k = keyOf(ops[i]); if (k) succeededKeys.push(k);
-          if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
-          if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
-          if (com) { commercialAttempted = true; commercialWritesSettled += 1; }
+          if (startCleared) await startCleared;
         } catch (err) {
           // the photo's own row could not be read or updated in time: not the server's answer. The act and its visit's
           // later acts are held, the rest of the queue goes on, and the flush is tried again
@@ -6610,7 +6803,7 @@ export const useStore = create<Store>()(
                 } else {
                   // not sent, and kept with the server's words, so the screen says which photos and why
                   ops.splice(i + 1, rest.length, ...rest.filter((o) => !onIt.includes(o)));
-                  for (const o of onIt) { settle(o); const k = keyOf(o); if (k) droppedKeys.push(k); }
+                  for (const o of onIt) { settle(o, true); const k = keyOf(o); if (k) droppedKeys.push(k); }
                 }
                 visitMoves.push([op.body.id, open?.id ?? null]);
               }
@@ -6621,7 +6814,7 @@ export const useStore = create<Store>()(
             } else {
               dropped += 1; // server will never accept this one — discard and keep going
             }
-            settle(ops[i]);
+            settle(ops[i], true);
             const k = keyOf(ops[i]); if (k) droppedKeys.push(k);
             if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
             if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
@@ -6660,7 +6853,10 @@ export const useStore = create<Store>()(
         if (heldAfter.length > 0) set({ siteVisitsHeld: { project: keptFor, generation: flushScope.generation, visits: heldAfter } });
       }
       // the held site visit acts came before the stop, so they stay ahead of everything after it, in order
-      const remaining = [...heldVisits, ...(stoppedAt >= 0 ? ops.slice(stoppedAt) : [])];
+      // U2: an act left for later whose done fact is here now leaves, so it is neither pending nor counted
+      const unsent = [...heldVisits, ...(stoppedAt >= 0 ? ops.slice(stoppedAt) : [])];
+      const remaining = scopeMoved ? unsent : unsent.filter((o) => !settleDone(o));
+      await Promise.all(doneWaits);
       const pendingKeys = remaining.map(keyOf).filter((k): k is string => !!k);
       if (scopeMoved) {
         // The in-memory outbox now belongs to the NEW scope (hydrateOutbox swapped
@@ -6675,6 +6871,8 @@ export const useStore = create<Store>()(
         await keepUnsentLocked(queueKeys, storage, flushKey, remaining.filter((o) => !isSiteVisitOp(o)), flushed.filter((o) => !isSiteVisitOp(o)), (l) => l, (o) => !isSiteVisitOp(o));
         // acts queued meanwhile for a refused start get the same move or drop as the normal path's (Codex 4278754334)
         await keepUnsentLocked(queueKeys, storage, siteVisitKeyOf(flushKey), remaining.filter(isStoredVisitOp), flushed.filter(isStoredVisitOp), (l) => remapVisits(l).filter(isStoredVisitOp), isStoredVisitOp);
+        // a guide waiting on one of these acts belonged to the scope left behind
+        for (const o of [...ops, ...remaining]) { const k = keyOf(o); if (k) actWatches.delete(k); }
         return { ran: true, scopeMoved: true, succeededKeys, droppedKeys, pendingKeys };
       }
 
@@ -6689,7 +6887,7 @@ export const useStore = create<Store>()(
         // under module ownership the command's own snapshot carries no daily-log slice, so the log
         // on screen predates the committed start/submit until the reconcile's module read lands —
         // flag it in the SAME update that drops the op, leaving no window to act on the stale log
-        if (dailyLogCommitted && dailyLogReadMode() === 'moduleQuery') {
+        if (dailyLogCommitted && (dailyLogReadMode() === 'moduleQuery' || dailyLogDoneElsewhere)) {
           s.dailyLogReconcileAfter = snapshotSeq;
           s.dailyLogReconcileKind = dailyLogCommitted;
         }
@@ -6711,10 +6909,47 @@ export const useStore = create<Store>()(
       // finding 1 — a write-ahead command passes its own success toast (`okMsg`); the reconcile
       // announces it on `applied`. In that case suppress the batch "N synced" line below (the okMsg
       // already reported success), but still surface the error parts (dropped / still-pending).
-      const flushOk = typeof opts?.okMsg === 'function' ? opts.okMsg() : opts?.okMsg;
+      // a command's line is said only by the flush the server accepted its act in, whichever call it came with (#1133).
+      // An act refused for good leaves the queue too, and says the refused line instead. A line whose act is still in this
+      // queue waits for a later flush (#1134 r1 4376641813); one whose act left it, sent or refused, is done
+      const succeeded = new Set(succeededKeys);
+      const stillQueued = new Set(get().outbox.flatMap((o) => keyOf(o) ?? []));
+      for (const k of succeededKeys) actWatches.get(k)?.('sent');
+      for (const k of droppedKeys) actWatches.get(k)?.('failed');
+      for (const k of pendingKeys) actWatches.get(k)?.('pending');
+      const said = okWaiting.filter((w) => succeeded.has(w.key));
+      okWaiting = okWaiting.filter((w) => w.queue !== flushKey || stillQueued.has(w.key));
+      // #1134 r2 (4377928188, root-cause audit in notes/site-visits/web-02-U3/u3b/r2/fix.md): a flush sends 0..N commands'
+      // acts, each with its own outcome. Each command whose act this flush sent says its line once, in the order sent, in
+      // this flush's one line; past two, the first is said and the rest are counted. The count covers every sent act
+      // without a line (every waiting act was counted as sent: no site visit act waits for a line)
+      const sentOrder = (k: string) => succeededKeys.indexOf(k);
+      // (every outbox act is keyed, so a line comes only with its act: `okWaiting`)
+      const lined = said.sort((a, b) => sentOrder(a.key) - sentOrder(b.key)).map((w) => w.okMsg);
+      const told = lined.length > 2 ? lined.slice(0, 1) : lined;
+      const flushOk = told.map((m) => (typeof m === 'function' ? m() : m)).join(' ') || undefined;
+      // the caller that says its own acts' word has them in none of the counts (#1134 residual: the drawing publish)
+      const ownOf = (keys: string[]) => (own ? keys.filter((k) => own.has(k)).length : 0);
+      const unlined = synced - told.length - ownOf(succeededKeys);
+      const unsaid = dropped - ownOf(droppedKeys);
+      const waiting = remaining.length - ownOf(pendingKeys);
+      const parts: string[] = [];
+      const lang = get().lang;
+      if (unlined > 0) parts.push(SYNC.synced(unlined, lang));
+      if (unsaid > 0) parts.push(SYNC.dropped(unsaid, lang));
+      if (waiting > 0) parts.push(SYNC.pending(waiting, lang));
+      // the chain refusals carry the server's words, so they are not folded into the count, but they are said in the same
+      // line: the command's line and everything else this flush did are one line, so none hides another (#1134 r1
+      // 4376641802, Stage 1 re-check of 62c8d1e)
+      const rest = [...(parts.length ? [SYNC.join(parts, lang)] : []), ...chainRefusals].join(' ');
+      // the caller says this flush's word with its own only if it can say it now; otherwise the flush says it, as main did
+      const handing = !!own && (opts?.saysNow?.() ?? true);
+      let toldWith: string | undefined;
       if (lastSnap && flushLease) {
         // a stale snapshot is handled as a superseded one is: the command's word is said, and a reconcile asked after it
-        consumeSnapshotResult(lastSnapStale ? 'superseded' : acceptSnapshot(lastSnap, flushLease), flushOk, flushLease.scope);
+        const result = lastSnapStale ? 'superseded' : acceptSnapshot(lastSnap, flushLease);
+        if (flushOk && (rest || handing) && (result === 'applied' || result === 'superseded')) toldWith = flushOk;
+        consumeSnapshotResult(result, toldWith ? undefined : flushOk, flushLease.scope);
       } else if (flushLease && pullSuperseded) {
         // (a flush whose project changed has returned above: the scope here is still the flush's)
         void requestFreshSnapshot(flushLease.scope);
@@ -6722,15 +6957,15 @@ export const useStore = create<Store>()(
       // ...asked for here, as the 404 path's reconcile is (settleDeleted): it begins after the 410's answer, so it clears
       // the count's "updating" and takes the photo out of the log, and one that fails shows the Retry
       if (photoSettledGone && flushLease) scheduleReconcile(flushLease.scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+      // U2: an act another tab sent brought no snapshot here; the read after it is owed, as a 410's is
+      if (doneElsewhere && flushLease) scheduleReconcile(flushLease.scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+      // ...and a visit act another tab sent brought this tab's Site Visits screen no answer: it reads again, as the photo
+      // retry has it do, so it never falls back to the visit as it was before the act (r1 gap-check of a6a03e1f, C7)
+      if (visitDoneElsewhere && scopeStillCurrent(flushScope)) tellSiteVisits({ kind: 'retry', project: flushGateway.project, generation: flushScope.generation });
 
-      const parts: string[] = [];
-      const lang = get().lang;
-      if (synced > 0 && !opts?.okMsg) parts.push(SYNC.synced(synced, lang));
-      if (dropped > 0) parts.push(SYNC.dropped(dropped, lang));
-      if (remaining.length > 0) parts.push(SYNC.pending(remaining.length, lang));
-      if (parts.length && endHere()) get().flash(SYNC.join(parts, lang));
-      // the chain refusals carry the server's words, so they are not folded into the count above
-      if (chainRefusals.length && endHere()) get().flash(chainRefusals.join(' '));
+      // one flash per flush: a caller that says its own acts' word says this flush's with it, in one line
+      const handBack = handing && endHere() ? [toldWith, rest].filter(Boolean).join(' ') || undefined : undefined;
+      if (!handing && rest && endHere()) get().flash(toldWith ? `${toldWith} ${rest}` : rest);
       // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved
       // to FAILED; an op kept alive by a failed dead-letter write stays covered
       void reconcileEvidence();
@@ -6814,16 +7049,20 @@ export const useStore = create<Store>()(
           ])) get().loadCommercialLineRegister(lineId);
         }
       }
-      return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys };
+      return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys, word: handBack };
       } finally {
         outboxFlushing = false;
+        flushingKeys = new Set();
+        // #482 — offline, no rerun follows: an act the guide waits on that this flush did not settle (taken after it began,
+        // or left out of it) waits for the signal, as going offline says
+        if (!get().online) for (const [k, watch] of [...actWatches]) if (!writingKeys.has(k)) watch('pending');
         // a visit photo reconciliation this flush overtook reads again now, against the settled queue (SV2)
         if (visitPhotoRecheck) {
           visitPhotoRecheck = false;
           void reconcileVisitPhotos();
         }
-        // a command persisted DURING this flush was not replayed here — flush it now (plain, no okMsg,
-        // so its success shows via the batch summary). Bounded: the rerun fires at most once per settle.
+        // a command persisted DURING this flush was not replayed here — flush it now (plain: a command's line still
+        // waiting is said by the flush that sends its act, #1133). Bounded: the rerun fires at most once per settle.
         // It runs on an empty queue too: a visit photo kept meanwhile whose act this flush let go (its visit's
         // start was refused) has it put back there and settled (SV2, Codex 4321084743)
         if (outboxFlushQueued) {

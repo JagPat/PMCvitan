@@ -221,6 +221,10 @@ function buildBase(): void {
     '20280112000000_site_visits_sv1a_record',
     // Site Visits SV2's visit files reference SV1-a's visit table: built on SV1-a, excluded with it.
     '20280114000000_site_visits_sv2_visit_media',
+    // #1179 R1's removal lines reference SV1-a's visit table and SV2's files: built on both, excluded with them.
+    '20280125000000_site_visit_file_removal',
+    // Hub #1118 U5m seeds its generation beside SV1-a's (its prerequisite): built on SV1-a, excluded with it.
+    '20280127000000_hub_catalog_generation',
     // The org role change written in place re-issues 4d-i's `phase6_t4d_org_authority`: built on 4d-i, excluded with
     // the rest (applied to this pre-4d base it would install a `phase6_t4d_*` function before the unit under test).
     '20280119000000_org_authority_role_change_in_place',

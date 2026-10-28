@@ -8,8 +8,14 @@ export const drawingsManifest: ModuleManifest = {
   id: 'drawings',
   title: 'Drawing Control',
   kind: 'domain',
-  ownsModels: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection'],
-  readEncapsulated: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection'],
+  // #1118 U1a-3 (20280121200000) — the Hub fetched-blob ledger
+  // #1118 U1a-2 (20280121300000) — the Hub link and its history
+  // #1118 U1b (20280122000000) — the Hub records of a Hub drawing, its versions and its governing marks
+  // #1118 U1a-1 (20280123000000) — Hub's delivery receipts and the versions Hub withdrew
+  ownsModels: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection', 'hubFetchedBlob', 'drawingHubLink', 'drawingHubLinkEvent',
+    'hubDrawing', 'hubRevision', 'hubGoverningMark', 'hubWebhookReceipt', 'hubVersionTombstone'],
+  readEncapsulated: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection', 'hubFetchedBlob', 'drawingHubLink', 'drawingHubLinkEvent',
+    'hubDrawing', 'hubRevision', 'hubGoverningMark', 'hubWebhookReceipt', 'hubVersionTombstone'],
   dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
   workflowParticipants: [],
   producesEvents: [
@@ -36,6 +42,8 @@ export const drawingsManifest: ModuleManifest = {
     'POST /projects/:projectId/drawings/rev/:revId/ack',
     'PATCH /projects/:projectId/drawings/:drawingId/node',
     'DELETE /drawings/:id',
+    // #1118 U3 — Hub's webhook deliveries (signed by Hub; no user)
+    'POST /integrations/hub/:orgId/events',
   ],
   permissions: ['pmc', 'engineer', 'contractor'],
 };

@@ -88,18 +88,41 @@ export function queueStrip(view: { get: () => StripState; set: (p: Partial<Strip
       // newer release's not yet reloaded was written over while the other refused its write)
       if (listed.length === 0 || !listed.every(settable)) return;
       const keys = listed.map((u) => u.key);
+      // #1136 r1 (Codex 4380084840): the bytes each listed key holds as the person taps, the only bytes this tap is for.
+      // A read that throws: the tap cannot know what it is for, and says Set aside failed
+      const tapped = new Map<string, string | null>();
+      try { for (const key of keys) tapped.set(key, storage.getItem(key)); } catch { view.set({ queueSetAsideFailed: true }); return; }
       // L2b (gap check 5): the copies, the writes and any put-back run holding every listed key's lock, so no other tab
-      // of this release writes a key between this tap's write and its put-back. No lock: nothing is changed
-      const done = await underQueueLocks(keys, () => {
+      // of this release writes a key between this tap's write and its put-back. No lock: nothing is changed.
+      // U3c (4370280900): every key of the scope's lock, listed or not, so no key the tap reads below can change between
+      // that read and the tap's writes
+      const done = await underQueueLocks(scope, () => {
         // the scope may have moved while the locks were asked for: then this tap acts for nothing
         if (bindScope() === null || bindScope()!.join() !== scope.join()) return 'moved' as const;
-        // every key copied and read back, or nothing changes
-        if (!view.keys().setAside(storage, keys)) return 'none' as const;
+        // U3c: every key of the scope is read again now that the tap holds its lock, through the guard's one reconciliation
+        // (`heard`), with memory's acts for it (none when memory holds none there): a key found unreadable now holds what
+        // this tab loaded from it (4370036882). A read that is not clean stops the tap and says so (4370280905). A key
+        // changed while the tap waited to bytes Set aside may not move (4358186333), or a scope key newly unreadable
+        // (4370036892), changes nothing: the strip now offers what fits
+        for (const key of scope) {
+          if (view.keys().heard(storage, key, view.writes().find((w) => w.key === key)?.mine ?? []) === null) return 'none' as const;
+        }
+        // the list now must be the one the tap was for: the same keys, each still settable (a listed key gone from it was
+        // made readable or cleared meanwhile: #1136 r1, Codex 4380084840)
+        const now = view.get().queueUnreadable.filter((u) => scope.includes(u.key));
+        if (now.length !== keys.length || !now.every((u) => keys.includes(u.key) && settable(u))) return 'changed' as const;
+        // every key copied and read back, or nothing changes; only the bytes just reconciled are copied, and only if they
+        // are the bytes the person tapped for: a key changed in any way since is 'changed', and the whole tap stops
+        const copied = view.keys().setAside(storage, keys, tapped);
+        if (copied !== 'ok') return copied;
         // then memory's acts are written over each copied key, and only those: all of them, or each is put back. A key
         // leaves the list as its write lands (Codex 4345664686)
         return view.keys().writeAll(storage, view.writes().filter((w) => keys.includes(w.key)));
       });
       if (done === 'moved') return;
+      // a key changed while the tap waited: nothing failed, the strip now offers what fits its bytes, and an earlier
+      // tap's failure line goes (Stage 1 gap check of 3302f45, note 3)
+      if (done === 'changed') { view.set({ queueSetAsideFailed: false }); return; }
       view.set({ queueSetAsideFailed: done === null || done === 'none' });
     },
     reload(): void {

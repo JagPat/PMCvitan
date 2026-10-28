@@ -4,10 +4,12 @@ import { can, forYouRole, type Lang, type ProjectMember, type Role } from '@vita
 import { useStore } from '@/store/store';
 import { Button, Modal } from '@/components';
 import { PhotoMarkup } from '@/components/PhotoMarkup';
+import { MediaPlayer } from '@/components/MediaPlayer';
 import { trailOf } from '@/lib/locationTree';
-import { mayAddPhoto, useSiteVisits } from '@/lib/useSiteVisits';
+import { mayAddPhoto, useSiteVisits, VIDEO_MAX_MS, VOICE_MAX_MS } from '@/lib/useSiteVisits';
+import { clockText, pickRecordType, RecordError, startRecording, type Recorded, type Recording, type RecordKind, type RecordOptions } from '@/lib/mediaRecorder';
 import { UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
-import { SV, visitTime } from '@/lib/siteVisitWords';
+import { refusalWords, SV, visitTime } from '@/lib/siteVisitWords';
 import { stampText } from '@/lib/captureStamp';
 import { resolveMediaUrl, type SiteVisit, type SiteVisitRating } from '@/data/apiGateway';
 import styles from './SiteVisitsScreen.module.css';
@@ -101,12 +103,14 @@ export function SiteVisitsScreen() {
           <ul className={styles.files}>
             {sv.notSent.map((p) => (
               <li key={p.key} className={styles.file} data-testid={`sv-not-sent-${p.key}`}>
-                <img className={styles.thumb} src={p.url} alt={p.note ?? SV.photos[lang]} />
+                {recordingKind(p.mime)
+                  ? <div className={styles.voice}><MediaPlayer url={p.url} mime={p.mime} label={p.note ?? fileName(p.mime, lang)} words={playWords(lang, p.mime)} /></div>
+                  : <img className={styles.thumb} src={p.url} alt={p.note ?? SV.photos[lang]} />}
                 <div className={styles.fileText}>
                   {p.copy && <div className={styles.meta}>{SV.markupCopy[lang]}</div>}
                   {p.note && <div>{p.note}</div>}
                   {p.placeName && <div className={styles.meta}>{p.placeName}</div>}
-                  <div className={styles.meta}>{/* the server's own words, in every language (Codex 4320122189) */}{p.reason ? `${SV.refused[lang]} ${p.reason}` : SV.refused[lang]}</div>
+                  <div className={styles.meta}>{/* the server's own words, in every language (Codex 4320122189); a voice refusal in the viewer's */}{p.reason ? `${SV.refused[lang]} ${refusalWords(p.reason, lang)}` : SV.refused[lang]}</div>
                   <Button variant="light" onClick={() => sv.dismiss(p.key)}>{SV.dismiss[lang]}</Button>
                 </div>
               </li>
@@ -202,6 +206,8 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
   const [person, setPerson] = useState('');
   const [guest, setGuest] = useState('');
   const [closing, setClosing] = useState(false);
+  // one recording at a time on a card: a voice note or a video
+  const [recordingNow, setRecordingNow] = useState<RecordKind | null>(null);
   const [reason, setReason] = useState('');
   const [photoNote, setPhotoNote] = useState('');
   const [photoRating, setPhotoRating] = useState<SiteVisitRating | ''>('');
@@ -230,6 +236,8 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
   // a photo is placed at one of the places this visit walked
   const walked = v.places.filter((p) => !p.retiredAt && p.nodeId);
   const files = v.files ?? [];
+  // a copy names its original by its place among the visit's photos, so voice notes and videos between them are not counted
+  const photos = files.filter((f) => !recordingKind(f.mime));
   // a place chosen for the photo and then removed from the visit is no longer offered, so it is not sent either
   const photoAt = walked.find((p) => p.nodeId === photoPlace);
   useEffect(() => { if (photoPlace && !photoAt) setPhotoPlace(''); }, [photoPlace, photoAt]);
@@ -331,13 +339,17 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
         </>
       )}
 
-      <h2 className={styles.sub}>{SV.photos[lang]}</h2>
+      <h2 className={styles.sub}>{SV.files[lang]}</h2>
       {files.length === 0 && <div className={styles.meta}>{SV.none[lang]}</div>}
       <ul className={styles.files}>
         {files.map((f) => (
           <li key={f.mediaId} className={styles.file} data-testid={`sv-file-${f.mediaId}`}>
-            {/* a queued photo the phone no longer has a picture of (its row is gone) shows without one until read again */}
-            {f.url ? (
+            {/* a voice note or a video plays where a photo shows; one the phone no longer has (its row is gone) shows without a player */}
+            {recordingKind(f.mime) ? (
+              <div className={styles.voice}>
+                {f.url ? <MediaPlayer url={f.url} mime={f.mime} label={f.note ?? fileName(f.mime, lang)} words={playWords(lang, f.mime)} poster={f.posterUrl ?? undefined} /> : null}
+              </div>
+            ) : /* a queued photo the phone no longer has a picture of (its row is gone) shows without one until read again */ f.url ? (
               <a href={resolveMediaUrl(f.url)} target="_blank" rel="noreferrer" aria-label={SV.photoOpen[lang]}>
                 <img
                   className={styles.thumb} src={resolveMediaUrl(f.url)} alt={f.note ?? SV.photos[lang]} loading="lazy"
@@ -351,7 +363,10 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
             ) : <div className={styles.thumb} aria-hidden="true" />}
             <div className={styles.fileText}>
               {f.rating && <span className={styles.rating} data-rating={f.rating}>{ratingName(f.rating, lang)}</span>}
-              {f.sourceMediaId && <CopyOf files={files} at={files.findIndex((x) => x.mediaId === f.sourceMediaId)} copyId={f.mediaId} lang={lang} />}
+              {f.sourceMediaId && <CopyOf files={photos} at={photos.findIndex((x) => x.mediaId === f.sourceMediaId)} copyId={f.mediaId} lang={lang} />}
+              {recordingKind(f.mime) && (
+                <div className={styles.meta}>{fileName(f.mime, lang)}{typeof f.durationSec === 'number' ? ` · ${clockText(f.durationSec * 1000)}` : ''}</div>
+              )}
               {f.note && <div>{f.note}</div>}
               {f.place && <div className={styles.meta}>{f.place.name}</div>}
               <div className={styles.meta}>
@@ -392,6 +407,14 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
             }}
           />
           <Button variant="light" disabled={sv.busy} onClick={() => fileRef.current?.click()}>{SV.addPhoto[lang]}</Button>
+          {RECORDERS.map((kind) => (
+            <MediaRecorderButton
+              key={kind} kind={kind} visitId={v.id} lang={lang} busy={sv.busy}
+              held={recordingNow !== null && recordingNow !== kind} onActive={(on) => setRecordingNow((k) => (on ? kind : k === kind ? null : k))}
+              onRecorded={(rec) => sv.addRecording(kind, v.id, rec, { note: photoNote, ...(photoRating ? { rating: photoRating } : {}), ...(photoAt ? { nodeId: photoAt.nodeId!, placeName: photoAt.name } : {}) })
+                .then((ok) => { sent(ok); return ok; })}
+            />
+          ))}
         </div>
       )}
 
@@ -409,5 +432,149 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
         </div>
       )}
     </article>
+  );
+}
+
+/** A visit file that plays (a voice note or a video clip), by its type; null for a photo. */
+const recordingKind = (mime: string): RecordKind | null => (mime.startsWith('audio/') ? 'audio' : mime.startsWith('video/') ? 'video' : null);
+const fileName = (mime: string, lang: Lang) => (mime.startsWith('video/') ? SV.videoClip[lang] : SV.voiceNote[lang]);
+const playWords = (lang: Lang, mime: string) => ({ play: SV.play[lang], failed: (mime.startsWith('video/') ? SV.videoPlayFailed : SV.playFailed)[lang], retry: SV.retry[lang] });
+
+/** The recorders a visit card offers, in order: a voice note, then a video clip. */
+const RECORDERS: readonly RecordKind[] = ['audio', 'video'];
+
+/** #995 V2b: a video clip records from the back camera where there is one, at about 1 Mbps picture and 64 kbps sound, so a
+ *  minute stays inside the upload's size; with the microphone refused (or missing) it records picture only. */
+const VIDEO_OPTIONS: RecordOptions = {
+  bits: { videoBitsPerSecond: 1_000_000, audioBitsPerSecond: 64_000 },
+  media: { audio: true, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+  fallback: { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+};
+
+/** What each recorder is called and says, and how long it runs. */
+const KINDS: Record<RecordKind, {
+  maxMs: number; options?: RecordOptions;
+  words: Record<'record' | 'capped' | 'denied' | 'format' | 'unavailable', (typeof SV)[keyof typeof SV]>;
+}> = {
+  audio: { maxMs: VOICE_MAX_MS, words: { record: SV.recordVoice, capped: SV.voiceCapped, denied: SV.voiceDenied, format: SV.voiceFormat, unavailable: SV.voiceUnavailable } },
+  video: { maxMs: VIDEO_MAX_MS, options: VIDEO_OPTIONS, words: { record: SV.recordVideo, capped: SV.videoCapped, denied: SV.videoDenied, format: SV.videoFormat, unavailable: SV.videoUnavailable } },
+};
+
+/** Stage 1 voice notes: record a note on the visit (#995 V2b: or a video clip, which shows what the camera sees while it
+ *  records). Offered only where this browser's recorder writes a type the upload
+ *  takes. It stops itself at the cap and is added then too; Discard keeps nothing. The microphone is let go when the
+ *  recording ends, and when the card goes while it runs. What is recorded is handed to the visit-file outbox. */
+function MediaRecorderButton({ kind, visitId, lang, busy, held, onActive, onRecorded }: {
+  kind: RecordKind;
+  visitId: string;
+  lang: Lang;
+  busy: boolean;
+  /** another recorder on this card is starting or running: one recording at a time */
+  held: boolean;
+  onActive: (on: boolean) => void;
+  onRecorded: (rec: Recorded) => Promise<boolean>;
+}) {
+  const { maxMs, options, words } = KINDS[kind];
+  const type = useMemo(() => pickRecordType(kind), [kind]);
+  const [live, setLive] = useState<MediaStream | null>(null);
+  const [phase, setPhase] = useState<'idle' | 'starting' | 'recording'>('idle');
+  const [elapsed, setElapsed] = useState(0);
+  const [said, setSaid] = useState<string | null>(null);
+  const run = useRef<Recording | null>(null);
+  // the recording stays this screen's until it has stopped, so leaving (or Discard) meanwhile still keeps nothing
+  const stopping = useRef<Recording | null>(null);
+  const alive = useRef(true);
+  // the note, rating and place as they are when the recording ends, however it ends (the cap included)
+  const recorded = useRef(onRecorded);
+  useEffect(() => { recorded.current = onRecorded; });
+  // set again on each mount: StrictMode runs the cleanup once before the real mount (as ProjectSwitcher does)
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; run.current?.cancel(); run.current = null; };
+  }, []);
+  // the running time, for the person only: the recording's own cap stops it
+  useEffect(() => {
+    if (phase !== 'recording') return;
+    const began = performance.now();
+    setElapsed(0);
+    const tick = setInterval(() => setElapsed(performance.now() - began), 250);
+    return () => clearInterval(tick);
+  }, [phase]);
+  // the card holds its other recorder while this one starts or runs
+  const active = phase !== 'idle';
+  const activeRef = useRef(onActive);
+  useEffect(() => { activeRef.current = onActive; });
+  useEffect(() => { activeRef.current(active); }, [active]);
+  useEffect(() => () => activeRef.current(false), []);
+  if (!type) return null;
+
+  const finish = async (rec: Recorded, capped: boolean) => {
+    setPhase('idle');
+    setLive(null);
+    const ok = await recorded.current(rec);
+    if (ok && capped && alive.current) setSaid(words.capped[lang]);
+  };
+  const start = async () => {
+    setSaid(null);
+    setPhase('starting');
+    try {
+      const r = await startRecording(kind, type, maxMs, options);
+      if (!alive.current) { r.cancel(); return; }
+      run.current = r;
+      setLive(r.stream);
+      setPhase('recording');
+      // stopped by its cap, or ended by the browser: added as if Stop was tapped, unless Stop or Discard came first
+      void r.ended.then(({ rec, cause }) => {
+        if (run.current !== r || !alive.current) return;
+        run.current = null;
+        void finish(rec, cause === 'cap');
+      });
+    } catch (err) {
+      if (!alive.current) return;
+      setPhase('idle');
+      const reason = err instanceof RecordError ? err.reason : 'unavailable';
+      setSaid(words[reason][lang]);
+    }
+  };
+  const stop = async () => {
+    const r = run.current;
+    if (!r || stopping.current === r) return;
+    stopping.current = r;
+    const rec = await r.stop();
+    if (run.current !== r || !alive.current) return;
+    run.current = null;
+    void finish(rec, false);
+  };
+  const discard = () => {
+    run.current?.cancel();
+    run.current = null;
+    setLive(null);
+    setPhase('idle');
+  };
+  // voice keeps its own test ids; a video's name its kind
+  const id = kind === 'audio' ? visitId : `video-${visitId}`;
+
+  return (
+    <>
+      {phase === 'recording' ? (
+        <div className={styles.recording} role="status" data-testid={`sv-recording-${id}`}>
+          {/* what the camera sees, muted: the clip itself is the recorder's */}
+          {kind === 'video' && live && (
+            <video
+              className={styles.preview} muted autoPlay playsInline aria-hidden="true"
+              ref={(el) => { if (el && el.srcObject !== live) el.srcObject = live; }}
+            />
+          )}
+          <span>{SV.recording[lang]} {clockText(elapsed)} {SV.recordingOf[lang]} {clockText(maxMs + 500)}</span>
+          <Button variant="ink" onClick={() => void stop()}>{SV.voiceStop[lang]}</Button>
+          <Button variant="ghost" onClick={discard}>{SV.voiceDiscard[lang]}</Button>
+        </div>
+      ) : (
+        <Button variant="light" disabled={busy || held || phase === 'starting'} data-testid={`sv-record-${id}`} onClick={() => void start()}>
+          {words.record[lang]}
+        </Button>
+      )}
+      {said && <div className={styles.meta} role="status">{said}</div>}
+    </>
   );
 }

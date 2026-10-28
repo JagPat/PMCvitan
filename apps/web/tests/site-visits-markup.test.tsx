@@ -1278,6 +1278,25 @@ describe('Site Visits M3: Mark up on a visit’s photos', HANG, () => {
     await mount(fakeGateway([visit({ files: [plain] })]));
     expect(within(screen.getByTestId('sv-file-m-1')).queryByText('Marked-up copy')).toBeNull();
   });
+
+  it('numbers a copy’s original among the visit’s photos only, the same with voice notes among them', async () => {
+    const voice = (id: string) => stored({ mediaId: id, url: `/media/${id}?t=1.sig`, mime: 'audio/webm', takenAt: null, note: null, rating: null });
+    const photos = [
+      stored({ mediaId: 'm-c2', url: '/media/m-c2?t=1.sig', sourceMediaId: 'm-2', note: null }),
+      stored({ mediaId: 'm-2', url: '/media/m-2?t=1.sig', note: 'Beam' }),
+      stored({ mediaId: 'm-1', url: '/media/m-1?t=1.sig' }),
+      stored({ mediaId: 'm-c1', url: '/media/m-c1?t=1.sig', sourceMediaId: 'm-1', note: null }),
+    ];
+    const labels = async (files: SiteVisitFile[]) => {
+      await mount(fakeGateway([visit({ files })]));
+      const out = [screen.getByTestId('sv-copy-of-m-c2').textContent, screen.getByTestId('sv-copy-of-m-c1').textContent];
+      cleanup();
+      return out;
+    };
+    expect(await labels(photos)).toEqual(['Marked-up copy of photo 2', 'Marked-up copy of photo 3']);
+    expect(await labels([voice('m-v0'), photos[0], voice('m-v1'), photos[1], voice('m-v2'), photos[2], photos[3]]))
+      .toEqual(['Marked-up copy of photo 2', 'Marked-up copy of photo 3']);
+  });
 });
 
 describe('Site Visits M3: the pieces the editor rests on', HANG, () => {

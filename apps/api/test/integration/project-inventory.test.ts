@@ -31,6 +31,15 @@ describe('project:inventory — the itemised list of one project (live PG)', () 
     await t.prisma.media.create({
       data: { id: `it-media-${f.projectA.id}`, projectId: f.projectA.id, kind: 'progress', mime: 'image/png', data: Buffer.from('abc'), sizeBytes: 3, uploadedBy: 'pmc' },
     });
+    // #995 — a video names two stored files, its clip and its still frame; a video without a still frame names one
+    await t.prisma.media.create({
+      data: { id: `it-video-${f.projectA.id}`, projectId: f.projectA.id, kind: 'progress', mime: 'video/mp4', sizeBytes: 3, uploadedBy: 'pmc',
+        durationSec: 12, storageKey: 'site/clip.mp4', posterStorageKey: 'site/clip-poster.jpg' },
+    });
+    await t.prisma.media.create({
+      data: { id: `it-video-bare-${f.projectA.id}`, projectId: f.projectA.id, kind: 'progress', mime: 'video/webm', sizeBytes: 3, uploadedBy: 'pmc',
+        durationSec: 5, storageKey: 'site/bare.webm' },
+    });
     const node = await t.prisma.projectNode.create({ data: { projectId: f.projectA.id, name: 'Zone', kind: 'zone' } });
     nodeKey = JSON.stringify([node.id]);
     // a contained row: a crew row belongs to its daily log and has no project column of its own
@@ -104,12 +113,26 @@ describe('project:inventory — the itemised list of one project (live PG)', () 
   it('lists the users pointing at the project and its stored files', async () => {
     const inv = await inventoryProject(t.prisma, f.projectA.id);
     expect(inv.files).toEqual(expect.arrayContaining([
-      { table: 'Media', id: `it-media-${f.projectA.id}`, storageKey: null, url: null, bytesInDatabase: true },
-      { table: 'DrawingRevision', id: revisionId, storageKey: 'drawings/a-1-a.pdf', url: null, bytesInDatabase: false },
+      { table: 'Media', id: `it-media-${f.projectA.id}`, column: 'storageKey', storageKey: null, url: null, bytesInDatabase: true },
+      { table: 'DrawingRevision', id: revisionId, column: 'storageKey', storageKey: 'drawings/a-1-a.pdf', url: null, bytesInDatabase: false },
     ]));
     expect(inv.userPointers.map((u) => u.id)).toEqual(expect.arrayContaining([f.memberUser.id, f.otherUser.id]));
     expect(inv.userPointers.find((u) => u.id === f.otherUser.id))
       .toMatchObject({ key: JSON.stringify([f.otherUser.id]), projectId: f.projectB.id, lastProjectId: f.projectA.id });
+  });
+
+  it("lists a video's still frame as a stored file of its own, and only where the video has one (#995)", async () => {
+    const inv = await inventoryProject(t.prisma, f.projectA.id);
+    const video = `it-video-${f.projectA.id}`;
+    const bare = `it-video-bare-${f.projectA.id}`;
+    expect(inv.files).toEqual(expect.arrayContaining([
+      { table: 'Media', id: video, column: 'storageKey', storageKey: 'site/clip.mp4', url: null, bytesInDatabase: false },
+      { table: 'Media', id: video, column: 'posterStorageKey', storageKey: 'site/clip-poster.jpg', url: null, bytesInDatabase: false },
+      { table: 'Media', id: bare, column: 'storageKey', storageKey: 'site/bare.webm', url: null, bytesInDatabase: false },
+    ]));
+    expect(inv.files.filter((x) => x.column === 'posterStorageKey').map((x) => x.id), 'a null still frame is no file').toEqual([video]);
+    const other = await inventoryProject(t.prisma, f.projectB.id);
+    expect(other.files.map((x) => x.storageKey), "project B lists none of A's files").not.toContain('site/clip-poster.jpg');
   });
 
   it('follows contained tables however deep the chain goes, and stops on a cycle', () => {

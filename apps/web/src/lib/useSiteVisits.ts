@@ -8,13 +8,16 @@ import {
   type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitOp,
   type SiteVisitRating,
 } from '@/data/apiGateway';
-import { deleteVisitPhoto, listVisitPhotos, putVisitPhoto, settleFiledVisitPhotos, storageAvailable, visitPhotoScope, withinWait, VisitPhotoUnconfirmed, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { deleteVisitPhoto, listVisitPhotos, posterWaits, putVisitPhoto, settleFiledVisitPhotos, storageAvailable, visitPhotoScope, withinWait, VisitPhotoUnconfirmed, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import type { MarkedCopy } from '@/components/PhotoMarkup';
 import { setClampedTimeout } from './clampedTimer';
 import { captureStamp } from './captureStamp';
 import { photoDecodes } from './photoDecodes';
 import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto';
-import { SV } from './siteVisitWords';
+import { acceptedType, blobBase64, type Recorded, type RecordKind } from './mediaRecorder';
+import { drawPoster } from './videoPoster';
+import { VIDEO_CLIP_MIMES, VOICE_NOTE_MIMES } from '@/data/queueContracts';
+import { refusalWords, SV } from './siteVisitWords';
 
 /**
  * Site Visits SV1-c (#792, QA item 6): the screen's own state. The visits are read a page at a time from the
@@ -90,9 +93,12 @@ function deviceLocation(): Promise<{ lat: number; lng: number; accuracyM: number
   });
 }
 
-/** What a refusal tells the viewer: the server's own reason in English (its gist in Hindi and Gujarati). */
+/** What a refusal tells the viewer: the server's own reason in English (its gist in Hindi and Gujarati, with the reason
+ *  too when it is a voice refusal those languages have words for). */
 function refusedText(message: string | null, lang: Lang): string {
-  return lang === 'en' && message ? `${SV.refused.en} ${message}` : SV.refused[lang];
+  if (!message) return SV.refused[lang];
+  const words = refusalWords(message, lang);
+  return lang === 'en' || words !== message ? `${SV.refused[lang]} ${words}` : SV.refused[lang];
 }
 
 /** A chosen file's bytes as a data URL; null when the browser could not read it. */
@@ -211,6 +217,42 @@ export const MARKUP_OPEN_WAIT_MS = 30_000;
 /** M3: a visit kept on screen from beyond the pages read (an act answered with it) is looked for in the older pages
  *  when its link must be renewed, this many pages at most (the API has no read of one visit). */
 export const MARKUP_RELINK_PAGES = 10;
+
+/** Stage 1 voice notes: a recording stops itself here, half a second inside the server's two minutes (it refuses a
+ *  note that reads 120.5 s or more), so a container's last frame never carries it over. */
+export const VOICE_MAX_MS = 119_500;
+/** and one shorter than this is not kept: the server refuses under half a second, and a tap that recorded nothing is
+ *  no note */
+export const VOICE_MIN_MS = 1_000;
+/** and one that ran this long or longer is not kept either: the recorder's cap should have stopped it, so a recording
+ *  past it (a recorder that ignored its timer) is refused here before it is kept, never at the server */
+export const VOICE_LIMIT_MS = 120_000;
+/** #995 V2b: a video clip stops itself here, half a second inside the server's minute (it refuses a clip that reads
+ *  60.5 s or more), and is kept on the same terms as a voice note: at least a second, and never one that ran a minute */
+export const VIDEO_MAX_MS = 59_500;
+export const VIDEO_MIN_MS = 1_000;
+export const VIDEO_LIMIT_MS = 60_000;
+
+/** What the person is told when a visit file is not kept on the phone, in the words of what it is. */
+type KeepWords = Record<'noStorage' | 'notKept' | 'maybeNotKept', (typeof SV)[keyof typeof SV]>;
+const PHOTO_KEEP: KeepWords = { noStorage: SV.photoNoStorage, notKept: SV.photoNotKept, maybeNotKept: SV.photoMaybeNotKept };
+const VOICE_KEEP: KeepWords = { noStorage: SV.voiceNoStorage, notKept: SV.voiceNotKept, maybeNotKept: SV.voiceMaybeNotKept };
+const VIDEO_KEEP: KeepWords = { noStorage: SV.videoNoStorage, notKept: SV.videoNotKept, maybeNotKept: SV.videoMaybeNotKept };
+
+/** A recording of each kind: the base types the upload takes for it, how long it may be, and the words for each refusal. */
+const RECORDING: Record<RecordKind, {
+  mimes: readonly string[]; minMs: number; limitMs: number; keep: KeepWords;
+  words: Record<'format' | 'tooShort' | 'tooLong' | 'unreadable' | 'tooBig' | 'placeGone', (typeof SV)[keyof typeof SV]>;
+}> = {
+  audio: {
+    mimes: VOICE_NOTE_MIMES, minMs: VOICE_MIN_MS, limitMs: VOICE_LIMIT_MS, keep: VOICE_KEEP,
+    words: { format: SV.voiceFormat, tooShort: SV.voiceTooShort, tooLong: SV.voiceTooLong, unreadable: SV.voiceUnreadable, tooBig: SV.voiceTooBig, placeGone: SV.voicePlaceGone },
+  },
+  video: {
+    mimes: VIDEO_CLIP_MIMES, minMs: VIDEO_MIN_MS, limitMs: VIDEO_LIMIT_MS, keep: VIDEO_KEEP,
+    words: { format: SV.videoFormat, tooShort: SV.voiceTooShort, tooLong: SV.videoTooLong, unreadable: SV.voiceUnreadable, tooBig: SV.videoTooBig, placeGone: SV.videoPlaceGone },
+  },
+};
 
 /** How an open for marking ended: the photo, ready to draw on; why it did not open; or `moved`, when the person went on
  *  (Cancel, another photo, a sign-out or another project), which says nothing. */
@@ -648,8 +690,8 @@ export function useSiteVisits() {
   // a queued photo shows its own picture; a refused one is listed apart, with why, until dismissed
   const previews = useMemo(() => new Map(kept.filter((r) => r.state !== 'failed').map((r) => [r.clientKey, `data:${r.op.file.mime};base64,${r.data}`])), [kept]);
   const notSent = useMemo(() => kept.filter((r) => r.state === 'failed').map((r) => ({
-    key: r.clientKey, url: `data:${r.op.file.mime};base64,${r.data}`, note: r.op.file.note ?? null, placeName: r.op.placeName, reason: r.reason,
-    copy: !!r.op.file.sourceMediaId,
+    key: r.clientKey, url: `data:${r.op.file.mime};base64,${r.data}`, mime: r.op.file.mime, note: r.op.file.note ?? null, placeName: r.op.placeName,
+    reason: r.reason, copy: !!r.op.file.sourceMediaId,
   })), [kept]);
   // a photo the server took is shown from its filed row (not as waiting to send) until the server's list shows it
   const filed = useMemo(() => kept.filter((r) => r.state === 'filed'), [kept]);
@@ -658,10 +700,16 @@ export function useSiteVisits() {
     const taken = filed.filter((r) => !queuedKeys.has(r.op.idempotencyKey)).map((r) => r.op);
     return withQueued(rows, [...queued, ...taken], me, previews, new Set(taken.map((o) => o.file.id)));
   }, [rows, queued, me, previews, filed]);
-  // while one waits for that read, the read is tried again on the visit photo retry (Codex 4321558427)
+  // while one waits for that read, the read is tried again on the visit photo retry (Codex 4321558427). A clip the
+  // server already lists whose still frame is still to send waits for no read: its frame goes with the next flush made
+  // for any other reason, so a server that keeps refusing the frame is not asked again on the retry's beat (V2b-2)
+  const awaited = useMemo(() => {
+    const listed = new Set(rows.flatMap((v) => (v.files ?? []).map((f) => f.clientKey)));
+    return filed.filter((r) => !(posterWaits(r) && listed.has(r.clientKey)));
+  }, [filed, rows]);
   useEffect(() => {
-    if (filed.length > 0) useStore.getState().retrySiteVisits();
-  }, [filed, filedReads]);
+    if (awaited.length > 0) useStore.getState().retrySiteVisits();
+  }, [awaited, filedReads]);
   // the photos' signed links expire: read again before the soonest one shown does, so a thumbnail or full photo never
   // opens dead; each read brings fresh links and sets the next read. The next is set only once a read settles, so reads
   // never overlap, and a read that fails (no signal) leaves the rows as they were, so the timer is set again from the
@@ -690,12 +738,14 @@ export function useSiteVisits() {
   known.current = new Set([...shown.visits.map((v) => v.id), ...queued.map(siteVisitOf)]);
   shownRef.current = shown.visits;
 
-  /** A visit file (a photo, or a marked-up copy: M3) kept on the phone with the one act that sends it, then queued like
-   *  every visit act. "Waiting to send" means written; a phone that cannot keep it is told so and nothing is sent. */
+  /** A visit file (a photo, a marked-up copy: M3, or a voice note) kept on the phone with the one act that sends it, then
+   *  queued like every visit act. "Waiting to send" means written; a phone that cannot keep it is told so, in the words
+   *  of what it is, and nothing is sent. */
   const keepAndQueue = async (
     scope: ProjectScope, op: SiteVisitAddFileOp, data: string, say: (text: (typeof SV)[keyof typeof SV]) => void,
+    words: KeepWords = PHOTO_KEEP, poster: string | null = null,
   ): Promise<boolean> => {
-    if (!storageAvailable()) { say(SV.photoNoStorage); return false; }
+    if (!storageAvailable()) { say(words.noStorage); return false; }
     const s = useStore.getState();
     // a visit whose start is still waiting to send: that start is kept with the photo too, so the photo never
     // outlives the act it needs (Codex 4320122186)
@@ -710,9 +760,9 @@ export function useSiteVisits() {
       void useStore.getState().flushOutbox();
     };
     try {
-      await putVisitPhoto(op.scope, s.activeProjectId, op, data, start, lateCommit);
+      await putVisitPhoto(op.scope, s.activeProjectId, op, data, start, lateCommit, poster);
     } catch (err) {
-      say(err instanceof VisitPhotoUnconfirmed ? SV.photoMaybeNotKept : SV.photoNotKept);
+      say(err instanceof VisitPhotoUnconfirmed ? words.maybeNotKept : words.notKept);
       return false;
     }
     // the person signed out or moved to another project while it was written: the row stays, kept for the user and
@@ -805,6 +855,50 @@ export function useSiteVisits() {
           by: { name: s.userName ?? '', role: s.role }, placeName: extra.placeName ?? null, queuedAt: now(),
         };
         return await keepAndQueue(scope, op, m[2], say);
+      } finally {
+        if (live(scope)) setBusy(false);
+      }
+    },
+    /** Stage 1 voice notes: a recording on the visit, with the same optional note, rating and place as a photo, from the
+     *  same people while the visit is not closed (the server asks again). It goes the way a photo goes: kept on the
+     *  phone with the one act that sends it, then queued, so it waits through no signal, a reload and a sign-in. Only
+     *  a type the upload takes (its codecs too), at least a second and under two minutes long and within the upload's size, is kept. Its length is not sent:
+     *  the server reads it from the file and stores that. #995 V2b: a video clip goes the same way, under a minute, with
+     *  the still frame this phone draws from it, when it can (V2b-2). */
+    addRecording: async (kind: RecordKind, visitId: string, rec: Recorded, extra: { note?: string; rating?: SiteVisitRating; nodeId?: string; placeName?: string | null }): Promise<boolean> => {
+      const rule = RECORDING[kind];
+      const state = useStore.getState();
+      if (!state.serverGateway()) { setError(SV.needsServer[state.lang]); return false; }
+      const scope = projectScopeOf(state);
+      const say = (text: (typeof SV)[keyof typeof SV]) => { if (live(scope)) setError(text[useStore.getState().lang]); };
+      setBusy(true);
+      setError(null);
+      setNotice(null);
+      try {
+        // the base type and the codecs the recorder named: both must be ones the server reads
+        if (!rule.mimes.includes(rec.mime) || !acceptedType(kind, rec.type)) { say(rule.words.format); return false; }
+        if (rec.ms < rule.minMs || rec.blob.size === 0) { say(rule.words.tooShort); return false; }
+        if (rec.ms >= rule.limitMs) { say(rule.words.tooLong); return false; }
+        const data = await blobBase64(rec.blob).catch(() => null);
+        if (!data) { say(rule.words.unreadable); return false; }
+        if (data.length > MAX_PHOTO_BASE64) { say(rule.words.tooBig); return false; }
+        // V2b-2: a clip's still frame, drawn here and kept with it; a clip this phone cannot draw one from is kept without
+        const poster = kind === 'video' ? await drawPoster(rec.blob).catch(() => null) : null;
+        if (!live(scope)) return false;
+        // the place is checked as the visit is now shown, as a photo's is
+        const v = shownRef.current.find((x) => x.id === visitId);
+        if (extra.nodeId && !v?.places.some((p) => p.nodeId === extra.nodeId && !p.retiredAt)) { say(rule.words.placeGone); return false; }
+        const s = useStore.getState();
+        const note = extra.note?.trim();
+        const op: SiteVisitAddFileOp = {
+          t: 'siteVisitAddFile', visitId, idempotencyKey: newIdempotencyKey(), scope: visitPhotoScope(s.sessionToken, s.sessionUserId),
+          file: {
+            id: newIdempotencyKey(), mime: rec.mime,
+            ...(extra.nodeId ? { nodeId: extra.nodeId } : {}), ...(note ? { note } : {}), ...(extra.rating ? { rating: extra.rating } : {}),
+          },
+          by: { name: s.userName ?? '', role: s.role }, placeName: extra.placeName ?? null, queuedAt: now(),
+        };
+        return await keepAndQueue(scope, op, data, say, rule.keep, poster);
       } finally {
         if (live(scope)) setBusy(false);
       }

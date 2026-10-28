@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, insertRawEvent, type TwoProjectFixture } from './fixtures';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { inventoryProject } from '../../src/platform/project-inventory';
 import { OUTBOX_QUIET_MINUTES, removeProject, type RemovalOptions } from '../../src/platform/project-remove';
 
@@ -27,6 +28,13 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
   // a staff account whose home is elsewhere and whose last-used project is the target (jp@ on #482)
   const staffId = `it-rm-staff-${run}`;
   const staffEmail = `staff.${run}@vitan.in`;
+  // the Hub link's actor (#1118 U1a-2): a user of this file's own, homed on a project of its own in a company of its own, so
+  // no fixture row is named by an event (an event names its actor through a NO ACTION key and goes only with its project)
+  const hubOrgId = `it-rm-hubo-${run}`;
+  const hubHomeId = `it-rm-hubh-${run}`;
+  const hubActorId = `it-rm-hubu-${run}`;
+  // a Hub drawing of the target (#1118 U1b): its revision, records and mark are sealed and hold RESTRICT keys
+  const hubDrawingId = `it-rm-hubd-${run}`;
   let streamPosition = 0;
 
   const opts = async (over: Partial<RemovalOptions> = {}): Promise<RemovalOptions> => ({
@@ -37,6 +45,9 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     commit: false,
     ...over,
   });
+  // the ledger's key shape, "<projectId>/hub/<uuid>.<ext>" (HubFetchedBlob_storageKey_shape)
+  const hubBlobUuid = randomUUID();
+  const hubBlobKey = (): string => `${f.projectA.id}/hub/${hubBlobUuid}.pdf`;
   const projectExists = async (id: string): Promise<boolean> => (await t.prisma.project.count({ where: { id } })) === 1;
 
   beforeAll(async () => {
@@ -47,6 +58,42 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     await t.prisma.media.create({ data: { id: `it-rm-media-${run}`, projectId: a, kind: 'progress', mime: 'image/png', data: Buffer.from('abc'), sizeBytes: 3, uploadedBy: 'pmc', clientKey: `it-rm-media-key-${run}` } });
     // a deleted photo's record (#482): sealed against a direct DELETE, so the removal has to take it as it does events
     await t.prisma.mediaTombstone.create({ data: { projectId: a, clientKey: `it-rm-key-${run}` } });
+    // a voice note's transcript (#1177 VT1a), done: sealed against a direct DELETE, so it goes with its note
+    await t.prisma.media.create({ data: { id: `it-rm-voice-${run}`, projectId: a, kind: 'visit', mime: 'audio/webm', uploadedBy: 'pmc', durationSec: 5 } });
+    await t.prisma.voiceTranscript.create({ data: { projectId: a, mediaId: `it-rm-voice-${run}` } });
+    await t.prisma.$executeRawUnsafe(`UPDATE "VoiceTranscript" SET "status" = 'done', "text" = 'heard' WHERE "mediaId" = $1`, `it-rm-voice-${run}`);
+    // a fetched Hub blob's ledger row (#1118 U1a-3) goes with the project, and inventory lists its file
+    await t.prisma.hubFetchedBlob.create({ data: { storageKey: hubBlobKey(), projectId: a, hubVersionId: `it-rm-ver-${run}` } });
+    // the Hub link and its history (#1118 U1a-2) go with the project; both are sealed against a direct DELETE, and a link
+    // commits only with its event 1, so the link and its events are one transaction
+    await t.prisma.org.create({ data: { id: hubOrgId, name: hubOrgId, slug: hubOrgId } });
+    await t.prisma.project.create({ data: {
+      id: hubHomeId, orgId: hubOrgId, name: hubHomeId, short: 'Home', descriptor: '', stage: 'x', siteCode: 'HOM', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0,
+    } });
+    await t.prisma.user.create({ data: { id: hubActorId, projectId: hubHomeId, role: 'pmc', name: 'Hub actor', email: `rm.hub.${run}@test.local` } });
+    await t.prisma.$transaction([
+      t.prisma.drawingHubLink.create({ data: { projectId: a, orgId: f.orgA.id } }),
+      t.prisma.drawingHubLinkEvent.create({ data: { projectId: a, seq: 1, kind: 'linked', hubProjectId: `it-rm-hp-${run}`, byUserId: hubActorId } }),
+      t.prisma.drawingHubLinkEvent.create({ data: { projectId: a, seq: 2, prevSeq: 1, kind: 'unlinked', byUserId: hubActorId } }),
+    ]);
+    // a Hub drawing (#1118 U1b) goes with the project, child first: mark, revision record, drawing record, then the
+    // drawing and its revision; each record is sealed against a direct DELETE and the keys between them are RESTRICT
+    await t.prisma.$transaction([
+      t.prisma.drawing.create({ data: { id: hubDrawingId, projectId: a, number: hubDrawingId, title: 'Hub', discipline: 'other', source: 'hub' } }),
+      t.prisma.drawingRevision.create({ data: { id: `${hubDrawingId}-r`, projectId: a, drawingId: hubDrawingId, rev: 'C01', status: 'for_construction', mime: 'application/pdf', issuedBy: 'hub', issuedAt: 't', source: 'hub' } }),
+      t.prisma.hubDrawing.create({ data: { projectId: a, drawingId: hubDrawingId, hubFileId: `it-rm-hubf-${run}`, hubProjectId: `it-rm-hp-${run}` } }),
+      t.prisma.hubRevision.create({ data: { projectId: a, drawingId: hubDrawingId, revisionId: `${hubDrawingId}-r`, hubVersionId: `it-rm-hubv-${run}`, hubVersionOrder: 1 } }),
+      t.prisma.hubGoverningMark.create({ data: { projectId: a, drawingId: hubDrawingId, order: 1 } }),
+    ]);
+    // a Hub delivery applied to the project with the tombstone it wrote (#1118 U1a-1): the two name each other by deferred
+    // keys and go with the project together; a refused delivery naming no project stays with the org
+    const hubReceiptId = (await t.prisma.$queryRawUnsafe<Array<{ id: bigint }>>(`SELECT nextval(pg_get_serial_sequence('"HubWebhookReceipt"', 'id')) AS id`))[0]!.id;
+    await t.prisma.$transaction([
+      t.prisma.hubWebhookReceipt.create({ data: { id: hubReceiptId, orgId: f.orgA.id, webhookId: `it-rm-wh-${run}`, eventType: 'drawing.superseded', outcome: 'applied',
+        projectId: a, hubVersionId: `it-rm-hubw-${run}`, appliedFact: 'tombstone' } }),
+      t.prisma.hubVersionTombstone.create({ data: { projectId: a, hubVersionId: `it-rm-hubw-${run}`, hubFileId: `it-rm-hubf-${run}`, sourceReceiptId: hubReceiptId } }),
+    ]);
+    await t.prisma.hubWebhookReceipt.create({ data: { orgId: f.orgA.id, webhookId: `it-rm-wh-${run}`, eventType: 'drawing.superseded', outcome: 'refused' } });
     await t.prisma.dailyLog.create({ data: { id: logId, projectId: a, date: '01 Jun 2026', logDate: new Date('2026-06-01') } });
     await t.prisma.crewRow.create({ data: { dailyLogId: logId, trade: 'Mason', count: 4, order: 0 } });
     // an append-only event of the project and a consumer's receipt for it, held with no foreign key
@@ -63,9 +110,19 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
       await t.prisma.crewRow.deleteMany({ where: { dailyLogId: logId } });
       await t.prisma.dailyLog.deleteMany({ where: { id: logId } });
       await t.prisma.projectNode.deleteMany({ where: { projectId: f.projectA.id } });
+      // the commit test did not take the Hub drawing: its records go only by the sanctioned reset, then the drawing
+      await sanctionedReset(t.prisma, ['HubGoverningMark', 'HubRevision', 'HubDrawing', 'HubWebhookReceipt', 'HubVersionTombstone']);
+      await t.prisma.drawing.deleteMany({ where: { projectId: f.projectA.id } });
     }
-    await f?.cleanup();
-    await t?.close();
+    try {
+      await f?.cleanup();
+    } finally {
+      // the fixture's cleanup takes projectA when the commit test did not, and with it the link's events: then the actor, its home, its company
+      await t?.prisma.user.deleteMany({ where: { id: hubActorId } });
+      await t?.prisma.project.deleteMany({ where: { id: hubHomeId } });
+      await t?.prisma.org.deleteMany({ where: { id: hubOrgId } });
+      await t?.close();
+    }
   });
 
   it('refuses a project that is not archived', async () => {
@@ -181,9 +238,14 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     const r = await removeProject(t.prisma, o);
     expect(r.failures).toEqual([]);
     expect(r).toMatchObject({ ok: true, mode: 'dry-run', outcome: 'rolled back' });
-    for (const table of ['Project', 'ProjectNode', 'CrewRow', 'DailyLog', 'Media', 'MediaTombstone', 'DomainEvent', 'OutboxDelivery', 'ProcessedEvent']) {
+    for (const table of ['Project', 'ProjectNode', 'CrewRow', 'DailyLog', 'Media', 'MediaTombstone', 'VoiceTranscript', 'DomainEvent', 'OutboxDelivery', 'ProcessedEvent',
+      'HubFetchedBlob', 'DrawingHubLink', 'DrawingHubLinkEvent', 'Drawing', 'DrawingRevision', 'HubDrawing', 'HubRevision', 'HubGoverningMark', 'HubWebhookReceipt', 'HubVersionTombstone']) {
       expect(r.removed[table], table).toEqual(o.inventory.keys[table]);
     }
+    // the Hub drawing's rows are listed, one each (#1118 U1b)
+    for (const table of ['HubDrawing', 'HubRevision', 'HubGoverningMark', 'VoiceTranscript']) expect(o.inventory.keys[table], table).toHaveLength(1);
+    // the applied receipt and its tombstone are listed; the org's refused receipt naming no project is not (#1118 U1a-1)
+    for (const table of ['HubWebhookReceipt', 'HubVersionTombstone']) expect(o.inventory.keys[table], table).toHaveLength(1);
     expect(Object.keys(r.added)).toEqual([]);
     expect(Object.keys(r.changed)).toEqual(['User']);
     expect(r.rehomed).toEqual([{ id: qaId, email: qaEmail, fromProjectId: f.projectA.id, toProjectId: f.projectB.id, lastProjectId: f.projectB.id }]);
@@ -200,10 +262,13 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
       expect(r.unlinked.find((u) => u.table === table), table).toMatchObject({ unchanged: true });
     }
     expect(r.protected).toEqual([expect.objectContaining({ projectId: f.projectB.id, removed: [], keysUnchanged: true })]);
-    expect(r.triggers.disabled.map((d) => d.name)).toEqual(expect.arrayContaining(['DomainEvent_append_only', 'MediaTombstone_immutable', 'Media_tombstone_on_delete']));
+    expect(r.triggers.disabled.map((d) => d.name)).toEqual(expect.arrayContaining(['DomainEvent_append_only', 'MediaTombstone_immutable', 'Media_tombstone_on_delete', 'VoiceTranscript_no_delete',
+      'DrawingHubLink_sealed', 'DrawingHubLinkEvent_sealed', 'HubDrawing_sealed', 'HubRevision_sealed', 'HubGoverningMark_sealed',
+      'HubWebhookReceipt_sealed', 'HubVersionTombstone_sealed']));
     expect(r.triggers.restored).toBe(true);
     expect(r.counts.Project.after).toBe(r.counts.Project.before - 1);
     expect(r.files).toEqual(expect.arrayContaining([expect.objectContaining({ table: 'Media', id: `it-rm-media-${run}` })]));
+    expect(r.files).toEqual(expect.arrayContaining([expect.objectContaining({ table: 'HubFetchedBlob', storageKey: hubBlobKey() })]));
     // rolled back: the project, its event and the user's home are as they were
     expect(await projectExists(f.projectA.id)).toBe(true);
     expect(await t.prisma.domainEvent.count({ where: { eventId } })).toBe(1);
@@ -223,6 +288,15 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     expect(await t.prisma.processedEvent.count({ where: { id: receipt } })).toBe(0);
     expect(await t.prisma.crewRow.count({ where: { dailyLogId: logId } })).toBe(0);
     expect(await t.prisma.mediaTombstone.count({ where: { projectId: f.projectA.id } })).toBe(0);
+    expect(await t.prisma.voiceTranscript.count({ where: { projectId: f.projectA.id } })).toBe(0);
+    expect(await t.prisma.hubFetchedBlob.count({ where: { projectId: f.projectA.id } })).toBe(0);
+    expect(await t.prisma.drawingHubLink.count({ where: { projectId: f.projectA.id } })).toBe(0);
+    expect(await t.prisma.drawingHubLinkEvent.count({ where: { projectId: f.projectA.id } })).toBe(0);
+    for (const count of [t.prisma.drawing.count({ where: { projectId: f.projectA.id } }), t.prisma.drawingRevision.count({ where: { projectId: f.projectA.id } }),
+      t.prisma.hubDrawing.count({ where: { projectId: f.projectA.id } }), t.prisma.hubRevision.count({ where: { projectId: f.projectA.id } }),
+      t.prisma.hubGoverningMark.count({ where: { projectId: f.projectA.id } }), t.prisma.hubWebhookReceipt.count({ where: { projectId: f.projectA.id } }),
+      t.prisma.hubVersionTombstone.count({ where: { projectId: f.projectA.id } })]) expect(await count).toBe(0);
+    expect(await t.prisma.hubWebhookReceipt.count({ where: { orgId: f.orgA.id, webhookId: `it-rm-wh-${run}`, outcome: 'refused' } })).toBe(1);
     const qa = await t.prisma.user.findUniqueOrThrow({ where: { id: qaId } });
     expect({ projectId: qa.projectId, lastProjectId: qa.lastProjectId }).toEqual({ projectId: f.projectB.id, lastProjectId: f.projectB.id });
     const staff = await t.prisma.user.findUniqueOrThrow({ where: { id: staffId } });

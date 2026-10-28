@@ -1,5 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, GoneException, Injectable, NotFoundException } from '@nestjs/common';
 import { lockStandingAnchors } from '../common/standing-anchor';
+import { lockProjectReadiness } from '../common/readiness-lock';
+import { lockActorStanding, resolveActorEnvelope } from '../platform/actor-envelope';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from './storage.service';
@@ -20,11 +22,14 @@ import { isPlaceHiddenFrom, previewPublishedProjectNode, resolvePublishedProject
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
-import type { CreateMediaInput } from '../contracts';
-import { SITE_PHOTO_DELETE_WINDOW_MS, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
+import { VIDEO_CLIP_MAX_SEC, VOICE_NOTE_MAX_SEC, VOICE_NOTE_SEC_TOLERANCE, type AddPosterInput, type CreateMediaInput } from '../contracts';
+import { MEDIA_NOT_FOUND_MESSAGE, SITE_PHOTO_DELETE_WINDOW_MS, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
+import { readVoiceRecording } from './voice-container';
+import { readVideoClip } from './video-container';
+import { readJpegStill } from './jpeg-still';
 
 export interface UploadedMedia {
   id: string;
@@ -77,6 +82,17 @@ function isSendKeyConflict(e: Prisma.PrismaClientKnownRequestError): boolean {
   const target = (e.meta as { target?: unknown } | undefined)?.target;
   if (Array.isArray(target)) return target.length === 2 && target.includes('projectId') && target.includes('clientKey');
   return target === 'Media_projectId_clientKey_key';
+}
+
+/** #995 V1b — what a still frame's request must read of its clip, early and again under the clip's row lock. */
+type PosterTarget = { projectId: string; kind: string; mime: string; uploadedBy: string; posterStorageKey: string | null };
+
+/** #995 V1b — a still frame goes only on a video clip on a site visit, and only from the member who recorded it: a clip
+ *  in another project is answered as if it did not exist. */
+function assertMayAddPoster(row: PosterTarget | null | undefined, projectId: string, user: AuthUser): asserts row is PosterTarget {
+  if (!row || row.projectId !== projectId) throw new NotFoundException(MEDIA_NOT_FOUND_MESSAGE);
+  if (row.uploadedBy !== user.sub) throw new ForbiddenException('Only the person who recorded this video may add its still frame');
+  if (row.kind !== 'visit' || !row.mime.startsWith('video/')) throw new BadRequestException('A still frame is added only to a video on a site visit');
 }
 
 export type MediaBytes = { mime: string; bytes: Buffer };
@@ -166,6 +182,18 @@ export class MediaService {
         throw new BadRequestException('A marked-up copy keeps the camera time and location of the photo it was drawn on');
       }
     }
+    // Stage 1 voice notes, site visits first (Jagrut, 19 Oct 2026): a voice note is a file on a visit, never a copy
+    if (input.mime.startsWith('audio/')) {
+      if (!isSiteVisitFile(input) || input.sourceMediaId !== undefined) {
+        throw new BadRequestException('A voice note is added on a site visit');
+      }
+    }
+    // #995 — so is a video clip, on the same terms
+    if (input.mime.startsWith('video/')) {
+      if (!isSiteVisitFile(input) || input.sourceMediaId !== undefined) {
+        throw new BadRequestException('A video is added on a site visit');
+      }
+    }
     if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input) && !isSiteVisitFile(input)) {
       throw new ForbiddenException('Your role may add a site photo, not evidence linked to a record');
     }
@@ -187,6 +215,32 @@ export class MediaService {
     // A visit file: the visit is this project's, not closed, and the caller is on it (an early no, as above)
     const visit = input.siteVisit;
     if (visit) await this.siteVisitFiles.assertMayAdd(projectId, visit.visitId, user.sub);
+    // a voice note is read only once its adder may add to the visit (Codex P1 on #1013 round 3): the type is the
+    // client's word, so the file is served only as what it is, an audio-only recording (Codex P2 on #1010), and its
+    // length is the file's own, for the two-minute cap and the play bar, never the request's (Codex P2 on #1013 round 3)
+    let durationSec: number | null = null;
+    if (input.mime.startsWith('audio/')) {
+      const recording = readVoiceRecording(input.mime, Buffer.from(input.data, 'base64'));
+      if (!recording) throw new BadRequestException('This file is not the voice recording its type says');
+      // the rules apply to the length as stored, the file's rounded to the nearest second (#1013 replacement review):
+      // under half a second the reader refuses, and 120.5 s or more would be stored past two minutes, so is refused
+      durationSec = recording.durationSec;
+      if (durationSec > VOICE_NOTE_MAX_SEC) throw new BadRequestException('A voice note is at most two minutes long');
+      if (input.durationSec !== undefined && Math.abs(input.durationSec - recording.seconds) > VOICE_NOTE_SEC_TOLERANCE) {
+        throw new BadRequestException('This voice note is not as long as its upload says');
+      }
+    }
+    // #995 — a video clip is read on the same terms, once its adder may add to the visit: a video with a picture in it
+    // in the container its type names, its length the file's own, rounded, at most a minute
+    if (input.mime.startsWith('video/')) {
+      const clip = readVideoClip(input.mime, Buffer.from(input.data, 'base64'));
+      if (!clip) throw new BadRequestException('This file is not the video its type says');
+      durationSec = clip.durationSec;
+      if (durationSec > VIDEO_CLIP_MAX_SEC) throw new BadRequestException('A video is at most a minute long');
+      if (input.durationSec !== undefined && Math.abs(input.durationSec - clip.seconds) > VOICE_NOTE_SEC_TOLERANCE) {
+        throw new BadRequestException('This video is not as long as its upload says');
+      }
+    }
     const source = visit && input.sourceMediaId ? await this.markupSource(this.prisma, projectId, visit.visitId, input.sourceMediaId) : null;
     // Project-owned references: a photo may only point at THIS project's decision/log.
     const decisionId = await this.decisions.resolveRefInProject(projectId, input.decisionId, 'decisionId');
@@ -258,6 +312,7 @@ export class MediaService {
             geoLng: source ? source.geoLng : input.geoLng,
             takenAt: source ? source.takenAt : input.takenAt,
             sourceMediaId: source?.id ?? null,
+            durationSec,
             decisionId,
             dailyLogId,
             nodeId,
@@ -391,6 +446,123 @@ export class MediaService {
   }
 
   /**
+   * #995 V1b — give a video clip its still frame: a JPEG the recording phone draws from the clip. The first one stays:
+   * a replay, or any later frame, is answered with the stored one's link and stores nothing new, so the request is
+   * idempotent by the clip's identity alone. The clip is complete without one.
+   *
+   * Authority before bytes, as for an upload: the caller and the clip are asked first, outside any transaction (a cheap
+   * early no), then the bytes are read whole and stored, and then the clip's row is locked and every question asked
+   * again, with the adder's standing and the project's state, under a visit file act's locks; that answer decides. An
+   * object that no row took, or whose PUT failed, is removed, but only once a fresh read proves no row references it.
+   *
+   * No event: a new event type is a new external-effect catalog generation, which is a migration of its own. A still
+   * frame adds no file to its visit, and other viewers see it on their next read of the visit's files.
+   */
+  async addPoster(projectId: string, mediaId: string, user: AuthUser, input: AddPosterInput): Promise<{ id: string; posterUrl: string }> {
+    // minted at each return, after the PUT and the lock wait, so its link outlives the request (Codex P2 on #1166)
+    const answer = () => ({ id: mediaId, posterUrl: this.signed.posterPath(mediaId) });
+    const select = { projectId: true, kind: true, mime: true, uploadedBy: true, posterStorageKey: true } as const;
+    const early = await this.prisma.media.findUnique({ where: { id: mediaId }, select });
+    assertMayAddPoster(early, projectId, user);
+    const bytes = Buffer.from(input.data, 'base64');
+    if (!readJpegStill(bytes)) throw new BadRequestException('This file is not a still frame the app can show');
+    // a replay after a lost reply, or a later frame: the stored one stands, and nothing is stored
+    if (early.posterStorageKey !== null) return answer();
+    // the dev stub keeps a file's bytes in its row, and a clip's row has room for one file only
+    if (!this.storage.configured) throw new ConflictException('This server has no file storage for a still frame');
+    const key = this.storage.keyFor(projectId, 'visit', 'image/jpeg');
+    const actor = await resolveActor(this.prisma, user);
+    let stored: string;
+    try {
+      // inside the cleanup: a PUT whose reply was lost may still have stored the object
+      await this.storage.put(key, bytes, 'image/jpeg');
+      stored = await this.prisma.$transaction(async (tx) => {
+        // a visit file act's order (Codex P1 on #1166): the project's readiness key first, so a removal or an archive
+        // is wholly before or after this; then the clip's row; then the adder's standing, as a visit file's link takes it
+        await lockProjectReadiness(tx, projectId);
+        const [row] = await tx.$queryRaw<PosterTarget[]>(Prisma.sql`
+          SELECT "projectId", kind, mime, "uploadedBy", "posterStorageKey" FROM "Media" WHERE id = ${mediaId} FOR NO KEY UPDATE`);
+        assertMayAddPoster(row, projectId, user);
+        await lockActorStanding(tx, projectId, user.sub);
+        const [state] = await tx.$queryRaw<Array<{ operable: boolean }>>(Prisma.sql`SELECT phase6_project_operable(${projectId}) AS "operable"`);
+        if (state?.operable !== true) throw new ForbiddenException('Project is unavailable');
+        if (!(await resolveActorEnvelope(tx, projectId, actor))) throw new ForbiddenException('Your role on this project has changed; sign in again');
+        if (row.posterStorageKey !== null) return row.posterStorageKey;
+        await tx.media.update({ where: { id: mediaId }, data: { posterStorageKey: key } });
+        return key;
+      });
+    } catch (e) {
+      await this.removePosterIfUnreferenced(projectId, key);
+      throw e;
+    }
+    if (stored !== key) await this.removePosterIfUnreferenced(projectId, key);
+    return answer();
+  }
+
+  /** {@link removeIfUnreferenced} for a still frame's object: removed only once a fresh read proves no clip names it. */
+  private async removePosterIfUnreferenced(projectId: string, key: string): Promise<void> {
+    const persisted = await this.prisma.media
+      .findFirst({ where: { projectId, posterStorageKey: key }, select: { id: true } })
+      .catch(() => ({ id: 'unknown' }) as { id: string });
+    if (!persisted) await this.storage.remove(key).catch(() => {});
+  }
+
+  /** #995 V1b — a clip's still frame for its serve endpoint (which has verified the frame's own token): a presigned
+   *  private-bucket GET, or null when the clip has none. */
+  async fetchPoster(id: string): Promise<MediaRedirect | null> {
+    const row = await this.prisma.media.findUnique({ where: { id }, select: { posterStorageKey: true } });
+    if (!row?.posterStorageKey) return null;
+    const signed = await this.storage.presignGet(row.posterStorageKey);
+    return signed ? { redirect: signed } : null;
+  }
+
+  /**
+   * #1179 (Jagrut, 27 Oct 2026) — take a voice note, video or photo off its site visit and delete it: the person who
+   * added it within the hour while the visit is open, or the PMC at any time with a reason (the site-visits module's
+   * rule, `recordRemoval`). The visit keeps a line saying who removed what, when and why; the file's row, its stored
+   * object, a clip's still frame and anything that goes with the row by key (a transcript) go. A file that is not on a
+   * visit, or not this project's, is not found.
+   *
+   * Lock order, an upload's: the file's send key, then the visit act's locks (readiness, tree, visit), then the file's
+   * row FOR UPDATE, which `addPoster` takes FOR NO KEY UPDATE after the same readiness key. The still frame's key is
+   * read under that lock (#1166's "latent orphan"), so a frame a racing `addPoster` stored is either named here and
+   * removed after commit, or written after this commit and refused, its object cleaned by `addPoster` itself.
+   */
+  async removeFromVisit(projectId: string, mediaId: string, user: AuthUser, reason: string | null): Promise<void> {
+    if (user.projectId !== projectId) throw new NotFoundException(MEDIA_NOT_FOUND_MESSAGE);
+    const early = await this.prisma.media.findUnique({ where: { id: mediaId }, select: { projectId: true, clientKey: true } });
+    if (!early || early.projectId !== projectId) throw new NotFoundException(MEDIA_NOT_FOUND_MESSAGE);
+    const visitId = await this.siteVisitFiles.visitOf(this.prisma, projectId, mediaId);
+    if (!visitId) throw new NotFoundException('This file is not on a site visit');
+    const actor = await resolveActor(this.prisma, user);
+    const { keys, events } = await this.prisma.$transaction(async (tx) => {
+      if (early.clientKey) await lockSendKey(tx, projectId, early.clientKey);
+      await this.siteVisitFiles.lockForRemoval(tx, projectId, visitId);
+      const [row] = await tx.$queryRaw<Array<{ storageKey: string | null; posterStorageKey: string | null }>>(Prisma.sql`
+        SELECT "storageKey", "posterStorageKey" FROM "Media" WHERE "projectId" = ${projectId} AND "id" = ${mediaId} FOR UPDATE`);
+      if (!row) throw new NotFoundException(MEDIA_NOT_FOUND_MESSAGE);
+      await this.siteVisitFiles.recordRemoval(tx, { projectId, mediaId, userId: user.sub, actor, reason });
+      // every other record that keeps this file as evidence still refuses, as for any photo
+      const observed = await this.disposability.assertDisposable(tx, { projectId, mediaId, actorUserId: user.sub });
+      const evidenceEv = await this.inspectionParticipant.removeEvidence(tx, { projectId, actor, mediaId, observed });
+      try {
+        await tx.media.delete({ where: { id: mediaId } });
+      } catch (e) {
+        // as for a photo: a record that cited this file after the guards above asked holds it by its key
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2003') {
+          throw new ConflictException('This file was just cited as evidence on another record, so it cannot be removed');
+        }
+        throw e;
+      }
+      const removedEv = await emitEvent(tx, { projectId, actor, eventType: 'media.removed', entityType: 'Media', entityId: mediaId, effectKey: 'media.removed', dispatch: {} });
+      return { keys: [row.storageKey, row.posterStorageKey], events: evidenceEv ? [evidenceEv, removedEv] : [removedEv] };
+    });
+    // after the commit that removed every reference, and only on success (POLICY: destructive side effects last)
+    for (const key of keys) if (key) await this.storage.remove(key).catch(() => {});
+    await this.dispatcher.dispatchCommitted(events);
+  }
+
+  /**
    * Delete a photo (bucket object + DB row). Scoped to the caller's project so
    * one project can't delete another's media. Returns false when not found /
    * out of scope. Best-effort on the bucket delete (dev stub is a no-op).
@@ -454,7 +626,8 @@ export class MediaService {
     // citing evidence that no longer existed. Now a rejected delete touches neither the row nor the
     // object, and by the time we get here the database no longer references the object at all, so
     // failing to clean it up is a harmless orphan — never a reason to fail a committed delete.
-    if (row.storageKey) await this.storage.remove(row.storageKey).catch(() => {});
+    // #995 — a video's still frame goes with it, on the same terms.
+    for (const key of [row.storageKey, row.posterStorageKey]) if (key) await this.storage.remove(key).catch(() => {});
     await this.dispatcher.dispatchCommitted(events);
     return { dailyLogId: row.kind === 'progress' ? row.dailyLogId : null };
   }

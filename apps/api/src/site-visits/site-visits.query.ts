@@ -39,6 +39,24 @@ export interface SiteVisitDto {
   attendees: SiteVisitAttendeeDto[];
   /** The files added on the visit (#792 SV2), by when the server took each (by file id within a millisecond). */
   files: SiteVisitFileDto[];
+  /** #1179 — the files taken off the visit, by when each was removed (by file id within a millisecond). A line never
+   *  changes and stays as long as the visit. */
+  removals: SiteVisitRemovalDto[];
+}
+
+/** #1179 — a file taken off a visit: what it was, who added it, who removed it, when and why. */
+export interface SiteVisitRemovalDto {
+  mediaId: string;
+  kind: 'photo' | 'voice' | 'video' | 'file';
+  addedByName: string;
+  addedByRole: string;
+  addedAt: string;
+  removedById: string;
+  removedByName: string;
+  removedByRole: string;
+  /** null when the person who added it removed it within the hour */
+  reason: string | null;
+  removedAt: string;
 }
 
 export interface SiteVisitFileDto {
@@ -51,8 +69,13 @@ export interface SiteVisitFileDto {
   clientKey: string | null;
   /** When the device took it, if it said. */
   takenAt: string | null;
+  /** A voice note's or a video clip's length in whole seconds; null for a photo (#482, #995). */
+  durationSec: number | null;
   /** A marked-up copy's original, a file on the same visit (M3); null for a photo as taken. */
   sourceMediaId: string | null;
+  /** A video clip's still frame, a short-lived signed path like `url`, once the recording phone has sent one; null
+   *  otherwise (#995 V1b). */
+  posterUrl: string | null;
   note: string | null;
   rating: 'fine' | 'concern' | 'action_needed' | null;
   /** The place the file showed when it was added, with the name it had then; `nodeId` is null once that place was
@@ -63,6 +86,10 @@ export interface SiteVisitFileDto {
   addedByName: string;
   addedByRole: string;
   addedAt: string;
+  /** #1179 — whether the viewer may remove this file now, as the server's rule reads at this read: the PMC always (a
+   *  reason needed unless it is their own within the hour), the person who added it until `until` while the visit is
+   *  open (not ended or closed). Null when the viewer may not. The removal asks again and is the authority. */
+  removable: { reasonRequired: boolean; until: string | null } | null;
 }
 
 export interface SiteVisitPlaceDto {
@@ -93,6 +120,7 @@ const withChildren = {
   places: { orderBy: [{ addedReceivedAt: 'asc' }, { id: 'asc' }] },
   attendees: { orderBy: [{ addedAt: 'asc' }, { id: 'asc' }] },
   media: { orderBy: [{ addedAt: 'asc' }, { mediaId: 'asc' }] },
+  removals: { orderBy: [{ removedAt: 'asc' }, { mediaId: 'asc' }] },
 } satisfies Prisma.SiteVisitInclude;
 
 type Row = Prisma.SiteVisitGetPayload<{ include: typeof withChildren }>;
@@ -100,9 +128,35 @@ type Row = Prisma.SiteVisitGetPayload<{ include: typeof withChildren }>;
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 
 /** What the media module says about a visit's file (`MediaQueryService.fileFacts`). */
-type FileFacts = Map<string, { mime: string; takenAt: string | null; clientKey: string | null; sourceMediaId: string | null }>;
+type FileFacts = Map<string, { mime: string; takenAt: string | null; clientKey: string | null; durationSec: number | null; sourceMediaId: string | null; poster: boolean; cited: boolean }>;
 
-export function toSiteVisitDto(v: Row, fileUrl: (mediaId: string) => string, facts: FileFacts): SiteVisitDto {
+/** #1179 — how long the person who added a file may remove it themselves (the database's CHECK on a line with no reason). */
+export const SITE_VISIT_OWN_REMOVAL_MS = 60 * 60 * 1000;
+
+/** Who reads a visit, for the per-file removal offer: their id and the role they act in on the project. */
+export interface SiteVisitViewer {
+  id: string;
+  role: string;
+}
+
+function removableBy(
+  viewer: SiteVisitViewer | undefined, status: string, addedById: string, addedAt: Date, now: number, cited: boolean,
+): SiteVisitFileDto['removable'] {
+  // a file another record cites as evidence is refused by the removal (409) for everyone (Codex 4397416732)
+  if (!viewer || cited) return null;
+  const until = addedAt.getTime() + SITE_VISIT_OWN_REMOVAL_MS;
+  // inclusive at the hour, as the server judges it (`addedAt + 1 hour >= now` on the database's clock)
+  const ownInHour = addedById === viewer.id && now <= until;
+  // the PMC's own file within the hour: no reason until `until`, then a reason
+  if (viewer.role === 'pmc') return { reasonRequired: !ownInHour, until: ownInHour ? new Date(until).toISOString() : null };
+  if (ownInHour && status === 'open') return { reasonRequired: false, until: new Date(until).toISOString() };
+  return null;
+}
+
+export function toSiteVisitDto(
+  v: Row, fileUrl: (mediaId: string) => string, facts: FileFacts, posterUrl: (mediaId: string) => string,
+  viewer?: SiteVisitViewer, now: number = Date.now(),
+): SiteVisitDto {
   const device = v.locationKind === 'device' && v.locLat !== null && v.locLng !== null && v.locAccuracyM !== null && v.locAt !== null;
   return {
     id: v.id,
@@ -131,12 +185,20 @@ export function toSiteVisitDto(v: Row, fileUrl: (mediaId: string) => string, fac
       id: a.id, kind: a.userId !== null ? 'member' : 'guest', userId: a.userId, role: a.role, name: a.displayName,
       addedAt: a.addedAt.toISOString(), retiredAt: iso(a.retiredAt),
     })),
-    // a linked file always exists (the link is frozen and the file's delete is refused); the fallback is only types
-    files: v.media.map((f) => ({
+    // a file the media module no longer has was removed after this visit was read (its line comes with the next read):
+    // it is left out, never served as an empty file with a dead link and a removal offer (Codex 4398005586)
+    files: v.media.filter((f) => facts.has(f.mediaId)).map((f) => ({
       mediaId: f.mediaId, url: fileUrl(f.mediaId), mime: facts.get(f.mediaId)?.mime ?? '', clientKey: facts.get(f.mediaId)?.clientKey ?? null,
-      takenAt: facts.get(f.mediaId)?.takenAt ?? null, sourceMediaId: facts.get(f.mediaId)?.sourceMediaId ?? null,
+      takenAt: facts.get(f.mediaId)?.takenAt ?? null, durationSec: facts.get(f.mediaId)?.durationSec ?? null,
+      sourceMediaId: facts.get(f.mediaId)?.sourceMediaId ?? null, posterUrl: facts.get(f.mediaId)?.poster ? posterUrl(f.mediaId) : null,
       note: f.note, rating: f.rating, place: f.placeName !== '' ? { nodeId: f.nodeId, name: f.placeName } : null,
       addedById: f.addedById, addedByName: f.addedByName, addedByRole: f.addedByRole, addedAt: f.addedAt.toISOString(),
+      removable: removableBy(viewer, v.status, f.addedById, f.addedAt, now, facts.get(f.mediaId)?.cited ?? false),
+    })),
+    removals: v.removals.map((r) => ({
+      mediaId: r.mediaId, kind: r.fileKind as SiteVisitRemovalDto['kind'], addedByName: r.addedByName, addedByRole: r.addedByRole,
+      addedAt: r.addedAt.toISOString(), removedById: r.removedById, removedByName: r.removedByName, removedByRole: r.removedByRole,
+      reason: r.reason, removedAt: r.removedAt.toISOString(),
     })),
   };
 }
@@ -152,17 +214,23 @@ export class SiteVisitsQueryService {
     private readonly media: MediaQueryService,
   ) {}
 
-  /** `viewerId` is who reads: each file's upload key goes only to its own uploader (Codex 4324453890). */
-  private async toDtos(projectId: string, rows: Row[], viewerId: string): Promise<SiteVisitDto[]> {
+  /** `viewerId` is who reads: each file's upload key goes only to its own uploader (Codex 4324453890); with the role
+   *  they act in, each file says whether they may remove it (#1179). */
+  private async toDtos(projectId: string, rows: Row[], viewerId: string, viewerRole?: string): Promise<SiteVisitDto[]> {
     const facts = await this.media.fileFacts(projectId, rows.flatMap((r) => r.media.map((f) => f.mediaId)), viewerId);
-    return rows.map((row) => toSiteVisitDto(row, (id) => this.signed.mediaPath(id), facts));
+    const viewer = viewerRole !== undefined ? { id: viewerId, role: viewerRole } : undefined;
+    // the hour is judged on the database's clock, as the removal judges it (Codex 4397416735)
+    const now = viewer && facts.size > 0
+      ? (await this.prisma.$queryRaw<Array<{ now: Date }>>`SELECT site_visits_now() AS "now"`)[0]!.now.getTime()
+      : Date.now();
+    return rows.map((row) => toSiteVisitDto(row, (id) => this.signed.mediaPath(id), facts, (id) => this.signed.posterPath(id), viewer, now));
   }
 
   /**
    * A page of the project's visits, newest start first. `before` names the last visit of the previous page, so
    * every visit stays reachable however many the project has. `status: 'open'` keeps only the visits still open.
    */
-  async list(projectId: string, page: { before?: string; limit?: number; status?: 'open' }, viewerId: string): Promise<SiteVisitDto[]> {
+  async list(projectId: string, page: { before?: string; limit?: number; status?: 'open' }, viewerId: string, viewerRole?: string): Promise<SiteVisitDto[]> {
     // The page boundary is the anchor's place in the order (start, then id), not the anchor row itself: under
     // `status: 'open'` the anchor may have ended since the previous page, and a cursor on a row the filter now
     // drops would return an empty page, hiding the older open visits.
@@ -192,13 +260,13 @@ export class SiteVisitsQueryService {
       orderBy: [{ startedAt: 'desc' }, { id: 'desc' }],
       take: page.limit ?? 50,
     });
-    return this.toDtos(projectId, rows, viewerId);
+    return this.toDtos(projectId, rows, viewerId, viewerRole);
   }
 
-  async get(projectId: string, visitId: string, viewerId: string): Promise<SiteVisitDto> {
+  async get(projectId: string, visitId: string, viewerId: string, viewerRole?: string): Promise<SiteVisitDto> {
     const row = await this.prisma.siteVisit.findFirst({ where: { projectId, id: visitId }, include: withChildren });
     if (!row) throw new NotFoundException('Site visit not found');
-    const [dto] = await this.toDtos(projectId, [row], viewerId);
+    const [dto] = await this.toDtos(projectId, [row], viewerId, viewerRole);
     return dto!;
   }
 }

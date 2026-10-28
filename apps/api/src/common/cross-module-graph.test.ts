@@ -72,6 +72,10 @@ const MODEL_OWNER: Record<string, string> = {
   phase: 'phases',
   inspection: 'inspections', inspectionItem: 'inspections',
   drawing: 'drawings', drawingRevision: 'drawings', drawingRecipient: 'drawings', drawingAck: 'drawings',
+  // #1118 U3 — Hub's delivery receipts (U1a-1's ledger), written by the Hub webhook receiver
+  hubWebhookReceipt: 'drawings',
+  // #1118 U4 — the ledger of Hub blobs fetched into storage (U1a-3), written by the Hub blob fetcher
+  hubFetchedBlob: 'drawings',
   dailyLog: 'daily-log', crewRow: 'daily-log', siteMaterial: 'daily-log',
   // Phase 3 Task 5 (§E) — the append-only mismatch resolution register, written only by
   // daily-log.resolveMismatch (one per observation; the observation row is never edited)
@@ -211,6 +215,12 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // edges 2/3 (sign-off done/revert) → activity.participant.applySignOff/revertSignOff
   'inspections/inspections.service.ts': { domain: 'inspections', foreign: {}, dispatch: 3 },
   'drawings/drawings.service.ts': { domain: 'drawings', foreign: {}, dispatch: 5 },
+  // #1118 U3 — Hub's webhook receiver records refused and ignored deliveries in the drawings-owned receipt ledger (and
+  // audits a refusal through `recordAudit`); it emits no domain event, so it dispatches nothing
+  'drawings/hub/hub-receiver.service.ts': { domain: 'drawings', foreign: {}, dispatch: 0 },
+  // #1118 U4 — the Hub blob fetcher writes only the drawings-owned fetched-blob ledger (the bytes go to StorageService);
+  // it emits no domain event, so it dispatches nothing
+  'drawings/hub/hub-blob.service.ts': { domain: 'drawings', foreign: {}, dispatch: 0 },
   // edge 4 (material mismatch block) → activity.participant.blockForMaterialMismatch;
   // Phase 3 Task 5 adds resolveMismatch (the inverse edge → clearMaterialMismatchBlock)
   'daily-log/daily-log.service.ts': { domain: 'daily-log', foreign: {}, dispatch: 5 },
@@ -218,7 +228,7 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   'site-visits/site-visits.service.ts': { domain: 'site-visits', foreign: {}, dispatch: 4 },
   // edge 7 (node unfiling across five domains) → FK SET NULL (nodeId); decisions stay a guarded NO ACTION
   'nodes/nodes.service.ts': { domain: 'nodes', foreign: {}, dispatch: 1 },
-  'media/media.service.ts': { domain: 'media', foreign: {}, dispatch: 3 },
+  'media/media.service.ts': { domain: 'media', foreign: {}, dispatch: 4 }, // #1179 R2: + a file's removal from its site visit
   // edge 8 (project-init structure) → node/activity/inspection init participants
   'orgs/orgs.service.ts': { domain: 'orgs', foreign: {}, dispatch: 0 },
   // Phase 4 Task 3 (§H) — the orgs-owned WorkerDevice→Worker binding. A roster surface like Task-1
@@ -425,7 +435,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   'orgs/companies.controller.ts': ['Post()', "Patch(':companyId')", "Delete(':companyId')"],
   // Phase 4 Task 3 (§H) — the orgs-owned WorkerDevice binding route
   'orgs/worker-devices.controller.ts': ["Post('worker-devices/:deviceId/bind')"],
-  'media/media.controller.ts': ["Post('projects/:projectId/media')", "Patch('projects/:projectId/media/:mediaId/node')", "Delete('media/:id')"],
+  'media/media.controller.ts': ["Post('projects/:projectId/media')", "Patch('projects/:projectId/media/:mediaId/node')", "Post('projects/:projectId/media/:mediaId/poster')", "Post('projects/:projectId/media/:mediaId/visit-removal')", "Delete('media/:id')"],
   'inspections/inspections.controller.ts': ['Post()', "Post(':inspectionId/submit')", "Post(':inspectionId/decide')"],
   'activities/phases.controller.ts': ['Post()', "Delete(':phaseId')"],
   'activities/requirements.controller.ts': ['Post()', "Post(':requirementId/revise')", "Post(':requirementId/cancel')"],
@@ -558,6 +568,8 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   'platform/ops/ops.controller.ts': ["Post('projects/:projectId/capabilities/:capability/enable')", "Post('projects/:projectId/capabilities/:capability/disable')"],
   // #482 operator door — the QA-only mark, door guard before the rate limit (Codex P2 on #1020)
   'platform/ops/ops-qa.controller.ts': ["Post('orgs/:orgId/qa-only')"],
+  // #1118 U3 — Hub's signed webhook deliveries (no user; closed without HUB_*)
+  'drawings/hub/hub-receiver.controller.ts': ["Post(':orgId/events')"],
 };
 
 // Controllers with NO mutating route (read-only surfaces).
@@ -626,7 +638,7 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
     it('84 external-effect dispatch sites total across the pillar services (82 + Phase-6 unit 4c-ii request/respond consultation)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(92); // +3: Site Visits SV1-b start, end, close; +1: SV1-b unit 2's one shared site for the visitor's edits
+      expect(total).toBe(93); // +3: Site Visits SV1-b start, end, close; +1: SV1-b unit 2's one shared site for the visitor's edits; +1: #1179 R2 a file's removal from its visit
     });
   });
 
@@ -637,12 +649,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only)', () => {
+    it('177 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only; +1 #995 V1b a video clip\'s still frame; +1 #1118 U3 Hub webhook deliveries; +1 #1179 R2 a file\'s removal from its site visit)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(188);
+      expect(total).toBe(191);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(188);
+      expect(live).toBe(191);
     });
   });
 

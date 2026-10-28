@@ -59,6 +59,7 @@
 .guideMeRow {
   display: flex;
   justify-content: flex-end;
+  gap: 16px;
 }
 
 .guideMe {
@@ -86,4 +87,59 @@
   border: 1.5px solid currentColor;
   font-size: 12px;
   line-height: 1;
+}
+
+/* #482 — the first-time welcome: a card in the page flow (never a dialog), so nothing below it is blocked */
+.welcome {
+  margin: 0 0 12px;
+  padding: 14px 16px;
+  background: var(--paper);
+  border: 1px solid var(--hairline-strong);
+  border-left: 4px solid var(--accent);
+  border-radius: 12px;
+  font-family: var(--font-sans);
+}
+
+.welcomeTitle {
+  margin: 0 0 6px;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.welcomeText {
+  margin: 0 0 6px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.welcomeActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.welcomePrimary,
+.welcomeSecondary {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 9px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.welcomePrimary {
+  border: none;
+  background: var(--ink);
+  color: var(--sidebar-text);
+}
+
+.welcomeSecondary {
+  border: 1px solid var(--hairline-strong);
+  background: transparent;
+  color: var(--ink);
 }

@@ -114,6 +114,10 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   { table: 'SiteVisitAttendee', trigger: 'SiteVisitAttendee_no_truncate' },
   { table: 'SiteVisitPlace', trigger: 'SiteVisitPlace_no_truncate' },
   { table: 'SiteVisitMedia', trigger: 'SiteVisitMedia_no_truncate' },
+  // #1179 R1 — a visit's removal lines reference the visit, so the same CASCADE reaches them.
+  { table: 'SiteVisitFileRemoval', trigger: 'SiteVisitFileRemoval_no_truncate' },
+  // #1177 VT1 — a voice note's transcript references its "Media" row, which a CASCADE from `Project` reaches.
+  { table: 'VoiceTranscript', trigger: 'VoiceTranscript_no_truncate' },
   // Phase 6 unit 4d-i (#582's review round 24, the sweep behind finding 2) — the STREAM. Every
   // 4d correspondence, claim and actor binding is a statement about a row in it, judged once at
   // write time, and the derived registers around it (`Notification`, the claim table,
@@ -166,6 +170,23 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // #482 site photos — the deleted-photo record refuses TRUNCATE, and its key cascades from `Project`, so a reset that
   // truncates `Project` with CASCADE reaches it; the seal is bypassed here by name (#1018 r4325096705).
   { table: 'MediaTombstone', trigger: 'MediaTombstone_no_truncate' },
+  // #1118 U1a-3 — the Hub fetched-blob ledger refuses TRUNCATE (its row DELETE is the sweep's); its key cascades from
+  // `Project`, so a reset that truncates it with CASCADE reaches it, and the seal is bypassed here by name.
+  { table: 'HubFetchedBlob', trigger: 'HubFetchedBlob_no_truncate' },
+  // #1118 U1a-2 — a project's Hub link and its history refuse TRUNCATE; their keys cascade from `Project`, so a reset
+  // that truncates it with CASCADE reaches them, and the seals are bypassed here by name.
+  { table: 'DrawingHubLink', trigger: 'DrawingHubLink_no_truncate' },
+  { table: 'DrawingHubLinkEvent', trigger: 'DrawingHubLinkEvent_no_truncate' },
+  // #1118 U1b — a Hub drawing's, revision's and mark's records refuse TRUNCATE; they hang off "Drawing" and
+  // "DrawingRevision" by RESTRICT keys, so only a reset that names them (or truncates with CASCADE) reaches them, and the
+  // seals are bypassed here by name.
+  { table: 'HubDrawing', trigger: 'HubDrawing_no_truncate' },
+  { table: 'HubRevision', trigger: 'HubRevision_no_truncate' },
+  { table: 'HubGoverningMark', trigger: 'HubGoverningMark_no_truncate' },
+  // #1118 U1a-1 — Hub's delivery receipts and the versions Hub withdrew refuse TRUNCATE; each goes with its project or
+  // org, so only a reset that names them (or truncates with CASCADE) reaches them, and the seals are bypassed here by name.
+  { table: 'HubWebhookReceipt', trigger: 'HubWebhookReceipt_no_truncate' },
+  { table: 'HubVersionTombstone', trigger: 'HubVersionTombstone_no_truncate' },
 ];
 
 /**

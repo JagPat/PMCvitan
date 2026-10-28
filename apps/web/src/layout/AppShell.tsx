@@ -14,7 +14,8 @@ import { QueueUnreadable } from './QueueUnreadable';
 import { AuthGate } from './AuthGate';
 import { LangPreference } from './LangPreference';
 import { GuideHost } from '@/guide/GuideHost';
-import { GuideMe } from '@/guide/GuideMe';
+import { HelpRow } from '@/guide/Help';
+import { Welcome } from '@/guide/Welcome';
 import styles from './AppShell.module.css';
 
 export function AppShell() {
@@ -40,12 +41,15 @@ export function AppShell() {
           <div className={`drawing-grid ${styles.backdrop}`} />
           <div className={styles.stageInner}>
             <QueueUnreadable />
+            {/* #482 — Help on every screen of every project, and "Guide me" where this screen has a guide */}
+            <HelpRow />
+            {/* #482 — the first-time welcome, once per person, once the project's data is on screen */}
+            <Welcome />
             {/* On a project transition the previous project's records are ALREADY cleared;
                 the boundary covers the gap until the new project's snapshot lands, and a
                 failed transition shows a recoverable error — never stale records. */}
             <ProjectLoadBoundary state={projectLoadState} error={projectLoadError} label={short} onRetry={retryProjectLoad}>
               <ReturnToPlace />
-              <GuideMe />
               <ScreenView />
             </ProjectLoadBoundary>
           </div>
@@ -56,7 +60,7 @@ export function AppShell() {
           every screen; it gates ITSELF on project-load state, because the shell is outside
           `ProjectLoadBoundary` and nothing here unmounts it during a transition. */}
       <CreateControl />
-      {/* #482 — coach marks over the live screen; "Guide me" sits in the stage above */}
+      {/* #482 — coach marks over the live screen; "Guide me" and Help sit in the stage above */}
       <GuideHost />
       <NotificationPanel />
       <ModalHost />

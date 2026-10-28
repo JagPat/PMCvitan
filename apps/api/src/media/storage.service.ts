@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const MIME_EXT: Record<string, string> = {
@@ -10,6 +10,13 @@ const MIME_EXT: Record<string, string> = {
   'image/webp': 'webp',
   'image/heic': 'heic',
   'image/gif': 'gif',
+  // Stage 1 voice notes
+  'audio/webm': 'webm',
+  'audio/mp4': 'm4a',
+  'audio/ogg': 'ogg',
+  // video clips on site visits (#995)
+  'video/webm': 'webm',
+  'video/mp4': 'mp4',
   // documents (drawings register): PDF for the field, DWG as the CAD source
   'application/pdf': 'pdf',
   'image/vnd.dwg': 'dwg',
@@ -46,6 +53,9 @@ export class StorageService {
       endpoint: process.env.S3_ENDPOINT,
       region: process.env.S3_REGION || 'auto',
       forcePathStyle: true,
+      // Checksums only where S3 requires one (#1175). The SDK's default adds a CRC32 to every PutObject, and on a
+      // presigned PUT it is the CRC32 of an empty body (signing has no bytes), which a real upload never matches.
+      requestChecksumCalculation: 'WHEN_REQUIRED',
       credentials: {
         accessKeyId: process.env.S3_ACCESS_KEY_ID!,
         secretAccessKey: process.env.S3_SECRET_ACCESS_KEY!,
@@ -81,11 +91,13 @@ export class StorageService {
    * the file's bytes straight to the bucket, bypassing the API's request-body
    * limit (large drawings, Slice 3). Returns null when no bucket is configured, so
    * the caller falls back to the base64 body path (the current dev-stub default).
+   * The signature covers Content-Type, so the object is stored as the type the server allowed and
+   * the bucket serves it as that type, never as one the uploader chose, such as a page (#995 nosniff).
    */
   async presignPut(key: string, mime: string, expiresIn = 900): Promise<{ uploadUrl: string; url: string } | null> {
     if (!this.configured) return null;
     const cmd = new PutObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key, ContentType: mime });
-    const uploadUrl = await getSignedUrl(this.s3(), cmd, { expiresIn });
+    const uploadUrl = await getSignedUrl(this.s3(), cmd, { expiresIn, signableHeaders: new Set(['content-type']) });
     return { uploadUrl, url: this.publicUrl(key) };
   }
 
@@ -99,6 +111,22 @@ export class StorageService {
     if (!this.configured) return null;
     const cmd = new GetObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key });
     return getSignedUrl(this.s3(), cmd, { expiresIn });
+  }
+
+  /**
+   * The stored type of an object a client uploaded through a presigned PUT (S3 mode), so the server checks the
+   * object itself before recording it, whatever URL it came through (#995 nosniff: an upload URL minted before
+   * the PUT's type was signed let the uploader choose it). Null when there is no such object, or no bucket.
+   */
+  async storedType(key: string): Promise<string | null> {
+    if (!this.configured) return null;
+    try {
+      const head = await this.s3().send(new HeadObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key }));
+      return head.ContentType ?? null;
+    } catch (err) {
+      if ((err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 404) return null;
+      throw err;
+    }
   }
 
   /** Delete a stored object (S3 mode). Dev stub keeps bytes in the DB row, so no-op here. */

@@ -136,6 +136,7 @@
 }
 .file {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: flex-start;
   font-size: 13px;
@@ -147,6 +148,23 @@
   border-radius: 10px;
   display: block;
   background: rgba(35, 33, 28, 0.06);
+}
+.voice {
+  min-width: 72px;
+  display: flex;
+  align-items: center;
+}
+/* a player never takes the row: on a narrow phone it fits the card, and the note and who added it go below it */
+.voice audio {
+  width: 220px;
+  max-width: 100%;
+}
+.recording {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
 }
 .copyOf {
   display: flex;
@@ -166,6 +184,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1 1 160px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -188,4 +207,18 @@
 .rating[data-rating='fine'] {
   background: #e3f1e5;
   color: #1e5b2a;
+}
+/* #995 V2b: a video plays at the card's width at most, and what the camera sees while recording takes a line of its own */
+.voice video {
+  width: 240px;
+  max-width: 100%;
+  border-radius: 10px;
+  background: #000;
+}
+.preview {
+  flex-basis: 100%;
+  width: 240px;
+  max-width: 100%;
+  border-radius: 10px;
+  background: #000;
 }

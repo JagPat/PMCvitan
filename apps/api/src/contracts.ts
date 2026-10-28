@@ -210,6 +210,19 @@ export type ResolveMismatchInput = z.infer<typeof resolveMismatchSchema>;
 // a single request can't push an unbounded blob through the API body.
 export const RASTER_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/heic', 'image/heif'] as const;
 export const MAX_MEDIA_BASE64 = 14_000_000; // ~10.5 MB decoded
+// Stage 1 voice notes (Jagrut, 19 Oct 2026, "yes to all" on the media plan): a spoken note on a site visit, up to two
+// minutes. Android browsers record WebM (Opus), iPhones MP4 (AAC), Firefox Ogg; only base types are named, so a
+// recorder's `;codecs=` parameter is the client's to strip. Two minutes is about 1 to 2 MB, well inside the cap above.
+export const VOICE_NOTE_MIMES = ['audio/webm', 'audio/mp4', 'audio/ogg'] as const;
+export const VOICE_NOTE_MAX_SEC = 120;
+// the length a voice note is stored with is read from the file; a length the client also sends must agree with it to
+// within this many seconds (a recorder's timer and its container can differ by a frame or a rounding)
+export const VOICE_NOTE_SEC_TOLERANCE = 2;
+// Stage 1 video on site visits (#995): a clip of up to a minute on a site visit. Android browsers record WebM (VP8 or
+// VP9), iPhones and Chrome's MP4 recorder MP4 (H.264 or VP9); sound is optional. The recorder keeps a minute inside the
+// cap above (about 1 Mbps). Its length is read from the file as a voice note's is, with the same tolerance.
+export const VIDEO_CLIP_MIMES = ['video/webm', 'video/mp4'] as const;
+export const VIDEO_CLIP_MAX_SEC = 60;
 // Site Visits #792 SV2 — a file added on a site visit: the visit, and what the adder saw (a note, a rating), both
 // optional. Such a file is its own kind, 'visit', so it stays inside its visit: every photo list (the Site Map, the
 // Dashboard, the daily log) reads the kinds it shows, and none of them reads 'visit'.
@@ -221,8 +234,11 @@ const mediaSiteVisitSchema = z.object({
 }).strict();
 export const createMediaSchema = z.object({
   kind: z.enum(['progress', 'inspection', 'decision', 'attendance', 'material', 'visit']),
-  mime: z.enum(RASTER_IMAGE_MIMES),
-  data: z.string().min(1).max(MAX_MEDIA_BASE64, 'image too large'),
+  mime: z.enum([...RASTER_IMAGE_MIMES, ...VOICE_NOTE_MIMES, ...VIDEO_CLIP_MIMES]),
+  data: z.string().min(1).max(MAX_MEDIA_BASE64, 'file too large'),
+  // a voice note's or a video clip's length in whole seconds as the recorder counted it, optional: the length stored is
+  // read from the file, and this, when sent, must agree with it; a photo has none (the database holds the same rule)
+  durationSec: z.number().int().min(1).max(VOICE_NOTE_MAX_SEC).optional(),
   decisionId: z.string().optional(),
   dailyLogId: z.string().optional(),
   // Evidence linkage (Phase 1 Task 4): the inspection item this photo proves.
@@ -243,8 +259,45 @@ export const createMediaSchema = z.object({
 }).refine((m) => (m.kind === 'visit') === (m.siteVisit !== undefined), {
   message: "a file on a site visit has kind 'visit' and names its visit; no other upload names one",
   path: ['siteVisit'],
+}).refine((m) => m.mime.startsWith('audio/') || m.mime.startsWith('video/') || m.durationSec === undefined, {
+  message: 'a photo has no length',
+  path: ['durationSec'],
+}).refine((m) => !m.mime.startsWith('video/') || m.durationSec === undefined || m.durationSec <= VIDEO_CLIP_MAX_SEC, {
+  message: 'a video clip is at most a minute long',
+  path: ['durationSec'],
 });
 export type CreateMediaInput = z.infer<typeof createMediaSchema>;
+
+// #995 V1b — a video clip's still frame: a JPEG the recording phone draws from the clip, added after the clip by its
+// own request, so the clip's upload keeps its shape. A 640 × 360 frame at quality 0.8 is 30 to 60 KB; the cap is about
+// 225 KB decoded. The bytes are read whole by `media/jpeg-still.ts` before anything is stored.
+export const POSTER_MAX_BASE64 = 300_000;
+export const addPosterSchema = z.object({
+  mime: z.literal('image/jpeg'),
+  data: z.string().min(1).max(POSTER_MAX_BASE64, 'file too large'),
+}).strict();
+export type AddPosterInput = z.infer<typeof addPosterSchema>;
+
+// #1179 R2 — take a file off its site visit. The PMC says why when the file is not their own within the hour; the
+// database keeps the reason on the visit's removal line, at most 300 characters and never blank (20280125000000).
+export const SITE_VISIT_REMOVAL_REASON_MAX = 300;
+// The limit counts characters, as the database column does (not UTF-16 units). A reason must show something: at
+// least one letter, digit, punctuation mark or symbol that is not default-ignorable (a variation selector or a Hangul
+// filler draws nothing) nor the blank Braille cell. This lists what shows rather than what does not, so a mark-only,
+// control-only, separator-only, private-use or unassigned reason is refused alike (Codex 4397768825, 4398944044).
+// A combining mark still counts beside the letter it sits on. A NUL is refused: PostgreSQL cannot store it.
+const SHOWS = /[\p{L}\p{N}\p{P}\p{S}]/u;
+const DRAWS_NOTHING = /[\p{Default_Ignorable_Code_Point}\u2800]/u;
+const showsSomething = (s: string) => [...s].some((c) => SHOWS.test(c) && !DRAWS_NOTHING.test(c));
+export const removeVisitFileSchema = z.object({
+  reason: z.string().trim()
+    .refine((s) => !s.includes('\u0000'), 'A reason cannot contain that character')
+    .refine(showsSomething, 'Say why you are removing this file')
+    .refine((s) => [...s].length <= SITE_VISIT_REMOVAL_REASON_MAX, `Keep the reason to ${SITE_VISIT_REMOVAL_REASON_MAX} characters`)
+    .nullish()
+    .transform((s) => s ?? undefined),
+}).strict();
+export type RemoveVisitFileInput = z.infer<typeof removeVisitFileSchema>;
 
 // Re-file an existing photo or drawing onto a location-tree node (or null to unfile).
 // Shared by PATCH /media/:id/node and /drawings/:id/node — "manage & modify" from the tree.

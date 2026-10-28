@@ -173,15 +173,19 @@ describe('#1100 — the standing projection refuses a direct write under a forei
     await Promise.race([t1deleted.p, T1]);
 
     // T2: a direct write that adds X as a pmc holder. It meets T1's deleted row and waits for T1.
-    const t2inserted = gate(); const t2release = gate();
-    const T2 = settle(t.prisma.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(`INSERT INTO "Membership" ("id", "projectId", "userId", "role", "status") VALUES ($1, $2, $3, 'pmc', 'active')`,
-        randomUUID(), f.projectA.id, x);
-      t2inserted.open();
-      await t2release.p;
-    }, { timeout: 60_000, maxWait: 10_000 }));
+    const openT2 = () => {
+      const inserted = gate(); const release = gate();
+      const done = settle(t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`INSERT INTO "Membership" ("id", "projectId", "userId", "role", "status") VALUES ($1, $2, $3, 'pmc', 'active')`,
+          randomUUID(), f.projectA.id, x);
+        inserted.open();
+        await release.p;
+      }, { timeout: 60_000, maxWait: 10_000 }));
+      return { inserted, release, done };
+    };
+    let T2 = openT2();
     let t2settled = false;
-    void T2.then(() => { t2settled = true; });
+    void T2.done.then(() => { t2settled = true; });
     try {
       for (;;) {
         if (t2settled) break; // T2 did not wait for T1: asserted below
@@ -194,7 +198,17 @@ describe('#1100 — the standing projection refuses a direct write under a forei
       t1release.open();
     }
     await T1;
-    const t2 = await Promise.race([t2inserted.p.then(() => null), T2]);
+    let t2 = await Promise.race([T2.inserted.p.then(() => null), T2.done]);
+    // #1144 — PostgreSQL wakes T2, which waits on T1's row, before it releases T1's advisory locks
+    // (`ProcReleaseLocks`: the regular locks first, then the advisory ones). So T2's seal can still find the key
+    // held in that window. It then fails closed, as designed for a direct writer, with exactly this refusal and
+    // nothing written. T1's commit has been observed, so the direct writer's one retry must add the holder.
+    if (t2 !== null) {
+      expect(t2.ok ? '' : t2.e, 'T2 failed for a reason other than the seal failing closed').toMatch(/the project readiness key is held elsewhere/);
+      expect(await standing(x), 'a refused direct write wrote nothing').toEqual([]);
+      T2 = openT2();
+      t2 = await Promise.race([T2.inserted.p.then(() => null), T2.done]);
+    }
     try {
       expect(t2, 'the raw insert after T1 committed was refused').toBe(null);
       // While T2 is open with its new holder, a forward cannot take the readiness key: T2 holds it.
@@ -202,9 +216,9 @@ describe('#1100 — the standing projection refuses a direct write under a forei
         'SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS got', readinessLockKey(f.projectA.id)))[0]!.got);
       expect(got, 'a real holder add is open without the readiness key held').toBe(false);
     } finally {
-      t2release.open();
+      T2.release.open();
     }
-    expect((await T2).ok).toBe(true);
+    expect((await T2.done).ok).toBe(true);
     expect(await standing(x)).toEqual(['pmc']);
   }, 60_000);
 

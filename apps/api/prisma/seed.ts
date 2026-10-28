@@ -67,8 +67,8 @@ async function main(): Promise<void> {
     'NotificationReceipt',
     // Site Visits (#792) SV1-a — the visit record refuses row DELETE (so `deleteMany` on a project, user or node would
     // be refused or blocked); it is cleared here, its TRUNCATE seals bypassed by `sanctionedReset`.
-    // SV2 — a visit's files reference the visit, so they truncate in the same statement.
-    'SiteVisitMedia', 'SiteVisitPlace', 'SiteVisitAttendee', 'SiteVisit',
+    // SV2 — a visit's files reference the visit, so they truncate in the same statement; so do its removal lines (#1179 R1).
+    'SiteVisitFileRemoval', 'SiteVisitMedia', 'SiteVisitPlace', 'SiteVisitAttendee', 'SiteVisit',
     'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
     'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
     'InspectionsProjection', 'MaterialReadinessProjection', 'CashForecastProjection',
@@ -138,7 +138,18 @@ async function main(): Promise<void> {
     // Phase 6 unit 4c-iii moved this wipe from `deleteMany()` to the sanctioned reset because the
     // consultation preservation seal refused a direct DELETE; unit 4c-v retired that seal. The
     // table stays in the reset list — one wipe path for every table, seal or no seal.
-    'ProjectCapability'
+    'ProjectCapability',
+    // #1118 U1a-2 — a Hub link event names the user who acted through a NO ACTION key, so it goes before the users;
+    // it refuses row DELETE, so it is cleared here, its TRUNCATE seal bypassed by name. The link goes in the same
+    // statement: this reset commits on its own, and a link left behind without its events could never be written again.
+    'DrawingHubLinkEvent', 'DrawingHubLink',
+    // #1118 U1b — a Hub drawing's, revision's and mark's records hold RESTRICT keys to "Drawing" and "DrawingRevision"
+    // and refuse row DELETE, so the drawing wipe below would be refused while one exists; they are cleared here, their
+    // TRUNCATE seals bypassed by name, together because each references the one before it.
+    'HubGoverningMark', 'HubRevision', 'HubDrawing',
+    // #1118 U1a-1 — a delivery's applied receipt and the fact it wrote reference each other (deferred keys), so they go in
+    // the same statement as the facts; both refuse row DELETE, their TRUNCATE seals bypassed by name.
+    'HubWebhookReceipt', 'HubVersionTombstone'
   ] as const;
   await sanctionedReset(prisma, RESET_TABLES);
   await prisma.gateOverride.deleteMany();

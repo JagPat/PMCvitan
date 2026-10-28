@@ -363,11 +363,18 @@ jobs:
   # is rebuilt from the real ledger, planted with representative legacy shapes,
   # upgraded through ALL Phase 1 migrations the way Prisma applies them, and
   # asserted to keep every legacy meaning intact. Pure psql — no build needed.
+  #
+  # Hub #1118 U5m added a second proof here, the ledger-lost restore through the REAL `migrate.sh`,
+  # which does need the build. It sits in this job rather than `api` so that it runs in parallel with
+  # the battery instead of after it, and only when this job's own paths change (migrations, the
+  # deploy and proof scripts: `scripts/ci-affected.mjs`); a push to main runs it with everything.
+  # Budget: setup ~5 + the upgrade proof's ~5 + the ledger-lost proof's 40-minute bound, rounded up.
+  # `scripts/ci-workflow-timeouts.test.mjs` requires it to cover the step budgets (40 here).
   upgrade-proof:
     needs: [review-scope, battery-plan]
     if: needs.battery-plan.outputs.run_products == 'true' && contains(fromJSON(needs.battery-plan.outputs.products), 'upgrade-proof')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:16
@@ -386,6 +393,32 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Upgraded-database proof (legacy fixture through all Phase 1 migrations)
         run: bash apps/api/scripts/upgrade-proof.sh
+
+      # Hub #1118 U5m — the only execution of the production `migrate.sh` over a database restored
+      # WITHOUT its ledger that carries the later catalog generations. On that path the runner resolves
+      # each superseded catalog owner as applied (A7d, SV1-a, U5m rules), because their immutable
+      # foreign-generation audits would refuse the newer generations on a restore that never served.
+      # `upgrade-proof.sh` above only mirrors the rule; the `api` job's runner proofs never build a
+      # database that carries A7d. Its state B mutates a COPY of migrate.sh to prove the RUNNER is
+      # coupled to the rule; the step is pinned by `scripts/ci-baseline-proof-wiring.test.mjs`.
+      # 40 minutes, not the `api` proofs' 25: it runs the runner's baseline path three times, and that
+      # path resolves every migration with its own Prisma call. Measured at 15 minutes on an idle
+      # machine; the `api` job records runner variance of up to 3x.
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Prisma generate
+        run: pnpm --filter api prisma:generate
+      - name: Ledger-lost restore production-runner proof (the real migrate.sh over the catalog generations)
+        timeout-minutes: 40
+        env:
+          JWT_SECRET: ci-integration-secret-not-used-in-production
+        run: bash apps/api/scripts/ledger-lost-runner-proof.sh
 
   api:
     needs: [review-scope, battery-plan]
@@ -449,8 +482,33 @@ jobs:
         run: pnpm --filter api prisma:migrate
       - name: Unit tests
         run: pnpm --filter api test
-      - name: Integration tests (real app over real PostgreSQL)
-        run: pnpm --filter api test:integration
+      # Owner request 2026-10-27: the integration suite was ~25 minutes run file by file, the largest part
+      # of this job. It now runs as four parallel shards, each on its OWN PostgreSQL server (the service
+      # above is shard 1; three more postgres:16 containers are started here), because the suite uses
+      # server-wide state: roles, lock-wait barriers read from pg_stat_activity, fixed scratch database
+      # names. Files inside a shard still run one at a time. apps/api/test/integration-shards.mjs places
+      # every file in exactly one shard and fails the step unless each shard's report names exactly its
+      # files, all passed: no test is dropped and the pass gate is unchanged.
+      - name: Start and migrate the integration shard databases
+        timeout-minutes: 5
+        run: |
+          for i in 1 2 3; do
+            docker run -d --name "pg-shard-$i" -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+              -e POSTGRES_DB=pmcvitan_test -p "$((5432 + i)):5432" postgres:16 >/dev/null
+          done
+          for i in 1 2 3; do
+            for _ in $(seq 60); do docker exec "pg-shard-$i" pg_isready -U postgres -h localhost >/dev/null 2>&1 && break; sleep 1; done
+            docker exec "pg-shard-$i" pg_isready -U postgres -h localhost
+            DATABASE_URL="postgresql://postgres:postgres@localhost:$((5432 + i))/pmcvitan_test?schema=public" \
+              pnpm --filter api prisma:migrate
+          done
+      - name: Integration tests (real app over real PostgreSQL, four parallel shards)
+        working-directory: apps/api
+        run: |
+          node test/integration-shards.mjs "$DATABASE_URL" \
+            "postgresql://postgres:postgres@localhost:5433/pmcvitan_test?schema=public" \
+            "postgresql://postgres:postgres@localhost:5434/pmcvitan_test?schema=public" \
+            "postgresql://postgres:postgres@localhost:5435/pmcvitan_test?schema=public"
       - name: Typecheck
         run: pnpm --filter api typecheck
       - name: Build

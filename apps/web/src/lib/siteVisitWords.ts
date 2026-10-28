@@ -118,9 +118,134 @@ export const SV = {
     gu: 'આ મુલાકાતના ફેરફારો રોકાયેલા છે: આ ફોનનો સ્ટોરેજ હમણાં વાંચી શકાતો નથી, અને તેમાં કોઈ ફોટો હજી મોકલવાનો બાકી હોઈ શકે છે.',
   },
   sendAnyway: { en: 'Send anyway', hi: 'फिर भी भेजें', gu: 'તો પણ મોકલો' },
-  notSent: { en: 'Photos not sent', hi: 'फ़ोटो जो नहीं भेजी गईं', gu: 'ન મોકલાયેલા ફોટા' },
+  notSent: { en: 'Photos, voice notes and videos not sent', hi: 'फ़ोटो, वॉइस नोट और वीडियो जो नहीं भेजे गए', gu: 'ન મોકલાયેલા ફોટા, વૉઇસ નોટ અને વીડિયો' },
   dismiss: { en: 'Dismiss', hi: 'हटाएँ', gu: 'દૂર કરો' },
   photoOpen: { en: 'Open photo', hi: 'फ़ोटो खोलें', gu: 'ફોટો ખોલો' },
+  // Stage 1 voice notes: a spoken note on the visit, up to two minutes, kept and sent the way a photo is
+  files: { en: 'Photos, voice notes and videos', hi: 'फ़ोटो, वॉइस नोट और वीडियो', gu: 'ફોટા, વૉઇસ નોટ અને વીડિયો' },
+  voiceNote: { en: 'Voice note', hi: 'वॉइस नोट', gu: 'વૉઇસ નોટ' },
+  recordVoice: { en: 'Record voice note', hi: 'वॉइस नोट रिकॉर्ड करें', gu: 'વૉઇસ નોટ રેકોર્ડ કરો' },
+  recording: { en: 'Recording', hi: 'रिकॉर्ड हो रहा है', gu: 'રેકોર્ડ થઈ રહ્યું છે' },
+  // the running time against the cap: "0:12 of 2:00"
+  recordingOf: { en: 'of', hi: '/', gu: '/' },
+  voiceStop: { en: 'Stop and add', hi: 'रोकें और जोड़ें', gu: 'રોકો અને ઉમેરો' },
+  voiceDiscard: { en: 'Discard', hi: 'रद्द करें', gu: 'રદ કરો' },
+  voiceCapped: {
+    en: 'The recording stopped at two minutes and was added.',
+    hi: 'रिकॉर्डिंग दो मिनट पर रुक गई और जोड़ दी गई।',
+    gu: 'રેકોર્ડિંગ બે મિનિટે અટકી ગયું અને ઉમેરાઈ ગયું.',
+  },
+  play: { en: 'Play', hi: 'चलाएँ', gu: 'વગાડો' },
+  playFailed: { en: 'This voice note could not be played.', hi: 'यह वॉइस नोट चल नहीं सका।', gu: 'આ વૉઇસ નોટ વાગી શકી નહીં.' },
+  voiceDenied: {
+    en: 'Voice notes need the microphone. Allow the microphone for this site in the browser settings, then try again.',
+    hi: 'वॉइस नोट के लिए माइक्रोफ़ोन चाहिए। ब्राउज़र सेटिंग में इस साइट के लिए माइक्रोफ़ोन की अनुमति दें, फिर से कोशिश करें।',
+    gu: 'વૉઇસ નોટ માટે માઇક્રોફોન જોઈએ. બ્રાઉઝર સેટિંગમાં આ સાઇટ માટે માઇક્રોફોનની મંજૂરી આપો, પછી ફરી પ્રયત્ન કરો.',
+  },
+  voiceUnavailable: {
+    en: 'This phone could not start recording. Check that no other app is using the microphone, then try again.',
+    hi: 'यह फ़ोन रिकॉर्डिंग शुरू नहीं कर सका। देखें कि कोई दूसरा ऐप माइक्रोफ़ोन इस्तेमाल न कर रहा हो, फिर से कोशिश करें।',
+    gu: 'આ ફોન રેકોર્ડિંગ શરૂ કરી શક્યો નહીં. જુઓ કે બીજી કોઈ ઍપ માઇક્રોફોન વાપરતી ન હોય, પછી ફરી પ્રયત્ન કરો.',
+  },
+  voiceTooShort: {
+    en: 'This recording was too short to add. Record for at least a second.',
+    hi: 'यह रिकॉर्डिंग जोड़ने के लिए बहुत छोटी थी। कम से कम एक सेकंड रिकॉर्ड करें।',
+    gu: 'આ રેકોર્ડિંગ ઉમેરવા માટે બહુ ટૂંકું હતું. ઓછામાં ઓછી એક સેકન્ડ રેકોર્ડ કરો.',
+  },
+  voiceTooLong: {
+    en: 'This recording ran past two minutes and was not added. Record a shorter note.',
+    hi: 'यह रिकॉर्डिंग दो मिनट से लंबी थी और जोड़ी नहीं गई। छोटा नोट रिकॉर्ड करें।',
+    gu: 'આ રેકોર્ડિંગ બે મિનિટથી લાંબું હતું અને ઉમેરાયું નથી. નાની નોટ રેકોર્ડ કરો.',
+  },
+  voiceFormat: {
+    en: 'This browser records voice in a format Vitan cannot send. Try another browser, such as Chrome or Safari.',
+    hi: 'यह ब्राउज़र आवाज़ ऐसे फ़ॉर्मेट में रिकॉर्ड करता है जिसे Vitan भेज नहीं सकता। कोई दूसरा ब्राउज़र आज़माएँ, जैसे Chrome या Safari।',
+    gu: 'આ બ્રાઉઝર અવાજ એવા ફોર્મેટમાં રેકોર્ડ કરે છે જે Vitan મોકલી શકતું નથી. બીજું બ્રાઉઝર અજમાવો, જેમ કે Chrome અથવા Safari.',
+  },
+  voiceUnreadable: {
+    en: 'This recording could not be read. Record it again.',
+    hi: 'यह रिकॉर्डिंग पढ़ी नहीं जा सकी। फिर से रिकॉर्ड करें।',
+    gu: 'આ રેકોર્ડિંગ વાંચી શકાયું નહીં. ફરી રેકોર્ડ કરો.',
+  },
+  voiceTooBig: {
+    en: 'This recording is too large to send. Record a shorter note.',
+    hi: 'यह रिकॉर्डिंग भेजने के लिए बहुत बड़ी है। छोटा नोट रिकॉर्ड करें।',
+    gu: 'આ રેકોર્ડિંગ મોકલવા માટે બહુ મોટું છે. નાની નોટ રેકોર્ડ કરો.',
+  },
+  voiceNoStorage: {
+    en: 'This voice note was not added: this browser cannot save it on the phone (private browsing cannot). Open the app in a normal browser window and record it again.',
+    hi: 'यह वॉइस नोट नहीं जोड़ा गया: यह ब्राउज़र इसे फ़ोन पर सहेज नहीं सकता (प्राइवेट ब्राउज़िंग नहीं कर सकती)। ऐप को सामान्य ब्राउज़र विंडो में खोलें और फिर से रिकॉर्ड करें।',
+    gu: 'આ વૉઇસ નોટ ઉમેરાઈ નથી: આ બ્રાઉઝર તેને ફોન પર સાચવી શકતું નથી (પ્રાઇવેટ બ્રાઉઝિંગ નથી સાચવી શકતું). ઍપ સામાન્ય બ્રાઉઝર વિન્ડોમાં ખોલો અને ફરી રેકોર્ડ કરો.',
+  },
+  voiceNotKept: {
+    en: 'This voice note was not added: it could not be saved on this phone. Free some space on the phone, then record it again.',
+    hi: 'यह वॉइस नोट नहीं जोड़ा गया: इसे इस फ़ोन पर सहेजा नहीं जा सका। फ़ोन में कुछ जगह खाली करें, फिर से रिकॉर्ड करें।',
+    gu: 'આ વૉઇસ નોટ ઉમેરાઈ નથી: તેને આ ફોન પર સાચવી શકાઈ નહીં. ફોનમાં થોડી જગ્યા ખાલી કરો, પછી ફરી રેકોર્ડ કરો.',
+  },
+  voiceMaybeNotKept: {
+    en: 'This voice note may not have been saved: the phone did not say in time. If it does not appear on the visit soon, record it again.',
+    hi: 'हो सकता है यह वॉइस नोट सहेजा न गया हो: फ़ोन ने समय पर नहीं बताया। अगर यह जल्द ही विज़िट पर न दिखे, तो इसे फिर से रिकॉर्ड करें।',
+    gu: 'આ વૉઇસ નોટ કદાચ સચવાઈ ન હોય: ફોને સમયસર જણાવ્યું નહીં. જો તે થોડી વારમાં મુલાકાત પર ન દેખાય, તો તેને ફરી રેકોર્ડ કરો.',
+  },
+  voicePlaceGone: {
+    en: 'The place you chose was removed from this visit. Choose the place again, then record the note.',
+    hi: 'आपकी चुनी जगह इस विज़िट से हटा दी गई। जगह फिर से चुनें, फिर नोट रिकॉर्ड करें।',
+    gu: 'તમે પસંદ કરેલી જગ્યા આ મુલાકાતમાંથી દૂર કરાઈ. જગ્યા ફરી પસંદ કરો, પછી નોટ રેકોર્ડ કરો.',
+  },
+  // #995 V2b: a video clip on the visit, up to a minute, recorded in the app and kept and sent the way a voice note is
+  videoClip: { en: 'Video', hi: 'वीडियो', gu: 'વીડિયો' },
+  recordVideo: { en: 'Record video', hi: 'वीडियो रिकॉर्ड करें', gu: 'વીડિયો રેકોર્ડ કરો' },
+  videoCapped: {
+    en: 'The video stopped at one minute and was added.',
+    hi: 'वीडियो एक मिनट पर रुक गया और जोड़ दिया गया।',
+    gu: 'વીડિયો એક મિનિટે અટકી ગયો અને ઉમેરાઈ ગયો.',
+  },
+  videoPlayFailed: { en: 'This video could not be played.', hi: 'यह वीडियो चल नहीं सका।', gu: 'આ વીડિયો ચાલી શક્યો નહીં.' },
+  videoDenied: {
+    en: 'Videos need the camera. Allow the camera for this site in the browser settings, then try again.',
+    hi: 'वीडियो के लिए कैमरा चाहिए। ब्राउज़र सेटिंग में इस साइट के लिए कैमरे की अनुमति दें, फिर से कोशिश करें।',
+    gu: 'વીડિયો માટે કૅમેરા જોઈએ. બ્રાઉઝર સેટિંગમાં આ સાઇટ માટે કૅમેરાની મંજૂરી આપો, પછી ફરી પ્રયત્ન કરો.',
+  },
+  videoUnavailable: {
+    en: 'This phone could not start recording. Check that no other app is using the camera, then try again.',
+    hi: 'यह फ़ोन रिकॉर्डिंग शुरू नहीं कर सका। देखें कि कोई दूसरा ऐप कैमरा इस्तेमाल न कर रहा हो, फिर से कोशिश करें।',
+    gu: 'આ ફોન રેકોર્ડિંગ શરૂ કરી શક્યો નહીં. જુઓ કે બીજી કોઈ ઍપ કૅમેરા વાપરતી ન હોય, પછી ફરી પ્રયત્ન કરો.',
+  },
+  videoTooLong: {
+    en: 'This video ran past one minute and was not added. Record a shorter video.',
+    hi: 'यह वीडियो एक मिनट से लंबा था और जोड़ा नहीं गया। छोटा वीडियो रिकॉर्ड करें।',
+    gu: 'આ વીડિયો એક મિનિટથી લાંબો હતો અને ઉમેરાયો નથી. નાનો વીડિયો રેકોર્ડ કરો.',
+  },
+  videoFormat: {
+    en: 'This browser records video in a format Vitan cannot send. Try another browser, such as Chrome or Safari.',
+    hi: 'यह ब्राउज़र वीडियो ऐसे फ़ॉर्मेट में रिकॉर्ड करता है जिसे Vitan भेज नहीं सकता। कोई दूसरा ब्राउज़र आज़माएँ, जैसे Chrome या Safari।',
+    gu: 'આ બ્રાઉઝર વીડિયો એવા ફોર્મેટમાં રેકોર્ડ કરે છે જે Vitan મોકલી શકતું નથી. બીજું બ્રાઉઝર અજમાવો, જેમ કે Chrome અથવા Safari.',
+  },
+  videoTooBig: {
+    en: 'This video is too large to send. Record a shorter video.',
+    hi: 'यह वीडियो भेजने के लिए बहुत बड़ा है। छोटा वीडियो रिकॉर्ड करें।',
+    gu: 'આ વીડિયો મોકલવા માટે બહુ મોટો છે. નાનો વીડિયો રેકોર્ડ કરો.',
+  },
+  videoNoStorage: {
+    en: 'This video was not added: this browser cannot save it on the phone (private browsing cannot). Open the app in a normal browser window and record it again.',
+    hi: 'यह वीडियो नहीं जोड़ा गया: यह ब्राउज़र इसे फ़ोन पर सहेज नहीं सकता (प्राइवेट ब्राउज़िंग नहीं कर सकती)। ऐप को सामान्य ब्राउज़र विंडो में खोलें और फिर से रिकॉर्ड करें।',
+    gu: 'આ વીડિયો ઉમેરાયો નથી: આ બ્રાઉઝર તેને ફોન પર સાચવી શકતું નથી (પ્રાઇવેટ બ્રાઉઝિંગ નથી સાચવી શકતું). ઍપ સામાન્ય બ્રાઉઝર વિન્ડોમાં ખોલો અને ફરી રેકોર્ડ કરો.',
+  },
+  videoNotKept: {
+    en: 'This video was not added: it could not be saved on this phone. Free some space on the phone, then record it again.',
+    hi: 'यह वीडियो नहीं जोड़ा गया: इसे इस फ़ोन पर सहेजा नहीं जा सका। फ़ोन में कुछ जगह खाली करें, फिर से रिकॉर्ड करें।',
+    gu: 'આ વીડિયો ઉમેરાયો નથી: તેને આ ફોન પર સાચવી શકાયો નહીં. ફોનમાં થોડી જગ્યા ખાલી કરો, પછી ફરી રેકોર્ડ કરો.',
+  },
+  videoMaybeNotKept: {
+    en: 'This video may not have been saved: the phone did not say in time. If it does not appear on the visit soon, record it again.',
+    hi: 'हो सकता है यह वीडियो सहेजा न गया हो: फ़ोन ने समय पर नहीं बताया। अगर यह जल्द ही विज़िट पर न दिखे, तो इसे फिर से रिकॉर्ड करें।',
+    gu: 'આ વીડિયો કદાચ સચવાયો ન હોય: ફોને સમયસર જણાવ્યું નહીં. જો તે થોડી વારમાં મુલાકાત પર ન દેખાય, તો તેને ફરી રેકોર્ડ કરો.',
+  },
+  videoPlaceGone: {
+    en: 'The place you chose was removed from this visit. Choose the place again, then record the video.',
+    hi: 'आपकी चुनी जगह इस विज़िट से हटा दी गई। जगह फिर से चुनें, फिर वीडियो रिकॉर्ड करें।',
+    gu: 'તમે પસંદ કરેલી જગ્યા આ મુલાકાતમાંથી દૂર કરાઈ. જગ્યા ફરી પસંદ કરો, પછી વીડિયો રેકોર્ડ કરો.',
+  },
   // M3: marking up a photo on the visit; the copy is a new photo, the original stays as it was
   markUp: { en: 'Mark up', hi: 'निशान लगाएँ', gu: 'નિશાન કરો' },
   markupCopy: { en: 'Marked-up copy', hi: 'निशान लगी कॉपी', gu: 'નિશાનવાળી નકલ' },
@@ -148,6 +273,58 @@ export const SV = {
     gu: 'આ નિશાનવાળી નકલ મોકલવા માટે બહુ મોટી છે.',
   },
 } satisfies Record<string, Words>;
+
+/** Stage 1 voice notes: the server's refusals of a voice note (and a video clip) it reads (#1025, media.service.ts), in each language. The
+ *  English is the server's own words, so a refusal reads the same whichever language the reason came through. */
+const VOICE_REFUSALS: Record<string, Words> = {
+  'This file is not the voice recording its type says': {
+    en: 'This file is not the voice recording its type says',
+    hi: 'यह फ़ाइल वैसी वॉइस रिकॉर्डिंग नहीं है जैसी इसका प्रकार बताता है',
+    gu: 'આ ફાઇલ તેના પ્રકાર મુજબની વૉઇસ રેકોર્ડિંગ નથી',
+  },
+  'A voice note is at most two minutes long': {
+    en: 'A voice note is at most two minutes long',
+    hi: 'वॉइस नोट ज़्यादा से ज़्यादा दो मिनट का होता है',
+    gu: 'વૉઇસ નોટ વધુમાં વધુ બે મિનિટની હોય છે',
+  },
+  'This voice note is not as long as its upload says': {
+    en: 'This voice note is not as long as its upload says',
+    hi: 'यह वॉइस नोट उतना लंबा नहीं है जितना इसके अपलोड में बताया गया है',
+    gu: 'આ વૉઇસ નોટ તેના અપલોડમાં કહ્યા જેટલી લાંબી નથી',
+  },
+  'A voice note is added on a site visit': {
+    en: 'A voice note is added on a site visit',
+    hi: 'वॉइस नोट साइट विज़िट पर ही जोड़ा जाता है',
+    gu: 'વૉઇસ નોટ સાઇટ મુલાકાત પર જ ઉમેરાય છે',
+  },
+  // #995 V1: the same refusals of a video clip
+  'This file is not the video its type says': {
+    en: 'This file is not the video its type says',
+    hi: 'यह फ़ाइल वैसा वीडियो नहीं है जैसा इसका प्रकार बताता है',
+    gu: 'આ ફાઇલ તેના પ્રકાર મુજબનો વીડિયો નથી',
+  },
+  'A video is at most a minute long': {
+    en: 'A video is at most a minute long',
+    hi: 'वीडियो ज़्यादा से ज़्यादा एक मिनट का होता है',
+    gu: 'વીડિયો વધુમાં વધુ એક મિનિટનો હોય છે',
+  },
+  'This video is not as long as its upload says': {
+    en: 'This video is not as long as its upload says',
+    hi: 'यह वीडियो उतना लंबा नहीं है जितना इसके अपलोड में बताया गया है',
+    gu: 'આ વીડિયો તેના અપલોડમાં કહ્યા જેટલો લાંબો નથી',
+  },
+  'A video is added on a site visit': {
+    en: 'A video is added on a site visit',
+    hi: 'वीडियो साइट विज़िट पर ही जोड़ा जाता है',
+    gu: 'વીડિયો સાઇટ મુલાકાત પર જ ઉમેરાય છે',
+  },
+};
+
+/** A server's reason for refusing a visit file, in the viewer's language when it is one of the voice refusals above;
+ *  any other reason is shown in the server's own words. */
+export function refusalWords(reason: string, lang: Lang): string {
+  return VOICE_REFUSALS[reason.trim()]?.[lang] ?? reason;
+}
 
 /** A server time as the viewer reads it, in India's time: "14 Oct, 15:30" in the viewer's language. */
 export function visitTime(iso: string, lang: Lang): string {
