@@ -6,6 +6,9 @@ export const GUIDE_TICK_MS = 300;
 /** how long a step's control may be missing before the guide steps back (a menu still opening is not gone) */
 export const GUIDE_REWIND_MS = 900;
 
+/** how long a guide asked for from Help may wait on its screen for its first control before the ask is dropped */
+export const GUIDE_ARRIVE_MS = 3000;
+
 export interface Box {
   top: number;
   left: number;

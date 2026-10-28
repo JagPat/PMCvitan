@@ -28,3 +28,12 @@ export function markGuideDone(key: string, guideId: string): void {
     /* storage unavailable — the guide may show again next time, nothing worse */
   }
 }
+
+/** "Show the first-time tips again": this person's guides all count as not done in this browser. */
+export function clearGuidesDone(key: string): void {
+  try {
+    globalThis.localStorage?.removeItem(PREFIX + key);
+  } catch {
+    /* storage unavailable — nothing was remembered to forget */
+  }
+}
