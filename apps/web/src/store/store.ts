@@ -107,7 +107,7 @@ import { COMMERCIAL_OP_PERMISSION, advanceCoalesceKey, budgetCoalesceKey, costHe
 import { checkinClock, todayCivil } from '@/lib/civilDate';
 import { hasStamp, type CaptureStamp } from '@/lib/captureStamp';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
-import { emitGuideOutcome, guideRunToken, recordGuidedPhotoPick } from '@/guide/outcomes';
+import { emitGuideOutcome, guideRunToken, recordGuidedPhotoPick, recordGuidedReview } from '@/guide/outcomes';
 import { saveSession, clearSession, loadSession } from '@/lib/sessionPersist';
 import { readDeviceLang } from '@/lib/langPreference';
 
@@ -2850,6 +2850,13 @@ export const useStore = create<Store>()(
      * offline outbox) when offline. Returns true when the action was handled
      * here (remote or queued); false means "no gateway — do the local mutation".
      */
+    /** #482 — a review decision's outcome for the review guide, under the run it is made in (taken before anything else,
+     *  so a later run never hears it) */
+    const reviewDecideReport = () => {
+      const guideRun = guideRunToken();
+      return (result: ActReport) =>
+        emitGuideOutcome(result === 'sent' || result === 'queued' ? 'review-decided' : result === 'failed' ? 'review-decide-failed' : 'review-decide-not-kept', null, guideRun);
+    };
     const runRemoteOrQueue = (
       op: OutboxOp,
       label: string,
@@ -4144,9 +4151,12 @@ export const useStore = create<Store>()(
         s.reviews[i].items[idx].rejected = !s.reviews[i].items[idx].rejected;
       }),
     approveInspection: () => {
+      // #482: how the decision went, for the review guide, under the run it was made in
+      const reportDecide = reviewDecideReport();
       const i = activeReviewIdx();
-      if (i < 0) return;
+      if (i < 0) { reportDecide('failed'); return; }
       const review = get().reviews[i];
+      recordGuidedReview(guideRunToken(), review.id);
       // Task 5: approving a CLOSING review is the sign-off that completes its activity
       // #482 V-1018-2 — what the decision says back, in the viewer's language when it is said (names and ids are
       // data): an online decision's toast reads the language at settlement (Codex 4307111788)
@@ -4157,7 +4167,7 @@ export const useStore = create<Store>()(
       // and any offline replay reach the server under it, so a lost-response retry decides once.
       const approveReviewKey = newIdempotencyKey();
       const decidedBy = get().sessionUserId;
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, IRL.approveQueued.en, () => gateway!.decideReview(review.id, true, [], approveReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), () => approvedMsg(get().lang), DLX.savedOffline(IRL.approveQueued[lang], lang))) return;
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, IRL.approveQueued.en, () => gateway!.decideReview(review.id, true, [], approveReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), () => approvedMsg(get().lang), DLX.savedOffline(IRL.approveQueued[lang], lang), reportDecide)) return;
       set((s) => {
         const j = s.reviews.findIndex((r) => r.id === review.id);
         if (j >= 0) {
@@ -4173,23 +4183,28 @@ export const useStore = create<Store>()(
         s.activeReviewId = review.id; // keep the just-decided review on screen (REVIEWED)
       });
       get().flash(msg);
+      reportDecide('sent');
     },
     sendReinspection: () => {
+      const reportDecide = reviewDecideReport();
       const i = activeReviewIdx();
-      if (i < 0) return;
+      if (i < 0) { reportDecide('failed'); return; }
       const review = get().reviews[i];
       const n = review.items.filter((it) => it.rejected || it.result === 'FAIL').length;
       const lang = get().lang;
+      // nothing marked to send back: refused here, and told, so the guide does not wait on it
       if (n === 0) {
         get().flash(IRL.noneRejected[lang]);
+        reportDecide('failed');
         return;
       }
+      recordGuidedReview(guideRunToken(), review.id);
       // gate finding 3: rejection names exact ROWS by server id (labels are not unique)
       const rejectedIds = review.items.filter((it) => it.rejected && it.id).map((it) => it.id!);
       // Task 10 (Module 3) correction — the rejection decision carries its own stable idempotency key.
       const rejectReviewKey = newIdempotencyKey();
       const decidedBy = get().sessionUserId;
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds, idempotencyKey: rejectReviewKey }, IRL.sendBackQueued.en, () => gateway!.decideReview(review.id, false, rejectedIds, rejectReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), () => IRT.reinspectionsToast(n, get().lang), DLX.savedOffline(IRL.sendBackQueued[lang], lang))) return;
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds, idempotencyKey: rejectReviewKey }, IRL.sendBackQueued.en, () => gateway!.decideReview(review.id, false, rejectedIds, rejectReviewKey).then((snap) => { refreshBriefAfterReview(decidedBy); return snap; }), () => IRT.reinspectionsToast(n, get().lang), DLX.savedOffline(IRL.sendBackQueued[lang], lang), reportDecide)) return;
       set((s) => {
         s.reinspectionCreated = true;
         const j = s.reviews.findIndex((r) => r.id === review.id);
@@ -4202,6 +4217,7 @@ export const useStore = create<Store>()(
         s.activeReviewId = review.id;
       });
       get().flash(IRT.reinspectionsToast(n, lang));
+      reportDecide('sent');
     },
 
     // ---- drawings register ----

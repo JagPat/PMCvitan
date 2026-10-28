@@ -1,10 +1,10 @@
 import { can, viewerIsConsultee, type Decision, type Role, type ScreenKey } from '@vitan/shared';
 import type { GuideTip, GuideTitle } from './words';
-import { guidedPhotoPicksOf, type GuideOutcome } from './outcomes';
+import { guidedPhotoPicksOf, guidedReviewOf, type GuideOutcome } from './outcomes';
 import { useGuideState } from './guideState';
 import { inspectionFrozen, useStore } from '@/store/store';
 import { dailyLogSendPending } from '@/store/dailyLogPending';
-import { dailyLogSettledForLinks, selectDecisionsNeedingViewer } from '@/store/selectors';
+import { dailyLogSettledForLinks, inspectionsSettledForLinks, selectDecisionsNeedingViewer } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
 import { ownOpenVisitNoted } from './visitFacts';
 
@@ -170,6 +170,24 @@ export const GUIDES: readonly Guide[] = [
     ],
   },
   {
+    // the PMC decides a submitted inspection: approve it or send it back, after marking any item not right. It ends on the
+    // decision's own report (sent, or kept on this phone to send), or once a refresh shows the review decided
+    id: 'review-inspection',
+    title: 'reviewInspection',
+    roles: ['pmc'],
+    screen: 'inspect-review',
+    available: reviewAwaitingDecision,
+    steps: [
+      {
+        target: 'review-decide',
+        tip: 'reviewDecide',
+        until: 'outcome',
+        outcome: { ok: 'review-decided', failed: 'review-decide-failed', held: 'review-decide-not-kept' },
+        settled: guidedReviewDecided,
+      },
+    ],
+  },
+  {
     // the client answers a choice put to them: Approve on the option they want, then confirm. Each Approve carries its
     // decision's id, so the confirm step and its outcome follow that one decision, not another approved meanwhile.
     id: 'approve-decision-client',
@@ -302,6 +320,21 @@ function sitePhotoButtonUsable(): boolean {
 function siteVisitRecordable(): boolean {
   const s = useStore.getState();
   return !!API_BASE && can('siteVisit.start', s.role);
+}
+
+/** A submitted inspection waits on the PMC's decision, with none on its way for it, on a settled read (the screen shows no
+ *  decision controls while its read loads or failed: `inspectionsSettledForLinks` holds neither) */
+function reviewAwaitingDecision(): boolean {
+  const s = useStore.getState();
+  if (!inspectionsSettledForLinks(s)) return false;
+  return s.reviews.some((r) => !r.decided && !s.outbox.some((o) => o.t === 'decideReview' && o.inspectionId === r.id));
+}
+
+/** the review this run decided shows decided, or has left the queue (the server's queue holds only undecided reviews) */
+function guidedReviewDecided(): boolean {
+  const run = useGuideState.getState().run;
+  const id = run ? guidedReviewOf(run.id) : null;
+  return id !== null && !useStore.getState().reviews.some((r) => r.id === id && !r.decided);
 }
 
 /** Today's log is open, not sent and not on its way, and its read has settled (under module read-ownership the screen

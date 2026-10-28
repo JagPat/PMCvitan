@@ -338,15 +338,17 @@ export function InspectionReviewScreen() {
           />
         ) : (
           <>
+            {/* #482: the guide points at the controls that decide. With a failed item Approve asks first, so its
+                confirm is the one, and while it asks Send back behind it is not */}
             {failedCount > 0 ? (
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <Button variant="danger" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
+                <Button variant="danger" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" data-guide={confirmApproveId === review.id ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
                 <Button variant="outline" onClick={() => setConfirmApproveId(review.id)} data-testid="approve-inspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.approve[lang]}</Button>
               </div>
             ) : (
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <Button variant="success" onClick={() => decide(approveInspection)} data-testid="approve-inspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.approve[lang]}</Button>
-                <Button variant="dangerOutline" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
+                <Button variant="success" onClick={() => decide(approveInspection)} data-testid="approve-inspection" data-guide="review-decide" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.approve[lang]}</Button>
+                <Button variant="dangerOutline" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" data-guide="review-decide" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
               </div>
             )}
             {confirmApproveId === review.id && failedCount > 0 && (
@@ -357,6 +359,7 @@ export function InspectionReviewScreen() {
                 onConfirm={() => decide(approveInspection)}
                 onCancel={() => setConfirmApproveId(null)}
                 testId="confirm-approve"
+                guide="review-decide"
               >
                 {T.failedConfirm(failedCount, lang)}
               </ConfirmDialog>
