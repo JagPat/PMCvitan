@@ -274,8 +274,10 @@ export function GuideHost() {
       if (current.keyed && g.run.key !== null && !guideKeyMatches(pressed.getAttribute('data-guide-key'), g.run.key)) return;
       // an action that can fail waits for the store's report (this runs before the control's own
       // handler, so even a report made at once, as in demo mode, finds the wait in place)
+      // A keyed step with no key yet (the first) takes its record from this press, so its outcome follows that record
+      // only: another record's outcome meanwhile neither finishes nor rewinds it (#1220)
       if (current.until === 'outcome') {
-        if (!(pressed as HTMLButtonElement).disabled) g.setWait(true);
+        if (!(pressed as HTMLButtonElement).disabled) g.setWait(true, current.keyed && g.run.key === null ? pressed.getAttribute('data-guide-key') : undefined);
         return;
       }
       completeStep(key, g, pressed.getAttribute('data-guide-key'));
