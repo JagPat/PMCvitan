@@ -8,20 +8,30 @@
 export type RecordKind = 'audio' | 'video';
 
 /** The recorder types tried, best first: WebM (Opus), which Chromium and Firefox write; MP4, which iPhones write (AAC);
- *  Ogg (Opus). The upload names only the base type (`VOICE_NOTE_MIMES`), so a `;codecs=` parameter is asked for and
- *  checked here, then stripped. */
+ *  Ogg (Opus). The upload names only the base type (`VOICE_NOTE_MIMES`, `VIDEO_CLIP_MIMES`), so a `;codecs=` parameter
+ *  is asked for and checked here, then stripped. A video clip is WebM (VP8, then VP9, with Opus) where the recorder
+ *  writes it, else MP4 (H.264 with AAC, as iPhones write). Never `video/webm;codecs=h264`: Chromium writes that as
+ *  Matroska, which the server refuses. */
 export const RECORD_TYPES: Record<RecordKind, readonly string[]> = {
   audio: ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/ogg'],
-  // the video web unit (V2) fills this in with what its server unit takes; until then video is never offered
-  video: [],
+  video: ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4'],
 };
 
 /** The base types the upload takes for each kind, each with the codecs the server's reader takes in it (the #1025
- *  allow-list: Opus in WebM and Ogg, AAC-LC or Opus in MP4). A recorder that reports anything else is not used. */
+ *  allow-list: Opus in WebM and Ogg, AAC-LC or Opus in MP4; #995 V1 for video: VP8 or VP9 with Opus in WebM, H.264
+ *  (`avc1`, never `avc3`) or VP9 with AAC-LC or Opus in MP4; Chromium names VP9 in MP4 `vp9`). A codec ending `.*` is that codec with any profile and
+ *  level (`avc1.64001F`), or none named. A recorder that reports anything else is not used. */
 export const UPLOAD_CODECS: Record<RecordKind, Readonly<Record<string, readonly string[]>>> = {
   audio: { 'audio/webm': ['opus'], 'audio/ogg': ['opus'], 'audio/mp4': ['mp4a.40.2', 'opus'] },
-  video: {},
+  video: { 'video/webm': ['vp8', 'vp9', 'vp09.*', 'opus'], 'video/mp4': ['avc1.*', 'vp9', 'vp09.*', 'mp4a.40.2', 'opus'] },
 };
+
+/** Whether `codec`, as a recorder names it, is the allow-list's `entry`. */
+function codecIs(codec: string, entry: string): boolean {
+  if (!entry.endsWith('.*')) return codec === entry;
+  const name = entry.slice(0, -2);
+  return codec === name || (codec.startsWith(`${name}.`) && codec.length > name.length + 1);
+}
 
 /** Whether the upload takes a file of `kind` written as `type`: its base type is one the upload takes, and every codec
  *  it names (when it names any: a recorder may give the base type alone) is one the server reads in that type. */
@@ -31,7 +41,7 @@ export function acceptedType(kind: RecordKind, type: string): boolean {
   const named = /;\s*codecs\s*=\s*"?([^";]*)"?/i.exec(type)?.[1];
   if (named === undefined) return true;
   const list = named.split(',').map((c) => c.trim().toLowerCase());
-  return list.length > 0 && list.every((c) => codecs.includes(c));
+  return list.length > 0 && list.every((c) => codecs.some((entry) => codecIs(c, entry)));
 }
 
 /** `type` without its parameters, lower-cased: `audio/webm;codecs=opus` is `audio/webm`. */
@@ -79,13 +89,17 @@ export interface Recording {
    *  (`ended`: the microphone went away, the phone took it for a call). It carries that recording, which is then also
    *  what `stop` returns. */
   ended: Promise<{ rec: Recorded; cause: 'cap' | 'ended' }>;
+  /** What is being recorded, live: a video clip shows it, muted, so the person sees what the camera sees. */
+  stream: MediaStream;
 }
 
 /** What a kind may ask of the recorder beyond its type: its bit rates (a video clip keeps a minute inside the upload's
- *  size), and which devices it records from (video may record picture only when the microphone is refused). */
+ *  size), and which devices it records from (video may record picture only when the microphone is refused: `fallback`
+ *  is asked for once when `media` is refused or finds no device, and its answer is then the one that counts). */
 export interface RecordOptions {
   bits?: { audioBitsPerSecond?: number; videoBitsPerSecond?: number };
   media?: MediaStreamConstraints;
+  fallback?: MediaStreamConstraints;
 }
 
 /**
@@ -99,13 +113,19 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
   const Recorder = (globalThis as { MediaRecorder?: typeof MediaRecorder }).MediaRecorder;
   const devices = (globalThis as { navigator?: Navigator }).navigator?.mediaDevices;
   if (!Recorder || !devices?.getUserMedia) throw new RecordError('unavailable');
-  let stream: MediaStream;
-  try {
-    stream = await devices.getUserMedia(options.media ?? (kind === 'audio' ? { audio: true } : { audio: true, video: true }));
-  } catch (err) {
-    const name = (err as { name?: string } | null)?.name;
-    throw new RecordError(name === 'NotAllowedError' || name === 'SecurityError' ? 'denied' : 'unavailable');
-  }
+  const ask = async (media: MediaStreamConstraints) => {
+    try {
+      return await devices.getUserMedia(media);
+    } catch (err) {
+      const name = (err as { name?: string } | null)?.name;
+      throw new RecordError(name === 'NotAllowedError' || name === 'SecurityError' ? 'denied' : 'unavailable');
+    }
+  };
+  const first = options.media ?? (kind === 'audio' ? { audio: true } : { audio: true, video: true });
+  const stream: MediaStream = await ask(first).catch((err: unknown) => {
+    if (!options.fallback) throw err;
+    return ask(options.fallback);
+  });
   const release = () => stream.getTracks().forEach((t) => t.stop());
   let recorder: MediaRecorder;
   try {
@@ -177,6 +197,7 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
     // the last data the recorder hands over as it stops is dropped too
     cancel: () => { cancelled = true; recorder.ondataavailable = null; chunks.length = 0; halt(); },
     ended,
+    stream,
   };
 }
 
