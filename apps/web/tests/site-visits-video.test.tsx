@@ -281,6 +281,28 @@ describe('#995 V2b: video clips on a visit', () => {
     expect(useStore.getState().outbox).toHaveLength(0);
   });
 
+  it('stops itself at 59.5 s, inside the server’s minute, and keeps that clip', async () => {
+    withRecorder();
+    // the recorder's own cap timer, caught as it is set, so the test runs it at its time rather than waiting a minute
+    const real = globalThis.setTimeout;
+    const caps: Array<{ ms: number; run: () => void }> = [];
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
+      if (typeof ms === 'number' && ms >= 30_000) { caps.push({ ms, run: fn }); return 0 as unknown as ReturnType<typeof setTimeout>; }
+      return real(fn, ms, ...rest);
+    }) as typeof setTimeout);
+    const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
+    const card = screen.getByTestId('sv-visit-v-1');
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Record video' })); });
+    expect(caps.map((c) => c.ms)).toEqual([59_500]);
+    now += 59_500;
+    await act(async () => { caps[0].run(); });
+    await settled();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect((uploadMedia.mock.calls[0] as unknown as [Record<string, unknown>])[0]).toMatchObject({ mime: 'video/webm' });
+    expect(within(card).getByText('The video stopped at one minute and was added.')).toBeTruthy();
+  });
+
   it('stops a recorder that writes H.264 in Matroska, says so, and keeps nothing', async () => {
     withRecorder();
     writes = 'video/x-matroska;codecs=avc1';
