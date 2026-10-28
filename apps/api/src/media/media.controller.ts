@@ -79,21 +79,24 @@ export class MediaController {
     return this.transcripts.advance(projectId, mediaId, user);
   }
 
-  /** #1177 VT2 — "Try again" once after the words could not be written out. The note's recorder, the PMC or the engineer. */
+  /** #1177 VT2 — "Try again" once after the words could not be written out. The note's recorder, the PMC or the engineer:
+   *  the route lets every reader through and the service decides, so a recorder whose role has changed since is not
+   *  turned away here. */
   @Post('projects/:projectId/media/:mediaId/transcript/retry')
   @HttpCode(200)
   @UseGuards(JwtGuard, RolesGuard)
-  @RolesFor('media.upload')
+  @RolesFor('project.read')
   retryTranscript(@Param('projectId') projectId: string, @Param('mediaId') mediaId: string, @CurrentUser() user: AuthUser) {
     return this.transcripts.retry(projectId, mediaId, user);
   }
 
   /** #1177 VT2 — correct a voice note's words (or take the correction back with `null`). The note's recorder, the PMC or
-   *  the engineer; each correction is added as its own row, and the words heard stay stored beside them (H7, VT1b). */
+   *  the engineer (decided by the service, as for "Try again"); each correction is added as its own row, and the words
+   *  heard stay stored beside them (H7, VT1b). */
   @Post('projects/:projectId/media/:mediaId/transcript/correction')
   @HttpCode(200)
   @UseGuards(JwtGuard, RolesGuard)
-  @RolesFor('media.upload')
+  @RolesFor('project.read')
   correctTranscript(
     @Param('projectId') projectId: string,
     @Param('mediaId') mediaId: string,

@@ -86,6 +86,12 @@ interface Row {
   corrections: Array<{ seq: number; text: string | null; correctedById: string; createdAt: Date }>;
 }
 
+/** The row as a step claimed it. */
+interface Claimed {
+  providerJobId: string | null;
+  attempts: number;
+}
+
 interface Note {
   id: string;
   mime: string;
@@ -114,14 +120,14 @@ export class VoiceTranscriptService {
   /** The note's words as they stand. Every member who can see the note reads them, where the switch is on. */
   async get(projectId: string, mediaId: string, user: AuthUser): Promise<VoiceTranscriptDto> {
     const note = await this.visibleNote(projectId, mediaId, user);
+    this.configured();
     return this.dto(note, user, await this.read(projectId, mediaId));
   }
 
   /** One step of the work, then the row as it stands (H2). */
   async advance(projectId: string, mediaId: string, user: AuthUser): Promise<VoiceTranscriptDto> {
     const note = await this.visibleNote(projectId, mediaId, user);
-    const provider = this.provider;
-    if (!provider) throw new ServiceUnavailableException('Writing out voice notes is not available right now');
+    const provider = this.configured();
     if (!(await this.read(projectId, mediaId))) await this.ensureRow(projectId, mediaId);
     const token = randomUUID();
     const claimed = await this.claim(projectId, mediaId, token);
@@ -137,7 +143,7 @@ export class VoiceTranscriptService {
     const note = await this.visibleNote(projectId, mediaId, user);
     this.assertCorrector(note, user);
     // nothing is written when the provider is not configured: the one "Try again" is kept for when it is
-    if (!this.provider) throw new ServiceUnavailableException('Writing out voice notes is not available right now');
+    this.configured();
     const reset = await this.prisma.voiceTranscript.updateMany({
       where: { projectId, mediaId, status: 'failed', retried: false },
       data: { status: 'pending', providerJobId: null, attempts: 0, retried: true, lastError: null, leaseToken: null, leaseUntil: null },
@@ -152,6 +158,7 @@ export class VoiceTranscriptService {
    *  replaces a newer correction it did not show. */
   async correct(projectId: string, mediaId: string, user: AuthUser, text: string | null, basedOn: number): Promise<VoiceTranscriptDto> {
     const note = await this.visibleNote(projectId, mediaId, user);
+    this.configured();
     this.assertCorrector(note, user);
     const value = text === null ? null : text.trim();
     if (value !== null && value === '') throw new BadRequestException('A correction holds some words');
@@ -191,16 +198,21 @@ export class VoiceTranscriptService {
 
   // ── the step ────────────────────────────────────────────────────────────────────────────────────────────────
 
-  private async step(provider: SpeechProvider, note: Note, projectId: string, token: string, row: { providerJobId: string | null; attempts: number }): Promise<void> {
+  private async step(provider: SpeechProvider, note: Note, projectId: string, token: string, row: Claimed): Promise<void> {
     try {
       if (row.providerJobId === null) {
-        const audio = await this.audio(note);
-        const jobId = await provider.startJob(audio, note.mime, fileName(note));
-        await this.writeBack(projectId, note.id, token, { status: 'running', providerJobId: jobId.slice(0, 200), lastError: null });
+        // the job's id is stored before anything else is sent, so a failure from here on carries on with this job and
+        // never pays for a second one; nothing matches once the note is gone or the lease lost, and the step ends
+        const jobId = await provider.createJob();
+        if (!(await this.recordJob(projectId, note.id, token, jobId))) return;
+        await this.begin(provider, note, projectId, token, jobId);
         return;
       }
       const state: SpeechJobState = await provider.checkJob(row.providerJobId);
-      if (state.state === 'running') {
+      if (state.state === 'waiting') {
+        // made, but the provider never heard its start (a failed send, or a step that ended first): start it now
+        await this.begin(provider, note, projectId, token, row.providerJobId);
+      } else if (state.state === 'running') {
         await this.writeBack(projectId, note.id, token, { lastError: null });
       } else if (state.state === 'done') {
         const language = languageCode(state.languageCode);
@@ -216,6 +228,24 @@ export class VoiceTranscriptService {
       const failed = final || attempts >= TRANSCRIPT_MAX_ATTEMPTS;
       await this.writeBack(projectId, note.id, token, failed ? { status: 'failed', attempts, lastError: reason } : { attempts, lastError: reason });
     }
+  }
+
+  /** Send a made job its recording and start it. */
+  private async begin(provider: SpeechProvider, note: Note, projectId: string, token: string, jobId: string): Promise<void> {
+    const audio = await this.audio(note);
+    await provider.startJob(jobId, audio, note.mime, fileName(note));
+    await this.writeBack(projectId, note.id, token, { lastError: null });
+  }
+
+  /** The new job's id, stored under the step's lease (which it keeps): false when the note is gone or the lease lost.
+   *  The row runs from here, as VT1a sets a job only with that move: "running" means the provider holds a job, and a
+   *  check that finds it still waiting starts it (H3). */
+  private async recordJob(projectId: string, mediaId: string, token: string, jobId: string): Promise<boolean> {
+    const kept = await this.prisma.voiceTranscript.updateMany({
+      where: { projectId, mediaId, leaseToken: token, status: 'pending', providerJobId: null },
+      data: { status: 'running', providerJobId: jobId },
+    });
+    return kept.count === 1;
   }
 
   /** The step's result, written only while its lease holds and the row is not done; the lease is released with it.
@@ -240,7 +270,7 @@ export class VoiceTranscriptService {
   /** Take the row for one step: a pending row, or a running one not checked in the last few seconds, whose lease (if
    *  any) has run out; while its last try stands failed, not before the pause. One statement, so two claimants cannot both win. Null
    *  when there is nothing to do now. */
-  private async claim(projectId: string, mediaId: string, token: string): Promise<{ providerJobId: string | null; attempts: number } | null> {
+  private async claim(projectId: string, mediaId: string, token: string): Promise<Claimed | null> {
     const now = Date.now();
     const taken = await this.prisma.voiceTranscript.updateMany({
       where: {
@@ -260,6 +290,12 @@ export class VoiceTranscriptService {
   }
 
   // ── reads and checks ────────────────────────────────────────────────────────────────────────────────────────
+
+  /** The provider, or 503 when none is configured: then no route reads, writes or sends anything (H6). */
+  private configured(): SpeechProvider {
+    if (!this.provider) throw new ServiceUnavailableException('Writing out voice notes is not available right now');
+    return this.provider;
+  }
 
   private async read(projectId: string, mediaId: string): Promise<Row | null> {
     return this.prisma.voiceTranscript.findFirst({ where: { projectId, mediaId }, select: ROW_SELECT });

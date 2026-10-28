@@ -15,7 +15,7 @@ const UPLOAD = 'https://blob.test/in/note.webm?sig=1';
 const DOWNLOAD = 'https://blob.test/out/note.json?sig=2';
 
 type Call = { url: string; method: string; headers: Record<string, string>; body: unknown };
-type Answer = { status?: number; json?: unknown } | Error;
+type Answer = { status?: number; json?: unknown; raw?: string } | Error;
 
 function fake(answers: Record<string, Answer>) {
   const calls: Call[] = [];
@@ -29,7 +29,8 @@ function fake(answers: Record<string, Answer>) {
     const answer = answers[key];
     if (!answer) throw new Error(`unexpected ${key}`);
     if (answer instanceof Error) throw answer;
-    return new Response(answer.json === undefined ? null : JSON.stringify(answer.json), { status: answer.status ?? 200 });
+    const payload = answer.raw ?? (answer.json === undefined ? null : JSON.stringify(answer.json));
+    return new Response(payload, { status: answer.status ?? 200 });
   }) as typeof fetch;
   return { calls, provider: new SarvamSpeechProvider(KEY, http, BASE) };
 }
@@ -52,10 +53,12 @@ async function refusal(p: Promise<unknown>): Promise<SpeechProviderError> {
 }
 
 describe('SarvamSpeechProvider', () => {
-  it('creates a job, uploads the recording to its link, starts it, and hands back the job id', async () => {
+  it('creates a job and hands back its id before anything is sent, then uploads the recording to its link and starts it', async () => {
     const { calls, provider } = fake(START);
     const audio = Buffer.from('voice bytes');
-    expect(await provider.startJob(audio, 'audio/webm', 'm1.webm')).toBe('job-7');
+    expect(await provider.createJob()).toBe('job-7');
+    expect(calls).toHaveLength(1);
+    await provider.startJob('job-7', audio, 'audio/webm', 'm1.webm');
     expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
       `POST ${BASE}/speech-to-text/job/v1`,
       `POST ${BASE}/speech-to-text/job/v1/upload-files`,
@@ -72,9 +75,9 @@ describe('SarvamSpeechProvider', () => {
   });
 
   it('an answer without a job id or an https upload link is Sarvam\'s fault, not the note\'s: it may be tried again', async () => {
-    expect((await refusal(fake({ ...START, 'POST /speech-to-text/job/v1': { json: {} } }).provider.startJob(Buffer.from('x'), 'audio/webm', 'm1.webm'))).final).toBe(false);
+    expect((await refusal(fake({ ...START, 'POST /speech-to-text/job/v1': { json: {} } }).provider.createJob())).final).toBe(false);
     const plain = { 'POST /speech-to-text/job/v1/upload-files': { json: { upload_urls: { 'm1.webm': { file_url: 'http://blob.test/in' } } } } };
-    expect((await refusal(fake({ ...START, ...plain }).provider.startJob(Buffer.from('x'), 'audio/webm', 'm1.webm'))).final).toBe(false);
+    expect((await refusal(fake({ ...START, ...plain }).provider.startJob('job-7', Buffer.from('x'), 'audio/webm', 'm1.webm'))).final).toBe(false);
   });
 
   it('may try again after 429, 5xx or no answer; any other 4xx, a bad key\'s 401 or 403 too, ends the note', async () => {
@@ -83,16 +86,19 @@ describe('SarvamSpeechProvider', () => {
       [new Error('socket hang up'), false], [{ status: 400 }, true], [{ status: 422 }, true],
     ];
     for (const [answer, final] of cases) {
-      const error = await refusal(fake({ ...START, 'POST /speech-to-text/job/v1': answer }).provider.startJob(Buffer.from('x'), 'audio/webm', 'm1.webm'));
+      const error = await refusal(fake({ ...START, 'POST /speech-to-text/job/v1': answer }).provider.createJob());
       expect(error.final, JSON.stringify(answer)).toBe(final);
       expect(error.message).not.toContain(KEY);
     }
     // the blob store's refusal of the upload is judged the same way
-    expect((await refusal(fake({ ...START, [`PUT ${UPLOAD}`]: { status: 413 } }).provider.startJob(Buffer.from('x'), 'audio/webm', 'm1.webm'))).final).toBe(true);
+    expect((await refusal(fake({ ...START, [`PUT ${UPLOAD}`]: { status: 413 } }).provider.startJob('job-7', Buffer.from('x'), 'audio/webm', 'm1.webm'))).final).toBe(true);
+    // and so is the start
+    expect((await refusal(fake({ ...START, 'POST /speech-to-text/job/v1/job-7/start': { status: 503 } }).provider.startJob('job-7', Buffer.from('x'), 'audio/webm', 'm1.webm'))).final).toBe(false);
   });
 
-  it('reads a running job as running, and a failed or partly failed one as failed', async () => {
-    for (const s of ['Accepted', 'Pending', 'Running', 'running', 'RUNNING', 'Queued']) expect(await fake(status(s)).provider.checkJob('job-7')).toEqual({ state: 'running' });
+  it('reads a job made but not started as waiting, a running job as running, and a failed or partly failed one as failed', async () => {
+    for (const s of ['Accepted', 'accepted']) expect(await fake(status(s)).provider.checkJob('job-7')).toEqual({ state: 'waiting' });
+    for (const s of ['Pending', 'Running', 'running', 'RUNNING', 'Queued']) expect(await fake(status(s)).provider.checkJob('job-7')).toEqual({ state: 'running' });
     expect(await fake(status('Failed')).provider.checkJob('job-7')).toEqual({ state: 'failed', reason: 'Sarvam job Failed' });
     expect(await fake(status('PartiallyCompleted')).provider.checkJob('job-7')).toMatchObject({ state: 'failed' });
     expect(await fake(status('Completed')).provider.checkJob('job-7')).toEqual({ state: 'failed', reason: 'Sarvam job completed without an output file' });
@@ -116,6 +122,15 @@ describe('SarvamSpeechProvider', () => {
     expect(await provider.checkJob('job-7')).toEqual({ state: 'done', text: 'પાઇપ લાઇન', languageCode: 'gu-IN' });
     expect(calls[1]!.body).toEqual({ job_id: 'job-7', files: ['m1.json'] });
     expect(calls[2]!.headers['api-subscription-key']).toBeUndefined();
+  });
+
+  it('an output cut short on the way is not the job\'s end: it costs a try, and is read again', async () => {
+    const { provider } = fake({
+      ...status('Completed', [{ file_name: 'm1.json' }]),
+      'POST /speech-to-text/job/v1/download-files': { json: { download_urls: { 'm1.json': { file_url: DOWNLOAD } } } },
+      [`GET ${DOWNLOAD}`]: { raw: '{"transcript":"પાઇપ' },
+    });
+    expect((await refusal(provider.checkJob('job-7'))).final).toBe(false);
   });
 
   it('a completed output without words is a failed job', async () => {

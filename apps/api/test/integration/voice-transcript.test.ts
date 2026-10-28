@@ -4,7 +4,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { SpeechProviderError, type SpeechJobState, type SpeechProvider } from '../../src/media/speech/speech-provider';
 import { CapabilitiesService, VOICE_TEXT_CAPABILITY } from '../../src/platform/capabilities.service';
-import { TRANSCRIPT_MAX_ATTEMPTS } from '../../src/media/voice-transcript.service';
+import { TRANSCRIPT_MAX_ATTEMPTS, VoiceTranscriptService } from '../../src/media/voice-transcript.service';
 
 /**
  * #1177 VT2 — a voice note's words, through the real routes against PostgreSQL, with a fake speech provider in place
@@ -21,7 +21,10 @@ const gate = (): Gate => {
 };
 
 class FakeProvider implements SpeechProvider {
-  started: Array<{ bytes: number; mime: string; fileName: string }> = [];
+  created: string[] = [];
+  started: Array<{ jobId: string; bytes: number; mime: string; fileName: string }> = [];
+  /** the jobs whose start the provider heard: any other job it made is reported waiting */
+  begun = new Set<string>();
   checked: string[] = [];
   startGate: Gate | null = null;
   /** signalled once startJob has been entered (a test waits on it, never on a clock) */
@@ -30,27 +33,30 @@ class FakeProvider implements SpeechProvider {
   checkError: SpeechProviderError | null = null;
   state: SpeechJobState = { state: 'running' };
 
-  async startJob(audio: Buffer, mime: string, fileName: string): Promise<string> {
-    this.started.push({ bytes: audio.length, mime, fileName });
-    // the job's id is fixed when it is asked for, so a late answer names its own job
-    const jobId = `job-${this.started.length}`;
+  async createJob(): Promise<string> {
+    this.created.push(`job-${this.created.length + 1}`);
+    return this.created[this.created.length - 1]!;
+  }
+
+  async startJob(jobId: string, audio: Buffer, mime: string, fileName: string): Promise<void> {
+    this.started.push({ jobId, bytes: audio.length, mime, fileName });
     this.entered?.open();
     // only the first start waits at the gate; a second start (which must never happen) returns at once
     const waitFor = this.startGate;
     this.startGate = null;
     if (waitFor) await waitFor.wait;
     if (this.startError) throw this.startError;
-    return jobId;
+    this.begun.add(jobId);
   }
 
   async checkJob(jobId: string): Promise<SpeechJobState> {
     this.checked.push(jobId);
     if (this.checkError) throw this.checkError;
-    return this.state;
+    return this.begun.has(jobId) ? this.state : { state: 'waiting' };
   }
 
   reset(): void {
-    this.started = []; this.checked = []; this.startGate = null; this.entered = null; this.startError = null; this.checkError = null;
+    this.created = []; this.started = []; this.begun = new Set(); this.checked = []; this.startGate = null; this.entered = null; this.startError = null; this.checkError = null;
     this.state = { state: 'running' };
   }
 }
@@ -135,7 +141,8 @@ describe('#1177 VT2 — a voice note written out (live PG, fake provider)', () =
     const started = await advance(pmc, m);
     expect(started.status).toBe(200);
     expect(started.body).toMatchObject({ status: 'running', text: null });
-    expect(provider.started).toEqual([{ bytes: 'a recording'.length, mime: 'audio/webm', fileName: `${m}.webm` }]);
+    expect(provider.created).toEqual(['job-1']);
+    expect(provider.started).toEqual([{ jobId: 'job-1', bytes: 'a recording'.length, mime: 'audio/webm', fileName: `${m}.webm` }]);
 
     // looked at again at once: the job is not asked about
     expect((await advance(engineer, m)).body.status).toBe('running');
@@ -185,11 +192,11 @@ describe('#1177 VT2 — a voice note written out (live PG, fake provider)', () =
     // supertest sends on `then`
     const first = advance(pmc, m).then((r) => r);
     await provider.entered.wait;
-    // while the first step holds the claim, others read the row as it stands and start nothing
+    // while the first step holds the claim, others read the row as it stands (its job stored, so running) and start nothing
     const [second, third] = await Promise.all([advance(engineer, m), advance(client, m)]);
     expect(provider.started).toHaveLength(1);
-    expect(second.body.status).toBe('pending');
-    expect(third.body.status).toBe('pending');
+    expect(second.body.status).toBe('running');
+    expect(third.body.status).toBe('running');
     held.open();
     expect((await first).body.status).toBe('running');
     expect(provider.started).toHaveLength(1);
@@ -215,14 +222,17 @@ describe('#1177 VT2 — a voice note written out (live PG, fake provider)', () =
     for (let i = 1; i <= TRANSCRIPT_MAX_ATTEMPTS; i++) {
       if (i > 1) {
         // a view straight after a failed try waits out the pause: no new try
-        expect((await advance(pmc, m)).body.status).toBe('pending');
+        expect((await advance(pmc, m)).body.status).toBe('running');
         expect(provider.started).toHaveLength(i - 1);
         await age(m);
       }
       const res = await advance(pmc, m);
-      expect(res.body.status).toBe(i < TRANSCRIPT_MAX_ATTEMPTS ? 'pending' : 'failed');
+      expect(res.body.status).toBe(i < TRANSCRIPT_MAX_ATTEMPTS ? 'running' : 'failed');
     }
     expect(provider.started).toHaveLength(TRANSCRIPT_MAX_ATTEMPTS);
+    // every try sent the recording to the one job made on the first: no second job was paid for
+    expect(provider.created).toEqual(['job-1']);
+    expect(new Set(provider.started.map((s) => s.jobId))).toEqual(new Set(['job-1']));
     // failed: looking again sends nothing
     expect((await advance(pmc, m)).body).toMatchObject({ status: 'failed', canRetry: true });
     expect(provider.started).toHaveLength(TRANSCRIPT_MAX_ATTEMPTS);
@@ -234,6 +244,8 @@ describe('#1177 VT2 — a voice note written out (live PG, fake provider)', () =
     const again = await retry(contractor, m);
     expect(again.status).toBe(200);
     expect(again.body).toMatchObject({ status: 'running', canRetry: false });
+    // "Try again" starts over with a new job
+    expect(provider.created).toEqual(['job-1', 'job-2']);
     // once only
     provider.state = { state: 'failed', reason: 'Sarvam job Failed' };
     await age(m);
@@ -241,20 +253,95 @@ describe('#1177 VT2 — a voice note written out (live PG, fake provider)', () =
     expect((await retry(pmc, m)).status).toBe(409);
   });
 
-  it('a step whose lease ran out and was taken over writes nothing when its late answer comes', async () => {
+  it('a step whose lease ran out is carried on by the next viewer with the same job, and its late answer writes nothing', async () => {
     const m = await note();
     const held = gate();
     provider.startGate = held;
     provider.entered = gate();
     const first = advance(pmc, m).then((r) => r);
     await provider.entered.wait;
-    // the first step's lease runs out while it waits on the provider; the next viewer takes over and starts job-2
+    // the job was stored before its recording was sent
+    expect((await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: m } })).providerJobId).toBe('job-1');
+    // the first step's lease runs out while it waits on the provider; the next viewer takes over the same job
     await t.prisma.$executeRaw`UPDATE "VoiceTranscript" SET "leaseUntil" = now() - interval '1 second' WHERE "mediaId" = ${m}`;
+    await age(m);
     expect((await advance(engineer, m)).body.status).toBe('running');
     held.open();
     await first;
-    expect(provider.started).toHaveLength(2);
-    expect((await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: m } })).providerJobId).toBe('job-2');
+    expect(provider.created).toEqual(['job-1']);
+    expect(provider.started.map((s) => s.jobId)).toEqual(['job-1', 'job-1']);
+    expect(await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: m } })).toMatchObject({ providerJobId: 'job-1', status: 'running' });
+  });
+
+  it('a job whose start the provider heard, though its answer was lost, runs from the next check: no second start', async () => {
+    const m = await note();
+    provider.startError = new SpeechProviderError('Sarvam could not be reached', false);
+    expect((await advance(pmc, m)).body.status).toBe('running');
+    // Sarvam did start it; only its answer was lost
+    provider.begun.add('job-1');
+    provider.startError = null;
+    await age(m);
+    expect((await advance(pmc, m)).body.status).toBe('running');
+    expect(provider.created).toEqual(['job-1']);
+    expect(provider.started).toHaveLength(1);
+    expect(provider.checked).toEqual(['job-1']);
+  });
+
+  it('switched off while its job runs, nothing is asked; back on, the job is carried on or ends within its tries', async () => {
+    const m = await note(contractorId);
+    expect((await advance(pmc, m)).body.status).toBe('running');
+    await t.prisma.projectCapability.delete({ where: { projectId_capability: { projectId: f.projectA.id, capability: VOICE_TEXT_CAPABILITY } } });
+    try {
+      await age(m);
+      expect((await advance(pmc, m)).status).toBe(404);
+      expect(provider.checked).toEqual([]);
+    } finally {
+      await t.app.get(CapabilitiesService).enable(f.projectA.id, VOICE_TEXT_CAPABILITY, f.memberUser.id);
+    }
+    // back on, the provider has dropped the job's output meanwhile: it ends failed, and may be tried once more
+    provider.checkError = new SpeechProviderError('Sarvam status answered 404', true);
+    expect((await advance(pmc, m)).body).toMatchObject({ status: 'failed', canRetry: true });
+    expect(provider.checked).toEqual(['job-1']);
+    provider.checkError = null;
+    expect((await retry(contractor, m)).body).toMatchObject({ status: 'running' });
+    expect(provider.created).toEqual(['job-1', 'job-2']);
+  });
+
+  it('with no provider configured, no route reads or writes a transcript', async () => {
+    const m = await note();
+    provider.state = { state: 'done', text: 'words heard', languageCode: 'en-IN' };
+    await advance(pmc, m);
+    await age(m);
+    expect((await advance(pmc, m)).body.status).toBe('done');
+    const service = t.app.get(VoiceTranscriptService) as unknown as { provider: SpeechProvider | null };
+    service.provider = null;
+    try {
+      expect((await get(pmc, m)).status).toBe(503);
+      expect((await advance(pmc, m)).status).toBe(503);
+      expect((await correct(pmc, m, 'new words', 0)).status).toBe(503);
+      expect((await retry(pmc, m)).status).toBe(503);
+      expect(await t.prisma.voiceTranscriptCorrection.count({ where: { mediaId: m } })).toBe(0);
+    } finally {
+      service.provider = provider;
+    }
+  });
+
+  it('the person who recorded a note may correct it and try again whatever their role is now', async () => {
+    const m = await note(contractorId);
+    provider.state = { state: 'failed', reason: 'Sarvam job Failed' };
+    await advance(pmc, m);
+    await age(m);
+    await advance(pmc, m);
+    // the routes ask only `project.read`; the service decides by who recorded the note. No membership can hold a role
+    // without `media.upload` yet (the architect role is not writable), so the recorder's later role is put to the service.
+    const service = t.app.get(VoiceTranscriptService);
+    const recorder = { sub: contractorId, role: 'architect' as const, projectId: f.projectA.id };
+    expect(await service.get(f.projectA.id, m, recorder)).toMatchObject({ status: 'failed', canRetry: true });
+    provider.state = { state: 'done', text: 'words heard', languageCode: 'en-IN' };
+    expect(await service.retry(f.projectA.id, m, recorder)).toMatchObject({ status: 'running' });
+    await age(m);
+    expect(await service.advance(f.projectA.id, m, recorder)).toMatchObject({ status: 'done', canCorrect: true });
+    expect(await service.correct(f.projectA.id, m, recorder, 'words said', 0)).toMatchObject({ correction: { text: 'words said', byId: contractorId } });
   });
 
   it('a final refusal fails the note at once', async () => {

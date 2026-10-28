@@ -283,6 +283,7 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     "apps/api/src/procurement/purchase-orders.service.ts :: req.status !== 'approved'": 'not a decision status: a material requisition',
     "apps/api/src/procurement/purchase-orders.service.ts :: comparison.status !== 'approved'": 'not a decision status: a material quote comparison',
     "apps/api/src/media/voice-transcript.service.ts :: status: 'pending'": 'not a decision status: a voice note transcript job',
+    "apps/api/src/media/voice-transcript.service.ts :: status: 'pending' #2": 'not a decision status: a voice note transcript job',
     // web
     "apps/web/src/data/apiGateway.ts :: entry.status !== 'pending'": 'not a decision status: an evidence upload entry',
     "apps/web/src/store/store.ts :: e.status === 'pending'": 'not a decision status: an evidence upload entry',

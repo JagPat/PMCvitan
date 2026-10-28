@@ -41,12 +41,16 @@ export const HOME_NAV_CAPABILITY = 'home-nav';
 
 /** #1177 VT2 — the per-project VOICE NOTE TO TEXT switch (AI item 1). On, the server writes out a voice note's words
  *  through the speech provider when someone views it, and the web shows them; off (no row), no note is sent anywhere
- *  and no transcript is shown. Text already written stays stored and returns if the switch comes back on: nothing
- *  else depends on it, so it may be turned off as freely as `home-nav` (#1177 H5). */
+ *  and no transcript is shown. Text already written stays stored and returns if the switch comes back on. A job the
+ *  provider was running when it went off is not asked about while it is off (off stops every exchange); back on, the
+ *  next view carries it on from its stored id, and a job whose output the provider has since dropped ends `failed`
+ *  within the bounded tries, with the note's "Try again" (#1177 H6). Nothing else depends on it, so it may be turned
+ *  off as freely as `home-nav` (#1177 H5). */
 export const VOICE_TEXT_CAPABILITY = 'voice-text';
 
 /** The capabilities `capability:disable` accepts. Each must be one whose OFF strands nothing: no queued work or
- *  command depends on it being on (`voice-text` keeps its stored text, unshown). A pilot hub never belongs here —
+ *  command depends on it being on (`voice-text` keeps its stored text, unshown, and its rows carry on or end within their
+ *  bounded tries when it is back on). A pilot hub never belongs here —
  *  turning `materials`, `labour` or `commercial` off under live records would strand them. */
 export const SWITCHABLE_CAPABILITIES: readonly string[] = [HOME_NAV_CAPABILITY, VOICE_TEXT_CAPABILITY];
 

@@ -30,7 +30,10 @@ type UrlMap = Record<string, { file_url?: unknown } | undefined>;
 /** Sarvam's job states, compared lower-cased as the `sarvamai` SDK does. `partiallycompleted` of a one-file job means
  *  its one file failed. A state outside these lists is not taken as the job's end: it costs a try, and the job is
  *  asked about again. */
-const RUNNING = new Set(['accepted', 'pending', 'running', 'queued']);
+const RUNNING = new Set(['pending', 'running', 'queued']);
+/** A job made but not started yet (its file is not in, or its start was not heard): `Accepted`, as Sarvam answers a
+ *  job's creation. */
+const WAITING = 'accepted';
 const FAILED = new Set(['failed', 'partiallycompleted', 'cancelled', 'canceled']);
 
 export class SarvamSpeechProvider implements SpeechProvider {
@@ -40,23 +43,27 @@ export class SarvamSpeechProvider implements SpeechProvider {
     private readonly baseUrl: string = SARVAM_BASE_URL,
   ) {}
 
-  async startJob(audio: Buffer, mime: string, fileName: string): Promise<string> {
+  async createJob(): Promise<string> {
     const created = await this.api('POST', '/speech-to-text/job/v1', { job_parameters: SARVAM_JOB_PARAMETERS });
     const jobId = typeof created.job_id === 'string' && created.job_id.trim() !== '' ? created.job_id : null;
-    if (!jobId) throw new SpeechProviderError('Sarvam did not return a job id', false);
+    if (!jobId || jobId.length > 200) throw new SpeechProviderError('Sarvam did not return a job id', false);
+    return jobId;
+  }
+
+  async startJob(jobId: string, audio: Buffer, mime: string, fileName: string): Promise<void> {
     const links = await this.api('POST', '/speech-to-text/job/v1/upload-files', { job_id: jobId, files: [fileName] });
     const uploadUrl = fileUrl(links.upload_urls as UrlMap | undefined, fileName);
     if (!uploadUrl) throw new SpeechProviderError('Sarvam did not return an upload link', false);
     const put = await this.exchange(uploadUrl, { method: 'PUT', headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': mime }, body: audio });
     if (!put.ok) throw failure('upload', put.status);
     await this.api('POST', `/speech-to-text/job/v1/${encodeURIComponent(jobId)}/start`, {});
-    return jobId;
   }
 
   async checkJob(jobId: string): Promise<SpeechJobState> {
     const status = await this.api('GET', `/speech-to-text/job/v1/${encodeURIComponent(jobId)}/status`);
     const raw = typeof status.job_state === 'string' ? status.job_state.trim() : '';
     const state = raw.toLowerCase();
+    if (state === WAITING) return { state: 'waiting' };
     if (RUNNING.has(state)) return { state: 'running' };
     if (FAILED.has(state)) return { state: 'failed', reason: `Sarvam job ${raw}` };
     if (state !== 'completed') throw new SpeechProviderError(`Sarvam job in an unknown state${raw ? ` (${raw.slice(0, 40)})` : ''}`, false);
@@ -67,7 +74,9 @@ export class SarvamSpeechProvider implements SpeechProvider {
     if (!downloadUrl) throw new SpeechProviderError('Sarvam did not return a download link', false);
     const res = await this.exchange(downloadUrl, { method: 'GET' });
     if (!res.ok) throw failure('download', res.status);
-    const body = (await res.json().catch(() => null)) as { transcript?: unknown; language_code?: unknown } | null;
+    // a body cut short or garbled on the way is not the job's end: the job keeps its output, and it is read again
+    const body = (await res.json().catch(() => undefined)) as { transcript?: unknown; language_code?: unknown } | null | undefined;
+    if (body === undefined) throw new SpeechProviderError('Sarvam output could not be read', false);
     if (!body || typeof body.transcript !== 'string') return { state: 'failed', reason: 'Sarvam output had no transcript' };
     return { state: 'done', text: body.transcript, languageCode: typeof body.language_code === 'string' ? body.language_code : null };
   }
