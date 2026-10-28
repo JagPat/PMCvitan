@@ -4,11 +4,11 @@ import { useStore } from '@/store/store';
 import { langPreferenceKey } from '@/lib/langPreference';
 import { projectDataUsable } from '@/store/projectScope';
 import { guidesFor, type Guide } from './guides';
-import { readGuidesDone, markGuideDone } from './guideDone';
+import { readGuidesDone, markGuideDone, clearGuidesDone } from './guideDone';
 import { useGuideState } from './guideState';
-import { findGuideTarget, findStepTarget, guideKeyMatches, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
+import { findGuideTarget, findStepTarget, guideKeyMatches, GUIDE_ARRIVE_MS, GUIDE_REWIND_MS, GUIDE_TICK_MS, type Box } from './guideTarget';
 import { subscribeGuideOutcome } from './outcomes';
-import { GUIDE_TIPS, GUIDE_WORDS } from './words';
+import { GUIDE_TIPS, GUIDE_WORDS, HELP_WORDS } from './words';
 import styles from './Guide.module.css';
 
 /** Move the run past its current step (finishing the guide after the last one). */
@@ -59,6 +59,9 @@ function sameBox(a: Box | null, b: Box | null): boolean {
  *   latest earlier step whose control is still there, so the person can pick the task up again; with
  *   none left (the first control itself went away) the run ends, not done, and "Guide me" offers it.
  *   While a pressed action's outcome is awaited it neither steps back nor ends.
+ * - A guide asked for from the Help sheet starts once its first control is on its screen, ahead of any
+ *   automatic start. When that control does not come (nothing to do it on yet), the ask is dropped with a
+ *   short note, so the press is never silently lost.
  */
 export function GuideHost() {
   const role = useStore((s) => s.role);
@@ -74,12 +77,32 @@ export function GuideHost() {
   const autoUsed = useRef(false);
   // when the running step's control was first found missing (see the step-back rule in `tick`)
   const missing = useRef<{ guideId: string; step: number; since: number } | null>(null);
+  // when a guide asked for from Help was first found unable to start on its screen
+  const arrive = useRef<{ guide: Guide; since: number } | null>(null);
+  const tipsEpoch = useGuideState((s) => s.tipsEpoch);
 
   // a new visit, a new person or a project reload: end the run (not done) and allow one auto start
   useEffect(() => {
     autoUsed.current = false;
     useGuideState.getState().stop();
-  }, [screen, key, ready]);
+  }, [screen, key, ready, tipsEpoch]);
+
+  // a guide asked for from Help belongs to the visit to its screen: going elsewhere, or another person, drops it
+  useEffect(() => {
+    const asked = useGuideState.getState().requested;
+    if (asked && asked.screen !== screen) useGuideState.getState().request(null);
+  }, [screen]);
+  useEffect(() => () => useGuideState.getState().request(null), [key]);
+
+  // "first-time tips again" pressed before a dev-auth sign-in settled reset the persona's key; once the
+  // signed-in key arrives it is the same person, so it is reset too. Any other change of person drops it.
+  useEffect(() => {
+    const g = useGuideState.getState();
+    const from = g.tipsResetKey;
+    if (from === null || from === key) return;
+    if (from.startsWith('persona:') && key.startsWith('user:')) clearGuidesDone(key);
+    g.clearTipsReset();
+  }, [key]);
 
   useEffect(() => {
     if (!ready) {
@@ -98,6 +121,32 @@ export function GuideHost() {
         const startable = (guide: Guide) => enabled(findGuideTarget(guide.steps[0]!.target));
         const done = readGuidesDone(key);
         g.setOffer(replayOffer(guides.filter(startable), done, g.lastStarted));
+        // read from the store, not this effect's `screen`: Help asks and then moves to the guide's screen in one
+        // press, and a tick queued by that ask runs before this effect is rebuilt for the new screen
+        const asked = g.requested;
+        // asked for under another role (a project switch can change it): never point this role at that task
+        if (asked && !asked.roles.includes(useStore.getState().role)) {
+          arrive.current = null;
+          g.request(null);
+        } else if (asked && asked.screen === useStore.getState().screen) {
+          if (startable(asked)) {
+            arrive.current = null;
+            autoUsed.current = true;
+            g.request(null);
+            g.start(asked);
+            return;
+          }
+          const now = Date.now();
+          if (!arrive.current || arrive.current.guide !== asked) {
+            arrive.current = { guide: asked, since: now };
+          } else if (now - arrive.current.since >= GUIDE_ARRIVE_MS) {
+            arrive.current = null;
+            g.request(null);
+            useStore.getState().flash(HELP_WORDS.notHere[useStore.getState().lang]);
+          }
+          return;
+        }
+        arrive.current = null;
         if (autoUsed.current) return;
         const next = guides.find((guide) => !done.has(guide.id));
         if (next && startable(next)) {
