@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { clipSeconds, readVideoClip } from './video-container';
 import { readVoiceRecording } from './voice-container';
 import {
-  WEBM, box, ebml, fullBox, ftyp, lacedBlock, mp4File, mp4Fragmented, mvhd, sampleEntry, simpleBlock, trak, webmCluster, webmClusterAt, webmFile, webmInfo, webmTrack,
+  WEBM, box, dinf, ebml, fullBox, ftyp, hdlr, lacedBlock, mdhd, mp4File, mp4Fragmented, mvhd, sampleEntry, simpleBlock, stsd, stsz, tkhd, trak, webmCluster, webmClusterAt, webmFile, webmInfo, webmTrack,
 } from '../../test/unit-support/voice-files';
 import {
   AVCC_BODY, CLIP_WEBM, NAL_SAMPLE, OPUS_20MS, OPUS_HEAD, avcC, btrt, clipFragmented, clipMp4, clipWebm, clipWebmTimed, colr, cuePoint, cuesOf, editOf, fixedTable, fragmentOf, mfra, mfraFor,
@@ -673,6 +673,105 @@ describe('readVideoClip — V2a: the layouts phones record, and sound read as a 
     };
     expect(mp4(empty(0))).not.toBeNull();
     expect(mp4(empty(48_000 * 4.9))).toBeNull();
+  });
+});
+
+/**
+ * A clip's MP4 sound, as a voice note's since #1197 (#1168): each frame at its own decode time, exactly (integer units of
+ * 1 / (media timescale × audio rate) seconds), and the length counts where they end. The cases #1197 pins for voice.
+ */
+describe('readVideoClip — every sound frame at its own decode time (#1168, #1197)', () => {
+  const S = 48_000;
+  const sttsOf = (entries: Array<[number, number]>) => fullBox('stts', 0, 0, [u32(entries.length), ...entries.map(([n, d]) => u32(n, d))]);
+  const elst = (mediaTime: number, ms = 5000) => editOf(ms, mediaTime);
+  // a plain clip: two pictures, and `n` AAC frames of 4 bytes timed by `entries`, in chunks of `perChunk`, on a track of
+  // media timescale `scale` (its entry's rate stays 48 kHz)
+  const plain = (n: number, entries: Array<[number, number]>, edit?: Buffer, perChunk = n, scale = S) => {
+    const chunks = Math.ceil(n / perChunk);
+    const head = (o: number) => {
+      const soundAt = o + 2 * NAL_SAMPLE.length;
+      const sound = box('trak', [tkhd(2), ...(edit ? [edit] : []), box('mdia', [mdhd(0, scale), hdlr('soun'), box('minf', [SMHD_BOX, dinf(), box('stbl', [
+        stsd('mp4a'), sttsOf(entries), fullBox('stsc', 0, 0, u32(1, 1, perChunk, 1)), stsz(Array<number>(n).fill(4)),
+        fullBox('stco', 0, 0, u32(chunks, ...Array.from({ length: chunks }, (_, c) => soundAt + c * perChunk * 4))),
+      ])])])]);
+      return Buffer.concat([ftyp('isom'), box('moov', [mvhd(), pictureTrak(1, [NAL_SAMPLE.length, NAL_SAMPLE.length], o), sound])]);
+    };
+    return Buffer.concat([head(head(0).length + 8), box('mdat', [NAL_SAMPLE, NAL_SAMPLE, Buffer.alloc(4 * n, 7)])]);
+  };
+  // a fragmented clip: the picture's run, then the sound's runs of AAC frames lasting `durations`, the first at `tfdt`
+  const frag = (runs: number[][], edit?: Buffer, tfdt = 0) => {
+    const moov = Buffer.concat([ftyp('isom'), box('moov', [mvhd(), pictureTrak(1, []), soundTrakOpus(2, edit ? [edit] : [], 'mp4a'), box('mvex', [
+      fullBox('trex', 0, 0, u32(1, 1, 0, 0, 0)), fullBox('trex', 0, 0, u32(2, 1, 0, 0, 0))])])]);
+    return Buffer.concat([moov, fragmentOf(1, [
+      { track: 1, time: 0, data: [NAL_SAMPLE, NAL_SAMPLE], durations: [1600, 1600] },
+      ...runs.map((r, i) => ({ track: 2, ...(i === 0 ? { time: tfdt } : {}), data: r.map(() => Buffer.alloc(4, 0x21)), durations: r })),
+    ])]);
+  };
+
+  it('reads stts entry by entry, with unequal durations and an entry of no samples', () => {
+    // frames at 0, 30 s, 30 s + 1,024 and 30 s + 2,048, in two chunks
+    const four: Array<[number, number]> = [[1, S * 30], [3, 1024]];
+    expect(mp4(plain(4, four, elst(0), 2))).not.toBeNull();
+    expect(mp4(plain(4, four, elst(1024), 2))).toBeNull(); // silence after the first frame: main read one 85 ms stretch from 0
+    expect(mp4(plain(4, four, elst(S * 30), 2))).not.toBeNull();
+    expect(mp4(plain(4, four, elst(S * 30 + 2 * 1024), 2))).not.toBeNull(); // the fourth frame
+    // exactly where the fourth frame ends: nothing left to play (float sums could let this pass)
+    expect(mp4(plain(4, four, elst(S * 30 + 3 * 1024), 2))).toBeNull();
+    // an edit in the silence that ends exactly where the second frame starts selects none of it; a millisecond more does
+    expect(mp4(plain(4, four, elst(S * 20, 10_000), 2))).toBeNull();
+    expect(mp4(plain(4, four, elst(S * 20, 10_001), 2))).not.toBeNull();
+    // frames at 0 and 1,024, then one at 2,048 that lasts 30 s
+    const three: Array<[number, number]> = [[2, 1024], [1, S * 30]];
+    expect(mp4(plain(3, three, elst(2048)))).not.toBeNull();
+    expect(mp4(plain(3, three, elst(3072)))).toBeNull();
+    // an entry of no samples times none of them
+    expect(mp4(plain(2, [[0, 99], [1, S * 30], [1, 1024]], elst(S * 30)))).not.toBeNull();
+    expect(mp4(plain(2, [[0, 99], [1, S * 30], [1, 1024]], elst(S * 30 + 1024)))).toBeNull();
+    // the length is the durations the file states, as before
+    expect(mp4(plain(4, four))).toBeCloseTo(30 + (3 * 1024) / S, 9);
+  });
+
+  it('places by the media timescale and the audio rate, each where it belongs: a 44,100-tick track of 48 kHz AAC', () => {
+    // two frames 30 s apart; the first's 1,024 samples at 48 kHz end at 21.333 ms, which is 940.8 ticks at 44,100
+    const two = (at: number) => plain(2, [[2, 44_100 * 30]], elst(at), 2, 44_100);
+    expect(mp4(two(940))).not.toBeNull(); // 21.315 ms: inside the first frame
+    expect(mp4(two(941))).toBeNull(); // 21.338 ms: past it (read at 44,100 samples a second it would end at 23.2 ms)
+    expect(mp4(two(44_100 * 30))).not.toBeNull();
+    expect(mp4(two(44_100 * 30 + 941))).toBeNull();
+    expect(mp4(plain(2, [[2, 44_100 * 30]], undefined, 2, 44_100))).toBe(60);
+  });
+
+  it('reads each trun sample\'s own duration, across runs', () => {
+    // run A: frames at 0 and 30 s; run B: one frame at 60 s
+    expect(mp4(frag([[S * 30, S * 30], [1024]], elst(S * 30)))).not.toBeNull();
+    expect(mp4(frag([[S * 30, S * 30], [1024]], elst(S * 60)))).not.toBeNull();
+    expect(mp4(frag([[S * 30, S * 30], [1024]], elst(S * 45)))).toBeNull(); // main read run A as one 43 ms stretch, so this passed
+    // unequal durations in one run: frames at 0, 10 s and 40 s
+    expect(mp4(frag([[S * 10, S * 30, 1024]], elst(S * 10)))).not.toBeNull();
+    expect(mp4(frag([[S * 10, S * 30, 1024]], elst(S * 20)))).toBeNull();
+    expect(mp4(frag([[S * 10, S * 30, 1024]], elst(S * 40)))).not.toBeNull();
+    expect(mp4(frag([[S * 10, S * 30, 1024]], elst(S * 40 + 1024)))).toBeNull();
+  });
+
+  it('counts zero-duration frames in the length: 1,000 of them after one of 50 s play to 71.3 s', () => {
+    const seconds = 50 + (1000 * 1024) / S; // the first frame's 21 ms sits inside its 50 s
+    expect(mp4(plain(1001, [[1, S * 50], [1000, 0]]))).toBeCloseTo(seconds, 6);
+    expect(mp4(frag([[S * 50, ...Array<number>(1000).fill(0)]]))).toBeCloseTo(seconds, 6);
+    expect(readVideoClip('video/mp4', plain(1001, [[1, S * 50], [1000, 0]]))).toMatchObject({ durationSec: 71 }); // which the upload refuses
+    expect(mp4(plain(1001, [[1, S * 50], [1000, 0]], elst(S * 65, 1000)))).not.toBeNull(); // 65 s is sound
+  });
+
+  it('reads the real recordings where their last frame ends', () => {
+    // as on main (da872322): every WebM recording, and this MP4, whose last sound frame's duration covers it
+    expect(mp4(recording('chromium-153-avc1-opus.mp4'))).toBe(1.999);
+    expect(webm(recording('chromium-153-vp8-opus.webm'))).toBe(1.988);
+    expect(webm(recording('chromium-153-app-vp8-opus.webm'))).toBe(1.98);
+    expect(webm(recording('chromium-153-vp9.webm'))).toBe(1.949);
+    // this one's 33 Opus packets are 60 ms each, and the trun gives the last a duration of 1,008 ticks (21 ms), where the
+    // recording stopped: it sits at 1.94 s and decodes to 2.0 s. Main read the packets back to back from 0, 1.98 s.
+    // Stored as 2 s either way
+    expect(mp4(recording('chromium-153-vp9-opus.mp4'))).toBe(2);
+    expect(readVideoClip('video/mp4', recording('chromium-153-vp9-opus.mp4'))).toEqual({ seconds: 2, durationSec: 2 });
   });
 });
 
