@@ -15,6 +15,9 @@ import styles from './responsive.module.css';
 export function InspectionReviewScreen() {
   const reviews = useStore(useShallow((s) => s.reviews));
   const active = useStore(selectActiveReview);
+  // #482: a review whose decision is already waiting to send is not the guide's to point at (pressing again would queue
+  // a second decision)
+  const decisionQueued = useStore((s) => !!active && s.outbox.some((o) => o.t === 'decideReview' && o.inspectionId === active.id));
   const setActiveReview = useStore((s) => s.setActiveReview);
   const toggleReject = useStore((s) => s.toggleReject);
   const approveInspection = useStore((s) => s.approveInspection);
@@ -339,16 +342,16 @@ export function InspectionReviewScreen() {
         ) : (
           <>
             {/* #482: the guide points at the controls that decide. With a failed item Approve asks first, so its
-                confirm is the one, and while it asks Send back behind it is not */}
+                confirm is the one, and while it asks Send back behind it is not. None once a decision waits to send */}
             {failedCount > 0 ? (
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <Button variant="danger" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" data-guide={confirmApproveId === review.id ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
+                <Button variant="danger" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" data-guide={decisionQueued || confirmApproveId === review.id ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
                 <Button variant="outline" onClick={() => setConfirmApproveId(review.id)} data-testid="approve-inspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.approve[lang]}</Button>
               </div>
             ) : (
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <Button variant="success" onClick={() => decide(approveInspection)} data-testid="approve-inspection" data-guide="review-decide" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.approve[lang]}</Button>
-                <Button variant="dangerOutline" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" data-guide="review-decide" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
+                <Button variant="success" onClick={() => decide(approveInspection)} data-testid="approve-inspection" data-guide={decisionQueued ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.approve[lang]}</Button>
+                <Button variant="dangerOutline" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" data-guide={decisionQueued ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
               </div>
             )}
             {confirmApproveId === review.id && failedCount > 0 && (
@@ -359,7 +362,7 @@ export function InspectionReviewScreen() {
                 onConfirm={() => decide(approveInspection)}
                 onCancel={() => setConfirmApproveId(null)}
                 testId="confirm-approve"
-                guide="review-decide"
+                guide={decisionQueued ? undefined : 'review-decide'}
               >
                 {T.failedConfirm(failedCount, lang)}
               </ConfirmDialog>

@@ -123,7 +123,7 @@ describe('the inspection review guide (#482 step 3c)', () => {
     await isDone();
   });
 
-  it('without signal: done once the decision is kept on this phone to send, and not offered again for that review', async () => {
+  it('without signal: done once the decision is kept on this phone to send, and that review is not pointed at again', async () => {
     const decideReview = vi.fn();
     const { useStore, useGuideState, guide } = await open({ decideReview }, { online: false, passing: true });
     act(() => { useGuideState.getState().start(guide); });
@@ -132,9 +132,9 @@ describe('the inspection review guide (#482 step 3c)', () => {
     await isDone();
     expect(decideReview).not.toHaveBeenCalled();
     expect(useStore.getState().outbox.filter((o) => o.t === 'decideReview')).toHaveLength(1);
-    // the one other seeded review still waits; with it decided too, nothing is left to guide
-    const others = useStore.getState().reviews.slice(1).map((r) => r.id);
-    act(() => { useStore.setState((s) => ({ reviews: s.reviews.map((r) => (others.includes(r.id) ? { ...r, decided: true } : r)) })); });
+    // its decision waits to send: the review still shows its buttons, but the guide neither offers nor points at them,
+    // so a second press is never guided into a second decision
+    expect(guided()).toEqual([]);
     expect(guide.available!()).toBe(false);
   });
 
@@ -171,6 +171,10 @@ describe('the inspection review guide (#482 step 3c)', () => {
     await isDone();
     expect(seen).toEqual(['review-decided']);
     expect(useStore.getState().reviews.find((r) => r.id === id)?.decided).toBe(true);
+    // the decided review stays on screen as its record, with nothing to press: not offered, though another still waits
+    act(() => { useStore.setState((s) => ({ reviews: [...s.reviews, { ...s.reviews[0]!, id: 'INSP-OTHER', decided: false }] })); });
+    expect(useStore.getState().activeReviewId).toBe(id);
+    expect(guide.available!()).toBe(false);
   });
 
   it('is offered only to the PMC, with a review waiting on a settled read', async () => {
