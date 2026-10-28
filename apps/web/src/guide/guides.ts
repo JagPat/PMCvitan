@@ -148,8 +148,8 @@ export const GUIDES: readonly Guide[] = [
   },
   {
     // the engineer sends the day's log to the PMC: check in (passed over when already checked in), then send. Send ends
-    // only on the server's answer (or, without signal, once the log is kept on this phone to send), or when a refresh
-    // shows the log sent
+    // only on the server's answer, once the log is kept on this phone to send (offline, or a send left to retry), or when
+    // a refresh shows the log sent
     id: 'send-daily-log',
     title: 'sendDailyLog',
     roles: ['engineer'],

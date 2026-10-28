@@ -88,7 +88,7 @@ export const GUIDE_TIPS = {
     gu: 'પહેલાં, સાઇટ પર હાજરી પૂરવા અહીં દબાવો.',
   },
   logSend: {
-    en: "Fill in today's crew and photos, then tap here to send the daily log to the PMC.",
+    en: "Fill in today's crew and photos, then tap Submit Daily Log to PMC to send it.",
     hi: 'आज के कारीगर और फ़ोटो भरें, फिर रोज़ का लॉग PMC को भेजने के लिए यहाँ दबाएँ।',
     gu: 'આજના કારીગરો અને ફોટા ભરો, પછી રોજનો લૉગ PMC ને મોકલવા અહીં દબાવો.',
   },

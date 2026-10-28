@@ -5,8 +5,8 @@ import { warmImports } from './warm-imports';
 
 /**
  * #482 step 3c (Jagrut, 27 Oct: hold people's hands wherever they ask for help): the engineer's daily log guide.
- * Check in (passed over when already checked in), then Submit Daily Log to PMC. Submit ends only on the server's answer
- * (or, without signal, once the log is kept on this phone to send), or once a refresh shows the log sent.
+ * Check in (passed over when already checked in), then Submit Daily Log to PMC. Submit ends only on the server's answer,
+ * once the log is kept on this phone to send, or once a refresh shows the log sent.
  */
 
 const DONE_KEY = 'vitan.guide.done.v1:user:u-eng';
@@ -23,7 +23,7 @@ const snapshot = (dailyLog: DailyLog) => ({
   drawings: [], phases: [], dailyLog, notifications: [], companies: [], nodes: [], photos: [], materials: [],
 });
 
-await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DailyLogScreen'), () => import('@/guide/GuideHost'), () => import('@/guide/guides'), () => import('@/guide/guideState'));
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/screens/DailyLogScreen'), () => import('@/guide/GuideHost'), () => import('@/guide/guides'), () => import('@/guide/guideState'), () => import('@/guide/outcomes'));
 
 beforeEach(() => {
   localStorage.clear();
@@ -59,9 +59,12 @@ async function open(dailyLog: DailyLog | null, gateway: Record<string, unknown> 
   const { DailyLogScreen } = await import('@/screens/DailyLogScreen');
   const { GUIDES } = await import('@/guide/guides');
   const { useGuideState } = await import('@/guide/guideState');
+  const outcomes = await import('@/guide/outcomes');
+  const seen: string[] = [];
+  outcomes.subscribeGuideOutcome((o) => seen.push(o));
   render(<><GuideHost /><DailyLogScreen /></>);
   const guide = GUIDES.find((g) => g.id === 'send-daily-log')!;
-  return { useStore, useGuideState, guide };
+  return { useStore, useGuideState, guide, outcomes, seen };
 }
 
 const tip = () => document.querySelector<HTMLElement>('[data-testid="guide-tip"]');
@@ -73,8 +76,9 @@ const press = (testId: string) => act(() => { fireEvent.click(document.querySele
 
 describe('the daily log guide (#482 step 3c)', () => {
   it('walks Check in → Submit, and is done once the server takes the log', async () => {
-    const submitDailyLog = vi.fn(async () => snapshot(log({ checkedIn: true, checkinTime: '11:30', submitted: true })));
-    const { useGuideState, guide } = await open(log(), { submitDailyLog });
+    // the server's answer reads the log back unsent, so only the send's own report can finish the run
+    const submitDailyLog = vi.fn(async () => snapshot(log({ checkedIn: true, checkinTime: '11:30', submitted: false })));
+    const { useGuideState, guide, seen } = await open(log(), { submitDailyLog });
     expect(guide.available!()).toBe(true);
     act(() => { useGuideState.getState().start(guide); });
     await tipAt('0');
@@ -83,6 +87,7 @@ describe('the daily log guide (#482 step 3c)', () => {
     press('submit-daily-log');
     await isDone();
     expect(submitDailyLog).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual(['daily-log-sent']);
     expect(useGuideState.getState().run).toBeNull();
   });
 
@@ -116,12 +121,36 @@ describe('the daily log guide (#482 step 3c)', () => {
   });
 
   it('the demo (no server) records the log sent: done', async () => {
-    const { useStore, useGuideState, guide } = await open(log({ checkedIn: true, checkinTime: '09:00' }), null);
+    const { useStore, useGuideState, guide, seen } = await open(log({ checkedIn: true, checkinTime: '09:00' }), null);
     act(() => { useGuideState.getState().start(guide); });
     await tipAt('1');
     press('submit-daily-log');
     await isDone();
+    expect(seen).toEqual(['daily-log-sent']);
     expect(useStore.getState().dailyLog?.submitted).toBe(true);
+  });
+
+  it('a log this phone would not keep ends the run unfinished, so it is offered again', async () => {
+    const { useGuideState, guide, outcomes } = await open(log({ checkedIn: true, checkinTime: '09:00' }), { submitDailyLog: vi.fn(() => new Promise(() => {})) });
+    act(() => { useGuideState.getState().start(guide); });
+    await tipAt('1');
+    press('submit-daily-log');
+    act(() => outcomes.emitGuideOutcome('daily-log-not-kept', null, outcomes.guideRunToken()));
+    await vi.waitFor(() => { if (useGuideState.getState().run !== null) throw new Error('still running'); });
+    expect(done()).not.toContain('send-daily-log');
+  });
+
+  it('checked out before Submit: the send is refused at once and told, so the guide does not wait', async () => {
+    const submitDailyLog = vi.fn();
+    const { useStore, useGuideState, guide, seen } = await open(log({ checkedIn: true, checkinTime: '09:00' }), { submitDailyLog });
+    act(() => { useGuideState.getState().start(guide); });
+    await tipAt('1');
+    act(() => { useStore.setState((s) => { s.dailyLog!.checkedIn = false; }); });
+    press('submit-daily-log');
+    expect(seen).toEqual(['daily-log-send-failed']);
+    expect(submitDailyLog).not.toHaveBeenCalled();
+    expect(useGuideState.getState().run?.waiting ?? false).toBe(false);
+    expect(done()).not.toContain('send-daily-log');
   });
 
   it('is not offered once the log is sent, or with no log today', async () => {

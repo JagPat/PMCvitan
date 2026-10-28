@@ -6332,13 +6332,20 @@ export const useStore = create<Store>()(
       }
     },
     submitDailyLog: () => {
+      // #482: how the send went, for the guide, told by the flush that settles it (as the advice guide's); a send this
+      // refuses before it starts is told as failed, so the guide does not wait on it
+      const guideRun = guideRunToken();
+      const reportSend = (result: ActReport) =>
+        emitGuideOutcome(result === 'sent' || result === 'queued' ? 'daily-log-sent' : result === 'failed' ? 'daily-log-send-failed' : 'daily-log-not-kept', null, guideRun);
       const dl = get().dailyLog;
       if (!dl) {
         get().flash(DLT.noLog[get().lang]);
+        reportSend('failed');
         return;
       }
       if (!dl.checkedIn) {
         get().flash(DLT.submitNeedsCheckIn[get().lang]);
+        reportSend('failed');
         return;
       }
       // a log already sent is never sent again: each send mints a fresh idempotency key, so the
@@ -6359,10 +6366,6 @@ export const useStore = create<Store>()(
       // network call (online too), so a lost response is retried under the SAME key, submitting once.
       const submitKey = newIdempotencyKey();
       const lang = get().lang;
-      // #482: how the send went, for the guide, told by the flush that settles it (as the advice guide's)
-      const guideRun = guideRunToken();
-      const reportSend = (result: ActReport) =>
-        emitGuideOutcome(result === 'sent' || result === 'queued' ? 'daily-log-sent' : result === 'failed' ? 'daily-log-send-failed' : 'daily-log-not-kept', null, guideRun);
       if (runWriteAhead({ t: 'submitDailyLog', log: logPayload, idempotencyKey: submitKey }, DLC.submit.en, () => DLT.sent[get().lang], DLX.savedOffline(DLC.submit[lang], lang), [], reportSend)) return;
       set((s) => {
         if (!s.dailyLog) return;
