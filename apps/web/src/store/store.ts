@@ -3058,6 +3058,10 @@ export const useStore = create<Store>()(
      *    attempt's scope is still the live one. */
     const memberActKeys = new Map<string, string>();
     const memberActsInFlight = new Map<string, string>();
+    /** #482 step 3c — the guide run each add on its way was pressed under (bound act → run), so the same add pressed again
+     *  in that run keeps the guide waiting on the first one's answer, and a refusal while another add of the run is on its
+     *  way leaves the guide waiting for that one */
+    const addRunsInFlight = new Map<string, number>();
     const memberAct = (scope: ProjectScope, act: string): string => `${scope.projectId}:${scope.generation}:${act}`;
     const memberActKey = (boundAct: string): string => {
       const existing = memberActKeys.get(boundAct);
@@ -3072,19 +3076,20 @@ export const useStore = create<Store>()(
     /** One dispatch of a member act in the CURRENT scope: refuse a second attempt while the first is
      *  unanswered; mint or reuse the act's key; settle exactly that key on a success or a terminal refusal;
      *  keep it on a transient failure for the user's retry; run the UI effects only while the attempt's
-     *  scope is still live. `label` names the act in the "already in progress" notice. */
+     *  scope is still live. `label` names the act in the "already in progress" notice. False when it was not
+     *  sent (that notice). */
     const dispatchMemberAct = (
       act: string,
       label: string,
       send: (key: string) => Promise<unknown>,
       onOk: () => void,
       onFail: () => void,
-    ): void => {
+    ): boolean => {
       const scope = currentScope();
       const boundAct = memberAct(scope, act);
       if (memberActsInFlight.has(boundAct)) {
         get().flash(label + ' — already in progress.');
-        return;
+        return false;
       }
       const key = memberActKey(boundAct);
       memberActsInFlight.set(boundAct, key);
@@ -3095,6 +3100,7 @@ export const useStore = create<Store>()(
           if (scopeStillCurrent(scope)) onFail();
         })
         .finally(() => { if (memberActsInFlight.get(boundAct) === key) memberActsInFlight.delete(boundAct); });
+      return true;
     };
     /** The add act is the REQUEST as the server hashes it (`MembersService.add`: name, role, the email
      *  lower-cased, the phone, the discipline only for a consultant) — a keyed replay with a different
@@ -5983,17 +5989,32 @@ export const useStore = create<Store>()(
     // identity on the same project is neither blocked by nor touched by this one's requests.
     addMember: (input) => {
       const g = gateway;
+      // #482 step 3c — the team guide's Add ends on this add's own answer (the run it was pressed under)
+      const guideRun = guideRunToken();
+      const reportAdd = (ok: boolean) => emitGuideOutcome(ok ? 'member-added' : 'member-add-failed', null, guideRun);
       if (!g) {
         get().flash('Managing the team needs the server.');
+        reportAdd(false);
         return;
       }
-      dispatchMemberAct(
+      const boundAdd = memberAct(currentScope(), addMemberAct(input));
+      const sent = dispatchMemberAct(
         addMemberAct(input),
         'Adding ' + input.name,
-        (key) => g.addMember(input, key),
-        () => { get().loadTeam(); get().flash(input.name + ' added to the team.'); },
-        () => { get().flash('Could not add the member — check the details / your access.'); },
+        (key) => {
+          addRunsInFlight.set(boundAdd, guideRun);
+          return g.addMember(input, key).finally(() => { if (addRunsInFlight.get(boundAdd) === guideRun) addRunsInFlight.delete(boundAdd); });
+        },
+        () => { get().loadTeam(); get().flash(input.name + ' added to the team.'); reportAdd(true); },
+        () => {
+          get().flash('Could not add the member — check the details / your access.');
+          // another add pressed in this run is still on its way (this one's entry is already cleared): its answer decides
+          if (![...addRunsInFlight.values()].includes(guideRun)) reportAdd(false);
+        },
       );
+      // the same add already on its way: pressed in this run, its own answer tells the guide; pressed before it, that
+      // answer is not this run's
+      if (!sent && addRunsInFlight.get(boundAdd) !== guideRun) reportAdd(false);
     },
     updateMemberRole: (userId, role, discipline) => {
       const g = gateway;
