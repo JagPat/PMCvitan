@@ -67,6 +67,10 @@ Stage 1 video on site visits (#995). Real camera recordings, written by Chromium
 The last one is a refusal case: Chromium writes H.264 in Matroska (DocType `matroska`), not WebM, so `video/webm`
 refuses it. The video web unit asks for VP8 or VP9 in WebM.
 
+`chromium-153-app-vp8-opus.webm` (Chromium 153.0.8010.12, headless, Linux, `video/webm;codecs=vp8,opus`, 2 s) was
+recorded as the app records: the same script, but `rec.start()` with no timeslice. Chromium then writes a SeekHead
+first in the Segment and Cues after the Cluster, which the reader takes (V2a, after #1188).
+
 ## How they were recorded
 
 As the voice recordings above, with the fake camera (a moving test pattern) at 320 × 240 and, for the ones with
