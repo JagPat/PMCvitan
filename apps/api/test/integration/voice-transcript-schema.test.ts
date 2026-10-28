@@ -146,8 +146,9 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     await expect(set(m, `"status" = 'running', "providerJobId" = E'\\t\\n'`)).rejects.toThrow(refused);
     await expect(set(m, `"status" = 'running'`)).rejects.toThrow(refused); // running without its job
     await expect(set(m, `"languageCode" = 'Gujarati'`)).rejects.toThrow(refused);
+    await expect(set(m, `"status" = 'done', "text" = 'x', "languageCode" = 'Gujarati'`)).rejects.toThrow(refused);
     await expect(set(m, `"attempts" = 11`)).rejects.toThrow(refused);
-    await expect(set(m, `"attempts" = -1`)).rejects.toThrow(refused);
+    await expect(set(m, `"attempts" = -1`)).rejects.toThrow(/only rise/); // tries never fall within a try (the check bounds them too)
     await expect(set(m, `"lastError" = repeat('x', 501)`)).rejects.toThrow(refused);
     await expect(set(m, `"status" = 'done', "text" = repeat('x', 20001)`)).rejects.toThrow(refused);
   });
@@ -192,20 +193,31 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     // a failed try is retried as a fresh claim, and its next job is its own
     const n = await voice(f.projectA.id);
     await claim(n);
-    await set(n, `"status" = 'running', "providerJobId" = 'job-4', "attempts" = 1`);
-    await set(n, `"status" = 'failed', "lastError" = 'provider refused'`);
-    // a failed row is never taken back up: not to done, not to running (then done, Codex #1208, 4399524540), and not to
-    // a claim that keeps its job, its tries or no mark of the retry; only a fresh retried claim starts it over
+    await set(n, `"status" = 'running', "providerJobId" = 'job-4', "attempts" = 1, "leaseToken" = 'tok', "leaseUntil" = now()`);
+    // within a try the tries only rise, the retry mark is the fresh claim's alone, and a language comes only with words
+    await expect(set(n, `"attempts" = 0`)).rejects.toThrow(/only rise, until a fresh claim/);
+    await expect(set(n, `"retried" = true`)).rejects.toThrow(/marked retried only by its fresh claim/);
+    await expect(set(n, `"languageCode" = 'gu-IN'`)).rejects.toThrow(/VoiceTranscript_shape_check/);
+    await set(n, `"status" = 'failed', "attempts" = 2, "lastError" = 'provider refused'`); // the lease stays with the try
+    // a failed row is never taken back up: not to done, not to running (then done, Codex #1208, 4399524540)
     const forward = /only forward, or from failed to a fresh retried claim/;
     await expect(set(n, `"status" = 'done', "text" = 'x'`)).rejects.toThrow(forward);
     await expect(set(n, `"status" = 'running'`)).rejects.toThrow(forward);
-    await expect(set(n, `"status" = 'pending'`)).rejects.toThrow(forward);
-    await expect(set(n, `"status" = 'pending', "providerJobId" = NULL, "attempts" = 0`)).rejects.toThrow(/is set once per try/);
-    await expect(set(n, `"status" = 'pending', "providerJobId" = NULL, "retried" = true`)).rejects.toThrow(forward);
-    await set(n, `"status" = 'pending', "providerJobId" = NULL, "attempts" = 0, "retried" = true, "lastError" = NULL`);
+    // ...and it starts over only as a bare claim marked retried, keeping nothing of the failed try: not its job, its
+    // tries, its error or its lease (Codex #1208, 4399950031)
+    await expect(set(n, `"status" = 'pending', "providerJobId" = NULL, "attempts" = 0, "lastError" = NULL, "leaseToken" = NULL, "leaseUntil" = NULL`)).rejects.toThrow(/is set once per try/);
+    const fresh = /starts over only as a fresh retried claim/;
+    const clean = `"providerJobId" = NULL, "attempts" = 0, "retried" = true, "lastError" = NULL, "leaseToken" = NULL, "leaseUntil" = NULL`;
+    await expect(set(n, `"status" = 'pending'`)).rejects.toThrow(fresh);
+    await expect(set(n, `"status" = 'pending', ${clean.replace('"attempts" = 0', '"attempts" = 2')}`)).rejects.toThrow(fresh);
+    await expect(set(n, `"status" = 'pending', ${clean.replace('"lastError" = NULL', '"lastError" = \'provider refused\'')}`)).rejects.toThrow(fresh);
+    await expect(set(n, `"status" = 'pending', ${clean.replace('"leaseToken" = NULL, "leaseUntil" = NULL', '"leaseToken" = \'tok\'')}`)).rejects.toThrow(fresh);
+    await set(n, `"status" = 'pending', ${clean}`);
     await set(n, `"status" = 'running', "providerJobId" = 'job-5', "attempts" = 1`);
-    await set(n, `"status" = 'done', "text" = 'words'`);
-    expect(await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: n } })).toMatchObject({ providerJobId: 'job-5', retried: true });
+    // the retry mark is never cleared, so the done row keeps its history (Codex #1208, 4399950036)
+    await expect(set(n, `"retried" = false`)).rejects.toThrow(/marked retried only by its fresh claim/);
+    await set(n, `"status" = 'done', "text" = 'words', "languageCode" = 'en'`);
+    expect(await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: n } })).toMatchObject({ providerJobId: 'job-5', retried: true, attempts: 1 });
   });
 
   it('has exactly its keys, check, indexes and triggers, and re-runs over itself unchanged', async () => {

@@ -26,16 +26,19 @@
 --       transcript exists its "Media" row stays audio. Its keys ("projectId", "mediaId") and "createdAt" never change,
 --       so a transcript is never moved onto another file. A row starts as a bare claim: 'pending', no job, no text, no
 --       tries, no error, no lease.
---   V3  Well formed. A status from the list; "text" set exactly when done; a running row names its job; a lease token
---       and its expiry together or neither; a job id, when set, never blank; "attempts" from 0 to 10; texts bounded
+--   V3  Well formed. A status from the list; "text" set exactly when done, and a language only then; a running row
+--       names its job; a lease token and its expiry together or neither; a job id, when set, never blank; "attempts" from 0 to 10; texts bounded
 --       (the provider's 20,000 characters, an error's 500); a language code shaped like 'gu-IN' or 'en'; every time
 --       finite.
 --   V4  What the provider heard stays as heard, from the job that heard it. A row moves only forward: pending to
 --       running, failed or done; running to failed or done; and failed back only to a fresh claim for another try
---       (pending, "retried", no job, no tries) (Codex #1208, 4399524540: not failed back to running). The job id is
---       written once per try: it is set when a pending row starts running and cleared only by that fresh claim; it is
---       never swapped or dropped in between (Codex #1182, 4398744242). Once a row is done nothing in it changes but
---       its update time, so a late provider answer cannot overwrite it (#1177 H7).
+--       (Codex #1208, 4399524540: not failed back to running). That fresh claim is exactly a bare claim marked
+--       "retried": no job, tries, error or lease (Codex #1208, 4399950031). Each column of the working row has its one
+--       way to change (the root of #1208's findings, checked as a whole): the job id is set once per try, as a pending
+--       row starts running, and cleared only by the fresh claim (Codex #1182, 4398744242); "attempts" only rises
+--       within a try and goes back to 0 only by the fresh claim; "retried" is set only by the fresh claim and never
+--       cleared (Codex #1208, 4399950036); the error and the lease are a try's working notes. Once a row is done
+--       nothing in it changes but its update time, so a late provider answer cannot overwrite it (#1177 H7).
 --       What the database cannot tell apart: a done row with no job after a reset is either a short note sent whole
 --       on its retry or a long one whose job a writer chose to abandon; both pass through a recorded failure and
 --       retry.
@@ -99,7 +102,7 @@ BEGIN
       AND (("leaseToken" IS NULL) = ("leaseUntil" IS NULL))
       AND ("leaseToken" IS NULL OR btrim("leaseToken", E' \t\n\x0B\f\r') <> '')
       AND ("providerJobId" IS NULL OR (btrim("providerJobId", E' \t\n\x0B\f\r') <> '' AND char_length("providerJobId") <= 200))
-      AND ("languageCode" IS NULL OR "languageCode" ~ '^[a-z]{2,3}(-[A-Z]{2})?$')
+      AND ("languageCode" IS NULL OR ("status" = 'done' AND "languageCode" ~ '^[a-z]{2,3}(-[A-Z]{2})?$'))
       AND "attempts" BETWEEN 0 AND 10
       AND ("lastError" IS NULL OR char_length("lastError") <= 500)
       AND isfinite("createdAt") AND isfinite("updatedAt") AND ("leaseUntil" IS NULL OR isfinite("leaseUntil"))
@@ -138,10 +141,13 @@ CREATE TRIGGER "VoiceTranscript_insert"
   BEFORE INSERT ON public."VoiceTranscript"
   FOR EACH ROW EXECUTE FUNCTION public.media_voice_transcript_insert();
 
--- V2 and V4, on update: the keys and the creation time never move; a row moves only forward, or from failed to a fresh
--- claim; the job id is written once per try; a done row changes no more.
+-- V2 and V4, on update: the keys and the creation time never move; a done row changes no more; a row moves only
+-- forward, or from failed to a fresh claim; each working column changes only in its own way.
 CREATE OR REPLACE FUNCTION public.media_voice_transcript_keys_fixed() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+  -- the one way a failed try starts over: a fresh claim, marked retried, carrying nothing of the try before
+  v_fresh BOOLEAN := OLD."status" = 'failed' AND NEW."status" = 'pending';
 BEGIN
   IF NEW."projectId" IS DISTINCT FROM OLD."projectId" OR NEW."mediaId" IS DISTINCT FROM OLD."mediaId"
      OR NEW."createdAt" IS DISTINCT FROM OLD."createdAt" THEN
@@ -158,7 +164,7 @@ BEGIN
   -- starts running; it is cleared only by the reset of a failed row to a fresh, retried claim; nothing else changes it
   IF NEW."providerJobId" IS DISTINCT FROM OLD."providerJobId"
      AND NOT (OLD."providerJobId" IS NULL AND OLD."status" = 'pending' AND NEW."status" = 'running')
-     AND NOT (NEW."providerJobId" IS NULL AND OLD."status" = 'failed' AND NEW."status" = 'pending' AND NEW."retried") THEN
+     AND NOT (NEW."providerJobId" IS NULL AND v_fresh AND NEW."retried") THEN
     RAISE EXCEPTION 'media: the job of voice note % is set once per try', OLD."mediaId"
       USING ERRCODE = 'check_violation';
   END IF;
@@ -168,10 +174,26 @@ BEGIN
   IF NEW."status" IS DISTINCT FROM OLD."status" AND NEW."status" IN ('pending', 'running', 'failed', 'done') AND NOT (
        (OLD."status" = 'pending' AND NEW."status" IN ('running', 'failed', 'done'))
     OR (OLD."status" = 'running' AND NEW."status" IN ('failed', 'done'))
-    OR (OLD."status" = 'failed' AND NEW."status" = 'pending' AND NEW."retried"
-        AND NEW."providerJobId" IS NULL AND NEW."attempts" = 0)) THEN
+    OR v_fresh) THEN
     RAISE EXCEPTION 'media: voice note % moves from % to % only forward, or from failed to a fresh retried claim',
       OLD."mediaId", OLD."status", NEW."status" USING ERRCODE = 'check_violation';
+  END IF;
+  -- the fresh claim carries nothing of the failed try: no job, tries, error or lease (and, by the shape check, no
+  -- words or language), and it is marked retried (Codex #1208, 4399950031)
+  IF v_fresh AND NOT (NEW."retried" AND NEW."providerJobId" IS NULL AND NEW."attempts" = 0
+                      AND NEW."lastError" IS NULL AND NEW."leaseToken" IS NULL) THEN
+    RAISE EXCEPTION 'media: voice note % starts over only as a fresh retried claim, with nothing of the failed try', OLD."mediaId"
+      USING ERRCODE = 'check_violation';
+  END IF;
+  -- the retry mark is set by the fresh claim and never cleared, so a done row keeps its history (Codex #1208,
+  -- 4399950036); the tries only rise within a try
+  IF NEW."retried" IS DISTINCT FROM OLD."retried" AND NOT (v_fresh AND NEW."retried") THEN
+    RAISE EXCEPTION 'media: voice note % is marked retried only by its fresh claim, and keeps the mark', OLD."mediaId"
+      USING ERRCODE = 'check_violation';
+  END IF;
+  IF NEW."attempts" < OLD."attempts" AND NOT v_fresh THEN
+    RAISE EXCEPTION 'media: the tries of voice note % only rise, until a fresh claim', OLD."mediaId"
+      USING ERRCODE = 'check_violation';
   END IF;
   RETURN NEW;
 END $$;
