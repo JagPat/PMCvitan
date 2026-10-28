@@ -263,8 +263,24 @@ export function GuideHost() {
       }
       completeStep(key, g, pressed.getAttribute('data-guide-key'));
     };
+    // a text box (`focus`) is reached by a tap or from the keyboard alike
+    const onFocus = (e: FocusEvent) => {
+      const g = useGuideState.getState();
+      if (!g.run) return;
+      const current = g.run.guide.steps[g.run.step]!;
+      if (current.until !== 'focus') return;
+      const target = e.target instanceof Element ? e.target : null;
+      const reached = target?.closest(`[data-guide="${current.target}"]`);
+      if (!reached) return;
+      if (current.keyed && !guideKeyMatches(reached.getAttribute('data-guide-key'), g.run.key)) return;
+      completeStep(key, g, reached.getAttribute('data-guide-key'));
+    };
     document.addEventListener('click', onClick, true);
-    return () => document.removeEventListener('click', onClick, true);
+    document.addEventListener('focusin', onFocus, true);
+    return () => {
+      document.removeEventListener('click', onClick, true);
+      document.removeEventListener('focusin', onFocus, true);
+    };
   }, [key]);
 
   // the store's report on an `outcome` step: success moves the guide on; failure ends the wait, so a
