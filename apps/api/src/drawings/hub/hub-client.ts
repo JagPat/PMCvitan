@@ -75,8 +75,8 @@ const ASCII_DXF = /^[ \t]*(?:999\r?\n[^\r\n]*\r?\n[ \t]*)?0\r?\n[ \t]*SECTION[ \
 export function sniffDrawingType(bytes: Buffer): HubContentType | null {
   const head = bytes.subarray(0, 512).toString('latin1');
   if (head.startsWith('%PDF-')) return 'application/pdf';
-  // AutoCAD R13 (AC1012) onwards: "AC10" and two digits
-  if (/^AC10\d\d/.test(head)) return 'image/vnd.dwg';
+  // AutoCAD R13 (AC1012) onwards; earlier versions (AC1009 and before) are refused
+  if (/^AC10(?:1[2-9]|[2-9]\d)/.test(head)) return 'image/vnd.dwg';
   if (bytes.subarray(0, BINARY_DXF.length).equals(BINARY_DXF) || ASCII_DXF.test(head)) return 'image/vnd.dxf';
   if (bytes.subarray(0, PNG.length).equals(PNG)) return 'image/png';
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';

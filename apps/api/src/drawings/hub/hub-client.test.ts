@@ -95,14 +95,27 @@ describe('#1118 U4 — fetching a version from Hub', () => {
       ['/api/v2/drawings/f-17/content?versionId=v-9031', `Bearer ${token}`], ['/files/v-9031', `Bearer ${token}`],
     ]);
 
-    hubRequests.length = 0;
     elsewhere.current = serve(pdf);
-    // another port on the same host is another origin
-    for (const location of [`${foreignOrigin}/files/v-9031`, `//127.0.0.2:${new URL(config.baseUrl).port}/x`, 'https://127.0.0.1/x', 'http://[::1', '']) {
+    const port = new URL(config.baseUrl).port;
+    // another port on the same host is another origin, and so is the other scheme on the same host and port
+    for (const location of [`${foreignOrigin}/files/v-9031`, `//127.0.0.2:${port}/x`, 'https://127.0.0.1/x', `https://127.0.0.1:${port}/x`, 'http://[::1', '']) {
+      hubRequests.length = 0;
       hub.current = (_req, res) => { res.writeHead(307, location ? { Location: location } : {}); res.end(); };
       expect(await fetchHubContent(ref(), { config }), location).toEqual({ ok: false, failure: 'redirect_refused', retryable: false });
+      expect(hubRequests, location).toHaveLength(1);
     }
     expect(elsewhereRequests).toEqual([]);
+
+    // a refused redirect's body is cancelled, not left open on the connection
+    const closed = new Promise<void>((resolve) => {
+      hub.current = (_req, res) => {
+        res.on('close', () => resolve());
+        res.writeHead(302, { Location: `${foreignOrigin}/x` });
+        res.write('a body that never ends');
+      };
+    });
+    expect(await fetchHubContent(ref(), { config })).toEqual({ ok: false, failure: 'redirect_refused', retryable: false });
+    await closed;
 
     // a loop is cut after three hops
     hubRequests.length = 0;
@@ -132,7 +145,27 @@ describe('#1118 U4 — fetching a version from Hub', () => {
       res.end();
     };
     expect(await fetchHubContent(ref(), { config, maxBytes })).toEqual({ ok: false, failure: 'too_large', retryable: false });
+
+    // the read is cancelled the moment it passes the cap, so Hub sees the transfer end
+    const closed = new Promise<void>((resolve) => {
+      hub.current = (_req, res) => {
+        res.on('close', () => resolve());
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'X-Sha256': sha(over) });
+        res.write(over);
+      };
+    });
+    expect(await fetchHubContent(ref(), { config, maxBytes })).toEqual({ ok: false, failure: 'too_large', retryable: false });
+    await closed;
+  });
+
+  it('accepts a version of exactly 25 MiB, declared as such', async () => {
     expect(HUB_CONTENT_MAX_BYTES).toBe(25 * 1024 * 1024);
+    const exact = Buffer.alloc(HUB_CONTENT_MAX_BYTES, 0x20);
+    exact.write('%PDF-1.7\n');
+    hub.current = serve(exact, { 'Content-Length': String(exact.length) });
+    const got = await fetchHubContent(ref(), { config });
+    expect(got).toMatchObject({ ok: true, mime: 'application/pdf', sha256: sha(exact) });
+    expect(got.ok && got.bytes.length).toBe(HUB_CONTENT_MAX_BYTES);
   });
 
   it('keeps only bytes that hash to X-Sha256: none, malformed or another hash is refused (retryable)', async () => {
@@ -191,6 +224,9 @@ describe('#1118 U4 — fetching a version from Hub', () => {
       ['%PDF-1.4\n', 'application/pdf'],
       ['AC1032\0\0\0', 'image/vnd.dwg'],
       ['AC1015', 'image/vnd.dwg'],
+      ['AC1012', 'image/vnd.dwg'],
+      ['AC1009', null],
+      ['AC1006', null],
       ['  0\nSECTION\n  2\nHEADER\n', 'image/vnd.dxf'],
       ['999\r\nmade by Hub\r\n  0\r\nSECTION\r\n', 'image/vnd.dxf'],
       [Buffer.from('AutoCAD Binary DXF\r\n\x1a\x00rest', 'latin1'), 'image/vnd.dxf'],
@@ -202,6 +238,7 @@ describe('#1118 U4 — fetching a version from Hub', () => {
       ['0\nSECTIONS\n', null],
       ['<html>', null],
       [Buffer.from([0xff, 0xd8]), null],
+      [Buffer.from([0xff, 0xd8, 0x00, 0xe0]), null],
       ['GIF89a', null],
     ];
     for (const [head, type] of cases) {
