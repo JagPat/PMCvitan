@@ -38,13 +38,20 @@ describe('#1210 residual — the test app server is shared by concurrent superte
 
   it('closing the test app closes its listener, keep-alive sockets included', async () => {
     const other = await createTestApp();
-    const otherServer: Server = other.app.getHttpServer();
-    expect(otherServer.listening).toBe(true);
-    const r = await request(otherServer).get('/health/live').set('Connection', 'keep-alive');
-    expect(r.status).toBe(200);
-    const closed = new Promise<void>((resolve) => otherServer.once('close', () => resolve()));
-    await other.close();
-    await closed;
-    expect(otherServer.listening).toBe(false);
+    let closing: Promise<void> | undefined;
+    try {
+      const otherServer: Server = other.app.getHttpServer();
+      expect(otherServer.listening).toBe(true);
+      const r = await request(otherServer).get('/health/live').set('Connection', 'keep-alive');
+      expect(r.status).toBe(200);
+      const closed = new Promise<void>((resolve) => otherServer.once('close', () => resolve()));
+      closing = other.close();
+      await closing;
+      await closed;
+      expect(otherServer.listening).toBe(false);
+    } finally {
+      // a failure before the close above must not leave this app's listener and pool to later files
+      if (!closing) await other.close();
+    }
   });
 });
