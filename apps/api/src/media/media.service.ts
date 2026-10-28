@@ -545,7 +545,15 @@ export class MediaService {
       // every other record that keeps this file as evidence still refuses, as for any photo
       const observed = await this.disposability.assertDisposable(tx, { projectId, mediaId, actorUserId: user.sub });
       const evidenceEv = await this.inspectionParticipant.removeEvidence(tx, { projectId, actor, mediaId, observed });
-      await tx.media.delete({ where: { id: mediaId } });
+      try {
+        await tx.media.delete({ where: { id: mediaId } });
+      } catch (e) {
+        // as for a photo: a record that cited this file after the guards above asked holds it by its key
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2003') {
+          throw new ConflictException('This file was just cited as evidence on another record, so it cannot be removed');
+        }
+        throw e;
+      }
       const removedEv = await emitEvent(tx, { projectId, actor, eventType: 'media.removed', entityType: 'Media', entityId: mediaId, effectKey: 'media.removed', dispatch: {} });
       return { keys: [row.storageKey, row.posterStorageKey], events: evidenceEv ? [evidenceEv, removedEv] : [removedEv] };
     });

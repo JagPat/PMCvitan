@@ -157,7 +157,8 @@ export class SiteVisitFilesParticipant {
       // the hour ran out between the check above and the line's own stamp (the database's CHECK on a line with no reason)
       const refused = error instanceof Prisma.PrismaClientUnknownRequestError || error instanceof Prisma.PrismaClientKnownRequestError;
       if (refused && /SiteVisitFileRemoval_shape_check/.test(error.message)) {
-        throw new ForbiddenException(envelope.actorRole === 'pmc' ? 'Say why you are removing this file' : 'A file can be removed only within an hour of adding it; ask the PMC');
+        if (envelope.actorRole === 'pmc') throw new BadRequestException('Say why you are removing this file');
+        throw new ForbiddenException('A file can be removed only within an hour of adding it; ask the PMC');
       }
       throw error;
     }

@@ -144,8 +144,10 @@ function removableBy(
 ): SiteVisitFileDto['removable'] {
   if (!viewer) return null;
   const until = addedAt.getTime() + SITE_VISIT_OWN_REMOVAL_MS;
-  const ownInHour = addedById === viewer.id && now < until;
-  if (viewer.role === 'pmc') return { reasonRequired: !ownInHour, until: null };
+  // inclusive at the hour, as the server judges it (`addedAt + 1 hour >= now` on the database's clock)
+  const ownInHour = addedById === viewer.id && now <= until;
+  // the PMC's own file within the hour: no reason until `until`, then a reason
+  if (viewer.role === 'pmc') return { reasonRequired: !ownInHour, until: ownInHour ? new Date(until).toISOString() : null };
   if (ownInHour && status !== 'closed') return { reasonRequired: false, until: new Date(until).toISOString() };
   return null;
 }

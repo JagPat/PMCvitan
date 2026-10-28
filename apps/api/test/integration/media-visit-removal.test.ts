@@ -151,18 +151,28 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
     const none = await removeIt(id);
     expect(none.status).toBe(400);
     expect(none.body.message).toMatch(/Say why/);
-    for (const reason of ['', '   ', 'x'.repeat(301)]) expect((await removeIt(id, pmcToken, { reason })).status, JSON.stringify(reason)).toBe(400);
+    // blank, invisible-only, a NUL (which PostgreSQL cannot store), or over 300 characters
+    for (const reason of ['', '   ', '\u200b\u200b', 'why\u0000', 'x'.repeat(301), '🙂'.repeat(301)]) {
+      expect((await removeIt(id, pmcToken, { reason })).status, JSON.stringify(reason)).toBe(400);
+    }
+    expect((await removeIt(id, pmcToken, { reason: null })).status).toBe(400);
     expect((await removeIt(id, pmcToken, { reason: 'x', extra: 1 })).status).toBe(400);
     const ok = await removeIt(id, pmcToken, { reason: '  Recorded by mistake  ' });
     expect(ok.status, ok.text).toBe(200);
     expect(await t.prisma.siteVisitFileRemoval.findUniqueOrThrow({ where: { mediaId: id } }))
       .toMatchObject({ addedById: consultant, removedById: f.memberUser.id, removedByRole: 'pmc', reason: 'Recorded by mistake' });
+    // 300 characters is 300 characters, emoji included, as the database counts them
+    const wide = await voice(consultantToken);
+    expect((await removeIt(wide, pmcToken, { reason: '🙂'.repeat(300) })).status).toBe(200);
   });
 
   it('the PMC removes their own file within the hour with no reason', async () => {
     const id = await voice();
-    expect((await visit()).files.find((x: { mediaId: string }) => x.mediaId === id).removable).toEqual({ reasonRequired: false, until: null });
-    expect((await removeIt(id)).status).toBe(200);
+    // the offer says until when no reason is needed
+    const offer = (await visit()).files.find((x: { mediaId: string }) => x.mediaId === id).removable;
+    expect(offer.reasonRequired).toBe(false);
+    expect(Date.parse(offer.until)).toBeGreaterThan(Date.now());
+    expect((await removeIt(id, pmcToken, { reason: null })).status).toBe(200);
     expect((await t.prisma.siteVisitFileRemoval.findUniqueOrThrow({ where: { mediaId: id } })).reason).toBeNull();
   });
 
