@@ -58,6 +58,10 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     await t.prisma.media.create({ data: { id: `it-rm-media-${run}`, projectId: a, kind: 'progress', mime: 'image/png', data: Buffer.from('abc'), sizeBytes: 3, uploadedBy: 'pmc', clientKey: `it-rm-media-key-${run}` } });
     // a deleted photo's record (#482): sealed against a direct DELETE, so the removal has to take it as it does events
     await t.prisma.mediaTombstone.create({ data: { projectId: a, clientKey: `it-rm-key-${run}` } });
+    // a voice note's transcript (#1177 VT1a), done: sealed against a direct DELETE, so it goes with its note
+    await t.prisma.media.create({ data: { id: `it-rm-voice-${run}`, projectId: a, kind: 'visit', mime: 'audio/webm', uploadedBy: 'pmc', durationSec: 5 } });
+    await t.prisma.voiceTranscript.create({ data: { projectId: a, mediaId: `it-rm-voice-${run}` } });
+    await t.prisma.$executeRawUnsafe(`UPDATE "VoiceTranscript" SET "status" = 'done', "text" = 'heard' WHERE "mediaId" = $1`, `it-rm-voice-${run}`);
     // a fetched Hub blob's ledger row (#1118 U1a-3) goes with the project, and inventory lists its file
     await t.prisma.hubFetchedBlob.create({ data: { storageKey: hubBlobKey(), projectId: a, hubVersionId: `it-rm-ver-${run}` } });
     // the Hub link and its history (#1118 U1a-2) go with the project; both are sealed against a direct DELETE, and a link
@@ -234,12 +238,12 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     const r = await removeProject(t.prisma, o);
     expect(r.failures).toEqual([]);
     expect(r).toMatchObject({ ok: true, mode: 'dry-run', outcome: 'rolled back' });
-    for (const table of ['Project', 'ProjectNode', 'CrewRow', 'DailyLog', 'Media', 'MediaTombstone', 'DomainEvent', 'OutboxDelivery', 'ProcessedEvent',
+    for (const table of ['Project', 'ProjectNode', 'CrewRow', 'DailyLog', 'Media', 'MediaTombstone', 'VoiceTranscript', 'DomainEvent', 'OutboxDelivery', 'ProcessedEvent',
       'HubFetchedBlob', 'DrawingHubLink', 'DrawingHubLinkEvent', 'Drawing', 'DrawingRevision', 'HubDrawing', 'HubRevision', 'HubGoverningMark', 'HubWebhookReceipt', 'HubVersionTombstone']) {
       expect(r.removed[table], table).toEqual(o.inventory.keys[table]);
     }
     // the Hub drawing's rows are listed, one each (#1118 U1b)
-    for (const table of ['HubDrawing', 'HubRevision', 'HubGoverningMark']) expect(o.inventory.keys[table], table).toHaveLength(1);
+    for (const table of ['HubDrawing', 'HubRevision', 'HubGoverningMark', 'VoiceTranscript']) expect(o.inventory.keys[table], table).toHaveLength(1);
     // the applied receipt and its tombstone are listed; the org's refused receipt naming no project is not (#1118 U1a-1)
     for (const table of ['HubWebhookReceipt', 'HubVersionTombstone']) expect(o.inventory.keys[table], table).toHaveLength(1);
     expect(Object.keys(r.added)).toEqual([]);
@@ -258,7 +262,7 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
       expect(r.unlinked.find((u) => u.table === table), table).toMatchObject({ unchanged: true });
     }
     expect(r.protected).toEqual([expect.objectContaining({ projectId: f.projectB.id, removed: [], keysUnchanged: true })]);
-    expect(r.triggers.disabled.map((d) => d.name)).toEqual(expect.arrayContaining(['DomainEvent_append_only', 'MediaTombstone_immutable', 'Media_tombstone_on_delete',
+    expect(r.triggers.disabled.map((d) => d.name)).toEqual(expect.arrayContaining(['DomainEvent_append_only', 'MediaTombstone_immutable', 'Media_tombstone_on_delete', 'VoiceTranscript_no_delete',
       'DrawingHubLink_sealed', 'DrawingHubLinkEvent_sealed', 'HubDrawing_sealed', 'HubRevision_sealed', 'HubGoverningMark_sealed',
       'HubWebhookReceipt_sealed', 'HubVersionTombstone_sealed']));
     expect(r.triggers.restored).toBe(true);
@@ -284,6 +288,7 @@ describe('project:remove — one project, by the reviewed list (live PG)', () =>
     expect(await t.prisma.processedEvent.count({ where: { id: receipt } })).toBe(0);
     expect(await t.prisma.crewRow.count({ where: { dailyLogId: logId } })).toBe(0);
     expect(await t.prisma.mediaTombstone.count({ where: { projectId: f.projectA.id } })).toBe(0);
+    expect(await t.prisma.voiceTranscript.count({ where: { projectId: f.projectA.id } })).toBe(0);
     expect(await t.prisma.hubFetchedBlob.count({ where: { projectId: f.projectA.id } })).toBe(0);
     expect(await t.prisma.drawingHubLink.count({ where: { projectId: f.projectA.id } })).toBe(0);
     expect(await t.prisma.drawingHubLinkEvent.count({ where: { projectId: f.projectA.id } })).toBe(0);
