@@ -2011,10 +2011,10 @@ describe('voice MP4: every frame at its own decode time (#1168)', () => {
   };
   const sttsOf = (entries: Array<[number, number]>) => fullBox('stts', 0, 0, [be(entries.length), ...entries.map(([n, d]) => Buffer.concat([be(n), be(d)]))]);
   // a plain movie: n AAC frames of 4 bytes, timed by `entries`, in chunks of `perChunk`
-  const plain = (n: number, entries: Array<[number, number]>, edit?: Buffer, perChunk = n) => {
+  const plain = (n: number, entries: Array<[number, number]>, edit?: Buffer, perChunk = n, scale = 48_000) => {
     const chunks = Math.ceil(n / perChunk);
     const stscBox = fullBox('stsc', 0, 0, [be(1), be(1), be(perChunk), be(1)]);
-    return Buffer.concat([laidOut((o) => Buffer.concat([ftyp(), box('moov', [mvhd(0, 1000), box('trak', [tkhd(1), ...(edit ? [edit] : []), box('mdia', [mdhd(), hdlr('soun'),
+    return Buffer.concat([laidOut((o) => Buffer.concat([ftyp(), box('moov', [mvhd(0, 1000), box('trak', [tkhd(1), ...(edit ? [edit] : []), box('mdia', [mdhd(0, scale), hdlr('soun'),
       box('minf', [fullBox('smhd', 0, 0, be(0)), dinf(), box('stbl', [stsd('mp4a'), sttsOf(entries), stscBox, stsz(Array(n).fill(4)),
         fullBox('stco', 0, 0, [be(chunks), ...Array.from({ length: chunks }, (_, c) => be(o + c * perChunk * 4))])])])])])])])), mdat(4 * n)]);
   };
@@ -2055,6 +2055,15 @@ describe('voice MP4: every frame at its own decode time (#1168)', () => {
     // an entry of no samples times none of them
     expect(mp4(plain(2, [[0, 99], [1, S * 30], [1, 1024]], elst(S * 30)))).toBe(true);
     expect(mp4(plain(2, [[0, 99], [1, S * 30], [1, 1024]], elst(S * 30 + 1024)))).toBe(false);
+  });
+
+  it('places by the media timescale and the audio rate, each where it belongs: a 44,100-tick track of 48 kHz AAC', () => {
+    // two frames 30 s apart; the first's 1,024 samples at 48 kHz end at 21.333 ms, which is 940.8 ticks at 44,100
+    const two = (at: number) => plain(2, [[2, 44_100 * 30]], elst(at), 2, 44_100);
+    expect(mp4(two(940))).toBe(true); // 21.315 ms: inside the first frame
+    expect(mp4(two(941))).toBe(false); // 21.338 ms: past it (read at 44,100 samples a second, it would end at 23.2 ms)
+    expect(mp4(two(44_100 * 30))).toBe(true);
+    expect(recordingSeconds('audio/mp4', two(0))).toBe(60);
   });
 
   it('reads each trun sample\'s own duration, across runs', () => {
