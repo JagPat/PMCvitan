@@ -25,7 +25,10 @@ import { readFile } from 'node:fs/promises';
 
 const WORKFLOW = new URL('../.github/workflows/ci.yml', import.meta.url);
 
-/** The job that must carry the proofs, and the gate that must require that job. */
+/**
+ * The job that carries a proof unless its entry names another (`job:`), and the gate that must
+ * require every host job.
+ */
 const HOST_JOB = 'api';
 const GATE_JOB = 'quality-gate';
 
@@ -89,6 +92,18 @@ const PINNED_PROOFS = [
              'say "F11. the decisions.inbox writer fence is dropped — the deploy must ABORT"',
              'G. COUPLING'],
   },
+  {
+    script: 'apps/api/scripts/ledger-lost-runner-proof.sh',
+    // The only execution of the production `migrate.sh` over a database restored WITHOUT its ledger
+    // that carries the later catalog generations (#1118 U5m): the path where the runner resolves the
+    // superseded catalog owners as applied. `upgrade-proof.sh` only mirrors that rule. It runs in
+    // the `upgrade-proof` job, in parallel with the `api` battery, on that job's paths.
+    job: 'upgrade-proof',
+    verdicts: [/ledger-lost runner proof: PASSED/u, /ledger-lost runner proof: FAILED/u],
+    // A. the ledger lost after U5m (resolve, then execute U5m) · B. the rule removed from a copy (the
+    // deploy must fail: the coupling) · C. the ledger lost before U5m (SV1-a replays, U5m applies).
+    states: ['say "A. THE LEDGER LOST AFTER U5m', 'say "B. THE RULE REMOVED', 'say "C. THE LEDGER LOST BEFORE U5m'],
+  },
 ];
 
 /** The `jobs:` block, split per job, preserving each job's own lines. */
@@ -141,14 +156,14 @@ function parseNeeds(jobLines) {
 }
 
 for (const proof of PINNED_PROOFS) {
-  const { script: SCRIPT } = proof;
+  const { script: SCRIPT, job: HOST = HOST_JOB } = proof;
 
-  test(`${SCRIPT} is a step of the \`${HOST_JOB}\` job`, async () => {
+  test(`${SCRIPT} is a step of the \`${HOST}\` job`, async () => {
     const jobs = parseJobs(await readFile(WORKFLOW, 'utf8'));
-    const job = jobs.get(HOST_JOB);
-    assert.ok(job, `ci.yml must define the \`${HOST_JOB}\` job`);
+    const job = jobs.get(HOST);
+    assert.ok(job, `ci.yml must define the \`${HOST}\` job`);
     assert.equal(stepsRunning(job, SCRIPT), 1,
-      `exactly one step of \`${HOST_JOB}\` must run ${SCRIPT}`);
+      `exactly one step of \`${HOST}\` must run ${SCRIPT}`);
   });
 
   test(`the detection FAILS when the ${SCRIPT} step is removed — it is not merely running`, async () => {
@@ -156,7 +171,7 @@ for (const proof of PINNED_PROOFS) {
     // over a fixture with the step deleted, and is required to come up empty.
     const yaml = await readFile(WORKFLOW, 'utf8');
     const withoutStep = yaml.split('\n').filter((line) => !line.includes(SCRIPT)).join('\n');
-    assert.equal(stepsRunning(parseJobs(withoutStep).get(HOST_JOB), SCRIPT), 0,
+    assert.equal(stepsRunning(parseJobs(withoutStep).get(HOST), SCRIPT), 0,
       'the fixture must not still contain the step, or this test proves nothing');
   });
 
@@ -169,19 +184,23 @@ for (const proof of PINNED_PROOFS) {
   });
 }
 
-test('the host job is required by the single required status', async () => {
-  const jobs = parseJobs(await readFile(WORKFLOW, 'utf8'));
-  const gate = jobs.get(GATE_JOB);
-  assert.ok(gate, `ci.yml must define the \`${GATE_JOB}\` job`);
-  assert.ok(parseNeeds(gate).includes(HOST_JOB),
-    `\`${GATE_JOB}\` must need \`${HOST_JOB}\`, or the proofs run in a job nothing waits for`);
-});
+const HOST_JOBS = [...new Set(PINNED_PROOFS.map((proof) => proof.job ?? HOST_JOB))];
 
-test('and THAT detection fails too when the job stops being required', async () => {
-  const yaml = await readFile(WORKFLOW, 'utf8');
-  const withoutNeed = yaml.split('\n')
-    .filter((line, i, all) => !(line === `      - ${HOST_JOB}` && all.slice(0, i).some((l) => /^ {4}needs:$/u.test(l))))
-    .join('\n');
-  assert.ok(!parseNeeds(parseJobs(withoutNeed).get(GATE_JOB)).includes(HOST_JOB),
-    'the needs fixture must really drop the job, or the assertion above proves nothing');
-});
+for (const HOST of HOST_JOBS) {
+  test(`the \`${HOST}\` host job is required by the single required status`, async () => {
+    const jobs = parseJobs(await readFile(WORKFLOW, 'utf8'));
+    const gate = jobs.get(GATE_JOB);
+    assert.ok(gate, `ci.yml must define the \`${GATE_JOB}\` job`);
+    assert.ok(parseNeeds(gate).includes(HOST),
+      `\`${GATE_JOB}\` must need \`${HOST}\`, or the proofs run in a job nothing waits for`);
+  });
+
+  test(`and THAT detection fails too when \`${HOST}\` stops being required`, async () => {
+    const yaml = await readFile(WORKFLOW, 'utf8');
+    const withoutNeed = yaml.split('\n')
+      .filter((line, i, all) => !(line === `      - ${HOST}` && all.slice(0, i).some((l) => /^ {4}needs:$/u.test(l))))
+      .join('\n');
+    assert.ok(!parseNeeds(parseJobs(withoutNeed).get(GATE_JOB)).includes(HOST),
+      'the needs fixture must really drop the job, or the assertion above proves nothing');
+  });
+}
