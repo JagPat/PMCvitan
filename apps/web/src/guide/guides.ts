@@ -6,6 +6,7 @@ import { inspectionFrozen, useStore } from '@/store/store';
 import { dailyLogSendPending } from '@/store/dailyLogPending';
 import { selectDecisionsNeedingViewer } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
+import { ownOpenVisitNoted } from './visitFacts';
 
 /**
  * #482 (board decision 14 Oct) — the in-app guide: coach marks on the live screen.
@@ -45,6 +46,9 @@ export interface GuideStep {
    * failure (its answer can be lost after the server took it), so it only says true for this run's own action.
    */
   settled?: (key: string | null) => boolean;
+  /** true when what this step asks for is already done (a visit already open): the run passes over it. Only for a
+   *  step whose control is then not on screen, so a run stepping back never lands on it */
+  skip?: () => boolean;
   /** For `until: 'outcome'`: the step a failed report goes back to (the box the attempt emptied), instead of staying here */
   retryFrom?: number;
   /** point at the control carrying the same `data-guide-key` as the one pressed in an earlier step
@@ -124,6 +128,22 @@ export const GUIDES: readonly Guide[] = [
     available: sitePhotoButtonUsable,
     steps: [
       { target: 'add-site-photo', tip: 'photoAdd', until: 'outcome', outcome: { ok: 'site-photo-added', failed: 'site-photo-add-failed', held: 'site-photo-not-kept' }, settled: guidedPhotoOnRecord },
+    ],
+  },
+  {
+    // a site visit: start it, then add a photo to it. Start ends once the visit shows on the screen (sent, or waiting to
+    // send: a photo can be added to a visit still waiting to send); the photo step ends only once the server has the
+    // photo, so a photo still waiting for signal leaves the guide unfinished. The Site visits screen reports both from
+    // what it shows (`useVisitGuideReports`)
+    id: 'record-site-visit',
+    title: 'recordSiteVisit',
+    roles: ['pmc', 'consultant'],
+    screen: 'site-visits',
+    available: siteVisitRecordable,
+    steps: [
+      { target: 'sv-start', tip: 'visitStart', until: 'outcome', outcome: { ok: 'visit-started', failed: 'visit-start-failed' }, skip: ownOpenVisitNoted },
+      // only the viewer's own open visit (the one just started) carries this target
+      { target: 'sv-add-photo', tip: 'visitPhoto', until: 'outcome', outcome: { ok: 'visit-photo-added', failed: 'visit-photo-add-failed' } },
     ],
   },
   {
@@ -252,6 +272,13 @@ function checklistOutOnSite(): boolean {
 function sitePhotoButtonUsable(): boolean {
   const s = useStore.getState();
   return !!API_BASE && can('media.upload', s.role) && !dailyLogSendPending(s);
+}
+
+/** The viewer may record a visit on their Site visits screen, against the server. One with a visit already open (a run
+ *  left before its photo went, Codex 4399847415) is taken straight to Add photo on it */
+function siteVisitRecordable(): boolean {
+  const s = useStore.getState();
+  return !!API_BASE && can('siteVisit.start', s.role);
 }
 
 /** A photo picked under this run of the guide is in the project's photos (the viewer's own photos carry their upload key). */
