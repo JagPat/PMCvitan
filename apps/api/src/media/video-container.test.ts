@@ -186,7 +186,7 @@ describe('readVideoClip — WebM frames', () => {
     const build = (pictures: number, sounds: number) => clipWebm({
       tracks: [pictureTrack(), soundTrack()],
       clusters: [webmCluster([
-        ...Array.from({ length: pictures }, (_, i) => pictureBlock(1, i % 2 ? 33 : 0)),
+        ...Array.from({ length: pictures }, (_, i) => pictureBlock(1, Math.floor(i / 2))), // two pictures a millisecond, in order
         ...Array.from({ length: sounds }, () => simpleBlock(2, opus)),
       ])],
     });
@@ -579,6 +579,11 @@ describe('readVideoClip — V2a: the layouts phones record, and sound read as a 
     // and play 118.8 s and 61.9 s): a lone frame at 59.4 s after one at 0, and a frame at 59.95 s after 58 s at 30 fps
     expect(webm(picturesAt([0, 59_400]))).toBeCloseTo(118.8, 6);
     expect(readVideoClip('video/webm', picturesAt([...frames(0, 58), 59_950]))?.durationSec).toBe(62);
+    // a picture placed back in the file is refused (Stage 1's r2 check of 87e7468c: sorted, these read 60.4 s and
+    // Firefox played 118.8 s); pictures starting together are not placed back
+    expect(webm(clipWebm({ tracks: [pictureTrack()], clusters: [webmClusterAt(0, [pictureBlock()]), webmClusterAt(59_400, [pictureBlock()]), webmClusterAt(59_390, [pictureBlock()])] }))).toBeNull();
+    expect(webm(clipWebm({ tracks: [pictureTrack()], clusters: [webmClusterAt(0, [pictureBlock(), pictureBlock(1, 33), pictureBlock(1, 20)])] }))).toBeNull();
+    expect(webm(clipWebm({ tracks: [pictureTrack()], clusters: [webmClusterAt(0, [pictureBlock(), pictureBlock(1, 33), pictureBlock(1, 33)])] }))).toBeCloseTo(0.066, 6);
     // and a freeze just before the last frame: pictures 2 s apart end 2 s after the last
     expect(webm(picturesAt([0, 2000, 4000]))).toBeCloseTo(6, 6);
     expect(webm(picturesAt([0, 33, 66, 99, 5000]))).toBeCloseTo(9.901, 6);

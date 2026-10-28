@@ -16,7 +16,8 @@
  *    a listed track at a Cluster's start. BlockAdditions (an alpha channel) stay refused, as every BlockGroup child but
  *    the voice ones is. A block's end is its timestamp plus, for sound, the longest of its Opus frames, its
  *    BlockDuration and DefaultDuration a frame, and for the picture the last two; the latest picture block with
- *    neither is held for the median interval between picture starts (at most a second), or the last interval if longer.
+ *    neither is held for the median interval between picture starts (at most a second), or the last interval if longer;
+ *    no picture block starts before the one ahead of it.
  *  - `video/mp4`: the voice MP4 rules, with one or two traks: exactly one `vide` track (a `vmhd` with its one defined
  *    flag; one `avc1` entry with one avcC, or one `vp09` with one version-1 vpcC with no initialization data; at most
  *    one pasp, btrt and nclx colr each; the visual entry's fixed fields as ISO 14496-12 defines them) and at most one
@@ -123,7 +124,10 @@ const COLOUR_CHILDREN = new Map<number, Kind>([
 
 /** a listed track: its number, DefaultDuration, kind, and whether its blocks may be laced (FlagLacing, 1 when not written) */
 interface ClipTrack { number: number; frameNs: number; sound: boolean; lacing: boolean }
-/** every picture block's start, in seconds, and the latest start of a block that does not say how long it lasts */
+/**
+ * every picture block's start, in seconds, in file order (never going back), and the latest start of a block that does
+ * not say how long it lasts
+ */
 interface Pictures { starts: number[]; untimed: number }
 /** the longest the median holds an untimed last picture (decision 3 of the V2 plan): a second */
 const HOLD_MAX = 1;
@@ -230,6 +234,10 @@ function walkCluster(b: Buffer, cluster: Element, tracks: Map<number, ClipTrack>
       samples += held;
       const start = ((base! + r.timecode) * scale) / 1e9;
       if (!track!.sound) {
+        // VP8 and VP9 never reorder frames, so no recorder writes a picture before the one ahead of it in the file; and
+        // Firefox holds the last picture for the interval before it in file order, which a picture placed back would
+        // hide from the hold (Stage 1's r2 check: 0 s, 59.4 s, then 59.39 s read 60.4 s and played 118.8 s)
+        if (pictures.starts.length > 0 && start < pictures.starts[pictures.starts.length - 1]!) fail();
         pictures.starts.push(start);
         // a picture block with no BlockDuration and no DefaultDuration says where it starts, not where it ends
         if (ticks === 0 && track!.frameNs === 0) pictures.untimed = Math.max(pictures.untimed, start);
@@ -351,9 +359,9 @@ function webmSeconds(b: Buffer): number | null {
  * no zero interval pulls the median down or stands as the last.
  */
 function heldFor(starts: number[]): number {
-  const sorted = [...starts].sort((x, y) => x - y);
+  // the starts are in file order and never go back (walkCluster), so the last interval is the one before the last start
   const gaps: number[] = [];
-  for (let i = 1; i < sorted.length; i++) if (sorted[i]! > sorted[i - 1]!) gaps.push(sorted[i]! - sorted[i - 1]!);
+  for (let i = 1; i < starts.length; i++) if (starts[i]! > starts[i - 1]!) gaps.push(starts[i]! - starts[i - 1]!);
   if (gaps.length === 0) return 0;
   const lastGap = gaps[gaps.length - 1]!;
   gaps.sort((x, y) => x - y);
