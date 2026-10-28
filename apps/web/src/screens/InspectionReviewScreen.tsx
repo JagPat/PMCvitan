@@ -52,6 +52,9 @@ export function InspectionReviewScreen() {
   // (the predicate the bell judges by, so the two cannot disagree)
   // (a module read that has not yet landed — `idle` before its first pull — is not settled either)
   const settled = useStore(inspectionsSliceSettled) && !reading;
+  // #482: the guide points at no decision while it waits to send, nor on a retained review whose read is loading or
+  // failed (Codex 4403491383): the same settled read its offer needs
+  const guideOff = decisionQueued || !settled;
   const routeReview = routeItem !== null && reviews.some((r) => r.id === routeItem) ? routeItem : null;
   const routeChecklist = routeItem !== null && openChecklists.some((c) => c.id === routeItem) ? routeItem : null;
   // Codex 4209321867 / 4209988812 — a decision ends the route's claim on its review only once it has
@@ -342,16 +345,16 @@ export function InspectionReviewScreen() {
         ) : (
           <>
             {/* #482: the guide points at the controls that decide. With a failed item Approve asks first, so its
-                confirm is the one, and while it asks Send back behind it is not. None once a decision waits to send */}
+                confirm is the one, and while it asks Send back behind it is not. None once a decision waits to send, or on an unsettled read */}
             {failedCount > 0 ? (
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <Button variant="danger" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" data-guide={decisionQueued || confirmApproveId === review.id ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
+                <Button variant="danger" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" data-guide={guideOff || confirmApproveId === review.id ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
                 <Button variant="outline" onClick={() => setConfirmApproveId(review.id)} data-testid="approve-inspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.approve[lang]}</Button>
               </div>
             ) : (
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <Button variant="success" onClick={() => decide(approveInspection)} data-testid="approve-inspection" data-guide={decisionQueued ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.approve[lang]}</Button>
-                <Button variant="dangerOutline" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" data-guide={decisionQueued ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
+                <Button variant="success" onClick={() => decide(approveInspection)} data-testid="approve-inspection" data-guide={guideOff ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.approve[lang]}</Button>
+                <Button variant="dangerOutline" onClick={() => decide(sendReinspection)} data-testid="send-reinspection" data-guide={guideOff ? undefined : 'review-decide'} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>{L.sendBack[lang]}</Button>
               </div>
             )}
             {confirmApproveId === review.id && failedCount > 0 && (
@@ -362,7 +365,7 @@ export function InspectionReviewScreen() {
                 onConfirm={() => decide(approveInspection)}
                 onCancel={() => setConfirmApproveId(null)}
                 testId="confirm-approve"
-                guide={decisionQueued ? undefined : 'review-decide'}
+                guide={guideOff ? undefined : 'review-decide'}
               >
                 {T.failedConfirm(failedCount, lang)}
               </ConfirmDialog>

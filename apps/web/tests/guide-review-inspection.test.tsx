@@ -177,17 +177,24 @@ describe('the inspection review guide (#482 step 3c)', () => {
     expect(guide.available!()).toBe(false);
   });
 
-  it('is offered only to the PMC, with a review waiting on a settled read', async () => {
+  it('is offered, and points, only for the PMC, with a review waiting on a settled read', async () => {
     const { useStore, guide } = await open(null);
     expect(guide.roles).toEqual(['pmc']);
     expect(guide.available!()).toBe(true);
     vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');
+    // a failed or loading refresh retains the last review, buttons and all: the guide neither offers nor points at them
+    // (Codex 4403491383)
     act(() => { useStore.setState({ inspectionsLoad: 'error' }); });
     expect(guide.available!()).toBe(false);
+    expect(document.querySelector('[data-testid="send-reinspection"]')).not.toBeNull();
+    expect(guided()).toEqual([]);
     act(() => { useStore.setState({ inspectionsLoad: 'loading' }); });
     expect(guide.available!()).toBe(false);
+    expect(document.querySelector('[data-testid="send-reinspection"]')).not.toBeNull();
+    expect(guided()).toEqual([]);
     act(() => { useStore.setState({ inspectionsLoad: 'ready' }); });
     expect(guide.available!()).toBe(true);
+    expect(guided()).toEqual(['send-reinspection']);
     act(() => { useStore.setState((s) => ({ reviews: s.reviews.map((r) => ({ ...r, decided: true })) })); });
     expect(guide.available!()).toBe(false);
   });
