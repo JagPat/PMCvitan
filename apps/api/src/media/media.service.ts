@@ -517,6 +517,52 @@ export class MediaService {
   }
 
   /**
+   * #1179 (Jagrut, 27 Oct 2026) — take a voice note, video or photo off its site visit and delete it: the person who
+   * added it within the hour while the visit is open, or the PMC at any time with a reason (the site-visits module's
+   * rule, `recordRemoval`). The visit keeps a line saying who removed what, when and why; the file's row, its stored
+   * object, a clip's still frame and anything that goes with the row by key (a transcript) go. A file that is not on a
+   * visit, or not this project's, is not found.
+   *
+   * Lock order, an upload's: the file's send key, then the visit act's locks (readiness, tree, visit), then the file's
+   * row FOR UPDATE, which `addPoster` takes FOR NO KEY UPDATE after the same readiness key. The still frame's key is
+   * read under that lock (#1166's "latent orphan"), so a frame a racing `addPoster` stored is either named here and
+   * removed after commit, or written after this commit and refused, its object cleaned by `addPoster` itself.
+   */
+  async removeFromVisit(projectId: string, mediaId: string, user: AuthUser, reason: string | null): Promise<void> {
+    if (user.projectId !== projectId) throw new NotFoundException(MEDIA_NOT_FOUND_MESSAGE);
+    const early = await this.prisma.media.findUnique({ where: { id: mediaId }, select: { projectId: true, clientKey: true } });
+    if (!early || early.projectId !== projectId) throw new NotFoundException(MEDIA_NOT_FOUND_MESSAGE);
+    const visitId = await this.siteVisitFiles.visitOf(this.prisma, projectId, mediaId);
+    if (!visitId) throw new NotFoundException('This file is not on a site visit');
+    const actor = await resolveActor(this.prisma, user);
+    const { keys, events } = await this.prisma.$transaction(async (tx) => {
+      if (early.clientKey) await lockSendKey(tx, projectId, early.clientKey);
+      await this.siteVisitFiles.lockForRemoval(tx, projectId, visitId);
+      const [row] = await tx.$queryRaw<Array<{ storageKey: string | null; posterStorageKey: string | null }>>(Prisma.sql`
+        SELECT "storageKey", "posterStorageKey" FROM "Media" WHERE "projectId" = ${projectId} AND "id" = ${mediaId} FOR UPDATE`);
+      if (!row) throw new NotFoundException(MEDIA_NOT_FOUND_MESSAGE);
+      await this.siteVisitFiles.recordRemoval(tx, { projectId, mediaId, userId: user.sub, actor, reason });
+      // every other record that keeps this file as evidence still refuses, as for any photo
+      const observed = await this.disposability.assertDisposable(tx, { projectId, mediaId, actorUserId: user.sub });
+      const evidenceEv = await this.inspectionParticipant.removeEvidence(tx, { projectId, actor, mediaId, observed });
+      try {
+        await tx.media.delete({ where: { id: mediaId } });
+      } catch (e) {
+        // as for a photo: a record that cited this file after the guards above asked holds it by its key
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2003') {
+          throw new ConflictException('This file was just cited as evidence on another record, so it cannot be removed');
+        }
+        throw e;
+      }
+      const removedEv = await emitEvent(tx, { projectId, actor, eventType: 'media.removed', entityType: 'Media', entityId: mediaId, effectKey: 'media.removed', dispatch: {} });
+      return { keys: [row.storageKey, row.posterStorageKey], events: evidenceEv ? [evidenceEv, removedEv] : [removedEv] };
+    });
+    // after the commit that removed every reference, and only on success (POLICY: destructive side effects last)
+    for (const key of keys) if (key) await this.storage.remove(key).catch(() => {});
+    await this.dispatcher.dispatchCommitted(events);
+  }
+
+  /**
    * Delete a photo (bucket object + DB row). Scoped to the caller's project so
    * one project can't delete another's media. Returns false when not found /
    * out of scope. Best-effort on the bucket delete (dev stub is a no-op).
