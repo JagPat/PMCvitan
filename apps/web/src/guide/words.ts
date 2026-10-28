@@ -97,6 +97,21 @@ export const GUIDE_TIPS = {
     hi: 'हर आइटम और उसकी फ़ोटो देखें, और जो ठीक न हो उस पर ‘आइटम नामंज़ूर करें’ दबाएँ। फिर निरीक्षण मंज़ूर करें, या दोबारा निरीक्षण के लिए वापस भेजें।',
     gu: 'દરેક આઇટમ અને તેનો ફોટો જુઓ, અને જે બરાબર ન હોય તેના પર ‘આઇટમ નામંજૂર કરો’ દબાવો. પછી નિરીક્ષણ મંજૂર કરો, અથવા ફરી નિરીક્ષણ માટે પાછું મોકલો.',
   },
+  drawingAdd: {
+    en: 'Tap Issue drawing to add a new drawing.',
+    hi: 'नई ड्रॉइंग जोड़ने के लिए ‘ड्रॉइंग जारी करें’ दबाएँ।',
+    gu: 'નવું ડ્રોઇંગ ઉમેરવા ‘ડ્રોઇંગ જારી કરો’ દબાવો.',
+  },
+  drawingFile: {
+    en: "Fill in the drawing's number, revision and title, then choose its file here.",
+    hi: 'ड्रॉइंग का नंबर, संशोधन और शीर्षक भरें, फिर यहाँ उसकी फ़ाइल चुनें।',
+    gu: 'ડ્રોઇંગનો નંબર, સંસ્કરણ અને શીર્ષક ભરો, પછી અહીં તેની ફાઇલ પસંદ કરો.',
+  },
+  drawingPublish: {
+    en: 'Check it, then tap Publish to send it to the site team.',
+    hi: 'जाँच लें, फिर साइट टीम को भेजने के लिए ‘जारी करें’ दबाएँ।',
+    gu: 'તપાસી લો, પછી સાઇટ ટીમને મોકલવા ‘જારી કરો’ દબાવો.',
+  },
   approveConfirm: {
     en: 'Check your choice, then tap here to confirm it.',
     hi: 'अपना चुनाव जाँचें, फिर पक्का करने के लिए यहाँ दबाएँ।',
@@ -177,6 +192,11 @@ export const GUIDE_TITLES = {
     en: 'Review a submitted inspection',
     hi: 'जमा हुए निरीक्षण की जाँच करें',
     gu: 'જમા થયેલા નિરીક્ષણની તપાસ કરો',
+  },
+  publishDrawing: {
+    en: 'Publish a drawing',
+    hi: 'ड्रॉइंग जारी करें',
+    gu: 'ડ્રોઇંગ જારી કરો',
   },
   approveDecision: {
     en: 'Approve a choice',

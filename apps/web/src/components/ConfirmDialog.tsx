@@ -18,6 +18,7 @@ export function ConfirmDialog({
   testId = 'confirm-dialog',
   lang = 'en',
   guide,
+  guideKey,
 }: {
   title: string;
   children?: ReactNode;
@@ -30,6 +31,8 @@ export function ConfirmDialog({
   lang?: Lang;
   /** #482 — the in-app guide's name for the confirm button (`data-guide`), when a guide points at it */
   guide?: string;
+  /** #482 — the record that guide follows (`data-guide-key`) */
+  guideKey?: string;
 }) {
   const titleId = useId();
   return (
@@ -43,7 +46,7 @@ export function ConfirmDialog({
             {blocked ? confirmDialogLabels.close[lang] : confirmDialogLabels.cancel[lang]}
           </Button>
           {!blocked && (
-            <Button variant="danger" onClick={() => { onConfirm(); onCancel(); }} data-testid={`${testId}-confirm`} data-guide={guide} style={{ padding: '10px 16px' }}>
+            <Button variant="danger" onClick={() => { onConfirm(); onCancel(); }} data-testid={`${testId}-confirm`} data-guide={guide} data-guide-key={guideKey} style={{ padding: '10px 16px' }}>
               {confirmLabel}
             </Button>
           )}
