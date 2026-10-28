@@ -775,11 +775,15 @@ function mp4Seconds(b: Buffer): number | null {
   // a clip has a picture, and no mdat holds a byte that is not some track's sample
   if (!list.some((t) => t.picture && t.bytes > 0) || !tilesMedia(media, ranges)) return null;
   // the sound's media edit plays some of its sound, as a voice note's (#1141, #1165): the media it selects, from its
-  // media_time for its duration (to the end when that is 0), overlaps a stretch of decoded frames. Durations the file
-  // states past its frames are silence, so they never count as sound here
+  // media_time for its duration, overlaps a stretch of decoded frames. A duration of 0 runs to the end only in a movie
+  // that declares fragments (ISO/IEC 14496-12 §8.6.6.1: the fragments supply its media); in a plain movie it is an edit
+  // of no length, which selects nothing (Codex P2 on #1186). Durations the file states past its frames are silence, so
+  // they never count as sound here
+  const fragmentable = (moov.get('mvex') ?? []).length > 0;
   for (const t of list) {
     if (t.picture || !t.edits) continue;
     const start = t.edits.start / t.scale;
+    if (t.edits.edit === 0 && !fragmentable) return null;
     const end = t.edits.edit > 0 ? start + t.edits.edit / movie.scale : Infinity;
     if (!t.sounds.some(([from, to]) => from < end && to > start)) return null;
   }

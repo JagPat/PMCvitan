@@ -633,6 +633,10 @@ describe('readVideoClip — V2a: the layouts phones record, and sound read as a 
     expect(mp4(edited(2048))).toBeNull(); // where the sound ends
     expect(mp4(edited(48_000 * 10))).toBeNull();
     expect(mp4(edited(48_000 * 10, 0))).toBeNull(); // to the end, from past it
+    // a duration of 0 runs to the end only in a movie that declares fragments: in a plain one it selects nothing
+    // (Codex P2 on #1186: these passed at da3d1cb7)
+    expect(mp4(edited(0, 0))).toBeNull();
+    expect(mp4(edited(1024, 0))).toBeNull();
     // fragmented: sound at 0 s and at 10 s, an edit inside the gap selects none of it
     const fragmented = (mediaTime: number) => {
       const moov = Buffer.concat([ftyp('isom'), box('moov', [mvhd(), pictureTrak(1, []), soundTrakOpus(2, [editOf(1000, mediaTime)]), box('mvex', [
@@ -644,6 +648,17 @@ describe('readVideoClip — V2a: the layouts phones record, and sound read as a 
       ])]);
     };
     expect(mp4(fragmented(0))).not.toBeNull();
+    // there, a duration of 0 runs on to the fragments' sound
+    const open = (mediaTime: number) => {
+      const moov = Buffer.concat([ftyp('isom'), box('moov', [mvhd(), pictureTrak(1, []), soundTrakOpus(2, [editOf(0, mediaTime)]), box('mvex', [
+        fullBox('trex', 0, 0, u32(1, 1, 0, 0, 0)), fullBox('trex', 0, 0, u32(2, 1, 0, 0, 0))])])]);
+      return Buffer.concat([moov, fragmentOf(1, [
+        { track: 1, time: 0, data: [NAL_SAMPLE, NAL_SAMPLE], durations: [1600, 1600] },
+        { track: 2, time: 0, data: [OPUS_20MS], durations: [960] },
+      ])]);
+    };
+    expect(mp4(open(0))).not.toBeNull();
+    expect(mp4(open(960))).toBeNull(); // from where the sound ends
     expect(mp4(fragmented(48_000 * 10))).not.toBeNull();
     expect(mp4(fragmented(48_000 * 5))).toBeNull();
     // a run with no frames holds no sound: one at 5 s does not make an edit from 4.9 s select any (Stage 1's gap-check)
