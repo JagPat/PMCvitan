@@ -11,13 +11,19 @@
  *  - `video/webm`: the voice WebM rules, with one or two TrackEntries: exactly one video track (TrackType 1, V_VP8 or
  *    V_VP9, its Video element of known fields with a nonzero PixelWidth and PixelHeight, a Colour of known integer
  *    fields, no CodecPrivate, CodecDelay, SeekPreRoll or Audio) and at most one sound track, read as a voice note's is
- *    (A_OPUS with its OpusHead, no Video or MaxBlockAdditionID). BlockAdditions (an alpha channel) stay refused, as
- *    every BlockGroup child but the voice ones is. A block's end is its timestamp plus, for sound, the longest of its
- *    Opus frames, its BlockDuration and DefaultDuration a frame, and for the picture the last two.
+ *    (A_OPUS with its OpusHead, no Video or MaxBlockAdditionID). No laced block on a track whose FlagLacing is 0. One
+ *    Cues, after the Tracks, as Safari writes it after its Clusters (V2a): read whole as a voice note's, each point on
+ *    a listed track at a Cluster's start. BlockAdditions (an alpha channel) stay refused, as every BlockGroup child but
+ *    the voice ones is. A block's end is its timestamp plus, for sound, the longest of its Opus frames, its
+ *    BlockDuration and DefaultDuration a frame, and for the picture the last two; the latest picture block with
+ *    neither is held for the median interval between picture starts (at most a second), or the last interval if longer;
+ *    no picture block starts before the one ahead of it.
  *  - `video/mp4`: the voice MP4 rules, with one or two traks: exactly one `vide` track (a `vmhd` with its one defined
  *    flag; one `avc1` entry with one avcC, or one `vp09` with one version-1 vpcC with no initialization data; at most
  *    one pasp, btrt and nclx colr each; the visual entry's fixed fields as ISO 14496-12 defines them) and at most one
- *    `soun` track read as a voice note's is. An avc1 sample is its NAL units, each with its length prefix (the avcC's
+ *    `soun` track read as a voice note's is (its runs give no non-zero composition offset, its frames play one after
+ *    another from where each run sits, and its media edit selects some of them; the picture keeps its offsets). An
+ *    avc1 sample is its NAL units, each with its length prefix (the avcC's
  *    1, 2 or 4 bytes) and at least one byte, filling the sample exactly. Fragments name a listed track, each with its
  *    own trex; an `mfra` is allowed only as the file's last box, read whole: each tfra once per listed track, every
  *    entry pointing at a moof, and an mfro giving the mfra's own size. Brands: the voice MP4 brands but `M4A `, with
@@ -31,6 +37,7 @@
 import {
   MAX_SAMPLES, MAX_MEDIA_BOXES, Malformed, fail, padding, charge, OPUS_RATE, opusPacketSamples,
   EBML_HEADER, DOC_TYPE, SEGMENT, INFO, TRACKS, TRACK_ENTRY, TRACK_NUMBER, TRACK_TYPE, CODEC_ID, AUDIO, CLUSTER, SIMPLE_BLOCK,
+  CUES, CUES_CHILDREN, CUE_POINT_CHILDREN, CUE_TIME, CUE_TRACK_POSITIONS, CUE_TRACK_POSITIONS_CHILDREN, CUE_TRACK, CUE_CLUSTER_POSITION,
   BLOCK_GROUP, BLOCK, VOID, TIMESTAMP_SCALE, DURATION, CLUSTER_TIMESTAMP, BLOCK_DURATION, DEFAULT_DURATION,
   EBML_HEADER_CHILDREN, SEGMENT_CHILDREN, SEEK_HEAD, seekHead, INFO_CHILDREN, TRACK_ENTRY_CHILDREN, AUDIO_CHILDREN, CLUSTER_CHILDREN,
   BLOCK_GROUP_CHILDREN, vint, readElement, checkChild, elements, codeOf, uintOf, floatOf, opusTrack, trackFlags, blockTrack,
@@ -80,6 +87,11 @@ const MAX_BLOCK_ADDITION_ID = 0x55ee;
 const PIXEL_WIDTH = 0xb0;
 const PIXEL_HEIGHT = 0xba;
 const COLOUR = 0x55b0;
+/**
+ * a clip's Segment children: what Chrome writes, and the Cues Safari writes after its Clusters (WebKit's libwebm writer
+ * in file mode, iOS 18.4 and later), as a voice note's (#1165)
+ */
+const CLIP_SEGMENT_CHILDREN = new Set([...SEGMENT_CHILDREN, CUES]);
 /** the picture codecs a browser records WebM in */
 const WEBM_VIDEO_CODECS = new Set(['V_VP8', 'V_VP9']);
 
@@ -110,9 +122,15 @@ const COLOUR_CHILDREN = new Map<number, Kind>([
   [VOID, 'void'],
 ]);
 
-interface ClipTrack { number: number; frameNs: number; sound: boolean }
-/** every picture block's start, in seconds, and the latest start of a block that does not say how long it lasts */
+/** a listed track: its number, DefaultDuration, kind, and whether its blocks may be laced (FlagLacing, 1 when not written) */
+interface ClipTrack { number: number; frameNs: number; sound: boolean; lacing: boolean }
+/**
+ * every picture block's start, in seconds, in file order (never going back), and the latest start of a block that does
+ * not say how long it lasts
+ */
 interface Pictures { starts: number[]; untimed: number }
+/** the longest the median holds an untimed last picture (decision 3 of the V2 plan): a second */
+const HOLD_MAX = 1;
 
 /**
  * A clip's tracks, by number: exactly one picture track (VP8 or VP9) and at most one sound track (Opus, read as a voice
@@ -149,9 +167,9 @@ function clipTracks(b: Buffer, tracks: Element, steps: Walk): Map<number, ClipTr
       const width = picture.get(PIXEL_WIDTH);
       const height = picture.get(PIXEL_HEIGHT);
       if (!width || !height || uintOf(b, width) < 1 || uintOf(b, height) < 1) fail();
-      trackFlags(b, seen);
+      const { lacing } = trackFlags(b, seen);
       const each = seen.get(DEFAULT_DURATION);
-      track = { number: uintOf(b, number!), frameNs: each ? uintOf(b, each) : 0, sound: false };
+      track = { number: uintOf(b, number!), frameNs: each ? uintOf(b, each) : 0, sound: false, lacing };
       if (track.number < 1) fail();
     } else if (type === 2) {
       if (++sounds > 1 || PICTURE_ONLY.some((id) => seen.has(id))) fail();
@@ -182,7 +200,7 @@ function walkCluster(b: Buffer, cluster: Element, tracks: Map<number, ClipTrack>
     if (cluster.unknownSize) {
       const id = vint(b, at, end, true).value;
       if (!CLUSTER_CHILDREN.has(id)) {
-        if (SEGMENT_CHILDREN.has(id)) return { next: at, picture, last, samples };
+        if (CLIP_SEGMENT_CHILDREN.has(id)) return { next: at, picture, last, samples };
         fail();
       }
     }
@@ -204,6 +222,7 @@ function walkCluster(b: Buffer, cluster: Element, tracks: Map<number, ClipTrack>
       const r = blockTrack(b, block.dataStart, block.dataEnd, steps);
       const track = tracks.get(r.track);
       if (!track) fail(); // a block on a track the file does not list
+      if (r.laced && !track!.lacing) fail(); // a laced block on a track whose FlagLacing 0 says none is (#1154, as voice)
       // every frame of either track counts toward the samples a clip may hold, as an MP4's do
       frames.n += r.frames.length;
       if (frames.n > MAX_SAMPLES) fail();
@@ -215,6 +234,10 @@ function walkCluster(b: Buffer, cluster: Element, tracks: Map<number, ClipTrack>
       samples += held;
       const start = ((base! + r.timecode) * scale) / 1e9;
       if (!track!.sound) {
+        // VP8 and VP9 never reorder frames, so no recorder writes a picture before the one ahead of it in the file; and
+        // Firefox holds the last picture for the interval before it in file order, which a picture placed back would
+        // hide from the hold (Stage 1's r2 check: 0 s, 59.4 s, then 59.39 s read 60.4 s and played 118.8 s)
+        if (pictures.starts.length > 0 && start < pictures.starts[pictures.starts.length - 1]!) fail();
         pictures.starts.push(start);
         // a picture block with no BlockDuration and no DefaultDuration says where it starts, not where it ends
         if (ticks === 0 && track!.frameNs === 0) pictures.untimed = Math.max(pictures.untimed, start);
@@ -224,6 +247,31 @@ function walkCluster(b: Buffer, cluster: Element, tracks: Map<number, ClipTrack>
     at = e.dataEnd;
   }
   return { next: end, picture, last, samples };
+}
+
+/**
+ * The Cues, read whole as a voice note's are (#1165): CuePoints, each a CueTime and one CueTrackPositions on a listed
+ * track, at most with the cue fields the voice reader names. Returns the Cluster positions they point at, from the
+ * Segment's data, for the caller to check against where Clusters start; null when it is not such a Cues. libwebm cues
+ * the picture track when there is one, but a cue on the sound track points into the same Clusters, so either listed
+ * track is read.
+ */
+function cuedClusters(b: Buffer, cues: Element, tracks: Map<number, ClipTrack>, steps: Walk): number[] | null {
+  const out: number[] = [];
+  for (const point of elements(b, cues.dataStart, cues.dataEnd, steps, CUES_CHILDREN)) {
+    if (point.id === VOID) continue;
+    const fields = new Map<number, Element>();
+    for (const f of elements(b, point.dataStart, point.dataEnd, steps, CUE_POINT_CHILDREN)) fields.set(f.id, f);
+    const positions = fields.get(CUE_TRACK_POSITIONS);
+    if (!fields.has(CUE_TIME) || !positions) return null;
+    const place = new Map<number, Element>();
+    for (const f of elements(b, positions.dataStart, positions.dataEnd, steps, CUE_TRACK_POSITIONS_CHILDREN)) place.set(f.id, f);
+    const track = place.get(CUE_TRACK);
+    const cluster = place.get(CUE_CLUSTER_POSITION);
+    if (!track || !cluster || !tracks.has(uintOf(b, track))) return null;
+    out.push(uintOf(b, cluster));
+  }
+  return out.length > 0 ? out : null;
 }
 
 function webmSeconds(b: Buffer): number | null {
@@ -249,11 +297,14 @@ function webmSeconds(b: Buffer): number | null {
   let samples = 0; // Opus samples in every sound frame
   const frames = { n: 0 }; // frames of both tracks, capped together
   const pictures: Pictures = { starts: [], untimed: -1 };
+  const clusters = new Set<number>(); // where each Cluster starts, from the Segment's data
+  let cued: number[] | undefined; // the Clusters the one Cues points at
   for (let at = segment.dataStart; at < segment.dataEnd;) {
     const id = vint(b, at, segment.dataEnd, true).value;
     const e = readElement(b, at, segment.dataEnd, steps, id === CLUSTER);
-    if (!SEGMENT_CHILDREN.has(e.id)) return null;
+    if (!CLIP_SEGMENT_CHILDREN.has(e.id)) return null;
     if (e.id === CLUSTER) {
+      clusters.add(at - segment.dataStart);
       // blocks before the track table that names their tracks, or before the Info that times them
       if (tracks === undefined || !info) return null;
       const r = walkCluster(b, e, tracks, scale, steps, frames, pictures);
@@ -268,10 +319,16 @@ function webmSeconds(b: Buffer): number | null {
       tracks = clipTracks(b, e, steps);
     } else if (e.id === SEEK_HEAD) {
       // the seek index, read whole and never followed: once, first (Chromium and Firefox write it before Info), and
-      // pointing only at what this walk takes
+      // pointing only at what this walk takes (the Cues too, which Chromium indexes when it records with no timeslice)
       if (seek || info || tracks !== undefined) return null;
       seek = true;
-      seekHead(b, e, steps, SEGMENT_CHILDREN, segment.dataEnd - segment.dataStart);
+      seekHead(b, e, steps, CLIP_SEGMENT_CHILDREN, segment.dataEnd - segment.dataStart);
+    } else if (e.id === CUES) {
+      // the seek index: one, after the track table it names tracks from; it times nothing, so it is not in the length
+      if (cued !== undefined || tracks === undefined) return null;
+      const points = cuedClusters(b, e, tracks, steps);
+      if (points === null) return null;
+      cued = points;
     } else if (e.id === INFO) {
       if (info) return null; // one Info
       info = true;
@@ -287,17 +344,35 @@ function webmSeconds(b: Buffer): number | null {
   }
   // a clip has a picture: a file whose only blocks are sound is a voice note, not a video
   if (tracks === undefined || !picture) return null;
-  // Chromium writes no durations for picture blocks. Every one of those is held for the longest interval between picture
-  // blocks, whatever else starts with it or after it, unless Info's Duration reaches past the latest one's start; so no
-  // frame can start inside the minute and play on past it. With no interval to go by, the end is unknown: refused
+  if (cued && !cued.every((p) => clusters.has(p))) return null; // a cue at no Cluster's start
+  // Chromium writes no durations for picture blocks. The latest one is held for the median interval between picture
+  // blocks (at most a second), or the last interval if that is longer, whatever else starts with it or after it, unless
+  // Info's Duration reaches past its start (V2 plan, decision 3: one stall mid-clip no longer lengthens it). Firefox
+  // holds the last picture for the last interval, so the length is never less than it plays. With no interval to go
+  // by, the end is unknown: refused
   if (pictures.untimed >= 0 && (duration * scale) / 1e9 <= pictures.untimed) {
-    const starts = pictures.starts.sort((x, y) => x - y);
-    let interval = 0;
-    for (let i = 1; i < starts.length; i++) interval = Math.max(interval, starts[i]! - starts[i - 1]!);
-    if (interval === 0) return null;
-    last = Math.max(last, pictures.untimed + interval);
+    const hold = heldFor(pictures.starts);
+    if (hold === 0) return null;
+    last = Math.max(last, pictures.untimed + hold);
   }
   return Math.max((duration * scale) / 1e9, last, samples / OPUS_RATE);
+}
+
+/**
+ * How long an untimed last picture is held: the median of the intervals between successive picture starts (the longer
+ * middle one of an even count), at most HOLD_MAX, or the last interval, the one before the latest start, if that is
+ * longer (Firefox plays the last picture for it: a lone frame at 59.4 s after one at 0 plays to 118.8 s, so it reads
+ * that long and is refused); 0 when no two pictures start apart. Blocks that start together are one picture time, so
+ * no zero interval pulls the median down or stands as the last.
+ */
+function heldFor(starts: number[]): number {
+  // the starts are in file order and never go back (walkCluster), so the last interval is the one before the last start
+  const gaps: number[] = [];
+  for (let i = 1; i < starts.length; i++) if (starts[i]! > starts[i - 1]!) gaps.push(starts[i]! - starts[i - 1]!);
+  if (gaps.length === 0) return 0;
+  const lastGap = gaps[gaps.length - 1]!;
+  gaps.sort((x, y) => x - y);
+  return Math.max(Math.min(gaps[Math.floor(gaps.length / 2)]!, HOLD_MAX), lastGap);
 }
 
 // ── MP4 (ISO BMFF) ───────────────────────────────────────────────────────────────────────────
@@ -455,7 +530,7 @@ interface Mp4Track {
   /** Opus sound, or the AAC rate (0 for Opus and for the picture) */
   opus: boolean;
   aacRate: number;
-  edits: { delay: number; edit: number } | undefined;
+  edits: { delay: number; edit: number; start: number } | undefined;
   scale: number;
   duration: number | null;
   trex: { duration: number; size: number } | undefined;
@@ -466,6 +541,12 @@ interface Mp4Track {
   frames: number;
   bytes: number;
   opusSamples: number;
+  /**
+   * for sound: where its frames end as decoded, in seconds (moov's from 0, then each fragment run's from where it sits
+   * and no earlier than the frames before it end), and each stretch of decoded sound, [from, to), for the edit's check
+   */
+  heard: number;
+  sounds: Array<[number, number]>;
   sample: (at: number, size: number) => void;
 }
 
@@ -512,7 +593,7 @@ function readTrak(b: Buffer, trak: Box, movieScale: number, media: MediaRanges, 
   const sound = picture ? { opus: false, rate: 0 } : audioSampleEntry(b, only(st, 'stsd'), steps);
   const track: Mp4Track = {
     id: trackId(b, tkhd), picture, opus: sound.opus, aacRate: sound.rate, edits, scale: mdhd.scale, duration: mdhd.duration,
-    trex: undefined, ticks: 0, timeline: 0, summed: 0, frames: 0, bytes: 0, opusSamples: 0,
+    trex: undefined, ticks: 0, timeline: 0, summed: 0, frames: 0, bytes: 0, opusSamples: 0, heard: 0, sounds: [],
     sample: (at, size) => {
       if (size < 1) fail(); // every sample holds at least one byte
       if (track.opus) track.opusSamples += opusPacketSamples(b, at, size);
@@ -523,7 +604,16 @@ function readTrak(b: Buffer, trak: Box, movieScale: number, media: MediaRanges, 
   track.ticks = track.timeline = track.summed = table.ticks;
   track.frames = table.count;
   track.bytes = table.bytes;
+  if (!picture) {
+    track.heard = decodedSeconds(track, table.count, track.opusSamples);
+    if (table.count > 0) track.sounds.push([0, track.heard]);
+  }
   return track;
+}
+
+/** what `frames` sound frames holding `opusSamples` Opus samples decode to, in seconds: 1,024 samples an AAC frame */
+function decodedSeconds(track: Mp4Track, frames: number, opusSamples: number): number {
+  return track.opus ? opusSamples / OPUS_RATE : (frames * 1024) / track.aacRate;
 }
 
 /**
@@ -648,6 +738,10 @@ function mp4Seconds(b: Buffer): number | null {
       let cursor = base;
       for (const trun of tr.get('trun') ?? []) {
         const run = trunRun(b, trun, defaults, MAX_SAMPLES - frames);
+        // sound frames are presented in the order they decode (AAC and Opus have no frame reordering), so a sound run
+        // presenting one at any other time is refused, as a voice note's is (#1165) and as moov's ctts is; the picture
+        // keeps its composition offsets (H.264 may reorder), counted where its latest sample ends as presented
+        if (!track.picture && run.shifted) return null;
         frames += run.count;
         track.frames += run.count;
         if (run.dataOffset !== undefined) cursor = base + run.dataOffset;
@@ -656,9 +750,18 @@ function mp4Seconds(b: Buffer): number | null {
           if (!inMedia(media, cursor, run.bytes)) fail();
           ranges.push({ at: cursor, bytes: run.bytes });
         }
+        const before = track.opusSamples;
         for (let i = 0, p = cursor; i < run.count; p += run.sizeOf(i), i++) track.sample(p, run.sizeOf(i));
         track.bytes += run.bytes;
         const runStart = track.timeline;
+        // a sound run's frames play one after another from its start, no earlier than the frames before it end, and a run
+        // with none moves nothing, as a voice note's (#1165: zero-duration frames placed late play past where they sit)
+        const decoded = track.picture ? 0 : decodedSeconds(track, run.count, track.opusSamples - before);
+        if (decoded > 0) {
+          const from = Math.max(runStart / track.scale, track.heard);
+          track.heard = from + decoded;
+          track.sounds.push([from, track.heard]);
+        }
         track.timeline += run.ticks;
         track.summed += run.ticks;
         if (!Number.isSafeInteger(track.timeline) || !Number.isSafeInteger(track.summed)) fail();
@@ -671,11 +774,25 @@ function mp4Seconds(b: Buffer): number | null {
   if (mfras.length === 1) frameIndex(b, mfras[0]!, tracks, new Set(fragments.map((f) => f.start)), steps);
   // a clip has a picture, and no mdat holds a byte that is not some track's sample
   if (!list.some((t) => t.picture && t.bytes > 0) || !tilesMedia(media, ranges)) return null;
+  // the sound's media edit plays some of its sound, as a voice note's (#1141, #1165): the media it selects, from its
+  // media_time for its duration, overlaps a stretch of decoded frames. A duration of 0 runs to the end only in a movie
+  // that declares fragments (ISO/IEC 14496-12 §8.6.6.1: the fragments supply its media); in a plain movie it is an edit
+  // of no length, which selects nothing (Codex P2 on #1186). Durations the file states past its frames are silence, so
+  // they never count as sound here
+  const fragmentable = (moov.get('mvex') ?? []).length > 0;
+  for (const t of list) {
+    if (t.picture || !t.edits) continue;
+    const start = t.edits.start / t.scale;
+    if (t.edits.edit === 0 && !fragmentable) return null;
+    const end = t.edits.edit > 0 ? start + t.edits.edit / movie.scale : Infinity;
+    if (!t.sounds.some(([from, to]) => from < end && to > start)) return null;
+  }
   // each track's length as a voice note's is reckoned (the edit list, the media header, the timeline and the summed
   // durations, and for sound what its frames hold), the longest of them, and the movie's own
   let longest = 0;
   for (const t of list) {
-    const held = t.picture ? 0 : t.opus ? t.opusSamples / OPUS_RATE : (t.frames * 1024) / t.aacRate;
+    // for sound, where its frames end as decoded: each run's from where it sits, and all of them from 0
+    const held = t.picture ? 0 : Math.max(t.heard, decodedSeconds(t, t.frames, t.opusSamples));
     const played = Math.max(
       t.edits ? t.edits.edit / movie.scale : 0,
       t.duration !== null ? t.duration / t.scale : 0,
