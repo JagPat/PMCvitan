@@ -420,7 +420,7 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
             }}
           />
           {/* #482: the visit guide points at the Add photo of the viewer's own open visit (the one it started) */}
-          <Button variant="light" disabled={sv.busy} data-guide={mine && v.status === 'open' ? 'sv-add-photo' : undefined} onClick={() => fileRef.current?.click()}>{SV.addPhoto[lang]}</Button>
+          <Button variant="light" disabled={sv.busy} data-guide={v.visitorId === me && v.status === 'open' ? 'sv-add-photo' : undefined} onClick={() => fileRef.current?.click()}>{SV.addPhoto[lang]}</Button>
           {RECORDERS.map((kind) => (
             <MediaRecorderButton
               key={kind} kind={kind} visitId={v.id} lang={lang} busy={sv.busy}

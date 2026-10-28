@@ -9,8 +9,8 @@ import { noteOwnOpenVisit } from './visitFacts';
  *
  * - Start visit: once a start made under the run shows as the viewer's open visit (sent, or waiting to send), it is
  *   `visit-started`; a start not taken at all (`started(false)`) is `visit-start-failed`.
- * - Add photo: a photo picked under the run is `visit-photo-added` once the server has it (shown and no longer waiting to
- *   send), and `visit-photo-add-failed` once it is listed as not sent (refused). One still waiting says nothing yet.
+ * - Add photo: a photo picked under the run is `visit-photo-added` once the server has it on the viewer's own visit (shown
+ *   and no longer waiting to send), and `visit-photo-add-failed` once it is listed as not sent (refused). One still waiting says nothing yet.
  *
  * `listed`: whether the screen's read of the visits has come back, so "no visit open" is known, not assumed.
  */
@@ -38,13 +38,14 @@ export function useVisitGuideReports(
         emitGuideOutcome('visit-photo-add-failed', null, run);
         continue;
       }
-      const filed = visits.some((v) => (v.files ?? []).some((f) => f.clientKey === key || f.mediaId === key));
+      // on the viewer's own visit, the one the guide started (a photo on a visit they are present on is not this task)
+      const filed = visits.some((v) => v.visitorId === me && (v.files ?? []).some((f) => f.clientKey === key || f.mediaId === key));
       if (filed && !waiting.has(key)) {
         told.current.add(key);
         emitGuideOutcome('visit-photo-added', null, run);
       }
     }
-  }, [run, visits, waiting, notSent]);
+  }, [run, visits, waiting, notSent, me]);
 
   return {
     started: (ok, startedUnder) => {

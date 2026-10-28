@@ -8,6 +8,8 @@ import { GuideHost } from '@/guide/GuideHost';
 import { GUIDES } from '@/guide/guides';
 import { useGuideState } from '@/guide/guideState';
 import type { ApiGateway, SiteVisit } from '@/data/apiGateway';
+import { MAX_PHOTO_BASE64 } from '@/lib/shrinkPhoto';
+import { noteOwnOpenVisit } from '@/guide/visitFacts';
 import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
 
 /**
@@ -58,13 +60,14 @@ function server(list: SiteVisit[], over: Fake = {}): Fake {
   };
 }
 
-async function mount(gw: Fake, role: Role = 'pmc') {
+async function mount(gw: Fake, role: Role = 'pmc', read = true) {
   useStore.setState({ ...getInitialState(), role, lang: 'en', sessionUserId: PMC, nodes: NODES, members: [], loadTeam: async () => true, screen: 'site-visits', projectLoadState: 'ready' });
   (gw as { project?: string }).project = useStore.getState().activeProjectId;
   useStore.getState()._setGateway(tracked(gw) as unknown as ApiGateway);
   render(<><GuideHost /><SiteVisitsScreen /></>);
   await act(async () => {});
-  await settled();
+  // a read held open on purpose is waited on by its own call instead
+  if (read) await settled();
 }
 
 const tip = () => document.querySelector<HTMLElement>('[data-testid="guide-tip"]');
@@ -72,8 +75,8 @@ const step = () => tip()?.getAttribute('data-guide-step') ?? null;
 const done = (): string[] => JSON.parse(localStorage.getItem(DONE_KEY) ?? '[]') as string[];
 const tipAt = (n: string) => vi.waitFor(() => { if (step() !== n) throw new Error(`tip at ${step()}`); });
 const photo = () => new File([new Uint8Array([1, 2, 3])], 'site.png', { type: 'image/png' });
-const pick = async (visitId: string) => {
-  await act(async () => { fireEvent.change(screen.getByTestId(`sv-photo-file-${visitId}`), { target: { files: [photo()] } }); });
+const pick = async (visitId: string, f: File = photo()) => {
+  await act(async () => { fireEvent.change(screen.getByTestId(`sv-photo-file-${visitId}`), { target: { files: [f] } }); });
   await settled();
 };
 
@@ -90,6 +93,7 @@ afterEach(async () => {
   await flushesEnded();
   act(() => { useGuideState.getState().stop(); });
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   cleanup();
   useStore.getState()._setGateway(null);
   localStorage.clear();
@@ -134,7 +138,7 @@ describe('the site visit guide (#482 step 3c)', () => {
   it('a photo still waiting for signal leaves the guide unfinished; it finishes once the photo is sent', async () => {
     let fail = true;
     const gw = server([visit()]);
-    const upload = gw.uploadMedia!.getMockImplementation()!;
+    const upload = gw.uploadMedia!.getMockImplementation() as (input: never) => Promise<unknown>;
     gw.uploadMedia!.mockImplementation(async (input: never) => { if (fail) throw new Error('network'); return upload(input); });
     await mount(gw);
     act(() => { useGuideState.getState().start(GUIDE); useGuideState.getState().setStep(1); });
@@ -152,6 +156,36 @@ describe('the site visit guide (#482 step 3c)', () => {
     await vi.waitFor(() => { if (!done().includes('record-site-visit')) throw new Error('not done'); });
   });
 
+  it('a photo this phone will not keep or send (too large) leaves the guide on Add photo, unfinished', async () => {
+    vi.stubGlobal('createImageBitmap', undefined);
+    const gw = server([visit()]);
+    await mount(gw);
+    act(() => { useGuideState.getState().start(GUIDE); useGuideState.getState().setStep(1); });
+    await tipAt('1');
+    fireEvent.click(document.querySelector('[data-guide="sv-add-photo"]')!);
+    expect(useGuideState.getState().run?.waiting).toBe(true);
+    await pick('v-1', new File([new Uint8Array((MAX_PHOTO_BASE64 / 4) * 3 + 1)], 'huge.jpg', { type: 'image/jpeg' }));
+    expect(screen.getByRole('alert').textContent).toBe('This photo is too large to send. Try a smaller one.');
+    await vi.waitFor(() => { if (useGuideState.getState().run?.waiting !== false) throw new Error('still waiting'); });
+    expect(gw.uploadMedia).not.toHaveBeenCalled();
+    expect(done()).not.toContain('record-site-visit');
+  });
+
+  it('a photo on another person\'s visit the viewer is present on does not finish it, and is not pointed at', async () => {
+    const theirs = visit({ id: 'v-2', visitorId: 'u-other', visitorName: 'Kiran Rao', visitorRole: 'consultant', startedAt: '2026-10-14T05:30:00.000Z',
+      attendees: [{ id: 'a-1', kind: 'member', userId: PMC, role: 'pmc', name: 'Priya Shah', addedAt: '2026-10-14T05:31:00.000Z', retiredAt: null }] });
+    const gw = server([theirs, visit()]);
+    await mount(gw);
+    expect(screen.getByTestId('sv-visit-v-2').querySelector('[data-guide="sv-add-photo"]')).toBeNull();
+    act(() => { useGuideState.getState().start(GUIDE); useGuideState.getState().setStep(1); });
+    await tipAt('1');
+    await pick('v-2');
+    expect(gw.uploadMedia).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('sv-visit-v-2').querySelector('[data-testid^="sv-file-"]')).not.toBeNull();
+    expect(done()).not.toContain('record-site-visit');
+    expect(useGuideState.getState().run).not.toBeNull();
+  });
+
   it('is offered only to someone who may start a visit and has none open on the screen', async () => {
     await mount(server([visit()]));
     expect(GUIDE.available!()).toBe(false);
@@ -160,5 +194,24 @@ describe('the site visit guide (#482 step 3c)', () => {
     expect(GUIDE.available!()).toBe(true);
     // an engineer is not shown Start visit
     expect(GUIDE.roles).not.toContain('engineer');
+  });
+
+  it('what the screen noted counts only for the same person and project, and only once the visits are read', async () => {
+    await mount(server([visit()]));
+    expect(GUIDE.available!()).toBe(false);
+    cleanup();
+    // read again, the list not back yet: what was noted stands (nothing is assumed while loading)
+    const held = vi.fn(() => new Promise(() => {}));
+    await mount(server([], { listSiteVisits: held }), 'pmc', false);
+    expect(held).toHaveBeenCalled();
+    expect(GUIDE.available!()).toBe(false);
+    // another project, or another person, is not what was noted
+    act(() => { useStore.setState({ activeProjectId: 'project-b' }); });
+    expect(GUIDE.available!()).toBe(true);
+    act(() => { useStore.setState({ activeProjectId: getInitialState().activeProjectId }); });
+    expect(GUIDE.available!()).toBe(false);
+    act(() => { useStore.setState({ sessionUserId: 'u-someone' }); });
+    expect(GUIDE.available!()).toBe(true);
+    act(() => { noteOwnOpenVisit(false); });
   });
 });
