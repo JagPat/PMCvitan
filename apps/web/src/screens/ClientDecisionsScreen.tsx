@@ -169,7 +169,7 @@ function PendingCard({ d, subLabel, onApprove, current = false }: { d: Decision;
                   </div>
                 </div>
               </div>
-              <Button variant={isRec ? 'ink' : 'light'} fullWidth onClick={() => onApprove(i)} data-testid={`approve-${d.id}-${o.key}`} style={{ marginTop: 11, padding: 12 }}>
+              <Button variant={isRec ? 'ink' : 'light'} fullWidth onClick={() => onApprove(i)} data-testid={`approve-${d.id}-${o.key}`} data-guide="approve-option" data-guide-key={d.id} style={{ marginTop: 11, padding: 12 }}>
                 Approve {o.label}
               </Button>
             </div>

@@ -2829,20 +2829,31 @@ export const useStore = create<Store>()(
       // #827: a translated caller's queued line in the viewer's language; it also gets the network-failure
       // line in that language. Without it, the label plus the standard English lines, as before
       offlineMsg?: string,
+      // #482 — how it went, for the in-app guide: `sent` (the server took it), `failed`, or, offline, `queued` with
+      // whether this phone kept it. Told only while the scope it was made in is still current
+      report?: (result: 'sent' | 'failed' | 'queued' | 'not-kept') => void,
     ): boolean => {
       if (!gateway) return false;
       if (get().online) {
         // #482 F-C4.2 — a refusal says the server's reason, never "Could not reach the server": a translated
         // caller in the viewer's language, every other in English, as the network line already does
         const lang = () => (offlineMsg !== undefined ? get().lang : 'en');
-        runRemote(call, okMsg, (why) => SRV.refused(why, lang()), offlineMsg !== undefined ? () => DTX.unreachable[get().lang] : undefined);
+        const scope = currentScope();
+        // an answer for another project is not this act taken (the guide's issue and publish steps read it so too)
+        let answered: ApiSnapshot | null = null;
+        const sent = () => call().then((snap) => { answered = snap; return snap; });
+        void runRemote(sent, okMsg, (why) => SRV.refused(why, lang()), offlineMsg !== undefined ? () => DTX.unreachable[get().lang] : undefined).then((ok) => {
+          if (scopeStillCurrent(scope)) report?.(ok && answered?.project.id === scope.projectId ? 'sent' : 'failed');
+        });
         return true;
       }
       set((s) => {
         s.outbox.push(op);
         s.syncQueue.push(label);
       });
-      flashSaved(offlineMsg ?? label + ' — saved offline, will sync when you reconnect.', [op]); // said once the locked write holds it
+      const stillThere = madeHere();
+      // said once the locked write holds it
+      flashSaved(offlineMsg ?? label + ' — saved offline, will sync when you reconnect.', [op], report && ((stored) => { if (stillThere()) report(stored ? 'queued' : 'not-kept'); }));
       return true;
     };
 
@@ -3475,7 +3486,11 @@ export const useStore = create<Store>()(
       // one stable idempotency key for this approval — the online send and any offline replay
       // reach the server under it, so a lost-response retry re-locks once (Phase 2 Task 5).
       const approveKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'approve', decisionId: decId, optionIndex: optIdx, idempotencyKey: approveKey }, 'Approve ' + decId, () => gateway!.approveDecision(decId, optIdx, approveKey), approveOutcomeCopy(decId), queuedLine(DTX.approveLabel, decId))) return;
+      // #482 — the guide's confirm step follows this decision under the run it was confirmed in
+      const guideRun = guideRunToken();
+      const reportApprove = (result: 'sent' | 'failed' | 'queued' | 'not-kept') =>
+        emitGuideOutcome(result === 'sent' || result === 'queued' ? 'decision-approved' : result === 'failed' ? 'decision-approve-failed' : 'decision-approve-not-kept', decId, guideRun);
+      if (runRemoteOrQueue({ t: 'approve', decisionId: decId, optionIndex: optIdx, idempotencyKey: approveKey }, 'Approve ' + decId, () => gateway!.approveDecision(decId, optIdx, approveKey), approveOutcomeCopy(decId), queuedLine(DTX.approveLabel, decId), reportApprove)) return;
       const src = get().decisions.find((x) => x.id === decId);
       const material = src ? src.options[optIdx].material : '';
       const title = src ? src.title : '';
@@ -3500,6 +3515,7 @@ export const useStore = create<Store>()(
         s.modal = { type: null };
       });
       get().flash(DTX.approvedDemo[get().lang]);
+      reportApprove('sent');
     },
     // Both consultation commands take the WRITE-AHEAD path (review finding F4), not
     // `runRemoteOrQueue`. The distinction matters here precisely because a consultation is an

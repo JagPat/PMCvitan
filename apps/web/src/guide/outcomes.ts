@@ -12,6 +12,9 @@ export type GuideOutcome =
   | 'checklist-issue-failed'
   | 'decision-published'
   | 'decision-publish-failed'
+  | 'decision-approved'
+  | 'decision-approve-failed'
+  | 'decision-approve-not-kept'
   | 'site-photo-added'
   | 'site-photo-add-failed'
   | 'site-photo-not-kept';
