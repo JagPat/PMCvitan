@@ -210,8 +210,17 @@ CREATE TRIGGER "VoiceTranscript_no_truncate"
 CREATE OR REPLACE FUNCTION public.media_voice_transcript_note_kept() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
-  IF NEW."mime" IS DISTINCT FROM OLD."mime" AND (NEW."mime" IS NULL OR NEW."mime" NOT LIKE 'audio/%')
-     AND EXISTS (SELECT 1 FROM public."VoiceTranscript" v WHERE v."projectId" = OLD."projectId" AND v."mediaId" = OLD."id") THEN
+  -- only a voice note can hold a transcript (V2), and only its leaving audio matters
+  IF OLD."mime" IS NULL OR OLD."mime" NOT LIKE 'audio/%' OR NEW."mime" LIKE 'audio/%' THEN
+    RETURN NEW;
+  END IF;
+  -- the lookup below must see a transcript committed while this write waited for the row; only READ COMMITTED reads
+  -- anew per statement, so a fixed-snapshot writer is refused here (Codex round 4, 4398170733)
+  IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'media: a voice note''s type changes only at READ COMMITTED, not %',
+      pg_catalog.current_setting('transaction_isolation') USING ERRCODE = 'check_violation';
+  END IF;
+  IF EXISTS (SELECT 1 FROM public."VoiceTranscript" v WHERE v."projectId" = OLD."projectId" AND v."mediaId" = OLD."id") THEN
     RAISE EXCEPTION 'media: file % has a transcript, so it stays a voice note', OLD."id"
       USING ERRCODE = 'check_violation';
   END IF;

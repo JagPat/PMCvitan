@@ -83,6 +83,11 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     await expect(mime('image/png')).rejects.toThrow(/stays a voice note/);
     await expect(mime(null)).rejects.toThrow(/stays a voice note/);
     await raw(`UPDATE "Media" SET "mime" = 'audio/mp4' WHERE "id" = $1`, m); // still a voice note
+    // a fixed-snapshot writer could miss a transcript committed while it waited, so it may not take a file out of audio
+    await expect(t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+      await tx.$executeRawUnsafe(`UPDATE "Media" SET "mime" = 'image/png', "durationSec" = NULL WHERE "id" = $1`, m);
+    })).rejects.toThrow(/only at READ COMMITTED, not repeatable read/);
     // a file with no transcript is not this trigger's concern
     const n = await voice(f.projectA.id);
     await raw(`UPDATE "Media" SET "mime" = 'image/png', "durationSec" = NULL WHERE "id" = $1`, n);
