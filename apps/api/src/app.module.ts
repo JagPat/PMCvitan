@@ -105,6 +105,7 @@ import { NodesController } from './nodes/nodes.controller';
 import { DrawingsController } from './drawings/drawings.controller';
 import { HubReceiverController } from './drawings/hub/hub-receiver.controller';
 import { HubReceiverService } from './drawings/hub/hub-receiver.service';
+import { HubBlobService } from './drawings/hub/hub-blob.service';
 import { PushService } from './push/push.service';
 import { PushController } from './push/push.controller';
 import { OrgsService } from './orgs/orgs.service';
@@ -253,6 +254,7 @@ import { MediaParticipant } from './media/media.participant';
     MediaDisposability,
     DrawingsService,
     HubReceiverService,
+    HubBlobService,
     DrawingsQueryService,
     PushService,
     OrgsService,
