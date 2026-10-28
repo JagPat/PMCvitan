@@ -143,27 +143,40 @@ export const GUIDES: readonly Guide[] = [
     ],
   },
   {
-    // a member asked for advice on a decision answers it: write it, then send it. Any member but the client may be asked
-    // (the client answers on their own Decisions screen). The box and its Send carry `<decision>:<consultation>`, so
-    // the Send step and its outcome follow that one request.
+    // a member asked for advice on a decision answers it: write it, then send it. The box and its Send carry
+    // `<decision>:<consultation>`, so the Send step and its outcome follow that one request.
     id: 'answer-advice',
     title: 'answerAdvice',
     roles: ['consultant', 'architect', 'pmc', 'engineer', 'contractor'],
     screen: 'decision-log',
     available: adviceWaitingOnViewer,
-    steps: [
-      { target: 'advice-write', tip: 'adviceWrite', until: 'focus' },
-      {
-        target: 'advice-send',
-        tip: 'adviceSend',
-        keyed: true,
-        until: 'outcome',
-        outcome: { ok: 'advice-sent', failed: 'advice-send-failed', held: 'advice-not-kept' },
-        settled: adviceAnswered,
-      },
-    ],
+    steps: answerAdviceSteps(),
+  },
+  {
+    // a client asked for advice answers it on their own Decisions screen, in the same box on the decision's card
+    id: 'answer-advice-client',
+    title: 'answerAdvice',
+    roles: ['client'],
+    screen: 'client-decisions',
+    available: adviceWaitingOnViewer,
+    steps: answerAdviceSteps(),
   },
 ];
+
+/** Write the advice, then send it: the same two steps wherever the advice box shows. */
+function answerAdviceSteps(): GuideStep[] {
+  return [
+    { target: 'advice-write', tip: 'adviceWrite', until: 'focus' },
+    {
+      target: 'advice-send',
+      tip: 'adviceSend',
+      keyed: true,
+      until: 'outcome',
+      outcome: { ok: 'advice-sent', failed: 'advice-send-failed', held: 'advice-not-kept' },
+      settled: adviceAnswered,
+    },
+  ];
+}
 
 /** A decision still open to advice: the same open set the advice box itself reads (`ConsultationThread`). */
 function openToAdvice(d: Decision): boolean {

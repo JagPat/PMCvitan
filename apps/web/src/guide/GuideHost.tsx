@@ -183,6 +183,16 @@ export function GuideHost() {
         completeStep(key, g, null);
         return;
       }
+      // a text box already focused when its step began (tapped before the guide started) is reached: no later
+      // `focusin` would say so
+      const current = guide.steps[step]!;
+      if (current.until === 'focus' && document.activeElement instanceof Element) {
+        const focused = document.activeElement.closest(`[data-guide="${current.target}"]`);
+        if (focused && (!current.keyed || guideKeyMatches(focused.getAttribute('data-guide-key'), runKey))) {
+          completeStep(key, g, focused.getAttribute('data-guide-key'));
+          return;
+        }
+      }
       const here = findStepTarget(guide.steps[step]!, runKey);
       if (here) {
         missing.current = null;

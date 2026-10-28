@@ -23,7 +23,7 @@ const asked = (id: string, consultee = 'u-con', answered = false): Decision =>
     }],
   }) as unknown as Decision;
 
-await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/guide/GuideHost'), () => import('@/guide/guides'), () => import('@/guide/guideState'), () => import('@/guide/outcomes'), () => import('@/screens/DecisionLogScreen'));
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/guide/GuideHost'), () => import('@/guide/guides'), () => import('@/guide/guideState'), () => import('@/guide/outcomes'), () => import('@/screens/DecisionLogScreen'), () => import('@/screens/ClientDecisionsScreen'));
 
 beforeEach(() => {
   localStorage.clear();
@@ -269,5 +269,60 @@ describe('the store reports a sent advice\'s outcome for the guide', () => {
     send();
     await settles(() => seen.length > 0);
     expect(seen).toEqual([['advice-sent', 'DL-1:c-DL-1']]);
+  });
+});
+
+describe('Codex round 1 on #1198', () => {
+  it('a box already focused before the guide started counts as reached: the guide moves on to Send', async () => {
+    vi.useFakeTimers();
+    const { useGuideState } = await start([asked('DL-1'), asked('DL-2')]);
+    const { guidesFor } = await import('@/guide/guides');
+    // no run yet when the box is tapped (the tip had not come up): no later focusin will say so
+    act(() => { useGuideState.getState().stop(); });
+    act(() => { box('DL-2').focus(); });
+    expect(useGuideState.getState().run).toBeNull();
+    const guide = guidesFor('consultant', 'decision-log').find((x) => x.id === 'answer-advice')!;
+    act(() => { useGuideState.getState().start(guide); });
+    tick();
+    expect(useGuideState.getState().run?.step).toBe(1);
+    expect(useGuideState.getState().run?.key).toBe('DL-2:c-DL-2');
+    // and it follows the decision whose box has the focus
+    write('DL-2', 'Quartz holds up better here.');
+    press(byTestId('consultation-send-advice-DL-2')!);
+    tick();
+    expect(done()).toEqual(['answer-advice']);
+  });
+
+  it('a client asked for advice is guided on their own Decisions screen, through the same box and Send', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('vitan.guide.done.v1:user:u-cli', JSON.stringify(['approve-decision-client']));
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    const scope = await import('@/store/projectScope');
+    useStore.setState(getInitialState());
+    useStore.setState({
+      ...scope.emptyProjectData(),
+      activeProjectId: 'project-a',
+      projectScopeGeneration: 1,
+      projectLoadState: 'ready',
+      role: 'client',
+      screen: 'client-decisions',
+      lang: 'en',
+      sessionUserId: 'u-cli',
+      decisions: [asked('DL-1', 'u-cli')],
+    } as never);
+    const { GuideHost } = await import('@/guide/GuideHost');
+    const { ClientDecisionsScreen } = await import('@/screens/ClientDecisionsScreen');
+    render(<><GuideHost /><ClientDecisionsScreen /></>);
+    tick();
+    expect(tip()?.getAttribute('data-guide-id')).toBe('answer-advice-client');
+    press(box('DL-1'));
+    tick();
+    expect(step()).toBe('1');
+    write('DL-1', 'Quartz, please.');
+    press(byTestId('consultation-send-advice-DL-1')!);
+    tick();
+    expect(tip()).toBeNull();
+    expect(JSON.parse(localStorage.getItem('vitan.guide.done.v1:user:u-cli') ?? '[]')).toContain('answer-advice-client');
   });
 });
