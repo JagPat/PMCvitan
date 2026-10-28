@@ -185,7 +185,9 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
     expect(none.body.message).toMatch(/Say why/);
     // blank, invisible-only, a NUL (which PostgreSQL cannot store), or over 300 characters
     // ... or only controls, separators or private-use marks, which show nothing (Codex 4397768825)
-    for (const reason of ['', '   ', '\u200b\u200b', 'why\u0000', 'x'.repeat(301), '🙂'.repeat(301), '\u0001', '\u0085\u009f', '\u2028\u3000', '\ue000']) {
+    // ... or only marks, default-ignorable letters or the blank Braille cell (Codex 4398944044)
+    for (const reason of ['', '   ', '\u200b\u200b', 'why\u0000', 'x'.repeat(301), '🙂'.repeat(301), '\u0001', '\u0085\u009f', '\u2028\u3000', '\ue000',
+      '\ufe0f', '\u{e0100}', '\u0301\u0301', '\u3164', '\uffa0', '\u2800', '\u{e0041}']) {
       expect((await removeIt(id, pmcToken, { reason })).status, JSON.stringify(reason)).toBe(400);
     }
     expect((await removeIt(id, pmcToken, { reason: null })).status).toBe(400);
@@ -197,6 +199,10 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
     // 300 characters is 300 characters, emoji included, as the database counts them
     const wide = await voice(consultantToken);
     expect((await removeIt(wide, pmcToken, { reason: '🙂'.repeat(300) })).status).toBe(200);
+    // Hindi and Gujarati reasons carry combining vowel signs beside their letters, and pass
+    for (const reason of ['गलती से रिकॉर्ड हुआ', 'ભૂલથી રેકોર્ડ થયું']) {
+      expect((await removeIt(await voice(consultantToken), pmcToken, { reason })).status, reason).toBe(200);
+    }
   });
 
   it('the PMC removes their own file within the hour with no reason', async () => {
