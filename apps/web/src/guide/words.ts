@@ -62,6 +62,16 @@ export const GUIDE_TIPS = {
     hi: 'विकल्प देखें, फिर जो चाहिए उसके नीचे का बटन दबाएँ।',
     gu: 'વિકલ્પો જુઓ, પછી જે જોઈએ તેની નીચેનું બટન દબાવો.',
   },
+  adviceWrite: {
+    en: 'You were asked for your advice on this. Write it here.',
+    hi: 'इस पर आपकी सलाह माँगी गई है। यहाँ लिखें।',
+    gu: 'આના પર તમારી સલાહ માંગી છે. અહીં લખો.',
+  },
+  adviceSend: {
+    en: 'Then tap here to send it.',
+    hi: 'फिर भेजने के लिए यहाँ दबाएँ।',
+    gu: 'પછી મોકલવા અહીં દબાવો.',
+  },
   approveConfirm: {
     en: 'Check your choice, then tap here to confirm it.',
     hi: 'अपना चुनाव जाँचें, फिर पक्का करने के लिए यहाँ दबाएँ।',
@@ -122,6 +132,11 @@ export const GUIDE_TITLES = {
     en: 'Add a site photo',
     hi: 'साइट की फ़ोटो जोड़ें',
     gu: 'સાઇટનો ફોટો ઉમેરો',
+  },
+  answerAdvice: {
+    en: 'Answer a request for advice',
+    hi: 'सलाह के अनुरोध का जवाब दें',
+    gu: 'સલાહની વિનંતીનો જવાબ આપો',
   },
   approveDecision: {
     en: 'Approve a choice',
