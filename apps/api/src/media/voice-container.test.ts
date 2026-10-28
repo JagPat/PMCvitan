@@ -789,8 +789,6 @@ describe('isAudioOnlyRecording, review of the #1013 replacement', () => {
     expect(seconds('audio/mp4', withTrak([edts(elst(0, [[5000, 0]]))]))).toBe(5);
     expect(seconds('audio/mp4', withTrak([edts(elst(0, [[2000, -1], [5000, 0]]))]))).toBe(7); // 2 s of delay, then 5 s
     expect(seconds('audio/mp4', withTrak([edts(elst(1, [[2000, -1], [5000, 1024]]))]))).toBe(7);
-    // the delay comes before the media's own length when the media edit gives none
-    expect(seconds('audio/mp4', withTrak([edts(elst(0, [[2000, -1], [0, 0]]))]))).toBeCloseTo(2 + 2048 / 48_000, 9);
     for (const [why, bad] of [
       ['the media twice', [edts(elst(0, [[5000, 0], [5000, 0]]))]],
       ['rate 2', [edts(elst(0, [[5000, 0, 2]]))]],
@@ -798,6 +796,9 @@ describe('isAudioOnlyRecording, review of the #1013 replacement', () => {
       ['rate 0 (a still)', [edts(elst(0, [[5000, 0, 0]]))]],
       ['only an empty edit', [edts(elst(0, [[2000, -1]]))]],
       ['an empty edit after the media', [edts(elst(0, [[5000, 0], [2000, -1]]))]],
+      // a media edit of duration 0 runs to the end only in a fragmented movie: in this plain one it selects nothing
+      ['a media edit of no length', [edts(elst(0, [[0, 0]]))]],
+      ['a delay, then a media edit of no length', [edts(elst(0, [[2000, -1], [0, 0]]))]],
       ['two empty edits', [edts(elst(0, [[2000, -1], [2000, -1]]))]],
       ['three entries', [edts(elst(0, [[2000, -1], [5000, 0], [5000, 0]]))]],
       ['no entries', [edts(elst(0, []))]],
@@ -1654,7 +1655,14 @@ describe('parser follow-ups from #1025 (#1097, #1141, #1154)', () => {
     };
     expect(mp4(stated(0))).toBe(true);
     expect(mp4(stated(48_000 * 50))).toBe(false);
-    expect(mp4(stated(2047))).toBe(true);
+    // each frame sits at its own decode time (#1168): sound at 0 to 21 ms and at 30 s to 30.021 s, silence between
+    expect(mp4(stated(1023))).toBe(true); // inside the first frame
+    expect(mp4(stated(1024))).toBe(false); // from where it ends: main read the two as one 43 ms stretch and passed it
+    expect(mp4(stated(2047))).toBe(false);
+    expect(mp4(stated(48_000 * 20))).toBe(false); // ends at 25 s, before the second frame
+    expect(mp4(stated(48_000 * 30 - 48_000 * 5 + 1))).toBe(true); // 25 s and a tick to 30 s and a tick: the second frame's start
+    expect(mp4(stated(48_000 * 30 + 1023))).toBe(true); // inside the second frame
+    expect(mp4(stated(48_000 * 30 + 1024))).toBe(false);
   });
 
   it('Codex P1 on #1165: frames decoded one after another carry across runs, so splitting them among runs changes nothing', () => {
@@ -1709,6 +1717,23 @@ describe('parser follow-ups from #1025 (#1097, #1141, #1154)', () => {
     ]);
     expect(mp4(carried)).toBe(true);
     expect(recordingSeconds('audio/mp4', carried)).toBeCloseTo((200 * 1024) / 48_000, 6);
+    // #1168: in one run, two AAC frames whose trun durations say 30 s each are sound near 0 and near 30 s, with
+    // silence between (main read them as one 43 ms stretch at 0, so an edit at 30 s was refused and one at 21 ms passed)
+    const spaced = (at: number) => {
+      const elst = Buffer.alloc(12);
+      elst.writeUInt32BE(5000);
+      elst.writeInt32BE(at, 4);
+      elst.writeInt16BE(1, 8);
+      const run = (o: number) => fullBox('trun', 0, 0x000301, [be(2), be(o), be(48_000 * 30), be(4), be(48_000 * 30), be(4)]);
+      return Buffer.concat([ftyp('iso5'), box('moov', [mvhd(0, 1000), trak('soun', 1, [], 0, 0, [box('edts', fullBox('elst', 0, 0, [be(1), elst]))]),
+        box('mvex', trex(1))]), fragment(1, (o) => [tfhd(1), fullBox('tfdt', 0, 0, be(0)), run(o)]), mdat(8)]);
+    };
+    expect(mp4(spaced(0))).toBe(true);
+    expect(mp4(spaced(1024))).toBe(false); // from where the first frame ends, 5 s of silence
+    expect(mp4(spaced(48_000 * 20))).toBe(false);
+    expect(mp4(spaced(48_000 * 30))).toBe(true); // the second frame
+    expect(mp4(spaced(48_000 * 30 + 1024))).toBe(false);
+    expect(recordingSeconds('audio/mp4', spaced(0))).toBe(60); // the length is unchanged: the durations the file states
   });
 
   it('Codex P2 on #1165 round 2: a run with no frames moves nothing; a run with a non-zero composition offset is refused', () => {
