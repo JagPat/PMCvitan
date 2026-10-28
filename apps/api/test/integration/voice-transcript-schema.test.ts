@@ -110,8 +110,13 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     await expect(set(`"status" = 'failed', "text" = NULL, "editedText" = NULL, "editedById" = NULL, "editedAt" = NULL`)).rejects.toThrow(kept);
     await expect(set(`"editedById" = '${f.otherUser.id}'`)).rejects.toThrow(/keeps its author and time/);
     await expect(set(`"editedAt" = now() + interval '1 hour'`)).rejects.toThrow(/keeps its author and time/);
+    // a changed correction is a new one: it cannot keep the previous corrector's time, or go back in time
+    const fresh = /carries its own author and a later time/;
+    await expect(set(`"editedText" = 'Pipe line starts here'`)).rejects.toThrow(fresh);
+    await expect(set(`"editedText" = 'Pipe line starts here', "editedById" = '${f.otherUser.id}'`)).rejects.toThrow(fresh);
+    await expect(set(`"editedText" = 'Pipe line starts here', "editedById" = '${f.otherUser.id}', "editedAt" = "editedAt" - interval '1 second'`)).rejects.toThrow(fresh);
     // a new correction by another person names them
-    await set(`"editedText" = 'Pipe line starts here', "editedById" = '${f.otherUser.id}', "editedAt" = now()`);
+    await set(`"editedText" = 'Pipe line starts here', "editedById" = '${f.otherUser.id}', "editedAt" = "editedAt" + interval '1 second'`);
     const row = await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: m } });
     expect(row).toMatchObject({ status: 'done', text: 'પાઇપ લાઇન અહીંથી જશે', languageCode: 'gu-IN', editedText: 'Pipe line starts here', editedById: f.otherUser.id });
   });

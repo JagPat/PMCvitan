@@ -133,7 +133,7 @@ CREATE TRIGGER "VoiceTranscript_insert"
   FOR EACH ROW EXECUTE FUNCTION public.media_voice_transcript_insert();
 
 -- V2 and V4, on update: the keys and the creation time never move; a done row keeps what the provider heard; the
--- corrector and time move only with the correction.
+-- corrector and time move only with the correction, and a changed correction carries a later time.
 CREATE OR REPLACE FUNCTION public.media_voice_transcript_keys_fixed() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
@@ -150,6 +150,13 @@ BEGIN
   IF NEW."editedText" IS NOT DISTINCT FROM OLD."editedText"
      AND (NEW."editedById" IS DISTINCT FROM OLD."editedById" OR NEW."editedAt" IS DISTINCT FROM OLD."editedAt") THEN
     RAISE EXCEPTION 'media: the correction of voice note % keeps its author and time unless the correction changes', OLD."mediaId"
+      USING ERRCODE = 'check_violation';
+  END IF;
+  -- a changed correction is a new one: it carries a later time (and the writer names its author with it), so the
+  -- previous corrector is never left standing beside words they did not write
+  IF OLD."editedText" IS NOT NULL AND NEW."editedText" IS NOT NULL AND NEW."editedText" IS DISTINCT FROM OLD."editedText"
+     AND NOT (NEW."editedAt" > OLD."editedAt") THEN
+    RAISE EXCEPTION 'media: a new correction of voice note % carries its own author and a later time', OLD."mediaId"
       USING ERRCODE = 'check_violation';
   END IF;
   RETURN NEW;
