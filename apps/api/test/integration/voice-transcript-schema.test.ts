@@ -10,6 +10,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
  * PostgreSQL holds on every writer (V1-V5 in the migration), and that the file re-runs.
  */
 const MIGRATION = join(__dirname, '../../prisma/migrations/20280126000000_voice_transcript/migration.sql');
+const CORRECTIONS = join(__dirname, '../../prisma/migrations/20280128000000_voice_transcript_correction/migration.sql');
 
 describe('#1177 voice-note transcripts (live PG)', () => {
   let t: TestApp;
@@ -33,6 +34,7 @@ describe('#1177 voice-note transcripts (live PG)', () => {
   const raw = (sql: string, ...values: unknown[]) => t.prisma.$executeRawUnsafe(sql, ...values);
   const url = () => (process.env.DATABASE_URL ?? '').split('?')[0]!;
   const replay = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url(), '-f', MIGRATION], { stdio: 'pipe' });
+  const replayCorrections = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url(), '-f', CORRECTIONS], { stdio: 'pipe' });
   const voice = async (projectId: string) =>
     (await t.prisma.media.create({ data: { projectId, kind: 'visit', mime: 'audio/webm', uploadedBy: f.memberUser.id, durationSec: 30 } })).id;
   const insert = (projectId: string, mediaId: string, extra = '', values = '') =>
@@ -239,6 +241,8 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     const media = await onMedia();
     expect(media[0]?.d).toMatch(/BEFORE UPDATE OF mime ON public."Media" FOR EACH ROW/);
     replay();
+    // VT1b replaces this file's delete guard (Codex #1213, 4401865953), and runs after it on every deploy; so does it here
+    replayCorrections();
     expect(await shape()).toEqual(before);
     expect(await onMedia()).toEqual(media);
   });

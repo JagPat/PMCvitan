@@ -207,6 +207,15 @@ describe('#1177 voice-note corrections (live PG)', () => {
       await tx.$executeRawUnsafe(`CREATE TRIGGER vt1b_wipe AFTER INSERT ON vt1b_wipe_go FOR EACH ROW EXECUTE FUNCTION pg_temp.vt1b_wipe()`);
       await tx.$executeRawUnsafe(`INSERT INTO vt1b_wipe_go VALUES ($1)`, m);
     })).rejects.toThrow(alone);
+    // nor by deleting the transcript from such a trigger, which would take every correction by cascade (Codex #1213,
+    // 4401865953): the transcript too goes only with its note
+    await expect(t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`CREATE FUNCTION pg_temp.vt1b_wipe_t() RETURNS TRIGGER LANGUAGE plpgsql AS $f$
+        BEGIN DELETE FROM public."VoiceTranscript" WHERE "mediaId" = NEW."m"; RETURN NEW; END $f$`);
+      await tx.$executeRawUnsafe(`CREATE TEMP TABLE vt1b_wipe_t_go ("m" TEXT) ON COMMIT DROP`);
+      await tx.$executeRawUnsafe(`CREATE TRIGGER vt1b_wipe_t AFTER INSERT ON vt1b_wipe_t_go FOR EACH ROW EXECUTE FUNCTION pg_temp.vt1b_wipe_t()`);
+      await tx.$executeRawUnsafe(`INSERT INTO vt1b_wipe_t_go VALUES ($1)`, m);
+    })).rejects.toThrow(/the transcript of voice note .* goes only with that note/);
     expect(await rows(m)).toHaveLength(1);
     // the note's own delete takes the transcript and its corrections (cascades, below trigger depth 1)
     await raw(`DELETE FROM "Media" WHERE "id" = $1`, m);
@@ -230,5 +239,9 @@ describe('#1177 voice-note corrections (live PG)', () => {
     expect(before.find((r) => r.k === 'c:VoiceTranscriptCorrection_correctedById_fkey')?.d).toMatch(/ON DELETE RESTRICT/);
     replay();
     expect(await shape()).toEqual(before);
+    // the transcript's delete guard is keyed on its note, not on trigger depth (Codex #1213, 4401865953)
+    const [{ src }] = await t.prisma.$queryRawUnsafe<Array<{ src: string }>>(`SELECT prosrc AS src FROM pg_proc WHERE proname = 'media_voice_transcript_no_delete'`);
+    expect(src).toMatch(/public\."Media"/);
+    expect(src).not.toMatch(/pg_trigger_depth/);
   });
 });

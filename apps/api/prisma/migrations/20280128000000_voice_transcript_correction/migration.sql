@@ -33,13 +33,19 @@
 --       a correction is a new row with no text, attributed and timed like any other (Codex #1182, 4398744235).
 --   C6  Goes only with its transcript. A DELETE is refused while its transcript row still stands, however deep the
 --       trigger that runs it, so only the transcript's own cascade takes the rows (by then the transcript is gone). A
---       TRUNCATE is refused by a statement seal, which the sanctioned reset lifts by name.
+--       TRUNCATE is refused by a statement seal, which the sanctioned reset lifts by name. The transcript's own guard
+--       is held to the same rule (Codex #1213, 4401865953): VT1a refused a direct delete of a transcript only at trigger
+--       depth 1, so a writer's own trigger could delete it and its cascade would take every correction. This file
+--       replaces that guard: a transcript is deleted only once its "Media" row is gone, that is, only by its note's
+--       cascade. It keeps VT1a's trigger and message; only the test changes.
 --
 -- WHAT THIS FILE DOES NOT DO. Who may correct a note (a member of its project, under its switch) is the server unit's
 -- rule (#1177 H5), as is what the screens show.
 --
 -- SAFE UNDER THE PREVIOUS RELEASE. The table is new and the previous release never reads or writes it.
--- "VoiceTranscript" and "User" gain only incoming keys; no trigger is added to either.
+-- "VoiceTranscript" and "User" gain only incoming keys; no trigger is added to either. The transcript's delete guard
+-- (replaced here) refuses only what VT1a already refused at depth 1, plus the same delete run from a writer's trigger;
+-- the previous release deletes no transcript, and a note's delete still takes its transcript.
 --
 -- LOCKS WHILE IT RUNS. Adding the two keys takes ShareRowExclusiveLock on "VoiceTranscript" and "User" until the file
 -- commits, so writes there wait for that moment; reads do not. No lock is waited for longer than 15 s (lock_timeout,
@@ -161,6 +167,21 @@ DROP TRIGGER IF EXISTS "VoiceTranscriptCorrection_no_delete" ON public."VoiceTra
 CREATE TRIGGER "VoiceTranscriptCorrection_no_delete"
   BEFORE DELETE ON public."VoiceTranscriptCorrection"
   FOR EACH ROW EXECUTE FUNCTION public.media_voice_transcript_correction_no_delete();
+
+-- C6, held at the transcript too (Codex #1213, 4401865953): VT1a's "VoiceTranscript_no_delete" trigger keeps its name
+-- and its message, and now refuses a delete while the note's "Media" row still stands, whatever the trigger depth, so
+-- only the note's own cascade (by then the note is gone) takes a transcript and, through it, its corrections.
+-- `project:remove` switches this trigger off with the others on the tables it clears. This file runs after VT1a's
+-- (also on ALWAYS_EXECUTE, in timestamp order), so this body is the one that stands.
+CREATE OR REPLACE FUNCTION public.media_voice_transcript_no_delete() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public."Media" m WHERE m."projectId" = OLD."projectId" AND m."id" = OLD."mediaId") THEN
+    RAISE EXCEPTION 'media: the transcript of voice note % goes only with that note', OLD."mediaId"
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN OLD;
+END $$;
 
 -- A TRUNCATE fires no row trigger, so it is refused by its own statement seal; the sanctioned reset lifts it by name.
 CREATE OR REPLACE FUNCTION public.media_voice_transcript_correction_no_truncate() RETURNS TRIGGER
