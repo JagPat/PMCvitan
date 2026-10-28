@@ -3,7 +3,7 @@ import { useStore } from '@/store/store';
 import { langPreferenceKey } from '@/lib/langPreference';
 import { projectDataUsable } from '@/store/projectScope';
 import { useNavItems } from '@/layout/useNavItems';
-import { guidesForRole, type Guide } from './guides';
+import { guidesForRole, guideOnScreen, type Guide } from './guides';
 import { guideStartable } from './guideTarget';
 import { markWelcomeSeen, readGuidesDone, readWelcomeSeen } from './guideDone';
 import { useGuideState } from './guideState';
@@ -97,7 +97,7 @@ export function Welcome() {
  * to show it on yet.
  */
 function tourOrder(guides: readonly Guide[], done: ReadonlySet<string>, screen: string): Guide[] {
-  const canStart = (g: Guide) => (g.screen === screen ? guideStartable(g) : (g.available?.() ?? true));
+  const canStart = (g: Guide) => (guideOnScreen(g, screen) ? guideStartable(g) : (g.available?.() ?? true));
   const ordered = [...guides.filter((g) => !done.has(g.id)), ...guides.filter((g) => done.has(g.id))];
   const tries = ordered.filter(canStart);
   return tries.length > 0 ? tries : ordered.slice(0, 1);

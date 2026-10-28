@@ -1643,6 +1643,8 @@ export const useStore = create<Store>()(
     const actWatches = new Map<string, (how: 'sent' | 'failed' | 'pending') => void>();
     /** #482 — the keys of the acts the flush now running has taken: that flush tells their watches, also after the signal goes */
     let flushingKeys: ReadonlySet<string> = new Set();
+    /** #482 — online acts whose write-ahead has not run yet: the flush called once it has runs and tells them */
+    const writingKeys = new Set<string>();
     const scopeCoordinators = new Map<string, ScopeCoordinator>();
     const scopeKey = (scope: ProjectScope): string => `${scope.projectId}::${scope.generation}`;
     /** Drop coordinators for scopes we've LEFT that have no pull in flight — a scope
@@ -2910,6 +2912,7 @@ export const useStore = create<Store>()(
       const key = 'idempotencyKey' in op ? op.idempotencyKey : undefined;
       if (get().online) {
         if (report && key) {
+          writingKeys.add(key);
           actWatches.set(key, (how) => {
             actWatches.delete(key);
             // left to send again: kept on this phone or not, once its write has run (the signal can go before it does)
@@ -2920,6 +2923,8 @@ export const useStore = create<Store>()(
         // sent once its write has run; one that write could not store is said not saved, and sent from memory with its
         // ask's made record on this phone (#1113 r1 re-check: never held from the server)
         void written.then(() => {
+          // the flush below takes it at once (or, coalesced, the running flush's end tells it if offline)
+          if (key) writingKeys.delete(key);
           if (!stillThere()) { if (key) actWatches.delete(key); return; }
           if (!stored()) get().flash(QW.notSavedYet[get().lang]);
           void get().flushOutbox({ okMsg, act: op });
@@ -6374,7 +6379,8 @@ export const useStore = create<Store>()(
       if (!goingOnline) {
         // #482 — a write-ahead act the guide waits on now waits for the signal: kept on this phone or not, as offline. One
         // the running flush has taken is told by that flush: its request is out, and the server may still refuse it
-        for (const [k, watch] of [...actWatches]) if (!flushingKeys.has(k)) watch('pending');
+        // the same for one still being written: the flush called once it is written sends it and tells it
+        for (const [k, watch] of [...actWatches]) if (!flushingKeys.has(k) && !writingKeys.has(k)) watch('pending');
         get().flash(DLT.signalLost[get().lang]);
         return;
       }
@@ -7027,7 +7033,7 @@ export const useStore = create<Store>()(
         flushingKeys = new Set();
         // #482 — offline, no rerun follows: an act the guide waits on that this flush did not settle (taken after it began,
         // or left out of it) waits for the signal, as going offline says
-        if (!get().online) for (const watch of [...actWatches.values()]) watch('pending');
+        if (!get().online) for (const [k, watch] of [...actWatches]) if (!writingKeys.has(k)) watch('pending');
         // a visit photo reconciliation this flush overtook reads again now, against the settled queue (SV2)
         if (visitPhotoRecheck) {
           visitPhotoRecheck = false;
