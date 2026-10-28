@@ -33,8 +33,9 @@ interface GuideState {
   start: (guide: Guide) => void;
   setStep: (step: number, key?: string | null) => void;
   stop: () => void;
-  /** start or end the wait for an `outcome` step's report */
-  setWait: (waiting: boolean) => void;
+  /** start or end the wait for an `outcome` step's report; `key`, when given, is the pressed control's (a `keyed` first
+   *  step takes its record from its own press) */
+  setWait: (waiting: boolean, key?: string | null) => void;
   setOffer: (guide: Guide | null) => void;
   /**
    * a guide asked for from the Help sheet: it starts as soon as its first control is on screen on its own
@@ -64,7 +65,7 @@ export const useGuideState = create<GuideState>()((set) => ({
   start: (guide) => set({ run: { guide, id: beginGuideRun(), step: 0, key: null, waiting: false, pressed: false }, lastStarted: guide.id }),
   setStep: (step, key) => set((s) => (s.run ? { run: { ...s.run, step, key: key === undefined ? s.run.key : key, waiting: false, pressed: false } } : s)),
   stop: () => set({ run: null }),
-  setWait: (waiting) => set((s) => (s.run ? { run: { ...s.run, waiting, pressed: s.run.pressed || waiting } } : s)),
+  setWait: (waiting, key) => set((s) => (s.run ? { run: { ...s.run, waiting, pressed: s.run.pressed || waiting, key: key === undefined ? s.run.key : key } } : s)),
   setOffer: (offer) => set((s) => (s.offer === offer ? s : { offer })),
   requested: null,
   fallbacks: [],

@@ -1,8 +1,8 @@
 import { can, viewerIsConsultee, type Decision, type Role, type ScreenKey } from '@vitan/shared';
 import type { GuideTip, GuideTitle } from './words';
-import { guidedPhotoPicksOf, guidedReviewOf, type GuideOutcome } from './outcomes';
+import { guidedDrawingOf, guidedPhotoPicksOf, type GuideOutcome } from './outcomes';
 import { useGuideState } from './guideState';
-import { inspectionFrozen, reviewDecisionWaits, useStore } from '@/store/store';
+import { drawingMutationsBlocked, inspectionFrozen, reviewDecisionWaits, useStore } from '@/store/store';
 import { dailyLogSendPending } from '@/store/dailyLogPending';
 import { dailyLogSettledForLinks, inspectionsSettledForLinks, selectActiveReview, selectDecisionsNeedingViewer } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
@@ -171,7 +171,9 @@ export const GUIDES: readonly Guide[] = [
   },
   {
     // the PMC decides a submitted inspection: approve it or send it back, after marking any item not right. It ends on the
-    // decision's own report (sent, or kept on this phone to send), or once a refresh shows the review decided
+    // decision's own report (sent, or kept on this phone to send), or once a refresh shows the review decided. Each decide
+    // control carries its review's id, so the press keys the run to that review: another review decided meanwhile, by
+    // hand, neither finishes nor rewinds it (#1220)
     id: 'review-inspection',
     title: 'reviewInspection',
     roles: ['pmc'],
@@ -181,9 +183,33 @@ export const GUIDES: readonly Guide[] = [
       {
         target: 'review-decide',
         tip: 'reviewDecide',
+        keyed: true,
         until: 'outcome',
         outcome: { ok: 'review-decided', failed: 'review-decide-failed', held: 'review-decide-not-kept' },
         settled: guidedReviewDecided,
+      },
+    ],
+  },
+  {
+    // the PMC publishes a drawing to the site team: Issue drawing, its number, title and file, then Publish. Publish
+    // ends on the server taking it, or once a refresh shows that revision in the register; a publish that did not go
+    // through (the form closes either way) goes back to Issue drawing
+    id: 'publish-drawing',
+    title: 'publishDrawing',
+    roles: ['pmc'],
+    screen: 'drawings',
+    available: drawingIssuable,
+    steps: [
+      { target: 'drawing-issue', tip: 'drawingAdd' },
+      // the file step ends once a file is attached (a cancelled picker leaves it), whatever order the boxes are filled in
+      { target: 'drawing-file', tip: 'drawingFile', until: 'done' },
+      {
+        target: 'drawing-publish',
+        tip: 'drawingPublish',
+        until: 'outcome',
+        outcome: { ok: 'drawing-published', failed: 'drawing-publish-failed' },
+        settled: guidedDrawingPublished,
+        retryFrom: 0,
       },
     ],
   },
@@ -331,11 +357,22 @@ function reviewAwaitingDecision(): boolean {
   return inspectionsSettledForLinks(s) && !!r && !r.decided && !reviewDecisionWaits(s, r.id);
 }
 
-/** the review this run decided shows decided, or has left the queue (the server's queue holds only undecided reviews) */
-function guidedReviewDecided(): boolean {
+/** the review this run's press decided (the run's key) shows decided, or has left the queue (the server's queue holds
+ *  only undecided reviews) */
+function guidedReviewDecided(key: string | null): boolean {
+  return key !== null && !useStore.getState().reviews.some((r) => r.id === key && !r.decided);
+}
+
+/** The register has settled, so Issue drawing is open (it is locked while a module read loads or failed) */
+function drawingIssuable(): boolean {
+  return !drawingMutationsBlocked(useStore.getState());
+}
+
+/** the revision this run published shows in the register, published (not a draft) */
+function guidedDrawingPublished(): boolean {
   const run = useGuideState.getState().run;
-  const id = run ? guidedReviewOf(run.id) : null;
-  return id !== null && !useStore.getState().reviews.some((r) => r.id === id && !r.decided);
+  const mine = run ? guidedDrawingOf(run.id) : null;
+  return mine !== null && useStore.getState().drawings.some((d) => d.number === mine.number && !d.draft && d.revisions.some((r) => r.rev === mine.rev));
 }
 
 /** Today's log is open, not sent and not on its way, and its read has settled (under module read-ownership the screen
