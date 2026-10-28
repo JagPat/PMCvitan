@@ -282,11 +282,12 @@ export type AddPosterInput = z.infer<typeof addPosterSchema>;
 // database keeps the reason on the visit's removal line, at most 300 characters and never blank (20280125000000).
 export const SITE_VISIT_REMOVAL_REASON_MAX = 300;
 // The limit counts characters, as the database column does (not UTF-16 units). A reason must show something: one
-// character that is neither space nor an invisible format mark, and never a NUL, which PostgreSQL cannot store.
+// character that is not a space, a separator or an invisible one (a control, format, private-use or unassigned code
+// point; Codex 4397768825), and never a NUL, which PostgreSQL cannot store.
 export const removeVisitFileSchema = z.object({
   reason: z.string().trim()
     .refine((s) => !s.includes('\u0000'), 'A reason cannot contain that character')
-    .refine((s) => /[^\s\p{Cf}]/u.test(s), 'Say why you are removing this file')
+    .refine((s) => /[^\s\p{Z}\p{C}]/u.test(s), 'Say why you are removing this file')
     .refine((s) => [...s].length <= SITE_VISIT_REMOVAL_REASON_MAX, `Keep the reason to ${SITE_VISIT_REMOVAL_REASON_MAX} characters`)
     .nullish()
     .transform((s) => s ?? undefined),

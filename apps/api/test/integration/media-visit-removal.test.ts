@@ -128,6 +128,18 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
     expect(await t.prisma.domainEvent.count({ where: { entityId: id, eventType: 'media.removed' } })).toBe(1);
   });
 
+  it('a reason sent by someone other than the PMC is not kept, so the database\'s CHECK still judges their hour at the line\'s own stamp (Codex 4397768832)', async () => {
+    const id = await voice(consultantToken);
+    expect((await removeIt(id, consultantToken, { reason: 'Recorded by mistake' })).status).toBe(200);
+    expect((await t.prisma.siteVisitFileRemoval.findUniqueOrThrow({ where: { mediaId: id } })).reason).toBeNull();
+    // and past the hour a reason does not stand in for the PMC's: the line is refused as before
+    const late = await voice(consultantToken);
+    await backdate(late);
+    const refused = await removeIt(late, consultantToken, { reason: 'Recorded by mistake' });
+    expect(refused.status).toBe(403);
+    expect(await t.prisma.siteVisitFileRemoval.count({ where: { mediaId: late } })).toBe(0);
+  });
+
   it('nobody else but the PMC may remove a file, and the person who added it not after the hour', async () => {
     const id = await voice(consultantToken);
     expect((await visit(visitId, engineerToken)).files.find((x: { mediaId: string }) => x.mediaId === id).removable).toBeNull();
@@ -152,7 +164,8 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
     expect(none.status).toBe(400);
     expect(none.body.message).toMatch(/Say why/);
     // blank, invisible-only, a NUL (which PostgreSQL cannot store), or over 300 characters
-    for (const reason of ['', '   ', '\u200b\u200b', 'why\u0000', 'x'.repeat(301), '🙂'.repeat(301)]) {
+    // ... or only controls, separators or private-use marks, which show nothing (Codex 4397768825)
+    for (const reason of ['', '   ', '\u200b\u200b', 'why\u0000', 'x'.repeat(301), '🙂'.repeat(301), '\u0001', '\u0085\u009f', '\u2028\u3000', '\ue000']) {
       expect((await removeIt(id, pmcToken, { reason })).status, JSON.stringify(reason)).toBe(400);
     }
     expect((await removeIt(id, pmcToken, { reason: null })).status).toBe(400);

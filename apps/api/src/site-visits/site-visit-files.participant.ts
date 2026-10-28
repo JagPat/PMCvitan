@@ -152,7 +152,9 @@ export class SiteVisitFilesParticipant {
     try {
       // the database copies the adder, the kind and the remover's name, and stamps the time, whatever is sent here
       await tx.siteVisitFileRemoval.create({
-        data: { projectId, visitId: link.visitId, mediaId, addedById: link.addedById, removedById: userId, removedByRole: envelope.actorRole, reason: input.reason },
+        // only the PMC's reason is kept: anyone else removes only their own file within the hour, which needs none, so a
+        // line with no reason leaves the database's CHECK to judge the hour at the line's own stamp (Codex 4397768832)
+        data: { projectId, visitId: link.visitId, mediaId, addedById: link.addedById, removedById: userId, removedByRole: envelope.actorRole, reason: envelope.actorRole === 'pmc' ? input.reason : null },
       });
     } catch (error) {
       // the hour ran out between the check above and the line's own stamp (the database's CHECK on a line with no reason)
