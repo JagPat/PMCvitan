@@ -10,6 +10,7 @@ import type { AddMemberInput, NewProjectInput, CompanyInput } from '@/data/apiGa
 import { todayCivil } from '@/lib/civilDate';
 import { isDeviceBindPending } from '@/lib/labourKeys';
 import { API_BASE } from '@/data/apiGateway';
+import { useGuideState } from '@/guide/guideState';
 import styles from './responsive.module.css';
 
 // B2 — the member-role labels are the ONE shared `ROLE_LABEL` (so the architect's is the same everywhere),
@@ -77,11 +78,15 @@ export function TeamScreen() {
   const ready = name.trim() && contact.trim();
   // #482 step 3c — the team guide moves past the form once the contact reads whole (not on its first character), and
   // shows only under a server: the demo cannot add anyone
-  // a phone: 10 digits, or 12 written with its country code (+91)
+  // a phone: 10 digits, 12 written with India's +91, or 11 with another country's code (+1 and 10 digits)
   const phoneDigits = contact.replace(/\D/g, '').length;
-  const contactWhole = isEmail ? /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact.trim()) : phoneDigits >= (contact.trim().startsWith('+') ? 12 : 10);
+  const phoneNeeds = contact.trim().startsWith('+') ? (/^\+\s*91/.test(contact.trim()) ? 12 : 11) : 10;
+  const contactWhole = isEmail ? /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact.trim()) : phoneDigits >= phoneNeeds;
   const guided = !!API_BASE;
   const formWhole = !!name.trim() && contactWhole;
+  // while the team guide runs, Add waits for a whole contact too: pressed earlier, its answer would come while the guide
+  // still points at the form, and the walkthrough could not finish
+  const guidingAdd = useGuideState((s) => s.run?.guide.id === 'invite-team-member');
   const submit = () => {
     if (!ready) return;
     const input: AddMemberInput = {
@@ -143,7 +148,7 @@ export function TeamScreen() {
               {CONSULTANT_DISCIPLINES.map((d) => <option key={d} value={d}>{discLabel(d)}</option>)}
             </select>
           )}
-          <Button variant="ink" onClick={submit} disabled={!ready} data-testid="add-member" data-guide={guided && formWhole ? 'add-member' : undefined} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '11px 15px', fontSize: 13 }}>
+          <Button variant="ink" onClick={submit} disabled={!ready || (guidingAdd && !formWhole)} data-testid="add-member" data-guide={guided && formWhole ? 'add-member' : undefined} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '11px 15px', fontSize: 13 }}>
             <Plus size={15} /> Add
           </Button>
         </div>

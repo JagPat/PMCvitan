@@ -112,6 +112,10 @@ describe('the team guide (#482 step 3c)', () => {
     await tipAt('1');
     type('member-contact', '+91 98765 43210');
     await tipAt('1');
+    // a number abroad (a client living in the US): its own country code and 10 digits
+    type('member-contact', '+1 415 555 1234');
+    await tipAt('1');
+    expect(document.querySelector<HTMLButtonElement>('[data-testid="add-member"]')!.disabled).toBe(false);
     // a box emptied again: Add is no target, and the tip goes back to the form
     type('member-contact', '');
     await tipAt('0', 5000);
@@ -164,6 +168,47 @@ describe('the team guide (#482 step 3c)', () => {
     expect(seen).toEqual(['member-add-failed', 'member-added']);
     await tipAt('0');
     expect(done()).not.toContain('invite-team-member');
+  });
+
+  it('the same add pressed again in this run while its answer is slow keeps waiting, and its answer finishes it (Codex 4405412373)', async () => {
+    let answer!: (m: unknown) => void;
+    const addMember = vi.fn(() => new Promise((resolve) => { answer = resolve; }));
+    const { useGuideState, guide, seen } = await open({ addMember });
+    act(() => { useGuideState.getState().start(guide); });
+    await fillForm();
+    press('add-member');
+    // the form emptied; the same details typed and Add pressed again before the answer
+    type('member-name', 'Nilesh');
+    type('member-contact', 'nilesh@vitan.in');
+    press('add-member');
+    expect(addMember).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual([]);
+    expect(useGuideState.getState().run?.step).toBe(1);
+    await act(async () => { answer(member); });
+    await isDone();
+    expect(seen).toEqual(['member-added']);
+  });
+
+  it('while the guide runs, Add waits for a whole contact; without the guide it does not (Codex 4405412367)', async () => {
+    const addMember = vi.fn(async () => member);
+    const { useGuideState, guide } = await open({ addMember });
+    const add = () => document.querySelector<HTMLButtonElement>('[data-testid="add-member"]')!;
+    // the guide offers itself on a first visit: closed, Add takes any contact the server takes
+    await tipAt('0');
+    act(() => { useGuideState.getState().stop(); });
+    type('member-name', 'Nilesh');
+    type('member-contact', '987654321');
+    expect(add().disabled).toBe(false);
+    act(() => { useGuideState.getState().start(guide); });
+    await tipAt('0');
+    expect(add().disabled).toBe(true);
+    press('add-member');
+    expect(addMember).not.toHaveBeenCalled();
+    type('member-contact', '9876543210');
+    await tipAt('1');
+    expect(add().disabled).toBe(false);
+    press('add-member');
+    await isDone();
   });
 
   it('another add pressed before the run, answered while the guided one is on its way, does not finish it', async () => {

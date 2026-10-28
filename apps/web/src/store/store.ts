@@ -3058,6 +3058,9 @@ export const useStore = create<Store>()(
      *    attempt's scope is still the live one. */
     const memberActKeys = new Map<string, string>();
     const memberActsInFlight = new Map<string, string>();
+    /** #482 step 3c — the guide run each add on its way was pressed under (bound act → run), so the same add pressed again
+     *  in that run keeps the guide waiting on the first one's answer */
+    const addRunsInFlight = new Map<string, number>();
     const memberAct = (scope: ProjectScope, act: string): string => `${scope.projectId}:${scope.generation}:${act}`;
     const memberActKey = (boundAct: string): string => {
       const existing = memberActKeys.get(boundAct);
@@ -5993,15 +5996,20 @@ export const useStore = create<Store>()(
         reportAdd(false);
         return;
       }
+      const boundAdd = memberAct(currentScope(), addMemberAct(input));
       const sent = dispatchMemberAct(
         addMemberAct(input),
         'Adding ' + input.name,
-        (key) => g.addMember(input, key),
+        (key) => {
+          addRunsInFlight.set(boundAdd, guideRun);
+          return g.addMember(input, key).finally(() => { if (addRunsInFlight.get(boundAdd) === guideRun) addRunsInFlight.delete(boundAdd); });
+        },
         () => { get().loadTeam(); get().flash(input.name + ' added to the team.'); reportAdd(true); },
         () => { get().flash('Could not add the member — check the details / your access.'); reportAdd(false); },
       );
-      // the same add already on its way was pressed before this run: its answer is not this run's
-      if (!sent) reportAdd(false);
+      // the same add already on its way: pressed in this run, its own answer tells the guide; pressed before it, that
+      // answer is not this run's
+      if (!sent && addRunsInFlight.get(boundAdd) !== guideRun) reportAdd(false);
     },
     updateMemberRole: (userId, role, discipline) => {
       const g = gateway;
