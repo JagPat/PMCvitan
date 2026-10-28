@@ -132,7 +132,8 @@ CREATE TRIGGER "VoiceTranscript_insert"
   BEFORE INSERT ON public."VoiceTranscript"
   FOR EACH ROW EXECUTE FUNCTION public.media_voice_transcript_insert();
 
--- V2 and V4, on update: the keys and the creation time never move; a done row keeps what the provider heard; the
+-- V2 and V4, on update: the keys and the creation time never move; a done row keeps what the provider heard (and all
+-- else but its correction); the
 -- corrector and time move only with the correction, and a changed correction carries a later time.
 CREATE OR REPLACE FUNCTION public.media_voice_transcript_keys_fixed() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
@@ -142,8 +143,12 @@ BEGIN
     RAISE EXCEPTION 'media: the transcript of voice note % stays with that note', OLD."mediaId"
       USING ERRCODE = 'check_violation';
   END IF;
-  IF OLD."status" = 'done' AND (NEW."status" IS DISTINCT FROM OLD."status" OR NEW."text" IS DISTINCT FROM OLD."text"
-       OR NEW."languageCode" IS DISTINCT FROM OLD."languageCode") THEN
+  -- a done row is settled: only its correction (and the row's update time) may change. The status, the words and
+  -- their language, the job they came from, the tries and the lease all stay as they were when it was done
+  -- (Codex round 3, 4397687020: the job id was not held).
+  IF OLD."status" = 'done'
+     AND (to_jsonb(NEW) - ARRAY['editedText', 'editedById', 'editedAt', 'updatedAt'])
+         IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['editedText', 'editedById', 'editedAt', 'updatedAt']) THEN
     RAISE EXCEPTION 'media: the words heard in voice note % are kept as heard; a person corrects them beside', OLD."mediaId"
       USING ERRCODE = 'check_violation';
   END IF;
@@ -198,5 +203,24 @@ DROP TRIGGER IF EXISTS "VoiceTranscript_no_truncate" ON public."VoiceTranscript"
 CREATE TRIGGER "VoiceTranscript_no_truncate"
   BEFORE TRUNCATE ON public."VoiceTranscript"
   FOR EACH STATEMENT EXECUTE FUNCTION public.media_voice_transcript_no_truncate();
+
+-- V2 kept, on the note: while a transcript exists, its "Media" row stays a voice note. A file's type is set at upload and
+-- no code changes it, but a raw writer could; this holds V2 after the insert as well as at it (Codex round 3,
+-- 4397687017). The transcript's insert share-locks the note, so the two serialize, and each statement here reads anew.
+CREATE OR REPLACE FUNCTION public.media_voice_transcript_note_kept() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  IF NEW."mime" IS DISTINCT FROM OLD."mime" AND (NEW."mime" IS NULL OR NEW."mime" NOT LIKE 'audio/%')
+     AND EXISTS (SELECT 1 FROM public."VoiceTranscript" v WHERE v."projectId" = OLD."projectId" AND v."mediaId" = OLD."id") THEN
+    RAISE EXCEPTION 'media: file % has a transcript, so it stays a voice note', OLD."id"
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "Media_voice_transcript_note_kept" ON public."Media";
+CREATE TRIGGER "Media_voice_transcript_note_kept"
+  BEFORE UPDATE OF "mime" ON public."Media"
+  FOR EACH ROW EXECUTE FUNCTION public.media_voice_transcript_note_kept();
 
 COMMIT;

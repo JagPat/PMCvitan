@@ -75,6 +75,19 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     expect(await raw(`UPDATE "VoiceTranscript" SET "status" = 'done', "text" = 'late' WHERE "mediaId" = $1`, m)).toBe(0);
   });
 
+  it('keeps its note a voice note while it exists (V2)', async () => {
+    const m = await voice(f.projectA.id);
+    await t.prisma.voiceTranscript.create({ data: { projectId: f.projectA.id, mediaId: m } });
+    // a photo carries no length, so the length goes with the type (the file's own shape check would refuse it otherwise)
+    const mime = (value: string | null) => raw(`UPDATE "Media" SET "mime" = $1, "durationSec" = NULL WHERE "id" = $2`, value, m);
+    await expect(mime('image/png')).rejects.toThrow(/stays a voice note/);
+    await expect(mime(null)).rejects.toThrow(/stays a voice note/);
+    await raw(`UPDATE "Media" SET "mime" = 'audio/mp4' WHERE "id" = $1`, m); // still a voice note
+    // a file with no transcript is not this trigger's concern
+    const n = await voice(f.projectA.id);
+    await raw(`UPDATE "Media" SET "mime" = 'image/png', "durationSec" = NULL WHERE "id" = $1`, n);
+  });
+
   it('is never deleted on its own, so heard words cannot be erased and written again (V5)', async () => {
     const m = await voice(f.projectA.id);
     await t.prisma.voiceTranscript.create({ data: { projectId: f.projectA.id, mediaId: m, status: 'done', text: 'પાઇપ લાઇન' } });
@@ -132,6 +145,12 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     await expect(set(`"editedText" = 'Pipe line starts here'`)).rejects.toThrow(fresh);
     await expect(set(`"editedText" = 'Pipe line starts here', "editedById" = '${f.otherUser.id}'`)).rejects.toThrow(fresh);
     await expect(set(`"editedText" = 'Pipe line starts here', "editedById" = '${f.otherUser.id}', "editedAt" = "editedAt" - interval '1 second'`)).rejects.toThrow(fresh);
+    // ...and nothing else on a done row moves: not its job, its tries or its lease
+    await expect(set(`"providerJobId" = 'job-other'`)).rejects.toThrow(kept);
+    await expect(set(`"attempts" = 1`)).rejects.toThrow(kept);
+    await expect(set(`"lastError" = 'late'`)).rejects.toThrow(kept);
+    await expect(set(`"retried" = true`)).rejects.toThrow(kept);
+    await expect(set(`"leaseToken" = NULL, "leaseUntil" = NULL`)).rejects.toThrow(kept);
     // a new correction by another person names them
     await set(`"editedText" = 'Pipe line starts here', "editedById" = '${f.otherUser.id}', "editedAt" = "editedAt" + interval '1 second'`);
     const row = await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: m } });
@@ -157,7 +176,12 @@ describe('#1177 voice-note transcripts (live PG)', () => {
       't:VoiceTranscript_insert', 't:VoiceTranscript_keys_fixed', 't:VoiceTranscript_no_delete', 't:VoiceTranscript_no_truncate',
     ]);
     expect(before.find((r) => r.k === 'c:VoiceTranscript_projectId_mediaId_fkey')?.d).toMatch(/ON DELETE CASCADE/);
+    const onMedia = () => t.prisma.$queryRawUnsafe<Array<{ d: string }>>(
+      `SELECT pg_get_triggerdef(oid) AS d FROM pg_trigger WHERE tgrelid = '"Media"'::regclass AND tgname = 'Media_voice_transcript_note_kept'`);
+    const media = await onMedia();
+    expect(media[0]?.d).toMatch(/BEFORE UPDATE OF mime ON public."Media" FOR EACH ROW/);
     replay();
     expect(await shape()).toEqual(before);
+    expect(await onMedia()).toEqual(media);
   });
 });
