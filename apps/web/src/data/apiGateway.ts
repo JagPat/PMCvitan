@@ -11,7 +11,7 @@
  * end-to-end in CI (the sandbox has no Postgres). Validate it once the API is
  * deployed and `VITE_API_URL` points at it.
  */
-import { failVisitPhoto, fileVisitPhoto, getVisitPhoto, withinWait, type CommittedPhoto } from './visitPhotoStore';
+import { clearVisitPoster, failVisitPhoto, fileVisitPhoto, getVisitPhoto, posterWaits, withinWait, type CommittedPhoto } from './visitPhotoStore';
 import { deleteEvidence, getEvidence, markEvidenceFailed } from './evidenceStore';
 import { MEDIA_NOT_FOUND_MESSAGE, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
 import type {
@@ -1371,6 +1371,15 @@ export class ApiGateway {
     });
   }
 
+  /** #995 V2b-2 — a video clip's still frame, sent by the phone that recorded the clip, after the clip. The first one
+   *  stays: a replay, or any later frame, is answered with the stored frame's link. */
+  addVisitPoster(mediaId: string, data: string): Promise<{ id: string; posterUrl: string }> {
+    return this.req<{ id: string; posterUrl: string }>(`/projects/${this.projectId}/media/${encodeURIComponent(mediaId)}/poster`, {
+      method: 'POST',
+      body: JSON.stringify({ mime: 'image/jpeg', data }),
+    });
+  }
+
   /** #482 site photos — delete a photo: the viewer's own site photo within the hour (the PMC and the engineer, any). */
   deleteMedia(mediaId: string): Promise<{ ok: boolean; dailyLogId?: string | null }> {
     return this.req<{ ok: boolean; dailyLogId?: string | null }>(`/media/${encodeURIComponent(mediaId)}`, { method: 'DELETE' });
@@ -1571,6 +1580,9 @@ export interface SiteVisitFile {
   /** A voice note's length in whole seconds, as the server read it from the file; null for a photo, absent from an API
    *  before voice notes. */
   durationSec?: number | null;
+  /** #995 V1b: a video clip's still frame, its own signed link; null for a clip without one (and every other file),
+   *  absent from an API before it. */
+  posterUrl?: string | null;
   note: string | null;
   rating: SiteVisitRating | null;
   /** The place the file showed when it was added, with the name it had then. */
@@ -2072,16 +2084,33 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
         if (committed) tellSiteVisits({ kind: 'photo', project: gw.project, generation, visitId: op.visitId, clientKey: id, ...committed });
         return null;
       };
+      // V2b-2: a clip's still frame, sent to the clip the server holds. Taken, or refused for good (a refused frame
+      // leaves the plain play tile), it leaves the row. No answer, a sign-in or a busy or failing server leaves it on the
+      // row for the next flush, and the clip's act still goes: a still frame never holds the visit's later acts
+      const sendPoster = async (mediaId: string, data: string): Promise<void> => {
+        try {
+          await gw.addVisitPoster(mediaId, data);
+        } catch (err) {
+          if (!isTerminalOutboxError(err)) return;
+        }
+        await withinWait(() => clearVisitPoster(op.scope, gw.project, id)).catch(() => {});
+      };
       // every read and write of the phone's record is bounded: one that fails or never answers rejects with
       // VisitPhotoUnreadable, which the flush holds for this visit alone (no status: nothing is dropped)
       return withinWait(() => getVisitPhoto(op.scope, gw.project, id)).then(async (row) => {
         // no row: the person dismissed it, or a read settled it; nothing to send or say
         if (!row) return null;
+        // sent already, its still frame not yet: the frame alone goes
+        if (posterWaits(row)) {
+          await sendPoster(row.mediaId, row.poster);
+          return tell({ state: 'filed', reason: null });
+        }
         // filed or failed already (another tab sent it, or it was refused): not sent again, and the screen is told the
         // state the row holds, so a refused photo is never shown as sent
         if (row.state !== 'queued') return tell({ state: row.state, reason: row.state === 'failed' ? row.reason : null });
+        let sent: { id: string };
         try {
-          await gw.uploadMedia({
+          sent = await gw.uploadMedia({
             ...file, data: row.data, kind: 'visit', clientKey: id,
             siteVisit: { visitId: op.visitId, ...(note ? { note } : {}), ...(rating ? { rating } : {}) },
           });
@@ -2093,8 +2122,11 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
           throw err;
         }
         // and a sent photo's act goes only once its row says so: a row left queued would be rebuilt and sent again. The
-        // row stays, as filed, so the screen shows the photo until the server's list does (Codex 4321998475)
-        return tell(await withinWait(() => fileVisitPhoto(op.scope, gw.project, id)));
+        // row stays, as filed, so the screen shows the photo until the server's list does (Codex 4321998475). A clip's
+        // row keeps the id the server gave it, for its still frame, which goes next
+        const committed = await withinWait(() => fileVisitPhoto(op.scope, gw.project, id, row.poster ? sent.id : undefined));
+        if (committed && row.poster) await sendPoster(sent.id, row.poster);
+        return tell(committed);
       });
     }
     case 'approve':

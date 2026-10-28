@@ -21,17 +21,21 @@ function tryPlay(el: HTMLMediaElement) {
  * fetched whole on Play and played from the phone's own copy (an object URL): `/media` serves no byte ranges, and
  * iPhone browsers play media only from a source that does. A file still waiting on the phone (a `data:` URL) plays as
  * it is. The fetch sends no credentials: the signed link is the permission. The copy is let go when the player goes. A
- * file this browser cannot play says so, with Try again.
+ * file this browser cannot play says so, with Try again. A video clip with a still frame (#995 V2b-2) shows it above
+ * Play, and the player shows it until the clip plays; a frame that does not load is left out.
  */
-export function MediaPlayer({ url, mime, label, words }: {
+export function MediaPlayer({ url, mime, label, words, poster }: {
   url: string;
   mime: string;
+  /** a video clip's still frame, its own signed link */
+  poster?: string;
   /** what the file is, for a screen reader */
   label: string;
   words: { play: string; failed: string; retry: string };
 }) {
   const local = url.startsWith('data:');
   const [phase, setPhase] = useState<'idle' | 'loading' | 'ready' | 'failed'>(local ? 'ready' : 'idle');
+  const [posterGone, setPosterGone] = useState(false);
   const media = useRef<HTMLMediaElement | null>(null);
   const run = useRef<AbortController | null>(null);
   const owned = useRef<string | null>(null);
@@ -74,12 +78,19 @@ export function MediaPlayer({ url, mime, label, words }: {
   // does nothing; the silence played on the tap is not the file
   const failed = () => { if (phase === 'ready') setPhase('failed'); };
   const Player = mime.startsWith('video/') ? 'video' : 'audio';
+  const still = Player === 'video' && poster && !posterGone ? resolveMediaUrl(poster) : null;
+  const play = (
+    <Button variant="light" disabled={phase === 'loading'} aria-label={`${words.play}: ${label}`} onClick={() => void load()}>
+      {words.play}
+    </Button>
+  );
 
   return (
     <>
       <Player
         ref={(el: HTMLMediaElement | null) => { media.current = el; }}
-        controls preload={local ? 'metadata' : 'none'} {...(Player === 'video' ? { playsInline: true } : {})} hidden={phase !== 'ready'} aria-label={label} onError={failed}
+        controls preload={local ? 'metadata' : 'none'} {...(Player === 'video' ? { playsInline: true } : {})} {...(still ? { poster: still } : {})}
+        hidden={phase !== 'ready'} aria-label={label} onError={failed}
         {...(local ? { src: url } : {})}
       />
       {phase === 'failed' && (
@@ -87,11 +98,15 @@ export function MediaPlayer({ url, mime, label, words }: {
           {words.failed} <Button variant="light" onClick={() => void load()}>{words.retry}</Button>
         </span>
       )}
-      {(phase === 'idle' || phase === 'loading') && (
-        <Button variant="light" disabled={phase === 'loading'} aria-label={`${words.play}: ${label}`} onClick={() => void load()}>
-          {words.play}
-        </Button>
-      )}
+      {(phase === 'idle' || phase === 'loading') && (still ? (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
+          <img
+            src={still} alt="" loading="lazy" onError={() => setPosterGone(true)}
+            style={{ display: 'block', width: 240, maxWidth: '100%', borderRadius: 10, background: '#000' }}
+          />
+          {play}
+        </span>
+      ) : play)}
     </>
   );
 }

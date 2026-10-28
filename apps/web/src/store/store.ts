@@ -98,7 +98,7 @@ import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isMediaNotFound, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
-import { clearVisitPhotoStart, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { clearVisitPhotoStart, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, posterWaits, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { parseLocation } from '@/lib/screens';
 import { setClampedTimeout, type ClampedTimer } from '@/lib/clampedTimer';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
@@ -2662,9 +2662,21 @@ export const useStore = create<Store>()(
       // when each queued photo was taken: its row's creation time, else when its act was queued
       const created = new Map(rows.map((r) => [r.op.idempotencyKey, r.createdAt]));
       const takenAt = (o: SiteVisitAddFileOp): number => created.get(o.idempotencyKey) ?? (o.queuedAt ? Date.parse(o.queuedAt) : NaN);
+      // V2b-2: a sent clip whose still frame is still to send has its act put back too, last, to send the frame alone
+      // (its row is filed: the clip is never uploaded again). It starts no flush of its own: the next flush sends it,
+      // so a server that keeps failing it is never asked again in a loop
+      const posters: OutboxOp[] = [];
       set((s) => {
         const queued = new Set(s.outbox.filter(isSiteVisitOp).map((o) => o.idempotencyKey));
         for (const row of rows) {
+          if (posterWaits(row)) {
+            if (!queued.has(row.op.idempotencyKey)) {
+              s.outbox.push(row.op);
+              queued.add(row.op.idempotencyKey);
+              posters.push(row.op);
+            }
+            continue;
+          }
           if (row.state !== 'queued') continue;
           // the start it needs, when the queue lost it, goes back ahead of it even when the photo's own act is still
           // queued (one kept just after its start was settled, then queued alone: Codex 4321998492). A start the
@@ -2707,6 +2719,7 @@ export const useStore = create<Store>()(
       });
       // a kept photo's row holds its act and the start it needs: their retry record is on this phone
       for (const row of rows) if (row.state === 'queued') storedHere([row.op, ...(row.start ? [row.start] : [])]);
+      storedHere(posters);
       if (rebuilt) void persistOutbox();
       return rebuilt;
     };
