@@ -24,7 +24,7 @@ export class SiteVisitsController {
   @Get()
   @RolesFor('project.read')
   list(@Param('projectId') projectId: string, @Query(new ZodPipe(listSiteVisitsSchema)) query: ListSiteVisitsInput, @CurrentUser() user: AuthUser) {
-    return this.visitsQuery.list(projectId, query, user.sub);
+    return this.visitsQuery.list(projectId, query, user.sub, user.role);
   }
 
   @Post()

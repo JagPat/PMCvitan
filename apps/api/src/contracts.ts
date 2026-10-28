@@ -278,6 +278,14 @@ export const addPosterSchema = z.object({
 }).strict();
 export type AddPosterInput = z.infer<typeof addPosterSchema>;
 
+// #1179 R2 — take a file off its site visit. The PMC says why when the file is not their own within the hour; the
+// database keeps the reason on the visit's removal line, at most 300 characters and never blank (20280125000000).
+export const SITE_VISIT_REMOVAL_REASON_MAX = 300;
+export const removeVisitFileSchema = z.object({
+  reason: z.string().trim().min(1, 'Say why you are removing this file').max(SITE_VISIT_REMOVAL_REASON_MAX).optional(),
+}).strict();
+export type RemoveVisitFileInput = z.infer<typeof removeVisitFileSchema>;
+
 // Re-file an existing photo or drawing onto a location-tree node (or null to unfile).
 // Shared by PATCH /media/:id/node and /drawings/:id/node — "manage & modify" from the tree.
 export const setNodeSchema = z.object({ nodeId: z.string().trim().min(1).nullable() });
