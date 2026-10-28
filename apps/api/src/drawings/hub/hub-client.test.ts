@@ -237,6 +237,8 @@ describe('#1118 U4 — fetching a version from Hub', () => {
       ['999\r\nmade by Hub\r\n  0\r\nSECTION\r\n', 'image/vnd.dxf'],
       ['999\nfirst comment\n999\nsecond comment\n  0\nSECTION\n', 'image/vnd.dxf'],
       ['999\nonly a comment\n', null],
+      ['999\nno end to this comment', null],
+      ['  0\nSECTIONS\n', null],
       [Buffer.from('AutoCAD Binary DXF\r\n\x1a\x00rest', 'latin1'), 'image/vnd.dxf'],
       [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]), 'image/png'],
       [Buffer.from([0xff, 0xd8, 0xff, 0xe0]), 'image/jpeg'],
@@ -252,5 +254,10 @@ describe('#1118 U4 — fetching a version from Hub', () => {
     for (const [head, type] of cases) {
       expect(sniffDrawingType(Buffer.isBuffer(head) ? head : Buffer.from(head, 'latin1')), String(head)).toBe(type);
     }
+    // comments that run far past the first bytes are skipped however long they are; a long run without a section is not a DXF
+    const comments = '999\r\nexported by Hub, sheet notes follow\r\n'.repeat(2000);
+    expect(sniffDrawingType(Buffer.from(`${comments}  0\r\nSECTION\r\n  2\r\nHEADER\r\n`, 'latin1'))).toBe('image/vnd.dxf');
+    expect(sniffDrawingType(Buffer.from(`999\n${'x'.repeat(4096)}\n  0\nSECTION\n`, 'latin1'))).toBe('image/vnd.dxf');
+    expect(sniffDrawingType(Buffer.from(`${comments}<html>`, 'latin1'))).toBeNull();
   });
 });

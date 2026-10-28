@@ -71,7 +71,19 @@ export function hubContentPath(fileId: string, versionId: string): string | null
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const BINARY_DXF = Buffer.from('AutoCAD Binary DXF\r\n\x1a\x00', 'latin1');
 // an ASCII DXF opens with its first section (`0` / `SECTION`), after any number of `999` comments
-const ASCII_DXF = /^[ \t]*(?:999\r?\n[^\r\n]*\r?\n[ \t]*)*0\r?\n[ \t]*SECTION[ \t]*\r?\n/;
+const DXF_COMMENT = /^[ \t]*999\r?\n/;
+const ASCII_DXF_SECTION = /^[ \t]*0\r?\n[ \t]*SECTION[ \t]*\r?\n/;
+
+/** Whether `bytes` is an ASCII DXF: its leading comments are skipped however long they run, then its first section. */
+function isAsciiDxf(bytes: Buffer): boolean {
+  let at = 0;
+  for (let m; (m = DXF_COMMENT.exec(bytes.subarray(at, at + 64).toString('latin1'))); ) {
+    const end = bytes.indexOf(0x0a, at + m[0].length); // the comment's own line
+    if (end < 0) return false;
+    at = end + 1;
+  }
+  return ASCII_DXF_SECTION.test(bytes.subarray(at, at + 64).toString('latin1'));
+}
 
 /** The drawing type of `bytes`, read from their first bytes; null for anything else. */
 export function sniffDrawingType(bytes: Buffer): HubContentType | null {
@@ -79,7 +91,7 @@ export function sniffDrawingType(bytes: Buffer): HubContentType | null {
   if (head.startsWith('%PDF-')) return 'application/pdf';
   // AutoCAD R13 (AC1012) onwards; earlier versions (AC1009 and before) are refused
   if (/^AC10(?:1[2-9]|[2-9]\d)/.test(head)) return 'image/vnd.dwg';
-  if (bytes.subarray(0, BINARY_DXF.length).equals(BINARY_DXF) || ASCII_DXF.test(head)) return 'image/vnd.dxf';
+  if (bytes.subarray(0, BINARY_DXF.length).equals(BINARY_DXF) || isAsciiDxf(bytes)) return 'image/vnd.dxf';
   if (bytes.subarray(0, PNG.length).equals(PNG)) return 'image/png';
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
   return null;
