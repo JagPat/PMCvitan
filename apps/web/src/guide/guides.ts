@@ -4,6 +4,7 @@ import { guidedPhotoPicksOf, type GuideOutcome } from './outcomes';
 import { useGuideState } from './guideState';
 import { inspectionFrozen, useStore } from '@/store/store';
 import { dailyLogSendPending } from '@/store/dailyLogPending';
+import { selectDecisionsNeedingViewer } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
 
 /**
@@ -120,7 +121,40 @@ export const GUIDES: readonly Guide[] = [
       { target: 'add-site-photo', tip: 'photoAdd', until: 'outcome', outcome: { ok: 'site-photo-added', failed: 'site-photo-add-failed', held: 'site-photo-not-kept' }, settled: guidedPhotoOnRecord },
     ],
   },
+  {
+    // the client answers a choice put to them: Approve on the option they want, then confirm. Each Approve carries its
+    // decision's id, so the confirm step and its outcome follow that one decision, not another approved meanwhile.
+    id: 'approve-decision-client',
+    title: 'approveDecision',
+    roles: ['client'],
+    screen: 'client-decisions',
+    available: decisionWaitingOnViewer,
+    steps: [
+      { target: 'approve-option', tip: 'approvePick' },
+      {
+        target: 'approve-confirm',
+        tip: 'approveConfirm',
+        keyed: true,
+        until: 'outcome',
+        outcome: { ok: 'decision-approved', failed: 'decision-approve-failed', held: 'decision-approve-not-kept' },
+        settled: decisionApproved,
+      },
+    ],
+  },
 ];
+
+/** A decision waits on this viewer (the client's Decisions screen shows its Approve buttons only then). */
+function decisionWaitingOnViewer(): boolean {
+  return selectDecisionsNeedingViewer(useStore.getState()).length > 0;
+}
+
+/** The run's key is the decision's id: it is answered once the store shows it approved (or sent on for the architect's
+ *  countersign). A decision that only left the list (withdrawn, or its decider changed) was not approved. */
+function decisionApproved(key: string | null): boolean {
+  if (key === null) return false;
+  const d = useStore.getState().decisions.find((x) => x.id === key);
+  return d?.status === 'approved' || d?.status === 'awaiting_countersign';
+}
 
 /** The run's key is `<checklist id>:<item>`: that checklist is submitted once it is no longer out on site. */
 function checklistSubmitted(key: string | null): boolean {

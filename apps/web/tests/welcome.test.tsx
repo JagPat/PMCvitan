@@ -84,9 +84,9 @@ describe('the first-time welcome', () => {
   });
 
   it('a role with no guide yet gets one "Got it"', async () => {
-    const { Welcome } = await setup('client', 'client-decisions');
+    const { Welcome } = await setup('consultant', 'decision-log');
     render(<Welcome />);
-    expect(byTestId('welcome')?.textContent).toContain('answer the choices put to you');
+    expect(byTestId('welcome')?.textContent).toContain('answer what is sent to you');
     expect(byTestId('welcome-tour')).toBeNull();
     expect(byTestId('welcome-close')?.textContent).toBe('Got it');
   });
