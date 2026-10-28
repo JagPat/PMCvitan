@@ -26,7 +26,7 @@ const answer = (projectId: string, decisions: Decision[]) => ({
   drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
 });
 
-await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/guide/GuideHost'), () => import('@/guide/guides'), () => import('@/guide/guideState'), () => import('@/guide/outcomes'), () => import('@/screens/ClientDecisionsScreen'), () => import('@/layout/ModalHost'));
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/guide/GuideHost'), () => import('@/guide/Help'), () => import('@/guide/guides'), () => import('@/guide/guideState'), () => import('@/guide/outcomes'), () => import('@/screens/ClientDecisionsScreen'), () => import('@/layout/ModalHost'));
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -188,6 +188,22 @@ describe('the client is guided through approving a choice', () => {
     press(byTestId('approve-lock')!);
     tick();
     expect(done()).toEqual(['approve-decision-client']);
+  });
+
+  it('a decision opened on its own (from a notice) shows no guide; Help\'s "Show me how" goes back to the list and starts it there', async () => {
+    const c = await client();
+    const { HelpButton } = await import('@/guide/Help');
+    act(() => { c.useStore.getState().openDecision('DL-2'); });
+    tick(2000);
+    expect(byTestId('decision-focus-approve')).toBeTruthy();
+    expect(tip()).toBeNull();
+    render(<HelpButton />);
+    press(byTestId('help-open')!);
+    press(byTestId('help-guide-approve-decision-client')!);
+    tick();
+    expect(c.useStore.getState().decisionFocus).toBeNull();
+    expect(tip()?.getAttribute('data-guide-id')).toBe('approve-decision-client');
+    expect(step()).toBe('0');
   });
 
   it('nothing waiting on the client means no guide', async () => {
