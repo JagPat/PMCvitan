@@ -92,6 +92,11 @@ export const GUIDE_TIPS = {
     hi: 'आज के कारीगर और फ़ोटो भरें, फिर रोज़ का लॉग PMC को भेजने के लिए यहाँ दबाएँ।',
     gu: 'આજના કારીગરો અને ફોટા ભરો, પછી રોજનો લૉગ PMC ને મોકલવા અહીં દબાવો.',
   },
+  reviewDecide: {
+    en: "Look at each item and its photo, and tap Reject item on any that isn't right. Then approve the inspection, or send it back for re-inspection.",
+    hi: 'हर आइटम और उसकी फ़ोटो देखें, और जो ठीक न हो उस पर ‘आइटम नामंज़ूर करें’ दबाएँ। फिर निरीक्षण मंज़ूर करें, या दोबारा निरीक्षण के लिए वापस भेजें।',
+    gu: 'દરેક આઇટમ અને તેનો ફોટો જુઓ, અને જે બરાબર ન હોય તેના પર ‘આઇટમ નામંજૂર કરો’ દબાવો. પછી નિરીક્ષણ મંજૂર કરો, અથવા ફરી નિરીક્ષણ માટે પાછું મોકલો.',
+  },
   approveConfirm: {
     en: 'Check your choice, then tap here to confirm it.',
     hi: 'अपना चुनाव जाँचें, फिर पक्का करने के लिए यहाँ दबाएँ।',
@@ -167,6 +172,11 @@ export const GUIDE_TITLES = {
     en: 'Send the daily log',
     hi: 'रोज़ का लॉग भेजें',
     gu: 'રોજનો લૉગ મોકલો',
+  },
+  reviewInspection: {
+    en: 'Review a submitted inspection',
+    hi: 'जमा हुए निरीक्षण की जाँच करें',
+    gu: 'જમા થયેલા નિરીક્ષણની તપાસ કરો',
   },
   approveDecision: {
     en: 'Approve a choice',

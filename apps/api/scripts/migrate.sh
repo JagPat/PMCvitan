@@ -599,6 +599,9 @@ if echo "$out" | grep -q "P3005"; then
   #
   # The Hub catalog generation (#1118 U5m, 20280127000000) is here for SV1-a's reason: its rows are sealed raw writes
   # under the catalog gate, which a db-push baseline does not seed. It is audited and re-runnable.
+  #
+  # Voice-note corrections (#1177 VT1b, 20280128000000) are here for the transcripts' reason: a check and four triggers.
+  # The file is guarded and re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -648,7 +651,8 @@ if echo "$out" | grep -q "P3005"; then
 20280123000000_hub_receipts
 20280125000000_site_visit_file_removal
 20280126000000_voice_transcript
-20280127000000_hub_catalog_generation"
+20280127000000_hub_catalog_generation
+20280128000000_voice_transcript_correction"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
