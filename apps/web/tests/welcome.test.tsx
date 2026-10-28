@@ -84,9 +84,12 @@ describe('the first-time welcome', () => {
   });
 
   it('a role with no guide yet gets one "Got it"', async () => {
-    const { Welcome } = await setup('consultant', 'decision-log');
+    // every role has a guide today: a role without one is a guide list with none for it
+    vi.doMock('@/guide/guides', async (load) => ({ ...(await load<typeof import('@/guide/guides')>()), guidesForRole: () => [], guidesFor: () => [] }));
+    const { Welcome } = await setup('contractor', 'decision-log');
+    vi.doUnmock('@/guide/guides');
     render(<Welcome />);
-    expect(byTestId('welcome')?.textContent).toContain('answer what is sent to you');
+    expect(byTestId('welcome')?.textContent).toContain('See the work planned on site');
     expect(byTestId('welcome-tour')).toBeNull();
     expect(byTestId('welcome-close')?.textContent).toBe('Got it');
   });

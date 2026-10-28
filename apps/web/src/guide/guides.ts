@@ -1,4 +1,4 @@
-import { can, type Role, type ScreenKey } from '@vitan/shared';
+import { can, viewerIsConsultee, type Decision, type Role, type ScreenKey } from '@vitan/shared';
 import type { GuideTip, GuideTitle } from './words';
 import { guidedPhotoPicksOf, type GuideOutcome } from './outcomes';
 import { useGuideState } from './guideState';
@@ -23,11 +23,12 @@ export interface GuideStep {
   target: string;
   tip: GuideTip;
   /**
-   * When the step is complete: `press` (default) when the control is pressed; `done` when the control
+   * When the step is complete: `press` (default) when the control is pressed; `focus` when a text box is pressed or
+   * reached from the keyboard; `done` when the control
    * says so with `data-guide-done="true"` (a photo actually attached), so a cancelled picker does not
    * move the guide on; `outcome` when the store reports the action really succeeded (see `outcome`).
    */
-  until?: 'press' | 'done' | 'outcome';
+  until?: 'press' | 'focus' | 'done' | 'outcome';
   /**
    * For `until: 'outcome'`: the store's report that the pressed action succeeded (`ok`) or did not
    * (`failed`). Between the press and the report the guide waits instead of stepping back, because the
@@ -44,6 +45,8 @@ export interface GuideStep {
    * failure (its answer can be lost after the server took it), so it only says true for this run's own action.
    */
   settled?: (key: string | null) => boolean;
+  /** For `until: 'outcome'`: the step a failed report goes back to (the box the attempt emptied), instead of staying here */
+  retryFrom?: number;
   /** point at the control carrying the same `data-guide-key` as the one pressed in an earlier step
    *  (the photo button of the item just failed, not of another failed item), or the key of the record
    *  it belongs to (that checklist's Submit); an `outcome` for another record does not count */
@@ -141,7 +144,74 @@ export const GUIDES: readonly Guide[] = [
       },
     ],
   },
+  {
+    // a member asked for advice on a decision answers it: write it, then send it. The box and its Send carry
+    // `<decision>:<consultation>`, so the Send step and its outcome follow that one request.
+    id: 'answer-advice',
+    title: 'answerAdvice',
+    roles: ['consultant', 'architect', 'pmc', 'engineer', 'contractor'],
+    screen: 'decision-log',
+    available: adviceWaitingOnViewer,
+    steps: answerAdviceSteps(),
+  },
+  {
+    // a client asked for advice answers it on their own Decisions screen, in the same box on the decision's card
+    id: 'answer-advice-client',
+    title: 'answerAdvice',
+    roles: ['client'],
+    screen: 'client-decisions',
+    available: adviceWaitingOnViewer,
+    steps: answerAdviceSteps(),
+  },
 ];
+
+/** Write the advice, then send it: the same two steps wherever the advice box shows. */
+function answerAdviceSteps(): GuideStep[] {
+  return [
+    // keyed: any box starts it; after a refused send it points back at the same request's box
+    { target: 'advice-write', tip: 'adviceWrite', until: 'focus', keyed: true },
+    {
+      target: 'advice-send',
+      tip: 'adviceSend',
+      keyed: true,
+      until: 'outcome',
+      outcome: { ok: 'advice-sent', failed: 'advice-send-failed', held: 'advice-not-kept' },
+      settled: adviceAnswered,
+      // Send empties the box, so a refused send goes back to writing it again
+      retryFrom: 0,
+    },
+  ];
+}
+
+/** A decision still open to advice: the same open set the advice box itself reads (`ConsultationThread`). */
+function openToAdvice(d: Decision): boolean {
+  return !d.draft && (d.status === 'pending' || d.status === 'change' || d.status === 'awaiting_countersign');
+}
+
+/** This viewer was asked for advice on the decision, in its current cycle, and has not answered yet: its advice box shows. */
+function adviceAskedOf(d: Decision, userId: string | null): boolean {
+  const thread = d.consultations ?? [];
+  const cycle = d.approvalCycle ?? 0;
+  return openToAdvice(d) && viewerIsConsultee(thread, cycle, userId) && thread.some((c) => c.consulteeUserId === userId && c.openCycle === cycle && !c.response);
+}
+
+/** Someone asked this viewer for advice that is still open and unanswered. */
+function adviceWaitingOnViewer(): boolean {
+  const s = useStore.getState();
+  return s.decisions.some((d) => adviceAskedOf(d, s.sessionUserId));
+}
+
+/** The run's key is `<decision id>:<consultation id>`: answered once that consultation carries a response (an earlier one
+ *  answered on the same decision is not this one). */
+function adviceAnswered(key: string | null): boolean {
+  if (key === null) return false;
+  const at = key.indexOf(':');
+  if (at < 0) return false;
+  const decisionId = key.slice(0, at);
+  const consultationId = key.slice(at + 1);
+  const d = useStore.getState().decisions.find((x) => x.id === decisionId);
+  return (d?.consultations ?? []).some((c) => c.id === consultationId && !!c.response);
+}
 
 /** A decision waits on this viewer (the client's Decisions screen shows its Approve buttons only then). */
 function decisionWaitingOnViewer(): boolean {

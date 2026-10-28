@@ -88,7 +88,7 @@ describe('the Help sheet', () => {
     }
   });
 
-  it('lists the PMC its tasks, and a consultant that there is no step-by-step help yet', async () => {
+  it('lists the PMC its tasks, and a role with no guide that there is no step-by-step help yet', async () => {
     const pmc = await setup('pmc', 'decision-log');
     render(<pmc.HelpButton />);
     press(byTestId('help-open')!);
@@ -98,12 +98,15 @@ describe('the Help sheet', () => {
     expect(byTestId('help-no-guides')).toBeNull();
     cleanup();
 
-    const consultant = await setup('consultant', 'decision-log');
-    render(<consultant.HelpButton />);
+    // every role has a guide today: a role without one is a guide list with none for it
+    vi.doMock('@/guide/guides', async (load) => ({ ...(await load<typeof import('@/guide/guides')>()), guidesForRole: () => [], guidesFor: () => [] }));
+    const contractor = await setup('contractor', 'decision-log');
+    render(<contractor.HelpButton />);
     press(byTestId('help-open')!);
     expect(byTestId('help-no-guides')?.textContent).toBe('No step-by-step help for your role yet.');
     expect(document.querySelectorAll('[data-testid^="help-guide-"]')).toHaveLength(0);
     expect(byTestId('help-tips-again')).toBeTruthy();
+    vi.doUnmock('@/guide/guides');
   });
 
   it.each(['hi', 'gu'] as const)('reads in %s with no English left over, for every role', async (lang) => {
