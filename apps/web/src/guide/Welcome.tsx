@@ -57,10 +57,10 @@ export function Welcome() {
   const guides = guidesForRole(role).filter((g) => reachable.has(g.screen));
   const first = guides[0] ?? null;
   const showMeAround = () => {
-    const pick = pickGuide(guides, readGuidesDone(key), useStore.getState().screen);
+    const [pick, ...fallbacks] = tourOrder(guides, readGuidesDone(key), useStore.getState().screen);
     if (!pick) return;
     close();
-    useGuideState.getState().request(pick);
+    useGuideState.getState().request(pick, fallbacks);
     setScreen(pick.screen);
   };
 
@@ -90,13 +90,15 @@ export function Welcome() {
 }
 
 /**
- * The guide "Show me around" starts: the first one not done yet that can start, i.e. on this screen with its first
- * control there and pressable now, or on another screen with something to show it on; failing that the first that can start at
- * all, done or not; failing that the first not done (Help's note then says there is nothing to show it on yet).
+ * The guides "Show me around" tries, in turn: the ones not done yet before the rest, each only if it can start. On
+ * this screen that is known now (its first control is there and pressable); on another screen it is the guide's own
+ * `available` check, a guess the overlay settles: when the guide cannot start once there, it asks for the next one
+ * (`GuideHost`). With none left to try, the first not done is asked for alone, and Help's note says there is nothing
+ * to show it on yet.
  */
-function pickGuide(guides: readonly Guide[], done: ReadonlySet<string>, screen: string): Guide | null {
-  const canStart = (g: Guide) =>
-    g.screen === screen ? guideStartable(g) : (g.available?.() ?? true);
-  const notDone = guides.filter((g) => !done.has(g.id));
-  return notDone.find(canStart) ?? guides.find(canStart) ?? notDone[0] ?? guides[0] ?? null;
+function tourOrder(guides: readonly Guide[], done: ReadonlySet<string>, screen: string): Guide[] {
+  const canStart = (g: Guide) => (g.screen === screen ? guideStartable(g) : (g.available?.() ?? true));
+  const ordered = [...guides.filter((g) => !done.has(g.id)), ...guides.filter((g) => done.has(g.id))];
+  const tries = ordered.filter(canStart);
+  return tries.length > 0 ? tries : ordered.slice(0, 1);
 }
