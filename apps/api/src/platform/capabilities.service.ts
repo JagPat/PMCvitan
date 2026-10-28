@@ -39,10 +39,16 @@ export const CONSULTATION_CAPABILITY = 'consultation';
  *  (`capability:disable`) — the server-side rollback the Board asked for instead of a web revert. */
 export const HOME_NAV_CAPABILITY = 'home-nav';
 
-/** The capabilities `capability:disable` accepts. Each must be presentation only: no stored data,
- *  queued work or command depends on it being on. A pilot hub never belongs here — turning
- *  `materials`, `labour` or `commercial` off under live records would strand them. */
-export const SWITCHABLE_CAPABILITIES: readonly string[] = [HOME_NAV_CAPABILITY];
+/** #1177 VT2 — the per-project VOICE NOTE TO TEXT switch (AI item 1). On, the server writes out a voice note's words
+ *  through the speech provider when someone views it, and the web shows them; off (no row), no note is sent anywhere
+ *  and no transcript is shown. Text already written stays stored and returns if the switch comes back on: nothing
+ *  else depends on it, so it may be turned off as freely as `home-nav` (#1177 H5). */
+export const VOICE_TEXT_CAPABILITY = 'voice-text';
+
+/** The capabilities `capability:disable` accepts. Each must be one whose OFF strands nothing: no queued work or
+ *  command depends on it being on (`voice-text` keeps its stored text, unshown). A pilot hub never belongs here —
+ *  turning `materials`, `labour` or `commercial` off under live records would strand them. */
+export const SWITCHABLE_CAPABILITIES: readonly string[] = [HOME_NAV_CAPABILITY, VOICE_TEXT_CAPABILITY];
 
 @Injectable()
 export class CapabilitiesService {

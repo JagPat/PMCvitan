@@ -299,6 +299,14 @@ export const removeVisitFileSchema = z.object({
 }).strict();
 export type RemoveVisitFileInput = z.infer<typeof removeVisitFileSchema>;
 
+// #1177 VT2 — a person's correction of a voice note's written-out words, or null to take the correction back. The
+// server trims it; a correction holds some words and at most 20,000 characters (the database's bound, VT1b C4), which
+// the service counts by character; this bound is in UTF-16 units, so it lets every such correction through.
+export const correctTranscriptSchema = z.object({
+  text: z.string().max(40_000).nullable(),
+}).strict();
+export type CorrectTranscriptInput = z.infer<typeof correctTranscriptSchema>;
+
 // Re-file an existing photo or drawing onto a location-tree node (or null to unfile).
 // Shared by PATCH /media/:id/node and /drawings/:id/node — "manage & modify" from the tree.
 export const setNodeSchema = z.object({ nodeId: z.string().trim().min(1).nullable() });

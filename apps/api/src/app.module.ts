@@ -95,6 +95,10 @@ import { RealtimeGateway } from './realtime/realtime.gateway';
 import { StorageService } from './media/storage.service';
 import { SignedUrlService } from './media/signed-url.service';
 import { MediaService } from './media/media.service';
+import { VoiceTranscriptService } from './media/voice-transcript.service';
+import { SPEECH_PROVIDER } from './media/speech/speech-provider';
+import { SarvamSpeechProvider } from './media/speech/sarvam.provider';
+import { readSarvamKey } from './media/speech/speech-config';
 import { MediaQueryService } from './media/media.query';
 import { MediaDisposability } from './media/media-disposability';
 import { MediaController } from './media/media.controller';
@@ -250,6 +254,10 @@ import { MediaParticipant } from './media/media.participant';
     StorageService,
     SignedUrlService,
     MediaService,
+    // #1177 VT2 — voice note to text: the speech provider is Sarvam when SARVAM_API_KEY is set, and absent (the feature
+    // answers "not available") when it is not
+    { provide: SPEECH_PROVIDER, useFactory: () => { const key = readSarvamKey(); return key ? new SarvamSpeechProvider(key) : null; } },
+    VoiceTranscriptService,
     MediaQueryService,
     MediaDisposability,
     DrawingsService,

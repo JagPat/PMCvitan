@@ -38,6 +38,10 @@ export const mediaManifest: ModuleManifest = {
     'PATCH /projects/:projectId/media/:mediaId/node',
     'POST /projects/:projectId/media/:mediaId/poster',
     'POST /projects/:projectId/media/:mediaId/visit-removal',
+    // #1177 VT2 — a voice note's written-out words: read, move on one step, try again, correct
+    'POST /projects/:projectId/media/:mediaId/transcript',
+    'POST /projects/:projectId/media/:mediaId/transcript/retry',
+    'POST /projects/:projectId/media/:mediaId/transcript/correction',
     'DELETE /media/:id',
   ],
   // #482 (Board, 14 Oct 2026) — every member uploads a plain site photo and deletes their own within the hour;

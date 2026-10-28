@@ -2,8 +2,9 @@ import { Body, Controller, Delete, ForbiddenException, Get, HttpCode, NotFoundEx
 import type { Response } from 'express';
 import { MediaService } from './media.service';
 import { SignedUrlService } from './signed-url.service';
+import { VoiceTranscriptService } from './voice-transcript.service';
 import { ZodPipe } from '../common/zod.pipe';
-import { addPosterSchema, createMediaSchema, removeVisitFileSchema, setNodeSchema, type AddPosterInput, type CreateMediaInput, type RemoveVisitFileInput, type SetNodeInput } from '../contracts';
+import { addPosterSchema, correctTranscriptSchema, createMediaSchema, removeVisitFileSchema, setNodeSchema, type AddPosterInput, type CorrectTranscriptInput, type CreateMediaInput, type RemoveVisitFileInput, type SetNodeInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { Public, RolesFor, RolesGuard } from '../common/roles';
 import { MEDIA_NOT_FOUND_MESSAGE } from '@vitan/shared';
@@ -13,6 +14,7 @@ export class MediaController {
   constructor(
     private readonly media: MediaService,
     private readonly signed: SignedUrlService,
+    private readonly transcripts: VoiceTranscriptService,
   ) {}
 
   /** Upload a site photo (base64). Returns { id, url } — url is absolute (S3/R2) or /media/:id (dev stub).
@@ -56,6 +58,49 @@ export class MediaController {
     @Body(new ZodPipe(addPosterSchema)) body: AddPosterInput,
   ) {
     return this.media.addPoster(projectId, mediaId, user, body);
+  }
+
+  /** #1177 VT2 — a voice note's written-out words, where the project's `voice-text` switch is on (404 elsewhere).
+   *  Every member who can see the note reads them. */
+  @Get('projects/:projectId/media/:mediaId/transcript')
+  @UseGuards(JwtGuard, RolesGuard)
+  @RolesFor('project.read')
+  transcript(@Param('projectId') projectId: string, @Param('mediaId') mediaId: string, @CurrentUser() user: AuthUser) {
+    return this.transcripts.get(projectId, mediaId, user);
+  }
+
+  /** #1177 VT2 — move the writing-out of a voice note on by one step (start the provider's job, or check it) and answer
+   *  the words as they then stand. The web asks while it shows a note whose words are not written yet (H2). */
+  @Post('projects/:projectId/media/:mediaId/transcript')
+  @HttpCode(200)
+  @UseGuards(JwtGuard, RolesGuard)
+  @RolesFor('project.read')
+  advanceTranscript(@Param('projectId') projectId: string, @Param('mediaId') mediaId: string, @CurrentUser() user: AuthUser) {
+    return this.transcripts.advance(projectId, mediaId, user);
+  }
+
+  /** #1177 VT2 — "Try again" once after the words could not be written out. The note's recorder, the PMC or the engineer. */
+  @Post('projects/:projectId/media/:mediaId/transcript/retry')
+  @HttpCode(200)
+  @UseGuards(JwtGuard, RolesGuard)
+  @RolesFor('media.upload')
+  retryTranscript(@Param('projectId') projectId: string, @Param('mediaId') mediaId: string, @CurrentUser() user: AuthUser) {
+    return this.transcripts.retry(projectId, mediaId, user);
+  }
+
+  /** #1177 VT2 — correct a voice note's words (or take the correction back with `null`). The note's recorder, the PMC or
+   *  the engineer; each correction is added as its own row, and the words heard stay stored beside them (H7, VT1b). */
+  @Post('projects/:projectId/media/:mediaId/transcript/correction')
+  @HttpCode(200)
+  @UseGuards(JwtGuard, RolesGuard)
+  @RolesFor('media.upload')
+  correctTranscript(
+    @Param('projectId') projectId: string,
+    @Param('mediaId') mediaId: string,
+    @CurrentUser() user: AuthUser,
+    @Body(new ZodPipe(correctTranscriptSchema)) body: CorrectTranscriptInput,
+  ) {
+    return this.transcripts.correct(projectId, mediaId, user, body.text);
   }
 
   /** #995 V1b — serve a clip's still frame, on its own `?t=` token (a clip's token does not open it): a 302 to a
