@@ -576,8 +576,8 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
 const READ_ONLY_CONTROLLERS: Record<string, string> = {
   'health.controller.ts': 'liveness/readiness probes',
   'snapshot/project.controller.ts': 'GET the RBAC-filtered project snapshot',
-  // #482 seen-state pins — the pin counts behind OPS_TOKEN, door guard before the rate limit
-  'platform/ops/ops-compat.controller.ts': 'GET /ops/compat/state-pins: seen-state pin counts from AuditLog',
+  // #482 seen-state pins and Idempotency-Key 2a — counts behind OPS_TOKEN, door guard before the rate limit
+  'platform/ops/ops-compat.controller.ts': 'GET /ops/compat/state-pins and /ops/compat/client-keys: seen-state pin counts from AuditLog, key-sighting counts from CommandKeySighting',
 };
 
 describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
