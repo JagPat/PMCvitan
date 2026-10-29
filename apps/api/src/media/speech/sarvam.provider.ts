@@ -1,4 +1,4 @@
-import { SpeechProviderError, type SpeechJobState, type SpeechProvider } from './speech-provider';
+import { SPEECH_JOB_ID, SPEECH_LANGUAGE, SPEECH_TEXT_MAX, SpeechProviderError, type SpeechJobState, type SpeechProvider } from './speech-provider';
 
 /**
  * #1177 VT2 — Sarvam's batch speech-to-text job API (H1: every note goes through a batch job, since the synchronous call
@@ -49,9 +49,10 @@ export class SarvamSpeechProvider implements SpeechProvider {
 
   async createJob(): Promise<string> {
     // a job may have been made whatever its answer says, so an answer with no usable id is final: no try makes another
-    // job, and the note's one "Try again" is left (the caller refuses an id it cannot store as final too)
+    // job, and the note's one "Try again" is left. So is an id the table could not store (blank, too long, not visible
+    // ASCII): the caller stores the id before anything is sent, and cannot
     const created = await this.api('POST', '/speech-to-text/job/v1', { job_parameters: SARVAM_JOB_PARAMETERS }, true);
-    if (typeof created.job_id !== 'string' || created.job_id.trim() === '') throw new SpeechProviderError('Sarvam did not return a job id', true);
+    if (typeof created.job_id !== 'string' || !SPEECH_JOB_ID.test(created.job_id)) throw new SpeechProviderError('Sarvam did not return a usable job id', true);
     return created.job_id;
   }
 
@@ -91,7 +92,7 @@ export class SarvamSpeechProvider implements SpeechProvider {
     if (!body || typeof body.transcript !== 'string') return { state: 'failed', reason: 'Sarvam output had no transcript' };
     // words that are empty or only spaces are a note with no speech: done, as heard (VT1a V3, V4), never failed, since
     // a "Try again" would only pay to hear the same silence
-    return { state: 'done', text: body.transcript, languageCode: typeof body.language_code === 'string' ? body.language_code : null };
+    return storable(body.transcript, body.language_code);
   }
 
   /** One JSON call to Sarvam's API, authenticated by header. An answer that cannot be read (not a JSON object, or
@@ -122,6 +123,33 @@ export class SarvamSpeechProvider implements SpeechProvider {
       throw new SpeechProviderError('Sarvam could not be reached', false);
     }
   }
+}
+
+/**
+ * A done result as the table can store it (VT1a's shape check), so the caller never holds words it cannot write:
+ * - PostgreSQL text holds no NUL and no lone half of a surrogate pair: a NUL is dropped, and a lone half is shown as
+ *   U+FFFD, as the decoder shows nothing else (it refuses bytes that are not UTF-8);
+ * - more than {@link SPEECH_TEXT_MAX} characters is far beyond any note's words (a note is at most two minutes): the
+ *   job reads as failed, as an output past its byte bound does, never as words cut short;
+ * - a language not in the table's shape is kept as none, whatever case or separator the provider wrote it in, rather
+ *   than refusing the words.
+ */
+function storable(transcript: string, language: unknown): SpeechJobState {
+  const text = transcript.replace(/\u0000/g, '').replace(LONE_SURROGATES, '\uFFFD');
+  let chars = 0;
+  for (const _ of text) if (++chars > SPEECH_TEXT_MAX) return { state: 'failed', reason: 'Sarvam output was too long' };
+  return { state: 'done', text, languageCode: languageCode(language) };
+}
+
+/** A half of a surrogate pair standing alone. */
+const LONE_SURROGATES = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/** The provider's language in the table's shape ('gu-IN', 'en'), whatever case or separator it was written in; else null. */
+function languageCode(value: unknown): string | null {
+  const m = typeof value === 'string' ? /^([A-Za-z]{2,3})(?:[-_]([A-Za-z]{2}))?$/.exec(value.trim()) : null;
+  if (!m) return null;
+  const code = m[2] ? `${m[1]!.toLowerCase()}-${m[2].toUpperCase()}` : m[1]!.toLowerCase();
+  return SPEECH_LANGUAGE.test(code) ? code : null;
 }
 
 const TOO_LARGE = Symbol('too large');

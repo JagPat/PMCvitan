@@ -88,8 +88,12 @@ describe('SarvamSpeechProvider', () => {
     for (const answer of [{ json: {} }, { json: { job_id: 7 } }, { json: { job_id: '' } }, { json: { job_id: '  ' } }, { raw: 'not json' }, { stream: [big] }] as Answer[]) {
       expect((await refusal(fake({ ...START, 'POST /speech-to-text/job/v1': answer }).provider.createJob())).final, JSON.stringify(answer)).toBe(true);
     }
-    // an id the database would refuse is the caller's to judge (it refuses one as final before storing it)
-    expect(await fake({ ...START, 'POST /speech-to-text/job/v1': { json: { job_id: 'j'.repeat(201) } } }).provider.createJob()).toBe('j'.repeat(201));
+    // an id the table could not store is final too (VT1a: visible ASCII, not blank, at most 200 characters), and one it
+    // can is handed back exactly as sent
+    for (const job_id of ['j'.repeat(201), 'job 7', 'job\u00e97', '\tjob-7']) {
+      expect((await refusal(fake({ ...START, 'POST /speech-to-text/job/v1': { json: { job_id } } }).provider.createJob())).final, job_id).toBe(true);
+    }
+    expect(await fake({ ...START, 'POST /speech-to-text/job/v1': { json: { job_id: 'j'.repeat(200) } } }).provider.createJob()).toBe('j'.repeat(200));
   });
 
   it('an answer without an https upload link is Sarvam\'s fault, not the note\'s: it may be tried again', async () => {
@@ -286,6 +290,30 @@ describe('SarvamSpeechProvider', () => {
       [`GET ${DOWNLOAD}`]: { stream: [words.slice(0, cut), words.slice(cut)] },
     });
     expect(await small.checkJob('job-7')).toEqual({ state: 'done', text: 'પાઇપ લાઇન', languageCode: 'gu-IN' });
+  });
+
+  it('hands back only a done result the table can store, rule by rule (VT1a VoiceTranscript_shape_check)', async () => {
+    const read = async (output: unknown) => fake({
+      ...status('Completed', [{ file_name: 'm1.json' }]),
+      'POST /speech-to-text/job/v1/download-files': { json: { download_urls: { 'm1.json': { file_url: DOWNLOAD } } } },
+      [`GET ${DOWNLOAD}`]: { json: output },
+    }).provider.checkJob('job-7');
+    // char_length("text") <= 20000, counted in characters as PostgreSQL counts them, not in UTF-16 units
+    expect(await read({ transcript: 'x'.repeat(20_000) })).toMatchObject({ state: 'done' });
+    expect(await read({ transcript: '😀'.repeat(20_000) })).toMatchObject({ state: 'done' });
+    expect(await read({ transcript: 'x'.repeat(20_001) })).toEqual({ state: 'failed', reason: 'Sarvam output was too long' });
+    expect(await read({ transcript: 'પ'.repeat(20_001) })).toEqual({ state: 'failed', reason: 'Sarvam output was too long' });
+    // PostgreSQL text holds no NUL and no lone surrogate half
+    expect(await read({ transcript: 'a\u0000b' })).toMatchObject({ state: 'done', text: 'ab' });
+    expect(await read({ transcript: 'a\ud800b\udc00c' })).toMatchObject({ state: 'done', text: 'a\ufffdb\ufffdc' });
+    expect(await read({ transcript: 'ok 😀' })).toMatchObject({ state: 'done', text: 'ok 😀' });
+    // "languageCode" ~ '^[a-z]{2,3}(-[A-Z]{2})?$', or none
+    for (const [given, kept] of [['gu-IN', 'gu-IN'], ['EN_in', 'en-IN'], [' hi ', 'hi'], ['english', null], ['gu-IND', null], [7, null], [null, null]] as const) {
+      expect(await read({ transcript: 'words', language_code: given }), String(given)).toMatchObject({ state: 'done', languageCode: kept });
+    }
+    // ("status" = 'done') = ("text" IS NOT NULL): a done result always has words, '' for a note with no speech
+    expect(await read({ transcript: '' })).toMatchObject({ state: 'done', text: '' });
+    expect(await read({ language_code: 'gu-IN' })).toMatchObject({ state: 'failed' });
   });
 
   it('a completed output whose words are empty or only spaces is done with those words: a note with no speech (VT1a V3)', async () => {

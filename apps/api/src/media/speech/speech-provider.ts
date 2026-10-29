@@ -14,7 +14,19 @@ export class SpeechProviderError extends Error {
   }
 }
 
-/** A job's state as the provider reports it. */
+/**
+ * The bounds of what a provider hands back, which are those of the table it is stored in ("VoiceTranscript", VT1a's
+ * `VoiceTranscript_shape_check`, 20280126000000). A provider never hands back a value the table would refuse: an id it
+ * cannot store is a final error, and a done result's words and language are made to fit or the job reads as failed.
+ */
+/** A job id: one run of visible ASCII, at most 200 characters (VT1a: not blank, char_length <= 200). */
+export const SPEECH_JOB_ID = /^[\x21-\x7e]{1,200}$/;
+/** A done job's words, counted in characters as PostgreSQL counts them (char_length <= 20000). */
+export const SPEECH_TEXT_MAX = 20_000;
+/** A done job's language, a BCP-47 code in the table's shape. */
+export const SPEECH_LANGUAGE = /^[a-z]{2,3}(-[A-Z]{2})?$/;
+
+/** A job's state as the provider reports it. A done result always fits the table (see the bounds above). */
 export type SpeechJobState =
   /** made, but not started: its recording is not in, or its start was not heard */
   | { state: 'waiting' }
