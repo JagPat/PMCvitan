@@ -39,8 +39,15 @@ import { SPEECH_PROVIDER, SpeechProviderError, type SpeechJobState, type SpeechP
 /** A claim is held this long; a step's exchanges are bounded inside it (five at most: the bucket read and four Sarvam
  *  calls, 20 s each). */
 export const TRANSCRIPT_LEASE_SECONDS = 120;
-/** A running job is asked about at most this often, however many people are looking at the note. */
-export const TRANSCRIPT_CHECK_EVERY_SECONDS = 4;
+/** A running job is asked about at most this often, however many people are looking at the note (Sarvam asks for 5 s). */
+export const TRANSCRIPT_CHECK_EVERY_SECONDS = 5;
+/** A job not finished this long after it was stored ends failed, with its one "Try again" (Sarvam's own client waits
+ *  600 s); a running job the provider never finishes is asked about no longer than this. */
+export const TRANSCRIPT_RUNNING_MAX_SECONDS = 600;
+/** The provider's rate limit is account-wide: once it refuses as busy, no note asks again for this long. */
+export const TRANSCRIPT_BUSY_PAUSE_SECONDS = 20;
+/** A step the provider refused as busy leaves this on the row: no try spent, and every note waits out the pause. */
+export const TRANSCRIPT_BUSY = 'Sarvam is busy; asking again shortly';
 /** After a failed try the next one waits this long, so a short outage does not use up a note's tries in a few views. */
 export const TRANSCRIPT_RETRY_PAUSE_SECONDS = 20;
 /** A row is marked failed on its third failed try (H6). */
@@ -92,6 +99,8 @@ interface Row {
 interface Claimed {
   providerJobId: string | null;
   attempts: number;
+  /** when this try's job was stored (VT1d's trigger), null while there is none */
+  runningSince: Date | null;
 }
 
 interface Note {
@@ -130,7 +139,10 @@ export class VoiceTranscriptService {
   async advance(projectId: string, mediaId: string, user: AuthUser): Promise<VoiceTranscriptDto> {
     const note = await this.visibleNote(projectId, mediaId, user);
     const provider = this.configured();
-    if (!(await this.read(projectId, mediaId))) await this.ensureRow(projectId, mediaId);
+    const current = await this.read(projectId, mediaId);
+    if (!current) await this.ensureRow(projectId, mediaId);
+    // a settled note has no step to take
+    if (current?.status === 'done' || current?.status === 'failed') return this.dto(note, user, current);
     const token = randomUUID();
     const claimed = await this.claim(projectId, mediaId, token);
     if (claimed) await this.step(provider, note, projectId, token, claimed);
@@ -201,37 +213,67 @@ export class VoiceTranscriptService {
   // ── the step ────────────────────────────────────────────────────────────────────────────────────────────────
 
   private async step(provider: SpeechProvider, note: Note, projectId: string, token: string, row: Claimed): Promise<void> {
+    // a job past its time is asked once more: words it holds are taken (they are paid for); anything else ends it failed
+    const late = row.runningSince !== null && Date.now() - row.runningSince.getTime() > TRANSCRIPT_RUNNING_MAX_SECONDS * 1000;
+    const tooLate = () => this.writeBack(projectId, note.id, token, { status: 'failed', lastError: 'Sarvam did not finish the job in time' });
+    // each exchange is asked only while the switch is on: one switched off mid-step makes no further call, and the row
+    // is left as it was (released), to carry on or end within its bounds once the switch is back on
+    const on = async () => {
+      if (await this.capabilities.isEnabled(projectId, VOICE_TEXT_CAPABILITY)) return true;
+      await this.writeBack(projectId, note.id, token, {});
+      return false;
+    };
+    // the job this step works on: the claimed row's, or the one it stores
+    let jobId = row.providerJobId;
     try {
-      if (row.providerJobId === null) {
+      if (!(await on())) return;
+      if (jobId === null) {
         // the job's id is stored before anything else is sent, so a failure from here on carries on with this job and
         // never pays for a second one; nothing matches once the note is gone or the lease lost, and the step ends
-        const jobId = await provider.createJob();
+        const made = await provider.createJob();
         // an id the database would refuse is the provider's fault, and no later try mends it
-        if (!JOB_ID.test(jobId)) throw new SpeechProviderError('The speech service gave an unusable job id', true);
-        if (!(await this.recordJob(projectId, note.id, token, jobId))) return;
+        if (!JOB_ID.test(made)) throw new SpeechProviderError('The speech service gave an unusable job id', true);
+        if (!(await this.recordJob(projectId, note.id, token, made))) return;
+        jobId = made;
+        if (!(await on())) return;
         await this.begin(provider, note, projectId, token, jobId, { lastError: null });
         return;
       }
-      const state: SpeechJobState = await provider.checkJob(row.providerJobId);
-      if (state.state === 'waiting') {
+      const state: SpeechJobState = await provider.checkJob(jobId);
+      if (state.state === 'done') {
+        const language = languageCode(state.languageCode);
+        await this.writeBack(projectId, note.id, token, { status: 'done', text: fit(state.text, TRANSCRIPT_TEXT_MAX), languageCode: language, lastError: null });
+      } else if (state.state === 'failed') {
+        await this.writeBack(projectId, note.id, token, { status: 'failed', lastError: fit(state.reason, ERROR_MAX) });
+      } else if (late) {
+        await tooLate();
+      } else if (state.state === 'waiting') {
         // made, but the provider has not heard its start (a failed send, or a step that ended first). Starting it again
         // is a try, paced and bounded like any other, so a job the provider keeps reporting unstarted ends failed (H6)
         if (row.attempts >= TRANSCRIPT_MAX_ATTEMPTS) {
           await this.writeBack(projectId, note.id, token, { status: 'failed', lastError: 'Sarvam never started the job' });
           return;
         }
-        await this.begin(provider, note, projectId, token, row.providerJobId, { attempts: row.attempts + 1, lastError: 'Sarvam had not started the job' });
-      } else if (state.state === 'running') {
-        await this.writeBack(projectId, note.id, token, { lastError: null });
-      } else if (state.state === 'done') {
-        const language = languageCode(state.languageCode);
-        await this.writeBack(projectId, note.id, token, { status: 'done', text: fit(state.text, TRANSCRIPT_TEXT_MAX), languageCode: language, lastError: null });
+        await this.begin(provider, note, projectId, token, jobId, { attempts: row.attempts + 1, lastError: 'Sarvam had not started the job' });
       } else {
-        await this.writeBack(projectId, note.id, token, { status: 'failed', lastError: fit(state.reason, ERROR_MAX) });
+        await this.writeBack(projectId, note.id, token, { lastError: null });
       }
     } catch (error) {
+      const busy = error instanceof SpeechProviderError && error.busy;
+      // busy: the provider's account-wide limit, not this note's fault, and every note waits it out. A job within its
+      // time spends no try on it (its running time bounds it); a note with no job yet, or a job past its time, spends
+      // one, so a provider busy for good still ends it within its tries. A late job whose answer was lost on the way
+      // also spends a try rather than ending, since its words may be there
+      if (busy && jobId !== null && !late) {
+        await this.writeBack(projectId, note.id, token, { lastError: TRANSCRIPT_BUSY });
+        return;
+      }
       const final = error instanceof SpeechProviderError && error.final;
-      const reason = fit(error instanceof SpeechProviderError ? error.message : 'The note could not be written out', ERROR_MAX);
+      if (late && final) {
+        await tooLate();
+        return;
+      }
+      const reason = busy ? TRANSCRIPT_BUSY : fit(error instanceof SpeechProviderError ? error.message : 'The note could not be written out', ERROR_MAX);
       if (!(error instanceof SpeechProviderError)) this.log.warn(`voice note ${note.id}: ${(error as Error).message}`);
       const attempts = row.attempts + 1;
       const failed = final || attempts >= TRANSCRIPT_MAX_ATTEMPTS;
@@ -281,7 +323,22 @@ export class VoiceTranscriptService {
    *  when there is nothing to do now. */
   private async claim(projectId: string, mediaId: string, token: string): Promise<Claimed | null> {
     const now = Date.now();
-    const taken = await this.prisma.voiceTranscript.updateMany({
+    // the provider refused as busy a moment ago, for any note: its limit is account-wide, so every note waits it out
+    const busy = await this.prisma.voiceTranscript.findFirst({
+      // (a row in the middle of its next step, leased, is not a fresh refusal)
+      where: { lastError: TRANSCRIPT_BUSY, leaseToken: null, updatedAt: { gt: new Date(now - TRANSCRIPT_BUSY_PAUSE_SECONDS * 1000) } },
+      select: { mediaId: true },
+    });
+    if (busy) return null;
+    // the claim is made under a share lock on the switch's row, so once switching off reports done no claim is made
+    return this.prisma.$transaction(async (tx) => {
+      if (!(await this.capabilities.holdEnabled(tx, projectId, VOICE_TEXT_CAPABILITY))) return null;
+      return this.claimRow(tx, projectId, mediaId, token, now);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 10_000, timeout: 30_000 });
+  }
+
+  private async claimRow(tx: Prisma.TransactionClient, projectId: string, mediaId: string, token: string, now: number): Promise<Claimed | null> {
+    const taken = await tx.voiceTranscript.updateMany({
       where: {
         projectId, mediaId,
         OR: [
@@ -295,7 +352,7 @@ export class VoiceTranscriptService {
       data: { leaseToken: token, leaseUntil: new Date(now + TRANSCRIPT_LEASE_SECONDS * 1000) },
     });
     if (taken.count === 0) return null;
-    return this.prisma.voiceTranscript.findFirst({ where: { projectId, mediaId, leaseToken: token }, select: { providerJobId: true, attempts: true } });
+    return tx.voiceTranscript.findFirst({ where: { projectId, mediaId, leaseToken: token }, select: { providerJobId: true, attempts: true, runningSince: true } });
   }
 
   // ── reads and checks ────────────────────────────────────────────────────────────────────────────────────────

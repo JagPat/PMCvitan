@@ -5,9 +5,10 @@
  */
 
 /** What a provider call ended in, when it did not succeed. `final` means asking again cannot help (a refused file, a
- *  bad key, a job the provider failed); otherwise the try may be repeated, within the caller's bound. */
+ *  bad key, a job the provider failed); otherwise the try may be repeated, within the caller's bound. `busy` means the
+ *  provider refused for its own load (a rate limit, which is account-wide): every note waits, and no note's try is spent. */
 export class SpeechProviderError extends Error {
-  constructor(message: string, readonly final: boolean) {
+  constructor(message: string, readonly final: boolean, readonly busy = false) {
     super(message);
     this.name = 'SpeechProviderError';
   }

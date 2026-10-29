@@ -69,6 +69,16 @@ export class CapabilitiesService {
     return row !== null;
   }
 
+  /** Whether the capability is on, read under a share lock on its row inside the caller's transaction: switching it off
+   *  (`disableCapability` deletes the row) waits for that transaction, so nothing the caller starts under the lock can
+   *  begin after the switch reports off (#1177 VT2, Codex #1226 round 2). */
+  async holdEnabled(tx: Prisma.TransactionClient, projectId: string, capability: string): Promise<boolean> {
+    const rows = await tx.$queryRaw<Array<{ one: number }>>`
+      SELECT 1 AS one FROM public."ProjectCapability"
+       WHERE "projectId" = ${projectId} AND "capability" = ${capability} FOR SHARE`;
+    return rows.length > 0;
+  }
+
   /** Route/service gate: behave as if the feature does not exist for a non-pilot project. */
   async assertEnabled(projectId: string, capability: string): Promise<void> {
     if (!(await this.isEnabled(projectId, capability))) throw new NotFoundException('Not found');

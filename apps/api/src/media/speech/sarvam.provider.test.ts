@@ -15,7 +15,7 @@ const UPLOAD = 'https://blob.test/in/note.webm?sig=1';
 const DOWNLOAD = 'https://blob.test/out/note.json?sig=2';
 
 type Call = { url: string; method: string; headers: Record<string, string>; body: unknown; redirect?: RequestInit['redirect'] };
-type Answer = { status?: number; json?: unknown; raw?: string } | Error;
+type Answer = { status?: number; json?: unknown; raw?: string; stream?: Uint8Array[] } | Error;
 
 function fake(answers: Record<string, Answer>) {
   const calls: Call[] = [];
@@ -29,6 +29,11 @@ function fake(answers: Record<string, Answer>) {
     const answer = answers[key];
     if (!answer) throw new Error(`unexpected ${key}`);
     if (answer instanceof Error) throw answer;
+    if (answer.stream) {
+      // a body sent in chunks with no length
+      const chunks = answer.stream;
+      return new Response(new ReadableStream({ pull(c) { const next = chunks.shift(); if (next) c.enqueue(next); else c.close(); } }), { status: answer.status ?? 200 });
+    }
     const payload = answer.raw ?? (answer.json === undefined ? null : JSON.stringify(answer.json));
     return new Response(payload, { status: answer.status ?? 200 });
   }) as typeof fetch;
@@ -89,6 +94,8 @@ describe('SarvamSpeechProvider', () => {
     for (const [answer, final] of cases) {
       const error = await refusal(fake({ ...START, 'POST /speech-to-text/job/v1': answer }).provider.createJob());
       expect(error.final, JSON.stringify(answer)).toBe(final);
+      // a 429 is Sarvam's account-wide limit: busy, which spends no running job's try
+      expect(error.busy, JSON.stringify(answer)).toBe(!(answer instanceof Error) && answer.status === 429);
       expect(error.message).not.toContain(KEY);
     }
     // the blob store's refusal of the upload is judged the same way
@@ -141,6 +148,28 @@ describe('SarvamSpeechProvider', () => {
       [`GET ${DOWNLOAD}`]: { raw: JSON.stringify({ transcript: 'x'.repeat(1_000_001) }) },
     });
     expect(await provider.checkJob('job-7')).toEqual({ state: 'failed', reason: 'Sarvam output was too large' });
+  });
+
+  it('an output sent in chunks with no length is counted as it comes, and dropped once past the bound', async () => {
+    const chunk = new TextEncoder().encode('x'.repeat(100_000));
+    const big = { stream: Array.from({ length: 20 }, () => chunk.slice()) };
+    const { provider } = fake({
+      ...status('Completed', [{ file_name: 'm1.json' }]),
+      'POST /speech-to-text/job/v1/download-files': { json: { download_urls: { 'm1.json': { file_url: DOWNLOAD } } } },
+      [`GET ${DOWNLOAD}`]: big,
+    });
+    expect(await provider.checkJob('job-7')).toEqual({ state: 'failed', reason: 'Sarvam output was too large' });
+    // the rest was never read
+    expect(big.stream.length).toBeGreaterThan(0);
+    // and words sent in chunks, split inside a character, read whole
+    const words = new TextEncoder().encode(JSON.stringify({ transcript: 'પાઇપ લાઇન', language_code: 'gu-IN' }));
+    const cut = words.indexOf(0xaa);
+    const { provider: small } = fake({
+      ...status('Completed', [{ file_name: 'm1.json' }]),
+      'POST /speech-to-text/job/v1/download-files': { json: { download_urls: { 'm1.json': { file_url: DOWNLOAD } } } },
+      [`GET ${DOWNLOAD}`]: { stream: [words.slice(0, cut), words.slice(cut)] },
+    });
+    expect(await small.checkJob('job-7')).toEqual({ state: 'done', text: 'પાઇપ લાઇન', languageCode: 'gu-IN' });
   });
 
   it('a completed output without words is a failed job', async () => {

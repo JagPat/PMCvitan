@@ -4,7 +4,8 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { SpeechProviderError, type SpeechJobState, type SpeechProvider } from '../../src/media/speech/speech-provider';
 import { CapabilitiesService, VOICE_TEXT_CAPABILITY } from '../../src/platform/capabilities.service';
-import { TRANSCRIPT_MAX_ATTEMPTS, VoiceTranscriptService } from '../../src/media/voice-transcript.service';
+import { disableCapability } from '../../src/platform/capability-switch';
+import { TRANSCRIPT_BUSY, TRANSCRIPT_MAX_ATTEMPTS, TRANSCRIPT_RUNNING_MAX_SECONDS, VoiceTranscriptService } from '../../src/media/voice-transcript.service';
 
 /**
  * #1177 VT2 — a voice note's words, through the real routes against PostgreSQL, with a fake speech provider in place
@@ -36,9 +37,12 @@ class FakeProvider implements SpeechProvider {
   neverBegins = false;
   /** the id the next made job is given, in place of `job-N` */
   nextId: string | null = null;
+  /** run once a job is made, before its id is handed back (a test switches the feature off there) */
+  afterCreate: (() => Promise<void>) | null = null;
 
   async createJob(): Promise<string> {
     this.created.push(this.nextId ?? `job-${this.created.length + 1}`);
+    await this.afterCreate?.();
     return this.created[this.created.length - 1]!;
   }
 
@@ -61,7 +65,7 @@ class FakeProvider implements SpeechProvider {
 
   reset(): void {
     this.created = []; this.started = []; this.begun = new Set(); this.checked = []; this.startGate = null; this.entered = null; this.startError = null; this.checkError = null;
-    this.neverBegins = false; this.nextId = null;
+    this.neverBegins = false; this.nextId = null; this.afterCreate = null;
     this.state = { state: 'running' };
   }
 }
@@ -310,6 +314,157 @@ describe('#1177 VT2 — a voice note written out (live PG, fake provider)', () =
     provider.checkError = null;
     expect((await retry(contractor, m)).body).toMatchObject({ status: 'running' });
     expect(provider.created).toEqual(['job-1', 'job-2']);
+  });
+
+  it('switched off in the middle of a step, makes no further call; back on, the same job carries on', async () => {
+    const m = await note();
+    const caps = t.app.get(CapabilitiesService);
+    provider.afterCreate = async () => {
+      await t.prisma.projectCapability.delete({ where: { projectId_capability: { projectId: f.projectA.id, capability: VOICE_TEXT_CAPABILITY } } });
+    };
+    try {
+      // the request began while the switch was on, and answers the row as the step left it
+      expect((await advance(pmc, m)).body.status).toBe('running');
+      // the job was stored, but nothing was sent to it, and the step let go of the row
+      expect(provider.started).toHaveLength(0);
+      expect(await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: m } })).toMatchObject({ providerJobId: 'job-1', status: 'running', leaseToken: null, attempts: 0 });
+    } finally {
+      provider.afterCreate = null;
+      await caps.enable(f.projectA.id, VOICE_TEXT_CAPABILITY, f.memberUser.id);
+    }
+    await age(m);
+    expect((await advance(pmc, m)).body.status).toBe('running');
+    expect(provider.created).toEqual(['job-1']);
+    expect(provider.started.map((x) => x.jobId)).toEqual(['job-1']);
+  });
+
+  it('switching off waits for a claim under way, and no claim is made once it is off', async () => {
+    const caps = t.app.get(CapabilitiesService);
+    const held = gate();
+    const entered = gate();
+    const holder = t.prisma.$transaction(async (tx) => {
+      expect(await caps.holdEnabled(tx, f.projectA.id, VOICE_TEXT_CAPABILITY)).toBe(true);
+      entered.open();
+      await held.wait;
+    });
+    await entered.wait;
+    let off = false;
+    const switching = disableCapability(t.prisma, { projectId: f.projectA.id, capability: VOICE_TEXT_CAPABILITY, operator: 'operator@test.local', reason: 'race' })
+      .then((r) => { off = true; return r; });
+    // wait for the switch to queue behind the claim's lock: a signal from the database, not a clock
+    for (;;) {
+      const [{ n }] = await t.prisma.$queryRaw<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%ProjectCapability%'`;
+      if (n > 0) break;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(off).toBe(false);
+    held.open();
+    await holder;
+    try {
+      expect(await switching).toEqual({ changed: true });
+      // a claim asked for now finds the switch off and claims nothing
+      const m = await note();
+      await t.prisma.voiceTranscript.create({ data: { projectId: f.projectA.id, mediaId: m } });
+      const service = t.app.get(VoiceTranscriptService) as unknown as { claim: (p: string, m: string, tok: string) => Promise<unknown> };
+      expect(await service.claim(f.projectA.id, m, 'tok')).toBeNull();
+      expect(await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: m } })).toMatchObject({ leaseToken: null });
+    } finally {
+      await caps.enable(f.projectA.id, VOICE_TEXT_CAPABILITY, f.memberUser.id);
+    }
+  });
+
+  it('a job past its time is asked once more: its words are taken if it has them, else it ends failed', async () => {
+    // the job's start is the database's stamp (VT1d), which no writer moves: it is aged with the triggers set aside
+    const late = (mediaId: string) => t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = replica`);
+      await tx.$executeRawUnsafe(`UPDATE "VoiceTranscript" SET "runningSince" = "runningSince" - make_interval(secs => $1), "updatedAt" = "updatedAt" - interval '1 minute' WHERE "mediaId" = $2`, TRANSCRIPT_RUNNING_MAX_SECONDS + 1, mediaId);
+    });
+    // nobody looked while the provider finished: the words are there, and paid for
+    const heard = await note();
+    expect((await advance(pmc, heard)).body.status).toBe('running');
+    await late(heard);
+    provider.state = { state: 'done', text: 'words heard', languageCode: 'en-IN' };
+    expect((await advance(pmc, heard)).body).toMatchObject({ status: 'done', text: 'words heard' });
+    // still running, or not answering, after its time: it ends failed, with its one "Try again"
+    provider.state = { state: 'running' };
+    const stuck = await note();
+    expect((await advance(pmc, stuck)).body.status).toBe('running');
+    await late(stuck);
+    expect((await advance(pmc, stuck)).body).toMatchObject({ status: 'failed', canRetry: true });
+    expect(provider.checked).toEqual(['job-1', 'job-2']);
+    const silent = await note();
+    expect((await advance(pmc, silent)).body.status).toBe('running');
+    await late(silent);
+    // a late job whose answer is lost (busy, or cut off) spends a try instead, since its words may be there
+    provider.checkError = new SpeechProviderError('Sarvam status answered 429', false, true);
+    expect((await advance(pmc, silent)).body.status).toBe('running');
+    expect(await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: silent } })).toMatchObject({ attempts: 1, lastError: TRANSCRIPT_BUSY });
+    provider.checkError = new SpeechProviderError('Sarvam output could not be read', false);
+    for (let i = 2; i <= TRANSCRIPT_MAX_ATTEMPTS; i++) {
+      await age(silent);
+      expect((await advance(pmc, silent)).body.status).toBe(i < TRANSCRIPT_MAX_ATTEMPTS ? 'running' : 'failed');
+    }
+    provider.checkError = null;
+    await age(silent);
+    // "Try again" makes a new job, with its own time
+    expect((await retry(pmc, stuck)).body.status).toBe('running');
+    expect(provider.created).toEqual(['job-1', 'job-2', 'job-3', 'job-4']);
+  });
+
+  it('a busy refusal before a job is stored spends a try and pauses every note; once stored, it spends none', async () => {
+    const m = await note();
+    const n = await note();
+    provider.startError = new SpeechProviderError('Sarvam start answered 429', false, true);
+    // the job was stored, then its start refused as busy: no try spent
+    expect((await advance(pmc, m)).body.status).toBe('running');
+    expect(await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: m } })).toMatchObject({ providerJobId: 'job-1', attempts: 0, lastError: TRANSCRIPT_BUSY });
+    // and no other note asks meanwhile
+    expect((await advance(pmc, n)).body.status).toBe('pending');
+    expect(provider.created).toEqual(['job-1']);
+    await age(m);
+    provider.startError = null;
+    // a refusal of the job's making itself spends a try (no job bounds it), and still pauses every note
+    const making = provider.createJob.bind(provider);
+    provider.createJob = async () => { throw new SpeechProviderError('Sarvam job answered 429', false, true); };
+    try {
+      expect((await advance(pmc, n)).body.status).toBe('pending');
+      expect(await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: n } })).toMatchObject({ attempts: 1, lastError: TRANSCRIPT_BUSY });
+      await age(m);
+      expect(provider.checked).toEqual([]);
+      expect((await advance(pmc, m)).body.status).toBe('running');
+      expect(provider.checked).toEqual([]);
+    } finally {
+      provider.createJob = making;
+    }
+    await age(m);
+    await age(n);
+  });
+
+  it('a busy provider spends no running job\'s try, and every note waits it out', async () => {
+    const m = await note();
+    const n = await note();
+    expect((await advance(pmc, m)).body.status).toBe('running');
+    expect((await advance(pmc, n)).body.status).toBe('running');
+    provider.checkError = new SpeechProviderError('Sarvam status answered 429', false, true);
+    for (let i = 0; i < TRANSCRIPT_MAX_ATTEMPTS + 1; i++) {
+      await age(m);
+      await age(n);
+      // the busy pause is the newest refusal's: aged with the rows, it is over
+      expect((await advance(pmc, m)).body.status).toBe('running');
+    }
+    expect(await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: m } })).toMatchObject({ status: 'running', attempts: 0, lastError: TRANSCRIPT_BUSY });
+    // straight after a busy refusal, another note asks nothing
+    const checked = provider.checked.length;
+    expect((await advance(pmc, n)).body.status).toBe('running');
+    expect(provider.checked).toHaveLength(checked);
+    // once the pause is over it is asked, and an answer puts both back on their pace
+    provider.checkError = null;
+    provider.state = { state: 'done', text: 'words heard', languageCode: 'en-IN' };
+    await age(m);
+    await age(n);
+    expect((await advance(pmc, n)).body.status).toBe('done');
+    expect((await advance(pmc, m)).body.status).toBe('done');
   });
 
   it('with no provider configured, no route reads or writes a transcript', async () => {

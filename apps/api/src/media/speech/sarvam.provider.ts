@@ -76,14 +76,11 @@ export class SarvamSpeechProvider implements SpeechProvider {
     if (!downloadUrl) throw new SpeechProviderError('Sarvam did not return a download link', false);
     const res = await this.exchange(downloadUrl, { method: 'GET' });
     if (!res.ok) throw failure('download', res.status);
-    // an output far beyond any note's words is not read at all; the note ends failed, with its one "Try again"
-    if (Number(res.headers.get('content-length') ?? 0) > OUTPUT_MAX_BYTES) {
-      await res.body?.cancel().catch(() => undefined);
-      return { state: 'failed', reason: 'Sarvam output was too large' };
-    }
+    // an output far beyond any note's words is never held whole: it is read in chunks and dropped once past the bound,
+    // whatever length it claims; the note ends failed, with its one "Try again"
+    const text = await bounded(res, OUTPUT_MAX_BYTES);
+    if (text === TOO_LARGE) return { state: 'failed', reason: 'Sarvam output was too large' };
     // a body cut short or garbled on the way is not the job's end: the job keeps its output, and it is read again
-    const text = await res.text().catch(() => undefined);
-    if (text !== undefined && text.length > OUTPUT_MAX_BYTES) return { state: 'failed', reason: 'Sarvam output was too large' };
     const body = parsed(text) as { transcript?: unknown; language_code?: unknown } | null | undefined;
     if (body === undefined) throw new SpeechProviderError('Sarvam output could not be read', false);
     if (!body || typeof body.transcript !== 'string') return { state: 'failed', reason: 'Sarvam output had no transcript' };
@@ -116,6 +113,36 @@ export class SarvamSpeechProvider implements SpeechProvider {
   }
 }
 
+const TOO_LARGE = Symbol('too large');
+
+/** A response body read in chunks as UTF-8, its bytes counted as they come: TOO_LARGE (and the rest cancelled) once
+ *  past `max`, undefined when the body breaks off on the way. */
+async function bounded(res: Response, max: number): Promise<string | undefined | typeof TOO_LARGE> {
+  if (Number(res.headers.get('content-length') ?? 0) > max) {
+    await res.body?.cancel().catch(() => undefined);
+    return TOO_LARGE;
+  }
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let size = 0;
+  let text = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return text + decoder.decode();
+      size += value.byteLength;
+      if (size > max) {
+        await reader.cancel().catch(() => undefined);
+        return TOO_LARGE;
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+  } catch {
+    return undefined;
+  }
+}
+
 /** JSON text read, or undefined when there is none to read. */
 function parsed(text: string | undefined): unknown {
   if (text === undefined) return undefined;
@@ -145,10 +172,10 @@ function outputName(details: unknown): string | null {
   return null;
 }
 
-/** A refused exchange. 408, 429 and 5xx may be tried again. Any other 4xx is final for that note: a refused file, a
+/** A refused exchange. 408, 429 and 5xx may be tried again; a 429 is Sarvam's account-wide rate limit (busy). Any other 4xx is final for that note: a refused file, a
  *  malformed request, and a bad or missing key (401, 403) too, which no later try mends until the key is fixed; the
  *  note's one "Try again" is left for then. */
 function failure(step: string, status: number): SpeechProviderError {
   const retryable = status === 408 || status === 429 || status >= 500;
-  return new SpeechProviderError(`Sarvam ${step} answered ${status}`, !retryable);
+  return new SpeechProviderError(`Sarvam ${step} answered ${status}`, !retryable, status === 429);
 }
