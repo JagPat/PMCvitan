@@ -1237,6 +1237,8 @@ model VoiceTranscript {
   lastError     String?
   leaseToken    String?
   leaseUntil    DateTime?
+  // #1177 VT1d (20280130000000): when this try's job was stored, set by a trigger (NULL while there is no job)
+  runningSince  DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   // #1177 VT1b (20280128000000) — what people said the note says, newest last
