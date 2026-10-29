@@ -1960,7 +1960,8 @@ export const useStore = create<Store>()(
      *  draft (so a sign-out or a switch never carries it across). Only ever added to; the log's next landing moves it
      *  into its draft. An entry ends when its log lands and takes it, when a log of another id lands (the draft for
      *  another log is superseded then, U1 #690), or when its log is sent; nothing ends before it is counted. At most
-     *  `SENT_SITE_PHOTOS_MAX` entries: one more drops the oldest, so a project nobody opens again keeps a few lines only.
+     *  `SENT_SITE_PHOTOS_MAX` entries of other logs: one more drops the oldest of those, never one for the newest entry's
+     *  log, which may still be open (Stage 1 gap-check, PR3). So a project nobody opens again keeps a few lines only.
      *  Every write runs under the list's own Web Lock (the queue keys' helper), reading the list as it stands then and
      *  merging by key, so another tab's entries stay. An entry not yet written (no lock, or storage refused it) is kept
      *  in memory, taken by a landing here, and written again by the next write of the list */
@@ -1968,6 +1969,12 @@ export const useStore = create<Store>()(
     type SentSitePhoto = { logId: string; clientKey: string };
     const sentSitePhotosKey = (projectId: string): string => `vitan.dailyLogSentPhotos.${sessionSub()}.${projectId}`;
     const sentSitePhotosUnwritten = new Map<string, SentSitePhoto[]>();
+    /** …the list within its bound: over it, the oldest entries of logs other than the newest entry's go first */
+    const boundSent = (list: SentSitePhoto[]): SentSitePhoto[] => {
+      const newest = list.at(-1)?.logId;
+      let over = list.length - SENT_SITE_PHOTOS_MAX;
+      return list.filter((e) => (over > 0 && e.logId !== newest ? (over -= 1, false) : true));
+    };
     const readSentSitePhotos = (key: string): SentSitePhoto[] => {
       try {
         const raw: unknown = JSON.parse(globalThis.localStorage?.getItem(key) ?? '[]');
@@ -1984,7 +1991,7 @@ export const useStore = create<Store>()(
         const storage = globalThis.localStorage;
         if (!storage) return false;
         const stored = readSentSitePhotos(key);
-        const list = change([...stored, ...pending.filter((e) => !stored.some((x) => x.clientKey === e.clientKey))]).slice(-SENT_SITE_PHOTOS_MAX);
+        const list = boundSent(change([...stored, ...pending.filter((e) => !stored.some((x) => x.clientKey === e.clientKey))]));
         try {
           if (list.length === 0) storage.removeItem(key);
           else storage.setItem(key, JSON.stringify(list));
@@ -2007,7 +2014,7 @@ export const useStore = create<Store>()(
       const key = sentSitePhotosKey(projectId);
       const entry = { logId: dailyLogId, clientKey };
       const unwritten = sentSitePhotosUnwritten.get(key) ?? [];
-      if (!unwritten.some((e) => e.clientKey === clientKey)) sentSitePhotosUnwritten.set(key, [...unwritten, entry].slice(-SENT_SITE_PHOTOS_MAX));
+      if (!unwritten.some((e) => e.clientKey === clientKey)) sentSitePhotosUnwritten.set(key, boundSent([...unwritten, entry]));
       writeSentSitePhotos(key, (list) => (list.some((e) => e.clientKey === clientKey) ? list : [...list, entry]));
     };
     /** …moved into the draft of the log that landed (the draft is written by the apply that called this). A sent log takes
@@ -2747,7 +2754,10 @@ export const useStore = create<Store>()(
           for (const r of missing) s.outbox.push({ t: 'uploadSitePhoto', scope: rowScope, clientKey: r.clientKey });
           // #1187: a row whose sending tab closed before its answer is counted on its log from here on, by its key, as
           // every queued photo is (a server that sends no count included), and once only, after a reload too
-          s.sitePhotosKept = full.filter((r) => s.outbox.some((o) => o.t === 'uploadSitePhoto' && o.clientKey === r.clientKey)).map((r) => keptFrom(r.input));
+          // a row sent (by this tab's flush or another tab) whose op here has not settled yet keeps its entry: its op's
+          // `afterSent` reads its log from it, to move it from the queue into the draft (Stage 1 gap-check, PR1 and PR5)
+          const sentHere = s.sitePhotosKept.filter((k) => s.outbox.some((o) => o.t === 'uploadSitePhoto' && o.clientKey === k.clientKey) && rows.some((r) => r.clientKey === k.clientKey && isSitePhotoSent(r) && !r.refused));
+          s.sitePhotosKept = [...full.filter((r) => s.outbox.some((o) => o.t === 'uploadSitePhoto' && o.clientKey === r.clientKey)).map((r) => keptFrom(r.input)), ...sentHere];
           recountDailyLogPhotos(s);
         });
         // (its op is never stored: the row is already its record on this phone)
