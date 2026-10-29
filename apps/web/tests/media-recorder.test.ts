@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { acceptedType, baseType, clockText, pickRecordType, RecordError, startRecording } from '@/lib/mediaRecorder';
+import { acceptedType, baseType, CAMERA_WAIT_MS, clockText, pickRecordType, RecordError, startRecording, type Recording } from '@/lib/mediaRecorder';
 
 /**
  * Stage 1 voice notes: the shared recorder (voice now, video clips in V2). The type is picked before recording from
@@ -39,7 +39,16 @@ class FakeRecorder {
 }
 
 let tracks: Track[] = [];
-const getUserMedia = vi.fn(async () => ({ getTracks: () => tracks }));
+/** a device stream as the recorder sees it: its tracks, the camera's among them */
+const devices = () => ({ getTracks: () => tracks, getVideoTracks: () => tracks });
+const getUserMedia = vi.fn(async () => devices());
+/** when the camera shows its first picture to the video that watches it: drawn at once (`frame`), only as loaded data
+ *  with a size where there is no frame callback (`loaded`), or never */
+let camera: 'frame' | 'loaded' | 'never' = 'frame';
+/** the videos the recorder watched the camera on */
+let watched: HTMLVideoElement[] = [];
+/** shows the camera's first picture to a video still waiting for it (`never` holds it until the test calls this) */
+let showPicture: (() => void) | null = null;
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance', 'Date'] });
@@ -48,13 +57,37 @@ beforeEach(() => {
   supported = new Set(['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']);
   tracks = [{ stop: vi.fn() }];
   getUserMedia.mockClear();
-  getUserMedia.mockImplementation(async () => ({ getTracks: () => tracks }));
+  getUserMedia.mockImplementation(async () => devices());
+  camera = 'frame';
+  watched = [];
+  showPicture = null;
+  FakeRecorder.last = null;
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(function (this: HTMLMediaElement) {
+    const video = this as HTMLVideoElement;
+    watched.push(video);
+    if (camera === 'loaded') {
+      Object.defineProperty(video, 'readyState', { value: 2, configurable: true });
+      Object.defineProperty(video, 'videoWidth', { value: 1280, configurable: true });
+      Object.defineProperty(video, 'videoHeight', { value: 720, configurable: true });
+      queueMicrotask(() => video.onloadeddata?.(new Event('loadeddata')));
+    }
+    return Promise.resolve();
+  });
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+  Object.defineProperty(HTMLVideoElement.prototype, 'requestVideoFrameCallback', {
+    configurable: true,
+    get() {
+      return camera === 'loaded' ? undefined : (cb: () => void) => { if (camera === 'frame') queueMicrotask(cb); else showPicture = cb; return 1; };
+    },
+  });
   vi.stubGlobal('MediaRecorder', FakeRecorder);
   Object.defineProperty(navigator, 'mediaDevices', { value: { getUserMedia }, configurable: true });
 });
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  delete (HTMLVideoElement.prototype as { requestVideoFrameCallback?: unknown }).requestVideoFrameCallback;
   Object.defineProperty(navigator, 'mediaDevices', { value: undefined, configurable: true });
 });
 
@@ -294,7 +327,7 @@ describe('Stage 1 voice notes: the shared recorder', () => {
     const no = Object.assign(new Error('no'), { name: 'NotAllowedError' });
     getUserMedia.mockImplementation(async (media?: MediaStreamConstraints) => {
       if (media?.audio) throw no;
-      return { getTracks: () => tracks };
+      return devices();
     });
     const r = await startRecording('video', 'video/webm;codecs=vp8,opus', 59_500, {
       bits: { videoBitsPerSecond: 1_000_000, audioBitsPerSecond: 64_000 }, media: both, fallback: picture,
@@ -328,6 +361,108 @@ describe('Stage 1 voice notes: the shared recorder', () => {
     await expect(startRecording('video', 'video/webm;codecs=vp8,opus', 59_500)).rejects.toMatchObject({ reason: 'format' });
     expect(FakeRecorder.last!.state).toBe('inactive');
     expect(tracks[0].stop).toHaveBeenCalled();
+  });
+
+  it('starts a video clip only once the camera shows its first picture, on a muted inline video that then leaves', async () => {
+    camera = 'never';
+    let started: Recording | null = null;
+    const pending = startRecording('video', 'video/webm;codecs=vp8,opus', 59_500).then((r) => { started = r; return r; });
+    await vi.advanceTimersByTimeAsync(1_000);
+    // the camera is on but shows nothing yet: no recorder, and the running time has not begun
+    expect(FakeRecorder.last).toBeNull();
+    expect(started).toBeNull();
+    const video = watched[0]!;
+    expect(video.isConnected).toBe(true);
+    expect(video.muted).toBe(true);
+    expect(video.hasAttribute('playsinline')).toBe(true);
+    expect(video.hasAttribute('muted')).toBe(true);
+    expect((video as HTMLVideoElement & { srcObject: unknown }).srcObject).toMatchObject({ getTracks: expect.any(Function) });
+    // its first picture: the recorder starts, and the watching video leaves the page; the camera goes on
+    showPicture!();
+    const r = await pending;
+    expect(FakeRecorder.last!.state).toBe('recording');
+    expect(video.isConnected).toBe(false);
+    expect((video as HTMLVideoElement & { srcObject: unknown }).srcObject).toBeNull();
+    expect(tracks[0].stop).not.toHaveBeenCalled();
+    // the clip runs from its first picture, not from when the camera was asked for; and the 5 s bound is gone
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await r.stop()).toMatchObject({ mime: 'video/webm', ms: 2_000 });
+    await vi.advanceTimersByTimeAsync(CAMERA_WAIT_MS);
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('says a video clip could not start when the camera shows no picture in time, and lets the devices go', async () => {
+    camera = 'never';
+    const pending = startRecording('video', 'video/webm;codecs=vp8,opus', 59_500);
+    const said = expect(pending).rejects.toMatchObject({ reason: 'unavailable' });
+    await vi.advanceTimersByTimeAsync(CAMERA_WAIT_MS - 1);
+    expect(tracks[0].stop).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await said;
+    expect(FakeRecorder.last).toBeNull();
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1);
+    expect(watched[0]!.isConnected).toBe(false);
+    expect((watched[0] as HTMLVideoElement & { srcObject: unknown }).srcObject).toBeNull();
+  });
+
+  it('lets the camera go at once when its caller gives up during the wait, or before the devices answer', async () => {
+    camera = 'never';
+    const leaving = new AbortController();
+    const pending = startRecording('video', 'video/webm', 59_500, { signal: leaving.signal });
+    const said = expect(pending).rejects.toMatchObject({ reason: 'unavailable' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(tracks[0].stop).not.toHaveBeenCalled();
+    leaving.abort();
+    await said;
+    // at once, not at the 5 s bound
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1);
+    expect(FakeRecorder.last).toBeNull();
+    expect(watched[0]!.isConnected).toBe(false);
+    // given up while the browser still asks for the devices: they are let go as soon as they answer, and no camera is watched
+    tracks = [{ stop: vi.fn() }];
+    watched = [];
+    let answer: (s: ReturnType<typeof devices>) => void = () => {};
+    getUserMedia.mockImplementation(() => new Promise((done) => { answer = done; }));
+    const early = new AbortController();
+    const asked = startRecording('video', 'video/webm', 59_500, { signal: early.signal });
+    const refused = expect(asked).rejects.toMatchObject({ reason: 'unavailable' });
+    early.abort();
+    answer(devices());
+    await refused;
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1);
+    expect(watched).toHaveLength(0);
+    expect(FakeRecorder.last).toBeNull();
+    // and a voice note given up the same way never starts its recorder
+    tracks = [{ stop: vi.fn() }];
+    const voice = new AbortController();
+    const note = startRecording('audio', 'audio/webm', 1_000, { signal: voice.signal });
+    const noted = expect(note).rejects.toMatchObject({ reason: 'unavailable' });
+    voice.abort();
+    answer(devices());
+    await noted;
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1);
+    expect(FakeRecorder.last).toBeNull();
+  });
+
+  it('counts a camera picture by its loaded frame and size where the browser has no frame callback', async () => {
+    camera = 'loaded';
+    const r = await startRecording('video', 'video/mp4', 59_500);
+    expect(FakeRecorder.last!.state).toBe('recording');
+    expect(watched[0]!.isConnected).toBe(false);
+    r.cancel();
+  });
+
+  it('says a clip with no camera at all could not start, and never waits on a voice note', async () => {
+    getUserMedia.mockImplementation(async () => ({ getTracks: () => tracks, getVideoTracks: () => [] }));
+    await expect(startRecording('video', 'video/webm', 59_500)).rejects.toMatchObject({ reason: 'unavailable' });
+    expect(FakeRecorder.last).toBeNull();
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1);
+    camera = 'never';
+    getUserMedia.mockImplementation(async () => ({ getTracks: () => tracks, getVideoTracks: () => tracks }));
+    const r = await startRecording('audio', 'audio/webm', 1_000);
+    expect(FakeRecorder.last!.state).toBe('recording');
+    expect(watched).toHaveLength(0);
+    r.cancel();
   });
 
   it('passes a kind’s bit rates and devices to the recorder', async () => {

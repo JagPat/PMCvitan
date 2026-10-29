@@ -195,6 +195,8 @@ export const SV = {
   // #995 V2b: a video clip on the visit, up to a minute, recorded in the app and kept and sent the way a voice note is
   videoClip: { en: 'Video', hi: 'वीडियो', gu: 'વીડિયો' },
   recordVideo: { en: 'Record video', hi: 'वीडियो रिकॉर्ड करें', gu: 'વીડિયો રેકોર્ડ કરો' },
+  // said while the camera starts, before the clip records from its first picture (29 Oct)
+  videoStarting: { en: 'Starting the camera…', hi: 'कैमरा शुरू हो रहा है…', gu: 'કૅમેરા શરૂ થઈ રહ્યો છે…' },
   videoCapped: {
     en: 'The video stopped at one minute and was added.',
     hi: 'वीडियो एक मिनट पर रुक गया और जोड़ दिया गया।',
@@ -377,10 +379,11 @@ const VOICE_REFUSALS: Record<string, Words> = {
     gu: 'વૉઇસ નોટ સાઇટ મુલાકાત પર જ ઉમેરાય છે',
   },
   // #995 V1: the same refusals of a video clip
+  // (only ever a clip recorded in the app, so said as a recording that went wrong, with what to do: 29 Oct)
   'This file is not the video its type says': {
-    en: 'This file is not the video its type says',
-    hi: 'यह फ़ाइल वैसा वीडियो नहीं है जैसा इसका प्रकार बताता है',
-    gu: 'આ ફાઇલ તેના પ્રકાર મુજબનો વીડિયો નથી',
+    en: 'This video didn’t record properly. Please record it again.',
+    hi: 'यह वीडियो ठीक से रिकॉर्ड नहीं हुआ। कृपया इसे फिर से रिकॉर्ड करें।',
+    gu: 'આ વીડિયો બરાબર રેકોર્ડ થયો નથી. કૃપા કરીને તેને ફરી રેકોર્ડ કરો.',
   },
   'A video is at most a minute long': {
     en: 'A video is at most a minute long',
