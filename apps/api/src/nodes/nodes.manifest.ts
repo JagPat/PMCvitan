@@ -25,7 +25,8 @@ export const nodesManifest: ModuleManifest = {
   producesEvents: ['node.created', 'node.published', 'node.renamed', 'node.moved', 'node.removed'],
   consumesEvents: [],
   commands: ['nodes.create', 'nodes.rename', 'nodes.move', 'nodes.publish', 'nodes.remove'],
-  queries: [],
+  // #1177 VT2-B — whether a place is a draft hidden from a viewer (NodesQueryService), so a reader elsewhere never reads `ProjectNode`
+  queries: ['nodes.placeHiddenFrom'],
   routes: [
     'POST /projects/:projectId/nodes',
     'PATCH /projects/:projectId/nodes/:nodeId',
