@@ -405,6 +405,45 @@ describe('Stage 1 voice notes: the shared recorder', () => {
     expect((watched[0] as HTMLVideoElement & { srcObject: unknown }).srcObject).toBeNull();
   });
 
+  it('lets the camera go at once when its caller gives up during the wait, or before the devices answer', async () => {
+    camera = 'never';
+    const leaving = new AbortController();
+    const pending = startRecording('video', 'video/webm', 59_500, { signal: leaving.signal });
+    const said = expect(pending).rejects.toMatchObject({ reason: 'unavailable' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(tracks[0].stop).not.toHaveBeenCalled();
+    leaving.abort();
+    await said;
+    // at once, not at the 5 s bound
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1);
+    expect(FakeRecorder.last).toBeNull();
+    expect(watched[0]!.isConnected).toBe(false);
+    // given up while the browser still asks for the devices: they are let go as soon as they answer, and no camera is watched
+    tracks = [{ stop: vi.fn() }];
+    watched = [];
+    let answer: (s: ReturnType<typeof devices>) => void = () => {};
+    getUserMedia.mockImplementation(() => new Promise((done) => { answer = done; }));
+    const early = new AbortController();
+    const asked = startRecording('video', 'video/webm', 59_500, { signal: early.signal });
+    const refused = expect(asked).rejects.toMatchObject({ reason: 'unavailable' });
+    early.abort();
+    answer(devices());
+    await refused;
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1);
+    expect(watched).toHaveLength(0);
+    expect(FakeRecorder.last).toBeNull();
+    // and a voice note given up the same way never starts its recorder
+    tracks = [{ stop: vi.fn() }];
+    const voice = new AbortController();
+    const note = startRecording('audio', 'audio/webm', 1_000, { signal: voice.signal });
+    const noted = expect(note).rejects.toMatchObject({ reason: 'unavailable' });
+    voice.abort();
+    answer(devices());
+    await noted;
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1);
+    expect(FakeRecorder.last).toBeNull();
+  });
+
   it('counts a camera picture by its loaded frame and size where the browser has no frame callback', async () => {
     camera = 'loaded';
     const r = await startRecording('video', 'video/mp4', 59_500);

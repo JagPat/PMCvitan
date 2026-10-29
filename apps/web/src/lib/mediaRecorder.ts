@@ -100,6 +100,9 @@ export interface RecordOptions {
   bits?: { audioBitsPerSecond?: number; videoBitsPerSecond?: number };
   media?: MediaStreamConstraints;
   fallback?: MediaStreamConstraints;
+  /** the caller gave up before the recording started (its screen was left): the devices are let go at once, and the
+   *  start is refused, rather than run on until the camera's wait ends */
+  signal?: AbortSignal;
 }
 
 /**
@@ -127,9 +130,17 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
     return ask(options.fallback);
   });
   const release = () => stream.getTracks().forEach((t) => t.stop());
+  const given = () => {
+    if (!options.signal?.aborted) return;
+    release();
+    throw new RecordError('unavailable');
+  };
+  given();
   // a video clip is recorded only once the camera shows a picture: an iPhone's camera takes a moment to start, and a
   // clip whose recorder started before then was kept black, would not play and was refused by the server (29 Oct)
-  if (kind === 'video' && !(await firstPicture(stream, CAMERA_WAIT_MS))) {
+  const seen = kind !== 'video' || (await firstPicture(stream, CAMERA_WAIT_MS, options.signal));
+  given();
+  if (!seen) {
     release();
     throw new RecordError('unavailable');
   }
@@ -214,10 +225,11 @@ export const CAMERA_WAIT_MS = 5_000;
  * Whether the camera in `stream` shows a picture within `ms`: false with no camera track. It is watched on a muted,
  * inline video in the page, out of sight (iOS plays only a video it can lay out), at its first drawn frame
  * (`requestVideoFrameCallback`), or once it has a frame and a size. The video leaves the page however it ends; the
- * stream's tracks go on for the recorder.
+ * stream's tracks go on for the recorder. A caller that gives up (`signal`) ends the wait at once.
  */
-function firstPicture(stream: MediaStream, ms: number): Promise<boolean> {
+function firstPicture(stream: MediaStream, ms: number, signal?: AbortSignal): Promise<boolean> {
   if ((stream.getVideoTracks?.() ?? []).length === 0 || typeof document === 'undefined') return Promise.resolve(false);
+  if (signal?.aborted) return Promise.resolve(false);
   return new Promise((resolve) => {
     const video = document.createElement('video');
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -226,6 +238,7 @@ function firstPicture(stream: MediaStream, ms: number): Promise<boolean> {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', left);
       video.onloadeddata = video.onresize = null;
       try { video.pause(); } catch { /* nothing to pause */ }
       video.srcObject = null;
@@ -233,7 +246,9 @@ function firstPicture(stream: MediaStream, ms: number): Promise<boolean> {
       resolve(seen);
     };
     const sized = () => { if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) finish(true); };
+    const left = () => finish(false);
     timer = setTimeout(() => finish(false), ms);
+    signal?.addEventListener('abort', left, { once: true });
     video.muted = true;
     video.defaultMuted = true;
     video.playsInline = true;

@@ -228,6 +228,24 @@ describe('#995 V2b: video clips on a visit', () => {
     expect(within(card).getByTestId('sv-record-v-1').textContent).toBe('વૉઇસ નોટ રેકોર્ડ કરો');
   });
 
+  it('lets the camera go at once when the screen is left while the camera is starting', async () => {
+    withRecorder();
+    Object.defineProperty(HTMLVideoElement.prototype, 'requestVideoFrameCallback', {
+      configurable: true,
+      value() { return 1; },
+    });
+    const view = await mount('consultant', CONSULTANT, fakeGateway([visit()]));
+    const card = screen.getByTestId('sv-visit-v-1');
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Record video' })); });
+    expect(within(card).getByTestId('sv-record-video-v-1').textContent).toBe('Starting the camera…');
+    expect(tracks[0].stop).not.toHaveBeenCalled();
+    view.unmount();
+    await settled();
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1);
+    expect(FakeRecorder.last).toBeNull();
+    expect(document.querySelectorAll('video')).toHaveLength(0);
+  });
+
   it('records picture only when the microphone is refused', async () => {
     withRecorder();
     getUserMedia.mockImplementation(async (media?: MediaStreamConstraints) => {
