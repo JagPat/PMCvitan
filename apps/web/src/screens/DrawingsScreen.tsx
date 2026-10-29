@@ -209,7 +209,7 @@ export function DrawingsScreen() {
           </div>
         </div>
         {can('drawing.issue', role) && (
-          <Button variant="ink" onClick={() => setIssuing(true)} disabled={actionsLocked} data-testid="issue-drawing" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '11px 15px', fontSize: 13, cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.6 : 1 }}>
+          <Button variant="ink" onClick={() => setIssuing(true)} disabled={actionsLocked} data-testid="issue-drawing" data-guide={actionsLocked ? undefined : 'drawing-issue'} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '11px 15px', fontSize: 13, cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.6 : 1 }}>
             <Plus size={16} /> {L.issue[lang]}
           </Button>
         )}
@@ -649,7 +649,8 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
             44px band makes the whole band the target rather than the native button alone. */}
         {/* #482 QA item 3 (Codex) — the browser's own file button and "No file chosen" speak the BROWSER's language,
             so a Hindi or Gujarati viewer gets the app's own button and status instead; English keeps the native control */}
-        <label style={lang === 'en' ? { display: 'block', marginTop: 10 } : { display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, minHeight: 44, cursor: 'pointer' }}>
+        {/* #482: the drawing guide's file step, done once a file is attached and the form can be published */}
+        <label data-guide="drawing-file" data-guide-done={ready ? 'true' : 'false'} style={lang === 'en' ? { display: 'block', marginTop: 10 } : { display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, minHeight: 44, cursor: 'pointer' }}>
           <input
             type="file"
             accept=".pdf,.dwg,.dxf,image/*,application/pdf"
@@ -671,7 +672,7 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           <Button variant="outline" onClick={onClose} style={{ flex: '0 0 auto', padding: '12px 16px' }}>{L.cancel[lang]}</Button>
           <Button variant="light" onClick={() => submit(false)} disabled={!ready} data-testid="save-draft-drawing" style={{ flex: 1, padding: 12 }}>{L.saveDraft[lang]}</Button>
-          <Button variant="ink" onClick={() => submit(true)} disabled={!ready} data-testid="publish-drawing" style={{ flex: 1, padding: 12 }}>{L.publish[lang]}</Button>
+          <Button variant="ink" onClick={() => submit(true)} disabled={!ready} data-testid="publish-drawing" data-guide="drawing-publish" style={{ flex: 1, padding: 12 }}>{L.publish[lang]}</Button>
         </div>
       </div>
     </Modal>

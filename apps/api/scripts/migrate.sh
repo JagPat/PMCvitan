@@ -602,6 +602,13 @@ if echo "$out" | grep -q "P3005"; then
   #
   # Voice-note corrections (#1177 VT1b, 20280128000000) are here for the transcripts' reason: a check and four triggers.
   # The file is guarded and re-runnable.
+  #
+  # The transcripts' creation stamp (#1177 VT1c, 20280129000000) is here because it replaces a function body that VT1a's
+  # file, also replayed, writes back; the replay applies files by name, so this later file's body is the one that stands.
+  # Re-runnable.
+  #
+  # The transcripts' job start (#1177 VT1d, 20280130000000) is here because its stamp is a trigger, which a db-push
+  # baseline does not have. Guarded and re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -652,7 +659,9 @@ if echo "$out" | grep -q "P3005"; then
 20280125000000_site_visit_file_removal
 20280126000000_voice_transcript
 20280127000000_hub_catalog_generation
-20280128000000_voice_transcript_correction"
+20280128000000_voice_transcript_correction
+20280129000000_voice_transcript_stamp
+20280130000000_voice_transcript_running_since"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

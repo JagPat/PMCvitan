@@ -30,7 +30,11 @@ export type GuideOutcome =
   | 'daily-log-not-kept'
   | 'review-decided'
   | 'review-decide-failed'
-  | 'review-decide-not-kept';
+  | 'review-decide-not-kept'
+  | 'drawing-published'
+  | 'drawing-publish-failed'
+  | 'member-added'
+  | 'member-add-failed';
 
 /** `key`: which record the outcome is about (the submitted inspection's id), so a guide following one
  *  checklist ignores the submit of another. `run`: the guide run the request was sent under (see
@@ -45,9 +49,9 @@ let currentRun = 0;
 
 export function beginGuideRun(): number {
   currentRun += 1;
-  // a photo picked, or a review decided, under an earlier run is not this run's
+  // a photo picked, or a drawing published, under an earlier run is not this run's
   guidedPhotoPicks.clear();
-  guidedReviews.clear();
+  guidedDrawings.clear();
   return currentRun;
 }
 
@@ -65,16 +69,16 @@ export function guidedPhotoPicksOf(run: number): ReadonlySet<string> {
   return guidedPhotoPicks.get(run) ?? new Set<string>();
 }
 
-/** The review each guide run decided, so the review guide can see it decided when the decision's own answer is lost (a
- *  refresh shows it decided, or gone from the queue, first). */
-const guidedReviews = new Map<number, string>();
+/** The drawing revision each guide run published, so the drawing guide can see it in the register when the publish's own
+ *  answer is lost (a refresh shows it first). */
+const guidedDrawings = new Map<number, { number: string; rev: string }>();
 
-export function recordGuidedReview(run: number, reviewId: string): void {
-  guidedReviews.set(run, reviewId);
+export function recordGuidedDrawing(run: number, number: string, rev: string): void {
+  guidedDrawings.set(run, { number, rev });
 }
 
-export function guidedReviewOf(run: number): string | null {
-  return guidedReviews.get(run) ?? null;
+export function guidedDrawingOf(run: number): { number: string; rev: string } | null {
+  return guidedDrawings.get(run) ?? null;
 }
 
 export function guideRunToken(): number {

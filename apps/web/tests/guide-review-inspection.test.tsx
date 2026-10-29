@@ -75,7 +75,7 @@ describe('the inspection review guide (#482 step 3c)', () => {
     expect(guide.available!()).toBe(true);
     act(() => { useGuideState.getState().start(guide); });
     await tipAt('0');
-    expect(guided()).toEqual(['approve-inspection', 'send-reinspection']);
+    expect(guided()).toEqual(['approve-inspection']);
     press('approve-inspection');
     await isDone();
     expect(decideReview).toHaveBeenCalledTimes(1);
@@ -127,10 +127,62 @@ describe('the inspection review guide (#482 step 3c)', () => {
     expect(guided()).toEqual([]);
     expect(guide.available!()).toBe(false);
     await act(async () => { refuse(Object.assign(new Error('closed'), { status: 409 })); });
-    expect(useStore.getState().reviewDecisionsSending).toBe(0);
+    expect(useStore.getState().reviewDecisionsSending).toEqual([]);
     await vi.waitFor(() => { if (guided().length === 0) throw new Error('not pointed at'); });
     expect(guided()).toEqual(['send-reinspection']);
     expect(guide.available!()).toBe(true);
+  });
+
+  it('another review decided by hand while the guided one is on its way neither finishes nor rewinds the run (#1220)', async () => {
+    const answers: Record<string, { ok: () => void; no: () => void }> = {};
+    const { useStore, useGuideState, guide, id } = await open({}, { passing: true });
+    const pending = { ...useStore.getState().reviews[0]!, decided: false };
+    const decideReview = vi.fn((reviewId: string) => new Promise((ok, no) => {
+      // the server's queue afterwards still holds the guided review, undecided
+      answers[reviewId] = { ok: () => ok({ ...snapshot(), reviews: reviewId === id ? [] : [pending] }), no: () => no(Object.assign(new Error('closed'), { status: 409 })) };
+    }));
+    useStore.getState()._setGateway({ snapshot: vi.fn(() => new Promise(() => {})), decideReview } as never);
+    act(() => { useStore.setState((s) => ({ reviews: [...s.reviews, { ...s.reviews[0]!, id: 'INSP-OTHER', decided: false }] })); });
+    act(() => { useGuideState.getState().start(guide); });
+    await tipAt('0');
+    press('approve-inspection');
+    expect(useGuideState.getState().run?.key).toBe(id);
+    // the PMC turns to another review and decides it by hand (its controls carry no target meanwhile)
+    act(() => { useStore.setState({ activeReviewId: 'INSP-OTHER' }); });
+    expect(guided()).toEqual([]);
+    press('approve-inspection');
+    await vi.waitFor(() => { if (decideReview.mock.calls.length !== 2) throw new Error('not sent'); });
+    // the other review's decision is taken: not the guided one's, so the run still waits on its own
+    await act(async () => { answers['INSP-OTHER']!.ok(); });
+    expect(useGuideState.getState().run?.waiting).toBe(true);
+    expect(done()).not.toContain('review-inspection');
+    // the guided review's own answer finishes it
+    await act(async () => { answers[id]!.ok(); });
+    await isDone();
+  });
+
+  it('a decision on its way for another project holds nothing back there, nor clears its own; back on its project it still holds (#1220)', async () => {
+    const resolvers: (() => void)[] = [];
+    const decideReview = vi.fn(() => new Promise((ok) => { resolvers.push(() => ok(snapshot())); }));
+    const { useStore } = await open({ decideReview }, { passing: true });
+    press('approve-inspection');
+    await vi.waitFor(() => { if (decideReview.mock.calls.length !== 1) throw new Error('not sent'); });
+    expect(guided()).toEqual([]);
+    // the person switches project while that request hangs: the review there is pointed at
+    act(() => { useStore.setState({ activeProjectId: 'qa2', projectScopeGeneration: 2 }); });
+    expect(guided()).toEqual(['approve-inspection']);
+    // and back: that decision is still on its way, so nothing here is pointed at
+    act(() => { useStore.setState({ activeProjectId: 'qa', projectScopeGeneration: 3 }); });
+    expect(guided()).toEqual([]);
+    act(() => { useStore.setState({ activeProjectId: 'qa2', projectScopeGeneration: 4 }); });
+    expect(guided()).toEqual(['approve-inspection']);
+    // a decision there is on its way; the old scope's answer comes, and the new one's still holds the targets back
+    press('approve-inspection');
+    await vi.waitFor(() => { if (decideReview.mock.calls.length !== 2) throw new Error('not sent'); });
+    expect(guided()).toEqual([]);
+    await act(async () => { resolvers[0]!(); });
+    expect(useStore.getState().reviewDecisionsSending).toHaveLength(1);
+    expect(guided()).toEqual([]);
   });
 
   it('a refusal whose review a refresh already shows decided (gone from the queue) still finishes it', async () => {
@@ -180,7 +232,7 @@ describe('the inspection review guide (#482 step 3c)', () => {
     stop();
     expect(decideReview).toHaveBeenCalledTimes(1);
     expect(open_).toEqual([]);
-    expect(useStore.getState().reviewDecisionsSending).toBe(0);
+    expect(useStore.getState().reviewDecisionsSending).toEqual([]);
   });
 
   it('without signal, a decision this phone would not keep ends the run unfinished', async () => {
@@ -196,15 +248,15 @@ describe('the inspection review guide (#482 step 3c)', () => {
     expect(done()).not.toContain('review-inspection');
   });
 
-  it('nothing failed but an item marked Reject item: only Send back is pointed at, never Approve past the mark (Codex 4403818425)', async () => {
+  it('nothing failed: Approve alone is pointed at (Send back with nothing marked is refused); an item marked: only Send back, never Approve past the mark (Codex 4403818425)', async () => {
     const { useStore, useGuideState, guide } = await open(null, { passing: true });
     act(() => { useGuideState.getState().start(guide); });
     await tipAt('0');
-    expect(guided()).toEqual(['approve-inspection', 'send-reinspection']);
+    expect(guided()).toEqual(['approve-inspection']);
     act(() => { useStore.getState().toggleReject(0); });
     expect(guided()).toEqual(['send-reinspection']);
     act(() => { useStore.getState().toggleReject(0); });
-    expect(guided()).toEqual(['approve-inspection', 'send-reinspection']);
+    expect(guided()).toEqual(['approve-inspection']);
   });
 
   it('Send back with nothing marked or failed is refused at once and told, so the guide does not wait', async () => {
@@ -216,6 +268,8 @@ describe('the inspection review guide (#482 step 3c)', () => {
     expect(seen).toEqual(['review-decide-failed']);
     expect(decideReview).not.toHaveBeenCalled();
     expect(useGuideState.getState().run?.waiting ?? false).toBe(false);
+    // it was not the guide's to press: the run follows no review, so another's decision cannot finish it
+    expect(useGuideState.getState().run?.key ?? null).toBeNull();
     expect(done()).not.toContain('review-inspection');
   });
 
