@@ -26,6 +26,8 @@ export const platformManifest: ModuleManifest = {
     'domainEvent',
     'projectEventStream',
     'commandExecution',
+    // Idempotency-Key Unit 2a-m (20280201000000) — the count of keyless and legacy-keyed requests on five routes
+    'commandKeySighting',
     'outboxDelivery',
     'processedEvent',
     'projectionCursor',
