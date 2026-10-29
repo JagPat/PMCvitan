@@ -7,8 +7,9 @@
 --
 -- WHAT. One table, "CommandKeySighting": per route, class and UTC day, how many such requests arrived and the newest
 -- one's time. Nothing else: no person, project, body or key. A row exists only for a day with such a request, so the
--- table holds at most 5 routes x 2 classes rows a day, and none once the residual is gone. A CHECK holds every row to
--- the five routes, the two classes, a count of at least one and finite times. Unit 2a writes it (one upsert, outside
+-- table holds at most 5 routes x 2 classes rows a day, and none once the residual is gone. A route is named by its
+-- command type, the name the command ledger keeps it under ('daily-log.flagMismatch', not the URL's 'flag-mismatch').
+-- A CHECK holds every row to the five routes, the two classes, a count of at least one and finite times. Unit 2a writes it (one upsert, outside
 -- each command's transaction) and reads it through the operator door; nothing does yet.
 --
 -- ITS END. Unit 2b stops writing it when it starts refusing; once 2b is live, a migration-only unit drops the table.
@@ -40,7 +41,7 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint
                   WHERE conrelid = 'public."CommandKeySighting"'::regclass AND conname = 'CommandKeySighting_shape_check') THEN
     ALTER TABLE public."CommandKeySighting" ADD CONSTRAINT "CommandKeySighting_shape_check"
-      CHECK ("route" IN ('activities.start', 'activities.complete', 'inspections.decide', 'daily-log.flag-mismatch', 'daily-log.submit')
+      CHECK ("route" IN ('activities.start', 'activities.complete', 'inspections.decide', 'daily-log.flagMismatch', 'daily-log.submit')
              AND "class" IN ('absent', 'legacy')
              AND "count" >= 1
              AND isfinite("day") AND isfinite("lastAt"));

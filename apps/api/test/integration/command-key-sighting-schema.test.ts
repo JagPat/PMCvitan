@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createTestApp, type TestApp } from './test-app';
 
@@ -9,7 +10,15 @@ import { createTestApp, type TestApp } from './test-app';
  * §2). This proves the shape PostgreSQL holds on every writer, the upsert 2a will run, and that the file re-runs.
  */
 const MIGRATION = join(__dirname, '../../prisma/migrations/20280201000000_command_key_sighting/migration.sql');
-const ROUTES = ['activities.start', 'activities.complete', 'inspections.decide', 'daily-log.flag-mismatch', 'daily-log.submit'];
+/** each route by its command type, with the service that runs it under that name (the ledger's `commandType`) */
+const ROUTES = ['activities.start', 'activities.complete', 'inspections.decide', 'daily-log.flagMismatch', 'daily-log.submit'];
+const SERVICE_OF: Record<string, string> = {
+  'activities.start': 'activities/activities.service.ts',
+  'activities.complete': 'activities/activities.service.ts',
+  'inspections.decide': 'inspections/inspections.service.ts',
+  'daily-log.flagMismatch': 'daily-log/daily-log.service.ts',
+  'daily-log.submit': 'daily-log/daily-log.service.ts',
+};
 
 describe('Idempotency-Key 2a-m: the key-sighting count (live PG)', () => {
   let t: TestApp;
@@ -29,6 +38,17 @@ describe('Idempotency-Key 2a-m: the key-sighting count (live PG)', () => {
          VALUES ($1, $2, (now() AT TIME ZONE 'UTC')::date, 1, now() AT TIME ZONE 'UTC')
        ON CONFLICT ("route", "class", "day") DO UPDATE SET "count" = s."count" + 1, "lastAt" = EXCLUDED."lastAt"`,
       route, cls);
+
+  it('the routes the CHECK takes are the five command types their services run (gap check of 98ce7e9b)', async () => {
+    const def = (await t.prisma.$queryRawUnsafe<Array<{ def: string }>>(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'CommandKeySighting_shape_check'`))[0]!.def;
+    const inCheck = [...def.matchAll(/'([a-z-]+\.[A-Za-z-]+)'::text/g)].map((m) => m[1]).filter((r) => r !== undefined && r.includes('.'));
+    expect(inCheck.sort()).toEqual([...ROUTES].sort());
+    for (const route of ROUTES) {
+      const source = readFileSync(join(__dirname, '../../src', SERVICE_OF[route]!), 'utf8');
+      expect([route, source.includes(`commandType: '${route}'`)]).toEqual([route, true]);
+    }
+  });
 
   it('takes each of the five routes in both classes', async () => {
     for (const route of ROUTES) for (const cls of ['absent', 'legacy']) expect(await insert(route, cls, '2026-11-01', 1)).toBe(1);
