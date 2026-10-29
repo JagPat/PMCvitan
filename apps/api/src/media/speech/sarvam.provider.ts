@@ -60,7 +60,9 @@ export class SarvamSpeechProvider implements SpeechProvider {
     const uploadUrl = fileUrl(links.upload_urls as UrlMap | undefined, fileName);
     if (!uploadUrl) throw new SpeechProviderError('Sarvam did not return an upload link', false);
     const put = await this.exchange(uploadUrl, { method: 'PUT', headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': mime }, body: audio });
-    if (!put.ok) throw await refused(put, 'upload');
+    if (!put.ok) throw await refused(put, 'upload', 'blob');
+    // the blob store's answer to a stored upload is not needed: let it go, as every answer is either read or let go
+    await release(put);
     await this.api('POST', `/speech-to-text/job/v1/${encodeURIComponent(jobId)}/start`, {});
   }
 
@@ -78,7 +80,7 @@ export class SarvamSpeechProvider implements SpeechProvider {
     const downloadUrl = fileUrl(links.download_urls as UrlMap | undefined, output);
     if (!downloadUrl) throw new SpeechProviderError('Sarvam did not return a download link', false);
     const res = await this.exchange(downloadUrl, { method: 'GET' });
-    if (!res.ok) throw await refused(res, 'download');
+    if (!res.ok) throw await refused(res, 'download', 'blob');
     // an output far beyond any note's words is never held whole: it is read in chunks and dropped once past the bound,
     // whatever length it claims; the note ends failed, with its one "Try again"
     const text = await bounded(res, OUTPUT_MAX_BYTES);
@@ -99,7 +101,7 @@ export class SarvamSpeechProvider implements SpeechProvider {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const step = path.split('/').slice(-1)[0] ?? 'call';
-    if (!res.ok) throw await refused(res, step);
+    if (!res.ok) throw await refused(res, step, 'api');
     // read in chunks and dropped once past the bound, as the output is, so no answer is held whole whatever it claims
     const text = await bounded(res, API_MAX_BYTES);
     const json = text === TOO_LARGE ? undefined : parsed(text);
@@ -147,6 +149,8 @@ async function bounded(res: Response, max: number): Promise<string | undefined |
       text += decoder.decode(value, { stream: true });
     }
   } catch {
+    // the body broke off, timed out, or is not UTF-8: whatever is left of it is let go, not left for garbage collection
+    await reader.cancel().catch(() => undefined);
     return undefined;
   }
 }
@@ -180,16 +184,29 @@ function outputName(details: unknown): string | null {
   return null;
 }
 
-/** A refused exchange. 408, 429 and 5xx may be tried again; a 429 is Sarvam's account-wide rate limit (busy). Any other 4xx is final for that note: a refused file, a
- *  malformed request, and a bad or missing key (401, 403) too, which no later try mends until the key is fixed; the
- *  note's one "Try again" is left for then. */
-function failure(step: string, status: number): SpeechProviderError {
-  const retryable = status === 408 || status === 429 || status >= 500;
-  return new SpeechProviderError(`Sarvam ${step} answered ${status}`, !retryable, status === 429);
+/**
+ * A refused exchange, judged by whom it was made with.
+ * - Sarvam's API (`api`): 408, 429 and 5xx may be tried again, and a 429 is Sarvam's account-wide rate limit (busy).
+ *   Any other 4xx is final for that note: a refused file, a malformed request, and a bad or missing key (401, 403) too,
+ *   which no later try mends until the key is fixed; the note's one "Try again" is left for then.
+ * - The blob store, through a link Sarvam just gave (`blob`): never busy (its limits are not Sarvam's account's). 408,
+ *   429 and 5xx may be tried again, and so may 401, 403 and 404, since a link that expired or a file not there yet is
+ *   mended by the fresh link the next try asks for (the note's bounded tries still end it). Any other 4xx (a recording
+ *   the store refuses, such as 413) is final.
+ */
+function failure(step: string, status: number, peer: 'api' | 'blob'): SpeechProviderError {
+  const retryable = status === 408 || status === 429 || status >= 500 || (peer === 'blob' && (status === 401 || status === 403 || status === 404));
+  return new SpeechProviderError(`Sarvam ${step} answered ${status}`, !retryable, peer === 'api' && status === 429);
 }
 
-/** A refused answer's body is let go unread, so its connection is freed at once rather than at garbage collection. */
-async function refused(res: Response, step: string): Promise<SpeechProviderError> {
+/** Let an answer's body go unread, so its connection is freed at once rather than at garbage collection. Every answer
+ *  this client receives is either read through {@link bounded} or let go here. */
+async function release(res: Response): Promise<void> {
   await res.body?.cancel().catch(() => undefined);
-  return failure(step, res.status);
+}
+
+/** A refused answer: its body let go, and the refusal judged by {@link failure}. */
+async function refused(res: Response, step: string, peer: 'api' | 'blob'): Promise<SpeechProviderError> {
+  await release(res);
+  return failure(step, res.status, peer);
 }

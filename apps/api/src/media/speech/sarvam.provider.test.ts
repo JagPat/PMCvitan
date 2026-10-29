@@ -115,20 +115,80 @@ describe('SarvamSpeechProvider', () => {
     expect((await refusal(fake({ ...START, 'POST /speech-to-text/job/v1/job-7/start': { status: 503 } }).provider.startJob('job-7', Buffer.from('x'), 'audio/webm', 'm1.webm'))).final).toBe(false);
   });
 
-  it('lets a refused answer\'s body go unread, from the API and from the blob store, so no connection is held', async () => {
-    for (const refusedAt of ['POST /speech-to-text/job/v1/upload-files', `PUT ${UPLOAD}`]) {
-      let cancelled = false;
+  it('reads every answer it receives to its end or lets it go, on every path: no body is left holding a connection', async () => {
+    // every answer's body is a stream that records how it ended: read to its end, or let go (cancelled)
+    type Body = { chunks: Uint8Array[]; ended: 'read' | 'cancelled' | null };
+    const enc = (v: unknown) => new TextEncoder().encode(typeof v === 'string' ? v : JSON.stringify(v));
+    const words = enc({ transcript: 'પાઇપ', language_code: 'gu-IN' });
+    const run = async (answers: Record<string, { status?: number; chunks: Uint8Array[] }>, act: (p: SarvamSpeechProvider) => Promise<unknown>) => {
+      const bodies: Body[] = [];
       const http = (async (input: string | URL | Request, init?: RequestInit) => {
         const key = `${init?.method ?? 'GET'} ${String(input).replace(BASE, '')}`;
-        if (key === refusedAt) return new Response(new ReadableStream({ cancel() { cancelled = true; } }), { status: 503 });
-        const answer = START[key] as { json?: unknown } | undefined;
+        const answer = answers[key];
         if (!answer) throw new Error(`unexpected ${key}`);
-        return new Response(JSON.stringify(answer.json ?? null), { status: 200 });
+        const body: Body = { chunks: answer.chunks.map((c) => c.slice()), ended: null };
+        bodies.push(body);
+        const stream = new ReadableStream<Uint8Array>({
+          pull(c) { const next = body.chunks.shift(); if (next) c.enqueue(next); else { body.ended = 'read'; c.close(); } },
+          cancel() { body.ended = 'cancelled'; },
+        });
+        return new Response(stream, { status: answer.status ?? 200 });
       }) as typeof fetch;
-      const error = await refusal(new SarvamSpeechProvider(KEY, http, BASE).startJob('job-7', Buffer.from('x'), 'audio/webm', 'm1.webm'));
-      expect(error.final, refusedAt).toBe(false);
-      expect(cancelled, refusedAt).toBe(true);
+      await act(new SarvamSpeechProvider(KEY, http, BASE)).catch(() => undefined);
+      return bodies;
+    };
+    const ok = (v: unknown) => ({ chunks: [enc(v)] });
+    const start = {
+      'POST /speech-to-text/job/v1/upload-files': ok({ upload_urls: { 'm1.webm': { file_url: UPLOAD } } }),
+      // the blob store answers a stored upload with a body of its own
+      [`PUT ${UPLOAD}`]: { status: 201, chunks: [enc('<stored/>')] },
+      'POST /speech-to-text/job/v1/job-7/start': ok({ job_state: 'Pending' }),
+    };
+    const done = {
+      'GET /speech-to-text/job/v1/job-7/status': ok({ job_state: 'Completed', job_details: [{ outputs: [{ file_name: 'm1.json' }] }] }),
+      'POST /speech-to-text/job/v1/download-files': ok({ download_urls: { 'm1.json': { file_url: DOWNLOAD } } }),
+      [`GET ${DOWNLOAD}`]: { chunks: [words] },
+    };
+    const startJob = (p: SarvamSpeechProvider) => p.startJob('job-7', Buffer.from('x'), 'audio/webm', 'm1.webm');
+    const checkJob = (p: SarvamSpeechProvider) => p.checkJob('job-7');
+    const cases: Array<[string, Record<string, { status?: number; chunks: Uint8Array[] }>, (p: SarvamSpeechProvider) => Promise<unknown>]> = [
+      ['a job made', { 'POST /speech-to-text/job/v1': ok({ job_id: 'job-7' }) }, (p) => p.createJob()],
+      ['a job started, the store\'s answer included', start, startJob],
+      ['words read', done, checkJob],
+      ['the API refusing', { ...start, 'POST /speech-to-text/job/v1/upload-files': { status: 503, chunks: [enc('busy'), enc('more')] } }, startJob],
+      ['the store refusing the upload', { ...start, [`PUT ${UPLOAD}`]: { status: 503, chunks: [enc('<error/>'), enc('more')] } }, startJob],
+      ['the store refusing the download', { ...done, [`GET ${DOWNLOAD}`]: { status: 403, chunks: [enc('<error/>'), enc('more')] } }, checkJob],
+      ['an output that is not UTF-8, with more after it', { ...done, [`GET ${DOWNLOAD}`]: { chunks: [new Uint8Array([0x7b, 0xff, 0xfe]), enc('"rest"'), enc('}')] } }, checkJob],
+      ['an API answer that is not UTF-8, with more after it', { 'GET /speech-to-text/job/v1/job-7/status': { chunks: [new Uint8Array([0x7b, 0xc3]), enc('x'), enc('}')] } }, checkJob],
+      ['an output past its bound', { ...done, [`GET ${DOWNLOAD}`]: { chunks: Array.from({ length: 12 }, () => new Uint8Array(100_000).fill(0x20)) } }, checkJob],
+    ];
+    for (const [what, answers, act] of cases) {
+      const bodies = await run(answers, act);
+      expect(bodies.length, what).toBeGreaterThan(0);
+      expect(bodies.map((b) => b.ended), what).toEqual(bodies.map(() => expect.stringMatching(/^(read|cancelled)$/)));
     }
+  });
+
+  it('judges a refusal by whom it came from: only Sarvam\'s API is busy, and the store\'s expired link is tried again', async () => {
+    const put = (code: number) => refusal(fake({ ...START, [`PUT ${UPLOAD}`]: { status: code } }).provider.startJob('job-7', Buffer.from('x'), 'audio/webm', 'm1.webm'));
+    const get = (code: number) => refusal(fake({
+      ...status('Completed', [{ file_name: 'm1.json' }]),
+      'POST /speech-to-text/job/v1/download-files': { json: { download_urls: { 'm1.json': { file_url: DOWNLOAD } } } },
+      [`GET ${DOWNLOAD}`]: { status: code },
+    }).provider.checkJob('job-7'));
+    // the store's 429 is its own limit, not Sarvam's account-wide one: tried again, and never busy
+    for (const e of [await put(429), await get(429)]) expect([e.final, e.busy]).toEqual([false, false]);
+    // a link that expired, or an output not there yet, is mended by the next try's fresh link
+    for (const s of [401, 403, 404, 408, 500, 503]) {
+      expect((await put(s)).final, `PUT ${s}`).toBe(false);
+      expect((await get(s)).final, `GET ${s}`).toBe(false);
+    }
+    // a recording the store refuses is final
+    expect((await put(413)).final).toBe(true);
+    // Sarvam's own API: its 429 is busy, and its 401/403 (a bad key) is final
+    const api = (code: number) => refusal(fake({ ...START, 'POST /speech-to-text/job/v1/upload-files': { status: code } }).provider.startJob('job-7', Buffer.from('x'), 'audio/webm', 'm1.webm'));
+    expect([(await api(429)).final, (await api(429)).busy]).toEqual([false, true]);
+    expect((await api(403)).final).toBe(true);
   });
 
   it('reads a job made but not started as waiting, a running job as running, and a failed or partly failed one as failed', async () => {
