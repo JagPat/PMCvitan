@@ -4,6 +4,7 @@ import type { Role } from '../common/auth';
 import { readinessLockKey } from '../common/readiness-lock';
 import { readPhase6_4dRollout } from '../platform/phase6-4d-rollout';
 import { RoleStandingQuery } from '../platform/role-standing.query';
+import { holdProjectExchangeFence } from './project-exchange-fence';
 
 /** #482 — the address pattern the Board fixed for the QA accounts (`qa.<lowercase letters>@vitan.in`), matched as stored. */
 export const QA_ACCOUNT_EMAIL = /^qa\.[a-z]+@vitan\.in$/;
@@ -119,6 +120,35 @@ export class OrgsParticipant {
     // foreign key, which `FOR UPDATE` turned into a deadlock between two commands on one project.
     const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ archived: boolean }>>(
       `SELECT ("archivedAt" IS NOT NULL) AS archived FROM "Project" WHERE "id" = $1 FOR NO KEY UPDATE`,
+      projectId,
+    );
+    return rows.length > 0 && rows[0]!.archived === false;
+  }
+
+  /**
+   * #1177 VT2-B — is the project operable, held so until the caller's transaction ends? Takes the shared side of the
+   * project's exchange fence (`project-exchange-fence.ts`), then reads `archivedAt`. An archive takes the fence's
+   * exclusive side first, so it waits (bounded) for every holder, and a holder that comes after a waiting archive
+   * waits behind it and then answers false. The project's row is not locked, so no other writer of it waits on a
+   * holder.
+   *
+   * For the caller:
+   * - Call it FIRST in the transaction, holding no other lock (the fence's lock order), and make only the one bounded
+   *   external exchange under it, so the archive's bounded wait (`PROJECT_EXCHANGE_FENCE_WAIT_MS`) always suffices.
+   * - READ COMMITTED only (Prisma's default): the read is its own statement after the lock, so it sees an archive that
+   *   committed while the holder waited. Under REPEATABLE READ or SERIALIZABLE it could not, so it refuses to run there.
+   * - The fence stays held after a false answer until the transaction ends.
+   * - A holder that comes while an archive waits queues behind it, for up to `PROJECT_EXCHANGE_FENCE_WAIT_MS`: size the
+   *   transaction's timeout (and any lock_timeout) for that wait plus the exchange. Holders wait on each other only
+   *   through such an archive, never directly.
+   */
+  async holdProjectOperable(tx: OrgsParticipantClient | Prisma.TransactionClient, projectId: string): Promise<boolean> {
+    const [{ iso }] = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ iso: string }>>(
+      `SELECT pg_catalog.current_setting('transaction_isolation') AS iso`);
+    if (iso !== 'read committed') throw new Error(`holdProjectOperable needs READ COMMITTED, not ${iso}`);
+    await holdProjectExchangeFence(tx as Prisma.TransactionClient, projectId);
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ archived: boolean }>>(
+      `SELECT ("archivedAt" IS NOT NULL) AS archived FROM "Project" WHERE "id" = $1`,
       projectId,
     );
     return rows.length > 0 && rows[0]!.archived === false;

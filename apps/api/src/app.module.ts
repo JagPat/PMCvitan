@@ -102,6 +102,7 @@ import { DrawingsService } from './drawings/drawings.service';
 import { DrawingsQueryService } from './drawings/drawings.query';
 import { NodesService } from './nodes/nodes.service';
 import { NodesController } from './nodes/nodes.controller';
+import { NodesQueryService } from './nodes/nodes.query';
 import { DrawingsController } from './drawings/drawings.controller';
 import { HubReceiverController } from './drawings/hub/hub-receiver.controller';
 import { HubReceiverService } from './drawings/hub/hub-receiver.service';
@@ -240,6 +241,8 @@ import { MediaParticipant } from './media/media.participant';
     // Task 10 (Module 3) — the inspections module's public READ boundary (snapshot slices + readiness
     // input + projection read + tenant-ref check).
     InspectionsQueryService,
+    // #1177 VT2-B — the nodes read contract (is a place hidden from a viewer)
+    NodesQueryService,
     DailyLogService,
     SiteVisitsService,
     SiteVisitsQueryService,
