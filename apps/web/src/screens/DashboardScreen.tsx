@@ -96,6 +96,8 @@ export function DashboardScreen() {
   const recordedPhotos = useStore(useShallow((s) => s.photos));
   // #482 site photos: a photo picked with no signal shows first at once, until its upload is sent
   const outbox = useStore((s) => s.outbox);
+  // and one whose online send lost its answer, queued by its key and shown from this phone's copy (#917)
+  const keptPhotos = useStore((s) => s.sitePhotosKept);
   const userName = useStore((s) => s.userName);
   // #482 site photos: past the newest four, the viewer's own photos still in their hour, from the window and from the
   // snapshot's list of those past it (Codex 4316959529, 4322976249). The PMC's and engineer's Delete has no hour.
@@ -103,8 +105,8 @@ export function DashboardScreen() {
   // a queued photo is this viewer's own pick: it says their name; its role and time come once the server records it.
   // One the server already holds shows once, as recorded, whether in the window or in the own list past it (Codex 4339094796)
   const queuedPhotos = useMemo(
-    () => (API_BASE ? queuedSitePhotos(outbox, [...recordedPhotos, ...myDeletablePhotos]).map((p) => (userName ? { ...p, by: userName } : p)) : []),
-    [outbox, recordedPhotos, myDeletablePhotos, userName],
+    () => (API_BASE ? queuedSitePhotos(outbox, [...recordedPhotos, ...myDeletablePhotos], keptPhotos).map((p) => (userName ? { ...p, by: userName } : p)) : []),
+    [outbox, recordedPhotos, myDeletablePhotos, keptPhotos, userName],
   );
   const sitePhotos = useMemo(() => [...queuedPhotos, ...recordedPhotos], [queuedPhotos, recordedPhotos]);
   // re-read at the earliest deadline among them, so a card whose hour is up leaves (Codex 4322976255)
