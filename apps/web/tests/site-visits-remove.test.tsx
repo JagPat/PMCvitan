@@ -388,7 +388,7 @@ describe('#1179 R3: taking a file off a visit', () => {
       t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: `idem-${id}`, scope,
       file: { id, mime: 'video/webm' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
     } as SiteVisitAddFileOp);
-    for (const id of ['ck-c', 'ck-d']) {
+    for (const id of ['ck-c', 'ck-d', 'ck-e']) {
       await putVisitPhoto(scope, st.activeProjectId, clip(id), 'AAAA', null, undefined, '/9j/frame');
       await fileVisitPhoto(scope, st.activeProjectId, id, `m-${id}`);
     }
@@ -397,6 +397,15 @@ describe('#1179 R3: taking a file off a visit', () => {
     // a frame refused for any other reason leaves the frame alone; the clip stays, filed, for its visit's next read
     const refused = { project: st.activeProjectId, addVisitPoster: vi.fn(async () => { throw refusal(400, 'This file is not a still frame the app can show'); }) };
     await expect(replayOutboxOp(refused as unknown as ApiGateway, clip('ck-d') as unknown as OutboxOp, st.projectScopeGeneration)).resolves.toBeNull();
-    expect((await listVisitPhotos(scope, st.activeProjectId)).map((r) => [r.clientKey, r.state, r.poster ?? null])).toEqual([['ck-d', 'filed', null]]);
+    // a removed clip the phone cannot let go of just then holds its own visit, to be answered and let go again
+    const stuck = { project: st.activeProjectId, addVisitPoster: vi.fn(async () => {
+      vi.spyOn(indexedDB, 'open').mockImplementation(() => { throw new Error('storage gone'); });
+      throw refusal(404, 'Media not found');
+    }) };
+    await expect(replayOutboxOp(stuck as unknown as ApiGateway, clip('ck-e') as unknown as OutboxOp, st.projectScopeGeneration)).rejects.toBeInstanceOf(VisitPhotoUnreadable);
+    vi.mocked(indexedDB.open).mockRestore();
+    expect((await listVisitPhotos(scope, st.activeProjectId)).map((r) => [r.clientKey, r.state, r.poster ?? null])).toEqual([['ck-d', 'filed', null], ['ck-e', 'filed', '/9j/frame']]);
+    await expect(replayOutboxOp(removed as unknown as ApiGateway, clip('ck-e') as unknown as OutboxOp, st.projectScopeGeneration)).resolves.toBeNull();
+    expect((await listVisitPhotos(scope, st.activeProjectId)).map((r) => r.clientKey)).toEqual(['ck-d']);
   });
 });

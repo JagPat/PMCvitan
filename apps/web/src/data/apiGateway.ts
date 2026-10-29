@@ -2154,9 +2154,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
         } catch (err) {
           // #1179: the clip itself was taken off the visit (the server's own not-found, by its exact text). The whole row
           // goes, its clip's bytes too, not the still frame alone: no later read may be needed to let go of a removed
-          // clip, and a reload never rebuilds it. A row the phone could not remove is let go by the next read of its visit
+          // clip, and a reload never rebuilds it. A row the phone could not remove keeps its act: withinWait's
+          // VisitPhotoUnreadable holds this visit alone, to be answered and removed again
           if (isVisitFileGone(err)) {
-            await withinWait(() => deleteVisitPhoto(op.scope, gw.project, id)).catch(() => {});
+            await withinWait(() => deleteVisitPhoto(op.scope, gw.project, id));
             tellSiteVisits({ kind: 'retry', project: gw.project, generation });
             return 'gone';
           }
