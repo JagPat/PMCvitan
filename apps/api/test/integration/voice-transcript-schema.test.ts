@@ -11,6 +11,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
  */
 const MIGRATION = join(__dirname, '../../prisma/migrations/20280126000000_voice_transcript/migration.sql');
 const STAMP = join(__dirname, '../../prisma/migrations/20280129000000_voice_transcript_stamp/migration.sql');
+const RUNNING_SINCE = join(__dirname, '../../prisma/migrations/20280130000000_voice_transcript_running_since/migration.sql');
 const CORRECTIONS = join(__dirname, '../../prisma/migrations/20280128000000_voice_transcript_correction/migration.sql');
 
 describe('#1177 voice-note transcripts (live PG)', () => {
@@ -36,6 +37,7 @@ describe('#1177 voice-note transcripts (live PG)', () => {
   const url = () => (process.env.DATABASE_URL ?? '').split('?')[0]!;
   const replay = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url(), '-f', MIGRATION], { stdio: 'pipe' });
   const replayCorrections = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url(), '-f', CORRECTIONS], { stdio: 'pipe' });
+  const replayRunningSince = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url(), '-f', RUNNING_SINCE], { stdio: 'pipe' });
   const replayStamp = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url(), '-f', STAMP], { stdio: 'pipe' });
   const voice = async (projectId: string) =>
     (await t.prisma.media.create({ data: { projectId, kind: 'visit', mime: 'audio/webm', uploadedBy: f.memberUser.id, durationSec: 30 } })).id;
@@ -238,6 +240,59 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     expect(await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId: n } })).toMatchObject({ providerJobId: 'job-5', retried: true, attempts: 1 });
   });
 
+  it('stamps when each try\'s job was stored, whatever the writer sends, and clears it with the job (VT1d)', async () => {
+    const since = async (mediaId: string) => (await t.prisma.voiceTranscript.findUniqueOrThrow({ where: { mediaId } })).runningSince;
+    const m = await voice(f.projectA.id);
+    // a claim has no job and no start, whatever the writer sends
+    await insert(f.projectA.id, m, ', "runningSince"', ", now() - interval '1 day'");
+    expect(await since(m)).toBeNull();
+    await set(m, `"runningSince" = now()`);
+    expect(await since(m)).toBeNull();
+    // the job's start is the database clock's UTC time when the job is stored, not the writer's
+    const [{ before }] = await t.prisma.$queryRawUnsafe<Array<{ before: Date }>>(`SELECT (clock_timestamp() AT TIME ZONE 'UTC')::timestamp(3) AS before`);
+    await set(m, `"status" = 'running', "providerJobId" = 'job-1', "runningSince" = now() - interval '1 day'`);
+    const started = await since(m);
+    expect(started).not.toBeNull();
+    expect(started!.getTime()).toBeGreaterThanOrEqual(before.getTime());
+    expect(started!.getTime()).toBeLessThanOrEqual(Date.now() + 5_000);
+    // it never moves while that job stands: not by a writer, not by the next check, not into done
+    await set(m, `"runningSince" = now() - interval '1 hour'`);
+    await set(m, `"attempts" = 1, "lastError" = 'busy'`);
+    expect(await since(m)).toEqual(started);
+    // in a session ahead of UTC it is still UTC (as VT1c's "createdAt")
+    const n = await voice(f.projectA.id);
+    await claim(n);
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL TIME ZONE 'Pacific/Kiritimati'`);
+      await tx.$executeRawUnsafe(`UPDATE "VoiceTranscript" SET "status" = 'running', "providerJobId" = 'job-k' WHERE "mediaId" = $1`, n);
+    });
+    expect((await since(n))!.getTime()).toBeLessThanOrEqual(Date.now() + 5_000);
+    // a failed try's fresh claim clears it with the job, and the next job gets its own
+    await set(m, `"status" = 'failed'`);
+    expect(await since(m)).toEqual(started);
+    await set(m, `"status" = 'pending', "providerJobId" = NULL, "attempts" = 0, "retried" = true, "lastError" = NULL, "leaseToken" = NULL, "leaseUntil" = NULL, "runningSince" = now()`);
+    expect(await since(m)).toBeNull();
+    await set(m, `"status" = 'running', "providerJobId" = 'job-2'`);
+    const again = await since(m);
+    expect(again!.getTime()).toBeGreaterThanOrEqual(started!.getTime());
+    // once done it is kept as it was, like every other column
+    await set(m, `"status" = 'done', "text" = 'words'`);
+    expect(await since(m)).toEqual(again);
+    await expect(set(m, `"runningSince" = now() - interval '1 day'`)).rejects.toThrow(/kept as heard/);
+    // a writer that skips the triggers (replica mode) still cannot part a job from its start
+    const r = await voice(f.projectA.id);
+    await claim(r);
+    await expect(t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = replica`);
+      await tx.$executeRawUnsafe(`UPDATE "VoiceTranscript" SET "status" = 'running', "providerJobId" = 'job-r' WHERE "mediaId" = $1`, r);
+    })).rejects.toThrow(/VoiceTranscript_running_since_check/);
+    // a short note sent whole is done with no job, and so with no start
+    const s = await voice(f.projectA.id);
+    await claim(s);
+    await set(s, `"status" = 'done', "text" = ''`);
+    expect(await since(s)).toBeNull();
+  });
+
   it('has exactly its keys, check, indexes and triggers, and re-runs over itself unchanged', async () => {
     const shape = async () => t.prisma.$queryRawUnsafe<Array<{ k: string; d: string }>>(
       `SELECT 'c:' || conname AS k, pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conrelid = '"VoiceTranscript"'::regclass
@@ -246,9 +301,10 @@ describe('#1177 voice-note transcripts (live PG)', () => {
        ORDER BY 1`);
     const before = await shape();
     expect(before.map((r) => r.k)).toEqual([
-      'c:VoiceTranscript_pkey', 'c:VoiceTranscript_projectId_mediaId_fkey', 'c:VoiceTranscript_shape_check',
+      'c:VoiceTranscript_pkey', 'c:VoiceTranscript_projectId_mediaId_fkey', 'c:VoiceTranscript_running_since_check', 'c:VoiceTranscript_shape_check',
       'i:"VoiceTranscript_pkey"', 'i:"VoiceTranscript_projectId_mediaId_key"',
       't:VoiceTranscript_insert', 't:VoiceTranscript_keys_fixed', 't:VoiceTranscript_no_delete', 't:VoiceTranscript_no_truncate',
+      't:VoiceTranscript_running_since',
     ]);
     expect(before.find((r) => r.k === 'c:VoiceTranscript_projectId_mediaId_fkey')?.d).toMatch(/ON DELETE CASCADE/);
     const onMedia = () => t.prisma.$queryRawUnsafe<Array<{ d: string }>>(
@@ -259,7 +315,11 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     // VT1b replaces this file's delete guard (Codex #1213, 4401865953), and runs after it on every deploy; so does it here
     replayCorrections();
     replayStamp();
+    replayRunningSince();
+    replayRunningSince();
     expect(await shape()).toEqual(before);
+    // the job start stands after the replay, stamped by its own trigger after VT1a's rules
+    expect(before.find((r) => r.k === 't:VoiceTranscript_running_since')?.d).toMatch(/BEFORE INSERT OR UPDATE ON public."VoiceTranscript" FOR EACH ROW/);
     // and the stamp that stands after the replay is VT1c's clock read, not VT1a's transaction start
     const [{ src }] = await t.prisma.$queryRawUnsafe<Array<{ src: string }>>(
       `SELECT prosrc AS src FROM pg_proc WHERE oid = 'public.media_voice_transcript_insert()'::regprocedure`);
