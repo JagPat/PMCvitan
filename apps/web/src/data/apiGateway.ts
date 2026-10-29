@@ -2129,10 +2129,18 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
       // V2b-2: a clip's still frame, sent to the clip the server holds. Taken, or refused for good (a refused frame
       // leaves the plain play tile), it leaves the row. No answer, a sign-in or a busy or failing server leaves it on the
       // row for the next flush, and the clip's act still goes: a still frame never holds the visit's later acts
-      const sendPoster = async (mediaId: string, data: string): Promise<void> => {
+      const sendPoster = async (mediaId: string, data: string): Promise<'gone' | void> => {
         try {
           await gw.addVisitPoster(mediaId, data);
         } catch (err) {
+          // #1179: the clip itself was taken off the visit (the server's own not-found, by its exact text). The whole row
+          // goes, its clip's bytes too, not the still frame alone: no later read may be needed to let go of a removed
+          // clip, and a reload never rebuilds it. A row the phone could not remove is let go by the next read of its visit
+          if (isVisitFileGone(err)) {
+            await withinWait(() => deleteVisitPhoto(op.scope, gw.project, id)).catch(() => {});
+            tellSiteVisits({ kind: 'retry', project: gw.project, generation });
+            return 'gone';
+          }
           if (!isTerminalOutboxError(err)) return;
         }
         await withinWait(() => clearVisitPoster(op.scope, gw.project, id)).catch(() => {});
@@ -2144,7 +2152,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
         if (!row) return null;
         // sent already, its still frame not yet: the frame alone goes
         if (posterWaits(row)) {
-          await sendPoster(row.mediaId, row.poster);
+          if (await sendPoster(row.mediaId, row.poster) === 'gone') return null;
           return tell({ state: 'filed', reason: null });
         }
         // filed or failed already (another tab sent it, or it was refused): not sent again, and the screen is told the
@@ -2159,9 +2167,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
         } catch (err) {
           // #1179: an earlier send of this key landed (its answer lost) and the file was then taken off the visit, by the
           // person who added it or the PMC. It is settled, never refused: its bytes go, and nothing says it was not sent.
-          // A row the phone could not remove keeps its act (no status: transient), to be answered and removed again
+          // A row the phone could not remove keeps its act: withinWait's VisitPhotoUnreadable holds this visit alone, to
+          // be answered and removed again, and the rest of the queue goes on
           if (isDeletedPhoto(err)) {
-            await withinWait(() => deleteVisitPhoto(op.scope, gw.project, id)).catch(() => { throw new Error('the removed file kept on this phone could not be let go'); });
+            await withinWait(() => deleteVisitPhoto(op.scope, gw.project, id));
             tellSiteVisits({ kind: 'retry', project: gw.project, generation });
             return null;
           }
@@ -2175,7 +2184,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
         // row stays, as filed, so the screen shows the photo until the server's list does (Codex 4321998475). A clip's
         // row keeps the id the server gave it, for its still frame, which goes next
         const committed = await withinWait(() => fileVisitPhoto(op.scope, gw.project, id, row.poster ? sent.id : undefined));
-        if (committed && row.poster) await sendPoster(sent.id, row.poster);
+        if (committed && row.poster && await sendPoster(sent.id, row.poster) === 'gone') return null;
         return tell(committed);
       });
     }

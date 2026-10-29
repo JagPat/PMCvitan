@@ -4,7 +4,7 @@ import { can, type Lang, type Role } from '@vitan/shared';
 import { useStore } from '@/store/store';
 import { isCurrentProjectScope, projectScopeOf, type ProjectScope } from '@/store/projectScope';
 import {
-  isSiteVisitOp, isTerminalOutboxError, isVisitFileGone, newIdempotencyKey, refusalMessage, resolveMediaUrl, siteVisitListeners, siteVisitOf,
+  isSiteVisitOp, isVisitFileGone, newIdempotencyKey, refusalMessage, resolveMediaUrl, siteVisitListeners, siteVisitOf,
   type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitFile, type SiteVisitOp,
   type SiteVisitRating,
 } from '@/data/apiGateway';
@@ -800,12 +800,20 @@ export function useSiteVisits() {
     setBusy(true);
     setError(null);
     setNotice(null);
-    const gone = () => {
+    const gone = async () => {
       removedFiles.current.add(file.mediaId);
       if (file.clientKey) removedFiles.current.add(file.clientKey);
       setRemovedTurn((n) => n + 1);
       setNotice(SV.fileRemoved[useStore.getState().lang]);
-      void readHead(false);
+      // the phone's own copy of a file it sent goes with the removal, not with a later read: a read that fails, or a
+      // reload, would otherwise rebuild the removed file from it. Bounded; one the phone could not let go is hidden here
+      // and settled by the next read of its visit
+      if (file.clientKey) {
+        const key = file.clientKey;
+        await withinWait(() => deleteVisitPhoto(visitPhotoScope(state.sessionToken, state.sessionUserId), scope.projectId, key)).catch(() => {});
+        if (live(scope)) readKept();
+      }
+      if (live(scope)) void readHead(false);
       return null;
     };
     try {
@@ -818,8 +826,9 @@ export function useSiteVisits() {
       // what the server allows may have moved (the hour up, the visit ended): the offer is read again
       void readHead(false);
       const lang = useStore.getState().lang;
-      // the server's refusal, in the viewer's words where it is one of the removal refusals; no answer is said as such
-      if (!isTerminalOutboxError(err)) return SV.removeUnreachable[lang];
+      // the server's refusal, in the viewer's words where it is one of the removal refusals. Only no answer at all is said
+      // as such: a sign-in, a timeout, a busy or a failing server answered, with a status
+      if (typeof (err as { status?: unknown } | null)?.status !== 'number') return SV.removeUnreachable[lang];
       const said = refusalMessage(err);
       return said ? `${SV.notRemoved[lang]} ${removalRefusalWords(said, lang)}` : SV.notRemoved[lang];
     } finally {

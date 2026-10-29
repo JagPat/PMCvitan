@@ -5,7 +5,7 @@ import type { Lang, ProjectMember, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { replayOutboxOp, type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitFile, type SiteVisitRemoval } from '@/data/apiGateway';
-import { fileVisitPhoto, listVisitPhotos, putVisitPhoto, visitPhotoScope, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
+import { fileVisitPhoto, listVisitPhotos, putVisitPhoto, visitPhotoScope, VisitPhotoUnreadable, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
 import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
 
 /**
@@ -235,6 +235,18 @@ describe('#1179 R3: taking a file off a visit', () => {
     expect(within(card2).getByTestId('sv-remove-said-m-v').textContent).toBe('No signal. Removing a file needs a connection.');
   });
 
+  it('a server that answered is never said to have given no answer: a sign-in, a timeout, a busy or failing server', async () => {
+    for (const [status, said] of [[503, 'Service unavailable'], [429, 'Too many requests'], [408, 'Request timed out'], [401, '']] as const) {
+      const { gw } = server(visit({ files: [voice({ removable: own })] }), { removeSiteVisitFile: vi.fn(async () => { throw refusal(status, said); }) });
+      const card = await mount('consultant', CONSULTANT, gw);
+      await click(within(card).getByTestId('sv-remove-m-v'));
+      await click(within(card).getByTestId('sv-remove-yes-m-v'));
+      expect(within(card).getByTestId('sv-remove-said-m-v').textContent).toBe(said ? `The file was not removed. ${said}` : 'The file was not removed.');
+      expect(within(card).getByTestId('sv-file-m-v')).toBeTruthy();
+      cleanup();
+    }
+  });
+
   it('the offer on one\'s own file leaves when the hour is up', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const { gw } = server(visit({ files: [voice({ removable: { reasonRequired: false, until: new Date(NOW + 60_000).toISOString() } })] }));
@@ -325,6 +337,8 @@ describe('#1179 R3: taking a file off a visit', () => {
     await click(within(card).getByTestId('sv-remove-yes-m-p'));
     expect(within(card).queryByTestId('sv-file-m-p')).toBeNull();
     expect(within(card).queryByTestId('sv-file-ck-1')).toBeNull();
+    // and the phone lets go of its copy with the removal: no later read is needed, and a reload rebuilds nothing
+    expect(await listVisitPhotos(scope, st.activeProjectId)).toEqual([]);
   });
 
   it('a send whose answer was lost, replayed after its file was removed, is settled: never "not sent"', async () => {
@@ -346,5 +360,43 @@ describe('#1179 R3: taking a file off a visit', () => {
     const gone = { project: st.activeProjectId, uploadMedia: vi.fn(async () => { throw refusal(410, 'Gone'); }) };
     await expect(replayOutboxOp(gone as unknown as ApiGateway, other as unknown as OutboxOp, st.projectScopeGeneration)).rejects.toMatchObject({ status: 410 });
     expect((await listVisitPhotos(scope, st.activeProjectId)).map((r) => [r.clientKey, r.state, r.reason])).toEqual([['ck-3', 'failed', 'Gone']]);
+  });
+  it('a removed file whose copy the phone cannot let go holds its own visit only, as an unreadable copy does', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const op = {
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: 'idem-4', scope,
+      file: { id: 'ck-4', mime: 'audio/webm' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
+    } as SiteVisitAddFileOp;
+    await putVisitPhoto(scope, st.activeProjectId, op, 'AAAA');
+    // the phone's store fails once the server has answered
+    const gw = { project: st.activeProjectId, uploadMedia: vi.fn(async () => {
+      vi.spyOn(indexedDB, 'open').mockImplementation(() => { throw new Error('storage gone'); });
+      throw refusal(410, 'This photo was deleted');
+    }) };
+    await expect(replayOutboxOp(gw as unknown as ApiGateway, op as unknown as OutboxOp, st.projectScopeGeneration)).rejects.toBeInstanceOf(VisitPhotoUnreadable);
+    vi.mocked(indexedDB.open).mockRestore();
+    expect((await listVisitPhotos(scope, st.activeProjectId)).map((r) => r.clientKey)).toEqual(['ck-4']);
+  });
+
+  it('a sent clip removed before its still frame went: the frame\'s not-found lets go of the whole clip on the phone', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const clip = (id: string) => ({
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: `idem-${id}`, scope,
+      file: { id, mime: 'video/webm' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
+    } as SiteVisitAddFileOp);
+    for (const id of ['ck-c', 'ck-d']) {
+      await putVisitPhoto(scope, st.activeProjectId, clip(id), 'AAAA', null, undefined, '/9j/frame');
+      await fileVisitPhoto(scope, st.activeProjectId, id, `m-${id}`);
+    }
+    const removed = { project: st.activeProjectId, addVisitPoster: vi.fn(async () => { throw refusal(404, 'Media not found'); }) };
+    await expect(replayOutboxOp(removed as unknown as ApiGateway, clip('ck-c') as unknown as OutboxOp, st.projectScopeGeneration)).resolves.toBeNull();
+    // a frame refused for any other reason leaves the frame alone; the clip stays, filed, for its visit's next read
+    const refused = { project: st.activeProjectId, addVisitPoster: vi.fn(async () => { throw refusal(400, 'This file is not a still frame the app can show'); }) };
+    await expect(replayOutboxOp(refused as unknown as ApiGateway, clip('ck-d') as unknown as OutboxOp, st.projectScopeGeneration)).resolves.toBeNull();
+    expect((await listVisitPhotos(scope, st.activeProjectId)).map((r) => [r.clientKey, r.state, r.poster ?? null])).toEqual([['ck-d', 'filed', null]]);
   });
 });
