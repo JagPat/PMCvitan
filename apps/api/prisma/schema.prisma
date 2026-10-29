@@ -819,6 +819,20 @@ model CommandExecution {
   @@index([projectId])
 }
 
+// Idempotency-Key Unit 2a-m (20280201000000) — per route, class and UTC day, how many requests on the five
+// keyless-tolerant routes came with no key ('absent') or a Unit 1 'legacy-' key ('legacy'). No person, project,
+// body or key. The CHECK (routes, classes, count >= 1, finite times) is in the migration. Unit 2b stops writing it;
+// a later migration drops it.
+model CommandKeySighting {
+  route  String
+  class  String
+  day    DateTime @db.Date
+  count  Int
+  lastAt DateTime
+
+  @@id([route, class, day])
+}
+
 // A firm/consultant associated with a project — the client company, the main
 // contractor, the structural/MEP consultants, etc. Distinct from Membership (which
 // is a *person* with a login role); a company is an organisation + a contact.
