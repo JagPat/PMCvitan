@@ -303,6 +303,33 @@ describe('a member deletes their own site photo within the hour (live PG)', () =
     }
   });
 
+  it('a delete whose photo another delete removed after it was read is the shared 404, never a 500, with or without a send key', async () => {
+    for (const clientKey of [null, `${f.projectA.id}-del-race-key`]) {
+      const id = (await t.prisma.media.create({ data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', uploadedBy: contractorId(), data: px, createdAt: minutesAgo(2), clientKey, storageKey: `site/race-${clientKey ?? 'none'}.png` } })).id;
+      // the guards answer "free", then the other delete commits before this one deletes the row
+      const disposability = (t.app.get(MediaService) as unknown as { disposability: { assertDisposable: (...a: unknown[]) => Promise<unknown> } }).disposability;
+      const real = disposability.assertDisposable.bind(disposability);
+      const guard = vi.spyOn(disposability, 'assertDisposable').mockImplementationOnce(async (...a: unknown[]) => {
+        const observed = await real(...a);
+        await t.prisma.media.delete({ where: { id } });
+        return observed;
+      });
+      const removeObject = vi.spyOn(t.app.get(StorageService), 'remove');
+      try {
+        const res = await del(id, pmc);
+        expect([clientKey, res.status, res.body.message]).toEqual([clientKey, 404, MEDIA_NOT_FOUND_MESSAGE]);
+        // nothing of this delete is kept: no removal recorded, and the files are the first delete's to remove
+        expect(await t.prisma.domainEvent.count({ where: { projectId: f.projectA.id, eventType: 'media.removed', entityId: id } })).toBe(0);
+        expect(removeObject).not.toHaveBeenCalled();
+        // the first delete's record of the key stands, once, so a resend of the photo is still told it was deleted
+        if (clientKey) expect(await t.prisma.mediaTombstone.count({ where: { projectId: f.projectA.id, clientKey } })).toBe(1);
+      } finally {
+        guard.mockRestore();
+        removeObject.mockRestore();
+      }
+    }
+  });
+
   it('an override citing a photo deleted a moment before is a 400, never a 500 (the delete-first order)', async () => {
     const activityId = `${f.projectA.id}-del-act-mirror`;
     await t.prisma.activity.create({ data: { id: activityId, projectId: f.projectA.id, name: 'Slab', zone: 'GF', plannedStart: 0, plannedEnd: 1 } });
