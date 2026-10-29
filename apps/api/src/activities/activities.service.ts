@@ -23,6 +23,7 @@ import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
+import { recordKeySighting } from '../platform/command-key-sighting';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import { DrawingParticipant } from '../drawings/drawing.participant';
 import { InventoryService } from '../inventory/inventory.service';
@@ -461,6 +462,8 @@ export class ActivitiesService {
    *  (409, no duplicate audit); a concurrent gate flip lands strictly before
    *  (this start refuses it) or strictly after (it waits for this commit). */
   async start(projectId: string, activityId: string, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    // Idempotency-Key 2a — count a keyless or legacy-keyed request before anything can refuse it (RUNBOOK §IDK)
+    await recordKeySighting(this.prisma, 'activities.start', idempotencyKey);
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const requestHash = hashRequest({ activityId });
@@ -540,6 +543,8 @@ export class ActivitiesService {
    *  inspection — with a default sign-off item, so it CAN be rejected. Only the
    *  PMC's approval of that closing inspection (inspections.decide) writes `done`. */
   async complete(projectId: string, activityId: string, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    // Idempotency-Key 2a — count a keyless or legacy-keyed request before anything can refuse it (RUNBOOK §IDK)
+    await recordKeySighting(this.prisma, 'activities.complete', idempotencyKey);
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const requestHash = hashRequest({ activityId });

@@ -34,6 +34,8 @@ export const OPS_VIA = 'ops-api';
  *    role (reads only), so "who can manage this project" is answered without a terminal paste.
  *  - `POST /ops/orgs/:orgId/qa-only`: mark a company QA-only, in {@link OpsQaController}.
  *  - `GET  /ops/compat/state-pins?since=<ISO>`: seen-state pin counts per pinned act, in {@link OpsCompatController}.
+ *  - `GET  /ops/compat/client-keys?since=<ISO>`: keyless and legacy-keyed request counts on five routes (Idempotency-Key
+ *    2a), in {@link OpsCompatController}.
  *  - `POST /ops/projects/:projectId/capabilities/:capability/enable|disable`: the same `capability-switch`
  *    functions the `capability:enable` / `capability:disable` CLIs call, limited to `SWITCHABLE_CAPABILITIES`
  *    (presentation only, no data touched). Each change writes the usual audit row on the project's trail
