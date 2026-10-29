@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
@@ -86,15 +87,17 @@ describe('Idempotency-Key 2a: the key-sighting count (live PG)', () => {
     expect((await post(`/activities/${id}/start`, {})).status).toBe(201);
     expect((await post(`/activities/${id}/start`, {})).status).toBe(409);
     expect(await counts()).toEqual([{ route: 'activities.start', class: 'absent', count: 2 }]);
-    // the row names the route, class and UTC day only
-    const [row] = await t.prisma.$queryRawUnsafe<Array<Record<string, unknown>>>(`SELECT "day"::text AS "day", "lastAt" FROM "CommandKeySighting"`);
-    expect(row!.day).toBe(new Date().toISOString().slice(0, 10));
+    // the row's day is the UTC date of its own newest time (both from the request's one instant), so a run across
+    // 00:00Z still holds
+    const [row] = await t.prisma.$queryRawUnsafe<Array<{ day: string; lastAt: Date }>>(`SELECT "day"::text AS "day", "lastAt" FROM "CommandKeySighting"`);
+    expect(row!.day).toBe(row!.lastAt.toISOString().slice(0, 10));
   });
 
   it('a counter write that fails leaves the command, its result and its effects as they were', async () => {
     await t.prisma.$executeRawUnsafe(`CREATE OR REPLACE FUNCTION public.cks_test_refuse() RETURNS trigger LANGUAGE plpgsql
       SET search_path = pg_catalog, public, pg_temp AS $$ BEGIN RAISE EXCEPTION 'cks test: refused'; END $$`);
     await t.prisma.$executeRawUnsafe(`CREATE TRIGGER cks_test_refuse BEFORE INSERT ON public."CommandKeySighting" FOR EACH ROW EXECUTE FUNCTION public.cks_test_refuse()`);
+    const warn = vi.spyOn(Logger.prototype, 'warn');
     try {
       const id = await readyActivity('refused-count');
       const res = await post(`/activities/${id}/start`, {});
@@ -102,20 +105,24 @@ describe('Idempotency-Key 2a: the key-sighting count (live PG)', () => {
       expect((await t.prisma.activity.findUniqueOrThrow({ where: { id } })).status).toBe('in_progress');
       expect(await t.prisma.auditLog.count({ where: { projectId: p(), action: 'activity.start', entityId: id } })).toBe(1);
       expect(await counts()).toEqual([]);
+      // logged with Prisma's code and PostgreSQL's (P0001, the trigger's RAISE), and nothing about the request's key
+      expect(warn.mock.calls.map((c) => c[0])).toContain('not counted: activities.start absent (PrismaClientKnownRequestError P2010 P0001)');
     } finally {
+      warn.mockRestore();
       await t.prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS cks_test_refuse ON public."CommandKeySighting"`);
       await t.prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS public.cks_test_refuse()`);
     }
   });
 
-  it('a counter row held by another transaction delays the command by the bound at most, and the command commits', async () => {
+  it('a counter held by another transaction delays the command by the bound at most, and the command commits', async () => {
     const id = await readyActivity('held-row');
     const day = new Date().toISOString().slice(0, 10);
     await t.prisma.$executeRawUnsafe(
       `INSERT INTO "CommandKeySighting" ("route", "class", "day", "count", "lastAt") VALUES ('activities.start', 'absent', $1::date, 5, now() AT TIME ZONE 'UTC')`, day);
-    // the holder keeps the row locked until the start has answered, so the start's upsert can only time out
+    // the holder keeps the table from any insert until the start has answered, so the start's upsert can only time out,
+    // whichever UTC day it lands on (a run across 00:00Z would miss a lock on today's row alone)
     const res = await t.prisma.$transaction(async (tx) => {
-      await tx.$queryRawUnsafe(`SELECT 1 FROM "CommandKeySighting" WHERE "route" = 'activities.start' AND "class" = 'absent' FOR UPDATE`);
+      await tx.$executeRawUnsafe(`LOCK TABLE public."CommandKeySighting" IN SHARE MODE`);
       return post(`/activities/${id}/start`, {});
     }, { timeout: 30_000 });
     expect(res.status).toBe(201);

@@ -2687,22 +2687,25 @@ keyless act that an earlier release saved under a fixed `legacy-…` key. Unit 2
 five routes. Until then, each request on them with no key (or a blank one) is counted as `absent`, and one with a
 `legacy-` key as `legacy`, per route and UTC day, in `CommandKeySighting`. A request with any other key is not
 counted. The count is taken before anything else, so a request the route then refuses is counted too. A count that
-cannot be written is logged under `CommandKeySighting` as `not counted: <route> <class> (<error>)`, and the act runs
-as before. The
+cannot be written is logged under `CommandKeySighting` as `not counted: <route> <class> (<error> <codes>)`, where the
+last code is PostgreSQL's (57014 the 2 s bound, 23514 the CHECK, 42P01 no table), and the act runs as before. The
 table holds no person, project or key.
 
 The count is read through the operator door (§OPS):
 
-    curl -H "Authorization: Bearer $OPS_TOKEN" "https://pms-api.vitan.in/ops/compat/client-keys?since=<ISO time>"
+    curl -H "Authorization: Bearer $OPS_TOKEN" "https://pms-api.vitan.in/ops/compat/client-keys?since=2026-11-05T00:00:00Z"
 
 It answers, for each of the five routes (zeros listed), `absent` and `legacy` with the newest time of each,
 summed over every UTC day from `since`'s UTC day on (`fromDay`), so it can only count more, never less. `since` is
-required; a missing or malformed one gets 400.
+required; a missing or malformed one gets 400. Write it in the `Z` form shown, with the date of the window's first
+day: a `+05:30` offset arrives as a space and gets 400.
 
 **When the key can be required (Unit 2b).** Pass is **all zeros for 7 days**: the read with
 `since=<now − 7 days>` shows `absent = 0` and `legacy = 0` on all five routes, and `since` is no earlier than the
-time this unit's commit first showed in `/health`. Anything else: paste the answer in the coordination issue, and
-2b waits. A plain-http address (no `crypto.subtle`) sends keyless and shows up as `absent`; 2b refuses it like any
+time this unit's commit first showed in `/health`; **and** the API's log in Coolify has no `CommandKeySighting`
+`not counted` line, as far back as it goes (it starts at the last deploy). A counter that failed on every write would
+otherwise read as zeros. Anything else: paste the answer (and any such line) in the coordination issue, and 2b
+waits. A plain-http address (no `crypto.subtle`) sends keyless and shows up as `absent`; 2b refuses it like any
 keyless request, and it is unsupported.
 
 **Its end.** Unit 2b removes the count along with adding the refusal, and once 2b is live a migration-only unit

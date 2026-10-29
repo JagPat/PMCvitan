@@ -10,9 +10,11 @@ import type { PrismaService } from '../prisma.service';
  *
  * Each route's handler calls {@link recordKeySighting} as its first statement, before the replay check, any read or
  * the command's own transaction, so a request the route then refuses is counted too. A request with any other key
- * writes nothing. The write is one upsert in its own short transaction, bounded by `statement_timeout`, outside the
- * command's transaction and lock order; it locks only the counter's row for that route, class and UTC day. It is
- * telemetry, not a gate: a write that fails is logged by its error's name and code and the command runs as before.
+ * writes nothing. The write is one upsert in its own short transaction, outside the command's transaction and lock
+ * order; it locks only the counter's row for that route, class and UTC day. `statement_timeout` bounds the statement
+ * only: waiting for a pool connection is bounded by the pool's own `pool_timeout`, as for every query. It is
+ * telemetry, not a gate: a write that fails is logged by its error's name, Prisma code and PostgreSQL SQLSTATE (a
+ * timeout 57014, a CHECK refusal 23514, a missing table 42P01), and the command runs as before.
  *
  * Read through the operator door: `GET /ops/compat/client-keys` (RUNBOOK §IDK). Its end: 2b removes these calls when
  * it starts refusing, and a migration-only unit then drops the table (plan §6).
@@ -68,6 +70,9 @@ export async function recordKeySighting(
     ]);
   } catch (e) {
     const code = e instanceof Prisma.PrismaClientKnownRequestError ? e.code : (e as { code?: unknown })?.code;
-    log.warn(`not counted: ${commandType} ${cls} (${e instanceof Error ? e.name : typeof e}${typeof code === 'string' ? ` ${code}` : ''})`);
+    // a raw statement's failure is Prisma's generic P2010; the SQLSTATE beside it says which failure it was
+    const sqlState = e instanceof Prisma.PrismaClientKnownRequestError ? (e.meta as { code?: unknown } | undefined)?.code : undefined;
+    const codes = [code, sqlState].filter((c): c is string => typeof c === 'string').map((c) => ` ${c}`).join('');
+    log.warn(`not counted: ${commandType} ${cls} (${e instanceof Error ? e.name : typeof e}${codes})`);
   }
 }
