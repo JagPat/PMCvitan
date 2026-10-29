@@ -572,7 +572,8 @@ export class MediaService {
   }
 
   /** {@link remove}, saying which day's log counted the photo (`dailyLogId`, a progress photo filed on one), or
-   *  null when not found / out of scope. */
+   *  null when not found / out of scope. A photo another delete removed after this one read it is a 404
+   *  (`MEDIA_NOT_FOUND_MESSAGE`) thrown from inside the transaction, so nothing this delete began is kept. */
   async removeFiled(id: string, user: AuthUser): Promise<{ dailyLogId: string | null } | null> {
     const projectId = user.projectId;
     const row = await this.prisma.media.findUnique({ where: { id } });
@@ -614,6 +615,12 @@ export class MediaService {
         // is touched, and the stored file stays (Codex 4320912811)
         if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2003') {
           throw new ConflictException('This photo was just cited as evidence on another record, so it cannot be deleted');
+        }
+        // another delete of this photo committed after the read above (two taps, two tabs, two people): it is gone, and
+        // this delete answers as the route does for a photo it no longer holds. Thrown, not returned, so the rollback
+        // undoes the evidence unlink above; the stored files are the first delete's to remove
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') {
+          throw new NotFoundException(MEDIA_NOT_FOUND_MESSAGE);
         }
         throw e;
       }
