@@ -179,9 +179,11 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
     // cancellation pair — the tombstone INSERT and (visible since the round-14 aliased-UPDATE
     // detection) the subject-stamp UPDATE, each under its OWN named waiver symbol (all four
     // waived, all four platform-own-table writes); 4d-ii-a's two ReleaseLease writes; and A3c's
-    // org-standing write mark, the orgs module's no-op UPDATE of its own Org row
+    // org-standing write mark, the orgs module's no-op UPDATE of its own Org row; and Idempotency-Key 2a's key-sighting
+    // count, the platform's upsert of its own CommandKeySighting row
     expect(analysis.persistence.rawWrites.map((r) => `${r.file}:${r.symbol}`).sort()).toEqual([
       'orgs/org-standing.ts:markOrgStandingWrite',
+      'platform/command-key-sighting.ts:recordKeySighting',
       'platform/outbox/cancellation.ts:cancelPass',
       'platform/outbox/cancellation.ts:cancelQueuedPushBySubject',
       'platform/outbox/relay.service.ts:claim',
