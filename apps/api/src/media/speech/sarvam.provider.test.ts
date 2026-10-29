@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SarvamSpeechProvider, SARVAM_JOB_PARAMETERS } from './sarvam.provider';
+import { SarvamSpeechProvider, SARVAM_JOB_PARAMETERS, SEAT_BUDGET_EXHAUSTED } from './sarvam.provider';
 import { SpeechProviderError } from './speech-provider';
 import { readSarvamKey } from './speech-config';
 
@@ -160,6 +160,8 @@ describe('SarvamSpeechProvider', () => {
       ['a job started, the store\'s answer included', start, startJob],
       ['words read', done, checkJob],
       ['the API refusing', { ...start, 'POST /speech-to-text/job/v1/upload-files': { status: 503, chunks: [enc('busy'), enc('more')] } }, startJob],
+      ['the API refusing with a 429, read for its code', { ...start, 'POST /speech-to-text/job/v1/upload-files': { status: 429, chunks: [enc('{"error":'), enc('{"code":"seat_budget_exhausted_error"}}')] } }, startJob],
+      ['the API refusing with a 429 past its bound', { ...start, 'POST /speech-to-text/job/v1/upload-files': { status: 429, chunks: Array.from({ length: 2 }, () => new Uint8Array(40_000).fill(0x20)) } }, startJob],
       ['the store refusing the upload', { ...start, [`PUT ${UPLOAD}`]: { status: 503, chunks: [enc('<error/>'), enc('more')] } }, startJob],
       ['the store refusing the download', { ...done, [`GET ${DOWNLOAD}`]: { status: 403, chunks: [enc('<error/>'), enc('more')] } }, checkJob],
       ['an output that is not UTF-8, with more after it', { ...done, [`GET ${DOWNLOAD}`]: { chunks: [new Uint8Array([0x7b, 0xff, 0xfe]), enc('"rest"'), enc('}')] } }, checkJob],
@@ -193,6 +195,29 @@ describe('SarvamSpeechProvider', () => {
     const api = (code: number) => refusal(fake({ ...START, 'POST /speech-to-text/job/v1/upload-files': { status: code } }).provider.startJob('job-7', Buffer.from('x'), 'audio/webm', 'm1.webm'));
     expect([(await api(429)).final, (await api(429)).busy]).toEqual([false, true]);
     expect((await api(403)).final).toBe(true);
+  });
+
+  it('ends the note on a 429 whose seat budget is used up, which no wait clears; every other 429 stays busy (#1244)', async () => {
+    const api = (answer: Answer) => refusal(fake({ ...START, 'POST /speech-to-text/job/v1/upload-files': { status: 429, ...answer } }).provider.startJob('job-7', Buffer.from('x'), 'audio/webm', 'm1.webm'));
+    const seat = { error: { message: 'Seat budget exhausted', code: SEAT_BUDGET_EXHAUSTED, spend_limits: { period: 'month' } } };
+    const exhausted = await api({ json: seat });
+    expect([exhausted.final, exhausted.busy]).toEqual([true, false]);
+    expect(exhausted.message).toContain('spend budget');
+    expect(exhausted.message).not.toContain(KEY);
+    // Sarvam's other 429s clear by waiting: busy, and tried again
+    for (const code of ['rate_limit_exceeded_error', 'model_rate_limit_exceeded_error', 'audio_duration_busy_error']) {
+      const e = await api({ json: { error: { message: 'not now', code } } });
+      expect([e.final, e.busy], code).toEqual([false, true]);
+    }
+    // a 429 whose body says nothing readable is read as the rate limit it most likely is: busy
+    const big = new Uint8Array(70_000).fill(0x20);
+    for (const answer of [{}, { raw: 'Too Many Requests' }, { json: { error: 'x' } }, { json: { error: { code: 7 } } }, { json: [seat] }, { stream: [big] }] as Answer[]) {
+      const e = await api(answer);
+      expect([e.final, e.busy], JSON.stringify(answer)).toEqual([false, true]);
+    }
+    // the code counts only from Sarvam's API: the blob store's 429 is never busy and never final
+    const put = await refusal(fake({ ...START, [`PUT ${UPLOAD}`]: { status: 429, json: seat } }).provider.startJob('job-7', Buffer.from('x'), 'audio/webm', 'm1.webm'));
+    expect([put.final, put.busy]).toEqual([false, false]);
   });
 
   it('reads a job made but not started as waiting, a running job as running, and a failed or partly failed one as failed', async () => {

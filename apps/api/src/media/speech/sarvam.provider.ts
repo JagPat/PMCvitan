@@ -14,7 +14,8 @@ import { SPEECH_JOB_ID, SPEECH_LANGUAGE, SPEECH_TEXT_MAX, SpeechProviderError, t
  *   GET  <file_url>                                                              -> { transcript, language_code }
  *
  * The key travels only in the `api-subscription-key` header and never appears in an error, a log or a result. Sarvam
- * answers a bad key with 403. A 429 or 5xx may be tried again; any other 4xx (401 and 403 too) is final for that note.
+ * answers a bad key with 403. A 429 or 5xx may be tried again; any other 4xx (401 and 403 too), and a 429 that says a
+ * seat's spend budget is used up, is final for that note.
  */
 
 export const SARVAM_BASE_URL = 'https://api.sarvam.ai';
@@ -26,6 +27,8 @@ export const SARVAM_TIMEOUT_MS = 20_000;
 const OUTPUT_MAX_BYTES = 1_000_000;
 /** The most of one of Sarvam's API answers read (a job id, a state, a pair of links): each is well under a kilobyte. */
 const API_MAX_BYTES = 64_000;
+/** Sarvam's `error.code` on a 429 that waiting never clears (docs.sarvam.ai, errors and troubleshooting). */
+export const SEAT_BUDGET_EXHAUSTED = 'seat_budget_exhausted_error';
 
 type Fetch = typeof fetch;
 
@@ -218,13 +221,18 @@ function outputName(details: unknown): string | null {
  * A refused exchange, judged by whom it was made with.
  * - Sarvam's API (`api`): 408, 429 and 5xx may be tried again, and a 429 is Sarvam's account-wide rate limit (busy).
  *   Any other 4xx is final for that note: a refused file, a malformed request, and a bad or missing key (401, 403) too,
- *   which no later try mends until the key is fixed; the note's one "Try again" is left for then.
+ *   which no later try mends until the key is fixed; the note's one "Try again" is left for then. So is a 429 whose
+ *   `error.code` is {@link SEAT_BUDGET_EXHAUSTED} (#1244): a seat's spend budget is used up, and only raising or
+ *   topping it up clears it, never waiting, so marking it busy would hold every note without end.
  * - The blob store, through a link Sarvam just gave (`blob`): never busy (its limits are not Sarvam's account's). 408,
  *   429 and 5xx may be tried again, and so may 401, 403 and 404, since a link that expired or a file not there yet is
  *   mended by the fresh link the next try asks for (the note's bounded tries still end it). Any other 4xx (a recording
  *   the store refuses, such as 413) is final.
  */
-function failure(step: string, status: number, peer: 'api' | 'blob'): SpeechProviderError {
+function failure(step: string, status: number, peer: 'api' | 'blob', code?: string): SpeechProviderError {
+  if (peer === 'api' && status === 429 && code === SEAT_BUDGET_EXHAUSTED) {
+    return new SpeechProviderError(`Sarvam ${step} answered 429: the seat's spend budget is used up`, true);
+  }
   const retryable = status === 408 || status === 429 || status >= 500 || (peer === 'blob' && (status === 401 || status === 403 || status === 404));
   return new SpeechProviderError(`Sarvam ${step} answered ${status}`, !retryable, peer === 'api' && status === 429);
 }
@@ -235,8 +243,14 @@ async function release(res: Response): Promise<void> {
   await res.body?.cancel().catch(() => undefined);
 }
 
-/** A refused answer: its body let go, and the refusal judged by {@link failure}. */
+/** A refused answer, judged by {@link failure}. The API's 429 is read (bounded) for its `error.code`, the one refusal
+ *  whose body changes the verdict; every other refused body is let go. A 429 body that cannot be read stays busy. */
 async function refused(res: Response, step: string, peer: 'api' | 'blob'): Promise<SpeechProviderError> {
-  await release(res);
-  return failure(step, res.status, peer);
+  if (peer !== 'api' || res.status !== 429) {
+    await release(res);
+    return failure(step, res.status, peer);
+  }
+  const text = await bounded(res, API_MAX_BYTES);
+  const error = (parsed(text === TOO_LARGE ? undefined : text) as { error?: { code?: unknown } } | null)?.error;
+  return failure(step, res.status, peer, typeof error?.code === 'string' ? error.code : undefined);
 }
