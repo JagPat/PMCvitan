@@ -432,16 +432,19 @@ describe('#1051 r1, Codex 4336713248: a key holding a damaged act of a known kin
     expect(localStorage.getItem(lane)).toBe(raw);
   });
 
-  /** each shape a released build stored, with the gateway call its replay makes: loaded whole, sent unkeyed, cleared */
+  /** Idempotency-Key Unit 1: a keyless start, completion, review, mismatch flag or daily-log submit is sent under a key
+   *  made from what it is (legacy-act-key.test.ts), never unkeyed */
+  const LEGACY_KEY = expect.stringMatching(/^legacy-[0-9a-f]{64}$/);
+  /** each shape a released build stored, with the gateway call its replay makes: loaded whole, sent as stored, cleared */
   const OLD: [string, object, string, unknown[]][] = [
     ['approve (b22895b1..466814c0)', { t: 'approve', decisionId: 'd-1', optionIndex: 0 }, 'approveDecision', ['d-1', 0, undefined]],
     ['change (b22895b1..466814c0)', { t: 'change', decisionId: 'd-1', reason: 'r', costImpact: 0, timeImpactDays: 0 }, 'requestChange', ['d-1', 'r', 0, 0, undefined]],
     ['changeWithdraw (41ff9dc1..466814c0)', { t: 'changeWithdraw', decisionId: 'd-1' }, 'withdrawChange', ['d-1', undefined]],
     ['ackDrawing (d29287b0..f59dc583)', { t: 'ackDrawing', revisionId: 'r-1' }, 'acknowledgeDrawing', ['r-1', undefined]],
-    ['flagMismatch (b22895b1..c0940a02)', { t: 'flagMismatch', decisionId: 'd-1' }, 'flagMismatch', ['d-1', undefined]],
-    ['submitDailyLog (b22895b1..c0940a02)', { t: 'submitDailyLog', log: { checkedIn: true, checkinTime: '8:00 AM', progress: 1, crew: [] } }, 'submitDailyLog', [{ checkedIn: true, checkinTime: '8:00 AM', progress: 1, crew: [] }, undefined]],
-    ['decideReview approving, rejectedItemNames (b22895b1..ce360ae5)', { t: 'decideReview', inspectionId: 'i-1', approve: true, rejectedItemNames: [] }, 'decideReview', ['i-1', true, undefined, undefined]],
-    ['decideReview rejecting, rejectedItemNames (b22895b1..ce360ae5)', { t: 'decideReview', inspectionId: 'i-1', approve: false, rejectedItemNames: ['Sealant'] }, 'decideReview', ['i-1', false, undefined, undefined]],
+    ['flagMismatch (b22895b1..c0940a02)', { t: 'flagMismatch', decisionId: 'd-1' }, 'flagMismatch', ['d-1', LEGACY_KEY]],
+    ['submitDailyLog (b22895b1..c0940a02)', { t: 'submitDailyLog', log: { checkedIn: true, checkinTime: '8:00 AM', progress: 1, crew: [] } }, 'submitDailyLog', [{ checkedIn: true, checkinTime: '8:00 AM', progress: 1, crew: [] }, LEGACY_KEY]],
+    ['decideReview approving, rejectedItemNames (b22895b1..ce360ae5)', { t: 'decideReview', inspectionId: 'i-1', approve: true, rejectedItemNames: [] }, 'decideReview', ['i-1', true, undefined, LEGACY_KEY]],
+    ['decideReview rejecting, rejectedItemNames (b22895b1..ce360ae5)', { t: 'decideReview', inspectionId: 'i-1', approve: false, rejectedItemNames: ['Sealant'] }, 'decideReview', ['i-1', false, undefined, LEGACY_KEY]],
     ['grantSodException with no rule (090ec501..86d45cf7)', { ...MIN.grantSodException, input: { billId: 'b', actorId: 'a', reason: 'r', versionId: 'v', status: 's', lifecycleVersion: 1 } }, 'grantSodException', [{ billId: 'b', actorId: 'a', reason: 'r', versionId: 'v', status: 's', lifecycleVersion: 1 }, k]],
   ];
   it.each(OLD)('%s, stored by a released build, loads whole, is sent as it was stored, and leaves the key', async (_label, op, call, args) => {

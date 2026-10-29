@@ -2080,10 +2080,44 @@ export function moveSiteVisitOps(ops: OutboxOp[], from: string, to: string): Out
   return ops.map((o) => (isSiteVisitOp(o) && o.t !== 'siteVisitStart' && o.visitId === from ? { ...o, visitId: to } : o));
 }
 
+/** The kinds an earlier release could store with no key (`storedActs.ts`: before Task 10, and before c0940a02 for the
+ *  daily-log two). Such a row is sent under a key made from what it is, never from where it sits, so every send of it
+ *  carries the same key, after a reload and from any tab, and the server replays its answer instead of refusing the
+ *  act it already took (409 / 400) or taking it again (a second alert or submit). Nothing is written to the row */
+type LegacyKeyless = Extract<OutboxOp, { t: 'startActivity' | 'completeActivity' | 'decideReview' | 'flagMismatch' | 'submitDailyLog' }>;
+
+/** sorted keys, undefined fields left out: the server's `hashRequest` rule (`platform/commands.ts`) */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+}
+
+/** The key a stored act of these kinds is sent under: its own, or for a keyless one `legacy-` and the SHA-256 of its
+ *  kind, its project, the person whose queue holds it, the activity, review or decision it names (none for a daily-log
+ *  submit: the route names none) and the whole act but its key. Two people, or two projects, never share one */
+export async function legacyActKey(op: LegacyKeyless, project: string, person: string): Promise<string> {
+  if (op.idempotencyKey) return op.idempotencyKey;
+  const body = { ...op, idempotencyKey: undefined };
+  const entity = op.t === 'startActivity' || op.t === 'completeActivity' ? op.activityId
+    : op.t === 'decideReview' ? op.inspectionId : op.t === 'flagMismatch' ? op.decisionId : null;
+  const identity = canonicalJson({ kind: op.t, project, person, entity, body });
+  return `legacy-${await sha256Hex(new TextEncoder().encode(identity))}`;
+}
+
 /** Replay one queued mutation; resolves to the fresh snapshot, or null for an act whose answer is not a snapshot
  *  and needs none (a site visit's answer goes to the Site Visits screen). `onPhotoGone` is told when a queued site photo
- *  or evidence photo was settled by the server's 410 (#482), whatever the refresh after it answered. */
-export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, onPhotoGone?: (localEvidence?: { url: string; inspectionId?: string; inspectionItemId?: string }) => void): Promise<ApiSnapshot | null> {
+ *  or evidence photo was settled by the server's 410 (#482), whatever the refresh after it answered. `person` is the
+ *  person whose queue the act was read from: a keyless act of an earlier release is sent under `legacyActKey`, and one
+ *  replayed with no person named goes keyless, as before. So does one whose key cannot be made (no `crypto.subtle`
+ *  outside a secure context, or a digest that fails): a key that can never be made must not hold it, and every act
+ *  behind it, at every flush (gap check of d581a1bf) */
+export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, onPhotoGone?: (localEvidence?: { url: string; inspectionId?: string; inspectionItemId?: string }) => void, person?: string): Promise<ApiSnapshot | null> {
+  const keyOf = (o: LegacyKeyless): Promise<string | undefined> =>
+    person === undefined ? Promise.resolve(o.idempotencyKey) : legacyActKey(o, gw.project, person).catch(() => o.idempotencyKey);
   const visit = (sent: Promise<SiteVisit>): Promise<null> =>
     sent.then((v) => { tellSiteVisits({ kind: 'answer', project: gw.project, generation, visit: v }); return null; });
   switch (op.t) {
@@ -2188,19 +2222,19 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
     case 'submitInspection':
       return gw.submitInspection(op.inspectionId, op.items);
     case 'decideReview':
-      return gw.decideReview(op.inspectionId, op.approve, op.rejectedItemIds, op.idempotencyKey);
+      return keyOf(op).then((k) => gw.decideReview(op.inspectionId, op.approve, op.rejectedItemIds, k));
     case 'startActivity':
-      return gw.startActivity(op.activityId, op.idempotencyKey);
+      return keyOf(op).then((k) => gw.startActivity(op.activityId, k));
     case 'completeActivity':
-      return gw.completeActivity(op.activityId, op.idempotencyKey);
+      return keyOf(op).then((k) => gw.completeActivity(op.activityId, k));
     case 'startDailyLog':
       return gw.startDailyLog(op.idempotencyKey);
     case 'addSiteMaterial':
       return gw.addSiteMaterial(op.input, op.idempotencyKey);
     case 'flagMismatch':
-      return gw.flagMismatch(op.decisionId, op.idempotencyKey);
+      return keyOf(op).then((k) => gw.flagMismatch(op.decisionId, k));
     case 'submitDailyLog':
-      return gw.submitDailyLog(op.log, op.idempotencyKey);
+      return keyOf(op).then((k) => gw.submitDailyLog(op.log, k));
     // Phase 3 Task 7 (correction 2) — the pilot materials commands return the route's own JSON (not a
     // snapshot; Phase-3 reads are module-query-only), so refetch the base snapshot to reconcile the
     // non-materials view. The store's materials reconcile hook reloads the materials view + open
