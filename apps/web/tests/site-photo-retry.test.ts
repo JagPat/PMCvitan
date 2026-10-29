@@ -469,4 +469,45 @@ describe('the site photo retry (#917, #1161)', () => {
     expect(arms).toHaveLength(8);
     expect(uploadMedia).not.toHaveBeenCalled();
   });
+
+  it('a photo answered "not kept" after the scope moved whose row cannot be removed keeps its lock, and the removal is made on the retry (#1242 r1, 4410673618)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    A.getState()._setGateway({ uploadMedia: vi.fn(), snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    const request = navigator.locks.request.bind(navigator.locks) as (...a: unknown[]) => Promise<unknown>;
+    const gate = deferred<void>();
+    const asked = deferred<string>();
+    vi.spyOn(navigator.locks, 'request').mockImplementationOnce((async (...args: unknown[]) => { asked.resolve(String(args[0])); await gate.promise; return request(...args); }) as never);
+    A.getState().addProgressPhoto(PNG);
+    const name = await asked.promise;
+    const key = name.slice(`vitan.sitePhoto.${ROWS}::villa-b::`.length);
+    // the write landed after its bound (here: in the database already), and from now on the phone refuses every write:
+    // the app's own write is answered "not kept", and its removal fails
+    const rows = await rowsOf();
+    await rows.putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: key });
+    const writes = failingWrites();
+    writes.on = true;
+    const next = vi.fn().mockResolvedValue({ id: 'm-dup', url: '/media/m-dup' });
+    A.setState({ projectScopeGeneration: 2 } as never);
+    A.getState()._setGateway({ uploadMedia: next, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    gate.resolve();
+    await until(A, (s) => s.toast === 'Could not upload the photo — please try again.');
+    await armed(1);
+    await settled();
+    // the row is still there, and its lock held: no load in any tab sends it
+    expect(await rows.getSitePhotoRow(ROWS, 'villa-b', key)).not.toBeNull();
+    expect(await heldSiteLocks()).toContain(name);
+    A.getState().hydrateOutbox();
+    await settled();
+    expect(next).not.toHaveBeenCalled();
+    // the phone writes again: the removal is made on the retry, and only then is the lock let go
+    writes.on = false;
+    arms[0]!.fn();
+    await settled();
+    expect(await rows.getSitePhotoRow(ROWS, 'villa-b', key)).toBeNull();
+    expect(await heldSiteLocks()).not.toContain(name);
+    A.getState().hydrateOutbox();
+    await settled();
+    expect(next).not.toHaveBeenCalled();
+  });
 });

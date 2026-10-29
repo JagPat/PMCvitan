@@ -1142,7 +1142,7 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     expect(B.getState().dailyLogDraft?.photosAdded).toBe(1);
   });
 
-  it('a lost answer for a photo a refresh from a server before the log\'s key list already shows adds no second copy and no draft photo (#1187, Codex 4396140838)', async () => {
+  it('a lost answer for a photo the photo list alone already shows, from a server before the day\'s count, adds no second copy but is counted in the log and its draft (#1187 4396140838, #1242 r1 4410673630)', async () => {
     const A = await tab();
     startWork(A as never);
     A.setState({ dailyLog: { ...LOG } } as never);
@@ -1151,11 +1151,29 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     A.getState().addProgressPhoto(PNG);
     await up.called();
     const key = up.calls[0]!.input.clientKey;
-    // a refresh landed while the send was out: its photo list holds the photo, by its key; its log says no key list
-    A.setState({ photos: [{ id: 'm-p', url: '/media/m-p', kind: 'progress', clientKey: key }], dailyLog: { ...LOG, progress: 1, photos: [{ id: 'm-p', url: '/media/m-p' }] } } as never);
+    // a refresh landed while the send was out: its photo list holds the photo, by its key; that server does not count it
+    // on the log (its stored count stays as it was), and its log's gallery does not show it yet
+    A.setState({ photos: [{ id: 'm-p', url: '/media/m-p', kind: 'progress', clientKey: key }], dailyLog: { ...LOG } } as never);
     up.calls[0]!.answer.reject(lost());
     await until(A, (s) => s.toast === SAVED);
-    expect(A.getState().dailyLog!.photos).toEqual([{ id: 'm-p', url: '/media/m-p' }]);
+    expect(A.getState().dailyLog!.photos).toEqual([]);
+    expect(A.getState().dailyLog!.progress).toBe(1);
+    expect(A.getState().dailyLogDraft).toMatchObject({ photosAdded: 1, queuedPhotoKeys: [key] });
+  });
+
+  it('a lost answer for a photo the log\'s gallery already shows by its key adds no second copy and no draft photo, as a yes adds nothing then (#1187)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    A.setState({ dailyLog: { ...LOG } } as never);
+    const up = uploads();
+    A.getState()._setGateway({ uploadMedia: up.fn, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.getState().addProgressPhoto(PNG);
+    await up.called();
+    const key = up.calls[0]!.input.clientKey;
+    A.setState({ dailyLog: { ...LOG, progress: 1, photos: [{ id: 'm-g', url: '/media/m-g', clientKey: key }] } } as never);
+    up.calls[0]!.answer.reject(lost());
+    await until(A, (s) => s.toast === SAVED);
+    expect(A.getState().dailyLog!.photos).toEqual([{ id: 'm-g', url: '/media/m-g', clientKey: key }]);
     expect(A.getState().dailyLog!.progress).toBe(1);
     expect(A.getState().dailyLogDraft?.photosAdded ?? 0).toBe(0);
   });
@@ -1296,5 +1314,57 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     // the server says 0 and names no key of this viewer's: the read begun after the answer is the count
     expect(A.getState().photoUploadsInFlight).toEqual([]);
     expect(A.getState().dailyLog!.progress).toBe(0);
+  });
+
+  /** A photo whose answer was lost here, counted in the saved draft by its key, then the page loaded again offline with
+   *  the server's log laid under that draft; `after` changes its row as another tab would, before the reload reads it. */
+  const reloadedWithDraftKey = async (after: (rows: Rows, key: string) => Promise<void>) => {
+    const A = await tab();
+    startWork(A as never);
+    A.setState({ dailyLog: { ...LOG } } as never);
+    A.getState()._setGateway({ uploadMedia: vi.fn().mockRejectedValue(lost()), snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
+    A.getState().addProgressPhoto(PNG);
+    await until(A, (s) => s.toast === SAVED);
+    const key = (A.getState().outbox[0] as { clientKey: string }).clientKey;
+    expect(draftSaved()).toMatchObject({ photosAdded: 1, queuedPhotoKeys: [key] });
+    const rows = await rowsOf();
+    await after(rows, key);
+    const B = await tab();
+    B.setState({ online: false, dailyLog: { ...LOG, progress: 1 } } as never);
+    startWork(B as never);
+    B.getState()._setGateway({ uploadMedia: vi.fn(), snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
+    B.getState().hydrateOutbox();
+    await until(B, (s) => s.dailyLogDraft?.photosAdded !== undefined);
+    await settled();
+    return { B, key };
+  };
+
+  it('a photo the saved draft counts by key whose row another tab\'s replay had refused leaves the draft and the count after a reload (#1242 r1, 4410673596)', async () => {
+    const { B } = await reloadedWithDraftKey((rows, key) => rows.markSitePhotoRefused(ROWS, 'villa-b', key));
+    expect(B.getState().outbox).toEqual([]);
+    expect(B.getState().dailyLog!.progress).toBe(0);
+    expect(B.getState().dailyLogDraft?.photosAdded ?? 0).toBe(0);
+    expect(draftSaved()?.photosAdded ?? 0).toBe(0);
+    expect(draftSaved()).not.toHaveProperty('queuedPhotoKeys');
+  });
+
+  it('a photo the saved draft counts by key whose row another tab sent stays counted after a reload, by key no longer (#1242 r1, 4410673596)', async () => {
+    const { B } = await reloadedWithDraftKey((rows, key) => rows.markSitePhotoSent(ROWS, 'villa-b', key));
+    expect(B.getState().outbox).toEqual([]);
+    expect(B.getState().dailyLog!.progress).toBe(1);
+    expect(B.getState().dailyLogDraft?.photosAdded).toBe(1);
+    expect(draftSaved()).not.toHaveProperty('queuedPhotoKeys');
+  });
+
+  it('a queued photo answered 410 after a reload takes its count back out of the saved draft (#1242 r1, 4410673603)', async () => {
+    const { B } = await reloadedWithDraftKey(async () => {});
+    expect(B.getState().outbox.some((o) => o.t === 'uploadSitePhoto')).toBe(true);
+    B.setState({ online: true } as never);
+    B.getState()._setGateway({ uploadMedia: vi.fn().mockRejectedValue(GONE()), snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
+    await B.getState().flushOutbox();
+    expect(B.getState().outbox).toEqual([]);
+    expect(B.getState().dailyLog!.progress).toBe(0);
+    expect(B.getState().dailyLogDraft?.photosAdded ?? 0).toBe(0);
+    expect(draftSaved()?.photosAdded ?? 0).toBe(0);
   });
 });
