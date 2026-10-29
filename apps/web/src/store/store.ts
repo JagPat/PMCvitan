@@ -1959,21 +1959,24 @@ export const useStore = create<Store>()(
      *  boot, or a module read not landed yet) waits here, by key, for that log, under the same person and project as the
      *  draft (so a sign-out or a switch never carries it across). Only ever added to; the log's next landing moves it
      *  into its draft. An entry ends when its log lands and takes it, when a log of another id lands (the draft for
-     *  another log is superseded then, U1 #690), or when its log is sent; nothing ends before it is counted. At most
-     *  `SENT_SITE_PHOTOS_MAX` entries of other logs: one more drops the oldest of those, never one for the newest entry's
-     *  log, which may still be open (Stage 1 gap-check, PR3). So a project nobody opens again keeps a few lines only.
+     *  another log is superseded then, U1 #690), or when its log is sent; nothing ends before it is counted. It holds the
+     *  entries of the `SENT_SITE_PHOTO_LOGS` logs written to last, each whole: an entry for a fourth log ends the oldest
+     *  log's. A log that may still be open (today's, or an unsent one before it) is never cut short, however many photos
+     *  it has or however late an older log's entry comes (Stage 1 gap-checks, PR3 and RC1). So a project nobody opens
+     *  again keeps a few lines only.
      *  Every write runs under the list's own Web Lock (the queue keys' helper), reading the list as it stands then and
      *  merging by key, so another tab's entries stay. An entry not yet written (no lock, or storage refused it) is kept
      *  in memory, taken by a landing here, and written again by the next write of the list */
-    const SENT_SITE_PHOTOS_MAX = 50;
+    const SENT_SITE_PHOTO_LOGS = 3;
     type SentSitePhoto = { logId: string; clientKey: string };
     const sentSitePhotosKey = (projectId: string): string => `vitan.dailyLogSentPhotos.${sessionSub()}.${projectId}`;
     const sentSitePhotosUnwritten = new Map<string, SentSitePhoto[]>();
-    /** …the list within its bound: over it, the oldest entries of logs other than the newest entry's go first */
+    /** …the list within its bound: the logs written to last, each kept whole (a late entry of an older log never pushes
+     *  out an open one's) */
     const boundSent = (list: SentSitePhoto[]): SentSitePhoto[] => {
-      const newest = list.at(-1)?.logId;
-      let over = list.length - SENT_SITE_PHOTOS_MAX;
-      return list.filter((e) => (over > 0 && e.logId !== newest ? (over -= 1, false) : true));
+      const recent: string[] = [];
+      for (let i = list.length - 1; i >= 0 && recent.length < SENT_SITE_PHOTO_LOGS; i--) if (!recent.includes(list[i]!.logId)) recent.push(list[i]!.logId);
+      return list.filter((e) => recent.includes(e.logId));
     };
     const readSentSitePhotos = (key: string): SentSitePhoto[] => {
       try {

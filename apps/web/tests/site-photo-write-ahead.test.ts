@@ -1468,17 +1468,56 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     expect(A.getState().outbox).toEqual([]);
   };
 
-  it('the sent list keeps its newest entries only, and keeps the ones another tab wrote (Stage 1, the list\'s bound)', async () => {
-    // fifty entries already, for a log of a project nobody opened again, the oldest first
-    localStorage.setItem(SENT, JSON.stringify(Array.from({ length: 50 }, (_, i) => ({ logId: 'log-0', clientKey: `k-${i}` }))));
+  it('the sent list keeps the three logs written to last, each whole, and the entries another tab wrote (Stage 1, the list\'s bound)', async () => {
+    // entries for three older logs already, the oldest first, as other tabs or earlier days left them
+    localStorage.setItem(SENT, JSON.stringify([
+      ...Array.from({ length: 30 }, (_, i) => ({ logId: 'log-a', clientKey: `k-a${i}` })),
+      ...Array.from({ length: 30 }, (_, i) => ({ logId: 'log-b', clientKey: `k-b${i}` })),
+      { logId: 'log-c', clientKey: 'k-c0' },
+    ]));
     const A = await tab();
     await sentWithNoLog(A, 'k-new');
     await sentWritten();
     const list = sentList();
-    expect(list).toHaveLength(50);
-    expect(list[0]).toEqual({ logId: 'log-0', clientKey: 'k-1' });
+    // a fourth log's entry ends the oldest log's, all of them; the other two stay whole
+    expect(list.filter((e) => e.logId === 'log-a')).toEqual([]);
+    expect(list.filter((e) => e.logId === 'log-b')).toHaveLength(30);
+    expect(list.filter((e) => e.logId === 'log-c')).toEqual([{ logId: 'log-c', clientKey: 'k-c0' }]);
     expect(list.at(-1)).toEqual({ logId: 'log-1', clientKey: 'k-new' });
   });
+
+  /** Rows for `logId` queued offline, then sent at boot with no log on show: each confirmed send waits on the sent list */
+  const sentAtBoot = async (A: Store, keys: string[], logId: string) => {
+    const rows = await rowsOf();
+    A.setState({ online: false } as never);
+    for (const k of keys) await rows.putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: k, dailyLogId: logId });
+    A.getState()._setGateway({ uploadMedia: vi.fn(async (input: { clientKey: string }) => ({ id: `m-${input.clientKey}`, url: '/m' })), snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
+    A.getState().hydrateOutbox();
+    await until(A, (s) => keys.every((k) => s.outbox.some((o) => o.t === 'uploadSitePhoto' && o.clientKey === k)));
+    await settled();
+    A.setState({ online: true } as never);
+    await A.getState().flushOutbox();
+    expect(A.getState().outbox).toEqual([]);
+    await sentWritten();
+  };
+
+  it('fifty-one photos for the open log, then one late photo of an older log: the open log keeps every entry and lands with all 51 (Stage 1 re-check, RC1)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    await sentAtBoot(A, Array.from({ length: 51 }, (_, i) => `k-${i}`), 'log-1');
+    await sentAtBoot(A, ['k-late'], 'log-0');
+    expect(sentList().filter((e) => e.logId === 'log-1')).toHaveLength(51);
+    await land(A, LOG);
+    await settled();
+    expect(A.getState().dailyLog!.progress).toBe(51);
+  }, 30000);
+
+  it('one log with more than fifty entries keeps all of them (Stage 1 re-check, RC2)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    await sentAtBoot(A, Array.from({ length: 60 }, (_, i) => `k-${i}`), 'log-1');
+    expect(sentList()).toHaveLength(60);
+  }, 30000);
 
   it('a photo the sent list could not take (no Web Lock) is still counted when its log lands in this tab (Stage 1, fail closed)', async () => {
     const A = await tab();
@@ -1621,5 +1660,45 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     expect(B.getState().outbox).toEqual([]);
     expect(B.getState().dailyLogDraft?.sentPhotoKeys ?? []).toContain('k-x');
     expect(B.getState().dailyLog!.progress).toBe(1);
+  });
+
+  it('a kept entry held for a row another tab sent leaves with its op when the marker ends before the replay: nothing is left behind (Stage 1 re-check, RC3)', async () => {
+    await (await rowsOf()).putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-y', dailyLogId: 'log-1' });
+    const A = await tab();
+    startWork(A as never);
+    await land(A, LOG);
+    A.setState({ online: false } as never);
+    A.getState()._setGateway({ uploadMedia: vi.fn(), snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
+    A.getState().hydrateOutbox();
+    await until(A, (s) => s.outbox.some((o) => o.t === 'uploadSitePhoto'));
+    await settled();
+    expect(A.getState().dailyLog!.progress).toBe(1);
+    const rows = await rowsOf();
+    // another tab sent it
+    await rows.markSitePhotoSent(ROWS, 'villa-b', 'k-y');
+    // this flush's replay of it waits for its row's lock until the test lets it go
+    const request = navigator.locks.request.bind(navigator.locks) as (...a: unknown[]) => Promise<unknown>;
+    const gate = deferred<void>();
+    const asked = deferred<void>();
+    vi.spyOn(navigator.locks, 'request').mockImplementation((async (...args: unknown[]) => { if (String(args[0]) === `vitan.sitePhoto.${ROWS}::villa-b::k-y`) { asked.resolve(); await gate.promise; } return request(...args); }) as never);
+    const before = A.getState().sitePhotosKept;
+    A.setState({ online: true } as never);
+    const up = vi.fn();
+    A.getState()._setGateway({ uploadMedia: up, snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
+    const flushed = A.getState().flushOutbox();
+    // the flush's read of the rows applied: the sent row keeps its entry while its op is queued
+    await until(A, (s) => s.sitePhotosKept !== before);
+    await asked.promise;
+    expect(A.getState().sitePhotosKept.map((k) => k.clientKey)).toEqual(['k-y']);
+    expect(A.getState().dailyLog!.progress).toBe(1);
+    // the marker passes its keep before the replay reads it
+    await rows.dropSentMarkers(Date.now() + 1);
+    gate.resolve();
+    await flushed;
+    await settled();
+    expect(up).not.toHaveBeenCalled();
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().sitePhotosKept).toEqual([]);
+    expect(A.getState().dailyLog!.progress).toBe(0);
   });
 });
