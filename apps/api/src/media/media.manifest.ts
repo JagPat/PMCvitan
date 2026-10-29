@@ -11,7 +11,9 @@ export const mediaManifest: ModuleManifest = {
   ownsModels: ['media', 'mediaTombstone', 'voiceTranscript', 'voiceTranscriptCorrection'],
   // Task 8 reads decisions; Task 10 reads daily-log + validates an evidence target via the inspections
   // query (InspectionsQueryService.assertEvidenceTarget) — all through their query contracts.
-  dependsOn: ['decisions', 'daily-log', 'inspections'],
+  // #1177 VT2 — a voice note's words ask the nodes query contract whether the note's place is hidden from the viewer
+  // (NodesQueryService.placeHiddenFrom); nodes never depends back on media (its media edge is a workflow participation).
+  dependsOn: ['decisions', 'daily-log', 'inspections', 'nodes'],
   // Task 10 (Module 3) correction — item evidence is linked/unlinked through the inspections participant
   // (addEvidence/removeEvidence) in the media-create/remove transaction, so the inspection-owned
   // InspectionEvidence write + its signal event commit atomically with the media write.
@@ -29,7 +31,8 @@ export const mediaManifest: ModuleManifest = {
   consumesEvents: [],
   // #995 V1b — a video clip's still frame, added by the phone that recorded it
   // #1179 R2 — a file taken off its site visit, with the visit's removal line (written by the site-visits participant)
-  commands: ['media.create', 'media.setNode', 'media.remove', 'media.addPoster', 'media.removeFromVisit'],
+  // #1177 VT2-C1 — a voice note's words: try again, correct
+  commands: ['media.create', 'media.setNode', 'media.remove', 'media.addPoster', 'media.removeFromVisit', 'media.retryTranscript', 'media.correctTranscript'],
   // U3a — the PMC brief's progress-photo count (MediaQueryService), so orgs never reads `Media` directly
   // #792 SV2 — a site visit's file list reads each file's type and taken time here (MediaQueryService.fileFacts)
   queries: ['media.progressPhotoCountSince', 'media.fileFacts'],
@@ -38,6 +41,9 @@ export const mediaManifest: ModuleManifest = {
     'PATCH /projects/:projectId/media/:mediaId/node',
     'POST /projects/:projectId/media/:mediaId/poster',
     'POST /projects/:projectId/media/:mediaId/visit-removal',
+    // #1177 VT2-C1 — a voice note's written-out words: try again, correct (reading them is a GET)
+    'POST /projects/:projectId/media/:mediaId/transcript/retry',
+    'POST /projects/:projectId/media/:mediaId/transcript/correction',
     'DELETE /media/:id',
   ],
   // #482 (Board, 14 Oct 2026) — every member uploads a plain site photo and deletes their own within the hour;
