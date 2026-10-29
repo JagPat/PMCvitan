@@ -14,7 +14,7 @@ const BASE = 'https://sarvam.test';
 const UPLOAD = 'https://blob.test/in/note.webm?sig=1';
 const DOWNLOAD = 'https://blob.test/out/note.json?sig=2';
 
-type Call = { url: string; method: string; headers: Record<string, string>; body: unknown; redirect?: RequestRedirect };
+type Call = { url: string; method: string; headers: Record<string, string>; body: unknown; redirect?: RequestInit['redirect'] };
 type Answer = { status?: number; json?: unknown; raw?: string } | Error;
 
 function fake(answers: Record<string, Answer>) {
