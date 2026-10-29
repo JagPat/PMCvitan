@@ -188,3 +188,23 @@ describe('Idempotency-Key Unit 1, through the store: the queue’s own person, a
     expect(theirs[0]!.key).toBe(await legacyActKey(stored[0] as Legacy, P2, 'dev:u-other'));
   });
 });
+
+describe('Idempotency-Key Unit 1 (gap check of d581a1bf): a key that cannot be made never holds the queue', () => {
+  it('with no crypto.subtle (plain http), a keyless row goes keyless as on main, and the keyed act behind it is sent', async () => {
+    const legacy = KEYLESS[0]!.act;
+    const behind = { t: 'completeActivity', activityId: 'a-9', idempotencyKey: 'k-behind' } as OutboxOp;
+    localStorage.setItem(general(USER), JSON.stringify([legacy, behind]));
+    vi.stubGlobal('crypto', { ...globalThis.crypto, subtle: undefined });
+    const sent = load(USER, false);
+    await flush();
+    expect(sent).toEqual([{ t: 'startActivity', key: undefined }, { t: 'completeActivity', key: 'k-behind' }]);
+    expect(useStore.getState().outbox).toEqual([]);
+  });
+
+  it('a digest that fails sends the row keyless too', async () => {
+    vi.spyOn(globalThis.crypto.subtle, 'digest').mockRejectedValue(new Error('digest failed'));
+    const { gw, sent } = recording('p-1');
+    await replayOutboxOp(gw, KEYLESS[4]!.act, -1, undefined, 'u-sub-1');
+    expect(sent).toEqual([{ path: '/daily-log/flag-mismatch', key: null }]);
+  });
+});

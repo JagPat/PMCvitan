@@ -2112,10 +2112,12 @@ export async function legacyActKey(op: LegacyKeyless, project: string, person: s
  *  and needs none (a site visit's answer goes to the Site Visits screen). `onPhotoGone` is told when a queued site photo
  *  or evidence photo was settled by the server's 410 (#482), whatever the refresh after it answered. `person` is the
  *  person whose queue the act was read from: a keyless act of an earlier release is sent under `legacyActKey`, and one
- *  replayed with no person named goes keyless, as before */
+ *  replayed with no person named goes keyless, as before. So does one whose key cannot be made (no `crypto.subtle`
+ *  outside a secure context, or a digest that fails): a key that can never be made must not hold it, and every act
+ *  behind it, at every flush (gap check of d581a1bf) */
 export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, onPhotoGone?: (localEvidence?: { url: string; inspectionId?: string; inspectionItemId?: string }) => void, person?: string): Promise<ApiSnapshot | null> {
   const keyOf = (o: LegacyKeyless): Promise<string | undefined> =>
-    person === undefined ? Promise.resolve(o.idempotencyKey) : legacyActKey(o, gw.project, person);
+    person === undefined ? Promise.resolve(o.idempotencyKey) : legacyActKey(o, gw.project, person).catch(() => o.idempotencyKey);
   const visit = (sent: Promise<SiteVisit>): Promise<null> =>
     sent.then((v) => { tellSiteVisits({ kind: 'answer', project: gw.project, generation, visit: v }); return null; });
   switch (op.t) {
