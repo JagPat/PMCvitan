@@ -123,7 +123,7 @@ export class SarvamSpeechProvider implements SpeechProvider {
 const TOO_LARGE = Symbol('too large');
 
 /** A response body read in chunks as UTF-8, its bytes counted as they come: TOO_LARGE (and the rest cancelled) once
- *  past `max`, undefined when the body breaks off on the way. */
+ *  past `max`, undefined when the body breaks off on the way or is not UTF-8. */
 async function bounded(res: Response, max: number): Promise<string | undefined | typeof TOO_LARGE> {
   if (Number(res.headers.get('content-length') ?? 0) > max) {
     await res.body?.cancel().catch(() => undefined);
@@ -131,7 +131,8 @@ async function bounded(res: Response, max: number): Promise<string | undefined |
   }
   if (!res.body) return '';
   const reader = res.body.getReader();
-  const decoder = new TextDecoder('utf-8');
+  // fatal: bytes that are not UTF-8 are an unreadable answer, never words with U+FFFD put in their place
+  const decoder = new TextDecoder('utf-8', { fatal: true });
   let size = 0;
   let text = '';
   try {

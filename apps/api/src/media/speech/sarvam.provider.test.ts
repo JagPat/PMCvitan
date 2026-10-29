@@ -186,6 +186,17 @@ describe('SarvamSpeechProvider', () => {
     expect((await refusal(provider.checkJob('job-7'))).final).toBe(false);
   });
 
+  it('an output that is not UTF-8 is unreadable: it costs a try, and is never kept as words with characters replaced', async () => {
+    const words = new TextEncoder().encode(JSON.stringify({ transcript: 'પાઇપ', language_code: 'gu-IN' }));
+    const bad = new Uint8Array([...words.slice(0, 16), 0xff, 0xfe, ...words.slice(16)]);
+    const { provider } = fake({
+      ...status('Completed', [{ file_name: 'm1.json' }]),
+      'POST /speech-to-text/job/v1/download-files': { json: { download_urls: { 'm1.json': { file_url: DOWNLOAD } } } },
+      [`GET ${DOWNLOAD}`]: { stream: [bad] },
+    });
+    expect((await refusal(provider.checkJob('job-7'))).final).toBe(false);
+  });
+
   it('an output far beyond any note\'s words is not kept: the job ends failed', async () => {
     const { provider } = fake({
       ...status('Completed', [{ file_name: 'm1.json' }]),
@@ -235,5 +246,10 @@ describe('readSarvamKey', () => {
     expect(readSarvamKey({ SARVAM_API_KEY: 'short' })).toBeNull();
     expect(readSarvamKey({ SARVAM_API_KEY: 'has a space in it' })).toBeNull();
     expect(readSarvamKey({ SARVAM_API_KEY: 'x'.repeat(513) })).toBeNull();
+    expect(readSarvamKey({ SARVAM_API_KEY: `sk_${'x'.repeat(510)}` })).toBeNull();
+    // a placeholder left in place of a key, or any value not shaped like Sarvam's (`sk_…`), keeps the feature closed
+    for (const v of ['YOUR_SARVAM_API_KEY', 'changeme-changeme', '<sarvam-key-here>', 'SK_0123456789abcdef', 'sk_short']) {
+      expect(readSarvamKey({ SARVAM_API_KEY: v }), v).toBeNull();
+    }
   });
 });
