@@ -4,6 +4,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { SpeechProviderError, type SpeechJobState, type SpeechProvider } from '../../src/media/speech/speech-provider';
 import { CapabilitiesService, VOICE_TEXT_CAPABILITY } from '../../src/platform/capabilities.service';
+import { ProjectController } from '../../src/snapshot/project.controller';
 import { disableCapability } from '../../src/platform/capability-switch';
 import { TRANSCRIPT_BUSY, TRANSCRIPT_MAX_ATTEMPTS, TRANSCRIPT_RUNNING_MAX_SECONDS, VoiceTranscriptService } from '../../src/media/voice-transcript.service';
 
@@ -467,15 +468,21 @@ describe('#1177 VT2 — a voice note written out (live PG, fake provider)', () =
     expect((await advance(pmc, m)).body.status).toBe('done');
   });
 
-  it('with no provider configured, no route reads or writes a transcript', async () => {
+  it('with no provider configured, no route reads or writes a transcript, and the shell does not offer it', async () => {
     const m = await note();
     provider.state = { state: 'done', text: 'words heard', languageCode: 'en-IN' };
     await advance(pmc, m);
     await age(m);
     expect((await advance(pmc, m)).body.status).toBe('done');
+    const shell = async () => (await http().get(`/projects/${f.projectA.id}/shell`).set('Authorization', `Bearer ${pmc}`).expect(200)).body.capabilities as string[];
+    expect(await shell()).toContain(VOICE_TEXT_CAPABILITY);
     const service = t.app.get(VoiceTranscriptService) as unknown as { provider: SpeechProvider | null };
+    const controller = t.app.get(ProjectController) as unknown as { speech: SpeechProvider | null };
     service.provider = null;
+    controller.speech = null;
     try {
+      // the switch is still on, but with no provider the feature is closed and not offered
+      expect(await shell()).not.toContain(VOICE_TEXT_CAPABILITY);
       expect((await get(pmc, m)).status).toBe(503);
       expect((await advance(pmc, m)).status).toBe(503);
       expect((await correct(pmc, m, 'new words', 0)).status).toBe(503);
@@ -483,6 +490,7 @@ describe('#1177 VT2 — a voice note written out (live PG, fake provider)', () =
       expect(await t.prisma.voiceTranscriptCorrection.count({ where: { mediaId: m } })).toBe(0);
     } finally {
       service.provider = provider;
+      controller.speech = provider;
     }
   });
 

@@ -80,8 +80,17 @@ describe('SarvamSpeechProvider', () => {
     expect(JSON.stringify(calls[2]!.headers)).not.toContain(KEY);
   });
 
-  it('an answer without a job id or an https upload link is Sarvam\'s fault, not the note\'s: it may be tried again', async () => {
-    expect((await refusal(fake({ ...START, 'POST /speech-to-text/job/v1': { json: {} } }).provider.createJob())).final).toBe(false);
+  it('a made job\'s answer with no usable id ends the note, so no try makes another job; an id is handed back as sent', async () => {
+    // a job may exist whatever the answer says: no id, an answer that is not JSON, or one past the bound
+    const big = new Uint8Array(70_000).fill(0x20);
+    for (const answer of [{ json: {} }, { json: { job_id: 7 } }, { raw: 'not json' }, { stream: [big] }] as Answer[]) {
+      expect((await refusal(fake({ ...START, 'POST /speech-to-text/job/v1': answer }).provider.createJob())).final, JSON.stringify(answer)).toBe(true);
+    }
+    // an id the database would refuse is the caller's to judge (it refuses one as final before storing it)
+    expect(await fake({ ...START, 'POST /speech-to-text/job/v1': { json: { job_id: 'j'.repeat(201) } } }).provider.createJob()).toBe('j'.repeat(201));
+  });
+
+  it('an answer without an https upload link is Sarvam\'s fault, not the note\'s: it may be tried again', async () => {
     const plain = { 'POST /speech-to-text/job/v1/upload-files': { json: { upload_urls: { 'm1.webm': { file_url: 'http://blob.test/in' } } } } };
     expect((await refusal(fake({ ...START, ...plain }).provider.startJob('job-7', Buffer.from('x'), 'audio/webm', 'm1.webm'))).final).toBe(false);
   });
@@ -119,6 +128,22 @@ describe('SarvamSpeechProvider', () => {
     }
     const error = await refusal(fake({ 'GET /speech-to-text/job/v1/job-7/status': { json: 'busy' } }).provider.checkJob('job-7'));
     expect(error.final).toBe(false);
+  });
+
+  it('an API answer past its bound is never held whole: read in chunks, dropped, and it costs a try', async () => {
+    // a status answer of 70 kB sent in chunks with no length; the stream counts how much was pulled before the cancel
+    let pulled = 0;
+    const chunk = new Uint8Array(16_000).fill(0x20);
+    const chunks = Array.from({ length: 10 }, () => chunk);
+    const http = (async () => new Response(new ReadableStream({
+      pull(c) { const next = chunks.shift(); if (next) { pulled += next.byteLength; c.enqueue(next); } else c.close(); },
+    }), { status: 200 })) as typeof fetch;
+    const error = await refusal(new SarvamSpeechProvider(KEY, http, BASE).checkJob('job-7'));
+    expect(error.final).toBe(false);
+    expect(pulled).toBeLessThan(160_000);
+    // and one that states a length past the bound is not read at all
+    const stated = await refusal(fake({ 'GET /speech-to-text/job/v1/job-7/status': { raw: ' '.repeat(65_000) } }).provider.checkJob('job-7'));
+    expect(stated.final).toBe(false);
   });
 
   it('downloads a completed job\'s words and language', async () => {

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from './storage.service';
 import { CapabilitiesService, VOICE_TEXT_CAPABILITY } from '../platform/capabilities.service';
-import { isPlaceHiddenFrom } from '../nodes/node-scope';
+import { NodesQueryService } from '../nodes/nodes.query';
 import type { AuthUser } from '../common/auth';
 import { SPEECH_PROVIDER, SpeechProviderError, type SpeechJobState, type SpeechProvider } from './speech/speech-provider';
 
@@ -123,6 +123,7 @@ export class VoiceTranscriptService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly capabilities: CapabilitiesService,
+    private readonly nodes: NodesQueryService,
     @Optional() @Inject(SPEECH_PROVIDER) private readonly provider: SpeechProvider | null,
     /** the fetch the recording is read back from the bucket with; injected for tests */
     @Optional() @Inject('VOICE_TRANSCRIPT_FETCH') private readonly http: typeof fetch = fetch,
@@ -376,7 +377,7 @@ export class VoiceTranscriptService {
       select: { id: true, mime: true, uploadedBy: true, storageKey: true, nodeId: true },
     });
     if (!note || !note.mime.startsWith('audio/')) throw new NotFoundException('Media not found');
-    if (note.nodeId && (await this.prisma.$transaction((tx) => isPlaceHiddenFrom(tx, projectId, note.nodeId, user.sub)))) {
+    if (note.nodeId && (await this.prisma.$transaction((tx) => this.nodes.placeHiddenFrom(tx, projectId, note.nodeId, user.sub)))) {
       throw new NotFoundException('Media not found');
     }
     return note;

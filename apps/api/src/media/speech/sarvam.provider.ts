@@ -24,6 +24,8 @@ export const SARVAM_JOB_PARAMETERS = { model: 'saaras:v3', mode: 'transcribe', l
 export const SARVAM_TIMEOUT_MS = 20_000;
 /** The most of a job's output read: a 120 s note's words are a few kilobytes. */
 const OUTPUT_MAX_BYTES = 1_000_000;
+/** The most of one of Sarvam's API answers read (a job id, a state, a pair of links): each is well under a kilobyte. */
+const API_MAX_BYTES = 64_000;
 
 type Fetch = typeof fetch;
 
@@ -46,10 +48,11 @@ export class SarvamSpeechProvider implements SpeechProvider {
   ) {}
 
   async createJob(): Promise<string> {
-    const created = await this.api('POST', '/speech-to-text/job/v1', { job_parameters: SARVAM_JOB_PARAMETERS });
-    const jobId = typeof created.job_id === 'string' && created.job_id.trim() !== '' ? created.job_id : null;
-    if (!jobId || jobId.length > 200) throw new SpeechProviderError('Sarvam did not return a job id', false);
-    return jobId;
+    // a job may have been made whatever its answer says, so an answer with no usable id is final: no try makes another
+    // job, and the note's one "Try again" is left (the caller refuses an id it cannot store as final too)
+    const created = await this.api('POST', '/speech-to-text/job/v1', { job_parameters: SARVAM_JOB_PARAMETERS }, true);
+    if (typeof created.job_id !== 'string') throw new SpeechProviderError('Sarvam did not return a job id', true);
+    return created.job_id;
   }
 
   async startJob(jobId: string, audio: Buffer, mime: string, fileName: string): Promise<void> {
@@ -87,8 +90,9 @@ export class SarvamSpeechProvider implements SpeechProvider {
     return { state: 'done', text: body.transcript, languageCode: typeof body.language_code === 'string' ? body.language_code : null };
   }
 
-  /** One JSON call to Sarvam's API, authenticated by header. */
-  private async api(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Record<string, unknown>> {
+  /** One JSON call to Sarvam's API, authenticated by header. An answer that cannot be read (not a JSON object, or
+   *  past {@link API_MAX_BYTES}) costs a try, or is final when `unreadableFinal`. */
+  private async api(method: 'GET' | 'POST', path: string, body?: unknown, unreadableFinal = false): Promise<Record<string, unknown>> {
     const res = await this.exchange(`${this.baseUrl}${path}`, {
       method,
       headers: { 'api-subscription-key': this.apiKey, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
@@ -96,10 +100,13 @@ export class SarvamSpeechProvider implements SpeechProvider {
       redirect: 'error',
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    if (!res.ok) throw failure(path.split('/').slice(-1)[0] ?? 'call', res.status);
-    const json = (await res.json().catch(() => null)) as unknown;
+    const step = path.split('/').slice(-1)[0] ?? 'call';
+    if (!res.ok) throw failure(step, res.status);
+    // read in chunks and dropped once past the bound, as the output is, so no answer is held whole whatever it claims
+    const text = await bounded(res, API_MAX_BYTES);
+    const json = text === TOO_LARGE ? undefined : parsed(text);
     // an answer that is not a JSON object is Sarvam's fault, not the note's: it costs a try
-    if (!json || typeof json !== 'object' || Array.isArray(json)) throw new SpeechProviderError(`Sarvam ${path.split('/').slice(-1)[0] ?? 'call'} answered with no JSON`, false);
+    if (!json || typeof json !== 'object' || Array.isArray(json)) throw new SpeechProviderError(`Sarvam ${step} answered with no JSON`, unreadableFinal);
     return json as Record<string, unknown>;
   }
 

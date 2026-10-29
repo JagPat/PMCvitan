@@ -11,7 +11,9 @@ export const mediaManifest: ModuleManifest = {
   ownsModels: ['media', 'mediaTombstone', 'voiceTranscript', 'voiceTranscriptCorrection'],
   // Task 8 reads decisions; Task 10 reads daily-log + validates an evidence target via the inspections
   // query (InspectionsQueryService.assertEvidenceTarget) — all through their query contracts.
-  dependsOn: ['decisions', 'daily-log', 'inspections'],
+  // #1177 VT2 — a voice note's words ask the nodes query contract whether the note's place is hidden from the viewer
+  // (NodesQueryService.placeHiddenFrom); nodes never depends back on media (its media edge is a workflow participation).
+  dependsOn: ['decisions', 'daily-log', 'inspections', 'nodes'],
   // Task 10 (Module 3) correction — item evidence is linked/unlinked through the inspections participant
   // (addEvidence/removeEvidence) in the media-create/remove transaction, so the inspection-owned
   // InspectionEvidence write + its signal event commit atomically with the media write.

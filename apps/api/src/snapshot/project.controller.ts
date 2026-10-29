@@ -1,4 +1,4 @@
-import { Controller, Get, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Inject, Optional, Param, UseGuards } from '@nestjs/common';
 import { SnapshotService } from './snapshot.service';
 import { ModuleRegistryService } from '../platform/module-registry/module-registry.service';
 import { CapabilitiesService, MATERIALS_CAPABILITY, LABOUR_CAPABILITY, COMMERCIAL_CAPABILITY, HOME_NAV_CAPABILITY, VOICE_TEXT_CAPABILITY } from '../platform/capabilities.service';
@@ -7,6 +7,7 @@ import { RolesFor, RolesGuard } from '../common/roles';
 import type { ProjectShellDto } from './types';
 import { PrismaService } from '../prisma.service';
 import { readPhase6_4dRollout } from '../platform/phase6-4d-rollout';
+import { SPEECH_PROVIDER, type SpeechProvider } from '../media/speech/speech-provider';
 
 @Controller('projects/:projectId')
 @UseGuards(JwtGuard, RolesGuard)
@@ -19,6 +20,8 @@ export class ProjectController {
     private readonly capabilities: CapabilitiesService,
     // Phase 6 task 4d — the catalog read behind `rollout.phase6_4d`
     private readonly prisma: PrismaService,
+    // #1177 VT2 — absent when no SARVAM_API_KEY is set: then voice note to text is closed, and not advertised
+    @Optional() @Inject(SPEECH_PROVIDER) private readonly speech: SpeechProvider | null = null,
   ) {}
 
   /** Phase 2 Task 9 — the PROJECT-SHELL summary: identity + `enabledModules` + projection counts, the
@@ -52,8 +55,9 @@ export class ProjectController {
       ...(commercial ? [COMMERCIAL_CAPABILITY] : []),
       // Stage 1 redesign (#482) — the home/navigation switch; layout only, read by the web
       ...(homeNav ? [HOME_NAV_CAPABILITY] : []),
-      // #1177 VT2 — voice note to text; the web shows a note's words only where it is on
-      ...(voiceText ? [VOICE_TEXT_CAPABILITY] : []),
+      // #1177 VT2 — voice note to text; the web shows a note's words only where it is on and a provider is configured
+      // (without one every transcript route answers 503, so the feature is not offered)
+      ...(voiceText && this.speech ? [VOICE_TEXT_CAPABILITY] : []),
     ];
     return { ...summary, enabledModules: this.registry.enabledModules, capabilities, rollout: { phase6_4d } };
   }
