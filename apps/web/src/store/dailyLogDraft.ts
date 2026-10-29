@@ -41,6 +41,9 @@ export type DailyLogDraft = {
   crewRows?: Record<string, { trade: string; count: number }>;
   /** progress photos taken for this log on this device, beyond what the server holds */
   photosAdded?: number;
+  /** #917 (#1167): the site photos among `photosAdded`, by key, each counted once its send was confirmed. Only ever added
+   *  to: a photo only queued here is never in the draft (it is counted from the queue), so nothing here is taken back */
+  sentPhotoKeys?: string[];
   /** the engineer answered every crew question for this log (a no-crew day is an answer, not a gap) */
   crewConfirmed?: boolean;
 };
@@ -123,6 +126,8 @@ export function adoptLegacyDraft(
   if (Object.keys(crewRows).length) out.crewRows = crewRows;
   const photos = (legacy!.photosAdded ?? 0) + (mine?.photosAdded ?? 0);
   if (photos) out.photosAdded = photos;
+  const sent = [...new Set([...(legacy!.sentPhotoKeys ?? []), ...(mine?.sentPhotoKeys ?? [])])];
+  if (sent.length) out.sentPhotoKeys = sent;
   if (mine?.crewConfirmed ?? legacy!.crewConfirmed) out.crewConfirmed = true;
   return out;
 }
@@ -225,5 +230,9 @@ export function parseDailyLogDraft(raw: unknown): DailyLogDraft | null {
     draft.crewRows = rows;
   }
   if (d.crewConfirmed === true) draft.crewConfirmed = true;
+  if (Array.isArray(d.sentPhotoKeys)) {
+    const keys = d.sentPhotoKeys.filter((k): k is string => typeof k === 'string' && k.length > 0);
+    if (keys.length) draft.sentPhotoKeys = [...new Set(keys)];
+  }
   return draft;
 }

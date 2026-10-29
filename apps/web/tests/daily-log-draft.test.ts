@@ -559,22 +559,29 @@ describe('#482 unit 3 — the day\'s photo count is the server\'s (store)', () =
   });
 
   it('an online upload counts once, the reply first and the refresh after', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
     const gw = {
       snapshot: vi.fn().mockResolvedValue(makeSnapshot(counted())),
-      uploadMedia: vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' }),
+      uploadMedia: vi.fn((input: { clientKey: string }) => {
+        // the server holds the photo from its reply on (#1195 gap-check: a read begun after the reply is the server's
+        // count); the read the reply asks for is answered when the test says
+        gw.snapshot.mockImplementation(() => held.then(() => makeSnapshot(counted({ photoCount: 3, myPhotoKeys: [input.clientKey] }))));
+        return Promise.resolve({ id: 'm1', url: '/media/m1' });
+      }),
     };
     s()._setGateway(gw as unknown as ApiGateway);
     await s().requestFreshSnapshot();
     await flush();
     s().addProgressPhoto(JPEG);
     await settles(() => s().photoUploadsInFlight[0]?.settled === true);
+    // the reply first: no read holds it yet, the reply's own settled count does
+    expect(s().dailyLog?.photoCount).toBe(2);
     expect(s().dailyLog?.progress).toBe(3);
-    const key = gw.uploadMedia.mock.calls[0]![0].clientKey as string;
-    gw.snapshot.mockResolvedValue(makeSnapshot(counted({ photoCount: 3, myPhotoKeys: [key] })));
-    await s().requestFreshSnapshot();
-    await flush();
+    release();
+    await settles(() => s().photoUploadsInFlight.length === 0);
+    expect(s().dailyLog?.photoCount).toBe(3);
     expect(s().dailyLog?.progress).toBe(3);
-    expect(s().photoUploadsInFlight).toEqual([]);
   });
 
   it('a refresh that already holds the photo, landing before the reply, is not counted again by the reply (r4285614525)', async () => {
