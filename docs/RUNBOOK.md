@@ -1548,7 +1548,7 @@ the same `User` row, forever.
    After 4d-i has SUCCEEDED, `User_t4d_architect_reserved` stands and the same statement in the
    other direction — a row moved INTO `architect` — is refused until 4d-iii retires it.
 
-   Any direct SQL write refused with "the project readiness key is held elsewhere" right after another writer commits has written nothing; retry it once (#1144, comment 6436303099).
+   Any direct SQL write refused with "the project readiness key is held elsewhere" right after another writer commits has written nothing; roll back and retry it once in a fresh transaction (or with autocommit), since the refusal aborts any transaction it ran in (#1144, comment 6436303099).
 
 2. **Clear the failed attempt.**
 
