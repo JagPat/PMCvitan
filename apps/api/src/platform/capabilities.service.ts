@@ -39,10 +39,18 @@ export const CONSULTATION_CAPABILITY = 'consultation';
  *  (`capability:disable`) — the server-side rollback the Board asked for instead of a web revert. */
 export const HOME_NAV_CAPABILITY = 'home-nav';
 
-/** The capabilities `capability:disable` accepts. Each must be presentation only: no stored data,
- *  queued work or command depends on it being on. A pilot hub never belongs here — turning
- *  `materials`, `labour` or `commercial` off under live records would strand them. */
-export const SWITCHABLE_CAPABILITIES: readonly string[] = [HOME_NAV_CAPABILITY];
+/** #1177 VT2 — the per-project VOICE NOTE TO TEXT switch (AI item 1). Off (no row), every transcript route answers not
+ *  found and nothing is written; text already stored stays stored, unshown, and returns if the switch comes back on.
+ *  Each write asks it again under the project's row lock, which turning it off also takes first, so no write lands
+ *  after it is off. The step that sends a note to the provider (VT2-C2, not yet built) will hold the same switch
+ *  across its one exchange, so that off also stops every exchange in flight (#1229); until then nothing sends a
+ *  note anywhere. Nothing else depends on it, so it may be turned off as freely as `home-nav` (#1177 H5). */
+export const VOICE_TEXT_CAPABILITY = 'voice-text';
+
+/** The capabilities `capability:disable` accepts. Each must be one whose OFF strands nothing: no queued work or
+ *  command depends on it being on (`voice-text` keeps its stored text, unshown, for when it is back on). A pilot hub never belongs here —
+ *  turning `materials`, `labour` or `commercial` off under live records would strand them. */
+export const SWITCHABLE_CAPABILITIES: readonly string[] = [HOME_NAV_CAPABILITY, VOICE_TEXT_CAPABILITY];
 
 @Injectable()
 export class CapabilitiesService {

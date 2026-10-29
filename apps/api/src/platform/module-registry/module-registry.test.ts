@@ -93,7 +93,8 @@ describe('Phase 2 Task 7 — module registry', () => {
       // U3a — the PMC brief reads a project's daily-log status through DailyLogQueryService and its
       // progress-photo count through MediaQueryService (media never depends back on orgs).
       orgs: ['decisions', 'inspections', 'labour', 'daily-log', 'media'], drawings: ['decisions'],
-      media: ['decisions', 'daily-log', 'inspections'],
+      // #1177 VT2 — media reads whether a place is hidden through the nodes query (nodes depends only on decisions)
+      media: ['decisions', 'daily-log', 'inspections', 'nodes'],
       // Phase 3 Task 2 — procurement reads requirement revisions through the activities query
       // (the §F bound-1 allocation lock) and approved specifications through decisions; neither
       // target depends back on procurement (the requirements-cancel disposition guard is a
