@@ -288,6 +288,18 @@ describe('SarvamSpeechProvider', () => {
     expect(await small.checkJob('job-7')).toEqual({ state: 'done', text: 'પાઇપ લાઇન', languageCode: 'gu-IN' });
   });
 
+  it('a completed output whose words are empty or only spaces is done with those words: a note with no speech (VT1a V3)', async () => {
+    for (const transcript of ['', '  \n ']) {
+      const { provider } = fake({
+        ...status('Completed', [{ file_name: 'm1.json' }]),
+        'POST /speech-to-text/job/v1/download-files': { json: { download_urls: { 'm1.json': { file_url: DOWNLOAD } } } },
+        [`GET ${DOWNLOAD}`]: { json: { transcript, language_code: 'gu-IN' } },
+      });
+      // done, never failed: a "Try again" would only pay to hear the same silence; the words are kept as heard (V4)
+      expect(await provider.checkJob('job-7'), JSON.stringify(transcript)).toEqual({ state: 'done', text: transcript, languageCode: 'gu-IN' });
+    }
+  });
+
   it('a completed output without words is a failed job', async () => {
     const { provider } = fake({
       ...status('Completed', [{ file_name: 'm1.json' }]),

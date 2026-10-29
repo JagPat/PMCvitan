@@ -89,6 +89,8 @@ export class SarvamSpeechProvider implements SpeechProvider {
     const body = parsed(text) as { transcript?: unknown; language_code?: unknown } | null | undefined;
     if (body === undefined) throw new SpeechProviderError('Sarvam output could not be read', false);
     if (!body || typeof body.transcript !== 'string') return { state: 'failed', reason: 'Sarvam output had no transcript' };
+    // words that are empty or only spaces are a note with no speech: done, as heard (VT1a V3, V4), never failed, since
+    // a "Try again" would only pay to hear the same silence
     return { state: 'done', text: body.transcript, languageCode: typeof body.language_code === 'string' ? body.language_code : null };
   }
 
