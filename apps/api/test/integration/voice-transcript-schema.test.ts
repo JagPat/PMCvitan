@@ -12,6 +12,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 const MIGRATION = join(__dirname, '../../prisma/migrations/20280126000000_voice_transcript/migration.sql');
 const STAMP = join(__dirname, '../../prisma/migrations/20280129000000_voice_transcript_stamp/migration.sql');
 const RUNNING_SINCE = join(__dirname, '../../prisma/migrations/20280130000000_voice_transcript_running_since/migration.sql');
+const BUSY_INDEX = join(__dirname, '../../prisma/migrations/20280131000000_voice_transcript_busy_index/migration.sql');
 const CORRECTIONS = join(__dirname, '../../prisma/migrations/20280128000000_voice_transcript_correction/migration.sql');
 
 describe('#1177 voice-note transcripts (live PG)', () => {
@@ -38,6 +39,7 @@ describe('#1177 voice-note transcripts (live PG)', () => {
   const replay = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url(), '-f', MIGRATION], { stdio: 'pipe' });
   const replayCorrections = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url(), '-f', CORRECTIONS], { stdio: 'pipe' });
   const replayRunningSince = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url(), '-f', RUNNING_SINCE], { stdio: 'pipe' });
+  const replayBusyIndex = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url(), '-f', BUSY_INDEX], { stdio: 'pipe' });
   const replayStamp = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url(), '-f', STAMP], { stdio: 'pipe' });
   const voice = async (projectId: string) =>
     (await t.prisma.media.create({ data: { projectId, kind: 'visit', mime: 'audio/webm', uploadedBy: f.memberUser.id, durationSec: 30 } })).id;
@@ -293,6 +295,23 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     expect(await since(s)).toBeNull();
   });
 
+  it('answers the busy lookup from its partial index, reading only recent rows with an error and no lease (VT1e)', async () => {
+    // the lookup as the server asks it (Prisma's findFirst: an equality on the error, no lease, a recent write)
+    const lookup = `SELECT "mediaId" FROM "VoiceTranscript" WHERE "lastError" = $1 AND "leaseToken" IS NULL AND "updatedAt" > $2 LIMIT 1`;
+    const plan = await t.prisma.$transaction(async (tx) => {
+      // the table is near empty here, so a scan would win on cost: forbid it, to ask only whether the index answers
+      await tx.$executeRawUnsafe('SET LOCAL enable_seqscan = off');
+      const rows = await tx.$queryRawUnsafe<Array<{ 'QUERY PLAN': string }>>(`EXPLAIN ${lookup}`, 'Sarvam is busy; asking again shortly', new Date(Date.now() - 20_000));
+      return rows.map((r) => r['QUERY PLAN']).join('\n');
+    });
+    expect(plan).toMatch(/Index (Only )?Scan using "VoiceTranscript_busy_lookup"|Bitmap Index Scan on "VoiceTranscript_busy_lookup"/);
+    expect(plan).toMatch(/Index Cond: \("updatedAt" > /);
+    // its predicate names no message text, so another busy wording is answered by the same index
+    const [{ pred }] = await t.prisma.$queryRawUnsafe<Array<{ pred: string }>>(
+      `SELECT pg_get_expr(indpred, indrelid) AS pred FROM pg_index WHERE indexrelid = 'public."VoiceTranscript_busy_lookup"'::regclass`);
+    expect(pred).toBe('(("lastError" IS NOT NULL) AND ("leaseToken" IS NULL))');
+  });
+
   it('has exactly its keys, check, indexes and triggers, and re-runs over itself unchanged', async () => {
     const shape = async () => t.prisma.$queryRawUnsafe<Array<{ k: string; d: string }>>(
       `SELECT 'c:' || conname AS k, pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conrelid = '"VoiceTranscript"'::regclass
@@ -302,7 +321,7 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     const before = await shape();
     expect(before.map((r) => r.k)).toEqual([
       'c:VoiceTranscript_pkey', 'c:VoiceTranscript_projectId_mediaId_fkey', 'c:VoiceTranscript_running_since_check', 'c:VoiceTranscript_shape_check',
-      'i:"VoiceTranscript_pkey"', 'i:"VoiceTranscript_projectId_mediaId_key"',
+      'i:"VoiceTranscript_busy_lookup"', 'i:"VoiceTranscript_pkey"', 'i:"VoiceTranscript_projectId_mediaId_key"',
       't:VoiceTranscript_insert', 't:VoiceTranscript_keys_fixed', 't:VoiceTranscript_no_delete', 't:VoiceTranscript_no_truncate',
       't:VoiceTranscript_running_since',
     ]);
@@ -317,6 +336,8 @@ describe('#1177 voice-note transcripts (live PG)', () => {
     replayStamp();
     replayRunningSince();
     replayRunningSince();
+    replayBusyIndex();
+    replayBusyIndex();
     expect(await shape()).toEqual(before);
     // the job start stands after the replay, stamped by its own trigger after VT1a's rules
     expect(before.find((r) => r.k === 't:VoiceTranscript_running_since')?.d).toMatch(/BEFORE INSERT OR UPDATE ON public."VoiceTranscript" FOR EACH ROW/);

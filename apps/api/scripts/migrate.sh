@@ -609,6 +609,9 @@ if echo "$out" | grep -q "P3005"; then
   #
   # The transcripts' job start (#1177 VT1d, 20280130000000) is here because its stamp is a trigger, which a db-push
   # baseline does not have. Guarded and re-runnable.
+  #
+  # The transcripts' busy-lookup index (#1177 VT1e, 20280131000000) is here because it is a partial index, which a
+  # db-push baseline does not have. IF NOT EXISTS, re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -661,7 +664,8 @@ if echo "$out" | grep -q "P3005"; then
 20280127000000_hub_catalog_generation
 20280128000000_voice_transcript_correction
 20280129000000_voice_transcript_stamp
-20280130000000_voice_transcript_running_since"
+20280130000000_voice_transcript_running_since
+20280131000000_voice_transcript_busy_index"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
