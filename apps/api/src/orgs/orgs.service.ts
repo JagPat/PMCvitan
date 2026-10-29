@@ -27,6 +27,7 @@ import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { executeCommand, hashRequest } from '../platform/commands';
 import { projectsInReach } from './project-reach';
+import { closeProjectExchangeFence, PROJECT_ARCHIVE_TX_TIMEOUT_MS } from './project-exchange-fence';
 import { lockStandingAnchors } from '../common/standing-anchor';
 import {
   lockInitializationDisplayIds,
@@ -1286,13 +1287,16 @@ export class OrgsService {
     if (!project || project.orgId !== orgId) throw new NotFoundException('Project not found in this org');
     const base = await resolveActor(this.prisma, { sub: userId, role: 'pmc', projectId } as unknown as AuthUser);
     await this.prisma.$transaction(async (tx) => {
+      // #1177 VT2-B — FIRST, holding nothing: wait out every external exchange in flight on this project (a voice note
+      // being sent), and let none start until this commits; a holder re-reads archivedAt after it gets the fence
+      await closeProjectExchangeFence(tx, projectId);
       const actor = await this.lifecycleActor(tx, orgId, projectId, base, { projectPmcMay: false, refusal: 'Only an org owner or admin can delete projects' });
       // #1061 — the actor's standing anchor BEFORE the project row: the emit reads their standing after
       // it, and a member command re-roling them holds their anchor and then waits on this project row
       await lockStandingAnchors(tx, { read: [actor.actorId] });
       await tx.project.update({ where: { id: projectId }, data: { archivedAt: new Date() } });
       await emitEvent(tx, { projectId, actor, eventType: 'project.archived', entityType: 'Project', entityId: projectId, effectKey: 'project.archived', dispatch: {} });
-    });
+    }, { maxWait: 10_000, timeout: PROJECT_ARCHIVE_TX_TIMEOUT_MS });
     return { ok: true };
   }
 
