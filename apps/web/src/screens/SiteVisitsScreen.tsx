@@ -491,6 +491,8 @@ function MediaRecorderButton({ kind, visitId, lang, busy, held, onActive, onReco
   const [elapsed, setElapsed] = useState(0);
   const [said, setSaid] = useState<string | null>(null);
   const run = useRef<Recording | null>(null);
+  // a start still waiting on the devices (or the camera's first picture): given up when the screen is left
+  const starting = useRef<AbortController | null>(null);
   // the recording stays this screen's until it has stopped, so leaving (or Discard) meanwhile still keeps nothing
   const stopping = useRef<Recording | null>(null);
   const alive = useRef(true);
@@ -500,7 +502,7 @@ function MediaRecorderButton({ kind, visitId, lang, busy, held, onActive, onReco
   // set again on each mount: StrictMode runs the cleanup once before the real mount (as ProjectSwitcher does)
   useEffect(() => {
     alive.current = true;
-    return () => { alive.current = false; run.current?.cancel(); run.current = null; };
+    return () => { alive.current = false; starting.current?.abort(); starting.current = null; run.current?.cancel(); run.current = null; };
   }, []);
   // the running time, for the person only: the recording's own cap stops it
   useEffect(() => {
@@ -527,8 +529,11 @@ function MediaRecorderButton({ kind, visitId, lang, busy, held, onActive, onReco
   const start = async () => {
     setSaid(null);
     setPhase('starting');
+    const given = new AbortController();
+    starting.current = given;
     try {
-      const r = await startRecording(kind, type, maxMs, options);
+      const r = await startRecording(kind, type, maxMs, { ...options, signal: given.signal });
+      if (starting.current === given) starting.current = null;
       if (!alive.current) { r.cancel(); return; }
       run.current = r;
       setLive(r.stream);
@@ -540,6 +545,7 @@ function MediaRecorderButton({ kind, visitId, lang, busy, held, onActive, onReco
         void finish(rec, cause === 'cap');
       });
     } catch (err) {
+      if (starting.current === given) starting.current = null;
       if (!alive.current) return;
       setPhase('idle');
       const reason = err instanceof RecordError ? err.reason : 'unavailable';
@@ -581,7 +587,7 @@ function MediaRecorderButton({ kind, visitId, lang, busy, held, onActive, onReco
         </div>
       ) : (
         <Button variant="light" disabled={busy || held || phase === 'starting'} data-testid={`sv-record-${id}`} onClick={() => void start()}>
-          {words.record[lang]}
+          {phase === 'starting' && kind === 'video' ? SV.videoStarting[lang] : words.record[lang]}
         </Button>
       )}
       {said && <div className={styles.meta} role="status">{said}</div>}
