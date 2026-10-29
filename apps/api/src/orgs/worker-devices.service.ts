@@ -5,6 +5,7 @@ import { CapabilitiesService, LABOUR_CAPABILITY } from '../platform/capabilities
 import { recordAudit } from '../platform/audit';
 import { executeCommand, hashRequest } from '../platform/commands';
 import { LabourRequirementQuery } from '../labour/labour.query';
+import { OrgsParticipant } from './orgs.participant';
 import { resolveActor } from '../common/actor';
 import type { AuthUser } from '../common/auth';
 import type { BindWorkerDeviceInput } from '../contracts';
@@ -30,6 +31,7 @@ export class WorkerDevicesService {
     private readonly prisma: PrismaService,
     private readonly capabilities: CapabilitiesService,
     private readonly labourQuery: LabourRequirementQuery,
+    private readonly orgsParticipant: OrgsParticipant,
   ) {}
 
   async bind(projectId: string, deviceId: string, input: BindWorkerDeviceInput, user: AuthUser, idempotencyKey?: string): Promise<{ deviceId: string; workerId: string }> {
@@ -42,6 +44,11 @@ export class WorkerDevicesService {
       scope: { scopeKind: 'project', projectId }, actor, commandType: 'orgs.workerDevice.bind',
       idempotencyKey, requestHash: hashRequest({ deviceId, ...input }),
       run: async (tx) => {
+        // #1129 — the door judged the project live before this transaction; an archive takes no readiness
+        // key, so lock its row and re-read it here, and refuse rather than bind on a project archived since
+        if (!(await this.orgsParticipant.isProjectOperable(tx, projectId))) {
+          throw new ConflictException('This project is archived — no device can be bound on it');
+        }
         const device = await tx.workerDevice.findFirst({ where: { id: deviceId, projectId }, select: { id: true, workerId: true } });
         if (!device) throw new NotFoundException('Worker device not found in this project');
         if (device.workerId === input.workerId) throw new ConflictException('Device is already bound to this worker');

@@ -1421,6 +1421,10 @@ baseline it before anything replays (t3c seals exit 5; see §P4T3C3).
   carries A7d AND SV1-a's generation the runner also resolves A7d as applied — with 4d-i-b U1 and A7a,
   whose replays would re-create the kernel actor seal and the revision claimant without the bodies
   only A7d's replay restored. `scripts/upgrade-proof.sh` proves both the lease-less and served arms.
+  **From Hub #1118 U5m** the rule extends once more: SV1-a's own catalog audit (immutable, gated the
+  same way) refuses U5m's generation (`63679450…`), so on a database that also carries U5m's
+  generation the runner resolves `20280111000000_site_visits_sv1a_catalog` as applied. That file
+  installs no function, so no other replay depends on it, and SV1-a's record file replays as before.
 - **Restored from a point after A7d was applied but before any process of this release served:** the
   same rule applies — A7d's seals are on the database, a lease is not — so the deploy completes with
   4d-i and U3 resolved. The residual: 4d-i's replay audits do not judge that database's rows; the live
@@ -1595,6 +1599,12 @@ eight `sitevisit.*` keys (invalidate, never push, pairing-required).
 `20280112000000_site_visits_sv1a_record` installs the claimants that pair it); the
 SV1-a build takes the same three steps above with `f9ebcd07…` as the seal's version.
 No consumer contract version moves, so nothing else in this section changes.
+
+**Hub #1118 U5m seeds the next generation AHEAD of it** — `63679450…`: SV1-a's keys plus
+`drawing.superseded_hub` and `drawing.relinked` (invalidate, never push, no pairing claim).
+`20280127000000_hub_catalog_generation` seeds it beside SV1-a's, and the U5m build compiles
+the same catalog as the build before it, so deploying U5m needs NO reseal. The later build that
+compiles the two keys (U5k) moves `f9ebcd07…` → `63679450…` and takes the three steps above.
 
 The seeded `ExternalEffectCatalog` rows are a DIFFERENT mechanism and do not
 substitute for this: two coverage generations keep a still-serving previous

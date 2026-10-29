@@ -1196,6 +1196,8 @@ model Media {
   measurements               Measurement[]
   // Site Visits #792 SV2 — the visit this file was added on, if any (at most one)
   siteVisit                  SiteVisitMedia?
+  // #1177 VT1 (20280126000000) — a voice note's words, when the project's `voice-text` switch wrote them out
+  voiceTranscript            VoiceTranscript?
   // Stage 1 media (markup, voice, video). A marked-up copy is a NEW image pointing at the
   // photo it was drawn on, which keeps its bytes, camera time and place. The database
   // clears the link with ON DELETE SET NULL ("sourceMediaId") when the original goes (a
@@ -1216,6 +1218,52 @@ model Media {
   @@index([projectId, uploadedBy, createdAt]) // #482: a member's own photos still inside their delete hour
   @@index([nodeId])
   @@index([inspectionId])
+}
+
+// #1177 VT1a (20280126000000): a voice note's words, as the speech provider heard them. At most one per voice note; it
+// goes with the note (ON DELETE CASCADE) and never on its own. A person's corrections are kept apart (VT1b), never
+// written over these words. The checks and triggers (a voice note only; keys fixed; a done row frozen) are raw SQL in
+// the migration, which Prisma cannot express.
+model VoiceTranscript {
+  media         Media     @relation(fields: [projectId, mediaId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId     String
+  mediaId       String    @id
+  status        String    @default("pending") // pending | running | done | failed
+  providerJobId String?
+  languageCode  String?
+  text          String? // the provider's words, exactly when done
+  attempts      Int       @default(0)
+  retried       Boolean   @default(false)
+  lastError     String?
+  leaseToken    String?
+  leaseUntil    DateTime?
+  // #1177 VT1d (20280130000000): when this try's job was stored, set by a trigger (NULL while there is no job)
+  runningSince  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  // #1177 VT1b (20280128000000) — what people said the note says, newest last
+  corrections   VoiceTranscriptCorrection[]
+
+  @@unique([projectId, mediaId])
+}
+
+// #1177 VT1b (20280128000000): a person's correction of a voice note's heard words, added and never changed. The newest
+// ("seq" highest) is the one shown; a row with no text goes back to the heard words. It goes with its transcript (ON
+// DELETE CASCADE) and never on its own. The checks and triggers (only of a done transcript; "seq" and "createdAt" set by
+// the database; no update, no direct delete) are raw SQL in the migration, which Prisma cannot express.
+model VoiceTranscriptCorrection {
+  transcript    VoiceTranscript @relation(fields: [projectId, mediaId], references: [projectId, mediaId], onDelete: Cascade, onUpdate: NoAction)
+  id            String          @id @default(cuid())
+  projectId     String
+  mediaId       String
+  seq           Int             @default(0) // set by the database: 1, 2, 3 ... per transcript
+  text          String? // NULL means back to what was heard
+  correctedBy   User            @relation("voiceTranscriptCorrectedBy", fields: [correctedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  correctedById String
+  createdAt     DateTime        @default(now())
+
+  @@unique([projectId, mediaId, seq])
+  @@index([correctedById])
 }
 
 // #482 site photos (20280117): one row per (project, clientKey) whose photo was deleted, written by a database trigger
@@ -1530,6 +1578,8 @@ model User {
   siteVisitMediaAdded       SiteVisitMedia[]       @relation("siteVisitMediaAddedBy")
   siteVisitRemovalsAdded    SiteVisitFileRemoval[] @relation("siteVisitFileRemovalAddedBy")
   siteVisitRemovalsMade     SiteVisitFileRemoval[] @relation("siteVisitFileRemovalRemovedBy")
+  // #1177 VT1b — the voice-note corrections this person made
+  voiceTranscriptCorrections VoiceTranscriptCorrection[] @relation("voiceTranscriptCorrectedBy")
   siteVisitPlacesRetired    SiteVisitPlace[]       @relation("siteVisitPlaceRetiredBy")
   // Phase 6 task 4b (§A.3) — push subscriptions currently linked to this user for targeted delivery
   pushSubscriptionsLinked   PushSubscription[]     @relation("pushSubscriptionsLinked")

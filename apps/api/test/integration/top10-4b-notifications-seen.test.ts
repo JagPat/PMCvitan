@@ -414,7 +414,7 @@ describe('Top 10 #4b unit C — the seen mark and per-notice unread (live PG)', 
     }
     for (const r of await Promise.all(toggles)) expect(r.ok ? '' : r.e).not.toMatch(/deadlock/i);
     for (const r of await Promise.all(marks)) {
-      expect(r.ok).toBe(true);
+      expect(r.ok, r.ok ? '' : r.e).toBe(true);
       expect(r.v?.status, r.v?.text).toBe(200);
     }
   });

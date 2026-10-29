@@ -48,8 +48,11 @@ export function findStepTarget(step: GuideStep, key: string | null): HTMLElement
 }
 
 
-/** A guide can start here now: its first control is on screen and pressable (the overlay and the welcome both ask this). */
+/** A guide can start here now: its first control is on screen and pressable (the overlay and the welcome both ask this).
+ *  A step already done (its `skip` holds) is passed over when the run starts, so the first step left is the one that
+ *  counts (Codex 4400711812). */
 export function guideStartable(guide: Guide): boolean {
-  const el = findGuideTarget(guide.steps[0]!.target);
+  const first = guide.steps.find((step) => !step.skip?.()) ?? guide.steps[guide.steps.length - 1]!;
+  const el = findGuideTarget(first.target);
   return el !== null && !(el as HTMLButtonElement).disabled;
 }

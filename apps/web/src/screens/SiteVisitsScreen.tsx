@@ -12,6 +12,8 @@ import { UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
 import { refusalWords, SV, visitTime } from '@/lib/siteVisitWords';
 import { stampText } from '@/lib/captureStamp';
 import { resolveMediaUrl, type SiteVisit, type SiteVisitFile, type SiteVisitRating, type SiteVisitRemoval } from '@/data/apiGateway';
+import { guideRunToken } from '@/guide/outcomes';
+import { useVisitGuideReports } from '@/guide/visitGuideReports';
 import styles from './SiteVisitsScreen.module.css';
 
 /**
@@ -39,6 +41,8 @@ export function SiteVisitsScreen() {
     [nodes],
   );
   const mineOpen = sv.visits.some((v) => v.visitorId === me && v.status === 'open');
+  // #482: the visit guide's reports, from what this screen shows
+  const guideReports = useVisitGuideReports(sv.visits, sv.read, sv.waiting, sv.notSent, me, sv.load !== 'loading');
   // the member list is the Team screen's; read it when this viewer can name someone on a visit, and again whenever
   // the server says the project changed (a member removed, re-roled or newly joined). A read that failed, even
   // with an older list on hand, makes the picker offer a retry
@@ -81,9 +85,13 @@ export function SiteVisitsScreen() {
             {placeOptions.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
           </select>
           <p className={styles.note}>{SV.locationNote[lang]}</p>
-          <Button variant="ink" fullWidth disabled={sv.busy} data-testid="sv-start" onClick={() => {
+          <Button variant="ink" fullWidth disabled={sv.busy} data-testid="sv-start" data-guide="sv-start" onClick={() => {
             const name = placeOptions.find((p) => p.id === startNode)?.label ?? null;
-            void sv.start(startNode || null, name).then((ok) => ok && setStartNode(''));
+            const guideRun = guideRunToken();
+            void sv.start(startNode || null, name).then((ok) => {
+              if (ok) setStartNode('');
+              guideReports.started(ok, guideRun);
+            });
           }}>
             {SV.start[lang]}
           </Button>
@@ -420,7 +428,7 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
             {/* a voice note or a video plays where a photo shows; one the phone no longer has (its row is gone) shows without a player */}
             {recordingKind(f.mime) ? (
               <div className={styles.voice}>
-                {f.url ? <MediaPlayer url={f.url} mime={f.mime} label={f.note ?? fileName(f.mime, lang)} words={playWords(lang, f.mime)} /> : null}
+                {f.url ? <MediaPlayer url={f.url} mime={f.mime} label={f.note ?? fileName(f.mime, lang)} words={playWords(lang, f.mime)} poster={f.posterUrl ?? undefined} /> : null}
               </div>
             ) : /* a queued photo the phone no longer has a picture of (its row is gone) shows without one until read again */ f.url ? (
               <a href={resolveMediaUrl(f.url)} target="_blank" rel="noreferrer" aria-label={SV.photoOpen[lang]}>
@@ -484,11 +492,13 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
               const file = e.target.files?.[0];
               e.target.value = '';
               if (!file) return;
+              // #482: a photo not kept tells the guide from addPhoto itself
               void sv.addPhoto(v.id, file, { note: photoNote, ...(photoRating ? { rating: photoRating } : {}), ...(photoAt ? { nodeId: photoAt.nodeId!, placeName: photoAt.name } : {}) })
                 .then(sent);
             }}
           />
-          <Button variant="light" disabled={sv.busy} onClick={() => fileRef.current?.click()}>{SV.addPhoto[lang]}</Button>
+          {/* #482: the visit guide points at the Add photo of the viewer's own open visit (the one it started) */}
+          <Button variant="light" disabled={sv.busy} data-guide={v.visitorId === me && v.status === 'open' ? 'sv-add-photo' : undefined} onClick={() => fileRef.current?.click()}>{SV.addPhoto[lang]}</Button>
           {RECORDERS.map((kind) => (
             <MediaRecorderButton
               key={kind} kind={kind} visitId={v.id} lang={lang} busy={sv.busy}

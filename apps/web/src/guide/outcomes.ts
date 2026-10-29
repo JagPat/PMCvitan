@@ -20,7 +20,21 @@ export type GuideOutcome =
   | 'advice-not-kept'
   | 'site-photo-added'
   | 'site-photo-add-failed'
-  | 'site-photo-not-kept';
+  | 'site-photo-not-kept'
+  | 'visit-started'
+  | 'visit-start-failed'
+  | 'visit-photo-added'
+  | 'visit-photo-add-failed'
+  | 'daily-log-sent'
+  | 'daily-log-send-failed'
+  | 'daily-log-not-kept'
+  | 'review-decided'
+  | 'review-decide-failed'
+  | 'review-decide-not-kept'
+  | 'drawing-published'
+  | 'drawing-publish-failed'
+  | 'member-added'
+  | 'member-add-failed';
 
 /** `key`: which record the outcome is about (the submitted inspection's id), so a guide following one
  *  checklist ignores the submit of another. `run`: the guide run the request was sent under (see
@@ -35,8 +49,9 @@ let currentRun = 0;
 
 export function beginGuideRun(): number {
   currentRun += 1;
-  // a photo picked under an earlier run is not this run's
+  // a photo picked, or a drawing published, under an earlier run is not this run's
   guidedPhotoPicks.clear();
+  guidedDrawings.clear();
   return currentRun;
 }
 
@@ -52,6 +67,18 @@ export function recordGuidedPhotoPick(run: number, clientKey: string): void {
 
 export function guidedPhotoPicksOf(run: number): ReadonlySet<string> {
   return guidedPhotoPicks.get(run) ?? new Set<string>();
+}
+
+/** The drawing revision each guide run published, so the drawing guide can see it in the register when the publish's own
+ *  answer is lost (a refresh shows it first). */
+const guidedDrawings = new Map<number, { number: string; rev: string }>();
+
+export function recordGuidedDrawing(run: number, number: string, rev: string): void {
+  guidedDrawings.set(run, { number, rev });
+}
+
+export function guidedDrawingOf(run: number): { number: string; rev: string } | null {
+  return guidedDrawings.get(run) ?? null;
 }
 
 export function guideRunToken(): number {

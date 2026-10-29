@@ -72,6 +72,56 @@ export const GUIDE_TIPS = {
     hi: 'फिर भेजने के लिए यहाँ दबाएँ।',
     gu: 'પછી મોકલવા અહીં દબાવો.',
   },
+  visitStart: {
+    en: 'Pick where you are starting if you like, then tap here to start the visit.',
+    hi: 'चाहें तो शुरुआत की जगह चुनें, फिर विज़िट शुरू करने के लिए यहाँ दबाएँ।',
+    gu: 'ઇચ્છો તો શરૂઆતની જગ્યા પસંદ કરો, પછી મુલાકાત શરૂ કરવા અહીં દબાવો.',
+  },
+  visitPhoto: {
+    en: 'Tap here to add a photo of what you see on this visit: take one or pick one from your phone.',
+    hi: 'इस विज़िट में जो दिखे उसकी फ़ोटो जोड़ने के लिए यहाँ दबाएँ: नई खींचें या फ़ोन से चुनें।',
+    gu: 'આ મુલાકાતમાં જે દેખાય તેનો ફોટો ઉમેરવા અહીં દબાવો: નવો પાડો અથવા ફોનમાંથી પસંદ કરો.',
+  },
+  logCheckIn: {
+    en: 'First, tap here to check in at site.',
+    hi: 'पहले, साइट पर हाज़िरी लगाने के लिए यहाँ दबाएँ।',
+    gu: 'પહેલાં, સાઇટ પર હાજરી પૂરવા અહીં દબાવો.',
+  },
+  logSend: {
+    en: "Fill in today's crew and photos, then tap Submit Daily Log to PMC to send it.",
+    hi: 'आज के कारीगर और फ़ोटो भरें, फिर रोज़ का लॉग PMC को भेजने के लिए यहाँ दबाएँ।',
+    gu: 'આજના કારીગરો અને ફોટા ભરો, પછી રોજનો લૉગ PMC ને મોકલવા અહીં દબાવો.',
+  },
+  reviewDecide: {
+    en: "Look at each item and its photo, and tap Reject item on any that isn't right. Then approve the inspection, or send it back for re-inspection.",
+    hi: 'हर आइटम और उसकी फ़ोटो देखें, और जो ठीक न हो उस पर ‘आइटम नामंज़ूर करें’ दबाएँ। फिर निरीक्षण मंज़ूर करें, या दोबारा निरीक्षण के लिए वापस भेजें।',
+    gu: 'દરેક આઇટમ અને તેનો ફોટો જુઓ, અને જે બરાબર ન હોય તેના પર ‘આઇટમ નામંજૂર કરો’ દબાવો. પછી નિરીક્ષણ મંજૂર કરો, અથવા ફરી નિરીક્ષણ માટે પાછું મોકલો.',
+  },
+  drawingAdd: {
+    en: 'Tap Issue drawing to add a new drawing.',
+    hi: 'नई ड्रॉइंग जोड़ने के लिए ‘ड्रॉइंग जारी करें’ दबाएँ।',
+    gu: 'નવું ડ્રોઇંગ ઉમેરવા ‘ડ્રોઇંગ જારી કરો’ દબાવો.',
+  },
+  drawingFile: {
+    en: "Fill in the drawing's number, revision and title, then choose its file here.",
+    hi: 'ड्रॉइंग का नंबर, संशोधन और शीर्षक भरें, फिर यहाँ उसकी फ़ाइल चुनें।',
+    gu: 'ડ્રોઇંગનો નંબર, સંસ્કરણ અને શીર્ષક ભરો, પછી અહીં તેની ફાઇલ પસંદ કરો.',
+  },
+  drawingPublish: {
+    en: 'Check it, then tap Publish to send it to the site team.',
+    hi: 'जाँच लें, फिर साइट टीम को भेजने के लिए ‘जारी करें’ दबाएँ।',
+    gu: 'તપાસી લો, પછી સાઇટ ટીમને મોકલવા ‘જારી કરો’ દબાવો.',
+  },
+  teamForm: {
+    en: 'Type their name and their email or phone.',
+    hi: 'उनका नाम और ईमेल या फ़ोन लिखें।',
+    gu: 'તેમનું નામ અને ઈમેલ અથવા ફોન લખો.',
+  },
+  teamAdd: {
+    en: 'Check the role they hold on this project, then tap Add. They can then sign in with that email or phone.',
+    hi: 'इस प्रोजेक्ट में उनकी भूमिका जाँच लें, फिर यहाँ दबाएँ। इसके बाद वे उसी ईमेल या फ़ोन से साइन इन कर सकते हैं।',
+    gu: 'આ પ્રોજેક્ટમાં તેમની ભૂમિકા તપાસી લો, પછી અહીં દબાવો. ત્યાર બાદ તેઓ એ જ ઈમેલ અથવા ફોનથી સાઇન ઇન કરી શકે છે.',
+  },
   approveConfirm: {
     en: 'Check your choice, then tap here to confirm it.',
     hi: 'अपना चुनाव जाँचें, फिर पक्का करने के लिए यहाँ दबाएँ।',
@@ -137,6 +187,31 @@ export const GUIDE_TITLES = {
     en: 'Answer a request for advice',
     hi: 'सलाह के अनुरोध का जवाब दें',
     gu: 'સલાહની વિનંતીનો જવાબ આપો',
+  },
+  recordSiteVisit: {
+    en: 'Record a site visit',
+    hi: 'साइट विज़िट दर्ज करें',
+    gu: 'સાઇટ મુલાકાત નોંધો',
+  },
+  sendDailyLog: {
+    en: 'Send the daily log',
+    hi: 'रोज़ का लॉग भेजें',
+    gu: 'રોજનો લૉગ મોકલો',
+  },
+  reviewInspection: {
+    en: 'Review a submitted inspection',
+    hi: 'जमा हुए निरीक्षण की जाँच करें',
+    gu: 'જમા થયેલા નિરીક્ષણની તપાસ કરો',
+  },
+  publishDrawing: {
+    en: 'Publish a drawing',
+    hi: 'ड्रॉइंग जारी करें',
+    gu: 'ડ્રોઇંગ જારી કરો',
+  },
+  inviteTeam: {
+    en: 'Add someone to the team',
+    hi: 'टीम में किसी को जोड़ें',
+    gu: 'ટીમમાં કોઈને ઉમેરો',
   },
   approveDecision: {
     en: 'Approve a choice',
