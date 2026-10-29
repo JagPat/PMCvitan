@@ -75,7 +75,7 @@ import { deleteWaitsForUpload, uploadQueued, type KeptSitePhoto } from '@/lib/qu
 import { deleteSitePhotoRow, dropSentMarkers, holdSitePhotoLock, isSitePhotoSent, listSitePhotoRows, markSitePhotoSent, putSitePhotoRow, sitePhotosLocked, SITE_PHOTO_SENT_KEEP_MS, sitePhotoStorageAvailable, SitePhotoBusy, SitePhotoUnreadable, type SitePhotoRow } from '@/data/sitePhotoStore';
 import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
-import { type DailyLogDraft, adoptLegacyDraft, dailyLogIdentity, dailyLogKey, draftAppliesTo, draftHoldsWork, legacyDraftExtras, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
+import { type DailyLogDraft, adoptLegacyDraft, dailyLogKey, draftAppliesTo, draftHoldsWork, legacyDraftExtras, overlayDailyLogDraft, parseDailyLogDraft } from './dailyLogDraft';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type NodeCreatePending, type ProjectLoadState, type ProjectScope } from './projectScope';
 import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, planSeenChunks, reconcileSeen, type NotifSeenState } from '@/lib/notificationSeen';
 import type { MaterialsView } from './materials';
@@ -93,7 +93,7 @@ import {
 } from './projectCreateHold';
 import { createQueueKeyGuard, queueActIdent, type QueueWrite } from '@/store/queueKeyGuard';
 import { isDone } from '@/store/queueLedger';
-import { keepUnsentLocked, underQueueLock, writeQueueKey } from '@/store/queueKeyLock';
+import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
@@ -450,7 +450,7 @@ export interface AppState {
    *  count is seen to hold them (`dailyLog.myPhotoKeys`), or until a pull begun after its answer (`after`, the snapshot
    *  sequence then) carried the log: one deleted before any read named it is then not counted for ever (#1195 gap-check);
    *  memory only (a reload re-reads the server's count). */
-  photoUploadsInFlight: { clientKey: string; dailyLogId: string; settled: boolean; after?: number }[];
+  photoUploadsInFlight: { clientKey: string; dailyLogId: string; settled: boolean; after?: number; lease?: number }[];
   /** #482 site photos — the upload keys of this tab's site photo uploads sent online and not yet answered (an answer of
    *  any kind, or a network error, ends one); memory only, as the request itself is */
   photoUploadsSending: string[];
@@ -1862,25 +1862,7 @@ export const useStore = create<Store>()(
       s.dailyLogDraft = r.draft;
       // a draft written before the log carried an id is kept aside, never laid over it (#692)
       if (r.legacy) s.legacyDailyLogDraft = r.legacy;
-      storedProgress = serverLog?.id && !serverLog.submitted && serverLog.photoCount === undefined
-        ? { identity: dailyLogIdentity(serverLog), progress: serverLog.progress } : null;
-      drainSentSitePhotos(s, projectId);
       recountDailyLogPhotos(s);
-    };
-    /** #917 (#1167): a server that sends no `photoCount` — the count it stored for the log on show, as it landed. The count
-     *  shown is always that, plus the photos the draft holds, plus the site photos queued here for the log, so a queued
-     *  photo is counted from the queue alone and nothing has to take it back out of the draft */
-    let storedProgress: { identity: string; progress: number } | null = null;
-    /** #917 (#1167): the site photos queued here for this log, by key: an op with its kept row filed on the log, that the
-     *  log does not already show from the server and the draft does not already hold */
-    const queuedSitePhotos = (s: AppState, log: DailyLog): Set<string> => {
-      const drafted = draftAppliesTo(s.dailyLogDraft, log, s.activeProjectId) ? s.dailyLogDraft!.sentPhotoKeys ?? [] : [];
-      const keys = new Set<string>();
-      for (const o of s.outbox) {
-        if (o.t !== 'uploadSitePhoto' || drafted.includes(o.clientKey) || log.photos.some((p) => p.id && p.clientKey === o.clientKey)) continue;
-        if (s.sitePhotosKept.some((k) => k.clientKey === o.clientKey && k.dailyLogId === log.id)) keys.add(o.clientKey);
-      }
-      return keys;
     };
     /** #482 site photos unit 3 — a server that counts the day's photos (`photoCount`: every member's photos filed on
      *  the log) is the count, plus this device's uploads for that log the server does not hold
@@ -1888,17 +1870,9 @@ export const useStore = create<Store>()(
      *  (its reply lost, or a refresh that landed before the reply) is never counted twice. A server that sends no
      *  `photoCount` keeps the count as before (the stored count plus the photos taken here). The added uploads are
      *  shown only: Send stores the server's own count, so an upload that never lands is never stored. */
-    // A server that sends no `photoCount`: the count it stored, the draft's photos and the site photos queued here
-    // (`storedProgress`, #1167). A log that landed before this release's count, or a sent one, keeps its count as it is
     const recountDailyLogPhotos = (s: AppState): void => {
       const log = s.dailyLog;
-      if (!log?.id) return;
-      if (log.photoCount === undefined) {
-        if (log.submitted || storedProgress?.identity !== dailyLogIdentity(log)) return;
-        const drafted = draftAppliesTo(s.dailyLogDraft, log, s.activeProjectId) ? s.dailyLogDraft!.photosAdded ?? 0 : 0;
-        log.progress = storedProgress.progress + drafted + queuedSitePhotos(s, log).size;
-        return;
-      }
+      if (!log?.id || log.photoCount === undefined) return;
       const held = new Set(log.myPhotoKeys ?? []);
       // an upload the server is seen to hold, or one settled for a log no longer on screen, needs no more counting
       s.photoUploadsInFlight = s.photoUploadsInFlight.filter((u) => !u.settled || (u.dailyLogId === log.id && !held.has(u.clientKey)));
@@ -1943,100 +1917,6 @@ export const useStore = create<Store>()(
     /** …one more progress photo taken for this log on this device. */
     const recordDraftPhoto = (s: AppState): void =>
       recordDailyLogDraft(s, (d) => { d.photosAdded = (d.photosAdded ?? 0) + 1; });
-    /** #917 (#1167): …one more, a site photo whose send the server confirmed, once by its key: met again (its answer here
-     *  and then its op's copy settled by its marker, or after a reload) it adds nothing. A photo only queued is never in
-     *  the draft: the queue counts it (`queuedSitePhotos`), so a refusal or a gone row has nothing to take back here.
-     *  One the log on show already holds from the server adds nothing, as a yes then adds nothing */
-    const recordDraftSentPhoto = (s: AppState, clientKey: string): void => {
-      if (s.dailyLog?.photos.some((p) => p.id && p.clientKey === clientKey)) return;
-      recordDailyLogDraft(s, (d) => {
-        if (d.sentPhotoKeys?.includes(clientKey)) return;
-        d.photosAdded = (d.photosAdded ?? 0) + 1;
-        d.sentPhotoKeys = [...(d.sentPhotoKeys ?? []), clientKey];
-      });
-    };
-    /** #917 (#1167, Codex 4411296873): a site photo whose send was confirmed while its log was not on show (a replay at
-     *  boot, or a module read not landed yet) waits here, by key, for that log, under the same person and project as the
-     *  draft (so a sign-out or a switch never carries it across). Only ever added to; the log's next landing moves it
-     *  into its draft. An entry ends when its log lands and takes it, when a log of another id lands (the draft for
-     *  another log is superseded then, U1 #690), or when its log is sent; nothing ends before it is counted. It holds the
-     *  entries of the `SENT_SITE_PHOTO_LOGS` logs written to last, each whole: an entry for a fourth log ends the oldest
-     *  log's. So a log's entries are never cut short by its own size, or by late entries of up to two other logs (Stage
-     *  1 gap-checks, PR3 and RC1); entries of three other logs written after it do end them (RD1, a residual while a
-     *  server without `photoCount` is supported). A project nobody opens again keeps a few lines only.
-     *  Every write runs under the list's own Web Lock (the queue keys' helper), reading the list as it stands then and
-     *  merging by key, so another tab's entries stay. An entry not yet written (no lock, or storage refused it) is kept
-     *  in memory, taken by a landing here, and written again by the next write of the list */
-    const SENT_SITE_PHOTO_LOGS = 3;
-    type SentSitePhoto = { logId: string; clientKey: string };
-    const sentSitePhotosKey = (projectId: string): string => `vitan.dailyLogSentPhotos.${sessionSub()}.${projectId}`;
-    const sentSitePhotosUnwritten = new Map<string, SentSitePhoto[]>();
-    /** …the list within its bound: the logs written to last, each kept whole (late entries of one or two other logs
-     *  never push out a log's) */
-    const boundSent = (list: SentSitePhoto[]): SentSitePhoto[] => {
-      const recent: string[] = [];
-      for (let i = list.length - 1; i >= 0 && recent.length < SENT_SITE_PHOTO_LOGS; i--) if (!recent.includes(list[i]!.logId)) recent.push(list[i]!.logId);
-      return list.filter((e) => recent.includes(e.logId));
-    };
-    const readSentSitePhotos = (key: string): SentSitePhoto[] => {
-      try {
-        const raw: unknown = JSON.parse(globalThis.localStorage?.getItem(key) ?? '[]');
-        return Array.isArray(raw)
-          ? raw.filter((e): e is SentSitePhoto => !!e && typeof e === 'object' && typeof (e as { logId?: unknown }).logId === 'string' && typeof (e as { clientKey?: unknown }).clientKey === 'string')
-          : [];
-      } catch { return []; }
-    };
-    /** Change the list as it stands under its lock (`change` gets the stored entries and this tab's unwritten ones, merged by
-     *  key); this tab's unwritten entries are let go once a write lands */
-    const writeSentSitePhotos = (key: string, change: (list: SentSitePhoto[]) => SentSitePhoto[]): void => {
-      const pending = [...(sentSitePhotosUnwritten.get(key) ?? [])];
-      void underQueueLock(key, () => {
-        const storage = globalThis.localStorage;
-        if (!storage) return false;
-        const stored = readSentSitePhotos(key);
-        const list = boundSent(change([...stored, ...pending.filter((e) => !stored.some((x) => x.clientKey === e.clientKey))]));
-        try {
-          if (list.length === 0) storage.removeItem(key);
-          else storage.setItem(key, JSON.stringify(list));
-          return true;
-        } catch { return false; }
-      }).then((done) => {
-        if (!done) return;
-        const left = (sentSitePhotosUnwritten.get(key) ?? []).filter((e) => !pending.some((x) => x.clientKey === e.clientKey));
-        if (left.length) sentSitePhotosUnwritten.set(key, left); else sentSitePhotosUnwritten.delete(key);
-      });
-    };
-    /** #917 (#1167): a confirmed send, in the draft of the log it was filed on: at once when that log is on show, otherwise
-     *  kept for it until it lands */
-    const confirmSitePhoto = (s: AppState, clientKey: string, dailyLogId: string | undefined, projectId: string): void => {
-      if (!dailyLogId) return;
-      if (s.dailyLog?.id === dailyLogId && projectId === s.activeProjectId) {
-        if (!s.dailyLog.submitted) recordDraftSentPhoto(s, clientKey);
-        return;
-      }
-      const key = sentSitePhotosKey(projectId);
-      const entry = { logId: dailyLogId, clientKey };
-      const unwritten = sentSitePhotosUnwritten.get(key) ?? [];
-      if (!unwritten.some((e) => e.clientKey === clientKey)) sentSitePhotosUnwritten.set(key, boundSent([...unwritten, entry]));
-      writeSentSitePhotos(key, (list) => (list.some((e) => e.clientKey === clientKey) ? list : [...list, entry]));
-    };
-    /** …moved into the draft of the log that landed (the draft is written by the apply that called this). A sent log takes
-     *  none, and its entries end with it */
-    const drainSentSitePhotos = (s: AppState, projectId: string): void => {
-      const log = s.dailyLog;
-      if (!log?.id || projectId !== s.activeProjectId) return;
-      const key = sentSitePhotosKey(projectId);
-      const stored = readSentSitePhotos(key);
-      const unwritten = sentSitePhotosUnwritten.get(key) ?? [];
-      if (stored.length === 0 && unwritten.length === 0) return;
-      const landed = log.id;
-      // taken into its draft (a key the draft holds adds nothing), or superseded by this log; ended in the list as it
-      // stands under its lock, so an entry another tab adds meanwhile for this log stays for the next landing
-      const taken = [...stored, ...unwritten].filter((e) => e.logId === landed).map((e) => e.clientKey);
-      if (!log.submitted) for (const k of taken) recordDraftSentPhoto(s, k);
-      sentSitePhotosUnwritten.delete(key);
-      writeSentSitePhotos(key, (list) => list.filter((e) => e.logId === landed && !taken.includes(e.clientKey)));
-    };
 
     const applySnapshotCore = (snap: ApiSnapshot, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null, drawingsResult?: ModuleDrawings | null, inspectionsResult?: ModuleInspections | null, activitiesResult?: ModuleActivities | null): void => {
       set((s) => {
@@ -2307,7 +2187,8 @@ export const useStore = create<Store>()(
       // delete was answered; a pull begun earlier may have counted the photo still there (Codex 4322142057)
       // ...and an upload answered here is counted from its answer only until a pull begun after that answer carried the log:
       // that pull's count is the server's, holding it or not (a photo deleted meanwhile, #1195 gap-check)
-      const answered = (u: AppState['photoUploadsInFlight'][number]): boolean => u.settled && u.after !== undefined && lease.sequence > u.after;
+      // (a replay's own snapshot is read after its answer, but under the flush's lease, taken before it: Codex 4412387979)
+      const answered = (u: AppState['photoUploadsInFlight'][number]): boolean => u.settled && ((u.after !== undefined && lease.sequence > u.after) || u.lease === lease.sequence);
       if ((dailyLogReadMode() === 'snapshot' || dailyLogResult != null) && get().photoUploadsInFlight.some(answered)) {
         set((s) => { s.photoUploadsInFlight = s.photoUploadsInFlight.filter((u) => !answered(u)); recountDailyLogPhotos(s); });
       }
@@ -2756,9 +2637,10 @@ export const useStore = create<Store>()(
         set((s) => {
           for (const r of missing) s.outbox.push({ t: 'uploadSitePhoto', scope: rowScope, clientKey: r.clientKey });
           // #1187: a row whose sending tab closed before its answer is counted on its log from here on, by its key, as
-          // every queued photo is (a server that sends no count included), and once only, after a reload too
-          // a row sent (by this tab's flush or another tab) whose op here has not settled yet keeps its entry: its op's
-          // `afterSent` reads its log from it, to move it from the queue into the draft (Stage 1 gap-check, PR1 and PR5)
+          // every queued photo is, and once only, after a reload too
+          // a row sent (by this tab's flush or another tab) whose op here has not settled yet keeps its entry: it stays
+          // counted, and its op's `afterSent` reads its log from it to keep it counted until a read shows the server's
+          // count (#1195; Stage 1 gap-check, PR1 and PR5)
           const sentHere = s.sitePhotosKept.filter((k) => s.outbox.some((o) => o.t === 'uploadSitePhoto' && o.clientKey === k.clientKey) && rows.some((r) => r.clientKey === k.clientKey && isSitePhotoSent(r) && !r.refused));
           s.sitePhotosKept = [...full.filter((r) => s.outbox.some((o) => o.t === 'uploadSitePhoto' && o.clientKey === r.clientKey)).map((r) => keptFrom(r.input)), ...sentHere];
           recountDailyLogPhotos(s);
@@ -6644,14 +6526,10 @@ export const useStore = create<Store>()(
                 }
                 // another log on screen now: the server holds the photo on its own log, and the next snapshot shows it
                 const log = onPickedLog(s);
-                // #1167: sent, in its log's draft by its key, so a later sight of it (its marker) adds nothing; kept for
-                // that log when another is on show
-                if (!log) { if (dailyLogId) confirmSitePhoto(s, clientKey, dailyLogId, rowProject); return; }
-                if (log.photos.some((p) => p.id === res.id)) return;
+                if (!log || log.photos.some((p) => p.id === res.id)) return;
                 log.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
-                recordDraftSentPhoto(s, clientKey);
                 if (log.photoCount === undefined) log.progress += 1;
-                recountDailyLogPhotos(s);
+                recordDraftPhoto(s);
               });
               persistDailyLogDraft();
               emitGuideOutcome('site-photo-added', null, guideRun);
@@ -6699,13 +6577,12 @@ export const useStore = create<Store>()(
                   settle(s, false);
                   const log = onPickedLog(s);
                   // a refresh that landed before this may already show the server's copy (its key in the log's own
-                  // list, or on the log's gallery copy): it is not shown or counted again (Codex 4389428620, #1187), as a
-                  // yes finding it in the gallery adds nothing. One the photo list alone shows is counted all the same: a
-                  // server before the day's count does not count it on the log, as a yes counts it (#1242 r1,
-                  // 4410673630); only its data URL is not laid in the gallery beside the server's copy (#1187)
+                  // list, on the log's gallery copy, or on the photo list): its data URL is not laid beside it (Codex
+                  // 4389428620, #1187)
                   const held = log?.myPhotoKeys?.includes(clientKey) || log?.photos.some((p) => p.clientKey === clientKey);
                   if (log && !held && ![...s.photos, ...s.myDeletablePhotos].some((p) => p.clientKey === clientKey)) log.photos.unshift({ url: dataUrl, clientKey });
-                  // counted by the queue, as every queued photo is (#1167): never in the draft until its send is confirmed
+                  // counted by the queue (`recountDailyLogPhotos`, by its key, against the server's `photoCount`), never in
+                  // the draft (#1167): nothing has to take it back out when its row is refused or gone
                   recountDailyLogPhotos(s);
                 });
                 // (its op is never stored: the row is its record on this phone, written before the send)
@@ -7122,8 +6999,8 @@ export const useStore = create<Store>()(
        *  effect of the success that does not read the server's answer, one function for both (xtab-drain U2 r1 root
        *  cause: a copy of these effects drifted, 4384591499/4384591507/4384591508). The 410 of an upload is read only by
        *  the send's own answer, so an upload is never settled by its fact. The start's photo clear is returned to wait on */
-      // `gone`: a site photo settled by the 410 was not sent: it is never put in the draft, and `forgetQueuedSitePhoto`
-      // takes it out of the queue after this (Codex 4410673603)
+      // `gone`: a site photo settled by the 410 was not sent: it is not kept counted, and `forgetQueuedSitePhoto` takes it
+      // out of the queue after this (Codex 4410673603)
       const afterSent = (o: OutboxOp, snap: ApiSnapshot | null, gone = false): Promise<unknown> | null => {
         settle(o);
         if (snap) { lastSnap = snap; lastSnapStale = false; } else if (lastSnap && isSiteVisitOp(o)) lastSnapStale = true;
@@ -7132,21 +7009,20 @@ export const useStore = create<Store>()(
         // so is a site photo's: settled by its answer, its queued copy leaves the Dashboard, and the server's must come
         // back (Codex 4389428615)
         if (!snap && (o.t === 'uploadEvidence' || o.t === 'uploadSitePhoto')) photoSettledGone = true;
-        // a site photo settled leaves the copy of its bytes this tab showed while it was queued (Codex 4391469504)
-        // and, sent (here, or by another tab whose marker settled this copy), it moves from the queue into its log's
-        // draft in the same update, by its key, once (#1167); kept for its log when another is on show (Codex 4411296873)
+        // a site photo settled leaves the copy of its bytes this tab showed while it was queued (Codex 4391469504); the
+        // draft is not touched: a queued photo was never in it (#1167)
         if (o.t === 'uploadSitePhoto' && !gone) {
           const key = o.clientKey;
           set((s) => {
             // #1195: the day's count keeps it, as an online upload answered here is kept, until a read shows the server's
             // count holding it: a module-owned daily-log read is not carried by this answer's snapshot and lands later
             const kept = s.sitePhotosKept.find((k) => k.clientKey === key);
-            if (kept?.dailyLogId && !s.photoUploadsInFlight.some((u) => u.clientKey === key)) s.photoUploadsInFlight.push({ clientKey: key, dailyLogId: kept.dailyLogId, settled: true, after: snapshotSeq });
+            // (with its answer's snapshot, read after the answer, the flush applies it under `flushLease`: that applying is a
+            // read after the answer too, Codex 4412387979)
+            if (kept?.dailyLogId && !s.photoUploadsInFlight.some((u) => u.clientKey === key)) s.photoUploadsInFlight.push({ clientKey: key, dailyLogId: kept.dailyLogId, settled: true, after: snapshotSeq, ...(snap && flushLease ? { lease: flushLease.sequence } : {}) });
             s.sitePhotosKept = s.sitePhotosKept.filter((k) => k.clientKey !== key);
-            confirmSitePhoto(s, key, kept?.dailyLogId, flushGateway.project);
             recountDailyLogPhotos(s);
           });
-          persistDailyLogDraft();
         }
         // a site visit's answer shows on its own screen, so it is not counted in the "synced" line; one that went
         // through starts the visit photo retry's wait over

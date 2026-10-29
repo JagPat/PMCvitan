@@ -782,7 +782,7 @@ describe('the settle skip touches only a site photo\'s op (#917 port, r2 re-chec
 });
 
 describe('Codex round 1 on #1161: a site photo is settled only once its row says so, and never left without a send (#917)', () => {
-  const LOG = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 0, crew: [], materials: [], photos: [] };
+  const LOG = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 0, crew: [], materials: [], photos: [], photoCount: 0, myPhotoKeys: [] as string[] };
   /** The phone's site photo database refuses every write while `on` is true; reads still answer. */
   const failingWrites = () => {
     const state = { on: false };
@@ -942,7 +942,7 @@ describe('Codex round 1 on #1161: a site photo is settled only once its row says
     for (const k of saved) expect((JSON.parse(localStorage.getItem(k)!) as { photosAdded?: number }).photosAdded ?? 0).toBe(0);
   });
 
-  it('sent after a lost answer, it moves from the queue into the draft by its key, and the count does not move (#1167)', async () => {
+  it('sent after a lost answer, it stays counted until a read shows the server\'s count, and the draft never holds it (#1167)', async () => {
     const A = await tab();
     startWork(A as never);
     await land(A, LOG);
@@ -955,8 +955,10 @@ describe('Codex round 1 on #1161: a site photo is settled only once its row says
     A.getState()._setGateway({ uploadMedia: vi.fn().mockResolvedValue({ id: 'm-k', url: '/media/m-k' }), snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
     await A.getState().flushOutbox();
     expect(A.getState().outbox).toEqual([]);
+    // its answer's read failed: the count keeps it from the answer (#1195), and the draft is not touched
     expect(A.getState().dailyLog!.progress).toBe(1);
-    expect(A.getState().dailyLogDraft).toMatchObject({ photosAdded: 1, sentPhotoKeys: [key] });
+    expect(A.getState().photoUploadsInFlight.map((u) => u.clientKey)).toEqual([key]);
+    expect(A.getState().dailyLogDraft?.photosAdded ?? 0).toBe(0);
   });
 
   it('a replay the server took leaves no copy of the photo\'s bytes in memory (4391469504)', async () => {
@@ -1092,17 +1094,12 @@ describe('Codex round 1 on #1161: a site photo is settled only once its row says
 });
 
 describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
-  const LOG = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 0, crew: [], materials: [], photos: [] };
+  const LOG = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 0, crew: [], materials: [], photos: [], photoCount: 0, myPhotoKeys: [] as string[] };
   const GONE = () => Object.assign(new Error('/media 410'), { status: 410, serverMessage: 'This photo was deleted' });
   const draftSaved = () => {
     const saved = Object.keys(localStorage).filter((k) => k.startsWith('vitan.dailyLogDraft.') && !k.includes('.legacy.'));
-    return saved.length ? (JSON.parse(localStorage.getItem(saved[0]!)!) as { photosAdded?: number; sentPhotoKeys?: string[] }) : null;
+    return saved.length ? (JSON.parse(localStorage.getItem(saved[0]!)!) as { photosAdded?: number }) : null;
   };
-
-  const SENT = 'vitan.dailyLogSentPhotos.anon.villa-b';
-  /** Resolves once every write of the sent list asked so far has run: its Web Lock is granted in order */
-  const sentWritten = () => navigator.locks.request(`vitan.queue.${SENT}`, async () => {});
-  const sentList = () => JSON.parse(localStorage.getItem(SENT) ?? '[]') as { logId: string; clientKey: string }[];
 
   /** The next lock request (a row's, for a photo being kept) waits until `gate`; `asked` gives its name. */
   const gatedLock = () => {
@@ -1116,7 +1113,7 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
   it('a row whose tab closed before its answer is counted in the log once, by its key, from the queue (#1187, Codex 4396140829)', async () => {
     const A = await tab();
     startWork(A as never);
-    // a server before the day's count: the log's count is the stored count plus the photos taken here
+    // the server's count does not hold it: the log's count is that count plus the photos queued here
     await land(A, LOG);
     A.setState({ online: false } as never);
     await (await rowsOf()).putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-orph', dailyLogId: 'log-1' });
@@ -1156,7 +1153,7 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     expect(B.getState().dailyLogDraft?.photosAdded ?? 0).toBe(0);
   });
 
-  it('a lost answer for a photo the photo list alone already shows, from a server before the day\'s count, adds no second copy but is counted in the log (#1187 4396140838, #1242 r1 4410673630)', async () => {
+  it('a lost answer for a photo the photo list alone already shows adds no second copy but is counted in the log until the server\'s count holds it (#1187 4396140838, #1242 r1 4410673630)', async () => {
     const A = await tab();
     startWork(A as never);
     await land(A, LOG);
@@ -1165,8 +1162,8 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     A.getState().addProgressPhoto(PNG);
     await up.called();
     const key = up.calls[0]!.input.clientKey;
-    // a refresh landed while the send was out: its photo list holds the photo, by its key; that server does not count it
-    // on the log (its stored count stays as it was), and its log's gallery does not show it yet
+    // a refresh landed while the send was out: its photo list holds the photo, by its key; the log's count does not hold
+    // it yet, and its log's gallery does not show it yet
     A.setState({ photos: [{ id: 'm-p', url: '/media/m-p', kind: 'progress', clientKey: key }] } as never);
     up.calls[0]!.answer.reject(lost());
     await until(A, (s) => s.toast === SAVED);
@@ -1330,9 +1327,30 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     expect(A.getState().dailyLog!.progress).toBe(0);
   });
 
+  it('a replayed queued photo deleted between its upload and its own snapshot is let go from the day\'s count by that snapshot (#1246 r1, Codex 4412387979)', async () => {
+    const A = await tab();
+    A.setState({ online: false, dailyLog: { ...LOG, photoCount: 0, myPhotoKeys: [] } } as never);
+    startWork(A as never);
+    await (await rowsOf()).putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-del', dailyLogId: 'log-1' });
+    // the snapshot the replay asks for after the upload's answer: the photo was deleted meanwhile, so the server neither
+    // counts nor names it
+    const gone = { ...snap, dailyLog: { ...LOG, photoCount: 0, myPhotoKeys: [] } };
+    A.getState()._setGateway({ uploadMedia: vi.fn().mockResolvedValue({ id: 'm-d', url: '/media/m-d' }), snapshot: vi.fn().mockResolvedValue(gone), project: 'villa-b' } as never);
+    A.getState().hydrateOutbox();
+    await until(A, (s) => s.outbox.some((o) => o.t === 'uploadSitePhoto'));
+    await settled();
+    A.setState({ online: true } as never);
+    await A.getState().flushOutbox();
+    await settled();
+    expect(A.getState().outbox).toEqual([]);
+    // that snapshot was read after the answer: its count is the server's, with no later read needed
+    expect(A.getState().photoUploadsInFlight).toEqual([]);
+    expect(A.getState().dailyLog!.progress).toBe(0);
+  });
+
   /** A photo whose answer was lost here, then the page loaded again offline with the server's log landed; `after` changes
    *  its row as another tab would, before the reload reads it. */
-  const reloaded = async (after: (rows: Rows, key: string) => Promise<void>) => {
+  const reloaded = async (after: (rows: Rows, key: string) => Promise<void>, landed: (key: string) => typeof LOG = () => LOG) => {
     const A = await tab();
     startWork(A as never);
     await land(A, LOG);
@@ -1350,7 +1368,7 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     B.getState()._setGateway({ uploadMedia: vi.fn(), snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
     B.getState().hydrateOutbox();
     await settled();
-    await land(B, LOG);
+    await land(B, landed(key));
     await settled();
     return { B, key };
   };
@@ -1363,9 +1381,9 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     expect(draftSaved()?.photosAdded ?? 0).toBe(0);
   });
 
-  it('a queued photo another tab sent is in the draft that tab saved, and counted once after a reload (#1242 r1, 4410673596)', async () => {
-    const { B } = await reloaded(async (_rows, key) => {
-      // another tab, with the log on show, reads the row and sends it: its draft holds the photo from then on
+  it('a queued photo another tab sent is in no draft, and after a reload is counted by the server\'s count alone (#1242 r1, 4410673596)', async () => {
+    const { B } = await reloaded(async () => {
+      // another tab, with the log on show, reads the row and sends it: its draft is not touched
       const C = await tab();
       startWork(C as never);
       await land(C, LOG);
@@ -1376,11 +1394,12 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
       C.setState({ online: true } as never);
       C.getState()._setGateway({ uploadMedia: vi.fn().mockResolvedValue({ id: 'm-x', url: '/media/m-x' }), snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
       await C.getState().flushOutbox();
-      expect(draftSaved()).toMatchObject({ photosAdded: 1, sentPhotoKeys: [key] });
-    });
+      expect(draftSaved()?.photosAdded ?? 0).toBe(0);
+    }, (key) => ({ ...LOG, photoCount: 1, myPhotoKeys: [key] }));
     expect(B.getState().outbox).toEqual([]);
+    // the server's count holds it: counted once, and by no draft
     expect(B.getState().dailyLog!.progress).toBe(1);
-    expect(B.getState().dailyLogDraft?.photosAdded).toBe(1);
+    expect(B.getState().dailyLogDraft?.photosAdded ?? 0).toBe(0);
   });
 
   it('a queued photo answered 410 after a reload leaves the count, and no draft ever held it (#1242 r1, 4410673603)', async () => {
@@ -1394,141 +1413,6 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     expect(B.getState().dailyLog!.progress).toBe(0);
     expect(B.getState().dailyLogDraft?.photosAdded ?? 0).toBe(0);
     expect(draftSaved()?.photosAdded ?? 0).toBe(0);
-  });
-
-  it('a queued photo sent while its log is not on show is counted in that log\'s draft when it lands, and its marker\'s end takes nothing back (Codex 4411296873)', async () => {
-    const A = await tab();
-    startWork(A as never);
-    await land(A, LOG);
-    A.getState()._setGateway({ uploadMedia: vi.fn().mockRejectedValue(lost()), snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
-    A.getState().addProgressPhoto(PNG);
-    await until(A, (s) => s.toast === SAVED);
-    const key = (A.getState().outbox[0] as { clientKey: string }).clientKey;
-    // the page is loaded again, and the photo is sent before the log is read (a replay at boot)
-    const B = await tab();
-    startWork(B as never);
-    B.setState({ online: false } as never);
-    B.getState()._setGateway({ uploadMedia: vi.fn().mockResolvedValue({ id: 'm-b', url: '/media/m-b' }), snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
-    B.getState().hydrateOutbox();
-    await until(B, (s) => s.outbox.some((o) => o.t === 'uploadSitePhoto'));
-    await settled();
-    expect(B.getState().dailyLog).toBeNull();
-    B.setState({ online: true } as never);
-    await B.getState().flushOutbox();
-    expect(B.getState().outbox).toEqual([]);
-    // its marker passes its keep before the log is read
-    const rows = await rowsOf();
-    await rows.dropSentMarkers(Date.now() + 1);
-    expect(await rows.getSitePhotoRow(ROWS, 'villa-b', key)).toBeNull();
-    await land(B, LOG);
-    await settled();
-    expect(B.getState().dailyLog!.progress).toBe(1);
-    // the rows read again, and the log landed again: counted once, still, in the log and in the draft saved on this phone
-    B.getState().hydrateOutbox();
-    await settled();
-    await land(B, LOG);
-    expect(B.getState().dailyLog!.progress).toBe(1);
-    expect(draftSaved()?.photosAdded).toBe(1);
-    expect(draftSaved()?.sentPhotoKeys).toEqual([key]);
-    await sentWritten();
-    expect(localStorage.getItem(SENT)).toBeNull();
-  });
-
-  it('a photo kept for a log that is not the one landing is let go with it, as the draft for another log is (Codex 4411296873)', async () => {
-    const A = await tab();
-    startWork(A as never);
-    A.setState({ online: false } as never);
-    await (await rowsOf()).putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-old', dailyLogId: 'log-0' });
-    A.getState()._setGateway({ uploadMedia: vi.fn().mockResolvedValue({ id: 'm-o', url: '/media/m-o' }), snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
-    A.getState().hydrateOutbox();
-    await until(A, (s) => s.outbox.some((o) => o.t === 'uploadSitePhoto'));
-    await settled();
-    A.setState({ online: true } as never);
-    await A.getState().flushOutbox();
-    await sentWritten();
-    expect(sentList()).toEqual([{ logId: 'log-0', clientKey: 'k-old' }]);
-    await land(A, LOG);
-    expect(A.getState().dailyLog!.progress).toBe(0);
-    expect(A.getState().dailyLogDraft?.photosAdded ?? 0).toBe(0);
-    await sentWritten();
-    expect(localStorage.getItem(SENT)).toBeNull();
-  });
-
-  /** A photo sent from its row with no log on show: its send is confirmed for `log-1` while nothing shows that log */
-  const sentWithNoLog = async (A: Store, key: string) => {
-    startWork(A as never);
-    A.setState({ online: false } as never);
-    await (await rowsOf()).putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: key, dailyLogId: 'log-1' });
-    A.getState()._setGateway({ uploadMedia: vi.fn().mockResolvedValue({ id: `m-${key}`, url: `/media/m-${key}` }), snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
-    A.getState().hydrateOutbox();
-    await until(A, (s) => s.outbox.some((o) => o.t === 'uploadSitePhoto'));
-    await settled();
-    A.setState({ online: true } as never);
-    await A.getState().flushOutbox();
-    expect(A.getState().outbox).toEqual([]);
-  };
-
-  it('the sent list keeps the three logs written to last, each whole, and the entries another tab wrote (Stage 1, the list\'s bound)', async () => {
-    // entries for three older logs already, the oldest first, as other tabs or earlier days left them
-    localStorage.setItem(SENT, JSON.stringify([
-      ...Array.from({ length: 30 }, (_, i) => ({ logId: 'log-a', clientKey: `k-a${i}` })),
-      ...Array.from({ length: 30 }, (_, i) => ({ logId: 'log-b', clientKey: `k-b${i}` })),
-      { logId: 'log-c', clientKey: 'k-c0' },
-    ]));
-    const A = await tab();
-    await sentWithNoLog(A, 'k-new');
-    await sentWritten();
-    const list = sentList();
-    // a fourth log's entry ends the oldest log's, all of them; the other two stay whole
-    expect(list.filter((e) => e.logId === 'log-a')).toEqual([]);
-    expect(list.filter((e) => e.logId === 'log-b')).toHaveLength(30);
-    expect(list.filter((e) => e.logId === 'log-c')).toEqual([{ logId: 'log-c', clientKey: 'k-c0' }]);
-    expect(list.at(-1)).toEqual({ logId: 'log-1', clientKey: 'k-new' });
-  });
-
-  /** Rows for `logId` queued offline, then sent at boot with no log on show: each confirmed send waits on the sent list */
-  const sentAtBoot = async (A: Store, keys: string[], logId: string) => {
-    const rows = await rowsOf();
-    A.setState({ online: false } as never);
-    for (const k of keys) await rows.putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: k, dailyLogId: logId });
-    A.getState()._setGateway({ uploadMedia: vi.fn(async (input: { clientKey: string }) => ({ id: `m-${input.clientKey}`, url: '/m' })), snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
-    A.getState().hydrateOutbox();
-    await until(A, (s) => keys.every((k) => s.outbox.some((o) => o.t === 'uploadSitePhoto' && o.clientKey === k)));
-    await settled();
-    A.setState({ online: true } as never);
-    await A.getState().flushOutbox();
-    expect(A.getState().outbox).toEqual([]);
-    await sentWritten();
-  };
-
-  it('fifty-one photos for the open log, then one late photo of an older log: the open log keeps every entry and lands with all 51 (Stage 1 re-check, RC1)', async () => {
-    const A = await tab();
-    startWork(A as never);
-    await sentAtBoot(A, Array.from({ length: 51 }, (_, i) => `k-${i}`), 'log-1');
-    await sentAtBoot(A, ['k-late'], 'log-0');
-    expect(sentList().filter((e) => e.logId === 'log-1')).toHaveLength(51);
-    await land(A, LOG);
-    await settled();
-    expect(A.getState().dailyLog!.progress).toBe(51);
-  }, 30000);
-
-  it('one log with more than fifty entries keeps all of them (Stage 1 re-check, RC2)', async () => {
-    const A = await tab();
-    startWork(A as never);
-    await sentAtBoot(A, Array.from({ length: 60 }, (_, i) => `k-${i}`), 'log-1');
-    expect(sentList()).toHaveLength(60);
-  }, 30000);
-
-  it('a photo the sent list could not take (no Web Lock) is still counted when its log lands in this tab (Stage 1, fail closed)', async () => {
-    const A = await tab();
-    const request = navigator.locks.request.bind(navigator.locks) as (...a: unknown[]) => Promise<unknown>;
-    vi.spyOn(navigator.locks, 'request').mockImplementation(((...args: unknown[]) => (String(args[0]).startsWith('vitan.queue.vitan.dailyLogSentPhotos.') ? Promise.reject(new Error('refused')) : request(...args))) as never);
-    await sentWithNoLog(A, 'k-mem');
-    await settled();
-    expect(localStorage.getItem(SENT)).toBeNull();
-    await land(A, LOG);
-    expect(A.getState().dailyLog!.progress).toBe(1);
-    expect(A.getState().dailyLogDraft).toMatchObject({ photosAdded: 1, sentPhotoKeys: ['k-mem'] });
   });
 
   it('a draft saved by the live release (#1161), which counts a queued photo with no key, does not count it twice on a server with the day\'s count (Stage 1)', async () => {
@@ -1554,7 +1438,7 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     expect(A.getState().dailyLog!.progress).toBe(1);
   });
 
-  it('a queued photo whose row a read of the rows finds already sent, before its own answer is applied, still moves into the draft (Stage 1 gap-check of the replacement, PR1)', async () => {
+  it('a queued photo whose row a read of the rows finds already sent, before its own answer is applied, stays counted until its own answer is applied (Stage 1 gap-check of the replacement, PR1)', async () => {
     const { B, key } = await reloaded(async () => {});
     expect(B.getState().dailyLog!.progress).toBe(1);
     B.setState({ online: true } as never);
@@ -1566,8 +1450,11 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     vi.spyOn(navigator.locks, 'query').mockImplementation((async () => { q += 1; if (q === 1) { asked.resolve(); await G.promise; } return query(); }) as never);
     const D1 = deferred<{ id: string; url: string }>();
     const key2 = deferred<string>();
-    const upload = vi.fn((input: { clientKey: string }) => (input.clientKey === key ? D1.promise : (key2.resolve(input.clientKey), Promise.resolve({ id: 'm-2', url: '/media/m-2' }))));
+    // the server holds a photo from its answer on
+    const held: string[] = [];
+    const upload = vi.fn((input: { clientKey: string }) => (input.clientKey === key ? D1.promise : (key2.resolve(input.clientKey), held.push(input.clientKey), Promise.resolve({ id: 'm-2', url: '/media/m-2' }))));
     let armed = false;
+    let countAtRead = -1;
     const snapFn = vi.fn(async () => {
       if (armed) {
         armed = false;
@@ -1575,8 +1462,10 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
         const before = B.getState().sitePhotosKept;
         G.resolve();
         await until(B, (s) => q >= 2 && s.sitePhotosKept !== before);
+        // that read found the row sent while its op here is still out: it is still counted, once
+        countAtRead = B.getState().dailyLog!.progress;
       }
-      return { ...snap, dailyLog: LOG };
+      return { ...snap, dailyLog: { ...LOG, photoCount: held.length, myPhotoKeys: [...held] } };
     });
     B.getState()._setGateway({ uploadMedia: upload, snapshot: snapFn, project: 'villa-b' } as never);
     const flushed = B.getState().flushOutbox();
@@ -1585,51 +1474,16 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     B.getState().addProgressPhoto(PNG);
     const k2 = await key2.promise;
     await navigator.locks.request(`vitan.sitePhoto.${ROWS}::villa-b::${k2}`, async () => {});
-    armed = true; D1.resolve({ id: 'm-1', url: '/media/m-1' });
+    armed = true; held.push(key); D1.resolve({ id: 'm-1', url: '/media/m-1' });
     await flushed;
     await settled();
-    expect(B.getState().dailyLogDraft?.sentPhotoKeys ?? []).toContain(key);
-    // counted once: stored 0 + two confirmed sends
+    expect(countAtRead).toBe(2);
+    // counted once each, by the server's count
     expect(B.getState().dailyLog!.progress).toBe(2);
+    expect(B.getState().photoUploadsInFlight).toEqual([]);
   });
 
-  it('fifty-one photos sent at boot before their open log lands are all counted in its draft: the sent list\'s bound never drops the newest log\'s entries (Stage 1 gap-check, PR3)', async () => {
-    const A = await tab();
-    startWork(A as never);
-    A.setState({ online: false } as never);
-    const rows = await rowsOf();
-    for (let i = 0; i < 51; i++) await rows.putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: `k-${i}`, dailyLogId: 'log-1' });
-    A.getState()._setGateway({ uploadMedia: vi.fn(async (input: { clientKey: string }) => ({ id: `m-${input.clientKey}`, url: '/m' })), snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
-    A.getState().hydrateOutbox();
-    await until(A, (s) => s.outbox.filter((o) => o.t === 'uploadSitePhoto').length === 51);
-    await settled();
-    A.setState({ online: true } as never);
-    await A.getState().flushOutbox();
-    expect(A.getState().outbox).toEqual([]);
-    await sentWritten();
-    await land(A, LOG);
-    await settled();
-    expect(A.getState().dailyLog!.progress).toBe(51);
-  }, 30000);
-
-  it('a sent list entry whose end could not be written is taken again by the next landing, and counted once by its key (Stage 1 gap-check, PR4)', async () => {
-    localStorage.setItem(SENT, JSON.stringify([{ logId: 'log-1', clientKey: 'k-x' }]));
-    const setItem = Storage.prototype.setItem;
-    const removeItem = Storage.prototype.removeItem;
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) { if (k === SENT) throw new Error('quota'); return setItem.call(this, k, v); });
-    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(function (this: Storage, k: string) { if (k === SENT) throw new Error('quota'); return removeItem.call(this, k); });
-    const A = await tab();
-    startWork(A as never);
-    await land(A, LOG);
-    await sentWritten();
-    expect(A.getState().dailyLog!.progress).toBe(1);
-    expect(sentList()).toEqual([{ logId: 'log-1', clientKey: 'k-x' }]);
-    await land(A, LOG);
-    await sentWritten();
-    expect(A.getState().dailyLog!.progress).toBe(1);
-  });
-
-  it('a photo another tab marked sent and closed before its answer was applied there is moved into the draft by this tab\'s copy of the op (Stage 1 gap-check, PR5)', async () => {
+  it('a photo another tab marked sent and closed before its answer was applied there is counted once, from the server\'s count, after this tab\'s copy of the op settles (Stage 1 gap-check, PR5)', async () => {
     await (await rowsOf()).putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-x', dailyLogId: 'log-1' });
     const A = await tab();
     startWork(A as never);
@@ -1654,11 +1508,45 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     await asked.promise;
     const up = vi.fn();
     B.setState({ online: true } as never);
-    B.getState()._setGateway({ uploadMedia: up, snapshot: vi.fn().mockResolvedValue({ ...snap, dailyLog: LOG }), project: 'villa-b' } as never);
+    B.getState()._setGateway({ uploadMedia: up, snapshot: vi.fn().mockResolvedValue({ ...snap, dailyLog: { ...LOG, photoCount: 1, myPhotoKeys: ['k-x'] } }), project: 'villa-b' } as never);
     await B.getState().flushOutbox();
     expect(up).not.toHaveBeenCalled();
     expect(B.getState().outbox).toEqual([]);
-    expect(B.getState().dailyLogDraft?.sentPhotoKeys ?? []).toContain('k-x');
+    expect(B.getState().dailyLogDraft?.photosAdded ?? 0).toBe(0);
+    expect(B.getState().dailyLog!.progress).toBe(1);
+  });
+
+  it('a photo another tab marked sent and closed, whose copy here settles with its refresh failed, stays counted once from the answer (#1246 r1 re-check, PR5b)', async () => {
+    await (await rowsOf()).putSitePhotoRow(ROWS, 'villa-b', { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-x', dailyLogId: 'log-1' });
+    const A = await tab();
+    startWork(A as never);
+    await land(A, LOG);
+    A.setState({ online: false } as never);
+    A.getState().hydrateOutbox();
+    await until(A, (s) => s.outbox.some((o) => o.t === 'uploadSitePhoto'));
+    await settled();
+    const B = await tab();
+    startWork(B as never);
+    await land(B, LOG);
+    B.setState({ online: false } as never);
+    B.getState().hydrateOutbox();
+    await until(B, (s) => s.outbox.some((o) => o.t === 'uploadSitePhoto'));
+    await settled();
+    expect(B.getState().dailyLog!.progress).toBe(1);
+    // A sends it; its refresh never answers (the tab is closed then)
+    const asked = deferred<void>();
+    A.setState({ online: true } as never);
+    A.getState()._setGateway({ uploadMedia: vi.fn().mockResolvedValue({ id: 'm-x', url: '/m' }), snapshot: vi.fn(() => { asked.resolve(); return new Promise(() => {}); }), project: 'villa-b' } as never);
+    void A.getState().flushOutbox();
+    await asked.promise;
+    const up = vi.fn();
+    B.setState({ online: true } as never);
+    // B's refresh after it fails (or a module read owns the log and has not landed): its kept entry gives the log
+    B.getState()._setGateway({ uploadMedia: up, snapshot: vi.fn().mockRejectedValue(lost()), project: 'villa-b' } as never);
+    await B.getState().flushOutbox();
+    expect(up).not.toHaveBeenCalled();
+    expect(B.getState().outbox).toEqual([]);
+    expect(B.getState().photoUploadsInFlight.map((u) => u.clientKey)).toEqual(['k-x']);
     expect(B.getState().dailyLog!.progress).toBe(1);
   });
 
