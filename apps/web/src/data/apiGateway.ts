@@ -14,6 +14,7 @@
 import { clearVisitPoster, deleteVisitPhoto, failVisitPhoto, fileVisitPhoto, getVisitPhoto, posterWaits, withinWait, type CommittedPhoto } from './visitPhotoStore';
 import { deleteEvidence, getEvidence, markEvidenceFailed } from './evidenceStore';
 import { MEDIA_NOT_FOUND_MESSAGE, NOT_A_VISIT_FILE_MESSAGE, SITE_PHOTO_DELETED_MESSAGE, VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
+import { deleteSitePhotoRow, getSitePhotoRow, ifSitePhotoUnlocked, isSitePhotoSent, markSitePhotoRefused, markSitePhotoSent, SitePhotoBusy, SitePhotoUnreadable } from './sitePhotoStore';
 import type {
   Activity,
   AppNotification,
@@ -1992,7 +1993,11 @@ export type OutboxOp =
   | { t: 'uploadMedia'; input: UploadMediaInput }
   // Task 4 evidence: metadata + clientKey ONLY — the bytes live in the durable
   // IndexedDB evidenceStore under (scope, projectId, clientKey) until confirmed.
-  | { t: 'uploadEvidence'; scope: string; clientKey: string };
+  | { t: 'uploadEvidence'; scope: string; clientKey: string }
+  // #917: a site photo sent online whose answer was lost: key only, the upload (bytes included) lives in the durable
+  // IndexedDB sitePhotoStore under (scope, projectId, clientKey) until the server answers it. Never stored in the outbox:
+  // it is rebuilt from its row on every load and flush, so no release, an older one included, ever reads one.
+  | { t: 'uploadSitePhoto'; scope: string; clientKey: string };
 
 /**
  * Classify an outbox replay failure. A *terminal* failure is one the server will keep
@@ -2028,6 +2033,20 @@ export function isVisitFileGone(err: unknown): boolean {
   if ((err as { status?: number } | null)?.status !== 404) return false;
   const said = refusalMessage(err);
   return said === VISIT_FILE_GONE_MESSAGE || said === NOT_A_VISIT_FILE_MESSAGE || said === MEDIA_NOT_FOUND_MESSAGE;
+}
+
+/** #917: a queued site photo whose row is no longer on this phone: a "sent" or "refused" marker past its keep, or the
+ *  site's data cleared. The flush drops the op quietly, counted neither as sent nor as discarded. A 4xx, so a flush that
+ *  does not know it still never counts it as sent. */
+export class SitePhotoGone extends Error {
+  readonly status = 404;
+  constructor() { super('the site photo kept on this phone to send is gone'); }
+}
+
+/** #917: another tab's replay of this site photo was refused for good: this copy of its op is discarded too. */
+export class SitePhotoRefusedElsewhere extends Error {
+  readonly status = 422;
+  constructor() { super('the server refused this site photo when another tab sent it'); }
 }
 
 export function isTerminalOutboxError(err: unknown): boolean {
@@ -2369,6 +2388,42 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
         return gw.snapshot().catch(() => null);
       });
     }
+    case 'uploadSitePhoto':
+      // #917: sent from its row, under the key the first send used, so a replay of an upload that landed is the same
+      // photo. Only under the row's lock: while another tab sends it, this op is kept for the next flush
+      return ifSitePhotoUnlocked(op.scope, gw.project, op.clientKey, async (): Promise<boolean> => {
+        const row = await getSitePhotoRow(op.scope, gw.project, op.clientKey);
+        // no row: a marker past its keep, or the site's data cleared. Nothing is left to send; the flush drops the op
+        // quietly, never counting it as sent
+        if (!row) throw new SitePhotoGone();
+        // another tab's send of it was taken: this copy of the op settles as synced (the server holds it). Refused for
+        // good there: discarded here too
+        if (isSitePhotoSent(row)) {
+          if (row.refused) throw new SitePhotoRefusedElsewhere();
+          return false;
+        }
+        try {
+          await gw.uploadMedia(row.input);
+        } catch (err) {
+          // answered for good (the photo was deleted after an earlier send of this key landed, or refused): the row goes
+          // with the op. A row the phone could not remove keeps its op (no status: sent and answered again)
+          if (isDeletedPhoto(err) || isTerminalOutboxError(err)) {
+            await (isDeletedPhoto(err) ? deleteSitePhotoRow : markSitePhotoRefused)(op.scope, gw.project, op.clientKey).catch(() => { throw new SitePhotoUnreadable(); });
+            // settled by the 410 alone, as an `uploadMedia` replay's is (#482)
+            if (isDeletedPhoto(err)) return true;
+          }
+          throw err;
+        }
+        // a row the phone could not mark keeps this op, which is sent again; the server answers with the same photo. Never
+        // settled with its bytes still in the row: a later load would rebuild an op for a photo said to be sent (Codex 4389428571)
+        await markSitePhotoSent(op.scope, gw.project, op.clientKey).catch(() => { throw new SitePhotoUnreadable(); });
+        return false;
+      }).then((gone) => {
+        if (gone === null) throw new SitePhotoBusy();
+        if (gone) onPhotoGone?.();
+        // settled by the answer: a refresh after it that fails answers no snapshot, never a resend (#482)
+        return gw.snapshot().catch(() => null);
+      });
     default:
       // WEB-02 step A (Codex 4344812918): a kind this release has no case for is never counted as sent; it stays queued
       return Promise.reject(new Error(`no replay for ${String((op as { t?: unknown }).t)}`));

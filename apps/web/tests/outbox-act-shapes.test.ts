@@ -86,6 +86,7 @@ const MIN: { [K in OutboxOp['t']]: Act<K> } = {
   rejectVendorBill: { t: 'rejectVendorBill', input: { billId: 'b', reason: 'r' }, idempotencyKey: k, coalesceKey: c },
   uploadMedia: { t: 'uploadMedia', input: { kind: 'progress', mime: 'image/png', data: 'AA==' } },
   uploadEvidence: { t: 'uploadEvidence', scope: S.evidence, clientKey: 'ck' },
+  uploadSitePhoto: { t: 'uploadSitePhoto', scope: S.visitPhoto, clientKey: 'ck' },
 };
 
 /** the kinds with optional fields, holding every one of them */
@@ -387,7 +388,8 @@ describe('#1085 r2 (Codex 4346169609): an act naming a user scope is read only u
 
 describe('#1051 r1, Codex 4336713248: a key holding a damaged act of a known kind is unreadable', () => {
   // the photo's act is kept in its IndexedDB row, never in a queue key: a damaged row is left as it is (gap 5's rule)
-  const stored = (Object.keys(MIN) as OutboxOp['t'][]).filter((t) => t !== 'siteVisitAddFile');
+  // (a visit photo's act and a site photo's are never stored: each is rebuilt from its row, SV2 and #917)
+  const stored = (Object.keys(MIN) as OutboxOp['t'][]).filter((t) => t !== 'siteVisitAddFile' && t !== 'uploadSitePhoto');
 
   it.each(stored)('%s missing its first field: listed, set aside on the tap, never loaded, replayed or written over', async (t) => {
     const bad = damaged(MIN[t])[0].act;
