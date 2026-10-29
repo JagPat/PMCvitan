@@ -6842,6 +6842,8 @@ export const useStore = create<Store>()(
       const flushScope = currentScope();
       const flushToken = get().sessionToken;
       const flushKey = outboxKey();
+      // whose queue this is: a keyless act of an earlier release is sent under a key made from it and them (legacyActKey)
+      const flushPerson = queueKeyScopes.get(flushKey)?.visitPhoto ?? 'anon';
       // gate round 11: take the ordering lease NOW, before replaying the first op.
       // The reconcile snapshot below is applied through the coordinator against this
       // lease, so if a newer socket/mutation lease begins while a replay is in flight
@@ -7010,7 +7012,7 @@ export const useStore = create<Store>()(
         try {
           let photoGone = false;
           let goneEvidence: { url: string; inspectionId?: string; inspectionItemId?: string } | undefined;
-          const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation, (local) => { photoGone = true; goneEvidence = local; });
+          const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation, (local) => { photoGone = true; goneEvidence = local; }, flushPerson);
           const startCleared = afterSent(ops[i], snap);
           // #482: a photo settled by the server's 410 is settled as a delete is (settleDeleted). Its local copies leave at
           // once, matched by the send's own key: one an earlier pull recorded is never shown past the server's word (Codex
