@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { lockProjectTree } from '../common/tree-lock';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -134,7 +135,7 @@ export class SiteVisitFilesParticipant {
       SELECT m."visitId", m."addedById", (m."addedAt" + interval '1 hour' >= site_visits_now()) AS "inHour", v."status"
         FROM "SiteVisitMedia" m JOIN "SiteVisit" v ON v."projectId" = m."projectId" AND v."id" = m."visitId"
        WHERE m."projectId" = ${projectId} AND m."mediaId" = ${mediaId} FOR SHARE OF m`);
-    if (!link) throw new NotFoundException('This file is no longer on the site visit');
+    if (!link) throw new NotFoundException(VISIT_FILE_GONE_MESSAGE);
     await lockActorStanding(tx, projectId, userId);
     const [state] = await tx.$queryRaw<Array<{ operable: boolean }>>(Prisma.sql`SELECT phase6_project_operable(${projectId}) AS "operable"`);
     if (state?.operable !== true) throw new ForbiddenException('Project is unavailable');

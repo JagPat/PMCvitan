@@ -4,8 +4,8 @@ import { can, type Lang, type Role } from '@vitan/shared';
 import { useStore } from '@/store/store';
 import { isCurrentProjectScope, projectScopeOf, type ProjectScope } from '@/store/projectScope';
 import {
-  isSiteVisitOp, newIdempotencyKey, resolveMediaUrl, siteVisitListeners, siteVisitOf,
-  type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitOp,
+  isSiteVisitOp, isVisitFileGone, newIdempotencyKey, refusalMessage, resolveMediaUrl, siteVisitListeners, siteVisitOf,
+  type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitFile, type SiteVisitOp,
   type SiteVisitRating,
 } from '@/data/apiGateway';
 import { deleteVisitPhoto, listVisitPhotos, posterWaits, putVisitPhoto, settleFiledVisitPhotos, storageAvailable, visitPhotoScope, withinWait, VisitPhotoUnconfirmed, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
@@ -17,7 +17,7 @@ import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto
 import { acceptedType, blobBase64, type Recorded, type RecordKind } from './mediaRecorder';
 import { drawPoster } from './videoPoster';
 import { VIDEO_CLIP_MIMES, VOICE_NOTE_MIMES } from '@/data/queueContracts';
-import { refusalWords, SV } from './siteVisitWords';
+import { refusalWords, removalRefusalWords, SV } from './siteVisitWords';
 import { emitGuideOutcome, guideRunToken, recordGuidedPhotoPick } from '@/guide/outcomes';
 
 /**
@@ -457,6 +457,11 @@ export function useSiteVisits() {
   const life = useRef(new AbortController());
   // what the editor says about its last save (why the copy was not kept): the editor's own, never another act's refusal
   const [markupNotice, setMarkupNotice] = useState<string | null>(null);
+  // #1179: the files this screen saw taken off a visit, by the server's id and the phone's key, for this project and
+  // sign-in. A read sent before the removal answered may still list one, and the phone's own copy of one it sent may
+  // still be shown until a read settles it: neither brings it back
+  const removedFiles = useRef(new Set<string>());
+  const [removedTurn, setRemovedTurn] = useState(0);
 
   /** Ends any markup: an open in flight is aborted with its timer, and the editor closes with its photo. */
   const stopMarkup = useCallback(() => {
@@ -603,6 +608,7 @@ export function useSiteVisits() {
     movedTo.current = new Set();
     filedHeard.current = new Set();
     setKept([]);
+    removedFiles.current = new Set();
     // a photo opened for marking in the last project or sign-in is not this one's, nor the visits last read for it
     stopMarkup();
     headRead.current = [];
@@ -699,8 +705,12 @@ export function useSiteVisits() {
   const shown = useMemo(() => {
     const queuedKeys = new Set(queued.map((o) => o.idempotencyKey));
     const taken = filed.filter((r) => !queuedKeys.has(r.op.idempotencyKey)).map((r) => r.op);
-    return withQueued(rows, [...queued, ...taken], me, previews, new Set(taken.map((o) => o.file.id)));
-  }, [rows, queued, me, previews, filed]);
+    const all = withQueued(rows, [...queued, ...taken], me, previews, new Set(taken.map((o) => o.file.id)));
+    const gone = removedFiles.current;
+    if (gone.size === 0) return all;
+    const kept = (f: SiteVisitFile) => !gone.has(f.mediaId) && !(f.clientKey && gone.has(f.clientKey));
+    return { ...all, visits: all.visits.map((v) => (v.files?.some((f) => !kept(f)) ? { ...v, files: v.files.filter(kept) } : v)) };
+  }, [rows, queued, me, previews, filed, removedTurn]);
   // while one waits for that read, the read is tried again on the visit photo retry (Codex 4321558427). A clip the
   // server already lists whose still frame is still to send waits for no read: its frame goes with the next flush made
   // for any other reason, so a server that keeps refusing the frame is not asked again on the retry's beat (V2b-2)
@@ -777,7 +787,57 @@ export function useSiteVisits() {
     return queuedHere;
   };
 
+  /** #1179: take a file off its visit, online only (it deletes the file for everyone, so it is never queued). The
+   *  server's answer is the removal: the file leaves the screen at once and a read brings the visit's removal line. A
+   *  removal whose answer was lost, sent again, finds the file already gone and settles the same way. Answers null once
+   *  the file is gone, or what to tell the person beside the file when it was not removed. */
+  const removeFile = async (file: SiteVisitFile, reason?: string): Promise<string | null> => {
+    const state = useStore.getState();
+    const gateway = state.serverGateway();
+    if (!gateway) return SV.needsServer[state.lang];
+    if (globalThis.navigator?.onLine === false) return SV.removeOffline[state.lang];
+    const scope = projectScopeOf(state);
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    const gone = async () => {
+      removedFiles.current.add(file.mediaId);
+      if (file.clientKey) removedFiles.current.add(file.clientKey);
+      setRemovedTurn((n) => n + 1);
+      setNotice(SV.fileRemoved[useStore.getState().lang]);
+      // the phone's own copy of a file it sent goes with the removal, not with a later read: a read that fails, or a
+      // reload, would otherwise rebuild the removed file from it. Bounded; one the phone could not let go is hidden here
+      // and settled by the next read of its visit
+      if (file.clientKey) {
+        const key = file.clientKey;
+        await withinWait(() => deleteVisitPhoto(visitPhotoScope(state.sessionToken, state.sessionUserId), scope.projectId, key)).catch(() => {});
+        if (live(scope)) readKept();
+      }
+      if (live(scope)) void readHead(false);
+      return null;
+    };
+    try {
+      await gateway.removeSiteVisitFile(file.mediaId, reason);
+      // another project or sign-in is shown now: nothing of this one is said there, and its next read lists what is left
+      return live(scope) ? gone() : null;
+    } catch (err) {
+      if (!live(scope)) return null;
+      if (isVisitFileGone(err)) return gone();
+      // what the server allows may have moved (the hour up, the visit ended): the offer is read again
+      void readHead(false);
+      const lang = useStore.getState().lang;
+      // the server's refusal, in the viewer's words where it is one of the removal refusals. Only no answer at all is said
+      // as such: a sign-in, a timeout, a busy or a failing server answered, with a status
+      if (typeof (err as { status?: unknown } | null)?.status !== 'number') return SV.removeUnreachable[lang];
+      const said = refusalMessage(err);
+      return said ? `${SV.notRemoved[lang]} ${removalRefusalWords(said, lang)}` : SV.notRemoved[lang];
+    } finally {
+      if (live(scope)) setBusy(false);
+    }
+  };
+
   return {
+    removeFile,
     visits: shown.visits, waiting: shown.waiting,
     /** the visits as the server last gave them (its reads and its answers), without the acts still queued here */
     read: rows,

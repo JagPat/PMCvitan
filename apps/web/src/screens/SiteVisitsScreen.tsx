@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { can, forYouRole, type Lang, type ProjectMember, type Role } from '@vitan/shared';
+import { can, forYouRole, removalReasonShows, SITE_VISIT_REMOVAL_REASON_MAX, type Lang, type ProjectMember, type Role } from '@vitan/shared';
 import { useStore } from '@/store/store';
 import { Button, Modal } from '@/components';
 import { PhotoMarkup } from '@/components/PhotoMarkup';
@@ -11,7 +11,7 @@ import { clockText, pickRecordType, RecordError, startRecording, type Recorded, 
 import { UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
 import { refusalWords, SV, visitTime } from '@/lib/siteVisitWords';
 import { stampText } from '@/lib/captureStamp';
-import { resolveMediaUrl, type SiteVisit, type SiteVisitRating } from '@/data/apiGateway';
+import { resolveMediaUrl, type SiteVisit, type SiteVisitFile, type SiteVisitRating, type SiteVisitRemoval } from '@/data/apiGateway';
 import { guideRunToken } from '@/guide/outcomes';
 import { useVisitGuideReports } from '@/guide/visitGuideReports';
 import styles from './SiteVisitsScreen.module.css';
@@ -179,6 +179,79 @@ function CopyOf({ files, at, copyId, lang }: { files: NonNullable<SiteVisit['fil
       <img className={styles.copyThumb} src={resolveMediaUrl(source.url)} alt="" loading="lazy" />
       <span>{label}</span>
     </a>
+  );
+}
+
+/** #1179: Remove on a visit file the server says the viewer may remove now. It asks once before removing, because the
+ *  file goes for everyone and does not come back; the PMC says why when the file is not their own within the hour. When
+ *  the hour on one's own file is up, the offer leaves, except the PMC's, which then asks for a reason as the server does.
+ *  What went wrong is said beside the file, and stays said once a fresh read withdraws the offer. */
+function RemoveFile({ file, lang, pmc, busy, remove }: {
+  file: SiteVisitFile; lang: Lang; pmc: boolean; busy: boolean; remove: (file: SiteVisitFile, reason?: string) => Promise<string | null>;
+}) {
+  const given = file.removable ?? null;
+  const [now, setNow] = useState(() => Date.now());
+  const [asking, setAsking] = useState(false);
+  const [reason, setReason] = useState('');
+  const [said, setSaid] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const until = given?.until ? Date.parse(given.until) : null;
+  const over = until !== null && now >= until;
+  const offer = !given ? null : over ? (pmc ? { reasonRequired: true, until: null } : null) : given;
+  useEffect(() => {
+    if (!given || until === null || over) return;
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, until - Date.now()) + 50);
+    return () => clearTimeout(timer);
+  }, [given, until, over]);
+  const id = file.mediaId;
+  const told = said && <div className={styles.error} role="alert" data-testid={`sv-remove-said-${id}`}>{said}</div>;
+  if (!offer) return told || null;
+  if (!asking) {
+    return (
+      <>
+        <Button variant="dangerOutline" disabled={busy} data-testid={`sv-remove-${id}`} onClick={() => { setSaid(null); setAsking(true); }}>{SV.remove[lang]}</Button>
+        {told}
+      </>
+    );
+  }
+  const typed = reason.trim();
+  const long = [...typed].length > SITE_VISIT_REMOVAL_REASON_MAX;
+  const reasonOk = !offer.reasonRequired || (removalReasonShows(typed) && !typed.includes('\u0000') && !long);
+  return (
+    <div className={styles.add} data-testid={`sv-remove-ask-${id}`}>
+      <div className={styles.meta}>{SV.removeAsk[lang]}{offer.until ? ` ${SV.removeUntil[lang]} ${visitTime(offer.until, lang)}.` : ''}</div>
+      {offer.reasonRequired && (
+        <input
+          aria-label={SV.removeReason[lang]} placeholder={SV.removeReason[lang]} className={styles.field} value={reason}
+          disabled={sending} onChange={(e) => setReason(e.target.value)} data-testid={`sv-remove-reason-${id}`}
+        />
+      )}
+      {offer.reasonRequired && long && <div className={styles.meta} data-testid={`sv-remove-long-${id}`}>{SV.removeReasonLong[lang]}</div>}
+      <Button variant="danger" disabled={busy || sending || !reasonOk} data-testid={`sv-remove-yes-${id}`} onClick={() => {
+        setSending(true);
+        setSaid(null);
+        void remove(file, offer.reasonRequired ? typed : undefined).then((text) => { setSaid(text); setSending(false); });
+      }}>{SV.removeYes[lang]}</Button>
+      <Button variant="ghost" disabled={sending} data-testid={`sv-remove-keep-${id}`} onClick={() => { setAsking(false); setReason(''); setSaid(null); }}>{SV.removeKeep[lang]}</Button>
+      {told}
+    </div>
+  );
+}
+
+/** #1179: the visit's line for a file taken off it: what it was, who added it, who removed it, when and why. */
+function RemovalLine({ r, lang }: { r: SiteVisitRemoval; lang: Lang }) {
+  const kind = r.kind === 'voice' ? SV.voiceNote : r.kind === 'video' ? SV.videoClip : r.kind === 'photo' ? SV.photo : SV.file;
+  const role = (x: string) => (roleName(x, lang) ? ` · ${roleName(x, lang)}` : '');
+  return (
+    <li className={styles.retired} data-testid={`sv-removal-${r.mediaId}`}>
+      <span>
+        {kind[lang]} · {SV.photoBy[lang]} {r.addedByName}{role(r.addedByRole)} · {visitTime(r.addedAt, lang)}
+        <br />
+        {SV.removedBy[lang]} {r.removedByName}{role(r.removedByRole)} · {visitTime(r.removedAt, lang)}
+        <br />
+        {r.reason ? `${SV.removalReason[lang]} ${r.reason}` : SV.removedOwn[lang]}
+      </span>
+    </li>
   );
 }
 
@@ -386,10 +459,19 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
                   {SV.markUp[lang]}
                 </Button>
               )}
+              <RemoveFile file={f} lang={lang} pmc={role === 'pmc'} busy={sv.busy} remove={sv.removeFile} />
             </div>
           </li>
         ))}
       </ul>
+      {(v.removals?.length ?? 0) > 0 && (
+        <>
+          <h3 className={styles.sub}>{SV.removals[lang]}</h3>
+          <ul className={styles.items}>
+            {v.removals!.map((r) => <RemovalLine key={r.mediaId} r={r} lang={lang} />)}
+          </ul>
+        </>
+      )}
       {canAddPhoto && (
         <div className={styles.add}>
           <input aria-label={SV.photoNote[lang]} placeholder={SV.photoNote[lang]} className={styles.field} value={photoNote} maxLength={500} disabled={photoBusy} onChange={(e) => setPhotoNote(e.target.value)} />

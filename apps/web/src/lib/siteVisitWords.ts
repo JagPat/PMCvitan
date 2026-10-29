@@ -274,7 +274,86 @@ export const SV = {
     hi: 'निशान लगी यह कॉपी भेजने के लिए बहुत बड़ी है।',
     gu: 'આ નિશાનવાળી નકલ મોકલવા માટે બહુ મોટી છે.',
   },
+  // #1179: taking a file off a visit (online only), and the visit's lines for the files taken off it
+  removeAsk: {
+    en: 'This file will be removed for everyone. This can’t be undone.',
+    hi: 'यह फ़ाइल सबके लिए हटा दी जाएगी। इसे वापस नहीं लाया जा सकता।',
+    gu: 'આ ફાઇલ બધા માટે કાઢી નાખવામાં આવશે. તેને પાછી લાવી શકાશે નહીં.',
+  },
+  removeReason: { en: 'Why are you removing it?', hi: 'आप इसे क्यों हटा रहे हैं?', gu: 'તમે તેને કેમ કાઢો છો?' },
+  removeReasonLong: {
+    en: 'Keep the reason to 300 characters.',
+    hi: 'कारण 300 अक्षरों तक रखें।',
+    gu: 'કારણ 300 અક્ષરો સુધી રાખો.',
+  },
+  removeYes: { en: 'Remove file', hi: 'फ़ाइल हटाएँ', gu: 'ફાઇલ કાઢો' },
+  removeKeep: { en: 'Keep it', hi: 'रहने दें', gu: 'રહેવા દો' },
+  removeUntil: { en: 'You can remove it until', hi: 'आप इसे इस समय तक हटा सकते हैं:', gu: 'તમે તેને આ સમય સુધી કાઢી શકો છો:' },
+  fileRemoved: { en: 'File removed.', hi: 'फ़ाइल हटा दी गई।', gu: 'ફાઇલ કાઢી નાખી.' },
+  notRemoved: { en: 'The file was not removed.', hi: 'फ़ाइल नहीं हटी।', gu: 'ફાઇલ કઢાઈ નથી.' },
+  removeOffline: {
+    en: 'No signal. Removing a file needs a connection.',
+    hi: 'सिग्नल नहीं है। फ़ाइल हटाने के लिए इंटरनेट चाहिए।',
+    gu: 'સિગ્નલ નથી. ફાઇલ કાઢવા માટે ઇન્ટરનેટ જોઈએ.',
+  },
+  removeUnreachable: {
+    en: 'No answer from the server. If the file is still listed, try again.',
+    hi: 'सर्वर से जवाब नहीं आया। अगर फ़ाइल अब भी दिख रही है, तो फिर कोशिश करें।',
+    gu: 'સર્વર તરફથી જવાબ ન આવ્યો. જો ફાઇલ હજી દેખાય છે, તો ફરી પ્રયત્ન કરો.',
+  },
+  removals: { en: 'Removed files', hi: 'हटाई गई फ़ाइलें', gu: 'કાઢેલી ફાઇલો' },
+  removedBy: { en: 'Removed by', hi: 'हटाने वाले', gu: 'કાઢનાર' },
+  removedOwn: {
+    en: 'Removed by the person who added it.',
+    hi: 'जोड़ने वाले ने ख़ुद हटाई।',
+    gu: 'ઉમેરનારે પોતે કાઢી.',
+  },
+  removalReason: { en: 'Reason:', hi: 'कारण:', gu: 'કારણ:' },
+  photo: { en: 'Photo', hi: 'फ़ोटो', gu: 'ફોટો' },
+  file: { en: 'File', hi: 'फ़ाइल', gu: 'ફાઇલ' },
 } satisfies Record<string, Words>;
+
+/** #1179: the server's refusals of a removal (site-visit-files.participant.ts, media.service.ts), in each language. The
+ *  English is the server's own words. */
+const REMOVAL_REFUSALS: Record<string, Words> = {
+  'Say why you are removing this file': {
+    en: 'Say why you are removing this file',
+    hi: 'बताइए कि आप यह फ़ाइल क्यों हटा रहे हैं',
+    gu: 'તમે આ ફાઇલ કેમ કાઢો છો તે જણાવો',
+  },
+  'Only the person who added this file, or the PMC, may remove it': {
+    en: 'Only the person who added this file, or the PMC, may remove it',
+    hi: 'यह फ़ाइल वही हटा सकता है जिसने इसे जोड़ा, या PMC',
+    gu: 'આ ફાઇલ તે જ કાઢી શકે જેણે તે ઉમેરી હતી, અથવા PMC',
+  },
+  'This site visit was closed by the PMC; ask the PMC to remove the file': {
+    en: 'This site visit was closed by the PMC; ask the PMC to remove the file',
+    hi: 'यह साइट विज़िट PMC ने बंद कर दी है; फ़ाइल हटाने के लिए PMC से कहें',
+    gu: 'આ સાઇટ મુલાકાત PMCએ બંધ કરી છે; ફાઇલ કાઢવા PMCને કહો',
+  },
+  'This site visit has ended; ask the PMC to remove the file': {
+    en: 'This site visit has ended; ask the PMC to remove the file',
+    hi: 'यह साइट विज़िट ख़त्म हो चुकी है; फ़ाइल हटाने के लिए PMC से कहें',
+    gu: 'આ સાઇટ મુલાકાત પૂરી થઈ ગઈ છે; ફાઇલ કાઢવા PMCને કહો',
+  },
+  'A file can be removed only within an hour of adding it; ask the PMC': {
+    en: 'A file can be removed only within an hour of adding it; ask the PMC',
+    hi: 'फ़ाइल जोड़ने के एक घंटे के अंदर ही हटाई जा सकती है; PMC से कहें',
+    gu: 'ફાઇલ ઉમેર્યાના એક કલાકમાં જ કાઢી શકાય છે; PMCને કહો',
+  },
+  'This file was just cited as evidence on another record, so it cannot be removed': {
+    en: 'This file was just cited as evidence on another record, so it cannot be removed',
+    hi: 'यह फ़ाइल अभी किसी दूसरे रिकॉर्ड में सबूत के तौर पर जोड़ी गई है, इसलिए हटाई नहीं जा सकती',
+    gu: 'આ ફાઇલ હમણાં જ બીજા રેકોર્ડમાં પુરાવા તરીકે જોડાઈ છે, તેથી કાઢી શકાય નહીં',
+  },
+};
+
+/** A server's reason for refusing a removal, in the viewer's language when it is one of the removal refusals above; any
+ *  other reason is shown in the server's own words. */
+export function removalRefusalWords(reason: string, lang: Lang): string {
+  // a refusal of the request's own fields names the field first ("reason: …")
+  return REMOVAL_REFUSALS[reason.trim().replace(/^reason:\s*/u, '')]?.[lang] ?? reason;
+}
 
 /** Stage 1 voice notes: the server's refusals of a voice note (and a video clip) it reads (#1025, media.service.ts), in each language. The
  *  English is the server's own words, so a refusal reads the same whichever language the reason came through. */

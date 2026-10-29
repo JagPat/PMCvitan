@@ -37,6 +37,8 @@ export * from './contracts/labour';
 export * from './contracts/commercial';
 // U3a — the PMC's cross-project daily brief (`GET /me/brief`)
 export * from './contracts/brief';
+// #1179 — taking a file off a site visit
+export * from './contracts/site-visits';
 // i18n dictionaries
 export * from './i18n/dictionary';
 export * from './i18n/schedule';
