@@ -2622,6 +2622,9 @@ the usual `capability.enable` / `capability.disable` audit row, with the operato
 `via: "ops-api"`. A wrong or missing token gets 401, and each route allows 30 calls a minute per address.
 No route takes SQL or touches project data. The T3C seal check stays a terminal command (`t3c:seals`).
 
+Two reads count how clients still send older shapes: `GET /ops/compat/state-pins` (§SSP) and
+`GET /ops/compat/client-keys` (§IDK).
+
 **QA companies and QA sign-in** (#482, Jagrut's "Rebuild it", 20 Oct 2026). A company marked QA-only holds only
 QA accounts (`qa.<word>@vitan.in`), and a QA account belongs only to QA-only companies. The database enforces both
 (migration `20280116000000_qa_company_lock`): adding a real person to a QA-only company or its projects, adding a
@@ -2674,6 +2677,39 @@ Then the coordinator opens the Step 3 PR, which refuses a missing header on the 
 **Rollback.** Roll the web back before the API. While the API is rolled back past the seen-state pins
 unit, pins are not enforced (today's behaviour) until it is redeployed; nothing queued is lost, because
 an older API ignores `X-Vitan-Seen-State`.
+
+## §IDK. Requests with no key or a legacy key — when the key can be required (Idempotency-Key Unit 2)
+
+Five acts (start and complete an activity, decide a review, flag a material mismatch, submit the daily log) still
+run when a request carries no `Idempotency-Key`. Without a key, a resend after a lost answer is refused (start,
+complete, decide) or runs again (flag, submit). The current web always sends a key. Since #1240 it also sends a
+keyless act that an earlier release saved under a fixed `legacy-…` key. Unit 2b will refuse a missing key on these
+five routes. Until then, each request on them with no key (or a blank one) is counted as `absent`, and one with a
+`legacy-` key as `legacy`, per route and UTC day, in `CommandKeySighting`. A request with any other key is not
+counted. The count is taken before anything else, so a request the route then refuses is counted too. A count that
+cannot be written is logged under `CommandKeySighting` as `not counted: <route> <class> (<error>)`, and the act runs
+as before. The
+table holds no person, project or key.
+
+The count is read through the operator door (§OPS):
+
+    curl -H "Authorization: Bearer $OPS_TOKEN" "https://pms-api.vitan.in/ops/compat/client-keys?since=<ISO time>"
+
+It answers, for each of the five routes (zeros listed), `absent` and `legacy` with the newest time of each,
+summed over every UTC day from `since`'s UTC day on (`fromDay`), so it can only count more, never less. `since` is
+required; a missing or malformed one gets 400.
+
+**When the key can be required (Unit 2b).** Pass is **all zeros for 7 days**: the read with
+`since=<now − 7 days>` shows `absent = 0` and `legacy = 0` on all five routes, and `since` is no earlier than the
+time this unit's commit first showed in `/health`. Anything else: paste the answer in the coordination issue, and
+2b waits. A plain-http address (no `crypto.subtle`) sends keyless and shows up as `absent`; 2b refuses it like any
+keyless request, and it is unsupported.
+
+**Its end.** Unit 2b removes the count along with adding the refusal, and once 2b is live a migration-only unit
+drops the table (plan `notes/idempotency-key/u2/plan.md` §6).
+
+**Rollback.** Roll the API back past this unit and nothing is counted (the table stays, unread); the acts are
+unchanged either way.
 
 ## §DS. Database snapshot (read-only)
 

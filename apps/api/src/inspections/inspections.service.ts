@@ -18,6 +18,7 @@ import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
+import { recordKeySighting } from '../platform/command-key-sighting';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { ActivityParticipant } from '../activities/activity.participant';
 import {
@@ -261,6 +262,8 @@ export class InspectionsService {
    *  activity to execution and assigns the corrective work to the RECORDED
    *  completer — only while that identity is still active and role-eligible. */
   async decide(projectId: string, inspectionId: string, input: DecideReviewInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    // Idempotency-Key 2a — count a keyless or legacy-keyed request before anything can refuse it (RUNBOOK §IDK)
+    await recordKeySighting(this.prisma, 'inspections.decide', idempotencyKey);
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const requestHash = hashRequest({

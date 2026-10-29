@@ -18,6 +18,7 @@ import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
 import { resolveActor } from '../common/actor';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
+import { recordKeySighting } from '../platform/command-key-sighting';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { MediaParticipant } from '../media/media.participant';
 
@@ -54,6 +55,8 @@ export class DailyLogService {
    *  Task 10 (correction, finding 3): idempotent via the CommandExecution ledger — the same
    *  `Idempotency-Key` + payload replays the committed result; a different payload is a 409. */
   async flagMismatch(projectId: string, input: FlagMismatchInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    // Idempotency-Key 2a — count a keyless or legacy-keyed request before anything can refuse it (RUNBOOK §IDK)
+    await recordKeySighting(this.prisma, 'daily-log.flagMismatch', idempotencyKey);
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const requestHash = hashRequest({ decisionId: input.decisionId });
@@ -251,6 +254,8 @@ export class DailyLogService {
    *  Task 10 (correction, finding 3): idempotent — a retried/replayed submit with the same key applies
    *  once; a different payload under the same key is a 409. */
   async submit(projectId: string, input: SubmitDailyLogInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    // Idempotency-Key 2a — count a keyless or legacy-keyed request before anything can refuse it (RUNBOOK §IDK)
+    await recordKeySighting(this.prisma, 'daily-log.submit', idempotencyKey);
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const requestHash = hashRequest({ checkedIn: input.checkedIn, checkinTime: input.checkinTime, progress: input.progress, crew: input.crew.map((c) => ({ trade: c.trade, count: c.count })) });

@@ -89,6 +89,13 @@ export const RAW_SQL_WRITE_WAIVERS: ReadonlyArray<RawSqlWriteWaiver> = [
       'Phase 6 task 4d-ii-a — the lease renewal: UPDATE "ReleaseLease" SET "leaseUntil" = GREATEST("leaseUntil", CURRENT_TIMESTAMP + make_interval(…)), an expression over the column and the database clock that the delegate API cannot express; GREATEST keeps the renewal monotone, the only move ReleaseLease_t4d_frozen admits. Own-module write (platform owns ReleaseLease).',
   },
   {
+    file: 'platform/command-key-sighting.ts',
+    symbol: 'recordKeySighting',
+    owner: 'platform',
+    reason:
+      'Idempotency-Key 2a — the key-sighting count: INSERT INTO "CommandKeySighting" … ON CONFLICT (route, class, day) DO UPDATE SET "count" = "count" + 1, one statement under a bounded statement_timeout, so two requests on one route, class and UTC day add to one row and never race to a unique violation; the delegate upsert may read then insert, and its lost race would drop a sighting. Own-module write (platform owns CommandKeySighting). Removed by Unit 2b with the calls.',
+  },
+  {
     file: 'orgs/org-standing.ts',
     symbol: 'markOrgStandingWrite',
     owner: 'orgs',
