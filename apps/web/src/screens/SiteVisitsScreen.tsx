@@ -581,7 +581,7 @@ function MediaRecorderButton({ kind, visitId, lang, busy, held, onActive, onReco
         </div>
       ) : (
         <Button variant="light" disabled={busy || held || phase === 'starting'} data-testid={`sv-record-${id}`} onClick={() => void start()}>
-          {words.record[lang]}
+          {phase === 'starting' && kind === 'video' ? SV.videoStarting[lang] : words.record[lang]}
         </Button>
       )}
       {said && <div className={styles.meta} role="status">{said}</div>}

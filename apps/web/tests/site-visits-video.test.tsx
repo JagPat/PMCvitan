@@ -76,7 +76,9 @@ let supported = new Set(['video/webm;codecs=vp8,opus', 'video/webm', 'audio/webm
 /** the bytes a recording holds */
 let bytes = new Uint8Array([1, 2, 3]);
 let tracks: Array<{ stop: ReturnType<typeof vi.fn> }> = [];
-const getUserMedia = vi.fn(async (_media?: MediaStreamConstraints) => ({ getTracks: () => tracks }));
+/** a camera's stream as the recorder sees it: its tracks, the camera's among them */
+const camera = () => ({ getTracks: () => tracks, getVideoTracks: () => tracks });
+const getUserMedia = vi.fn(async (_media?: MediaStreamConstraints) => camera());
 class FakeRecorder {
   static isTypeSupported(t: string) { return supported.has(t); }
   static last: FakeRecorder | null = null;
@@ -105,18 +107,27 @@ beforeEach(() => {
   writes = null;
   supported = new Set(['video/webm;codecs=vp8,opus', 'video/webm', 'audio/webm;codecs=opus', 'audio/webm']);
   bytes = new Uint8Array([1, 2, 3]);
+  FakeRecorder.last = null;
   still.frame = null;
   vi.spyOn(Date, 'now').mockImplementation(() => now);
   vi.spyOn(performance, 'now').mockImplementation(() => now);
   tracks = [{ stop: vi.fn() }];
   getUserMedia.mockClear();
-  getUserMedia.mockImplementation(async () => ({ getTracks: () => tracks }));
+  getUserMedia.mockImplementation(async () => camera());
+  // the camera shows its first picture as soon as it is watched (the recorder waits for it: 29 Oct)
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => Promise.resolve());
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+  Object.defineProperty(HTMLVideoElement.prototype, 'requestVideoFrameCallback', {
+    configurable: true,
+    value(cb: () => void) { queueMicrotask(cb); return 1; },
+  });
 });
 afterEach(async () => {
   await flushesEnded();
   expect(useStore.getState()._outboxFlushing()).toBe(false);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  delete (HTMLVideoElement.prototype as { requestVideoFrameCallback?: unknown }).requestVideoFrameCallback;
   Object.defineProperty(navigator, 'mediaDevices', { value: undefined, configurable: true });
   cleanup();
   useStore.getState()._setGateway(null);
@@ -194,11 +205,34 @@ describe('#995 V2b: video clips on a visit', () => {
     expect((within(card).getByRole('button', { name: 'Record voice note' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it('says the camera is starting until it shows its first picture, and only then records', async () => {
+    withRecorder();
+    let showPicture: (() => void) | null = null;
+    Object.defineProperty(HTMLVideoElement.prototype, 'requestVideoFrameCallback', {
+      configurable: true,
+      value(cb: () => void) { showPicture = cb; return 1; },
+    });
+    await mount('consultant', CONSULTANT, fakeGateway([visit()]), 'gu');
+    const card = screen.getByTestId('sv-visit-v-1');
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'વીડિયો રેકોર્ડ કરો' })); });
+    const button = within(card).getByTestId('sv-record-video-v-1') as HTMLButtonElement;
+    expect(button.textContent).toBe('કૅમેરા શરૂ થઈ રહ્યો છે…');
+    expect(button.disabled).toBe(true);
+    expect(FakeRecorder.last).toBeNull();
+    expect(within(card).queryByTestId('sv-recording-video-v-1')).toBeNull();
+    await act(async () => { showPicture!(); });
+    await settled();
+    expect(FakeRecorder.last!.state).toBe('recording');
+    expect(within(card).getByTestId('sv-recording-video-v-1')).toBeTruthy();
+    // and a voice note's button never says so
+    expect(within(card).getByTestId('sv-record-v-1').textContent).toBe('વૉઇસ નોટ રેકોર્ડ કરો');
+  });
+
   it('records picture only when the microphone is refused', async () => {
     withRecorder();
     getUserMedia.mockImplementation(async (media?: MediaStreamConstraints) => {
       if (media?.audio) throw Object.assign(new Error('no'), { name: 'NotAllowedError' });
-      return { getTracks: () => tracks };
+      return camera();
     });
     const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
     await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia }));
@@ -334,7 +368,7 @@ describe('#995 V2b: video clips on a visit', () => {
     await record(screen.getByTestId('sv-visit-v-1'), 5_000, { record: 'वीडियो रिकॉर्ड करें', stop: 'रोकें और जोड़ें' });
     await settled();
     expect(uploadMedia).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId('sv-not-sent').textContent).toContain('यह फ़ाइल वैसा वीडियो नहीं है जैसा इसका प्रकार बताता है');
+    expect(screen.getByTestId('sv-not-sent').textContent).toContain('यह वीडियो ठीक से रिकॉर्ड नहीं हुआ। कृपया इसे फिर से रिकॉर्ड करें।');
     expect(screen.getByTestId('sv-not-sent').querySelector('video')).not.toBeNull();
   });
 

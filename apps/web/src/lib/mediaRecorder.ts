@@ -127,6 +127,12 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
     return ask(options.fallback);
   });
   const release = () => stream.getTracks().forEach((t) => t.stop());
+  // a video clip is recorded only once the camera shows a picture: an iPhone's camera takes a moment to start, and a
+  // clip whose recorder started before then was kept black, would not play and was refused by the server (29 Oct)
+  if (kind === 'video' && !(await firstPicture(stream, CAMERA_WAIT_MS))) {
+    release();
+    throw new RecordError('unavailable');
+  }
   let recorder: MediaRecorder;
   try {
     recorder = new Recorder(stream, { mimeType: type, ...options.bits });
@@ -199,6 +205,54 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
     ended,
     stream,
   };
+}
+
+/** How long a video clip waits for the camera's first picture before it starts recording, or says it could not. */
+export const CAMERA_WAIT_MS = 5_000;
+
+/**
+ * Whether the camera in `stream` shows a picture within `ms`: false with no camera track. It is watched on a muted,
+ * inline video in the page, out of sight (iOS plays only a video it can lay out), at its first drawn frame
+ * (`requestVideoFrameCallback`), or once it has a frame and a size. The video leaves the page however it ends; the
+ * stream's tracks go on for the recorder.
+ */
+function firstPicture(stream: MediaStream, ms: number): Promise<boolean> {
+  if ((stream.getVideoTracks?.() ?? []).length === 0 || typeof document === 'undefined') return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let settled = false;
+    const finish = (seen: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      video.onloadeddata = video.onresize = null;
+      try { video.pause(); } catch { /* nothing to pause */ }
+      video.srcObject = null;
+      video.remove();
+      resolve(seen);
+    };
+    const sized = () => { if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) finish(true); };
+    timer = setTimeout(() => finish(false), ms);
+    video.muted = true;
+    video.defaultMuted = true;
+    video.playsInline = true;
+    video.setAttribute('muted', '');
+    video.setAttribute('playsinline', '');
+    video.setAttribute('aria-hidden', 'true');
+    video.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none';
+    video.onloadeddata = sized;
+    video.onresize = sized;
+    if (typeof video.requestVideoFrameCallback === 'function') video.requestVideoFrameCallback(() => finish(true));
+    try {
+      video.srcObject = stream;
+      document.body.appendChild(video);
+      // a refused play still has its frame and size counted, where the browser loads one without playing
+      void Promise.resolve(video.play()).catch(() => {});
+    } catch {
+      finish(false);
+    }
+  });
 }
 
 /** A clock that only runs forward: a recording's length is never moved by the phone's time of day being changed or
