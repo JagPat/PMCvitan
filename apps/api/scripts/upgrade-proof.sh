@@ -5684,7 +5684,8 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20280127000000_hub_catalog_generation
 20280128000000_voice_transcript_correction
 20280129000000_voice_transcript_stamp
-20280130000000_voice_transcript_running_since"
+20280130000000_voice_transcript_running_since
+20280131000000_voice_transcript_busy_index"
 # 4d-ii-a / A7d — THE RUNNER'S RULE, MIRRORED (scripts/migrate.sh, the P3005 baseline path): on a database
 # that CARRIES A7d (its two claimant seals and the re-issued actor seal standing beside 4d-i's own seal
 # functions) 4d-i's two halves and 4d-i-b U3 are resolved as applied rather than replayed, because each
@@ -5885,6 +5886,10 @@ assert "#1177 VT1c: after the replay the transcripts' insert stamps the database
 assert "#1177 VT1d: after the replay the transcripts keep their job-start column and its stamping trigger" \
   "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'VoiceTranscript' AND column_name = 'runningSince')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"VoiceTranscript\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname = 'VoiceTranscript_running_since')::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"VoiceTranscript\"'::regclass AND conname = 'VoiceTranscript_running_since_check')::text || '|' || (SELECT count(*) FROM pg_proc WHERE proname = 'media_voice_transcript_running_since' AND prosrc LIKE '%clock_timestamp() AT TIME ZONE ''UTC''%')::text;" \
   "1|1|1|1"
+# #1177 VT1e — the transcripts' busy-lookup index (on ALWAYS_EXECUTE): partial, on "updatedAt", over rows with an error and no lease.
+assert "#1177 VT1e: after the replay the transcripts keep their partial busy-lookup index" \
+  "SELECT count(*)::text FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'VoiceTranscript' AND indexname = 'VoiceTranscript_busy_lookup' AND indexdef LIKE '%(\"updatedAt\")%' AND indexdef LIKE '%\"lastError\" IS NOT NULL%' AND indexdef LIKE '%\"leaseToken\" IS NULL%';" \
+  "1"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \
