@@ -46,6 +46,9 @@ export interface SitePhotoSent {
   sentAt: number;
   /** the server refused it for good: a copy of its op another tab holds says so too, never sends it */
   refused?: true;
+  /** #919: it was saved without its place, which was removed: a copy of its op another tab holds says so too (Codex
+   *  4436566600). A marker an earlier release wrote has none, and nothing is said */
+  placeDropped?: true;
 }
 
 export type SitePhotoEntry = SitePhotoRow | SitePhotoSent;
@@ -165,8 +168,8 @@ export function getSitePhotoRow(userScope: string, projectId: string, clientKey:
 }
 
 /** The server took the photo: its bytes go, and a marker says so to a copy of its op another tab may still hold. */
-export function markSitePhotoSent(userScope: string, projectId: string, clientKey: string): Promise<void> {
-  const sent: SitePhotoSent = { key: keyOf(userScope, projectId, clientKey), userScope, projectId, clientKey, sentAt: Date.now() };
+export function markSitePhotoSent(userScope: string, projectId: string, clientKey: string, placeDropped = false): Promise<void> {
+  const sent: SitePhotoSent = { key: keyOf(userScope, projectId, clientKey), userScope, projectId, clientKey, sentAt: Date.now(), ...(placeDropped ? { placeDropped: true as const } : {}) };
   return bounded((run) => tx(run, 'readwrite', (s) => s.put(sent)).then(() => undefined));
 }
 
