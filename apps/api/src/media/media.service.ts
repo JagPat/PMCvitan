@@ -54,6 +54,12 @@ function isSiteVisitFile(input: CreateMediaInput): boolean {
 }
 
 /** What a clientKey replay must read to decide whether the caller may have the stored row back. */
+/** A stored coordinate against the one a replay sends: none only for none, else equal to a billionth of a degree. A
+ *  double can read back from the database a last digit off what was sent (Stage 1's re-check of #1255: 23.033333333333335
+ *  reads back as 23.03333333333333), so an exact comparison would refuse an honest resend. */
+const sameCoordinate = (stored: number | null, sent: number | undefined): boolean =>
+  stored === null || sent === undefined ? stored === (sent ?? null) : Math.abs(stored - sent) <= 1e-9;
+
 const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true, mime: true, sizeBytes: true, sourceMediaId: true, takenAt: true, geoLat: true, geoLng: true } as const;
 type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null; mime: string; sizeBytes: number; sourceMediaId: string | null; takenAt: string | null; geoLat: number | null; geoLng: number | null };
 
@@ -145,8 +151,8 @@ export class MediaService {
    *  upload's own replay matches. The place (`nodeId`) is not compared: a photo may be re-filed to another place.
    *  The rule (Codex rounds 1 and 2 on #1255): every field the upload stores as the request sent it is compared, and
    *  only the place is not. That is the file itself (its type and size in bytes; a size of 0 is a row written without
-   *  one, the column's default, and is not compared), its camera time and location (a marked-up copy stores its
-   *  original's instead, and its request sends none), the photo a copy was drawn on, and for a visit file its link:
+   *  one, the column's default, and is not compared), its camera time and location (the location to a billionth of a
+   *  degree, see sameCoordinate; a marked-up copy stores its original's instead, and its request sends none), the photo a copy was drawn on, and for a visit file its link:
    *  the visit, note and rating, written with the upload and never changed. The length is read from the file, so the
    *  same bytes give the same length. */
   private async replayed(projectId: string, user: AuthUser, input: CreateMediaInput, row: ReplayRow): Promise<UploadedMedia> {
@@ -155,7 +161,7 @@ export class MediaService {
       || row.inspectionId !== (input.inspectionId ?? null) || row.inspectionItemId !== (input.inspectionItemId ?? null)
       || row.mime !== input.mime || (row.sizeBytes !== 0 && row.sizeBytes !== Buffer.from(input.data, 'base64').length)
       || row.sourceMediaId !== (input.sourceMediaId ?? null)
-      || (!row.sourceMediaId && (row.takenAt !== (input.takenAt ?? null) || row.geoLat !== (input.geoLat ?? null) || row.geoLng !== (input.geoLng ?? null)))
+      || (!row.sourceMediaId && (row.takenAt !== (input.takenAt ?? null) || !sameCoordinate(row.geoLat, input.geoLat) || !sameCoordinate(row.geoLng, input.geoLng)))
       || !(await this.sameVisitLink(projectId, row.id, input))) {
       throw new ForbiddenException('This upload key belongs to another photo');
     }

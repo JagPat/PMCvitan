@@ -200,6 +200,15 @@ describe('Site Visits SV2 — adding files to a visit (live PG)', () => {
     for (const [extraBody, link] of [[{}, { note: 'West wall' }], [{}, { rating: 'concern' }], [{ takenAt: '01 Nov 2026 · 9:00 AM' }, {}], [{ geoLat: 23.03 }, {}]] as const) {
       expect((await visitFile(consultantToken, visitId, { clientKey: key, ...extraBody }, link)).status, JSON.stringify([extraBody, link])).toBe(403);
     }
+    // a location a double reads back a last digit off (as EXIF and browser coordinates do) still replays to the same file
+    const geoKey = `sv2f-904-geo-${run}`;
+    const geo = { takenAt: '01 Nov 2026 · 9:12 AM', geoLat: 23.033333333333335, geoLng: 0.1 + 0.2 };
+    const placed = await visitFile(consultantToken, visitId, { clientKey: geoKey, ...geo }, { note: 'East wall', rating: 'fine' });
+    expect(placed.status).toBe(201);
+    const resent = await visitFile(consultantToken, visitId, { clientKey: geoKey, ...geo }, { note: 'East wall', rating: 'fine' });
+    expect([resent.status, resent.body.id]).toEqual([201, placed.body.id]);
+    expect((await visitFile(consultantToken, visitId, { clientKey: geoKey, ...geo, geoLat: 23.0334 }, { note: 'East wall', rating: 'fine' })).status).toBe(403);
+    expect((await visitFile(consultantToken, visitId, { clientKey: geoKey, takenAt: geo.takenAt }, { note: 'East wall', rating: 'fine' })).status).toBe(403);
     // the honest replay is still the same file, on its visit once
     const again = await visitFile(consultantToken, visitId, { clientKey: key });
     expect([again.status, again.body.id]).toEqual([201, first.body.id]);
