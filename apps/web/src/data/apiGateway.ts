@@ -11,9 +11,9 @@
  * end-to-end in CI (the sandbox has no Postgres). Validate it once the API is
  * deployed and `VITE_API_URL` points at it.
  */
-import { clearVisitPoster, failVisitPhoto, fileVisitPhoto, getVisitPhoto, posterWaits, withinWait, type CommittedPhoto } from './visitPhotoStore';
+import { clearVisitPoster, deleteVisitPhoto, failVisitPhoto, fileVisitPhoto, getVisitPhoto, posterWaits, withinWait, type CommittedPhoto } from './visitPhotoStore';
 import { deleteEvidence, getEvidence, markEvidenceFailed } from './evidenceStore';
-import { MEDIA_NOT_FOUND_MESSAGE, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
+import { MEDIA_NOT_FOUND_MESSAGE, NOT_A_VISIT_FILE_MESSAGE, SITE_PHOTO_DELETED_MESSAGE, VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
 import { deleteSitePhotoRow, getSitePhotoRow, ifSitePhotoUnlocked, isSitePhotoSent, markSitePhotoRefused, markSitePhotoSent, SitePhotoBusy, SitePhotoUnreadable } from './sitePhotoStore';
 import type {
   Activity,
@@ -1538,6 +1538,14 @@ export class ApiGateway {
   retireSiteVisitAttendee(visitId: string, attendeeId: string, idempotencyKey: string): Promise<SiteVisit> {
     return this.visitAct(`/${visitId}/attendees/${attendeeId}/retire`, undefined, idempotencyKey);
   }
+  /** #1179 — take a file off its visit and delete it, online only: the person who added it within the hour while the
+   *  visit is open, or the PMC with a reason. The visit read then carries the removal line. */
+  removeSiteVisitFile(mediaId: string, reason?: string): Promise<{ ok: true }> {
+    return this.req<{ ok: true }>(`/projects/${this.projectId}/media/${mediaId}/visit-removal`, {
+      method: 'POST',
+      body: JSON.stringify(reason === undefined ? {} : { reason }),
+    });
+  }
   private visitAct(path: string, body: unknown, idempotencyKey: string): Promise<SiteVisit> {
     return this.req<SiteVisit>(`/projects/${this.projectId}/site-visits${path}`, {
       method: 'POST',
@@ -1571,6 +1579,22 @@ export interface SiteVisit {
   attendees: { id: string; kind: 'member' | 'guest'; userId: string | null; role: string | null; name: string; addedAt: string; retiredAt: string | null }[];
   /** The files added on the visit (SV2), oldest first; absent from an API older than SV2. */
   files?: SiteVisitFile[];
+  /** #1179 — the files taken off the visit, oldest removal first; absent from an API before removals. */
+  removals?: SiteVisitRemoval[];
+}
+/** #1179 — a file taken off a visit (`SiteVisitRemovalDto`): what it was, who added it, who removed it, when and why. */
+export interface SiteVisitRemoval {
+  mediaId: string;
+  kind: 'photo' | 'voice' | 'video' | 'file';
+  addedByName: string;
+  addedByRole: string;
+  addedAt: string;
+  removedById: string;
+  removedByName: string;
+  removedByRole: string;
+  /** null when the person who added it removed it within the hour */
+  reason: string | null;
+  removedAt: string;
 }
 export type SiteVisitRating = 'fine' | 'concern' | 'action_needed';
 /** A file on a visit (`SiteVisitFileDto`): `url` is a short-lived signed path, resolved against the API base. */
@@ -1598,6 +1622,10 @@ export interface SiteVisitFile {
   addedByName: string;
   addedByRole: string;
   addedAt: string;
+  /** #1179 — whether the viewer may remove it now, as the server read its rule: a reason is needed, and until when the
+   *  offer lasts (the end of the viewer's hour on their own file; null for the PMC's offer on anyone's). Null when the
+   *  viewer may not; absent from an API before removals and on a file the phone still holds. */
+  removable?: { reasonRequired: boolean; until: string | null } | null;
 }
 /** A photo queued for a visit: the upload's own fields, under its `clientKey` (`id`), so a replay is the same file. The
  *  bytes are not here: they wait in `visitPhotoStore` beside this act (localStorage cannot hold photos). */
@@ -1999,6 +2027,14 @@ export function isMediaNotFound(err: unknown): boolean {
   return (err as { status?: number } | null)?.status === 404 && refusalMessage(err) === MEDIA_NOT_FOUND_MESSAGE;
 }
 
+/** #1179 — the server's own "not found" for a removal of a visit file it no longer holds, by its exact text: an earlier
+ *  removal whose answer was lost, or someone else's, took it. A route's or a proxy's 404 is not taken for a removal. */
+export function isVisitFileGone(err: unknown): boolean {
+  if ((err as { status?: number } | null)?.status !== 404) return false;
+  const said = refusalMessage(err);
+  return said === VISIT_FILE_GONE_MESSAGE || said === NOT_A_VISIT_FILE_MESSAGE || said === MEDIA_NOT_FOUND_MESSAGE;
+}
+
 /** #917: a queued site photo whose row is no longer on this phone: a "sent" or "refused" marker past its keep, or the
  *  site's data cleared. The flush drops the op quietly, counted neither as sent nor as discarded. A 4xx, so a flush that
  *  does not know it still never counts it as sent. */
@@ -2146,10 +2182,19 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
       // V2b-2: a clip's still frame, sent to the clip the server holds. Taken, or refused for good (a refused frame
       // leaves the plain play tile), it leaves the row. No answer, a sign-in or a busy or failing server leaves it on the
       // row for the next flush, and the clip's act still goes: a still frame never holds the visit's later acts
-      const sendPoster = async (mediaId: string, data: string): Promise<void> => {
+      const sendPoster = async (mediaId: string, data: string): Promise<'gone' | void> => {
         try {
           await gw.addVisitPoster(mediaId, data);
         } catch (err) {
+          // #1179: the clip itself was taken off the visit (the server's own not-found, by its exact text). The whole row
+          // goes, its clip's bytes too, not the still frame alone: no later read may be needed to let go of a removed
+          // clip, and a reload never rebuilds it. A row the phone could not remove keeps its act: withinWait's
+          // VisitPhotoUnreadable holds this visit alone, to be answered and removed again
+          if (isVisitFileGone(err)) {
+            await withinWait(() => deleteVisitPhoto(op.scope, gw.project, id));
+            tellSiteVisits({ kind: 'retry', project: gw.project, generation });
+            return 'gone';
+          }
           if (!isTerminalOutboxError(err)) return;
         }
         await withinWait(() => clearVisitPoster(op.scope, gw.project, id)).catch(() => {});
@@ -2161,7 +2206,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
         if (!row) return null;
         // sent already, its still frame not yet: the frame alone goes
         if (posterWaits(row)) {
-          await sendPoster(row.mediaId, row.poster);
+          if (await sendPoster(row.mediaId, row.poster) === 'gone') return null;
           return tell({ state: 'filed', reason: null });
         }
         // filed or failed already (another tab sent it, or it was refused): not sent again, and the screen is told the
@@ -2174,6 +2219,15 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
             siteVisit: { visitId: op.visitId, ...(note ? { note } : {}), ...(rating ? { rating } : {}) },
           });
         } catch (err) {
+          // #1179: an earlier send of this key landed (its answer lost) and the file was then taken off the visit, by the
+          // person who added it or the PMC. It is settled, never refused: its bytes go, and nothing says it was not sent.
+          // A row the phone could not remove keeps its act: withinWait's VisitPhotoUnreadable holds this visit alone, to
+          // be answered and removed again, and the rest of the queue goes on
+          if (isDeletedPhoto(err)) {
+            await withinWait(() => deleteVisitPhoto(op.scope, gw.project, id));
+            tellSiteVisits({ kind: 'retry', project: gw.project, generation });
+            return null;
+          }
           // refused for good: the flush drops the act, and the row stays with the server's words, so the screen can
           // say which photo was not sent and why whenever it is next opened. The act goes only once the row says so:
           // a row the phone could not mark keeps its act, to be sent and marked again (Codex 4320122168)
@@ -2184,7 +2238,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
         // row stays, as filed, so the screen shows the photo until the server's list does (Codex 4321998475). A clip's
         // row keeps the id the server gave it, for its still frame, which goes next
         const committed = await withinWait(() => fileVisitPhoto(op.scope, gw.project, id, row.poster ? sent.id : undefined));
-        if (committed && row.poster) await sendPoster(sent.id, row.poster);
+        if (committed && row.poster && await sendPoster(sent.id, row.poster) === 'gone') return null;
         return tell(committed);
       });
     }
