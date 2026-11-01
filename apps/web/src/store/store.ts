@@ -72,6 +72,7 @@ import {
 } from '@vitan/shared';
 import { routableScreensFor, screensFor } from '@/lib/screens';
 import { deleteWaitsForUpload, uploadQueued, type KeptSitePhoto } from '@/lib/queuedSitePhotos';
+import { UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
 import { deleteSitePhotoRow, dropSentMarkers, holdSitePhotoLock, isSitePhotoSent, listSitePhotoRows, markSitePhotoSent, putSitePhotoRow, sitePhotosLocked, SITE_PHOTO_SENT_KEEP_MS, sitePhotoStorageAvailable, SitePhotoBusy, SitePhotoUnreadable, type SitePhotoRow } from '@/data/sitePhotoStore';
 import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
@@ -96,7 +97,7 @@ import { isDone } from '@/store/queueLedger';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isMediaNotFound, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { clearVisitPhotoStart, clearVisitPoster, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, posterLapsed, posterWaits, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
@@ -447,8 +448,10 @@ export interface AppState {
    *  only, so a reload holds them again until the phone can read its photos. */
   siteVisitsSentAnyway: string[];
   /** #482 site photos unit 3 — this device's online photo uploads for a log, from the pick until the server's own
-   *  count is seen to hold them (`dailyLog.myPhotoKeys`); memory only (a reload re-reads the server's count). */
-  photoUploadsInFlight: { clientKey: string; dailyLogId: string; settled: boolean }[];
+   *  count is seen to hold them (`dailyLog.myPhotoKeys`), or until a pull begun after its answer (`after`, the snapshot
+   *  sequence then) carried the log: one deleted before any read named it is then not counted for ever (#1195 gap-check);
+   *  memory only (a reload re-reads the server's count). */
+  photoUploadsInFlight: { clientKey: string; dailyLogId: string; settled: boolean; after?: number; lease?: number }[];
   /** #482 site photos — the upload keys of this tab's site photo uploads sent online and not yet answered (an answer of
    *  any kind, or a network error, ends one); memory only, as the request itself is */
   photoUploadsSending: string[];
@@ -2183,6 +2186,13 @@ export const useStore = create<Store>()(
       }
       // #482 site photos — the day's photo count after a delete is the server's, read by a pull that began after the
       // delete was answered; a pull begun earlier may have counted the photo still there (Codex 4322142057)
+      // ...and an upload answered here is counted from its answer only until a pull begun after that answer carried the log:
+      // that pull's count is the server's, holding it or not (a photo deleted meanwhile, #1195 gap-check)
+      // (a replay's own snapshot is read after its answer, but under the flush's lease, taken before it: Codex 4412387979)
+      const answered = (u: AppState['photoUploadsInFlight'][number]): boolean => u.settled && ((u.after !== undefined && lease.sequence > u.after) || u.lease === lease.sequence);
+      if ((dailyLogReadMode() === 'snapshot' || dailyLogResult != null) && get().photoUploadsInFlight.some(answered)) {
+        set((s) => { s.photoUploadsInFlight = s.photoUploadsInFlight.filter((u) => !answered(u)); recountDailyLogPhotos(s); });
+      }
       const countAfter = get().dailyLogPhotoCountAfter;
       if (countAfter !== null && lease.sequence > countAfter && (dailyLogReadMode() === 'snapshot' || dailyLogResult != null)) {
         set((s) => { s.dailyLogPhotoCountAfter = null; });
@@ -2552,17 +2562,32 @@ export const useStore = create<Store>()(
       ...(input.takenAt ? { takenAt: input.takenAt } : {}), ...(input.nodeId ? { nodeId: input.nodeId } : {}),
       ...(input.dailyLogId ? { dailyLogId: input.dailyLogId } : {}),
     });
+    /** #917: a site photo kept in its row is queued by its key: its op, its kept copy (the Dashboard's and the count's),
+     *  and its data URL on the log it was picked for. One path for a lost answer and an offline pick, so the two cannot
+     *  drift. Counted by the queue (`recountDailyLogPhotos`, by its key, against the server's `photoCount`), never in
+     *  the draft (#1167): nothing has to take it back out when its row is refused or gone. (Its op is never stored: the
+     *  row is its record on this phone.) */
+    const queueKeptSitePhoto = (s: AppState, rowScope: string, input: UploadMediaInput & { clientKey: string }, dataUrl: string, log: DailyLog | null): void => {
+      const { clientKey } = input;
+      s.outbox.push({ t: 'uploadSitePhoto', scope: rowScope, clientKey });
+      s.syncQueue.push('Progress photo');
+      s.sitePhotosKept.push(keptFrom(input));
+      // a refresh that landed before this may already show the server's copy (its key in the log's own list, on the
+      // log's gallery copy, or on the photo list): its data URL is not laid beside it (Codex 4389428620, #1187)
+      const held = log?.myPhotoKeys?.includes(clientKey) || log?.photos.some((p) => p.clientKey === clientKey);
+      if (log && !held && ![...s.photos, ...s.myDeletablePhotos].some((p) => p.clientKey === clientKey)) log.photos.unshift({ url: dataUrl, clientKey });
+      recountDailyLogPhotos(s);
+    };
     /** #917: a site photo the server refused for good, or whose row is gone, leaves what this device showed while it was
-     *  queued: its data URL in the log's gallery, the count and the draft photo it added there, and its kept copy (Codex
-     *  4389428627, 4389716748) */
+     *  queued: its data URL in the log's gallery, the count it added there, and its kept copy (Codex 4389428627,
+     *  4389716748). The count was the queue's (#1167): leaving the queue takes it back, after a reload too (Codex
+     *  4392115360), and the draft, which holds only confirmed sends, is not touched */
     const forgetQueuedSitePhoto = (s: AppState, clientKey: string): void => {
       const log = s.dailyLog;
-      if (log?.photos.some((p) => p.clientKey === clientKey && !p.id)) {
-        log.photos = log.photos.filter((p) => p.clientKey !== clientKey);
-        if (log.photoCount === undefined) log.progress = Math.max(0, log.progress - 1);
-        recordDailyLogDraft(s, (d) => { d.photosAdded = Math.max(0, (d.photosAdded ?? 0) - 1); });
-      }
+      if (log) log.photos = log.photos.filter((p) => p.id || p.clientKey !== clientKey);
       s.sitePhotosKept = s.sitePhotosKept.filter((k) => k.clientKey !== clientKey);
+      // and a count kept for it once it was sent (a 410 settles it after `afterSent`, #1195)
+      s.photoUploadsInFlight = s.photoUploadsInFlight.filter((u) => u.clientKey !== clientKey);
       recountDailyLogPhotos(s);
     };
     /** #917: the rows are the site photo queue's only record (its ops are never stored). Give every row of the queue on
@@ -2580,6 +2605,9 @@ export const useStore = create<Store>()(
      *  key. Made again on every retry, in any project, online or not; the send stays this tab's and its lock held until
      *  it lands (Codex 4389428586, Stage 1 r3) */
     const sitePhotoRowChanges = new Map<string, () => Promise<void>>();
+    /** #917 (#1170): bumped each time a row settles here (a direct send let go, a flush done), so a read of the rows made
+     *  before it is never applied: it may still list a row now marked sent or refused, with its lock already let go */
+    let sitePhotoSettles = 0;
     const retrySitePhotos = (): void => {
       if (sitePhotoRetry?.mine()) return;
       sitePhotoRetry?.timer.clear();
@@ -2606,23 +2634,39 @@ export const useStore = create<Store>()(
       const readKey = outboxKey();
       const rowScope = visitPhotoScope(get().sessionToken, get().sessionUserId);
       const project = gateway.project;
+      const settles = sitePhotoSettles;
       void dropSentMarkers(Date.now() - SITE_PHOTO_SENT_KEEP_MS).catch(() => {});
       void Promise.all([listSitePhotoRows(rowScope, project), sitePhotosLocked(rowScope, project)]).then(([rows, locked]) => {
         if (!scopeStillCurrent(readScope) || outboxKey() !== readKey) return;
+        // a row settled while this read was out: read again, so a sent photo is never queued again (Codex 4393007605)
+        if (settles !== sitePhotoSettles) { reconcileSitePhotos(); return; }
         const full = rows.filter((r): r is SitePhotoRow => !isSitePhotoSent(r));
         // a row a tab is sending now gets no op here; one this tab already queues stays on show while another tab sends it
         const missing = full.filter((r) => !sitePhotoSendsDirect.has(r.clientKey) && !locked.has(r.clientKey) && !uploadQueued(get().outbox, r.clientKey));
-        if (missing.length === 0 && full.length === 0 && get().sitePhotosKept.length === 0) return;
+        // #1238: the rows and the locks are two reads, so a lock another tab took for a row written after the rows were
+        // read is seen with no row behind it. That tab may close before its answer and leave the row unsent: read again
+        const lockedUnseen = [...locked].some((k) => !sitePhotoSendsDirect.has(k) && !rows.some((r) => r.clientKey === k));
+        if (missing.length === 0 && full.length === 0 && get().sitePhotosKept.length === 0 && !lockedUnseen) {
+          // nothing kept and nothing to send: the next wait starts again at 5 s (Codex 4392115375)
+          if (sitePhotoRowChanges.size === 0 && !get().outbox.some((o) => o.t === 'uploadSitePhoto')) sitePhotoRetryMs = 5000;
+          return;
+        }
         set((s) => {
           for (const r of missing) s.outbox.push({ t: 'uploadSitePhoto', scope: rowScope, clientKey: r.clientKey });
-          s.sitePhotosKept = full.filter((r) => s.outbox.some((o) => o.t === 'uploadSitePhoto' && o.clientKey === r.clientKey)).map((r) => keptFrom(r.input));
+          // #1187: a row whose sending tab closed before its answer is counted on its log from here on, by its key, as
+          // every queued photo is, and once only, after a reload too
+          // a row sent (by this tab's flush or another tab) whose op here has not settled yet keeps its entry: it stays
+          // counted, and its op's `afterSent` reads its log from it to keep it counted until a read shows the server's
+          // count (#1195; Stage 1 gap-check, PR1 and PR5)
+          const sentHere = s.sitePhotosKept.filter((k) => s.outbox.some((o) => o.t === 'uploadSitePhoto' && o.clientKey === k.clientKey) && rows.some((r) => r.clientKey === k.clientKey && isSitePhotoSent(r) && !r.refused));
+          s.sitePhotosKept = [...full.filter((r) => s.outbox.some((o) => o.t === 'uploadSitePhoto' && o.clientKey === r.clientKey)).map((r) => keptFrom(r.input)), ...sentHere];
           recountDailyLogPhotos(s);
         });
         // (its op is never stored: the row is already its record on this phone)
         if (missing.length > 0 && get().online) void get().flushOutbox();
         // a row another tab is sending, and no op here: if that tab closes before it is answered, nothing else would
         // give the row its op while this tab stays online with nothing queued. Read again (Codex 4389428598)
-        else if (full.some((r) => locked.has(r.clientKey) && !sitePhotoSendsDirect.has(r.clientKey) && !uploadQueued(get().outbox, r.clientKey))) retrySitePhotos();
+        else if (lockedUnseen || full.some((r) => locked.has(r.clientKey) && !sitePhotoSendsDirect.has(r.clientKey) && !uploadQueued(get().outbox, r.clientKey))) retrySitePhotos();
         // the wait starts again only once no row is held by another tab: a row held for that tab's life keeps backing off
         else if (sitePhotoRowChanges.size === 0 && !get().outbox.some((o) => o.t === 'uploadSitePhoto') && !full.some((r) => locked.has(r.clientKey) && !sitePhotoSendsDirect.has(r.clientKey))) sitePhotoRetryMs = 5000;
       }, () => {
@@ -5594,6 +5638,9 @@ export const useStore = create<Store>()(
             // only into the scope this switch left: a sign-out or re-auth meanwhile owns the state now
             if (s.projectScopeGeneration === switchGeneration) s.enabledModules = prevModules;
           });
+          // #1201: the site photo retry armed before the switch was let go with the scope it was made in, and the old
+          // project's queue is still here: armed again for the scope it is back in, so a queued photo is not left unsent
+          if (get().projectScopeGeneration === switchGeneration) retrySitePhotos();
           get().flash('Could not switch project — please try again.');
           return false;
         });
@@ -6370,6 +6417,15 @@ export const useStore = create<Store>()(
         return;
       }
       const [, mime, base64] = m;
+      // #918: only the types the upload takes (`RASTER_IMAGE_MIMES`, compared as the server compares them). Another is
+      // refused here, before anything is kept, queued, shown or sent: the server would refuse it, and a queued one would be
+      // discarded later. The pickers keep `image/*` (naming HEIC there can stop iOS Safari from converting a library HEIC
+      // photo to JPEG), so this is the check
+      if (!UPLOAD_IMAGE_MIMES.includes(mime)) {
+        emitGuideOutcome('site-photo-add-failed', null, guideRun);
+        get().flash(DLT.photoTypeRefused[get().lang]);
+        return;
+      }
       // The day's log this photo was taken for (#482): fixed when it was picked, filed on it, and shown only in
       // THAT log. A replay that lands after the log was sent, or after a refresh brought the next log, still
       // belongs to it, and never adds to the count of a log the server did not file it on.
@@ -6401,23 +6457,69 @@ export const useStore = create<Store>()(
         // (local data URL) and queue the upload for replay on reconnect — instead
         // of losing it. Mirrors runRemoteOrQueue for the JSON mutations.
         if (!get().online) {
-          const upload: OutboxOp = { t: 'uploadMedia', input };
-          set((s) => {
-            s.outbox.push(upload);
-            s.syncQueue.push('Progress photo');
-            const log = onPickedLog(s);
-            if (log) {
-              log.photos.unshift({ url: dataUrl, clientKey });
-              if (log.photoCount === undefined) log.progress += 1;
-              else recountDailyLogPhotos(s);
-              recordDraftPhoto(s);
-            }
-          });
-          persistDailyLogDraft();
-          // the photo's bytes live only in this act: said once it is written, and the guide's step is done only then. One
-          // not kept on this phone is still sent from memory but lost on a reload: the guide ends unfinished (offered again
-          // later) rather than asking for the same photo twice
-          flashSaved(DLT.photoOffline[get().lang], [upload], (stored) => emitGuideOutcome(stored ? 'site-photo-added' : 'site-photo-not-kept', null, guideRun));
+          // the earlier path, kept for a phone with no database and for a row the phone could not write: the photo's
+          // bytes ride in the stored outbox, as before (a release never reshapes an outbox kind)
+          const queueInOutbox = (): void => {
+            const upload: OutboxOp = { t: 'uploadMedia', input };
+            set((s) => {
+              s.outbox.push(upload);
+              s.syncQueue.push('Progress photo');
+              const log = onPickedLog(s);
+              if (log) {
+                log.photos.unshift({ url: dataUrl, clientKey });
+                if (log.photoCount === undefined) log.progress += 1;
+                else recountDailyLogPhotos(s);
+                recordDraftPhoto(s);
+              }
+            });
+            persistDailyLogDraft();
+            // the photo's bytes live only in this act: said once it is written, and the guide's step is done only then. One
+            // not kept on this phone is still sent from memory but lost on a reload: the guide ends unfinished (offered again
+            // later) rather than asking for the same photo twice
+            flashSaved(DLT.photoOffline[get().lang], [upload], (stored) => emitGuideOutcome(stored ? 'site-photo-added' : 'site-photo-not-kept', null, guideRun));
+          };
+          if (!sitePhotoStorageAvailable()) { queueInOutbox(); return; }
+          // offline picks: kept on this phone's photo rows, as an online pick is (#917), not as bytes in the stored outbox,
+          // whose one localStorage value a few photos would fill, losing every act queued beside them. The row is written
+          // under its lock first; once written it is queued by its key, shown and counted from the queue (never in the
+          // draft, #1167), and only then said to be saved. A row not written falls back to the earlier path
+          const pickScope = currentScope();
+          const pickGateway = gateway;
+          const rowScope = visitPhotoScope(get().sessionToken, get().sessionUserId);
+          const rowProject = pickGateway.project;
+          // no other tab gives the row its op while it is being written here (its lock is held): this pick queues its own,
+          // in the same turn its write is answered, so no read of the rows in this tab sees the row without it
+          void holdSitePhotoLock(rowScope, rowProject, clientKey).then((release) =>
+            putSitePhotoRow(rowScope, rowProject, input).then(() => true, () => false).then((saved) => {
+              const here = scopeStillCurrent(pickScope) && gateway === pickGateway;
+              // a read of the rows begun before this queued the op is never applied over it (#1170)
+              const letGo = (): void => { sitePhotoSettles += 1; release(); };
+              if (saved && here) {
+                set((s) => queueKeptSitePhoto(s, rowScope, input, dataUrl, onPickedLog(s)));
+                letGo();
+                emitGuideOutcome('site-photo-added', null, guideRun);
+                get().flash(DLT.photoOffline[get().lang]);
+                // the signal came back while the row was being written: sent now, not on the next unrelated write
+                if (get().online) void get().flushOutbox();
+                return;
+              }
+              // #1201: the person or the project moved while the photo was being kept. A kept row stays for its own scope,
+              // whose next load or flush gives it its op; the person is told it is kept
+              if (saved) { letGo(); reconcileSitePhotos(); get().flash(DLT.photoOffline[get().lang]); return; }
+              // not kept: a write answered "not kept" may still land after its bound, so its row goes under the lock, and
+              // a removal the phone could not make is made again on the site photo retry, as a direct send's is. A photo
+              // queued below under the same key and a row that outlived a closed tab are one photo at the server
+              const drop = (): Promise<void> => deleteSitePhotoRow(rowScope, rowProject, clientKey);
+              void drop().then(letGo, () => {
+                sitePhotoRowChanges.set(clientKey, () => drop().then(() => { sitePhotoRowChanges.delete(clientKey); letGo(); }, () => {}));
+                retrySitePhotos();
+              });
+              if (here) {
+                queueInOutbox();
+                // the signal came back while the row was being written: sent now, as a kept row is above (Codex 4436044675)
+                if (get().online) void get().flushOutbox();
+              } else get().flash(DLT.photoUploadFailed[get().lang]);
+            }));
           return;
         }
         // raw-DTO reconcile: pin the reply to the scope that uploaded it — a late
@@ -6428,7 +6530,7 @@ export const useStore = create<Store>()(
         const settle = (s: AppState, landed: boolean): void => {
           const at = s.photoUploadsInFlight.findIndex((u) => u.clientKey === clientKey);
           if (at < 0) return;
-          if (landed) s.photoUploadsInFlight[at]!.settled = true;
+          if (landed) Object.assign(s.photoUploadsInFlight[at]!, { settled: true, after: snapshotSeq });
           else s.photoUploadsInFlight.splice(at, 1);
           recountDailyLogPhotos(s);
         };
@@ -6511,6 +6613,24 @@ export const useStore = create<Store>()(
               );
             }, (err: unknown) => {
               // the upload's own answer only: a fault in handling a yes is never taken for a lost answer
+              // #1228: the server's 410 for a photo deleted since an earlier send of this key landed (another tab's replay
+              // of this row, in a browser without Web Locks) is settled as a queued photo's 410 is: its row goes, every
+              // copy a pull brought in leaves at once, and the server's word on the day is read after this answer
+              if (isDeletedPhoto(err)) {
+                letRowGo();
+                set((s) => settle(s, false));
+                if (scopeStillCurrent(scope)) {
+                  beginSnapshotLease(scope);
+                  set((s) => {
+                    if (s.dailyLog) s.dailyLogPhotoCountAfter = snapshotSeq;
+                    for (const id of [...s.photos, ...s.myDeletablePhotos].filter((p) => p.clientKey === clientKey).map((p) => p.id)) dropDeletedPhoto(s, id);
+                    if (s.dailyLog) s.dailyLog.photos = s.dailyLog.photos.filter((p) => p.clientKey !== clientKey);
+                  });
+                  scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+                }
+                emitGuideOutcome('site-photo-added', null, guideRun);
+                return;
+              }
               // #917: no answer, and the photo is kept on this phone: it is queued by its key, shown and counted from the
               // phone as an offline pick is, and sent again from its row. For a project no longer on screen the row stays,
               // and that project's next flush gives it its op; the person is told it is kept all the same
@@ -6521,23 +6641,12 @@ export const useStore = create<Store>()(
                   return;
                 }
                 set((s) => {
-                  s.outbox.push({ t: 'uploadSitePhoto', scope: rowScope, clientKey });
-                  s.syncQueue.push('Progress photo');
-                  s.sitePhotosKept.push(keptFrom(input));
                   // counted from now on as queued, by its row's log, until the server's count holds it or the queue lets
-                  // it go (settle recounts)
+                  // it go
                   settle(s, false);
-                  const log = onPickedLog(s);
-                  // a refresh that landed before this may already show the server's copy (its key in the log's own
-                  // list): it is not shown or counted again (Codex 4389428620)
-                  if (log && !log.myPhotoKeys?.includes(clientKey)) {
-                    log.photos.unshift({ url: dataUrl, clientKey });
-                    if (log.photoCount === undefined) log.progress += 1;
-                    recordDraftPhoto(s);
-                  }
+                  queueKeptSitePhoto(s, rowScope, input, dataUrl, onPickedLog(s));
                 });
                 // (its op is never stored: the row is its record on this phone, written before the send)
-                persistDailyLogDraft();
                 // kept on this phone, as a stored offline pick is: the guide's step is done
                 emitGuideOutcome('site-photo-added', null, guideRun);
                 get().flash(DLT.photoOffline[get().lang]);
@@ -6553,7 +6662,7 @@ export const useStore = create<Store>()(
             })
             .finally(() => {
               void rowGone.then((done) => {
-                const letGo = (): void => { sitePhotoSendsDirect.delete(clientKey); release(); };
+                const letGo = (): void => { sitePhotoSendsDirect.delete(clientKey); sitePhotoSettles += 1; release(); };
                 const make = rowChange;
                 // a row never written needs no change: the one try made is enough, and a phone whose database is failing
                 // is not asked again for the tab's life (Codex 4391469488)
@@ -6568,8 +6677,38 @@ export const useStore = create<Store>()(
         // taken first, so no other tab gives the row an op while this send is out
         if (!sitePhotoStorageAvailable()) send(false, () => {});
         else {
+          // #1201: the person or the project moved while the photo was being kept: nothing is sent with the gateway of a
+          // scope left (a departed person's token would still create it). A kept row stays for its own scope, whose next
+          // load or flush gives it its op; one not kept is lost, and the person is told to try again
+          // A write answered "not kept" may still have landed after its bound: its row goes under the lock, as send(false)'s
+          // does, so a photo the person is told to pick again is never sent later too. A kept row is read again once its
+          // lock is let go: the scope now current may be its own again (a failed switch, the same person back), whose load
+          // skipped it while this tab held the lock (Stage 1 gap-check)
+          // A removal the phone could not make keeps the lock, and is made again on the site photo retry until it lands, as a
+          // direct send's row change is (#1242 r1, 4410673618)
+          const leave = (saved: boolean, release: () => void): void => {
+            const letGo = (): void => {
+              sitePhotoSendsDirect.delete(clientKey);
+              sitePhotoSettles += 1;
+              release();
+              if (saved) reconcileSitePhotos();
+            };
+            if (saved) letGo();
+            else {
+              const drop = (): Promise<void> => deleteSitePhotoRow(rowScope, rowProject, clientKey);
+              void drop().then(letGo, () => {
+                sitePhotoRowChanges.set(clientKey, () => drop().then(() => { sitePhotoRowChanges.delete(clientKey); letGo(); }, () => {}));
+                retrySitePhotos();
+              });
+            }
+            set((s) => { settle(s, false); s.photoUploadsSending = s.photoUploadsSending.filter((k) => k !== clientKey); });
+            get().flash(saved ? DLT.photoOffline[get().lang] : DLT.photoUploadFailed[get().lang]);
+          };
           void holdSitePhotoLock(rowScope, rowProject, clientKey).then((release) =>
-            putSitePhotoRow(rowScope, rowProject, input).then(() => send(true, release), () => send(false, release)));
+            putSitePhotoRow(rowScope, rowProject, input).then(() => true, () => false).then((saved) => {
+              if (scopeStillCurrent(scope) && gateway === sendGateway) send(saved, release);
+              else leave(saved, release);
+            }));
         }
         return;
       }
@@ -6921,7 +7060,9 @@ export const useStore = create<Store>()(
        *  effect of the success that does not read the server's answer, one function for both (xtab-drain U2 r1 root
        *  cause: a copy of these effects drifted, 4384591499/4384591507/4384591508). The 410 of an upload is read only by
        *  the send's own answer, so an upload is never settled by its fact. The start's photo clear is returned to wait on */
-      const afterSent = (o: OutboxOp, snap: ApiSnapshot | null): Promise<unknown> | null => {
+      // `gone`: a site photo settled by the 410 was not sent: it is not kept counted, and `forgetQueuedSitePhoto` takes it
+      // out of the queue after this (Codex 4410673603)
+      const afterSent = (o: OutboxOp, snap: ApiSnapshot | null, gone = false): Promise<unknown> | null => {
         settle(o);
         if (snap) { lastSnap = snap; lastSnapStale = false; } else if (lastSnap && isSiteVisitOp(o)) lastSnapStale = true;
         // an evidence send settled with its refresh failed (its bytes are gone, so it is never sent again): the pull it
@@ -6929,8 +7070,21 @@ export const useStore = create<Store>()(
         // so is a site photo's: settled by its answer, its queued copy leaves the Dashboard, and the server's must come
         // back (Codex 4389428615)
         if (!snap && (o.t === 'uploadEvidence' || o.t === 'uploadSitePhoto')) photoSettledGone = true;
-        // a site photo settled leaves the copy of its bytes this tab showed while it was queued (Codex 4391469504)
-        if (o.t === 'uploadSitePhoto') { const key = o.clientKey; set((s) => { s.sitePhotosKept = s.sitePhotosKept.filter((k) => k.clientKey !== key); recountDailyLogPhotos(s); }); }
+        // a site photo settled leaves the copy of its bytes this tab showed while it was queued (Codex 4391469504); the
+        // draft is not touched: a queued photo was never in it (#1167)
+        if (o.t === 'uploadSitePhoto' && !gone) {
+          const key = o.clientKey;
+          set((s) => {
+            // #1195: the day's count keeps it, as an online upload answered here is kept, until a read shows the server's
+            // count holding it: a module-owned daily-log read is not carried by this answer's snapshot and lands later
+            const kept = s.sitePhotosKept.find((k) => k.clientKey === key);
+            // (with its answer's snapshot, read after the answer, the flush applies it under `flushLease`: that applying is a
+            // read after the answer too, Codex 4412387979)
+            if (kept?.dailyLogId && !s.photoUploadsInFlight.some((u) => u.clientKey === key)) s.photoUploadsInFlight.push({ clientKey: key, dailyLogId: kept.dailyLogId, settled: true, after: snapshotSeq, ...(snap && flushLease ? { lease: flushLease.sequence } : {}) });
+            s.sitePhotosKept = s.sitePhotosKept.filter((k) => k.clientKey !== key);
+            recountDailyLogPhotos(s);
+          });
+        }
         // a site visit's answer shows on its own screen, so it is not counted in the "synced" line; one that went
         // through starts the visit photo retry's wait over
         if (!isSiteVisitOp(o)) synced += 1;
@@ -7013,7 +7167,7 @@ export const useStore = create<Store>()(
           let photoGone = false;
           let goneEvidence: { url: string; inspectionId?: string; inspectionItemId?: string } | undefined;
           const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation, (local) => { photoGone = true; goneEvidence = local; }, flushPerson);
-          const startCleared = afterSent(ops[i], snap);
+          const startCleared = afterSent(ops[i], snap, photoGone);
           // #482: a photo settled by the server's 410 is settled as a delete is (settleDeleted). Its local copies leave at
           // once, matched by the send's own key: one an earlier pull recorded is never shown past the server's word (Codex
           // 4340333337), and a pull begun before this answer, which may still hold it, is superseded. The day's count on
@@ -7212,6 +7366,7 @@ export const useStore = create<Store>()(
       // never drop a write): the original ops were the outbox prefix, so slice past them.
       const appended = remapVisits(get().outbox.slice(taken));
       visitPhotoEpoch += 1; visitPhotoFlushes += 1; // a visit photo reconciliation read before this flush settled would re-queue a sent photo
+      sitePhotoSettles += 1; // and a site photo one (#1170)
       set((s) => {
         s.outbox = [...remaining, ...appended];
         // a photo upload dropped for good (terminal rejection) stops counting on screen in the same update

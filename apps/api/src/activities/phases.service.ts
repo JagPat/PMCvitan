@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
@@ -87,7 +88,12 @@ export class PhasesService {
         // Edge 6 (Task 7): the Activity(projectId, phaseId) FK is now ON DELETE SET NULL
         // (phaseId), so deleting the phase detaches its activities in the database — no
         // cross-module write here (they render in the flat list once unfiled).
-        await tx.phase.delete({ where: { id: phaseId } });
+        await tx.phase.delete({ where: { id: phaseId } }).catch((e: unknown) => {
+          // another delete of this phase committed after the read above: it is gone, answered as the read answers,
+          // and thrown so nothing of this delete commits (no receipt for its key either)
+          if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') throw new NotFoundException('Phase not found');
+          throw e;
+        });
         await recordAudit(tx, { projectId, actor, action: 'phase.delete', entity: 'Phase', entityId: phaseId });
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'phase.removed', entityType: 'Phase', entityId: phaseId, effectKey: 'phase.removed', dispatch: {} });
         return { resultRef: phaseId, events: [ev] };
