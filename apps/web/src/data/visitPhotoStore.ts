@@ -363,8 +363,10 @@ export async function deleteRemovedVisitPhoto(userScope: string, projectId: stri
   }
 }
 
-/** The keys of (user, project) whose files the server removed while their rows could not be deleted. */
-export function removedVisitPhotos(userScope: string, projectId: string): ReadonlySet<string> {
+/** The keys of (user, project) whose files the server removed while their rows could not be deleted. `'unreadable'`
+ *  when localStorage is there but cannot be read: a record may exist, so every caller fails closed (#1266). With no
+ *  localStorage at all no record was ever made (`deleteRemovedVisitPhoto` refuses), so none is known. */
+export function removedVisitPhotos(userScope: string, projectId: string): ReadonlySet<string> | 'unreadable' {
   const out = new Set<string>();
   try {
     const storage = globalThis.localStorage;
@@ -374,7 +376,9 @@ export function removedVisitPhotos(userScope: string, projectId: string): Readon
       const k = storage.key(i);
       if (k?.startsWith(prefix)) out.add(k.slice(prefix.length));
     }
-  } catch { /* unreadable: none known here */ }
+  } catch {
+    return 'unreadable';
+  }
   return out;
 }
 

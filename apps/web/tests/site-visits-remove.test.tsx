@@ -420,7 +420,7 @@ describe('#1179 R3: taking a file off a visit', () => {
     expect(screen.queryByText('File removed.')).toBeNull();
     expect(within(card).getByTestId('sv-file-m-n')).toBeTruthy();
     expect((await listVisitPhotos(scope, project)).map((r) => r.clientKey)).toEqual(['ck-n']);
-    expect(removedVisitPhotos(scope, project).size).toBe(0);
+    expect(removedVisitPhotos(scope, project)).toEqual(new Set());
   });
 
   it('a removed file whose copy the phone cannot delete just then is never shown from it again, and goes on the next read', async () => {
@@ -456,7 +456,7 @@ describe('#1179 R3: taking a file off a visit', () => {
     await mount('consultant', CONSULTANT, gw);
     await settled();
     expect(await listVisitPhotos(scope, project)).toEqual([]);
-    expect(removedVisitPhotos(scope, project).size).toBe(0);
+    expect(removedVisitPhotos(scope, project)).toEqual(new Set());
   });
 
   it('a queued send of a file recorded as removed is settled unsent, and never put back, even while its row cannot be deleted', async () => {
@@ -491,7 +491,7 @@ describe('#1179 R3: taking a file off a visit', () => {
     del.mockRestore();
     await expect(replayOutboxOp(gw as unknown as ApiGateway, op as unknown as OutboxOp, st.projectScopeGeneration)).resolves.toBeNull();
     expect(await listVisitPhotos(scope, project)).toEqual([]);
-    expect(removedVisitPhotos(scope, project).size).toBe(0);
+    expect(removedVisitPhotos(scope, project)).toEqual(new Set());
   });
 
   it('a removal recorded while its row cannot be deleted holds no act of its visit behind that row (#1265)', async () => {
@@ -531,7 +531,42 @@ describe('#1179 R3: taking a file off a visit', () => {
     await settled();
     expect(gw.uploadMedia).not.toHaveBeenCalled();
     expect(await listVisitPhotos(scope, project)).toEqual([]);
-    expect(removedVisitPhotos(scope, project).size).toBe(0);
+    expect(removedVisitPhotos(scope, project)).toEqual(new Set());
+  });
+
+  it('removal records that cannot be read hold the queue and the screen closed: nothing uploaded, put back or shown from the phone (#1266)', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    const op = {
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: 'idem-u', scope,
+      file: { id: 'ck-u', mime: 'image/jpeg' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
+    } as SiteVisitAddFileOp;
+    await putVisitPhoto(scope, project, op, 'AAAA');
+    await filedCopy(scope, project, 'ck-f');
+    // a record was made, and then localStorage cannot be read
+    localStorage.setItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-u`, '1');
+    const unreadable = vi.spyOn(Storage.prototype, 'key').mockImplementation(() => { throw new Error('storage blocked'); });
+    expect(removedVisitPhotos(scope, project)).toBe('unreadable');
+    // a replay of its act is held, never uploaded
+    const gw = { project, uploadMedia: vi.fn(async () => ({ id: 'm-u' })), listSiteVisits: vi.fn(async () => [visit()]) };
+    await expect(replayOutboxOp(gw as unknown as ApiGateway, op as unknown as OutboxOp, st.projectScopeGeneration)).rejects.toBeInstanceOf(VisitPhotoUnreadable);
+    // the queue's own read of the rows puts nothing back
+    let putBack = false;
+    const stop = useStore.subscribe((x) => { if (x.outbox.some((o) => (o as { idempotencyKey?: string }).idempotencyKey === 'idem-u')) putBack = true; });
+    useStore.getState()._setGateway(tracked(gw) as unknown as ApiGateway);
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    await settled();
+    stop();
+    expect(putBack).toBe(false);
+    expect(gw.uploadMedia).not.toHaveBeenCalled();
+    // the screen shows no file from the phone's copies, and deletes none
+    const card = await mount('consultant', CONSULTANT, server(visit()).gw);
+    expect(within(card).queryByTestId('sv-file-ck-f')).toBeNull();
+    unreadable.mockRestore();
+    expect((await listVisitPhotos(scope, project)).map((r) => r.clientKey).sort()).toEqual(['ck-f', 'ck-u']);
+    localStorage.removeItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-u`);
   });
 
   it('a removal another tab recorded hides the phone\'s copy on an open screen at once', async () => {

@@ -2867,7 +2867,10 @@ export const useStore = create<Store>()(
       }
       // #1241: a row whose file the server removed (recorded when the phone could not delete it) is never put back, and
       // it is deleted here, its record going once it is, so its bytes do not wait for the Site Visits screen (#1265)
-      const removed = rows.length > 0 ? removedVisitPhotos(rows[0].userScope, rows[0].projectId) : new Set<string>();
+      const recorded = rows.length > 0 ? removedVisitPhotos(rows[0].userScope, rows[0].projectId) : new Set<string>();
+      // #1266: records that cannot be read may hold any row: nothing is put back or deleted until they can be
+      if (recorded === 'unreadable') return false;
+      const removed: ReadonlySet<string> = recorded;
       for (const row of rows) {
         if (!removed.has(row.clientKey)) continue;
         void withinWait(() => deleteVisitPhoto(row.userScope, row.projectId, row.clientKey))
