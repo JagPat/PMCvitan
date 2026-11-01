@@ -13,7 +13,7 @@ import {
   GITHUB_PR_FILES_LIMIT,
 } from './review-cap.mjs';
 import { classifyCodexState } from './autonomous-review-state.mjs';
-import { capDefersStoredFailure, capFiles, cappedSuccessDetail, ensureTerminalReviewState, EVIDENCE_SNAPSHOT_ATTEMPTS, fileDeferredFindings, finalCodexEvidence, publishBlockingVerdict, publishSettledSuccess, readCodexEvidence, reclassifyCurrentCodexEvidence, reviewAttempt, settleFinalCodexEvidence, SETTLING_DESCRIPTION, unionDeferred } from './autonomous-review-gate.mjs';
+import { capDefersStoredFailure, capFiles, cappedSuccessDetail, ensureTerminalReviewState, EVIDENCE_SNAPSHOT_ATTEMPTS, fileDeferredFindings, finalCodexEvidence, isTerminalReviewStatus, publishBlockingVerdict, publishSettledSuccess, readCodexEvidence, reclassifyCurrentCodexEvidence, reviewAttempt, settleFinalCodexEvidence, SETTLING_DESCRIPTION, unionDeferred } from './autonomous-review-gate.mjs';
 import { pendingFollowUpHeads } from './review-follow-up.mjs';
 import { CODEX_RUN_HELD_DETAIL, CODEX_SECURITY_FINDINGS_DETAIL, FOLLOW_UP_RETRY, isRetryableReviewFailureDescription, REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
@@ -959,8 +959,16 @@ test('G2 gap 2 — security findings settle as a non-retryable finding a correct
   const settled = await settleFinalCodexEvidence(quiet.client, { number: 9 }, HEAD);
   assert.equal(settled.state, 'changes_required');
   assert.equal(settled.retryable, false);
-  assert.equal(settled.detail, CODEX_SECURITY_FINDINGS_DETAIL);
   const status = (description) => ({ context: 'codex-current-head', state: 'failure', description });
+  // Stage 1 probe I — published as a terminal `review:` failure on the ordinary path and the success recovery alike
+  // (both publish `settled.detail`), so recovery and the authorizer can classify it
+  assert.equal(settled.detail, `review: ${CODEX_SECURITY_FINDINGS_DETAIL}`);
+  assert.equal(isTerminalReviewStatus(status(settled.detail)), true);
+  assert.equal(isTerminalReviewStatus(status(CODEX_SECURITY_FINDINGS_DETAIL)), false, 'unprefixed it is not terminal');
+  const { readFile } = await import('node:fs/promises');
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState'), gate.indexOf('async function waitForRequiredChecks'));
+  assert.match(recovery, /settled\.state === 'changes_required'\) \{\s*await publishBlockingVerdict\(client, finalPolicy\.pullRequest, expectedHead, \{\s*description: settled\.detail,/u);
   assert.equal(isRetryableReviewFailureDescription(`review: ${CODEX_SECURITY_FINDINGS_DETAIL}`), false);
   assert.equal(correctionReasonFor(status(`review: ${CODEX_SECURITY_FINDINGS_DETAIL}`)), 'review');
   assert.equal(correctionReasonFor(status(`review: ${CODEX_RUN_HELD_DETAIL}`)), null);

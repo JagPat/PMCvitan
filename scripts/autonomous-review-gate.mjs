@@ -21,6 +21,7 @@ import {
   isBodyOnlyOwnershipRecoveryDetail,
   REVIEW_ROUND_CAP,
   CODEX_RUN_HELD_DETAIL,
+  CODEX_SECURITY_FINDINGS_DETAIL,
 } from './review-policy.mjs';
 export {
   requiredChecksForPullRequest,
@@ -2658,7 +2659,9 @@ function blockingSettlement(evidence, deferred) {
       // G2 — a same-head Codex run still going is retryable (review-policy RETRYABLE_REVIEW_FAILURES)
       ? `review: ${CODEX_RUN_HELD_DETAIL}`
       : evidence.state === 'changes_required'
-        ? evidence.detail
+        // G2 — the security verdict carries no finding text `isTerminalReviewStatus` knows, so it is published as a
+        // `review:` failure on both paths (the ordinary one and the success recovery), or recovery would not see it
+        ? evidence.detail === CODEX_SECURITY_FINDINGS_DETAIL ? `review: ${evidence.detail}` : evidence.detail
         // an unsettled read is retryable (review-policy RETRYABLE_REVIEW_FAILURES), never a latched finding
         : evidence.state === 'unsettled'
           ? 'review: Codex evidence changed during final verification'
