@@ -616,7 +616,7 @@ if echo "$out" | grep -q "P3005"; then
   # The key-sighting count (Idempotency-Key 2a-m, 20280201000000) is here because of its CHECK, which a db-push
   # baseline does not have. IF NOT EXISTS and a guarded constraint, re-runnable.
   #
-  # The file digest (#904, 20280202000000) is here because of its CHECK, which a db-push baseline does not have.
+  # The file digest (#904, 20280202000000) is here because of its CHECK and trigger, which a db-push baseline does not have.
   # IF NOT EXISTS and a guarded constraint, re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds

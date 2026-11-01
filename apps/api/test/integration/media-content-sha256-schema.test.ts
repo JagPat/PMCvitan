@@ -8,7 +8,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 /**
  * #904 / #1262: `20280202000000_media_content_sha256` adds "Media"."contentSha256", the SHA-256 of a file's decoded
  * bytes as 64 lowercase hex characters, which #1262 writes with each new upload and compares on an upload key's replay.
- * This proves the shape PostgreSQL holds on every writer, that a row written as the previous release writes it (no
+ * This proves the shape PostgreSQL holds on every writer, that a stored digest is never changed, that a row written as the previous release writes it (no
  * digest) still goes in, and that the file re-runs.
  */
 const MIGRATION = join(__dirname, '../../prisma/migrations/20280202000000_media_content_sha256/migration.sql');
@@ -56,7 +56,28 @@ describe('#904: the file digest column (live PG)', () => {
       await expect(setDigest(id, bad)).rejects.toThrow(/Media_contentSha256_shape_check/);
     }
     expect(await setDigest(id, digest)).toBe(1);
-    expect(await setDigest(id, null)).toBe(1);
+    const { id: other } = await plainRow();
+    expect(await setDigest(other, null)).toBe(1);
+  });
+
+  it('keeps a stored digest on every writer: only NULL to a digest is taken (Codex 4437816190)', async () => {
+    const { id } = await plainRow();
+    expect(await setDigest(id, digest)).toBe(1);
+    // the same value again is no change
+    expect(await setDigest(id, digest)).toBe(1);
+    const another = createHash('sha256').update('another photo').digest('hex');
+    await expect(setDigest(id, another)).rejects.toThrow(/keeps the digest it was stored with/);
+    await expect(setDigest(id, null)).rejects.toThrow(/keeps the digest it was stored with/);
+    await expect(t.prisma.media.update({ where: { id }, data: { contentSha256: another } })).rejects.toThrow(/keeps the digest it was stored with/);
+    // a row created with its digest keeps it too, and an update of other fields leaves it alone
+    const made = await t.prisma.media.create({
+      data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', data: bytes, sizeBytes: bytes.length, uploadedBy: f.memberUser.id, contentSha256: digest },
+      select: { id: true },
+    });
+    await expect(setDigest(made.id, another)).rejects.toThrow(/keeps the digest it was stored with/);
+    await t.prisma.media.update({ where: { id: made.id }, data: { mime: 'image/jpeg' } });
+    const kept = await t.prisma.media.findUniqueOrThrow({ where: { id: made.id }, select: { contentSha256: true } });
+    expect(kept.contentSha256).toBe(digest);
   });
 
   it('is one nullable text column with no default', async () => {
@@ -74,6 +95,9 @@ describe('#904: the file digest column (live PG)', () => {
     const checks = await t.prisma.$queryRawUnsafe<Array<{ n: number }>>(
       `SELECT count(*)::int AS n FROM pg_constraint WHERE conrelid = '"Media"'::regclass AND conname = 'Media_contentSha256_shape_check'`);
     expect(checks[0]!.n).toBe(1);
+    const triggers = await t.prisma.$queryRawUnsafe<Array<{ n: number }>>(
+      `SELECT count(*)::int AS n FROM pg_trigger WHERE tgrelid = '"Media"'::regclass AND tgname = 'Media_content_sha256_fixed' AND NOT tgisinternal`);
+    expect(triggers[0]!.n).toBe(1);
     const kept = await t.prisma.media.findUniqueOrThrow({ where: { id }, select: { contentSha256: true } });
     expect(kept.contentSha256).toBe(digest);
   });
