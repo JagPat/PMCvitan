@@ -27,7 +27,7 @@ const placeGone = () => Object.assign(new Error('/media 400'), { status: 400, se
 const otherRefusal = () => Object.assign(new Error('/media 400'), { status: 400, serverMessage: 'Unsupported image type' });
 const lost = () => new TypeError('Failed to fetch');
 
-type Answer = Error | { id: string; url: string };
+type Answer = Error | { id: string; url: string; nodeId?: string | null };
 /** An upload mock that answers its calls in the order given, and records each input. */
 function uploads(...answers: Answer[]) {
   const inputs: Array<Record<string, unknown>> = [];
@@ -160,19 +160,38 @@ describe('a queued site photo whose place was removed (#919)', () => {
     expect(row && rows.isSitePhotoSent(row) && row.refused).toBe(true);
   });
 
-  it('PG6: the second send\'s answer lost: the photo stays queued, and the next replay sends the pair again under its key', async () => {
+  it('PG6: the second send\'s answer lost: the photo stays queued; the next replay is answered by the key with the stored, unplaced photo, and the person is told then', async () => {
     const A = await tab();
     startWork(A as never);
     const key = await queued(A);
-    const up = uploads(placeGone(), lost(), placeGone(), { id: 'm1', url: '/media/m1' });
+    // the server's key fast path answers before any place check (media.service.ts), with the photo the lost second send stored
+    const up = uploads(placeGone(), lost(), { id: 'm1', url: '/media/m1', nodeId: null });
     gatewayOf(A, up.fn);
     await A.getState().flushOutbox();
     await settled();
     expect(A.getState().outbox).toEqual([{ t: 'uploadSitePhoto', scope: ROWS, clientKey: key }]);
+    expect(A.getState().toast ?? '').not.toContain(DROPPED_LINE);
     await A.getState().flushOutbox();
     await settled();
-    expect(up.inputs.map((i) => [i.clientKey, 'nodeId' in i])).toEqual([[key, true], [key, false], [key, true], [key, false]]);
+    expect(up.inputs.map((i) => [i.clientKey, 'nodeId' in i])).toEqual([[key, true], [key, false], [key, true]]);
     expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().toast).toContain(DROPPED_LINE);
+  });
+
+  it.each([
+    ['names the place it asked for', { id: 'm1', url: '/media/m1', nodeId: 'room-1' }],
+    ['comes from an API that names no place', { id: 'm1', url: '/media/m1' }],
+  ])('PG9: a keyed answer that %s says nothing about a place', async (_, answer) => {
+    const A = await tab();
+    startWork(A as never);
+    await queued(A);
+    const up = uploads(answer);
+    gatewayOf(A, up.fn);
+    await A.getState().flushOutbox();
+    await settled();
+    expect(up.inputs).toHaveLength(1);
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().toast ?? '').not.toContain('without a place');
   });
 
   it('PG7: an earlier release\'s queued `uploadMedia` site photo is saved without the place too', async () => {

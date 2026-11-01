@@ -36,6 +36,9 @@ export interface UploadedMedia {
   url: string;
   /** #482 site photos — when the server recorded it (ISO), so a device shows the time the snapshot will */
   at: string;
+  /** #919 — the place it is filed on (null: none). A replay answers the stored photo's, so a phone whose answer to a
+   *  send without a removed place was lost learns, on its next send of the key, that the place was dropped */
+  nodeId: string | null;
 }
 
 /** The roles that keep the record-linked uploads: evidence for a decision or an inspection item, or a non-progress kind. */
@@ -145,7 +148,7 @@ export class MediaService {
     if (row.nodeId && (await this.prisma.$transaction((tx) => isPlaceHiddenFrom(tx, projectId, row.nodeId, user.sub)))) {
       throw new NotFoundException('Media not found');
     }
-    return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString() };
+    return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString(), nodeId: row.nodeId };
   }
 
   /** The photo a marked-up copy is drawn on: an image of this project that is a file on the same visit. The copy takes
@@ -393,7 +396,7 @@ export class MediaService {
     // a fresh upload signals its project once; a replay (P2002 return above) never reaches here
     if (events.length) await this.dispatcher.dispatchCommitted(events);
     // a short-lived, signed path resolved against the API base by the frontend
-    return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString() };
+    return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString(), nodeId: row.nodeId };
   }
 
   /** The earned cleanup (#571 round 12): remove this request's stored object only once a fresh read

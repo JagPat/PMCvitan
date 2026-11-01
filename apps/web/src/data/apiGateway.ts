@@ -1367,9 +1367,10 @@ export class ApiGateway {
   }
 
   /** Upload a site photo; returns its id + resolvable URL. */
-  // `at`: when the server recorded it (#482); absent from an API older than this web build
-  uploadMedia(input: UploadMediaInput): Promise<{ id: string; url: string; at?: string }> {
-    return this.req<{ id: string; url: string; at?: string }>(`/projects/${this.projectId}/media`, {
+  // `at`: when the server recorded it (#482); `nodeId`: the place it is filed on, null for none (#919). Each is absent
+  // from an API older than it
+  uploadMedia(input: UploadMediaInput): Promise<{ id: string; url: string; at?: string; nodeId?: string | null }> {
+    return this.req<{ id: string; url: string; at?: string; nodeId?: string | null }>(`/projects/${this.projectId}/media`, {
       method: 'POST',
       body: JSON.stringify(input),
     });
@@ -2082,11 +2083,14 @@ export function isPlaceGone(err: unknown): boolean {
  *  named a place, once, under the same key. The server stores nothing for the key on that 400 (its early place check
  *  runs before the bytes are stored, and the transaction's own check rolls back and clears this request's object), so
  *  the second send is the one photo. Its answer is final whatever it is: there is never a third send. The input kept on
- *  the phone is not changed: a replay after a lost answer to the second send sends the pair again, and the server's key
- *  fast path answers it with the stored photo. */
+ *  the phone is not changed: a replay after a lost answer to the second send sends the photo with its place again, and
+ *  the server's key fast path answers it with the stored photo, before any place check. That answer names the stored
+ *  photo's place, so a photo that named one and is stored with none was saved without it, and the person is told then
+ *  (Codex 4436483105). An API older than that answer names none: nothing is said. */
 export async function uploadSitePhotoInput(gw: Pick<ApiGateway, 'uploadMedia'>, input: UploadMediaInput): Promise<{ id: string; url: string; at?: string; placeDropped?: true }> {
   try {
-    return await gw.uploadMedia(input);
+    const res = await gw.uploadMedia(input);
+    return input.nodeId && res.nodeId === null ? { ...res, placeDropped: true } : res;
   } catch (err) {
     if (!input.nodeId || !isPlaceGone(err)) throw err;
     const { nodeId: _gone, ...unplaced } = input;
