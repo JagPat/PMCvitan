@@ -96,7 +96,7 @@ import { isDone } from '@/store/queueLedger';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, uploadSitePhotoInput, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { clearVisitPhotoStart, clearVisitPoster, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, posterLapsed, posterWaits, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
@@ -6486,9 +6486,10 @@ export const useStore = create<Store>()(
           const changeRow = (make: () => Promise<void>): void => { rowChange = make; rowGone = make().then(() => true, () => false); };
           const letRowGo = (): void => changeRow(() => deleteSitePhotoRow(rowScope, rowProject, clientKey));
           const rowSent = (): void => changeRow(() => (sitePhotoStorageAvailable() ? markSitePhotoSent(rowScope, rowProject, clientKey) : Promise.resolve()));
-          void sendGateway
-            .uploadMedia(input)
+          // a place removed since the pick: saved without it, and the person told so (#919)
+          void uploadSitePhotoInput(sendGateway, input)
             .then((res) => {
+              const placed = res.placeDropped ? undefined : nodeId;
               rowSent();
               if (!scopeStillCurrent(scope)) { set((s) => settle(s, true)); return; }
               set((s) => {
@@ -6504,7 +6505,7 @@ export const useStore = create<Store>()(
                 if (!s.photos.some((p) => p.id === res.id) && !s.myDeletablePhotos.some((p) => p.id === res.id)) {
                   // after any photo this device picked later whose reply came back first
                   const at = s.photos.findIndex((p) => (photoPickedAt.get(p.id) ?? 0) < pickSeq);
-                  s.photos.splice(at < 0 ? s.photos.length : at, 0, { id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(nodeId ? { nodeId } : {}),
+                  s.photos.splice(at < 0 ? s.photos.length : at, 0, { id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(placed ? { nodeId: placed } : {}),
                     // who and when (#482): this viewer, at the time the server recorded it. No role yet: the role the
                     // viewer acts in can come through the org rather than a project membership, and the next snapshot
                     // says the project role, so nothing is claimed here that the server would not say.
@@ -6537,7 +6538,7 @@ export const useStore = create<Store>()(
               void requestFreshSnapshot(scope);
               // say what the photo actually carried, not what the feature is called
               get().flash(
-                hasStamp(stamped) ? DLT.photoUploadedStamped[get().lang] : DLT.photoUploaded[get().lang],
+                res.placeDropped ? DLT.photoPlaceDropped[get().lang] : hasStamp(stamped) ? DLT.photoUploadedStamped[get().lang] : DLT.photoUploaded[get().lang],
               );
             }, (err: unknown) => {
               // the upload's own answer only: a fault in handling a yes is never taken for a lost answer
@@ -6978,6 +6979,8 @@ export const useStore = create<Store>()(
       // the doors stand, an ineligible state, a lesser client under an active chain) is reported as the
       // server's own words, one line per act, instead of joining the anonymous "discarded" count.
       const chainRefusals: string[] = [];
+      // #919: queued site photos saved without their place, because the place was removed: said in the same line
+      let placesDropped = 0;
       // Site Visits (#792, F53): the moves made for refused starts, applied to acts queued during this flush too
       // (to null: the refused start's acts went with it)
       const visitMoves: [string, string | null][] = [];
@@ -7105,7 +7108,7 @@ export const useStore = create<Store>()(
         try {
           let photoGone = false;
           let goneEvidence: { url: string; inspectionId?: string; inspectionItemId?: string } | undefined;
-          const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation, (local) => { photoGone = true; goneEvidence = local; }, flushPerson);
+          const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation, (local) => { photoGone = true; goneEvidence = local; }, flushPerson, () => { placesDropped += 1; });
           const startCleared = afterSent(ops[i], snap, photoGone);
           // #482: a photo settled by the server's 410 is settled as a delete is (settleDeleted). Its local copies leave at
           // once, matched by the send's own key: one an earlier pull recorded is never shown past the server's word (Codex
@@ -7367,7 +7370,7 @@ export const useStore = create<Store>()(
       // the chain refusals carry the server's words, so they are not folded into the count, but they are said in the same
       // line: the command's line and everything else this flush did are one line, so none hides another (#1134 r1
       // 4376641802, Stage 1 re-check of 62c8d1e)
-      const rest = [...(parts.length ? [SYNC.join(parts, lang)] : []), ...chainRefusals].join(' ');
+      const rest = [...(parts.length ? [SYNC.join(parts, lang)] : []), ...chainRefusals, ...(placesDropped > 0 ? [SYNC.placeDropped(placesDropped, lang)] : [])].join(' ');
       // the caller says this flush's word with its own only if it can say it now; otherwise the flush says it, as main did
       const handing = !!own && (opts?.saysNow?.() ?? true);
       let toldWith: string | undefined;

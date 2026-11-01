@@ -2070,6 +2070,35 @@ export function refusalMessage(err: unknown): string | null {
   return typeof m === 'string' && m.trim() ? m : null;
 }
 
+/** #919 — the server's own words for a place that is unknown to the project, a draft, or deleted (node-scope.ts
+ *  `assertPublishedNode`), by its exact text: no other 400 is taken for it. */
+export const PLACE_GONE_MESSAGE = 'Unknown location for this project';
+export function isPlaceGone(err: unknown): boolean {
+  return (err as { status?: number } | null)?.status === 400 && refusalMessage(err) === PLACE_GONE_MESSAGE;
+}
+
+/** #919 part 1 — a site photo whose place was removed (deleted or unpublished) after it was chosen is saved without the
+ *  place, never lost. The one stated exception to "a 4xx is final for the web": only that exact 400, only when the photo
+ *  named a place, once, under the same key. The server stores nothing for the key on that 400 (its early place check
+ *  runs before the bytes are stored, and the transaction's own check rolls back and clears this request's object), so
+ *  the second send is the one photo. Its answer is final whatever it is: there is never a third send. The input kept on
+ *  the phone is not changed: a replay after a lost answer to the second send sends the pair again, and the server's key
+ *  fast path answers it with the stored photo. */
+export async function uploadSitePhotoInput(gw: Pick<ApiGateway, 'uploadMedia'>, input: UploadMediaInput): Promise<{ id: string; url: string; at?: string; placeDropped?: true }> {
+  try {
+    return await gw.uploadMedia(input);
+  } catch (err) {
+    if (!input.nodeId || !isPlaceGone(err)) throw err;
+    const { nodeId: _gone, ...unplaced } = input;
+    return { ...(await gw.uploadMedia(unplaced)), placeDropped: true };
+  }
+}
+
+/** #919: a queued `uploadMedia` that is a plain site photo (an earlier release's offline pick): not evidence, not a visit
+ *  file, not a decision's photo. Only these are saved without a removed place. */
+const isPlainSitePhotoInput = (input: UploadMediaInput): boolean =>
+  input.kind === 'progress' && !input.siteVisit && !input.inspectionId && !input.inspectionItemId && !input.decisionId && !input.sourceMediaId;
+
 export type SiteVisitOp = Extract<OutboxOp, { t: `siteVisit${string}` }>;
 export function isSiteVisitOp(op: OutboxOp): op is SiteVisitOp {
   return op.t.startsWith('siteVisit');
@@ -2150,8 +2179,9 @@ export async function legacyActKey(op: LegacyKeyless, project: string, person: s
  *  person whose queue the act was read from: a keyless act of an earlier release is sent under `legacyActKey`, and one
  *  replayed with no person named goes keyless, as before. So does one whose key cannot be made (no `crypto.subtle`
  *  outside a secure context, or a digest that fails): a key that can never be made must not hold it, and every act
- *  behind it, at every flush (gap check of d581a1bf) */
-export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, onPhotoGone?: (localEvidence?: { url: string; inspectionId?: string; inspectionItemId?: string }) => void, person?: string): Promise<ApiSnapshot | null> {
+ *  behind it, at every flush (gap check of d581a1bf). `onPlaceDropped` is told when a queued site photo was saved
+ *  without its place because the place was removed (#919) */
+export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, onPhotoGone?: (localEvidence?: { url: string; inspectionId?: string; inspectionItemId?: string }) => void, person?: string, onPlaceDropped?: () => void): Promise<ApiSnapshot | null> {
   const keyOf = (o: LegacyKeyless): Promise<string | undefined> =>
     person === undefined ? Promise.resolve(o.idempotencyKey) : legacyActKey(o, gw.project, person).catch(() => o.idempotencyKey);
   const visit = (sent: Promise<SiteVisit>): Promise<null> =>
@@ -2362,8 +2392,8 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
       // #482: a 410 says the photo was deleted after an earlier send of this key landed (on this device or another):
       // the send is settled, not refused, so it leaves the queue quietly and the snapshot no longer lists it. Settled by
       // the 410 alone: a refresh after it that fails answers no snapshot, never a resend (Codex 4339094809)
-      return gw.uploadMedia(op.input).then(
-        () => gw.snapshot(),
+      return (isPlainSitePhotoInput(op.input) ? uploadSitePhotoInput(gw, op.input) : gw.uploadMedia(op.input) as Promise<{ placeDropped?: true }>).then(
+        (res) => { if (res.placeDropped) onPlaceDropped?.(); return gw.snapshot(); },
         (err: unknown) => {
           if (!isDeletedPhoto(err)) throw err;
           onPhotoGone?.();
@@ -2438,7 +2468,8 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
           return false;
         }
         try {
-          await gw.uploadMedia(row.input);
+          // a place removed since the pick: saved without it (#919)
+          if ((await uploadSitePhotoInput(gw, row.input)).placeDropped) onPlaceDropped?.();
         } catch (err) {
           // answered for good (the photo was deleted after an earlier send of this key landed, or refused): the row goes
           // with the op. A row the phone could not remove keeps its op (no status: sent and answered again)
