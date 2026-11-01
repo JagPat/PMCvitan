@@ -34,7 +34,7 @@ describe('#1118 U4 — fetching a version from Hub', () => {
     hubServer = a.server;
     elsewhereServer = b.server;
     foreignOrigin = b.origin;
-    config = { baseUrl: a.origin, officeToken: token, webhookSecrets: [randomBytes(32)], orgId: 'org-hub' };
+    config = { baseUrl: a.origin, officeToken: token, webhookSecrets: [randomBytes(32)], orgId: 'org-hub', officeId: '7' };
   });
   afterAll(async () => {
     await close(hubServer);
@@ -86,7 +86,7 @@ describe('#1118 U4 — fetching a version from Hub', () => {
   });
 
   it('is closed without every HUB_* and sends nothing', async () => {
-    for (const name of ['HUB_BASE_URL', 'HUB_OFFICE_TOKEN', 'HUB_WEBHOOK_SECRET', 'HUB_ORG_ID']) vi.stubEnv(name, '');
+    for (const name of ['HUB_BASE_URL', 'HUB_OFFICE_TOKEN', 'HUB_WEBHOOK_SECRET', 'HUB_ORG_ID', 'HUB_OFFICE_ID']) vi.stubEnv(name, '');
     expect(await fetchHubContent(ref())).toEqual({ ok: false, failure: 'closed', retryable: false });
     expect(hubRequests).toEqual([]);
   });

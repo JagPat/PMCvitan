@@ -27,7 +27,7 @@ export type HubDeliveryAnswer =
   | 'accepted';
 
 /** Why a delivery was refused, on its audit row. */
-export type HubRefusal = 'unreadable' | 'malformed' | 'not_linked' | 'hub_project_mismatch';
+export type HubRefusal = 'unreadable' | 'malformed' | 'office_mismatch' | 'not_linked' | 'hub_project_mismatch';
 
 export type HubDelivery = {
   orgId: string;
@@ -39,11 +39,13 @@ export type HubDelivery = {
 /**
  * #1118 U3 — judges one Hub webhook delivery (`notes/hub/1118-plan.md` U3), in this order:
  *
- *  1. Closed: the integration unless all four `HUB_*` are good, or a route org other than `HUB_ORG_ID`. Nothing is read.
+ *  1. Closed: the integration unless all five `HUB_*` are good, or a route org other than `HUB_ORG_ID`. Nothing is read.
  *  2. The body must be the raw bytes (`hubRawBody`), and the Standard Webhooks signature must hold. Neither writes.
  *  3. Then, in one transaction: a delivery already `applied` for this org is answered 2xx and skipped. Any other is
  *     judged again, so a refused or ignored delivery can still be applied by a later release (C2).
- *  4. The event is read: unreadable or malformed is refused; an unsubscribed type or work in progress is ignored.
+ *  4. The event is read: unreadable or malformed is refused; an unsubscribed type or work in progress is ignored. An
+ *     event naming a Hub office other than `HUB_OFFICE_ID` is refused (U3o) before any project is looked at; one naming
+ *     no office (Hub's events from before it added `data.office`) goes on.
  *  5. The project resolves only through its active link: the link of the PMC project Hub names (`links[app=pmc]`), in
  *     the Hub org, whose latest event is `linked` to the Hub project the event is about. The link row is read FOR UPDATE:
  *     a link event's insert takes KEY SHARE on that row through its foreign key, which only FOR UPDATE conflicts with, so
@@ -96,6 +98,7 @@ export class HubReceiverService {
       if (event.kind === 'unreadable') return record('refused', HUB_UNREADABLE_TYPE, null, 'unreadable');
       if (event.kind === 'ignored') return record('ignored', event.type, null);
       if (event.kind === 'malformed') return record('refused', event.type, event.versionId, 'malformed');
+      if (event.officeId !== null && event.officeId !== hub.config.officeId) return record('refused', event.type, event.versionId, 'office_mismatch');
       // Hub names one PMC project per link; none, or more than one, resolves nothing
       if (event.pmcProjectIds.length !== 1) return record('refused', event.type, event.versionId, 'not_linked');
 
