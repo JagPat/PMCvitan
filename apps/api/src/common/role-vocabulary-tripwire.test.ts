@@ -76,6 +76,8 @@ describe('the role vocabulary tripwire (4d-ii-a / A5a)', () => {
 
   type Verdict = 'answered' | `excludes: ${string}` | `owed by ${string}` | `not a role: ${string}`;
   const ROLE_LISTS: Record<string, Verdict> = {
+    // fresh start (1 Nov 2026) — the operator bootstrap's project roles
+    'apps/api/src/platform/org-bootstrap.ts :: list PROJECT_ROLES': 'excludes: architect is reserved (4d-i doors refuse it); the bootstrap seeds delivered member roles only',
     // shared
     'packages/shared/src/domain/types.ts :: union TokenRole': 'answered',
     'packages/shared/src/domain/types.ts :: list TOKEN_ROLES': 'answered',
