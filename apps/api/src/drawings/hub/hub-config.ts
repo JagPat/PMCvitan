@@ -1,7 +1,7 @@
 /**
  * #1118 U2 — the Hub integration's configuration, read from the environment.
  *
- * Four variables, all required. While any is unset or malformed the integration is CLOSED: `readHubConfig` returns
+ * Five variables, all required. While any is unset or malformed the integration is CLOSED: `readHubConfig` returns
  * `{ open: false }` and says which variables are at fault, by name only. A value never leaves this file: not in the
  * result, not in a log, not in an error. Nothing is defaulted and nothing is partly open, so a typo in one secret of a
  * rotation pair closes intake rather than quietly dropping that secret (Hub retries for about 27.6 h; plan Q3).
@@ -13,12 +13,15 @@
  * - `HUB_WEBHOOK_SECRET`: one to {@link HUB_WEBHOOK_SECRETS_MAX} Standard Webhooks secrets (`whsec_` + base64 of 24 to 64
  *   bytes), separated by commas or whitespace. Two at once are a rotation's overlap window.
  * - `HUB_ORG_ID`: the PMC org whose projects Hub's events may reach (U3 also checks the route's `:orgId` against it).
+ * - `HUB_OFFICE_ID`: the Hub office (Hub's `companyId`, from `GET /api/v2/me`) this PMC org is connected to. An event
+ *   whose `data.office.id` names another office is refused (U3o); it is Hub's id, separate from `HUB_ORG_ID`. It is
+ *   compared as written, so copy `companyId` exactly (`7`, never `007`): a mismatch refuses every event with a 2xx.
  *
  * It reads the environment on every call, so unsetting a variable and restarting closes the integration.
  */
 import { isProduction } from '../../config';
 
-export const HUB_ENV = ['HUB_BASE_URL', 'HUB_OFFICE_TOKEN', 'HUB_WEBHOOK_SECRET', 'HUB_ORG_ID'] as const;
+export const HUB_ENV = ['HUB_BASE_URL', 'HUB_OFFICE_TOKEN', 'HUB_WEBHOOK_SECRET', 'HUB_ORG_ID', 'HUB_OFFICE_ID'] as const;
 export type HubEnvName = (typeof HUB_ENV)[number];
 
 /** The most webhook secrets accepted at once: a rotation needs two; the cap bounds the HMACs one delivery costs. */
@@ -34,6 +37,8 @@ export type HubConfig = {
   /** decoded secret keys, in the order given, without duplicates */
   webhookSecrets: readonly Buffer[];
   orgId: string;
+  /** the Hub office id events must name when they name one (`data.office.id`) */
+  officeId: string;
 };
 
 /** Why a variable keeps the integration closed. Names and codes only, never a value. */
@@ -42,6 +47,8 @@ export type HubConfigFault = { name: HubEnvName; problem: 'unset' | 'malformed' 
 export type HubConfigResult = { open: true; config: HubConfig } | { open: false; faults: HubConfigFault[] };
 
 const TOKEN = /^[\x21-\x7e]+$/;
+/** a Hub id as `hub-event.ts` reads one: visible ASCII, at most 256 */
+const HUB_OFFICE = /^[\x21-\x7e]{1,256}$/;
 const SECRET = /^whsec_([A-Za-z0-9+/]+={0,2})$/;
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 
@@ -77,7 +84,7 @@ function webhookSecrets(raw: string): Buffer[] | null {
   return keys;
 }
 
-/** Reads the four `HUB_*` variables from `env` (the process environment by default). */
+/** Reads the five `HUB_*` variables from `env` (the process environment by default). */
 export function readHubConfig(env: NodeJS.ProcessEnv = process.env): HubConfigResult {
   const faults: HubConfigFault[] = [];
   const read = <T>(name: HubEnvName, parse: (raw: string) => T | null): T | null => {
@@ -95,6 +102,7 @@ export function readHubConfig(env: NodeJS.ProcessEnv = process.env): HubConfigRe
     officeToken: read('HUB_OFFICE_TOKEN', (raw) => (TOKEN.test(raw) ? raw : null)),
     webhookSecrets: read('HUB_WEBHOOK_SECRET', webhookSecrets),
     orgId: read('HUB_ORG_ID', (raw) => (TOKEN.test(raw) ? raw : null)),
+    officeId: read('HUB_OFFICE_ID', (raw) => (HUB_OFFICE.test(raw) ? raw : null)),
   };
   if (faults.length) return { open: false, faults };
   return { open: true, config: config as HubConfig };
