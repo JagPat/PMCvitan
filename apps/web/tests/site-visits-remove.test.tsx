@@ -6,7 +6,7 @@ import { VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { replayOutboxOp, type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitFile, type SiteVisitRemoval } from '@/data/apiGateway';
-import { fileVisitPhoto, listVisitPhotos, putVisitPhoto, removedVisitPhotos, visitPhotoScope, VisitPhotoUnreadable, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
+import { deleteRemovedVisitPhoto, fileVisitPhoto, listVisitPhotos, putVisitPhoto, REMOVED_VISIT_PHOTO_PREFIX, removedVisitPhotos, visitPhotoScope, VisitPhotoUnreadable, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
 import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
 
 /**
@@ -457,6 +457,58 @@ describe('#1179 R3: taking a file off a visit', () => {
     await settled();
     expect(await listVisitPhotos(scope, project)).toEqual([]);
     expect(removedVisitPhotos(scope, project).size).toBe(0);
+  });
+
+  it('a queued send of a file recorded as removed is settled unsent, and never put back, even while its row cannot be deleted', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    const op = {
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: 'idem-r', scope,
+      file: { id: 'ck-r', mime: 'image/jpeg' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
+    } as SiteVisitAddFileOp;
+    // a send whose answer was lost: the server holds the file, the phone's row is still queued. The file is removed, and
+    // the phone cannot delete the row just then, so the removal is recorded
+    await putVisitPhoto(scope, project, op, 'AAAA');
+    const del = vi.spyOn(IDBObjectStore.prototype, 'delete').mockImplementation(() => { throw new Error('storage down'); });
+    await expect(deleteRemovedVisitPhoto(scope, project, 'ck-r')).resolves.toBe('kept');
+    const gw = { project, uploadMedia: vi.fn(async () => ({ id: 'm-r' })) };
+    await expect(replayOutboxOp(gw as unknown as ApiGateway, op as unknown as OutboxOp, st.projectScopeGeneration)).resolves.toBeNull();
+    expect(gw.uploadMedia).not.toHaveBeenCalled();
+    expect((await listVisitPhotos(scope, project)).map((r) => r.clientKey)).toEqual(['ck-r']);
+    expect(removedVisitPhotos(scope, project)).toEqual(new Set(['ck-r']));
+    // the queue's own read of the rows does not put its act back
+    let putBack = false;
+    const stop = useStore.subscribe((s) => { if (s.outbox.some((o) => (o as { idempotencyKey?: string }).idempotencyKey === 'idem-r')) putBack = true; });
+    useStore.getState()._setGateway(tracked({ ...gw, listSiteVisits: vi.fn(async () => []) }) as unknown as ApiGateway);
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    await settled();
+    stop();
+    expect(putBack).toBe(false);
+    expect(gw.uploadMedia).not.toHaveBeenCalled();
+    // once the phone can delete it, the next replay does, and the record goes
+    del.mockRestore();
+    await expect(replayOutboxOp(gw as unknown as ApiGateway, op as unknown as OutboxOp, st.projectScopeGeneration)).resolves.toBeNull();
+    expect(await listVisitPhotos(scope, project)).toEqual([]);
+    expect(removedVisitPhotos(scope, project).size).toBe(0);
+  });
+
+  it('a removal another tab recorded hides the phone\'s copy on an open screen at once', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    await filedCopy(scope, project, 'ck-t');
+    const { gw } = server(visit());
+    const card = await mount('consultant', CONSULTANT, gw);
+    expect(within(card).getByTestId('sv-file-ck-t')).toBeTruthy();
+    // the other tab's phone could not delete the row: it recorded the removal, and this tab hears of it
+    const key = `${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-t`;
+    localStorage.setItem(key, '1');
+    await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key, newValue: '1' })); });
+    expect(within(screen.getByTestId('sv-visit-v-1')).queryByTestId('sv-file-ck-t')).toBeNull();
+    localStorage.removeItem(key);
   });
 
   it('a send whose answer was lost, replayed after its file was removed, is settled: never "not sent"', async () => {

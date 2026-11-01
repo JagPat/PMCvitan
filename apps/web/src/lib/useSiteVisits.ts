@@ -8,7 +8,7 @@ import {
   type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitFile, type SiteVisitOp,
   type SiteVisitRating,
 } from '@/data/apiGateway';
-import { deleteRemovedVisitPhoto, deleteVisitPhoto, forgetRemovedVisitPhoto, listVisitPhotos, removedVisitPhotos, posterWaits, putVisitPhoto, settleFiledVisitPhotos, storageAvailable, visitPhotoScope, withinWait, VisitPhotoUnconfirmed, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { deleteRemovedVisitPhoto, deleteVisitPhoto, forgetRemovedVisitPhoto, listVisitPhotos, REMOVED_VISIT_PHOTO_PREFIX, removedVisitPhotos, posterWaits, putVisitPhoto, settleFiledVisitPhotos, storageAvailable, visitPhotoScope, withinWait, VisitPhotoUnconfirmed, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import type { MarkedCopy } from '@/components/PhotoMarkup';
 import { setClampedTimeout } from './clampedTimer';
 import { captureStamp } from './captureStamp';
@@ -462,6 +462,12 @@ export function useSiteVisits() {
   // still be shown until a read settles it: neither brings it back
   const removedFiles = useRef(new Set<string>());
   const [removedTurn, setRemovedTurn] = useState(0);
+  // another tab recorded a removal its phone could not apply (#1241): shown files are filtered again
+  useEffect(() => {
+    const heard = (e: StorageEvent) => { if (e.key?.startsWith(REMOVED_VISIT_PHOTO_PREFIX)) setRemovedTurn((n) => n + 1); };
+    globalThis.addEventListener?.('storage', heard);
+    return () => globalThis.removeEventListener?.('storage', heard);
+  }, []);
 
   /** Ends any markup: an open in flight is aborted with its timer, and the editor closes with its photo. */
   const stopMarkup = useCallback(() => {
@@ -718,7 +724,11 @@ export function useSiteVisits() {
     const queuedKeys = new Set(queued.map((o) => o.idempotencyKey));
     const taken = filed.filter((r) => !queuedKeys.has(r.op.idempotencyKey)).map((r) => r.op);
     const all = withQueued(rows, [...queued, ...taken], me, previews, new Set(taken.map((o) => o.file.id)));
-    const gone = removedFiles.current;
+    // a file removed here, or one this phone recorded as removed (#1241, read again on every server read and on another
+    // tab's record), is never shown, from the server's rows or the phone's own copy
+    const st = useStore.getState();
+    const recorded = removedVisitPhotos(visitPhotoScope(st.sessionToken, st.sessionUserId), st.activeProjectId);
+    const gone = recorded.size === 0 ? removedFiles.current : new Set([...removedFiles.current, ...recorded]);
     if (gone.size === 0) return all;
     const kept = (f: SiteVisitFile) => !gone.has(f.mediaId) && !(f.clientKey && gone.has(f.clientKey));
     return { ...all, visits: all.visits.map((v) => (v.files?.some((f) => !kept(f)) ? { ...v, files: v.files.filter(kept) } : v)) };

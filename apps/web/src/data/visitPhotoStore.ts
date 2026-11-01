@@ -336,9 +336,11 @@ export function deleteVisitPhoto(userScope: string, projectId: string, clientKey
 
 /** #1241: one localStorage key per file the server removed whose row this phone could not delete just then: the record,
  *  apart from IndexedDB, that the row is to go. A read of the rows hides the row and deletes it, and the key goes once
- *  the row is gone (`removedVisitPhotos`, `forgetRemovedVisitPhoto`). Without localStorage nothing is kept here, and the
- *  next read of its visit settles the row, as before. */
-const removedPrefix = (userScope: string, projectId: string): string => `vitan.visitPhotoRemoved.${userScope}.${projectId}.`;
+ *  the row is gone (`removedVisitPhotos`, `forgetRemovedVisitPhoto`). The record is authoritative wherever a row is
+ *  used: the screen never shows it, the queue never puts its act back, and a replay of its act settles it unsent.
+ *  Without localStorage nothing is kept here, and the next read of its visit settles the row, as before. */
+export const REMOVED_VISIT_PHOTO_PREFIX = 'vitan.visitPhotoRemoved.';
+const removedPrefix = (userScope: string, projectId: string): string => `${REMOVED_VISIT_PHOTO_PREFIX}${userScope}.${projectId}.`;
 
 /** The server removed this file: its row goes. When the row cannot be deleted now, the removal is kept in localStorage
  *  so that no later read, in this page or after a reload, shows the file from it; rejects (`VisitPhotoUnreadable`) when
