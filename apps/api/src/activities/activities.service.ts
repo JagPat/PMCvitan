@@ -401,7 +401,10 @@ export class ActivitiesService {
         // Inspections/overrides keep their NO ACTION FKs and still BLOCK the delete (surfaced
         // as the Conflict below), so a referenced activity is never lost.
         const unlinkedEv = await this.drawingParticipant.unlinkFromDeletedActivity(tx, { projectId, actor, activityId });
-        await tx.activity.delete({ where: { id: activityId } }).catch(() => {
+        await tx.activity.delete({ where: { id: activityId } }).catch((e: unknown) => {
+          // another delete of this activity committed after the read above: it is gone, not linked, and answered as
+          // the read answers; thrown so the unlink above and everything else of this delete roll back
+          if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') throw new NotFoundException(`Activity ${activityId} not found`);
           throw new ConflictException('This activity has linked records (inspections/materials) — it can no longer be deleted');
         });
         await recordAudit(tx, { projectId, actor, action: 'activity.delete', entity: 'Activity', entityId: activityId });
@@ -692,7 +695,11 @@ export class ActivitiesService {
       run: async (tx) => {
         // revoking restores the derivation instantly — a readiness write (finding 1)
         await lockProjectReadiness(tx, projectId);
-        await tx.gateOverride.delete({ where: { id: overrideId } });
+        await tx.gateOverride.delete({ where: { id: overrideId } }).catch((e: unknown) => {
+          // another revoke of this override committed after the read above: it is gone, answered as the read answers
+          if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') throw new NotFoundException(`Override ${overrideId} not found`);
+          throw e;
+        });
         await recordAudit(tx, { projectId, actor, action: 'activity.override_revoke', entity: 'Activity', entityId: activityId, payload: { overrideId, gate: row.gate, state: row.state, reason: row.reason } });
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'activity.override_revoked', entityType: 'Activity', entityId: activityId, effectKey: 'activity.override_revoked', dispatch: {} });
         return { resultRef: overrideId, events: [ev] };

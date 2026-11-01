@@ -460,7 +460,11 @@ export class OrgsService {
     // Phase 6 task 4b (§A.1 round 11) — removing an owner/admin can strand a covered project's
     // pmc-held open decision; judged per project under its readiness key.
     await this.guardedOrgStandingWrite(orgId, userId, null, (tx) =>
-      tx.orgMembership.delete({ where: { orgId_userId: { orgId, userId } } }),
+      tx.orgMembership.delete({ where: { orgId_userId: { orgId, userId } } }).catch((e: unknown) => {
+        // another removal of this member committed after the read above: they are gone, answered as the read answers
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') throw new NotFoundException('Not a member of this org');
+        throw e;
+      }),
     );
     return { ok: true };
   }
