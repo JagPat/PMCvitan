@@ -231,6 +231,22 @@ describe('who may add a site photo (live PG)', () => {
     expect(replay.body.url).toBeUndefined();
   });
 
+  it('another member\'s key on a place hidden from the caller is not found, never refused as taken (Codex round 1 on #1262)', async () => {
+    // the engineer's private draft, hidden from everyone else; the contractor's photo filed on it before #881
+    const draft = await t.prisma.projectNode.create({
+      data: { id: `${f.projectA.id}-roles-engineer-draft`, projectId: f.projectA.id, name: 'engineer draft', kind: 'zone', publishedAt: null, authorId: `${f.projectA.id}-engineer` },
+    });
+    await t.prisma.media.create({
+      data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', data: Buffer.from(px, 'base64'), uploadedBy: `${f.projectA.id}-contractor`, nodeId: draft.id, clientKey: 'hidden-other' },
+    });
+    // the PMC (site-record role) and a narrowed role: both 404, as an unknown record, not 403 'belongs to another photo'
+    for (const role of ['pmc', 'consultant'] as Role[]) {
+      const replay = await upload(tokens[role], { kind: 'progress', clientKey: 'hidden-other' });
+      expect([role, replay.status, replay.body.url]).toEqual([role, 404, undefined]);
+    }
+    expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: 'hidden-other' } })).toBe(1);
+  });
+
   it('a contractor\'s photo goes on a published place, never on a draft (the #881 rule holds for the new roles)', async () => {
     const node = (id: string, publishedAt: Date | null, authorId: string) =>
       t.prisma.projectNode.create({ data: { id: `${f.projectA.id}-${id}`, projectId: f.projectA.id, name: id, kind: 'zone', publishedAt, authorId } });

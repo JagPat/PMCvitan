@@ -157,6 +157,11 @@ export class MediaService {
    *  the visit, note and rating, written with the upload and never changed. The length is read from the file, so the
    *  same bytes give the same length. */
   private async replayed(projectId: string, user: AuthUser, input: CreateMediaInput, row: ReplayRow): Promise<UploadedMedia> {
+    // a file on a place hidden from the caller is answered as not there, before anything about it is compared, so the
+    // answer never tells whether the key is in use (Codex round 1 on #1262)
+    if (row.nodeId && (await this.prisma.$transaction((tx) => isPlaceHiddenFrom(tx, projectId, row.nodeId, user.sub)))) {
+      throw new NotFoundException('Media not found');
+    }
     if (row.uploadedBy !== user.sub || row.kind !== input.kind
       || row.decisionId !== (input.decisionId || null) || row.dailyLogId !== (input.dailyLogId || null)
       || row.inspectionId !== (input.inspectionId ?? null) || row.inspectionItemId !== (input.inspectionItemId ?? null)
@@ -169,9 +174,6 @@ export class MediaService {
     if (!SITE_RECORD_ROLES.has(user.role)) {
       const plain = (row.kind === 'progress' || row.kind === 'visit') && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
       if (!plain) throw new ForbiddenException('This upload key belongs to another photo');
-    }
-    if (row.nodeId && (await this.prisma.$transaction((tx) => isPlaceHiddenFrom(tx, projectId, row.nodeId, user.sub)))) {
-      throw new NotFoundException('Media not found');
     }
     return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString() };
   }
