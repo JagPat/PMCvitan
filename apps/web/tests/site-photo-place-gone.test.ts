@@ -86,6 +86,8 @@ describe('an online site photo whose place was removed (#919)', () => {
     const rows = await import('@/data/sitePhotoStore');
     const row = await rows.getSitePhotoRow(ROWS, 'villa-b', up.inputs[0]!.clientKey as string);
     expect(row && rows.isSitePhotoSent(row)).toBe(true);
+    // the marker says so, to a copy of its op another tab may hold (Stage 1 r2 gap: M5)
+    expect(row).toMatchObject({ placeDropped: true });
     expect(A.getState().outbox).toEqual([]);
   });
 
@@ -115,6 +117,23 @@ describe('an online site photo whose place was removed (#919)', () => {
     expect(up.inputs).toHaveLength(2);
     expect(up.inputs[1]).not.toHaveProperty('nodeId');
   });
+
+  it('PG10: the second send answered with a photo on its place (another tab sent it once the place was back): listed on it, nothing said', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const up = uploads(placeGone(), { id: 'm1', url: '/media/m1', nodeId: 'room-1' });
+    gatewayOf(A, up.fn);
+    A.getState().addProgressPhoto(PNG, 'room-1');
+    await until(A, (s) => s.photos.some((p) => p.id === 'm1'));
+    // listed on its place as the answer came (the test's later refresh lists nothing)
+    expect(A.getState().photos.find((p) => p.id === 'm1')).toMatchObject({ nodeId: 'room-1' });
+    await settled();
+    expect(up.inputs).toHaveLength(2);
+    expect(A.getState().toast ?? '').not.toBe(DROPPED);
+    const rows = await import('@/data/sitePhotoStore');
+    const row = await rows.getSitePhotoRow(ROWS, 'villa-b', up.inputs[0]!.clientKey as string);
+    expect(row).not.toHaveProperty('placeDropped');
+  });
 });
 
 describe('a queued site photo whose place was removed (#919)', () => {
@@ -142,6 +161,39 @@ describe('a queued site photo whose place was removed (#919)', () => {
     const rows = await import('@/data/sitePhotoStore');
     const row = await rows.getSitePhotoRow(ROWS, 'villa-b', key);
     expect(row && rows.isSitePhotoSent(row) && !row.refused).toBe(true);
+    // the marker says so, to a copy of its op another tab may hold (Stage 1 r2 gap: M6)
+    expect(row).toMatchObject({ placeDropped: true });
+  });
+
+  it('PG14: a replay whose row could not be marked sent says nothing yet; its next send, once marked, says it once', async () => {
+    let failMark = false;
+    vi.doMock('@/data/sitePhotoStore', async (importOriginal) => {
+      const real = await importOriginal<typeof import('@/data/sitePhotoStore')>();
+      return { ...real, markSitePhotoSent: (...args: Parameters<typeof real.markSitePhotoSent>) => {
+        if (failMark) { failMark = false; return Promise.reject(new Error('QuotaExceededError')); }
+        return real.markSitePhotoSent(...args);
+      } };
+    });
+    try {
+      const A = await tab();
+      startWork(A as never);
+      const key = await queued(A);
+      const up = uploads(placeGone(), { id: 'm1', url: '/media/m1', nodeId: null }, { id: 'm1', url: '/media/m1', nodeId: null });
+      gatewayOf(A, up.fn);
+      failMark = true;
+      await A.getState().flushOutbox();
+      await settled();
+      expect(failMark).toBe(false);
+      expect(A.getState().outbox).toEqual([{ t: 'uploadSitePhoto', scope: ROWS, clientKey: key }]);
+      expect(A.getState().toast ?? '').not.toContain('without a place');
+      await A.getState().flushOutbox();
+      await settled();
+      expect(up.inputs.map((i) => 'nodeId' in i)).toEqual([true, false, true]);
+      expect(A.getState().outbox).toEqual([]);
+      expect(A.getState().toast).toContain(DROPPED_LINE);
+    } finally {
+      vi.doUnmock('@/data/sitePhotoStore');
+    }
   });
 
   it('PG5: the same 400 again on a replay\'s second send: no third send, discarded as before, its row marked refused', async () => {
@@ -205,6 +257,55 @@ describe('a queued site photo whose place was removed (#919)', () => {
     expect(up.inputs.map((i) => [i.clientKey, 'nodeId' in i])).toEqual([['k-old', true], ['k-old', false]]);
     expect(A.getState().outbox).toEqual([]);
     expect(A.getState().toast).toContain(DROPPED_LINE);
+  });
+
+  it('PG11: a refresh that fails after an earlier release\'s photo was saved without its place: told once, by the send that settles it', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const up = uploads(placeGone(), { id: 'm1', url: '/media/m1', nodeId: null }, { id: 'm1', url: '/media/m1', nodeId: null });
+    const snapshot = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch')).mockResolvedValue(snap);
+    A.getState()._setGateway({ uploadMedia: up.fn, snapshot, project: 'villa-b' } as never);
+    A.setState({ outbox: [{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-old', nodeId: 'room-1' } }] } as never);
+    await A.getState().flushOutbox();
+    await settled();
+    expect(A.getState().outbox).toHaveLength(1);
+    expect(A.getState().toast ?? '').not.toContain(DROPPED_LINE);
+    await A.getState().flushOutbox();
+    await settled();
+    expect(up.inputs.map((i) => 'nodeId' in i)).toEqual([true, false, true]);
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().toast).toContain(DROPPED_LINE);
+  });
+
+  it('PG12: a copy of the op whose photo another tab saved without its place says so too, sending nothing', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const key = await queued(A);
+    const rows = await import('@/data/sitePhotoStore');
+    // the other tab's send: answered, its row marked sent, without the place
+    await rows.markSitePhotoSent(ROWS, 'villa-b', key, true);
+    const up = uploads();
+    gatewayOf(A, up.fn);
+    await A.getState().flushOutbox();
+    await settled();
+    expect(up.inputs).toHaveLength(0);
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().toast).toContain(DROPPED_LINE);
+  });
+
+  it('PG13: a copy whose photo another tab sent with its place, or an earlier release marked sent, says nothing about a place', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const key = await queued(A);
+    const rows = await import('@/data/sitePhotoStore');
+    await rows.markSitePhotoSent(ROWS, 'villa-b', key);
+    const up = uploads();
+    gatewayOf(A, up.fn);
+    await A.getState().flushOutbox();
+    await settled();
+    expect(up.inputs).toHaveLength(0);
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().toast ?? '').not.toContain('without a place');
   });
 
   it('PG8: a queued evidence or visit upload keeps the 4xx final: sent once', async () => {

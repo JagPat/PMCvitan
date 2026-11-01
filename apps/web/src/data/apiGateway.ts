@@ -2086,7 +2086,9 @@ export function isPlaceGone(err: unknown): boolean {
  *  the phone is not changed: a replay after a lost answer to the second send sends the photo with its place again, and
  *  the server's key fast path answers it with the stored photo, before any place check. That answer names the stored
  *  photo's place, so a photo that named one and is stored with none was saved without it, and the person is told then
- *  (Codex 4436483105). An API older than that answer names none: nothing is said. */
+ *  (Codex 4436483105). An API older than that answer names none: nothing is said. The second send's own answer is taken
+ *  the same way: a photo another tab sent under the key, stored on the place once it was back, is answered with that
+ *  place, and is not said to be without it (Codex 4436566611). */
 export async function uploadSitePhotoInput(gw: Pick<ApiGateway, 'uploadMedia'>, input: UploadMediaInput): Promise<{ id: string; url: string; at?: string; placeDropped?: true }> {
   try {
     const res = await gw.uploadMedia(input);
@@ -2094,7 +2096,8 @@ export async function uploadSitePhotoInput(gw: Pick<ApiGateway, 'uploadMedia'>, 
   } catch (err) {
     if (!input.nodeId || !isPlaceGone(err)) throw err;
     const { nodeId: _gone, ...unplaced } = input;
-    return { ...(await gw.uploadMedia(unplaced)), placeDropped: true };
+    const res = await gw.uploadMedia(unplaced);
+    return res.nodeId ? res : { ...res, placeDropped: true };
   }
 }
 
@@ -2397,7 +2400,9 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
       // the send is settled, not refused, so it leaves the queue quietly and the snapshot no longer lists it. Settled by
       // the 410 alone: a refresh after it that fails answers no snapshot, never a resend (Codex 4339094809)
       return (isPlainSitePhotoInput(op.input) ? uploadSitePhotoInput(gw, op.input) : gw.uploadMedia(op.input) as Promise<{ placeDropped?: true }>).then(
-        (res) => { if (res.placeDropped) onPlaceDropped?.(); return gw.snapshot(); },
+        // told only once the send is settled: a refresh that fails keeps the op, and its next send is told instead
+        // (Codex 4436566606)
+        async (res) => { const snap = await gw.snapshot(); if (res.placeDropped) onPlaceDropped?.(); return snap; },
         (err: unknown) => {
           if (!isDeletedPhoto(err)) throw err;
           onPhotoGone?.();
@@ -2469,11 +2474,14 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
         // good there: discarded here too
         if (isSitePhotoSent(row)) {
           if (row.refused) throw new SitePhotoRefusedElsewhere();
+          // saved there without its removed place: said here too, as a refusal there is (Codex 4436566600)
+          if (row.placeDropped) onPlaceDropped?.();
           return false;
         }
+        // a place removed since the pick: saved without it (#919)
+        let placeDropped = false;
         try {
-          // a place removed since the pick: saved without it (#919)
-          if ((await uploadSitePhotoInput(gw, row.input)).placeDropped) onPlaceDropped?.();
+          placeDropped = (await uploadSitePhotoInput(gw, row.input)).placeDropped === true;
         } catch (err) {
           // answered for good (the photo was deleted after an earlier send of this key landed, or refused): the row goes
           // with the op. A row the phone could not remove keeps its op (no status: sent and answered again)
@@ -2486,7 +2494,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
         }
         // a row the phone could not mark keeps this op, which is sent again; the server answers with the same photo. Never
         // settled with its bytes still in the row: a later load would rebuild an op for a photo said to be sent (Codex 4389428571)
-        await markSitePhotoSent(op.scope, gw.project, op.clientKey).catch(() => { throw new SitePhotoUnreadable(); });
+        await markSitePhotoSent(op.scope, gw.project, op.clientKey, placeDropped).catch(() => { throw new SitePhotoUnreadable(); });
+        // told once the op is settled: a row the phone could not mark keeps the op, and its next send is told instead
+        // (Codex 4436566606)
+        if (placeDropped) onPlaceDropped?.();
         return false;
       }).then((gone) => {
         if (gone === null) throw new SitePhotoBusy();

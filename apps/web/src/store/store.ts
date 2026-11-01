@@ -6557,12 +6557,13 @@ export const useStore = create<Store>()(
           let rowGone: Promise<boolean> = Promise.resolve(true);
           const changeRow = (make: () => Promise<void>): void => { rowChange = make; rowGone = make().then(() => true, () => false); };
           const letRowGo = (): void => changeRow(() => deleteSitePhotoRow(rowScope, rowProject, clientKey));
-          const rowSent = (): void => changeRow(() => (sitePhotoStorageAvailable() ? markSitePhotoSent(rowScope, rowProject, clientKey) : Promise.resolve()));
+          // saved without its removed place: the marker says so to a copy of its op another tab holds (Codex 4436566600)
+          const rowSent = (placeDropped: boolean): void => changeRow(() => (sitePhotoStorageAvailable() ? markSitePhotoSent(rowScope, rowProject, clientKey, placeDropped) : Promise.resolve()));
           // a place removed since the pick: saved without it, and the person told so (#919)
           void uploadSitePhotoInput(sendGateway, input)
             .then((res) => {
               const placed = res.placeDropped ? undefined : nodeId;
-              rowSent();
+              rowSent(res.placeDropped === true);
               if (!scopeStillCurrent(scope)) { set((s) => settle(s, true)); return; }
               set((s) => {
                 settle(s, true);
