@@ -1,4 +1,5 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { OrgsParticipant } from './orgs.participant';
 import type { AuthUser } from '../common/auth';
@@ -147,7 +148,11 @@ export class CompaniesService {
     // constraint trigger would refuse the whole transaction at COMMIT — so the delete the user
     // asked for would fail rather than the association tidying itself up.
     await this.prisma.$transaction(async (tx) => {
-      await tx.projectCompany.delete({ where: { id: companyId } });
+      await tx.projectCompany.delete({ where: { id: companyId } }).catch((e: unknown) => {
+        // another removal of this company committed after the read above: it is gone, answered as the read answers
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') throw new NotFoundException('Company not found on this project');
+        throw e;
+      });
       await this.party.releasePartyAssociationIfUnsourced(tx, { projectId, partyId: existing.partyId });
     });
     return { ok: true };
