@@ -138,7 +138,7 @@ describe('MediaService.create', () => {
     const { svc, prisma, dispatcher } = make(null);
     const res = await svc.create('ambli', uploader, input);
 
-    expect(res).toEqual({ id: 'med1', url: '/media/med1?t=tok', at: '2026-10-19T09:30:00.000Z' });
+    expect(res).toEqual({ id: 'med1', url: '/media/med1?t=tok', at: '2026-10-19T09:30:00.000Z', nodeId: null });
     const row = prisma.media.create.mock.calls[0][0].data;
     expect(row.data).toBeInstanceOf(Buffer);
     expect(row.data.toString()).toBe('hello');
