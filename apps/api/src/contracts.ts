@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { parseCivilDate } from './common/civil-date';
-import { DEDUCTION_TYPES, MONEY_STRING, QUANTITY_STRING, SOD_RULES } from '@vitan/shared';
+import { DEDUCTION_TYPES, MONEY_STRING, QUANTITY_STRING, SITE_VISIT_REMOVAL_REASON_MAX, SOD_RULES, removalReasonShows } from '@vitan/shared';
 
 export const sessionSchema = z.object({
   // `architect` (Phase 6 task 4d): admitted here so the SERVICE can refuse it 409 with the drain
@@ -280,19 +280,13 @@ export type AddPosterInput = z.infer<typeof addPosterSchema>;
 
 // #1179 R2 — take a file off its site visit. The PMC says why when the file is not their own within the hour; the
 // database keeps the reason on the visit's removal line, at most 300 characters and never blank (20280125000000).
-export const SITE_VISIT_REMOVAL_REASON_MAX = 300;
-// The limit counts characters, as the database column does (not UTF-16 units). A reason must show something: at
-// least one letter, digit, punctuation mark or symbol that is not default-ignorable (a variation selector or a Hangul
-// filler draws nothing) nor the blank Braille cell. This lists what shows rather than what does not, so a mark-only,
-// control-only, separator-only, private-use or unassigned reason is refused alike (Codex 4397768825, 4398944044).
-// A combining mark still counts beside the letter it sits on. A NUL is refused: PostgreSQL cannot store it.
-const SHOWS = /[\p{L}\p{N}\p{P}\p{S}]/u;
-const DRAWS_NOTHING = /[\p{Default_Ignorable_Code_Point}\u2800]/u;
-const showsSomething = (s: string) => [...s].some((c) => SHOWS.test(c) && !DRAWS_NOTHING.test(c));
+// The limit counts characters, as the database column does (not UTF-16 units). What counts as showing something is
+// shared with the screen (`removalReasonShows`). A NUL is refused: PostgreSQL cannot store it.
+export { SITE_VISIT_REMOVAL_REASON_MAX };
 export const removeVisitFileSchema = z.object({
   reason: z.string().trim()
     .refine((s) => !s.includes('\u0000'), 'A reason cannot contain that character')
-    .refine(showsSomething, 'Say why you are removing this file')
+    .refine(removalReasonShows, 'Say why you are removing this file')
     .refine((s) => [...s].length <= SITE_VISIT_REMOVAL_REASON_MAX, `Keep the reason to ${SITE_VISIT_REMOVAL_REASON_MAX} characters`)
     .nullish()
     .transform((s) => s ?? undefined),
