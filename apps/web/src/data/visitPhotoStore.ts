@@ -334,6 +334,51 @@ export function deleteVisitPhoto(userScope: string, projectId: string, clientKey
     .then(() => letGoOf(userScope, projectId, [clientKey]));
 }
 
+/** #1241: one localStorage key per file the server removed whose row this phone could not delete just then: the record,
+ *  apart from IndexedDB, that the row is to go. A read of the rows hides the row and deletes it, and the key goes once
+ *  the row is gone (`removedVisitPhotos`, `forgetRemovedVisitPhoto`). Without localStorage nothing is kept here, and the
+ *  next read of its visit settles the row, as before. */
+const removedPrefix = (userScope: string, projectId: string): string => `vitan.visitPhotoRemoved.${userScope}.${projectId}.`;
+
+/** The server removed this file: its row goes. When the row cannot be deleted now, the removal is kept in localStorage
+ *  so that no later read, in this page or after a reload, shows the file from it; rejects (`VisitPhotoUnreadable`) when
+ *  neither the delete nor that record was made. Resolves `'kept'` when only the record was made. */
+export async function deleteRemovedVisitPhoto(userScope: string, projectId: string, clientKey: string): Promise<'deleted' | 'kept'> {
+  try {
+    await withinWait(() => deleteVisitPhoto(userScope, projectId, clientKey));
+    return 'deleted';
+  } catch {
+    try {
+      const storage = globalThis.localStorage;
+      if (!storage) throw new Error('no localStorage');
+      storage.setItem(`${removedPrefix(userScope, projectId)}${clientKey}`, '1');
+      return 'kept';
+    } catch {
+      throw new VisitPhotoUnreadable();
+    }
+  }
+}
+
+/** The keys of (user, project) whose files the server removed while their rows could not be deleted. */
+export function removedVisitPhotos(userScope: string, projectId: string): ReadonlySet<string> {
+  const out = new Set<string>();
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return out;
+    const prefix = removedPrefix(userScope, projectId);
+    for (let i = 0; i < storage.length; i += 1) {
+      const k = storage.key(i);
+      if (k?.startsWith(prefix)) out.add(k.slice(prefix.length));
+    }
+  } catch { /* unreadable: none known here */ }
+  return out;
+}
+
+/** The row of a removed file is gone: its record goes. */
+export function forgetRemovedVisitPhoto(userScope: string, projectId: string, clientKey: string): void {
+  try { globalThis.localStorage?.removeItem(`${removedPrefix(userScope, projectId)}${clientKey}`); } catch { /* the next read tries again */ }
+}
+
 /** The state a row was left in by a transition, as committed: what an event about it carries (see "State rules" in
  *  the module notes). Null when there is no row (dismissed or settled). */
 export type CommittedPhoto = { state: 'filed' | 'failed'; reason: string | null } | null;

@@ -5,7 +5,7 @@ import type { Lang, ProjectMember, Role } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { replayOutboxOp, type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitFile, type SiteVisitRemoval } from '@/data/apiGateway';
-import { fileVisitPhoto, listVisitPhotos, putVisitPhoto, visitPhotoScope, VisitPhotoUnreadable, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
+import { fileVisitPhoto, listVisitPhotos, putVisitPhoto, removedVisitPhotos, visitPhotoScope, VisitPhotoUnreadable, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
 import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
 
 /**
@@ -66,6 +66,17 @@ async function mount(role: Role, me: string, gw: Fake, lang: Lang = 'en') {
   await act(async () => {});
   await settled();
   return screen.getByTestId('sv-visit-v-1');
+}
+/** a photo the phone sent and the server took, filed after the screen's first read is sent, so it is shown from the phone */
+async function filedCopy(scope: string, project: string, key: string) {
+  const op = {
+    t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: `idem-${key}`, scope,
+    file: { id: key, mime: 'image/jpeg' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
+  } as SiteVisitAddFileOp;
+  now = NOW + 5_000;
+  await putVisitPhoto(scope, project, op, 'AAAA');
+  await fileVisitPhoto(scope, project, key);
+  now = NOW;
 }
 const refusal = (status: number, serverMessage: string) => Object.assign(new Error(String(status)), { status, serverMessage });
 const click = async (el: HTMLElement) => { await act(async () => { fireEvent.click(el); }); await settled(); };
@@ -217,7 +228,7 @@ describe('#1179 R3: taking a file off a visit', () => {
     }
   });
 
-  it('no answer is said as such, and with no signal nothing is sent', async () => {
+  it('no answer is said as such; a browser that says it is offline still sends, and is said to have no signal only when nothing answered', async () => {
     const { gw } = server(visit({ files: [voice({ removable: own })] }), { removeSiteVisitFile: vi.fn(async () => { throw new TypeError('Failed to fetch'); }) });
     const card = await mount('consultant', CONSULTANT, gw);
     await click(within(card).getByTestId('sv-remove-m-v'));
@@ -226,13 +237,23 @@ describe('#1179 R3: taking a file off a visit', () => {
     expect(within(card).getByTestId('sv-file-m-v')).toBeTruthy();
     cleanup();
 
+    // #1239: the browser's own guess is not the server's reach (a VPN, a network its probe cannot see out of)
     vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
-    const offline = server(visit({ files: [voice({ removable: own })] }));
-    const card2 = await mount('consultant', CONSULTANT, offline.gw);
+    const reached = server(visit({ files: [voice({ removable: own })] }));
+    const card2 = await mount('consultant', CONSULTANT, reached.gw);
+    reached.state.visit = visit({ files: [], removals: [line()] });
     await click(within(card2).getByTestId('sv-remove-m-v'));
     await click(within(card2).getByTestId('sv-remove-yes-m-v'));
-    expect(offline.gw.removeSiteVisitFile).not.toHaveBeenCalled();
-    expect(within(card2).getByTestId('sv-remove-said-m-v').textContent).toBe('No signal. Removing a file needs a connection.');
+    expect(reached.gw.removeSiteVisitFile).toHaveBeenCalledWith('m-v', undefined);
+    expect(within(card2).queryByTestId('sv-file-m-v')).toBeNull();
+    cleanup();
+
+    const unreached = server(visit({ files: [voice({ removable: own })] }), { removeSiteVisitFile: vi.fn(async () => { throw new TypeError('Failed to fetch'); }) });
+    const card3 = await mount('consultant', CONSULTANT, unreached.gw);
+    await click(within(card3).getByTestId('sv-remove-m-v'));
+    await click(within(card3).getByTestId('sv-remove-yes-m-v'));
+    expect(unreached.gw.removeSiteVisitFile).toHaveBeenCalledTimes(1);
+    expect(within(card3).getByTestId('sv-remove-said-m-v').textContent).toBe('No signal. Removing a file needs a connection.');
   });
 
   it('a server that answered is never said to have given no answer: a sign-in, a timeout, a busy or failing server', async () => {
@@ -339,6 +360,61 @@ describe('#1179 R3: taking a file off a visit', () => {
     expect(within(card).queryByTestId('sv-file-ck-1')).toBeNull();
     // and the phone lets go of its copy with the removal: no later read is needed, and a reload rebuilds nothing
     expect(await listVisitPhotos(scope, st.activeProjectId)).toEqual([]);
+  });
+
+  it('the phone lets go of its copy in the scope the removal was sent from, even when another is shown by the answer', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    await filedCopy(scope, project, 'ck-1');
+    let answer!: () => void;
+    const photo = voice({ mediaId: 'm-p', mime: 'image/jpeg', url: '/media/m-p?sig=x', clientKey: 'ck-1', removable: own, durationSec: null, note: null });
+    const { gw } = server(visit({ files: [photo] }), { removeSiteVisitFile: vi.fn(() => new Promise((ok) => { answer = () => ok({ ok: true }); })) });
+    const card = await mount('consultant', CONSULTANT, gw);
+    await click(within(card).getByTestId('sv-remove-m-p'));
+    await act(async () => { fireEvent.click(within(card).getByTestId('sv-remove-yes-m-p')); });
+    await act(async () => { useStore.setState({ projectScopeGeneration: useStore.getState().projectScopeGeneration + 1 }); });
+    await act(async () => { answer(); });
+    await settled();
+    // #1253: nothing is said on the new screen, but the removed file's copy is gone from the phone
+    expect(screen.queryByRole('status')).toBeNull();
+    await vi.waitFor(async () => expect(await listVisitPhotos(scope, project)).toEqual([]));
+  });
+
+  it('a removed file whose copy the phone cannot delete just then is never shown from it again, and goes on the next read', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    await filedCopy(scope, project, 'ck-1');
+    const photo = voice({ mediaId: 'm-p', mime: 'image/jpeg', url: '/media/m-p?sig=x', clientKey: 'ck-1', removable: own, durationSec: null, note: null });
+    const { gw, state } = server(visit({ files: [photo] }));
+    const card = await mount('consultant', CONSULTANT, gw);
+    state.visit = visit({ files: [], removals: [line({ mediaId: 'm-p', kind: 'photo' })] });
+    // the phone's storage fails for the removal's own delete only
+    const open = indexedDB.open.bind(indexedDB);
+    const failing = vi.spyOn(indexedDB, 'open').mockImplementation(() => { throw new Error('storage down'); });
+    await click(within(card).getByTestId('sv-remove-m-p'));
+    await click(within(card).getByTestId('sv-remove-yes-m-p'));
+    failing.mockImplementation(open);
+    expect(within(card).queryByTestId('sv-file-ck-1')).toBeNull();
+    // #1241: the removal is recorded apart from IndexedDB, so a reload shows nothing from the copy, and its read deletes it
+    expect(removedVisitPhotos(scope, project)).toEqual(new Set(['ck-1']));
+    cleanup();
+    // a reload while the row still cannot be deleted (and its first read, sent before the copy was filed, does not
+    // settle it): only the record keeps the file off the screen
+    const del = vi.spyOn(IDBObjectStore.prototype, 'delete').mockImplementation(() => { throw new Error('storage down'); });
+    const card2 = await mount('consultant', CONSULTANT, gw);
+    expect(within(card2).queryByTestId('sv-file-ck-1')).toBeNull();
+    expect((await listVisitPhotos(scope, project)).map((r) => r.clientKey)).toEqual(['ck-1']);
+    expect(removedVisitPhotos(scope, project)).toEqual(new Set(['ck-1']));
+    del.mockRestore();
+    cleanup();
+    // the next read of the rows that can delete it does, and the record goes
+    await mount('consultant', CONSULTANT, gw);
+    await vi.waitFor(async () => expect(await listVisitPhotos(scope, project)).toEqual([]));
+    await vi.waitFor(() => expect(removedVisitPhotos(scope, project).size).toBe(0));
   });
 
   it('a send whose answer was lost, replayed after its file was removed, is settled: never "not sent"', async () => {
