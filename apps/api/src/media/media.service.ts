@@ -54,8 +54,8 @@ function isSiteVisitFile(input: CreateMediaInput): boolean {
 }
 
 /** What a clientKey replay must read to decide whether the caller may have the stored row back. */
-const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true } as const;
-type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null };
+const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true, mime: true, sizeBytes: true, sourceMediaId: true, takenAt: true, geoLat: true, geoLng: true } as const;
+type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null; mime: string; sizeBytes: number; sourceMediaId: string | null; takenAt: string | null; geoLat: number | null; geoLng: number | null };
 
 /** #482 site photos — one send key at a time: the upload that may store a photo under it, and the delete that retires
  *  it. Always the FIRST statement of its transaction, so no transaction holds another lock while it waits for this one,
@@ -142,11 +142,21 @@ export class MediaService {
    *  own key sent for something else, is refused rather than answered with a photo the request did not upload, which
    *  would leave its evidence unstored while the device counts it as sent. Each link is stored as the request sent it
    *  (`resolveRefInProject` returns the id it checked; an empty one is none) and is never rewritten after, so a stored
-   *  upload's own replay matches. The place (`nodeId`) is not compared: a photo may be re-filed to another place. */
+   *  upload's own replay matches. The place (`nodeId`) is not compared: a photo may be re-filed to another place.
+   *  The rule (Codex rounds 1 and 2 on #1255): every field the upload stores as the request sent it is compared, and
+   *  only the place is not. That is the file itself (its type and size in bytes; a size of 0 is a row written without
+   *  one, the column's default, and is not compared), its camera time and location (a marked-up copy stores its
+   *  original's instead, and its request sends none), the photo a copy was drawn on, and for a visit file its link:
+   *  the visit, note and rating, written with the upload and never changed. The length is read from the file, so the
+   *  same bytes give the same length. */
   private async replayed(projectId: string, user: AuthUser, input: CreateMediaInput, row: ReplayRow): Promise<UploadedMedia> {
     if (row.uploadedBy !== user.sub || row.kind !== input.kind
       || row.decisionId !== (input.decisionId || null) || row.dailyLogId !== (input.dailyLogId || null)
-      || row.inspectionId !== (input.inspectionId ?? null) || row.inspectionItemId !== (input.inspectionItemId ?? null)) {
+      || row.inspectionId !== (input.inspectionId ?? null) || row.inspectionItemId !== (input.inspectionItemId ?? null)
+      || row.mime !== input.mime || (row.sizeBytes !== 0 && row.sizeBytes !== Buffer.from(input.data, 'base64').length)
+      || row.sourceMediaId !== (input.sourceMediaId ?? null)
+      || (!row.sourceMediaId && (row.takenAt !== (input.takenAt ?? null) || row.geoLat !== (input.geoLat ?? null) || row.geoLng !== (input.geoLng ?? null)))
+      || !(await this.sameVisitLink(projectId, row.id, input))) {
       throw new ForbiddenException('This upload key belongs to another photo');
     }
     if (!SITE_RECORD_ROLES.has(user.role)) {
@@ -157,6 +167,16 @@ export class MediaService {
       throw new NotFoundException('Media not found');
     }
     return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString() };
+  }
+
+  /** Whether a stored file's visit link is the one this request would have written: none for an upload that names no
+   *  visit (only a visit upload writes one), else the same visit, note and rating. */
+  private async sameVisitLink(projectId: string, mediaId: string, input: CreateMediaInput): Promise<boolean> {
+    if (input.kind !== 'visit') return true;
+    const link = await this.siteVisitFiles.linkOf(this.prisma, projectId, mediaId);
+    const sent = input.siteVisit;
+    return link !== null && sent !== undefined && link.visitId === sent.visitId
+      && link.note === (sent.note ?? null) && link.rating === (sent.rating ?? null);
   }
 
   /** The photo a marked-up copy is drawn on: an image of this project that is a file on the same visit. The copy takes

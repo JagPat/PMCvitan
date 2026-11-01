@@ -136,6 +136,9 @@ describe('who may add a site photo (live PG)', () => {
     for (const link of [{ decisionId: 'not-this' }, { dailyLogId: 'not-this' }, { inspectionId: 'not-this' }]) {
       expect((await upload(tokens[role], { kind: 'material', ...link, clientKey: `904-own-${role}` })).status, JSON.stringify(link)).toBe(403);
     }
+    // nor another file under it: another type, or other bytes (Codex round 2 on #1255)
+    expect((await upload(tokens[role], { kind: 'material', mime: 'image/jpeg', clientKey: `904-own-${role}` })).status).toBe(403);
+    expect((await upload(tokens[role], { kind: 'material', data: Buffer.from([0x89, 0x50, 0x4e]).toString('base64'), clientKey: `904-own-${role}` })).status).toBe(403);
     // an empty link is none, as the upload stored it
     expect((await upload(tokens[role], { kind: 'material', decisionId: '', dailyLogId: '', clientKey: `904-own-${role}` })).body.id).toBe(first.body.id);
     // nothing new was stored, and the two photos are as they were

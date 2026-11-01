@@ -181,6 +181,31 @@ describe('Site Visits SV2 — adding files to a visit (live PG)', () => {
     expect(listed.clientKey).toBe(key);
   });
 
+  it('#904: a file key replays only to the same file on the same visit (Codex round 2 on #1255)', async () => {
+    const key = `sv2f-904-${run}`;
+    const first = await visitFile(consultantToken, visitId, { clientKey: key });
+    expect(first.status).toBe(201);
+    // the same uploader's key sent for another visit they are on: that visit would get no file while the phone counts
+    // it as sent, so it is refused and nothing goes on the other visit
+    const other = randomUUID();
+    expect((await http().post(visits()).set('Authorization', `Bearer ${consultantToken}`).send({ id: other, claimedAt: ago(10) })).status).toBe(201);
+    const elsewhere = await visitFile(consultantToken, other, { clientKey: key });
+    expect([elsewhere.status, elsewhere.body.id]).toEqual([403, undefined]);
+    expect(await t.prisma.siteVisitMedia.count({ where: { visitId: other } })).toBe(0);
+    // nor is it another file: another type, or other bytes
+    expect((await visitFile(consultantToken, visitId, { clientKey: key, mime: 'image/jpeg' })).status).toBe(403);
+    const otherBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d]).toString('base64');
+    expect((await visitFile(consultantToken, visitId, { clientKey: key, data: otherBytes })).status).toBe(403);
+    // nor the same file sent with another note, rating, camera time or location than its upload stored
+    for (const [extraBody, link] of [[{}, { note: 'West wall' }], [{}, { rating: 'concern' }], [{ takenAt: '01 Nov 2026 · 9:00 AM' }, {}], [{ geoLat: 23.03 }, {}]] as const) {
+      expect((await visitFile(consultantToken, visitId, { clientKey: key, ...extraBody }, link)).status, JSON.stringify([extraBody, link])).toBe(403);
+    }
+    // the honest replay is still the same file, on its visit once
+    const again = await visitFile(consultantToken, visitId, { clientKey: key });
+    expect([again.status, again.body.id]).toEqual([201, first.body.id]);
+    expect(await t.prisma.siteVisitMedia.count({ where: { mediaId: first.body.id } })).toBe(1);
+  });
+
   it('names a file’s upload key to its uploader only, in the list and in an act’s answer (Codex 4324453890)', async () => {
     const key = `sv2f-own-${run}`;
     const sent = await visitFile(consultantToken, visitId, { clientKey: key });
@@ -206,6 +231,10 @@ describe('Site Visits SV2 — adding files to a visit (live PG)', () => {
     const of = (v: Listed, id: string) => v.files.find((x) => x.mediaId === id)!;
     const own = await readVisit(visitId, consultantToken);
     expect(of(own, copy.body.id)).toMatchObject({ sourceMediaId: original.body.id, clientKey: key });
+    // its key replays only as a copy of the same photo (Codex round 2 on #1255)
+    expect((await visitFile(consultantToken, visitId, { sourceMediaId: original.body.id, mime: 'image/jpeg', clientKey: key, nodeId: place.id })).body.id).toBe(copy.body.id);
+    expect((await visitFile(consultantToken, visitId, { mime: 'image/jpeg', clientKey: key, nodeId: place.id })).status).toBe(403);
+    expect((await visitFile(consultantToken, visitId, { sourceMediaId: 'not-this', mime: 'image/jpeg', clientKey: key, nodeId: place.id })).status).toBe(403);
     // the original is kept as it was, and names no source
     expect(of(own, original.body.id).sourceMediaId).toBeNull();
     // every other member reads which photo it was drawn on, never the copy's key
