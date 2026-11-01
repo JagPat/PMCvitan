@@ -450,9 +450,11 @@ export class DrawingsService {
     return null;
   }
 
-  /** Delete a whole drawing (all revisions + files), scoped to the project. Audited. */
+  /** Delete a whole drawing (all revisions + files), scoped to the project. Audited. A delete that loses a race to
+   *  another delete of the drawing is the controller's 404, and nothing of it commits. The revisions' files are removed
+   *  only after the delete commits: a delete that fails keeps every file its rows still name. */
   async remove(id: string, projectId: string, user: AuthUser, idempotencyKey?: string): Promise<boolean> {
-    const drawing = await this.prisma.drawing.findUnique({ where: { id }, include: { revisions: true } });
+    const drawing = await this.prisma.drawing.findUnique({ where: { id }, select: { projectId: true, number: true } });
     if (!drawing || drawing.projectId !== projectId) return false;
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
@@ -460,22 +462,31 @@ export class DrawingsService {
     if (await peekReplay(this.prisma, scope, actor.actorId, 'drawings.remove', idempotencyKey, requestHash)) {
       return true; // already removed under this key
     }
-    await Promise.all(drawing.revisions.map((r) => (r.storageKey ? this.storage.remove(r.storageKey).catch(() => {}) : Promise.resolve())));
-    const outcome = await executeCommand(this.prisma, {
+    const outcome = await executeCommand<string[]>(this.prisma, {
       scope,
       actor,
       commandType: 'drawings.remove',
       idempotencyKey,
       requestHash,
       run: async (tx) => {
-        // deleting a linked drawing changes the aggregated gate (finding 1)
+        // deleting a linked drawing changes the aggregated gate (finding 1); the readiness lock comes FIRST, before
+        // the row lock below (the issue path's order)
         await lockProjectReadiness(tx, projectId);
+        // the drawing row, locked: another delete that committed since the read above leaves nothing to lock, and a
+        // revision issued since is in the list below (an issue locks this row too). Thrown, so nothing here commits
+        // (by id alone, as publish locks it: the read above proved its project, which a drawing never changes)
+        const [locked] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT "id" FROM "Drawing" WHERE "id" = ${id} FOR UPDATE`);
+        if (!locked) throw new NotFoundException('Drawing not found');
+        const revisions = await tx.drawingRevision.findMany({ where: { projectId, drawingId: id }, select: { storageKey: true } });
         await tx.drawing.delete({ where: { id } }); // revisions + recipients cascade
         await recordAudit(tx, { projectId, actor, action: 'drawing.remove', entity: 'Drawing', entityId: id, payload: { number: drawing.number } });
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'drawing.removed', entityType: 'Drawing', entityId: id, payload: { number: drawing.number }, effectKey: 'drawing.removed', dispatch: {} });
-        return { resultRef: id, events: [ev] };
+        return { resultRef: id, value: revisions.flatMap((r) => (r.storageKey ? [r.storageKey] : [])), events: [ev] };
       },
     });
+    // the files go once no row names them; one that fails to go is a harmless orphan, never a failed delete. A replay
+    // removes nothing: the run that committed did
+    if (!outcome.replayed) await Promise.all((outcome.value ?? []).map((key) => this.storage.remove(key).catch(() => {})));
     if (!outcome.replayed && outcome.events.length > 0) await this.dispatcher.dispatchCommitted(outcome.events);
     return true;
   }
