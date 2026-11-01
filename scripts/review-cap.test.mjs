@@ -15,7 +15,7 @@ import {
 import { classifyCodexState } from './autonomous-review-state.mjs';
 import { capDefersStoredFailure, capFiles, cappedSuccessDetail, ensureTerminalReviewState, EVIDENCE_SNAPSHOT_ATTEMPTS, fileDeferredFindings, finalCodexEvidence, publishBlockingVerdict, publishSettledSuccess, readCodexEvidence, reclassifyCurrentCodexEvidence, reviewAttempt, settleFinalCodexEvidence, SETTLING_DESCRIPTION, unionDeferred } from './autonomous-review-gate.mjs';
 import { pendingFollowUpHeads } from './review-follow-up.mjs';
-import { CODEX_RUN_HELD_DETAIL, FOLLOW_UP_RETRY, isRetryableReviewFailureDescription, REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
+import { CODEX_RUN_HELD_DETAIL, CODEX_SECURITY_FINDINGS_DETAIL, FOLLOW_UP_RETRY, isRetryableReviewFailureDescription, REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
 // M3c C1 — the gate stamps the run id and records a receipt from the Actions env; in CI that env is the test
 // runner's own, so clear it to keep the suite hermetic and the runner's GITHUB_ENV untouched.
@@ -565,8 +565,9 @@ test('Codex 4225790715 — a stored findings failure that the cap now defers no 
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState'), gate.indexOf('async function waitForRequiredChecks'));
   // (G2 — each also turns a 'held' answer into the retryable hold before preserving anything)
-  assert.match(recovery, /const latchedDeferral = latched \? await capDefersStoredFailure\([\s\S]{0,200}if \(latchedDeferral === 'held'\) \{\s*await publishHeldReview\([\s\S]{0,80}if \(latched && !latchedDeferral\)/u);
-  assert.match(recovery, /\} else \{[\s\S]{0,400}const deferral = await capDefersStoredFailure\(client, pullRequest, expectedHead, status\);\s*if \(deferral === 'held'\) \{\s*await publishHeldReview\([\s\S]{0,80}if \(deferral\) return false;/u);
+  // (G2 — a 'held' answer hands the head to the ordinary review in both branches, before anything is preserved)
+  assert.match(recovery, /const latchedDeferral = latched \? await capDefersStoredFailure\([\s\S]{0,200}if \(latchedDeferral === 'held'\) return false;\s*if \(latched && !latchedDeferral\)/u);
+  assert.match(recovery, /\} else \{[\s\S]{0,400}const deferral = await capDefersStoredFailure\(client, pullRequest, expectedHead, status\);[\s\S]{0,200}if \(deferral\) return false;/u);
 });
 
 test('Codex 4226080917 — a failed follow-up filing is retried by the next controller run on the same head', async () => {
@@ -921,14 +922,46 @@ test('G2 — the final read takes Codex\'s record without reactions, and reports
   assert.ok(!reads.includes('issueComments'));
 });
 
-test('G2 — recovery of a stored findings failure on a held head publishes the retryable hold, undrafted', async () => {
+test('G2 gap 1 — recovery of a stored findings failure on a held head hands it to the ordinary review (no status preserved)', async () => {
   const rounds = [finding({ head: 'a'.repeat(40), id: 50 }), finding({ head: 'b'.repeat(40), id: 51 })];
   const pr = { number: 9, html_url: 'u', state: 'open', draft: false, changed_files: 2, body: '<!-- correction-owner: claude -->', head: { sha: HEAD, ref: 'b', repo: { full_name: 'o/r' } }, base: { ref: 'main', repo: { full_name: 'o/r' } } };
   const { client, state } = fakeGitHub({ comments: [...rounds, finding({ p: 2, id: 52 })], pr });
   client.issueComments = async () => [stillRunning];
   const failure = { id: 1, context: 'codex-current-head', state: 'failure', description: 'review: 1 current-head Codex finding' };
-  assert.equal(await ensureTerminalReviewState(client, pr, HEAD, failure, [failure]), true);
-  assert.deepEqual(state.statuses.map((s) => [s.state, s.description]), [['failure', `review: ${CODEX_RUN_HELD_DETAIL}`]]);
+  // false: the ordinary review runs (its pending status replaces the stored failure; its poll holds until the run
+  // ends, then defers and files). A hold published over the stored failure would never be re-dispatched (D2/D3)
+  assert.equal(await ensureTerminalReviewState(client, pr, HEAD, failure, [failure]), false);
+  assert.deepEqual(state.statuses, []);
   assert.ok(!state.log.includes('draft:true'));
-  assert.equal(isRetryableReviewFailureDescription(state.statuses[0].description), true);
+});
+
+test('G2 gap 3 (PROBE-H) — a run that starts while the deferred findings are filed holds the settlement (no success)', async () => {
+  const earlier = [finding({ head: 'a'.repeat(40), id: 1 }), finding({ head: 'b'.repeat(40), id: 2 })];
+  const fake = fakeGitHub({ comments: [...earlier, finding({ p: 2, id: 3 })] });
+  let record = [doneWithFindings];
+  const own = fake.client.issueComments;
+  fake.client.issueComments = async (number) => [...(await own(number)), ...(number === 9 ? record : [])];
+  const create = fake.client.createIssue;
+  fake.client.createIssue = async (issue) => { record = [stillRunning]; return create(issue); };
+  const settled = await settleFinalCodexEvidence(fake.client, { number: 9 }, HEAD);
+  assert.equal(fake.state.issues.length, 1, 'the deferred finding was filed');
+  assert.equal(settled.state, 'changes_required', 'the re-read after the filing is held');
+  assert.equal(settled.retryable, true);
+  assert.equal(settled.detail, `review: ${CODEX_RUN_HELD_DETAIL}`);
+});
+
+test('G2 gap 2 — security findings settle as a non-retryable finding a correction answers; a run still going opens no lease', async () => {
+  const { correctionReasonFor } = await import('./correction-lease.mjs');
+  const securityRecord = { ...doneWithFindings, body: doneWithFindings.body.replace('"security_review":{"commit_sha":null,"has_any_findings":null,"has_unresolved_findings":null,"status":null}', `"security_review":{"commit_sha":"${HEAD}","has_any_findings":true,"has_unresolved_findings":true,"status":"completed"}`) };
+  assert.notEqual(securityRecord.body, doneWithFindings.body);
+  const quiet = fakeGitHub({ comments: [] });
+  quiet.client.issueComments = async () => [securityRecord];
+  const settled = await settleFinalCodexEvidence(quiet.client, { number: 9 }, HEAD);
+  assert.equal(settled.state, 'changes_required');
+  assert.equal(settled.retryable, false);
+  assert.equal(settled.detail, CODEX_SECURITY_FINDINGS_DETAIL);
+  const status = (description) => ({ context: 'codex-current-head', state: 'failure', description });
+  assert.equal(isRetryableReviewFailureDescription(`review: ${CODEX_SECURITY_FINDINGS_DETAIL}`), false);
+  assert.equal(correctionReasonFor(status(`review: ${CODEX_SECURITY_FINDINGS_DETAIL}`)), 'review');
+  assert.equal(correctionReasonFor(status(`review: ${CODEX_RUN_HELD_DETAIL}`)), null);
 });

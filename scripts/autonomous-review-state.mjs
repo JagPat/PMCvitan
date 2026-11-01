@@ -1,4 +1,4 @@
-import { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN, CODEX_RUN_HELD_DETAIL, isCodexReplyOnlyReview } from './review-policy.mjs';
+import { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN, CODEX_RUN_HELD_DETAIL, CODEX_SECURITY_FINDINGS_DETAIL, isCodexReplyOnlyReview } from './review-policy.mjs';
 export { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN } from './review-policy.mjs';
 
 import { isLineageBase } from './lineage-policy.mjs';
@@ -137,18 +137,21 @@ export function isCodexReviewSummaryOnly(body) {
  * A Codex record that names this head and is not wholly clean (findings, a run still going, a missing flag) vetoes
  * any record's own clear, whenever it was written (Codex 4437620372).
  *
- * Returns 'hold', 'dirty', 'clear' or 'none' (G2, #1094 6565074822). 'hold' is narrower than 'dirty': a same-head
- * run still going (a code or security review on this head whose status is present and not `completed`), or a
- * security review completed on this head with unresolved findings, which the gate cannot see as comments. It holds
- * every clearance (the cap's deferral, a fresh +1, the record's own) as a retryable non-success. A code review
- * completed with `has_unresolved_findings: true` is only 'dirty': that is Codex's normal record for any head it
- * commented on, and those findings are visible to the gate, which blocks them (under the cap) or defers and files
- * them (past it) exactly as before.
+ * Returns 'hold', 'security', 'dirty', 'clear' or 'none' (G2, #1094 6565074822).
+ *  - 'hold': a same-head run still going (a code or security review on this head whose status is present and not
+ *    `completed`). It holds every clearance (the cap's deferral, a fresh +1, the record's own) as a retryable
+ *    non-success: the run ends and the head is re-judged.
+ *  - 'security': a security review completed on this head with unresolved findings, which the gate cannot see as
+ *    comments. No run ending lifts it, so it blocks every clearance as a finding (non-retryable: a correction is owed).
+ *  - 'dirty': any other same-head record that is not wholly clean. A code review completed with
+ *    `has_unresolved_findings: true` is Codex's normal record for any head it commented on; those findings are
+ *    visible to the gate, which blocks them (under the cap) or defers and files them (past it) exactly as before.
  */
 export function codexStateRecordVerdict(issueComments, expectedHead, readyAtMs) {
   let clears = false;
   let dirty = false;
   let hold = false;
+  let securityFindings = false;
   for (const comment of issueComments ?? []) {
     if (!isCodexActor(comment)) continue;
     const match = /<!--\s*codex-review-state:v1\s+([\s\S]*?)\s*-->/u.exec(String(comment?.body ?? ''));
@@ -169,14 +172,15 @@ export function codexStateRecordVerdict(issueComments, expectedHead, readyAtMs) 
     const namesHead = code?.commit_sha === expectedHead || security?.commit_sha === expectedHead;
     if (namesHead && !(codeClean && securityClean)) dirty = true;
     const running = (review) => review?.commit_sha === expectedHead && review.status != null && review.status !== 'completed';
-    if (running(code) || running(security)
-      || (security?.commit_sha === expectedHead && security.status === 'completed' && security.has_unresolved_findings === true)) {
-      hold = true;
+    if (running(code) || running(security)) hold = true;
+    if (security?.commit_sha === expectedHead && security.status === 'completed' && security.has_unresolved_findings === true) {
+      securityFindings = true;
     }
     const writtenMs = Date.parse(comment?.updated_at ?? comment?.created_at);
     if (Number.isFinite(writtenMs) && writtenMs >= readyAtMs && codeClean && securityClean) clears = true;
   }
   if (hold) return 'hold';
+  if (securityFindings) return 'security';
   if (dirty) return 'dirty';
   return clears ? 'clear' : 'none';
 }
@@ -217,14 +221,19 @@ export function classifyCodexState({
       : { state: 'unsettled', findingCount: 0, detail: 'Codex evidence changed while it was read' };
   }
 
-  // G2 (Codex 4437635934) — a same-head Codex run still going (or security findings the gate cannot see) holds
-  // EVERY clearance below (the cap's deferral, a fresh +1, the record's own), never a finding: findings still block
-  // as before. A hold is `held: true` on a pending (or, past the deadline, timed_out) result, so a caller that
-  // admits `pending` as "nothing arrived" can tell it apart and refuse it (the settlement, the recovery)
+  // G2 (Codex 4437635934) — a same-head Codex run still going holds EVERY clearance below (the cap's deferral, a
+  // fresh +1, the record's own, the fall-through), never a finding: findings still block first. A hold is
+  // `held: true` on a pending (or, past the deadline, timed_out) result, so a caller that admits `pending` as
+  // "nothing arrived" can tell it apart and refuse it (the settlement, the recovery). Security findings the gate
+  // cannot see block at the same points as a finding (`changes_required`, non-retryable)
   const record = codexStateRecordVerdict(issueComments, expectedHead, readyAtMs);
-  const recordHeld = () => (nowMs > deadlineMs
-    ? { state: 'timed_out', findingCount: 0, held: true, detail: CODEX_RUN_HELD_DETAIL }
-    : { state: 'pending', findingCount: 0, held: true, detail: CODEX_RUN_HELD_DETAIL });
+  const recordStops = () => {
+    if (record === 'security') return { state: 'changes_required', findingCount: 1, detail: CODEX_SECURITY_FINDINGS_DETAIL };
+    if (record !== 'hold') return null;
+    return nowMs > deadlineMs
+      ? { state: 'timed_out', findingCount: 0, held: true, detail: CODEX_RUN_HELD_DETAIL }
+      : { state: 'pending', findingCount: 0, held: true, detail: CODEX_RUN_HELD_DETAIL };
+  };
 
   const currentHeadComments = new Map(comments
     .filter(
@@ -268,7 +277,8 @@ export function classifyCodexState({
     // nothing to defer is no verdict, so it falls through to the ordinary evidence rules (a fresh +1 clears;
     // incomplete evidence stays pending or blocks) exactly as before the cap
     if (deferred.length > 0) {
-      if (record === 'hold') return recordHeld();
+      const stopped = recordStops();
+      if (stopped) return stopped;
       const count = deferred.length;
       return {
         state: 'clear',
@@ -309,7 +319,7 @@ export function classifyCodexState({
       reaction.content === '+1' &&
       timestamp(reaction.created_at, 'reaction.created_at') >= readyAtMs,
   );
-  if (hasFreshCleanReaction && record !== 'hold') {
+  if (hasFreshCleanReaction && !recordStops()) {
     return {
       state: 'clear',
       findingCount: 0,
@@ -326,7 +336,8 @@ export function classifyCodexState({
     };
   }
 
-  if (record === 'hold') return recordHeld();
+  const stopped = recordStops();
+  if (stopped) return stopped;
 
   if (nowMs > deadlineMs) {
     return {

@@ -224,10 +224,16 @@ export function reviewHistoryPolicy(findingHeads) {
 export const FOLLOW_UP_RETRY = 'review: Codex follow-up filing did not complete; the gate retries this head';
 
 /**
- * G2 (#1094 6565074822) — the detail of a head whose same-head Codex run is still going (or whose security review
- * reports findings the gate cannot see). It is a retryable review failure: the run ends, and the head is re-judged.
+ * G2 (#1094 6565074822) — the detail of a head whose same-head Codex run is still going. It is a retryable review
+ * failure: the run ends, and the head is re-judged.
  */
-export const CODEX_RUN_HELD_DETAIL = 'a Codex review of this exact head is still running or reports security findings';
+export const CODEX_RUN_HELD_DETAIL = 'a Codex review of this exact head is still running';
+/**
+ * G2 — the detail of a head whose same-head Codex security review completed with unresolved findings, which the gate
+ * cannot see as comments. It is NOT retryable: no run ending lifts it, so it is a finding a correction must answer
+ * (a review lease opens), exactly like a current-head Codex finding.
+ */
+export const CODEX_SECURITY_FINDINGS_DETAIL = 'Codex security review reports unresolved findings on this exact head';
 
 const RETRYABLE_REVIEW_FAILURES = [
   FOLLOW_UP_RETRY,

@@ -1551,8 +1551,9 @@ export async function capDefersStoredFailure(client, pullRequest, expectedHead, 
   if (!/current-head Codex finding|Codex submitted a current-head review/u.test(description)) return false;
   try {
     const evidence = await finalCodexEvidence(client, pullRequest, expectedHead);
-    // G2 — a same-head Codex run still going is neither a deferral nor the stored failure: the caller replaces
-    // the failure with the retryable hold (`publishHeldReview`), so the head is re-judged once the run ends
+    // G2 — a same-head Codex run still going is neither a deferral nor the stored failure: the caller hands the
+    // head to the ordinary review, whose poll holds until the run ends and then defers and files (gap-check D2/D3: a
+    // hold published over the stored failure would never be re-dispatched, as the stored failure still latches it)
     if (evidence.held) return 'held';
     return evidence.state === 'clear' && evidence.deferred.length > 0;
   } catch {
@@ -1587,10 +1588,7 @@ export async function ensureTerminalReviewState(
     await withdrawUntokenedSuccess(client, pullRequest, expectedHead, status);
     const latched = persistentReviewFailure(statuses);
     const latchedDeferral = latched ? await capDefersStoredFailure(client, pullRequest, expectedHead, latched) : false;
-    if (latchedDeferral === 'held') {
-      await publishHeldReview(client, pullRequest, expectedHead);
-      return true;
-    }
+    if (latchedDeferral === 'held') return false;
     if (latched && !latchedDeferral) {
       await client.setStatus(
         expectedHead,
@@ -1689,10 +1687,7 @@ export async function ensureTerminalReviewState(
     // Codex 4225790715 — a stored findings failure the cap now defers is not preserved: the ordinary review
     // path runs instead, which files the deferred findings and completes the head without a new push
     const deferral = await capDefersStoredFailure(client, pullRequest, expectedHead, status);
-    if (deferral === 'held') {
-      await publishHeldReview(client, pullRequest, expectedHead);
-      return true;
-    }
+    // G2 — 'held' too: the ordinary review runs, and its poll holds until the run ends (gap-check D2/D3)
     if (deferral) return false;
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
@@ -2674,14 +2669,6 @@ function blockingSettlement(evidence, deferred) {
     // a held one
     retryable: evidence.state === 'unsettled' || evidence.held === true,
   };
-}
-
-/**
- * G2 — publish the retryable hold on a head whose same-head Codex run is still going, in place of a stored
- * success or findings failure. Not drafted (as with a read retry): the run ends and recovery re-judges the head.
- */
-export async function publishHeldReview(client, pullRequest, expectedHead) {
-  await client.setStatus(expectedHead, 'failure', `review: ${CODEX_RUN_HELD_DETAIL}`, pullRequest.html_url);
 }
 
 /**
