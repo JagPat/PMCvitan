@@ -403,7 +403,7 @@ export class MediaService {
     const persisted = await this.prisma.media
       .findFirst({ where: { projectId, storageKey: key }, select: { id: true } })
       .catch(() => ({ id: 'unknown' }) as { id: string });
-    if (!persisted) await this.storage.remove(key).catch(() => {});
+    if (!persisted) await this.storage.removeOrLog(key, 'upload cleanup');
   }
 
   /** Re-file a photo onto a location-tree node (or null to unfile). Scoped to the
@@ -504,7 +504,7 @@ export class MediaService {
     const persisted = await this.prisma.media
       .findFirst({ where: { projectId, posterStorageKey: key }, select: { id: true } })
       .catch(() => ({ id: 'unknown' }) as { id: string });
-    if (!persisted) await this.storage.remove(key).catch(() => {});
+    if (!persisted) await this.storage.removeOrLog(key, 'poster cleanup');
   }
 
   /** #995 V1b — a clip's still frame for its serve endpoint (which has verified the frame's own token): a presigned
@@ -558,7 +558,7 @@ export class MediaService {
       return { keys: [row.storageKey, row.posterStorageKey], events: evidenceEv ? [evidenceEv, removedEv] : [removedEv] };
     });
     // after the commit that removed every reference, and only on success (POLICY: destructive side effects last)
-    for (const key of keys) if (key) await this.storage.remove(key).catch(() => {});
+    for (const key of keys) if (key) await this.storage.removeOrLog(key, 'visit file removed');
     await this.dispatcher.dispatchCommitted(events);
   }
 
@@ -634,7 +634,7 @@ export class MediaService {
     // object, and by the time we get here the database no longer references the object at all, so
     // failing to clean it up is a harmless orphan — never a reason to fail a committed delete.
     // #995 — a video's still frame goes with it, on the same terms.
-    for (const key of [row.storageKey, row.posterStorageKey]) if (key) await this.storage.remove(key).catch(() => {});
+    for (const key of [row.storageKey, row.posterStorageKey]) if (key) await this.storage.removeOrLog(key, 'photo deleted');
     await this.dispatcher.dispatchCommitted(events);
     return { dailyLogId: row.kind === 'progress' ? row.dailyLogId : null };
   }

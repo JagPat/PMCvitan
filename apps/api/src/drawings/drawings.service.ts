@@ -486,7 +486,7 @@ export class DrawingsService {
     });
     // the files go once no row names them; one that fails to go is a harmless orphan, never a failed delete. A replay
     // removes nothing: the run that committed did
-    if (!outcome.replayed) await Promise.all((outcome.value ?? []).map((key) => this.storage.remove(key).catch(() => {})));
+    if (!outcome.replayed) await Promise.all((outcome.value ?? []).map((key) => this.storage.removeOrLog(key, 'drawing deleted')));
     if (!outcome.replayed && outcome.events.length > 0) await this.dispatcher.dispatchCommitted(outcome.events);
     return true;
   }
