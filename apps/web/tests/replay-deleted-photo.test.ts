@@ -267,8 +267,15 @@ describe('the queued local copies of a photo settled by its 410 (#482)', () => {
     const uploadMedia = vi.fn().mockRejectedValueOnce(gone()).mockRejectedValue(failed());
     useStore.getState()._setGateway({ uploadMedia, snapshot: vi.fn().mockRejectedValue(failed()), project: 'villa-b' } as never);
     useStore.setState({ dailyLog: { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 0, photoCount: 0, myPhotoKeys: [], crew: [], materials: [], photos: [] } } as never);
-    useStore.getState().addProgressPhoto('data:image/png;base64,AAAA', null, undefined, undefined, 'log-1');
-    useStore.getState().addProgressPhoto('data:image/png;base64,BBBB', null, undefined, undefined, 'log-1');
+    // on a phone with no photo database, an offline pick is queued with its bytes in the outbox (one with a database is
+    // kept in a row, and its 410 is settled from there: site-photo-write-ahead.test.ts)
+    const db = globalThis.indexedDB;
+    (globalThis as { indexedDB?: IDBFactory }).indexedDB = undefined;
+    try {
+      useStore.getState().addProgressPhoto('data:image/png;base64,AAAA', null, undefined, undefined, 'log-1');
+      useStore.getState().addProgressPhoto('data:image/png;base64,BBBB', null, undefined, undefined, 'log-1');
+    } finally { globalThis.indexedDB = db; }
+    expect(useStore.getState().outbox.map((o) => o.t)).toEqual(['uploadMedia', 'uploadMedia']);
     expect(useStore.getState().dailyLog?.photos.map((p) => p.url)).toEqual(['data:image/png;base64,BBBB', 'data:image/png;base64,AAAA']);
     useStore.setState({ online: true } as never);
     await useStore.getState().flushOutbox();
