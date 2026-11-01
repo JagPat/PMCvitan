@@ -33,6 +33,9 @@ const MIME_EXT: Record<string, string> = {
  *     DB row and serves them from GET /media/:id (the dev stub).
  * Flipping from stub to cloud is env-only — no code change (mirrors SmsService).
  */
+/** An error name {@link StorageService.removeOrLog} may log as it is: a short plain word, nothing a URL or a line break needs. */
+const LOGGABLE_ERROR_NAME = /^[A-Za-z0-9._-]{1,64}$/;
+
 @Injectable()
 export class StorageService {
   private readonly log = new Logger('StorageService');
@@ -140,15 +143,28 @@ export class StorageService {
    * {@link remove} where a failure must never fail the caller: a delete that has already committed, or an upload's
    * cleanup of an object nothing references. A failed removal leaves an orphaned object, so it is logged once, as a
    * warning naming the key, why it was being removed, and the error's name and HTTP status: the line an operator
-   * sweeps by hand (RUNBOOK). Only those: never the error's message, a URL, a header or a credential.
+   * sweeps by hand (RUNBOOK §BD). Only those, and only in a checked shape: the client copies a refusal's `<Code>` into
+   * the error's name as it came, so a name that is not a short plain word is logged as `Unknown` (it could carry a URL
+   * or a line break that forges another line), and a status only when it is an integer. Never the error's message, a
+   * URL, a header or a credential. Nothing here throws: not a getter on the error, and not the logger.
    */
   async removeOrLog(key: string, why: string): Promise<void> {
     try {
       await this.remove(key);
     } catch (err) {
-      const name = err instanceof Error ? err.name : typeof err;
-      const status = (err as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata?.httpStatusCode;
-      this.log.warn(`could not delete ${key} (${why}): ${name}${status ? ` ${status}` : ''}`);
+      let name = 'Unknown';
+      try {
+        const raw = (err as { name?: unknown } | null)?.name;
+        if (typeof raw === 'string' && LOGGABLE_ERROR_NAME.test(raw)) name = raw;
+      } catch { /* a throwing getter: Unknown */ }
+      let status = '';
+      try {
+        const raw = (err as { $metadata?: { httpStatusCode?: unknown } } | null)?.$metadata?.httpStatusCode;
+        if (Number.isInteger(raw)) status = ` ${raw as number}`;
+      } catch { /* a throwing getter: no status */ }
+      try {
+        this.log.warn(`could not delete ${key} (${why}): ${name}${status}`);
+      } catch { /* a logger that throws never fails the caller */ }
     }
   }
 

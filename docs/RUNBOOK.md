@@ -2887,5 +2887,6 @@ could not delete <projectId>/<kind>/<uuid>.<ext> (<why>): <ErrorName> <HTTP stat
 `<why>` is one of `photo deleted`, `visit file removed`, `drawing deleted`, `upload cleanup` or
 `poster cleanup`. No row names the file any more (or, for a cleanup, ever did), so the object is an
 orphan: it is unreachable through the app and only takes space. Sweep it by hand in the bucket by that key, after
-checking that no row still names it (`storageKey` or `posterStorageKey`). A 403 means the app's key
+checking that no row still names it: `Media.storageKey`, `Media.posterStorageKey` and
+`DrawingRevision.storageKey`. A 403 means the app's key
 may not delete there; never broaden or swap that key for this.

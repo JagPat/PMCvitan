@@ -150,6 +150,45 @@ describe('StorageService.removeOrLog', () => {
     ]);
   });
 
+  it('logs an error name only when it is a short plain word, and a status only when it is an integer', async () => {
+    configureS3();
+    const s = new StorageService();
+    const warn = vi.spyOn((s as unknown as { log: { warn: (m: string) => void } }).log, 'warn').mockImplementation(() => undefined);
+    const send = vi.fn();
+    s._setClient({ send } as unknown as S3Client);
+    // a refusal whose <Code> carries a signed URL, a line break that would forge a second line, or a non-numeric status
+    send.mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'https://r2.example.com/b/k?X-Amz-Signature=abc', $metadata: { httpStatusCode: 403 } }));
+    send.mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'AccessDenied\ncould not delete other/key (photo deleted): X', $metadata: { httpStatusCode: '403\nforged' } }));
+    send.mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'A'.repeat(65), $metadata: { httpStatusCode: 403.5 } }));
+    send.mockRejectedValueOnce('a bare string');
+    for (const k of ['a', 'b', 'c', 'd']) await s.removeOrLog(`ambli/progress/${k}.jpg`, 'photo deleted');
+    expect(warn.mock.calls.map((c) => c[0])).toEqual([
+      'could not delete ambli/progress/a.jpg (photo deleted): Unknown 403',
+      'could not delete ambli/progress/b.jpg (photo deleted): Unknown',
+      'could not delete ambli/progress/c.jpg (photo deleted): Unknown',
+      'could not delete ambli/progress/d.jpg (photo deleted): Unknown',
+    ]);
+  });
+
+  it('never throws: not on a throwing name or status getter, and not when the logger throws', async () => {
+    configureS3();
+    const s = new StorageService();
+    const log = (s as unknown as { log: { warn: (m: string) => void } }).log;
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
+    const send = vi.fn();
+    s._setClient({ send } as unknown as S3Client);
+    const hostile = Object.defineProperties({}, {
+      name: { get: () => { throw new Error('name getter'); } },
+      $metadata: { get: () => { throw new Error('metadata getter'); } },
+    });
+    send.mockRejectedValueOnce(hostile);
+    await expect(s.removeOrLog('ambli/progress/a.jpg', 'photo deleted')).resolves.toBeUndefined();
+    expect(warn.mock.calls.map((c) => c[0])).toEqual(['could not delete ambli/progress/a.jpg (photo deleted): Unknown']);
+    warn.mockImplementation(() => { throw new Error('logger down'); });
+    send.mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'AccessDenied' }));
+    await expect(s.removeOrLog('ambli/progress/b.jpg', 'photo deleted')).resolves.toBeUndefined();
+  });
+
   it('dev stub (no provider): nothing to remove, nothing logged', async () => {
     const s = new StorageService();
     const warn = vi.spyOn((s as unknown as { log: { warn: (m: string) => void } }).log, 'warn');
