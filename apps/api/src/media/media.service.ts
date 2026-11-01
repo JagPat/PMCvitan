@@ -53,13 +53,13 @@ function isSiteVisitFile(input: CreateMediaInput): boolean {
     && !input.decisionId && !input.dailyLogId && !input.inspectionId && !input.inspectionItemId;
 }
 
-/** What a clientKey replay must read to decide whether the caller may have the stored row back. */
 /** A stored coordinate against the one a replay sends: none only for none, else equal to a billionth of a degree. A
  *  double can read back from the database a last digit off what was sent (Stage 1's re-check of #1255: 23.033333333333335
  *  reads back as 23.03333333333333), so an exact comparison would refuse an honest resend. */
 const sameCoordinate = (stored: number | null, sent: number | undefined): boolean =>
   stored === null || sent === undefined ? stored === (sent ?? null) : Math.abs(stored - sent) <= 1e-9;
 
+/** What a clientKey replay must read to decide whether the caller may have the stored row back. */
 const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true, mime: true, sizeBytes: true, sourceMediaId: true, takenAt: true, geoLat: true, geoLng: true } as const;
 type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null; mime: string; sizeBytes: number; sourceMediaId: string | null; takenAt: string | null; geoLat: number | null; geoLng: number | null };
 
