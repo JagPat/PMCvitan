@@ -2089,16 +2089,24 @@ export function isPlaceGone(err: unknown): boolean {
  *  (Codex 4436483105). An API older than that answer names none: nothing is said. The second send's own answer is taken
  *  the same way: a photo another tab sent under the key, stored on the place once it was back, is answered with that
  *  place, and is not said to be without it (Codex 4436566611). */
-export async function uploadSitePhotoInput(gw: Pick<ApiGateway, 'uploadMedia'>, input: UploadMediaInput): Promise<{ id: string; url: string; at?: string; nodeId?: string | null; placeDropped?: true }> {
+export async function uploadSitePhotoInput(gw: Pick<ApiGateway, 'uploadMedia' | 'snapshot'>, input: UploadMediaInput): Promise<{ id: string; url: string; at?: string; nodeId?: string | null; placeDropped?: true }> {
+  let res: Awaited<ReturnType<ApiGateway['uploadMedia']>>;
   try {
-    const res = await gw.uploadMedia(input);
-    return input.nodeId && res.nodeId === null ? { ...res, placeDropped: true } : res;
+    res = await gw.uploadMedia(input);
   } catch (err) {
     if (!input.nodeId || !isPlaceGone(err)) throw err;
     const { nodeId: _gone, ...unplaced } = input;
-    const res = await gw.uploadMedia(unplaced);
-    return res.nodeId ? res : { ...res, placeDropped: true };
+    const second = await gw.uploadMedia(unplaced);
+    return second.nodeId ? second : { ...second, placeDropped: true };
   }
+  if (!input.nodeId || res.nodeId !== null) return res;
+  // stored with no place, though this send named one: saved without it after its place was removed (an earlier send's
+  // second try, whose answer was lost), or taken off its place since, by a re-file, while the place stands. Which one is
+  // read from the tree as it is now, never from one the tab already holds, so a stale tab cannot decide "removed" from
+  // an old tree (Codex 4437127228, Stage 1). That read failing answers nothing: the send is not settled, and its next
+  // send asks again.
+  const now = await gw.snapshot();
+  return now.nodes.some((n) => n.id === input.nodeId && !n.draft) ? res : { ...res, placeDropped: true };
 }
 
 /** #919: a queued `uploadMedia` that is a plain site photo (an earlier release's offline pick): not evidence, not a visit

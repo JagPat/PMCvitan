@@ -79,16 +79,19 @@ describe('a site photo upload answers with its place (live PG)', () => {
     }
     return false;
   };
-  /** Runs `during` under the project's exclusive tree lock, as a place's removal holds it, until released. */
-  const underTreeLock = (during: (q: Parameters<Parameters<TestApp['prisma']['$transaction']>[0]>[0]) => Promise<unknown>) => {
+  /** Runs `during` under an advisory lock held until released: the project's tree lock (as a place's removal holds it)
+   *  or a photo's send key (as its delete, `removeFiled`, holds it, with no tree lock). */
+  const underLock = (lockKey: string, during: (q: Parameters<Parameters<TestApp['prisma']['$transaction']>[0]>[0]) => Promise<unknown>, rollback = false) => {
     let held!: () => void; const heldP = new Promise<void>((r) => { held = r; });
     let release!: () => void; const releaseP = new Promise<void>((r) => { release = r; });
+    const rolledBack = new Error('rolled back');
     const done = t.prisma.$transaction(async (q) => {
-      await q.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, treeLockKey(f.projectA.id));
+      await q.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey);
       await during(q);
       held();
       await releaseP;
-    }, { timeout: 30_000 });
+      if (rollback) throw rolledBack;
+    }, { timeout: 30_000 }).catch((e: unknown) => { if (e !== rolledBack) throw e; });
     return { held: heldP, release, done };
   };
 
@@ -100,7 +103,7 @@ describe('a site photo upload answers with its place (live PG)', () => {
     });
     const first = await upload({ clientKey: 'answers-racing', nodeId: room.id });
     expect(first.body.nodeId).toBe(room.id);
-    const removal = underTreeLock(async (q) => {
+    const removal = underLock(treeLockKey(f.projectA.id), async (q) => {
       await q.$executeRawUnsafe(`UPDATE "Media" SET "nodeId" = NULL WHERE "nodeId" = $1`, room.id);
       await q.$executeRawUnsafe(`DELETE FROM "ProjectNode" WHERE "id" = $1`, room.id);
     });
@@ -114,15 +117,16 @@ describe('a site photo upload answers with its place (live PG)', () => {
     expect(replay.body).toMatchObject({ id: first.body.id, nodeId: null });
   });
 
-  // Stage 1 r1 fold: the photo itself deleted while the replay waited is answered as deleted (410), never as a photo
-  // saved without its place
+  // Stage 1 r1 fold, Codex 4437127224: the photo itself deleted while the replay waited is answered as deleted (410),
+  // never as a photo saved (with or without its place). The delete holds the photo's send key, as `removeFiled` does,
+  // and no tree lock; the replay takes that key first, so it waits for the delete and reads after it commits.
   it('a replay while its photo is being deleted waits and is answered as deleted, not as unplaced', async () => {
     const room = await t.prisma.projectNode.create({
       data: { id: `${f.projectA.id}-answers-deleting`, projectId: f.projectA.id, name: 'deleting', kind: 'zone', publishedAt: new Date(), authorId: f.memberUser.id },
     });
     const first = await upload({ clientKey: 'answers-deleting', nodeId: room.id });
     expect(first.body.nodeId).toBe(room.id);
-    const deletion = underTreeLock((q) => q.$executeRawUnsafe(`DELETE FROM "Media" WHERE "id" = $1`, first.body.id));
+    const deletion = underLock(`media-send-key:${f.projectA.id}:answers-deleting`, (q) => q.$executeRawUnsafe(`DELETE FROM "Media" WHERE "id" = $1`, first.body.id));
     await deletion.held;
     const replaying = upload({ clientKey: 'answers-deleting', nodeId: room.id }).then((r) => r);
     expect(await waitingOn(['advisory'])).toBe(true);
@@ -131,5 +135,25 @@ describe('a site photo upload answers with its place (live PG)', () => {
     const replay = await replaying;
     expect(replay.status).toBe(410);
     expect(replay.body.message).toBe(SITE_PHOTO_DELETED_MESSAGE);
+  });
+
+  // Stage 1 r2: the other side — a delete that rolls back (refused after its DELETE, as a P2003 cited-photo refusal is)
+  // leaves the photo: the replay waiting behind it is answered with the photo and its place
+  it('a replay behind a photo delete that rolls back is answered with the photo, on its place', async () => {
+    const room = await t.prisma.projectNode.create({
+      data: { id: `${f.projectA.id}-answers-kept`, projectId: f.projectA.id, name: 'kept', kind: 'zone', publishedAt: new Date(), authorId: f.memberUser.id },
+    });
+    const first = await upload({ clientKey: 'answers-kept', nodeId: room.id });
+    expect(first.body.nodeId).toBe(room.id);
+    const deletion = underLock(`media-send-key:${f.projectA.id}:answers-kept`, (q) => q.$executeRawUnsafe(`DELETE FROM "Media" WHERE "id" = $1`, first.body.id), true);
+    await deletion.held;
+    const replaying = upload({ clientKey: 'answers-kept', nodeId: room.id }).then((r) => r);
+    expect(await waitingOn(['advisory'])).toBe(true);
+    deletion.release();
+    await deletion.done;
+    const replay = await replaying;
+    expect(replay.status).toBe(201);
+    expect(replay.body).toMatchObject({ id: first.body.id, nodeId: room.id });
+    expect(await t.prisma.mediaTombstone.count({ where: { projectId: f.projectA.id, clientKey: 'answers-kept' } })).toBe(0);
   });
 });

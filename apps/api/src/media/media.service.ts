@@ -140,28 +140,28 @@ export class MediaService {
    *  narrowed to plain site photos, that is their OWN plain photo — never another member's evidence.
    *  And never a photo the caller cannot see now: one filed (before #881) on another member's private
    *  draft is answered as if it did not exist, as the snapshot and re-filing already answer it (#884). */
-  private async replayed(projectId: string, user: AuthUser, row: ReplayRow): Promise<UploadedMedia> {
+  private async replayed(projectId: string, user: AuthUser, row: ReplayRow, clientKey: string): Promise<UploadedMedia> {
     if (!SITE_RECORD_ROLES.has(user.role)) {
       const plain = (row.kind === 'progress' || row.kind === 'visit') && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
       if (!plain || row.uploadedBy !== user.sub) throw new ForbiddenException('This upload key belongs to another photo');
     }
-    let nodeId = row.nodeId;
-    if (row.nodeId) {
+    // #919 — the answer is read again, under the send key's lock (its transaction's first statement, as the upload and
+    // the delete take it), so a delete of this photo in flight finishes first and the answer is "deleted", never a photo
+    // that is no longer there (Codex 4437127224); then under the tree's shared lock, so a removal of its place in flight
+    // finishes first and the answer names no place (Codex 4436983883). Lock order: the send key, then the tree, as the
+    // upload takes them.
+    const seen = await this.prisma.$transaction(async (tx) => {
+      await lockSendKey(tx, projectId, clientKey);
+      const still = await tx.media.findUnique({ where: { id: row.id }, select: { nodeId: true } });
+      if (!still) return 'deleted' as const;
       const placed = row.nodeId;
-      const seen = await this.prisma.$transaction(async (tx) => {
-        if (await isPlaceHiddenFrom(tx, projectId, placed, user.sub)) return null;
-        // #919 — read again under the tree's shared lock, which the check above took: a place removed while this replay
-        // waited for it has let the photo go by now, and the answer says so (Codex 4436983883)
-        const still = await tx.media.findUnique({ where: { id: row.id }, select: { nodeId: true } });
-        // the photo itself deleted while this replay waited: answered as deleted, never as saved without its place
-        if (!still) return 'deleted' as const;
-        const now = still.nodeId;
-        return now !== null && now !== placed && (await isPlaceHiddenFrom(tx, projectId, now, user.sub)) ? null : { nodeId: now };
-      });
-      if (seen === 'deleted') throw new GoneException(DELETED_PHOTO);
-      if (!seen) throw new NotFoundException('Media not found');
-      nodeId = seen.nodeId;
-    }
+      if (placed && (await isPlaceHiddenFrom(tx, projectId, placed, user.sub))) return null;
+      const now = (await tx.media.findUnique({ where: { id: row.id }, select: { nodeId: true } }))?.nodeId ?? null;
+      return now !== null && now !== placed && (await isPlaceHiddenFrom(tx, projectId, now, user.sub)) ? null : { nodeId: now };
+    });
+    if (seen === 'deleted') throw new GoneException(DELETED_PHOTO);
+    if (!seen) throw new NotFoundException('Media not found');
+    const nodeId = seen.nodeId;
     return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString(), nodeId };
   }
 
@@ -220,7 +220,7 @@ export class MediaService {
         where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
         select: REPLAY_SELECT,
       });
-      if (existing) return this.replayed(projectId, user, existing);
+      if (existing) return this.replayed(projectId, user, existing, input.clientKey);
       // #482 — its photo was deleted: an early no, before any bytes are stored (asked again under the key's lock below)
       const deleted = await this.prisma.mediaTombstone.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } } });
       if (deleted) throw new GoneException(DELETED_PHOTO);
@@ -369,7 +369,7 @@ export class MediaService {
         });
         let replay: UploadedMedia | undefined;
         try {
-          if (winner) replay = await this.replayed(projectId, user, winner);
+          if (winner) replay = await this.replayed(projectId, user, winner, input.clientKey);
           // #482 — no winner any more: "deleted" only on the database's word, its record of the key (written in the
           // delete's own statement); without it the original error stands, unexplained
           else if (await this.prisma.mediaTombstone.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } } })) {

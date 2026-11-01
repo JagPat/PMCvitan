@@ -369,6 +369,76 @@ describe('a queued site photo whose place was removed (#919)', () => {
     expect(A.getState().toast).toContain(DROPPED_LINE);
   });
 
+  // Codex 4437127228: a keyed answer with no place is also a photo taken off its place since (a re-file in another tab)
+  // while the place stands. Which one is read from the tree as it is now, never the one the tab holds (Stage 1).
+  const ROOM = { id: 'room-1', parentId: null, name: 'Room 1', kind: 'room' as const, order: 0 };
+  const withTree = (A: Store, up: ReturnType<typeof uploads>['fn'], tree: () => Promise<Omit<typeof snap, 'nodes'> & { nodes: Array<typeof ROOM> }>) =>
+    A.getState()._setGateway({ uploadMedia: up, snapshot: vi.fn(tree), project: 'villa-b' } as never);
+
+  it('PG20: a keyed answer with no place while the place stands now: settled, nothing said, the marker says nothing dropped', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const key = await queued(A);
+    const up = uploads({ id: 'm1', url: '/media/m1', nodeId: null });
+    withTree(A, up.fn, async () => ({ ...snap, nodes: [ROOM] }));
+    await A.getState().flushOutbox();
+    await settled();
+    expect(up.inputs).toHaveLength(1);
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().toast ?? '').not.toContain('without a place');
+    const rows = await import('@/data/sitePhotoStore');
+    const row = await rows.getSitePhotoRow(ROWS, 'villa-b', key);
+    expect(row && rows.isSitePhotoSent(row) && !row.refused).toBe(true);
+    expect(row).not.toHaveProperty('placeDropped');
+  });
+
+  it('PG21: the tab still holds the place, the tree as it is now does not: the place was removed, and the person is told', async () => {
+    const A = await tab();
+    startWork(A as never);
+    await queued(A);
+    A.setState({ nodes: [ROOM] } as never);
+    const up = uploads({ id: 'm1', url: '/media/m1', nodeId: null });
+    withTree(A, up.fn, async () => ({ ...snap, nodes: [] }));
+    await A.getState().flushOutbox();
+    await settled();
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().toast).toContain(DROPPED_LINE);
+  });
+
+  it('PG22: the tree cannot be read: not settled, nothing said; its next send reads it again and says it once', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const key = await queued(A);
+    const up = uploads({ id: 'm1', url: '/media/m1', nodeId: null }, { id: 'm1', url: '/media/m1', nodeId: null });
+    let treeDown = true;
+    withTree(A, up.fn, async () => { if (treeDown) throw lost(); return { ...snap, nodes: [] }; });
+    await A.getState().flushOutbox();
+    await settled();
+    expect(A.getState().outbox).toEqual([{ t: 'uploadSitePhoto', scope: ROWS, clientKey: key }]);
+    expect(A.getState().toast ?? '').not.toContain(DROPPED_LINE);
+    treeDown = false;
+    await A.getState().flushOutbox();
+    await settled();
+    expect(up.inputs).toHaveLength(2);
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().toast).toContain(DROPPED_LINE);
+  });
+
+  it('PG23: a direct send answered with no place while the place stands now: listed with no place, nothing said', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const up = uploads({ id: 'm1', url: '/media/m1', nodeId: null });
+    withTree(A, up.fn, async () => ({ ...snap, nodes: [ROOM] }));
+    A.getState().addProgressPhoto(PNG, 'room-1');
+    await until(A, (s) => s.photos.some((p) => p.id === 'm1'));
+    expect(A.getState().photos.find((p) => p.id === 'm1')).not.toHaveProperty('nodeId');
+    await settled();
+    expect(A.getState().toast ?? '').not.toBe(DROPPED);
+    const rows = await import('@/data/sitePhotoStore');
+    const row = await rows.getSitePhotoRow(ROWS, 'villa-b', up.inputs[0]!.clientKey as string);
+    expect(row).not.toHaveProperty('placeDropped');
+  });
+
   it.each([
     ['names the place it asked for', { id: 'm1', url: '/media/m1', nodeId: 'room-1' }],
     ['comes from an API that names no place', { id: 'm1', url: '/media/m1' }],
