@@ -2273,7 +2273,12 @@ export async function readCodexEvidence(client, number, { reactions = false } = 
     snapshot = { reviews, comments, stable: sameReviewSet(before, reviews) };
     if (snapshot.stable) break;
   }
-  return reactions ? { ...snapshot, reactions: await client.reactions(number) } : snapshot;
+  if (!reactions) return snapshot;
+  // #1254 — Codex's review-state record (an issue comment) is read last, with the reactions: like a +1, it can
+  // only clear a head that the snapshot above shows no current-head finding on
+  const withReactions = { ...snapshot, reactions: await client.reactions(number) };
+  // a client with no reader yields no record, which is no verdict (fail closed)
+  return { ...withReactions, issueComments: typeof client.issueComments === 'function' ? await client.issueComments(number) : [] };
 }
 
 /** The success description of a head the review-round cap cleared, naming its follow-up issue. */
@@ -2354,7 +2359,7 @@ async function reviewAttempt(
     );
     if (!live) return { state: 'superseded' };
 
-    const { reviews, comments, reactions, stable } = await readCodexEvidence(client, pullRequest.number, { reactions: true });
+    const { reviews, comments, reactions, issueComments, stable } = await readCodexEvidence(client, pullRequest.number, { reactions: true });
     const result = classifyCodexState({
       stable,
       expectedHead,
@@ -2364,6 +2369,7 @@ async function reviewAttempt(
       reviews,
       comments,
       reactions,
+      issueComments,
       cap: await capFor(client, pullRequest.number, expectedHead, reviews, comments, pullRequest.changed_files),
     });
     // an unsettled snapshot is read again on the next poll, like a pending one
@@ -2378,7 +2384,7 @@ async function reclassifyCurrentCodexEvidence(
   expectedHead,
   reviewNotBefore,
 ) {
-  const { reviews, comments, reactions, stable } = await readCodexEvidence(client, number, { reactions: true });
+  const { reviews, comments, reactions, issueComments, stable } = await readCodexEvidence(client, number, { reactions: true });
   const now = new Date();
   return classifyCodexState({
     stable,
@@ -2389,6 +2395,7 @@ async function reclassifyCurrentCodexEvidence(
     reviews,
     comments,
     reactions,
+    issueComments,
     cap: await capFor(client, number, expectedHead, reviews, comments),
   });
 }

@@ -384,9 +384,11 @@ test('Codex 4220621334 / 4221120415 — one evidence snapshot: reviews, comments
     reviews: async () => { order.push('reviews'); return [{ id: 1 }]; },
     reviewComments: async () => { order.push('comments'); return []; },
     reactions: async () => { order.push('reactions'); return []; },
+    issueComments: async () => { order.push('issueComments'); return []; },
   };
   const evidence = await readCodexEvidence(client, 9, { reactions: true });
-  assert.deepEqual(order, ['reviews', 'comments', 'reviews', 'reactions']);
+  // #1254 — Codex's review-state record is read last, after the reactions
+  assert.deepEqual(order, ['reviews', 'comments', 'reviews', 'reactions', 'issueComments']);
   assert.equal(evidence.stable, true);
   // every gate read of Codex evidence goes through it, and every classification is told whether it is stable
   const { readFile } = await import('node:fs/promises');
