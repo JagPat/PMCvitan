@@ -119,6 +119,61 @@ describe('who may add a site photo (live PG)', () => {
     expect(again.body.id).toBe(first.body.id);
   });
 
+  it.each(['pmc', 'engineer'] as Role[])('#904: a %s\'s replay is their own upload, as it was sent', async (role) => {
+    // an honest retry (a lost answer, a second tab) is the same photo
+    const first = await upload(tokens[role], { kind: 'material', clientKey: `904-own-${role}` });
+    expect(first.status).toBe(201);
+    const again = await upload(tokens[role], { kind: 'material', clientKey: `904-own-${role}` });
+    expect([again.status, again.body.id]).toEqual([201, first.body.id]);
+    // a key another member used is not theirs: refused, not answered with that member's photo
+    const client = await upload(tokens.client, { kind: 'progress', clientKey: `904-client-${role}` });
+    expect(client.status).toBe(201);
+    const taken = await upload(tokens[role], { kind: 'progress', clientKey: `904-client-${role}` });
+    expect([taken.status, taken.body.id]).toEqual([403, undefined]);
+    // nor is their own key sent for something else: another kind, or an inspection the stored photo is not on
+    expect((await upload(tokens[role], { kind: 'progress', clientKey: `904-own-${role}` })).status).toBe(403);
+    expect((await upload(tokens[role], { kind: 'material', inspectionId: 'not-this', clientKey: `904-own-${role}` })).status).toBe(403);
+    // nothing new was stored, and the two photos are as they were
+    const rows = await t.prisma.media.findMany({ where: { projectId: f.projectA.id, clientKey: { in: [`904-own-${role}`, `904-client-${role}`] } }, orderBy: { clientKey: 'asc' } });
+    expect(rows.map((r) => [r.clientKey, r.kind, r.uploadedBy])).toEqual([
+      [`904-client-${role}`, 'progress', f.clientUser.id],
+      [`904-own-${role}`, 'material', role === 'pmc' ? f.memberUser.id : `${f.projectA.id}-${role}`],
+    ]);
+  });
+
+  it('#904: a PMC upload that loses its new key to another member\'s at the unique is refused, and its object cleaned up', async () => {
+    const storage = t.app.get(StorageService);
+    // forced order: both requests pass the idempotency read and store their bytes; the client's commits first, and
+    // only then does the PMC's open its transaction and meet the unique (P2002)
+    let pmcStored!: () => void;
+    const pmcAtPut = new Promise<void>((r) => (pmcStored = r));
+    let clientDone!: () => void;
+    const clientAnswered = new Promise<void>((r) => (clientDone = r));
+    const putKeys: string[] = [];
+    const realPut = storage.put.bind(storage);
+    const put = vi.spyOn(storage, 'put').mockImplementation(async (key, bytes, mime) => {
+      putKeys.push(key);
+      const stored = await realPut(key, bytes, mime);
+      if (key.includes('/material/')) { pmcStored(); await clientAnswered; } else await pmcAtPut;
+      return stored;
+    });
+    const remove = vi.spyOn(storage, 'remove').mockResolvedValue(undefined);
+    try {
+      const clientReq = upload(tokens.client, { kind: 'progress', clientKey: '904-race' }).then((r) => { clientDone(); return r; });
+      const [client, pmc] = await Promise.all([clientReq, upload(tokens.pmc, { kind: 'material', clientKey: '904-race' })]);
+      const rows = await t.prisma.media.findMany({ where: { projectId: f.projectA.id, clientKey: '904-race' } });
+      expect(rows.map((r) => [r.kind, r.uploadedBy])).toEqual([['progress', f.clientUser.id]]);
+      expect([client.status, client.body.id]).toEqual([201, rows[0].id]);
+      // the PMC's material photo was never stored: refused, never handed the client's photo as its own
+      expect([pmc.status, pmc.body.id]).toEqual([403, undefined]);
+      expect(putKeys).toHaveLength(2);
+      expect(remove.mock.calls).toEqual([[putKeys.find((k) => k !== rows[0].storageKey)]]);
+    } finally {
+      put.mockRestore();
+      remove.mockRestore();
+    }
+  });
+
   it('two concurrent uploads under one new key keep one row and one object: the loser\'s object is cleaned up', async () => {
     const storage = t.app.get(StorageService);
     // explicit barrier: both requests have passed the idempotency read and stored their bytes, under their

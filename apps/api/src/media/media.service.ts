@@ -136,11 +136,21 @@ export class MediaService {
   /** A clientKey replay returns the stored row only when the caller could have created it: for the roles
    *  narrowed to plain site photos, that is their OWN plain photo — never another member's evidence.
    *  And never a photo the caller cannot see now: one filed (before #881) on another member's private
-   *  draft is answered as if it did not exist, as the snapshot and re-filing already answer it (#884). */
-  private async replayed(projectId: string, user: AuthUser, row: ReplayRow): Promise<UploadedMedia> {
+   *  draft is answered as if it did not exist, as the snapshot and re-filing already answer it (#884).
+   *  For EVERY role, the PMC and the engineer too (#904), the row is the caller's own and is what this request would
+   *  have stored: the same kind and the same inspection and item. A key another person used, or the caller's own key
+   *  sent for something else, is refused rather than answered with a photo the request did not upload, which would
+   *  leave its evidence unstored while the device counts it as sent. `decisionId` and `dailyLogId` are not compared:
+   *  the request names them by a ref resolved only after this check, and the uploader check already refuses another
+   *  person's row; the device resends a stored upload's own input, so its own replay matches. */
+  private async replayed(projectId: string, user: AuthUser, input: CreateMediaInput, row: ReplayRow): Promise<UploadedMedia> {
+    if (row.uploadedBy !== user.sub || row.kind !== input.kind
+      || row.inspectionId !== (input.inspectionId ?? null) || row.inspectionItemId !== (input.inspectionItemId ?? null)) {
+      throw new ForbiddenException('This upload key belongs to another photo');
+    }
     if (!SITE_RECORD_ROLES.has(user.role)) {
       const plain = (row.kind === 'progress' || row.kind === 'visit') && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
-      if (!plain || row.uploadedBy !== user.sub) throw new ForbiddenException('This upload key belongs to another photo');
+      if (!plain) throw new ForbiddenException('This upload key belongs to another photo');
     }
     if (row.nodeId && (await this.prisma.$transaction((tx) => isPlaceHiddenFrom(tx, projectId, row.nodeId, user.sub)))) {
       throw new NotFoundException('Media not found');
@@ -203,7 +213,7 @@ export class MediaService {
         where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
         select: REPLAY_SELECT,
       });
-      if (existing) return this.replayed(projectId, user, existing);
+      if (existing) return this.replayed(projectId, user, input, existing);
       // #482 — its photo was deleted: an early no, before any bytes are stored (asked again under the key's lock below)
       const deleted = await this.prisma.mediaTombstone.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } } });
       if (deleted) throw new GoneException(DELETED_PHOTO);
@@ -352,7 +362,7 @@ export class MediaService {
         });
         let replay: UploadedMedia | undefined;
         try {
-          if (winner) replay = await this.replayed(projectId, user, winner);
+          if (winner) replay = await this.replayed(projectId, user, input, winner);
           // #482 — no winner any more: "deleted" only on the database's word, its record of the key (written in the
           // delete's own statement); without it the original error stands, unexplained
           else if (await this.prisma.mediaTombstone.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } } })) {
