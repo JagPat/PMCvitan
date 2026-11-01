@@ -136,6 +136,22 @@ export class StorageService {
     this.log.log(`deleted ${key} from S3`);
   }
 
+  /**
+   * {@link remove} where a failure must never fail the caller: a delete that has already committed, or an upload's
+   * cleanup of an object nothing references. A failed removal leaves an orphaned object, so it is logged once, as a
+   * warning naming the key, why it was being removed, and the error's name and HTTP status: the line an operator
+   * sweeps by hand (RUNBOOK). Only those: never the error's message, a URL, a header or a credential.
+   */
+  async removeOrLog(key: string, why: string): Promise<void> {
+    try {
+      await this.remove(key);
+    } catch (err) {
+      const name = err instanceof Error ? err.name : typeof err;
+      const status = (err as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata?.httpStatusCode;
+      this.log.warn(`could not delete ${key} (${why}): ${name}${status ? ` ${status}` : ''}`);
+    }
+  }
+
   /** @internal test seam — inject a fake S3 client. */
   _setClient(c: S3Client): void {
     this.client = c;

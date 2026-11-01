@@ -185,6 +185,8 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
     publicUrl: vi.fn((k: string) => `https://cdn.vitan.in/${k}`),
     presignPut: vi.fn(async () => (storagePutUrl ? { uploadUrl: 'https://cdn.vitan.in/upload?sig=x', url: storagePutUrl } : null)),
     remove: vi.fn(async () => {}),
+    // the real one's contract: never throws (a failure is a warn line); removal itself is `remove`, asserted below
+    removeOrLog: vi.fn(async (key: string, _why: string) => { await (storage.remove as (k: string) => Promise<void>)(key).catch(() => undefined); }),
     storedType: vi.fn(async (_key: string): Promise<string | null> => 'application/pdf'),
   };
   const dispatcher = { dispatchCommitted: vi.fn() };

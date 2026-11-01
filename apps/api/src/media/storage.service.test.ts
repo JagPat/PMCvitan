@@ -126,3 +126,37 @@ describe('StorageService.storedType', () => {
     await expect(s.storedType('ambli/drawings/x.pdf')).rejects.toThrow('AccessDenied');
   });
 });
+
+describe('StorageService.removeOrLog', () => {
+  it('removes the object, and never throws: a failure is one warn line with the key, the reason, the error name and status only', async () => {
+    configureS3();
+    const s = new StorageService();
+    const warn = vi.spyOn((s as unknown as { log: { warn: (m: string) => void } }).log, 'warn').mockImplementation(() => undefined);
+    const send = vi.fn().mockResolvedValueOnce({});
+    s._setClient({ send } as unknown as S3Client);
+    await s.removeOrLog('ambli/progress/a.jpg', 'photo deleted');
+    const command = send.mock.calls[0][0] as { constructor: { name: string }; input: { Bucket?: string; Key?: string } };
+    expect([command.constructor.name, command.input]).toEqual(['DeleteObjectCommand', { Bucket: 'vitan-media', Key: 'ambli/progress/a.jpg' }]);
+    expect(warn).not.toHaveBeenCalled();
+    // a refusal from the bucket: resolved, and logged without the message (which may carry a request id or URL)
+    send.mockRejectedValueOnce(Object.assign(new Error('Access Denied https://r2.example.com/vitan-media?X-Amz-Signature=abc'), { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } }));
+    await expect(s.removeOrLog('ambli/progress/b.jpg', 'drawing deleted')).resolves.toBeUndefined();
+    // a network failure has no status
+    send.mockRejectedValueOnce(Object.assign(new Error('socket hang up'), { name: 'TimeoutError' }));
+    await expect(s.removeOrLog('ambli/progress/c.jpg', 'upload cleanup')).resolves.toBeUndefined();
+    expect(warn.mock.calls.map((c) => c[0])).toEqual([
+      'could not delete ambli/progress/b.jpg (drawing deleted): AccessDenied 403',
+      'could not delete ambli/progress/c.jpg (upload cleanup): TimeoutError',
+    ]);
+  });
+
+  it('dev stub (no provider): nothing to remove, nothing logged', async () => {
+    const s = new StorageService();
+    const warn = vi.spyOn((s as unknown as { log: { warn: (m: string) => void } }).log, 'warn');
+    const send = vi.fn();
+    s._setClient({ send } as unknown as S3Client);
+    await s.removeOrLog('ambli/progress/a.jpg', 'photo deleted');
+    expect(send).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
