@@ -2874,3 +2874,19 @@ dying mid-install (the database may then have committed the install although the
 0. If it says `MTSTO`: run the count above, and have the owner decide each row before going on.
 1. `npx prisma migrate resolve --rolled-back 20280118000000_media_tombstone_guard`
 2. Redeploy. A re-run is safe whether or not the install had committed.
+
+## §BD. A stored file that could not be deleted (orphan in the bucket)
+
+A delete that has committed never fails because its file could not be removed from the bucket. A
+failed removal is logged once by the API as a warning:
+
+```
+could not delete <projectId>/<kind>/<uuid>.<ext> (<why>): <ErrorName> <HTTP status>
+```
+
+`<why>` is one of `photo deleted`, `visit file removed`, `drawing deleted`, `upload cleanup` or
+`poster cleanup`. No row names the file any more (or, for a cleanup, ever did), so the object is an
+orphan: it is unreachable through the app and only takes space. Sweep it by hand in the bucket by that key, after
+checking that no row still names it: `Media.storageKey`, `Media.posterStorageKey` and
+`DrawingRevision.storageKey`. A 403 means the app's key
+may not delete there; never broaden or swap that key for this.
