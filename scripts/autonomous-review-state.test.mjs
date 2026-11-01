@@ -508,3 +508,23 @@ test('Codex 4437620372 — a same-head record that is not wholly clean vetoes a 
   // a record for another head is no veto
   assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), stateRecord({ head: OLD_HEAD, status: 'in_progress' })] })).state, 'clear');
 });
+
+test('Codex 4437635934 — a same-head run still going holds a fresh +1 too; Codex\'s completed-with-findings record does not', () => {
+  const plusOne = [{ user: { login: CODEX_LOGIN }, content: '+1', created_at: '2026-07-27T10:01:00Z' }];
+  for (const record of [
+    stateRecord({ status: 'in_progress' }),
+    stateRecord({ status: 'running', unresolved: null }),
+    stateRecord({ security: { commit_sha: HEAD, has_any_findings: null, has_unresolved_findings: null, status: 'in_progress' } }),
+    stateRecord({ security: { commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: 'completed' } }),
+  ]) {
+    assert.equal(classifyCodexState(input({ reactions: plusOne, issueComments: [record] })).state, 'pending');
+    assert.equal(classifyCodexState(input({ now: '2026-07-27T10:15:01Z', reactions: plusOne, issueComments: [record] })).state, 'timed_out');
+  }
+  // a +1 still clears beside Codex's real record for a head it commented on (completed, unresolved findings: those
+  // findings are the gate's to see), a clean record, another head's running record, or no record at all
+  for (const issueComments of [[stateRecord({ unresolved: true })], [stateRecord()], [stateRecord({ head: OLD_HEAD, status: 'in_progress' })], []]) {
+    assert.equal(classifyCodexState(input({ reactions: plusOne, issueComments })).detail, 'fresh Codex +1 for this review attempt');
+  }
+  // the completed-with-findings record still never clears on its own
+  assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), stateRecord({ unresolved: true })] })).state, 'pending');
+});

@@ -837,3 +837,45 @@ test('#1254 — a record back in progress at the verification re-read is not cle
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   assert.match(gate, /const verifiedResult = await reclassifyCurrentCodexEvidence\([\s\S]*?if \(verifiedResult\.state !== 'clear'\) \{[\s\S]*?publishBlockingVerdict\(/u);
 });
+
+// Codex 4437635934 — Codex's REAL record for a head it commented on is `completed` with has_unresolved_findings: true
+// (every sampled PR with current-head Codex findings: #1270, #1269, #1267, #1262, #1261, #1255, #1232). That is no
+// hold: the findings are visible to the gate. Only a same-head run still going holds a clear.
+const codexRecord = (code) => ({ user: { login: CODEX }, created_at: '2026-10-08T00:00:40Z', updated_at: '2026-10-08T00:00:40Z',
+  body: `<!-- codex-review-state:v1 ${JSON.stringify({ code_review: { commit_sha: HEAD, has_any_findings: true, ...code }, security_review: { commit_sha: null, has_any_findings: null, has_unresolved_findings: null, status: null } })} -->` });
+const doneWithFindings = codexRecord({ has_unresolved_findings: true, status: 'completed' });
+const stillRunning = codexRecord({ has_any_findings: null, has_unresolved_findings: null, status: 'running' });
+
+test('Codex 4437635934 — past the cap: Codex\'s real record still defers (PROBE-A); a running same-head record holds', () => {
+  const base = { expectedHead: HEAD, readyAt: '2026-10-08T00:00:00Z', deadline: '2026-10-08T01:00:00Z', now: '2026-10-08T00:01:00Z',
+    comments: [finding({ p: 2, id: 60 })], reviews: [], cap: { reached: true, changedLines: changedLinesFromFiles(FILES) } };
+  const withRecord = classifyCodexState({ ...base, issueComments: [doneWithFindings] });
+  assert.equal(withRecord.state, 'clear');
+  assert.deepEqual(withRecord.deferred.map((f) => f.id), [60]);
+  assert.equal(classifyCodexState({ ...base, now: '2026-10-08T01:00:01Z', issueComments: [doneWithFindings] }).state, 'clear');
+  assert.equal(classifyCodexState({ ...base, issueComments: [stillRunning] }).state, 'pending');
+  assert.equal(classifyCodexState({ ...base, now: '2026-10-08T01:00:01Z', issueComments: [stillRunning] }).state, 'timed_out');
+  // a blocking finding still blocks, record or not
+  assert.equal(classifyCodexState({ ...base, comments: [finding()], issueComments: [stillRunning] }).state, 'changes_required');
+});
+
+test('Codex 4437635934 — PROBE-B: a stored failure the cap would defer is still re-judged with Codex\'s real record', async () => {
+  const rounds = [finding({ head: 'a'.repeat(40), id: 50 }), finding({ head: 'b'.repeat(40), id: 51 })];
+  const client = (issueComments) => ({ reviews: async () => [], reviewComments: async () => [...rounds, finding({ p: 2, id: 52 })], pullRequestFiles: async () => FILES, issueComments: async () => issueComments });
+  const failure = { context: 'codex-current-head', state: 'failure', description: 'review: 1 current-head Codex finding' };
+  for (const record of [doneWithFindings, stillRunning]) {
+    assert.equal(await capDefersStoredFailure(client([record]), { number: 9, changed_files: 2 }, HEAD, failure), true);
+  }
+});
+
+test('Codex 4437635934 — PROBE-C: the settlement still files a deferrable finding beside Codex\'s real record', async () => {
+  const earlier = [finding({ head: 'a'.repeat(40), id: 1 }), finding({ head: 'b'.repeat(40), id: 2 })];
+  for (const record of [doneWithFindings, stillRunning]) {
+    const { client, listed } = fakeGitHub({ comments: [...earlier, finding({ p: 2, id: 3 })] });
+    const own = client.issueComments;
+    client.issueComments = async (number) => [...(await own(number)), ...(number === 9 ? [record] : [])];
+    const settled = await settleFinalCodexEvidence(client, { number: 9 }, HEAD);
+    assert.equal(settled.state, 'clear');
+    assert.match(listed(settled.followUp), /discussion_r3/u, 'the settlement files the deferrable finding before a success');
+  }
+});
