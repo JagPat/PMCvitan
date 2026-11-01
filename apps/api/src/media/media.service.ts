@@ -421,7 +421,10 @@ export class MediaService {
       }
       // the target place's publication under the same shared lock
       const resolved = await resolvePublishedProjectNode(tx, projectId, nodeId);
-      await tx.media.update({ where: { id }, data: { nodeId: resolved } });
+      // a delete that committed after the reads above leaves no row: the refile is answered as one sent after the delete
+      // (404), never a 500 from an update that finds no row (Prisma P2025); a delete still in flight is waited out here
+      const { count } = await tx.media.updateMany({ where: { id, projectId }, data: { nodeId: resolved } });
+      if (count === 0) throw new NotFoundException('Media not found');
       return emitEvent(tx, { projectId, actor, eventType: 'media.refiled', entityType: 'Media', entityId: id, payload: { nodeId: resolved }, effectKey: 'media.refiled', dispatch: {} });
     });
     await this.dispatcher.dispatchCommitted([ev]);
