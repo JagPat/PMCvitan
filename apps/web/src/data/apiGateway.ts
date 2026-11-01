@@ -2097,7 +2097,11 @@ export async function uploadSitePhotoInput(gw: Pick<ApiGateway, 'uploadMedia' | 
     if (!input.nodeId || !isPlaceGone(err)) throw err;
     const { nodeId: _gone, ...unplaced } = input;
     const second = await gw.uploadMedia(unplaced);
-    return second.nodeId ? second : { ...second, placeDropped: true };
+    if (second.nodeId) return second;
+    if (second.nodeId === null) return { ...second, placeDropped: true };
+    // an API older than the answer's place names none: the photo the key holds may be another tab's, stored on the place
+    // once it was published. Decided as below, from the tree as it is now (Codex 4437554261)
+    return (await placeStandsNow(gw, input.nodeId)) ? second : { ...second, placeDropped: true };
   }
   if (!input.nodeId || res.nodeId !== null) return res;
   // stored with no place, though this send named one: saved without it after its place was removed (an earlier send's
@@ -2105,8 +2109,13 @@ export async function uploadSitePhotoInput(gw: Pick<ApiGateway, 'uploadMedia' | 
   // read from the tree as it is now, never from one the tab already holds, so a stale tab cannot decide "removed" from
   // an old tree (Codex 4437127228, Stage 1). That read failing answers nothing: the send is not settled, and its next
   // send asks again.
+  return (await placeStandsNow(gw, input.nodeId)) ? res : { ...res, placeDropped: true };
+}
+
+/** #919: is the place a photo named published in the project's tree as it is now (a fresh read, never the tab's own)? */
+async function placeStandsNow(gw: Pick<ApiGateway, 'snapshot'>, nodeId: string): Promise<boolean> {
   const now = await gw.snapshot();
-  return now.nodes.some((n) => n.id === input.nodeId && !n.draft) ? res : { ...res, placeDropped: true };
+  return now.nodes.some((n) => n.id === nodeId && !n.draft);
 }
 
 /** #919: a queued `uploadMedia` that is a plain site photo (an earlier release's offline pick): not evidence, not a visit

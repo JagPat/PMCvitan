@@ -439,6 +439,42 @@ describe('a queued site photo whose place was removed (#919)', () => {
     expect(row).not.toHaveProperty('placeDropped');
   });
 
+  // Codex 4437554261: an API older than the answer's place names none on the second send either. The key's photo may be
+  // another tab's, stored on the place once it was published: decided from the tree as it is now, as above
+  it.each([
+    ['published now: another tab\'s photo on it, nothing said', [ROOM], false],
+    ['still a draft: saved without it, and told', [{ ...ROOM, draft: true }], true],
+    ['gone: saved without it, and told', [], true],
+  ])('PG24: an older API\'s answer to the second send, the place %s', async (_, nodes, told) => {
+    const A = await tab();
+    startWork(A as never);
+    await queued(A);
+    const up = uploads(placeGone(), { id: 'm1', url: '/media/m1' });
+    withTree(A, up.fn, async () => ({ ...snap, nodes }));
+    await A.getState().flushOutbox();
+    await settled();
+    expect(up.inputs).toHaveLength(2);
+    expect(A.getState().outbox).toEqual([]);
+    if (told) expect(A.getState().toast).toContain(DROPPED_LINE);
+    else expect(A.getState().toast ?? '').not.toContain('without a place');
+  });
+
+  it('PG25: an older API\'s answer to the second send, and the tree cannot be read: not settled, nothing guessed', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const key = await queued(A);
+    const up = uploads(placeGone(), { id: 'm1', url: '/media/m1' });
+    withTree(A, up.fn, async () => { throw lost(); });
+    await A.getState().flushOutbox();
+    await settled();
+    expect(up.inputs).toHaveLength(2);
+    expect(A.getState().outbox).toEqual([{ t: 'uploadSitePhoto', scope: ROWS, clientKey: key }]);
+    expect(A.getState().toast ?? '').not.toContain('without a place');
+    const rows = await import('@/data/sitePhotoStore');
+    const row = await rows.getSitePhotoRow(ROWS, 'villa-b', key);
+    expect(row && !rows.isSitePhotoSent(row)).toBe(true);
+  });
+
   it.each([
     ['names the place it asked for', { id: 'm1', url: '/media/m1', nodeId: 'room-1' }],
     ['comes from an API that names no place', { id: 'm1', url: '/media/m1' }],
