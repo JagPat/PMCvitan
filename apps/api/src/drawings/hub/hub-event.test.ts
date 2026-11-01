@@ -16,7 +16,7 @@ const read = (value: unknown) => readHubEvent(Buffer.from(typeof value === 'stri
 
 describe('#1118 U3 readHubEvent', () => {
   it('reads a drawing event: its type, version, Hub project and the one PMC project Hub names', () => {
-    expect(read(issued())).toEqual({ kind: 'event', type: 'drawing.issued', versionId: 'v-9031', hubProjectId: '42', pmcProjectIds: ['ambli'] });
+    expect(read(issued())).toEqual({ kind: 'event', type: 'drawing.issued', versionId: 'v-9031', hubProjectId: '42', pmcProjectIds: ['ambli'], officeId: null });
     expect(read(issued({ toStage: 'SUPERSEDED' }, 'drawing.superseded'))).toMatchObject({ kind: 'event', type: 'drawing.superseded' });
     // a string Hub project id reads the same as the number
     expect(read(issued({ project: { id: '42', links: [] } }))).toMatchObject({ hubProjectId: '42', pmcProjectIds: [] });
@@ -72,5 +72,17 @@ describe('#1118 U3 readHubEvent', () => {
   it('reads the exact bytes as UTF-8, whatever their other fields hold', () => {
     const body = Buffer.from(JSON.stringify(issued({ title: 'Plan — तल मंज़िल' })), 'utf8');
     expect(readHubEvent(body)).toMatchObject({ kind: 'event', pmcProjectIds: ['ambli'] });
+  });
+
+  it('U3o: reads the office Hub names, accepts none (older events), and calls a bad one malformed', () => {
+    expect(read(issued({ office: { id: '7' } }))).toMatchObject({ kind: 'event', officeId: '7' });
+    // a whole number reads the same as the string, like every Hub id
+    expect(read(issued({ office: { id: 7 } }))).toMatchObject({ kind: 'event', officeId: '7' });
+    expect(read(issued({ office: null }))).toMatchObject({ kind: 'event', officeId: null });
+    for (const office of ['7', 7, [], {}, { id: '' }, { id: 'two words' }, { id: -1 }, { id: 'x'.repeat(257) }, { id: null }]) {
+      expect(read(issued({ office })), JSON.stringify(office)).toEqual({ kind: 'malformed', type: 'drawing.issued', versionId: 'v-9031' });
+    }
+    // work in progress is ignored before the office is read: nothing from it reaches the site either way
+    expect(read(issued({ toStage: null, office: 'bad' }, 'drawing.status_changed'))).toMatchObject({ kind: 'ignored', why: 'work_in_progress' });
   });
 });
