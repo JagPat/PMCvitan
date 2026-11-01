@@ -23,7 +23,7 @@ import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
 import { VIDEO_CLIP_MAX_SEC, VOICE_NOTE_MAX_SEC, VOICE_NOTE_SEC_TOLERANCE, type AddPosterInput, type CreateMediaInput } from '../contracts';
-import { MEDIA_NOT_FOUND_MESSAGE, SITE_PHOTO_DELETE_WINDOW_MS, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
+import { MEDIA_NOT_FOUND_MESSAGE, NOT_A_VISIT_FILE_MESSAGE, SITE_PHOTO_DELETE_WINDOW_MS, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
@@ -533,7 +533,7 @@ export class MediaService {
     const early = await this.prisma.media.findUnique({ where: { id: mediaId }, select: { projectId: true, clientKey: true } });
     if (!early || early.projectId !== projectId) throw new NotFoundException(MEDIA_NOT_FOUND_MESSAGE);
     const visitId = await this.siteVisitFiles.visitOf(this.prisma, projectId, mediaId);
-    if (!visitId) throw new NotFoundException('This file is not on a site visit');
+    if (!visitId) throw new NotFoundException(NOT_A_VISIT_FILE_MESSAGE);
     const actor = await resolveActor(this.prisma, user);
     const { keys, events } = await this.prisma.$transaction(async (tx) => {
       if (early.clientKey) await lockSendKey(tx, projectId, early.clientKey);
@@ -572,7 +572,8 @@ export class MediaService {
   }
 
   /** {@link remove}, saying which day's log counted the photo (`dailyLogId`, a progress photo filed on one), or
-   *  null when not found / out of scope. */
+   *  null when not found / out of scope. A photo another delete removed after this one read it is a 404
+   *  (`MEDIA_NOT_FOUND_MESSAGE`) thrown from inside the transaction, so nothing this delete began is kept. */
   async removeFiled(id: string, user: AuthUser): Promise<{ dailyLogId: string | null } | null> {
     const projectId = user.projectId;
     const row = await this.prisma.media.findUnique({ where: { id } });
@@ -614,6 +615,12 @@ export class MediaService {
         // is touched, and the stored file stays (Codex 4320912811)
         if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2003') {
           throw new ConflictException('This photo was just cited as evidence on another record, so it cannot be deleted');
+        }
+        // another delete of this photo committed after the read above (two taps, two tabs, two people): it is gone, and
+        // this delete answers as the route does for a photo it no longer holds. Thrown, not returned, so the rollback
+        // undoes the evidence unlink above; the stored files are the first delete's to remove
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') {
+          throw new NotFoundException(MEDIA_NOT_FOUND_MESSAGE);
         }
         throw e;
       }
