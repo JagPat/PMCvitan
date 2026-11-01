@@ -78,6 +78,12 @@ const land = async (store: Store, log: { id: string }, gw: Record<string, unknow
   await until(store, (s) => s.dailyLog?.id === log.id);
 };
 
+/** Runs `fn` as on a phone with no photo database (private mode in some browsers): `sitePhotoStorageAvailable` is false. */
+const withoutDatabase = (fn: () => void): void => {
+  const db = globalThis.indexedDB;
+  (globalThis as { indexedDB?: IDBFactory }).indexedDB = undefined;
+  try { fn(); } finally { globalThis.indexedDB = db; }
+};
 const storedOutboxes = (): string[] => Object.keys(localStorage).filter((k) => k.startsWith('vitan.outbox')).map((k) => localStorage.getItem(k) ?? '');
 
 beforeEach(() => {
@@ -490,9 +496,11 @@ describe('a project switch during a flush or a load (#917)', () => {
     startWork(A as never);
     const up = uploads();
     A.getState()._setGateway({ uploadMedia: up.fn, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    // picked with no signal on a phone with no photo database: queued with their bytes in the outbox, the path an offline
+    // pick takes when its row cannot be kept (offline picks with a database are kept in rows, below)
     const pick = (data: string): void => {
       A.setState({ online: false } as never);
-      A.getState().addProgressPhoto(`data:image/png;base64,${data}`);
+      withoutDatabase(() => A.getState().addProgressPhoto(`data:image/png;base64,${data}`));
       A.setState({ online: true } as never);
     };
     // P1 picked with no signal, then a photo sent online whose answer is lost, then P2 with no signal
@@ -1588,5 +1596,156 @@ describe('the #1161 follow-ups (#1187, #1195, #1201, #1228)', () => {
     expect(A.getState().outbox).toEqual([]);
     expect(A.getState().sitePhotosKept).toEqual([]);
     expect(A.getState().dailyLog!.progress).toBe(0);
+  });
+});
+
+describe('a site photo picked offline is kept in a row, not as bytes in the stored outbox (offline picks)', () => {
+  const LOG = { id: 'log-1', date: 'today', checkedIn: true, submitted: false, progress: 0, photoCount: 0, myPhotoKeys: [], crew: [], materials: [], photos: [] };
+
+  it('OP1: its row is written first; then it is queued by its key, shown and counted from the queue, said to be saved, and sent from its row', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const up = uploads();
+    A.getState()._setGateway({ uploadMedia: up.fn, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.setState({ online: false, dailyLog: structuredClone(LOG) } as never);
+    const hold = await holdDatabase();
+    A.getState().addProgressPhoto(PNG, null, undefined, undefined, 'log-1');
+    await hold.writeAsked;
+    // nothing is queued, shown, counted or said before the row is written
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().toast ?? '').not.toBe(SAVED);
+    expect(A.getState().dailyLog!.progress).toBe(0);
+    await hold.release();
+    await until(A, (s) => s.toast === SAVED);
+    const key = (A.getState().outbox[0] as { clientKey: string }).clientKey;
+    expect(A.getState().outbox).toEqual([{ t: 'uploadSitePhoto', scope: ROWS, clientKey: key }]);
+    expect(A.getState().sitePhotosKept.map((k) => k.clientKey)).toEqual([key]);
+    expect(A.getState().dailyLog!.photos).toEqual([{ url: PNG, clientKey: key }]);
+    // counted from the queue, never in the draft (#1167)
+    expect(A.getState().dailyLog!.progress).toBe(1);
+    expect(A.getState().dailyLogDraft?.photosAdded).toBeUndefined();
+    const rows = await rowsOf();
+    expect(await rows.getSitePhotoRow(ROWS, 'villa-b', key)).toMatchObject({ input: { clientKey: key, data: PNG.split(',')[1], dailyLogId: 'log-1' } });
+    // no photo bytes and no upload in the stored outbox
+    await queueWritten();
+    expect(storedOutboxes().join('')).not.toContain(PNG.split(',')[1]);
+    expect(storedOutboxes().join('')).not.toContain('uploadMedia');
+    // the signal returns: sent from its row under its key
+    A.setState({ online: true } as never);
+    const flushed = A.getState().flushOutbox();
+    await up.called();
+    expect(up.calls[0]!.input).toMatchObject({ clientKey: key, data: PNG.split(',')[1], dailyLogId: 'log-1' });
+    up.calls[0]!.answer.resolve({ id: 'm1', url: '/media/m1' });
+    await flushed;
+    expect(A.getState().outbox).toEqual([]);
+    const after = await rows.getSitePhotoRow(ROWS, 'villa-b', key);
+    expect(after && rows.isSitePhotoSent(after)).toBe(true);
+  });
+
+  it('OP2: a row the phone could not write falls back to the earlier path: its bytes in the stored outbox, and no row left', async () => {
+    const A = await tab();
+    startWork(A as never);
+    A.getState()._setGateway({ uploadMedia: vi.fn(), snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.setState({ online: false } as never);
+    const rows = await rowsOf();
+    const hold = await holdDatabase();
+    const bound = deferred<() => void>();
+    rows.setSitePhotoDeadline((fire) => { bound.resolve(fire); return () => {}; });
+    A.getState().addProgressPhoto(PNG);
+    // the row's write passes its bound while it waits
+    await hold.writeAsked;
+    (await bound.promise)();
+    rows.setSitePhotoDeadline(null);
+    await hold.release();
+    await until(A, (s) => s.outbox.length > 0);
+    const op = A.getState().outbox[0] as { t: string; input: { clientKey: string; data: string } };
+    expect(op.t).toBe('uploadMedia');
+    expect(op.input.data).toBe(PNG.split(',')[1]);
+    // said to be saved only once the outbox holding its bytes is written, as before
+    await until(A, (s) => s.toast === SAVED);
+    await queueWritten();
+    expect(storedOutboxes().join('')).toContain(PNG.split(',')[1]);
+    await settled();
+    expect(await rows.getSitePhotoRow(ROWS, 'villa-b', op.input.clientKey)).toBeNull();
+  });
+
+  it('OP3: a move to another project while the row is written queues nothing there; the row is kept and sent once back', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const up = uploads();
+    A.getState()._setGateway({ uploadMedia: up.fn, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.setState({ online: false } as never);
+    const hold = await holdDatabase();
+    A.getState().addProgressPhoto(PNG);
+    await hold.writeAsked;
+    A.setState({ activeProjectId: 'villa-c', projectScopeGeneration: 2 } as never);
+    await hold.release();
+    await until(A, (s) => s.toast === SAVED);
+    await settled();
+    expect(A.getState().outbox).toEqual([]);
+    expect(A.getState().sitePhotosKept).toEqual([]);
+    const rows = await rowsOf();
+    const kept = await rows.listSitePhotoRows(ROWS, 'villa-b');
+    expect(kept).toHaveLength(1);
+    const key = (kept[0] as { input: { clientKey: string } }).input.clientKey;
+    // back on that project with the signal: its next flush gives the row its op and sends it under its key
+    A.setState({ activeProjectId: 'villa-b', projectScopeGeneration: 3, online: true } as never);
+    void A.getState().flushOutbox();
+    await up.called();
+    expect(up.calls[0]!.input).toMatchObject({ clientKey: key });
+  });
+
+  it('OP4: after a reload it comes back from its row: queued, kept and counted once', async () => {
+    const A = await tab();
+    startWork(A as never);
+    A.getState()._setGateway({ uploadMedia: vi.fn(), snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.setState({ online: false, dailyLog: structuredClone(LOG) } as never);
+    A.getState().addProgressPhoto(PNG, null, undefined, undefined, 'log-1');
+    await until(A, (s) => s.toast === SAVED);
+    const key = (A.getState().outbox[0] as { clientKey: string }).clientKey;
+    await settled();
+    const B = await tab();
+    B.setState({ online: false, dailyLog: structuredClone(LOG) } as never);
+    startWork(B as never);
+    B.getState()._setGateway({ uploadMedia: vi.fn(), snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    B.getState().hydrateOutbox();
+    await until(B, (s) => s.outbox.some((o) => o.t === 'uploadSitePhoto' && o.clientKey === key));
+    await settled();
+    expect(B.getState().outbox).toEqual([{ t: 'uploadSitePhoto', scope: ROWS, clientKey: key }]);
+    expect(B.getState().sitePhotosKept.map((k) => k.clientKey)).toEqual([key]);
+    expect(B.getState().dailyLog!.progress).toBe(1);
+  });
+
+  it('OP5: a read of the rows begun before the pick queued its op is not applied over it: its kept copy and count stay', async () => {
+    const A = await tab();
+    startWork(A as never);
+    A.getState()._setGateway({ uploadMedia: vi.fn(), snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.setState({ online: false, dailyLog: structuredClone(LOG) } as never);
+    // Web Locks whose first query (the load's) is answered when the test says: the load's read of the rows is answered
+    // before the pick's write, and applied only after the pick has queued its op
+    const firstQuery = deferred<{ held: []; pending: [] }>();
+    let queries = 0;
+    const locks = {
+      request: (_name: string, opts: unknown, cb?: (lock: unknown) => unknown) => Promise.resolve((cb ?? (opts as (lock: unknown) => unknown))({})),
+      query: () => (queries++ === 0 ? firstQuery.promise : Promise.resolve({ held: [], pending: [] })),
+    };
+    Object.defineProperty(navigator, 'locks', { value: locks, configurable: true });
+    try {
+      const hold = await holdDatabase();
+      A.getState().hydrateOutbox();
+      await hold.readAsked;
+      A.getState().addProgressPhoto(PNG, null, undefined, undefined, 'log-1');
+      await hold.writeAsked;
+      await hold.release();
+      await until(A, (s) => s.toast === SAVED);
+      firstQuery.resolve({ held: [], pending: [] });
+      await settled();
+      const key = (A.getState().outbox.find((o) => o.t === 'uploadSitePhoto') as { clientKey: string }).clientKey;
+      expect(A.getState().outbox.filter((o) => o.t === 'uploadSitePhoto')).toHaveLength(1);
+      expect(A.getState().sitePhotosKept.map((k) => k.clientKey)).toEqual([key]);
+      expect(A.getState().dailyLog!.progress).toBe(1);
+    } finally {
+      delete (navigator as { locks?: unknown }).locks;
+    }
   });
 });
