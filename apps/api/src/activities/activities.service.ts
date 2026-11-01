@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { lockStandingAnchors } from '../common/standing-anchor';
-import { type DeciderKind, CONTRACTOR_CAPTURE_FAIL_CLOSED, contractorCaptureFailClosed } from '@vitan/shared';
+import { type DeciderKind, CONTRACTOR_CAPTURE_FAIL_CLOSED, contractorCaptureFailClosed, activityNotFoundMessage, overrideNotFoundMessage } from '@vitan/shared';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
@@ -304,7 +304,7 @@ export class ActivitiesService {
       return this.snapshot.build(projectId, user.role, user.sub);
     }
     const a = await this.prisma.activity.findUnique({ where: { id: activityId } });
-    if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
+    if (!a || a.projectId !== projectId) throw new NotFoundException(activityNotFoundMessage(activityId));
     const ps = input.plannedStart ?? a.plannedStart;
     const pe = input.plannedEnd ?? a.plannedEnd;
     if (pe < ps) throw new BadRequestException('plannedEnd must be on or after plannedStart');
@@ -389,7 +389,7 @@ export class ActivitiesService {
       return this.snapshot.build(projectId, user.role, user.sub);
     }
     const a = await this.prisma.activity.findUnique({ where: { id: activityId } });
-    if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
+    if (!a || a.projectId !== projectId) throw new NotFoundException(activityNotFoundMessage(activityId));
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'activities.remove', idempotencyKey, requestHash,
       run: async (tx) => {
@@ -404,7 +404,7 @@ export class ActivitiesService {
         await tx.activity.delete({ where: { id: activityId } }).catch((e: unknown) => {
           // another delete of this activity committed after the read above: it is gone, not linked, and answered as
           // the read answers; thrown so the unlink above and everything else of this delete roll back
-          if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') throw new NotFoundException(`Activity ${activityId} not found`);
+          if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') throw new NotFoundException(activityNotFoundMessage(activityId));
           throw new ConflictException('This activity has linked records (inspections/materials) — it can no longer be deleted');
         });
         await recordAudit(tx, { projectId, actor, action: 'activity.delete', entity: 'Activity', entityId: activityId });
@@ -488,7 +488,7 @@ export class ActivitiesService {
         // decision's status comes from the decisions query contract, in THIS transaction under the
         // readiness lock (a concurrent approval serializes), never a direct `activity.decision` read.
         const a = await tx.activity.findUnique({ where: { id: activityId } });
-        if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
+        if (!a || a.projectId !== projectId) throw new NotFoundException(activityNotFoundMessage(activityId));
         if (a.status !== 'not_started') throw new ConflictException('Activity is not in a startable state');
         const linkedDecision = a.decisionId ? await this.decisions.statusAndDraftOf(projectId, a.decisionId, tx) : null;
 
@@ -557,7 +557,7 @@ export class ActivitiesService {
       return this.snapshot.build(projectId, user.role, user.sub);
     }
     const a = await this.prisma.activity.findUnique({ where: { id: activityId } });
-    if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
+    if (!a || a.projectId !== projectId) throw new NotFoundException(activityNotFoundMessage(activityId));
     if (a.status !== 'in_progress') throw new ConflictException('Only a running activity can be marked complete');
 
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
@@ -651,7 +651,7 @@ export class ActivitiesService {
       return this.snapshot.build(projectId, user.role, user.sub);
     }
     const a = await this.prisma.activity.findUnique({ where: { id: activityId } });
-    if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
+    if (!a || a.projectId !== projectId) throw new NotFoundException(activityNotFoundMessage(activityId));
     const expiresAt = new Date(input.expiresAt);
     if (expiresAt.getTime() <= Date.now()) {
       throw new BadRequestException('An override must expire in the future — it is a temporary exception, never a permanent flag');
@@ -688,7 +688,7 @@ export class ActivitiesService {
     }
     const row = await this.prisma.gateOverride.findUnique({ where: { id: overrideId } });
     if (!row || row.projectId !== projectId || row.activityId !== activityId) {
-      throw new NotFoundException(`Override ${overrideId} not found`);
+      throw new NotFoundException(overrideNotFoundMessage(overrideId));
     }
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'activities.revokeOverride', idempotencyKey, requestHash,
@@ -697,7 +697,7 @@ export class ActivitiesService {
         await lockProjectReadiness(tx, projectId);
         await tx.gateOverride.delete({ where: { id: overrideId } }).catch((e: unknown) => {
           // another revoke of this override committed after the read above: it is gone, answered as the read answers
-          if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') throw new NotFoundException(`Override ${overrideId} not found`);
+          if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') throw new NotFoundException(overrideNotFoundMessage(overrideId));
           throw e;
         });
         await recordAudit(tx, { projectId, actor, action: 'activity.override_revoke', entity: 'Activity', entityId: activityId, payload: { overrideId, gate: row.gate, state: row.state, reason: row.reason } });

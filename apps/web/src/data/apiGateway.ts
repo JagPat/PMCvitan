@@ -2027,6 +2027,13 @@ export function isMediaNotFound(err: unknown): boolean {
   return (err as { status?: number } | null)?.status === 404 && refusalMessage(err) === MEDIA_NOT_FOUND_MESSAGE;
 }
 
+/** Delete races (S1) — the server's own "not found" for a delete or removal of a record it no longer holds, by the exact
+ *  text that route answers (the shared `*_NOT_FOUND_MESSAGE`s): an earlier try whose answer was lost, or someone else,
+ *  removed it, so it is already gone. A route's or a proxy's 404 carries other text and is not taken for gone. */
+export function isGone(err: unknown, message: string): boolean {
+  return (err as { status?: number } | null)?.status === 404 && refusalMessage(err) === message;
+}
+
 /** #1179 — the server's own "not found" for a removal of a visit file it no longer holds, by its exact text: an earlier
  *  removal whose answer was lost, or someone else's, took it. A route's or a proxy's 404 is not taken for a removal. */
 export function isVisitFileGone(err: unknown): boolean {
