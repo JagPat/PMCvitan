@@ -501,12 +501,16 @@ export function useSiteVisits() {
       // not read: what is shown stays, and it is read again on the visit photo retry
       .catch(() => { if (live(scope)) useStore.getState().retrySiteVisits(); });
   }, []);
-  // another tab recorded a removal its phone could not apply, or cleared one once its row went (#1241): shown files are
-  // filtered again at once, and the phone's rows are read again, so a cleared record never lets a row read before it
-  // was deleted show the removed file again
+  // another tab recorded a removal its phone could not apply, or cleared one once its row went (#1241): the file is
+  // the server's removed file either way, so this screen keeps it hidden as one it saw removed, and the phone's rows are
+  // read again. A cleared record never lets a row read before it was deleted, or a server read sent before the
+  // removal, show the removed file again
   useEffect(() => {
     const heard = (e: StorageEvent) => {
       if (!e.key?.startsWith(REMOVED_VISIT_PHOTO_PREFIX)) return;
+      const st = useStore.getState();
+      const mine = `${REMOVED_VISIT_PHOTO_PREFIX}${visitPhotoScope(st.sessionToken, st.sessionUserId)}.${st.activeProjectId}.`;
+      if (e.key.startsWith(mine) && e.key.length > mine.length) removedFiles.current.add(e.key.slice(mine.length));
       setRemovedTurn((n) => n + 1);
       readKept();
     };

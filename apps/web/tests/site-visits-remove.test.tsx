@@ -530,6 +530,26 @@ describe('#1179 R3: taking a file off a visit', () => {
     expect(within(screen.getByTestId('sv-visit-v-1')).queryByTestId('sv-file-ck-c')).toBeNull();
   });
 
+  it('a server read from before another tab\'s removal never shows the file again once that tab clears its record', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    const { gw } = server(visit({ files: [voice({ mediaId: 'm-s', clientKey: 'ck-s', mime: 'image/jpeg', durationSec: null, removable: own })] }));
+    const card = await mount('consultant', CONSULTANT, gw);
+    expect(within(card).getByTestId('sv-file-m-s')).toBeTruthy();
+    const reads = gw.listSiteVisits!.mock.calls.length;
+    // the other tab removed the file, recorded it, then deleted its row and cleared the record; this screen read nothing since
+    const key = `${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-s`;
+    localStorage.setItem(key, '1');
+    await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key, newValue: '1' })); });
+    localStorage.removeItem(key);
+    await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key, oldValue: '1', newValue: null })); });
+    await settled();
+    expect(gw.listSiteVisits!.mock.calls.length).toBe(reads);
+    expect(within(screen.getByTestId('sv-visit-v-1')).queryByTestId('sv-file-m-s')).toBeNull();
+  });
+
   it('a send whose answer was lost, replayed after its file was removed, is settled: never "not sent"', async () => {
     useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
     const st = useStore.getState();
