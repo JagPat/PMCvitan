@@ -35,9 +35,12 @@ import { SPEECH_PROVIDER, type SpeechProvider } from './speech/speech-provider';
 export const TRANSCRIPT_CORRECTION_MAX = 20_000;
 /** A half of a surrogate pair standing alone: no character at all, and PostgreSQL's UTF-8 text cannot hold it. */
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
-/** Only spaces and what shows nothing: format characters (U+200B, U+FEFF, a joiner), marks with no letter to sit on
- *  (a lone combining mark, a variation selector), and the blank letters (Hangul fillers, the blank Braille pattern). */
-const BLANK = /^[\p{White_Space}\p{Cf}\p{Mn}\p{Me}\u115F\u1160\u2800\u3164\uFFA0]*$/u;
+/** Only spaces and what shows nothing: control characters, format characters (U+200B, U+FEFF, a joiner), every other
+ *  code point Unicode says to show as nothing (Default_Ignorable), marks with no letter to sit on (a lone combining mark,
+ *  a variation selector), and the blank letters (Hangul fillers, the blank Braille pattern). */
+const BLANK = /^[\p{White_Space}\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\p{Mn}\p{Me}\u115F\u1160\u2800\u3164\uFFA0]*$/u;
+/** A control character other than a tab or a line break (C0, DEL, C1): it shows nothing in words, so none is kept. */
+const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/u;
 /** READ COMMITTED, as the database requires of a correction (VT1b C3), so each statement after a lock sees what
  *  committed before it. */
 const WRITE_TX = { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 10_000, timeout: 30_000 };
@@ -97,7 +100,13 @@ export class VoiceTranscriptService {
   async get(projectId: string, mediaId: string, user: AuthUser): Promise<VoiceTranscriptDto> {
     const note = await this.visibleNote(projectId, mediaId, user);
     this.configured();
-    return this.dto(note, user, await this.read(projectId, mediaId));
+    const row = await this.read(projectId, mediaId);
+    // a note deleted after it was found takes its transcript with it (H4), so "no row" could be that delete: asked again
+    // after the read, a note still there was there when its transcript was read, and one gone is not found
+    if (!(await this.prisma.media.findFirst({ where: { projectId, id: mediaId }, select: { id: true } }))) {
+      throw new NotFoundException('Media not found');
+    }
+    return this.dto(note, user, row);
   }
 
   /** "Try again" after a failure, once per note (H6): the row starts over as pending, with no job and no tries spent;
@@ -137,7 +146,7 @@ export class VoiceTranscriptService {
     const value = text === null ? null : text.trim();
     // only spaces and invisible marks (a zero-width space, a byte-order mark) would show as empty words with an author
     if (value !== null && BLANK.test(value)) throw new BadRequestException('A correction holds some words');
-    if (value !== null && (value.includes('\u0000') || LONE_SURROGATE.test(value))) {
+    if (value !== null && (CONTROL.test(value) || LONE_SURROGATE.test(value))) {
       throw new BadRequestException('A correction cannot contain that character');
     }
     if (value !== null && Array.from(value).length > TRANSCRIPT_CORRECTION_MAX) {

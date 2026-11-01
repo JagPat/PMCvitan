@@ -133,6 +133,28 @@ describe('#1177 VT2-C1 — a voice note\'s words read, corrected and tried again
     expect(await t.prisma.voiceTranscript.count({ where: { mediaId: m } })).toBe(0);
   });
 
+  it('a note deleted while its words are read is not found, never read as one with nothing asked of it', async () => {
+    const m = await note();
+    await heard(m, 'words heard');
+    // the read stopped between finding the note and reading its transcript, while the note is deleted (with it)
+    const service = t.app.get(VoiceTranscriptService) as unknown as { read: (p: string, id: string) => Promise<unknown> };
+    const read = service.read;
+    let reached!: () => void;
+    const atRead = new Promise<void>((r) => { reached = r; });
+    let go!: () => void;
+    const gate = new Promise<void>((r) => { go = r; });
+    service.read = async (p: string, id: string) => { reached(); await gate; return read.call(service, p, id); };
+    try {
+      const answer = get(pmc, m).then((r) => r);
+      await atRead;
+      await t.prisma.media.delete({ where: { id: m } });
+      go();
+      expect((await answer).status).toBe(404);
+    } finally {
+      service.read = read;
+    }
+  });
+
   it('with no provider configured, no route reads or writes a transcript, and the shell does not offer it', async () => {
     const m = await note();
     await heard(m, 'words heard');
@@ -233,11 +255,13 @@ describe('#1177 VT2-C1 — a voice note\'s words read, corrected and tried again
     expect((await correct(engineer, m, '\u3000\u00a0 ', 0)).status).toBe(400);
     expect((await correct(engineer, m, '\u0085', 0)).status).toBe(400);
     expect((await correct(engineer, m, '\u200b\ufeff \u2060', 0)).status).toBe(400);
-    for (const blank of ['\u2800', '\u3164', '\u200d\ufe0f', '\u0301', '\u115f\u1160\uffa0']) {
+    for (const blank of ['\u2800', '\u3164', '\u200d\ufe0f', '\u0301', '\u115f\u1160\uffa0', '\u0001', '\u001f\u007f', '\u0085\u009f', '\u034f\u180e']) {
       expect((await correct(engineer, m, blank, 0)).status, JSON.stringify(blank)).toBe(400);
     }
     expect((await correct(engineer, m, 'x'.repeat(20_001), 0)).status).toBe(400);
     expect((await correct(engineer, m, 'a\u0000b', 0)).status).toBe(400);
+    // a control character shows nothing among words either (C0, DEL, C1); a tab and a line break are kept
+    for (const control of ['a\u0001b', 'a\u007fb', 'a\u0090b']) expect((await correct(engineer, m, control, 0)).status, JSON.stringify(control)).toBe(400);
     // half a surrogate pair is no character, and PostgreSQL cannot hold it
     expect((await correct(engineer, m, 'a\ud800b', 0)).status).toBe(400);
     expect((await correct(engineer, m, 'a\udc00', 0)).status).toBe(400);
