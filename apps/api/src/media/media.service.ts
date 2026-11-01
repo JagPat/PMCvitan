@@ -53,9 +53,15 @@ function isSiteVisitFile(input: CreateMediaInput): boolean {
     && !input.decisionId && !input.dailyLogId && !input.inspectionId && !input.inspectionItemId;
 }
 
+/** A stored coordinate against the one a replay sends: none only for none, else equal to a billionth of a degree. A
+ *  double can read back from the database a last digit off what was sent (Stage 1's re-check of #1255: 23.033333333333335
+ *  reads back as 23.03333333333333), so an exact comparison would refuse an honest resend. */
+const sameCoordinate = (stored: number | null, sent: number | undefined): boolean =>
+  stored === null || sent === undefined ? stored === (sent ?? null) : Math.abs(stored - sent) <= 1e-9;
+
 /** What a clientKey replay must read to decide whether the caller may have the stored row back. */
-const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true } as const;
-type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null };
+const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true, mime: true, sizeBytes: true, sourceMediaId: true, takenAt: true, geoLat: true, geoLng: true } as const;
+type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null; mime: string; sizeBytes: number; sourceMediaId: string | null; takenAt: string | null; geoLat: number | null; geoLng: number | null };
 
 /** #482 site photos — one send key at a time: the upload that may store a photo under it, and the delete that retires
  *  it. Always the FIRST statement of its transaction, so no transaction holds another lock while it waits for this one,
@@ -136,16 +142,68 @@ export class MediaService {
   /** A clientKey replay returns the stored row only when the caller could have created it: for the roles
    *  narrowed to plain site photos, that is their OWN plain photo — never another member's evidence.
    *  And never a photo the caller cannot see now: one filed (before #881) on another member's private
-   *  draft is answered as if it did not exist, as the snapshot and re-filing already answer it (#884). */
-  private async replayed(projectId: string, user: AuthUser, row: ReplayRow): Promise<UploadedMedia> {
+   *  draft is answered as if it did not exist, as the snapshot and re-filing already answer it (#884).
+   *  For EVERY role, the PMC and the engineer too (#904), the row is the caller's own and is what this request would
+   *  have stored: the same kind, decision, day's log, inspection and item. A key another person used, or the caller's
+   *  own key sent for something else, is refused rather than answered with a photo the request did not upload, which
+   *  would leave its evidence unstored while the device counts it as sent. Each link is stored as the request sent it
+   *  (`resolveRefInProject` returns the id it checked; an empty one is none) and is never rewritten after, so a stored
+   *  upload's own replay matches. The place (`nodeId`) is not compared: a photo may be re-filed to another place.
+   *  The rule (Codex rounds 1 and 2 on #1255): every field the upload stores as the request sent it is compared, and
+   *  only the place is not. That is the file itself (its type and size in bytes; a size of 0 is a row written without
+   *  one, the column's default, and is not compared), its camera time and location (the location to a billionth of a
+   *  degree, see sameCoordinate; a marked-up copy stores its original's instead, and its request sends none), the photo a
+   *  copy was drawn on (see sameSource: the one link the database clears after), and for a visit file its link:
+   *  the visit, note and rating, written with the upload and never changed. The length is read from the file, so the
+   *  same bytes give the same length. */
+  private async replayed(projectId: string, user: AuthUser, input: CreateMediaInput, row: ReplayRow): Promise<UploadedMedia> {
+    if (row.uploadedBy !== user.sub || row.kind !== input.kind
+      || row.decisionId !== (input.decisionId || null) || row.dailyLogId !== (input.dailyLogId || null)
+      || row.inspectionId !== (input.inspectionId ?? null) || row.inspectionItemId !== (input.inspectionItemId ?? null)
+      || row.mime !== input.mime || (row.sizeBytes !== 0 && row.sizeBytes !== Buffer.from(input.data, 'base64').length)
+      || !(await this.sameSource(projectId, row, input))
+      || (input.sourceMediaId === undefined && (row.takenAt !== (input.takenAt ?? null) || !sameCoordinate(row.geoLat, input.geoLat) || !sameCoordinate(row.geoLng, input.geoLng)))
+      || !(await this.sameVisitLink(projectId, row, input))) {
+      throw new ForbiddenException('This upload key belongs to another photo');
+    }
     if (!SITE_RECORD_ROLES.has(user.role)) {
       const plain = (row.kind === 'progress' || row.kind === 'visit') && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
-      if (!plain || row.uploadedBy !== user.sub) throw new ForbiddenException('This upload key belongs to another photo');
+      if (!plain) throw new ForbiddenException('This upload key belongs to another photo');
     }
     if (row.nodeId && (await this.prisma.$transaction((tx) => isPlaceHiddenFrom(tx, projectId, row.nodeId, user.sub)))) {
       throw new NotFoundException('Media not found');
     }
     return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString() };
+  }
+
+  /** Whether a stored copy names the photo this request names (Codex round 3 on #1255). The one compared field the
+   *  database writes after the upload: the link is cleared (`ON DELETE SET NULL ("sourceMediaId")`) when the original
+   *  is deleted. A copy's original is always a file on the copy's visit, and such a file leaves only with that visit's
+   *  removal line. So a stored file that names none matches a copy's request only when the photo it names was taken
+   *  off the request's visit and is gone from the project; otherwise (a photo still there, an id that never existed,
+   *  another project's photo) the stored file was never its copy. */
+  private async sameSource(projectId: string, row: ReplayRow, input: CreateMediaInput): Promise<boolean> {
+    const sent = input.sourceMediaId ?? null;
+    if (row.sourceMediaId === sent) return true;
+    if (row.sourceMediaId !== null || sent === null || input.siteVisit === undefined) return false;
+    if (!(await this.siteVisitFiles.wasRemovedFrom(this.prisma, projectId, input.siteVisit.visitId, sent))) return false;
+    return (await this.prisma.media.findFirst({ where: { projectId, id: sent }, select: { id: true } })) === null;
+  }
+
+  /** Whether a stored file's visit link is the one this request would have written: none for an upload that names no
+   *  visit (only a visit upload writes one), else the same visit, note and rating. A link goes only with its file
+   *  (cascade), so a visit file read just before its removal committed has none here: the removal wrote the key's
+   *  record in the same statement, and the replay is answered as a deleted photo's, 410, not refused (Codex round 3). */
+  private async sameVisitLink(projectId: string, row: ReplayRow, input: CreateMediaInput): Promise<boolean> {
+    if (input.kind !== 'visit') return true;
+    const link = await this.siteVisitFiles.linkOf(this.prisma, projectId, row.id);
+    if (link === null && input.clientKey
+      && (await this.prisma.mediaTombstone.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } } }))) {
+      throw new GoneException(DELETED_PHOTO);
+    }
+    const sent = input.siteVisit;
+    return link !== null && sent !== undefined && link.visitId === sent.visitId
+      && link.note === (sent.note ?? null) && link.rating === (sent.rating ?? null);
   }
 
   /** The photo a marked-up copy is drawn on: an image of this project that is a file on the same visit. The copy takes
@@ -203,7 +261,7 @@ export class MediaService {
         where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
         select: REPLAY_SELECT,
       });
-      if (existing) return this.replayed(projectId, user, existing);
+      if (existing) return this.replayed(projectId, user, input, existing);
       // #482 — its photo was deleted: an early no, before any bytes are stored (asked again under the key's lock below)
       const deleted = await this.prisma.mediaTombstone.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } } });
       if (deleted) throw new GoneException(DELETED_PHOTO);
@@ -352,7 +410,7 @@ export class MediaService {
         });
         let replay: UploadedMedia | undefined;
         try {
-          if (winner) replay = await this.replayed(projectId, user, winner);
+          if (winner) replay = await this.replayed(projectId, user, input, winner);
           // #482 — no winner any more: "deleted" only on the database's word, its record of the key (written in the
           // delete's own statement); without it the original error stands, unexplained
           else if (await this.prisma.mediaTombstone.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } } })) {

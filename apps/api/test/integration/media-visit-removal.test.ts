@@ -8,6 +8,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { StorageService } from '../../src/media/storage.service';
 import { MediaQueryService } from '../../src/media/media.query';
+import { SiteVisitFilesParticipant } from '../../src/site-visits/site-visit-files.participant';
 import { base64, webmTimed } from '../unit-support/voice-files';
 import { clipWebmTimed } from '../unit-support/video-files';
 import { SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
@@ -267,14 +268,50 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
     expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey } })).toBe(0);
   });
 
+  it('#904: a replay that read its file just before the file\'s removal committed is answered as removed, 410, not refused (Codex round 3 on #1255)', async () => {
+    const clientKey = `svr-race-${run}-${randomUUID()}`;
+    const id = await voice(consultantToken, visitId, { clientKey });
+    // forced order: the replay has read the file's row; the removal commits before it reads the file's visit link
+    const files = t.app.get(SiteVisitFilesParticipant);
+    const linkOf = files.linkOf.bind(files);
+    const spy = vi.spyOn(files, 'linkOf').mockImplementationOnce(async (...args) => {
+      expect((await removeIt(id, consultantToken)).status).toBe(200);
+      return linkOf(...args);
+    });
+    try {
+      const replay = await upload(consultantToken, { kind: 'visit', mime: 'audio/webm', data: base64(webmTimed(4)), durationSec: 4, siteVisit: { visitId }, clientKey });
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect([replay.status, replay.body.message]).toEqual([410, SITE_PHOTO_DELETED_MESSAGE]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey } })).toBe(0);
+  });
+
   it('a marked-up copy of a removed photo stays on the visit, its original link cleared', async () => {
     const px = Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64');
     const original = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
     expect(original.status, original.text).toBe(201);
-    const copy = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, sourceMediaId: original.body.id, siteVisit: { visitId } });
+    const clientKey = `svr-copy-${run}`;
+    const copyBody = { kind: 'visit', mime: 'image/png', data: px, sourceMediaId: original.body.id, siteVisit: { visitId }, clientKey };
+    const copy = await upload(pmcToken, copyBody);
     expect(copy.status, copy.text).toBe(201);
+    // a plain file's key is not taken for a copy of a photo that is still there (#904, Codex round 3 on #1255)
+    const plainKey = `svr-plain-${run}`;
+    const plain = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId }, clientKey: plainKey });
+    expect(plain.status, plain.text).toBe(201);
+    expect((await upload(pmcToken, { ...copyBody, clientKey: plainKey })).status).toBe(403);
+    // nor for a copy of a photo this visit never lost: an id that never existed, or another project's photo (#904)
+    expect((await upload(pmcToken, { ...copyBody, clientKey: plainKey, sourceMediaId: randomUUID() })).status).toBe(403);
+    const elsewhere = await http().post(`/projects/${f.projectB.id}/media`).set('Authorization', `Bearer ${otherToken}`)
+      .send({ kind: 'progress', mime: 'image/png', data: px });
+    expect(elsewhere.status, elsewhere.text).toBe(201);
+    expect((await upload(pmcToken, { ...copyBody, clientKey: plainKey, sourceMediaId: elsewhere.body.id })).status).toBe(403);
     expect((await removeIt(original.body.id)).status).toBe(200);
     expect(await t.prisma.media.findUniqueOrThrow({ where: { id: copy.body.id }, select: { sourceMediaId: true } })).toEqual({ sourceMediaId: null });
+    // the copy's own resend, still naming the removed original, is the same copy (Codex round 3 on #1255)
+    const again = await upload(pmcToken, copyBody);
+    expect([again.status, again.body.id]).toEqual([201, copy.body.id]);
     expect((await visit()).files.map((x: { mediaId: string }) => x.mediaId)).toContain(copy.body.id);
     expect((await t.prisma.siteVisitFileRemoval.findUniqueOrThrow({ where: { mediaId: original.body.id } })).fileKind).toBe('photo');
   });

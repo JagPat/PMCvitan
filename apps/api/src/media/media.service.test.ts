@@ -300,7 +300,7 @@ describe('MediaService — a replayed upload key (#482)', () => {
     const { svc, prisma, storage } = make(null);
     prisma.media.create.mockRejectedValueOnce(p2002());
     Object.assign(prisma.media, {
-      findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null }),
+      findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null, mime: 'image/jpeg', sizeBytes: 5, sourceMediaId: null, takenAt: null, geoLat: null, geoLng: null }),
       findFirst: vi.fn(async () => null),
     });
     expect(await svc.create('ambli', contractor, { ...input, clientKey: 'k' })).toEqual({ id: 'own', url: '/media/own?t=tok', at: '2026-10-19T09:30:00.000Z' });
@@ -367,7 +367,7 @@ describe('MediaService — a replayed upload key (#482)', () => {
     const { svc, prisma, storage } = make(null);
     prisma.media.create.mockRejectedValueOnce(p2002());
     Object.assign(prisma.media, {
-      findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null }),
+      findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null, mime: 'image/jpeg', sizeBytes: 5, sourceMediaId: null, takenAt: null, geoLat: null, geoLng: null }),
       findFirst: vi.fn(async () => ({ id: 'own' })),
     });
     expect(await svc.create('ambli', contractor, { ...input, clientKey: 'k' })).toEqual({ id: 'own', url: '/media/own?t=tok', at: '2026-10-19T09:30:00.000Z' });
