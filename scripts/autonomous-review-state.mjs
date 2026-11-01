@@ -124,6 +124,41 @@ export function isCodexReviewSummaryOnly(body) {
   return rest.trim().length === 0;
 }
 
+/**
+ * #1254 (Jagrut's choice, #1094 6564512390) — Codex's own review-state record. Codex keeps one PR comment it edits
+ * in place, carrying `<!-- codex-review-state:v1 {json} -->`; on a clean run it may post neither a +1 nor a
+ * comment, so this record is the only verdict. It clears a head only when every part of it holds:
+ *  - the comment is Codex's (REST login) and was last written at or after `readyAtMs` (this review attempt);
+ *  - `code_review` is `completed` on exactly `expectedHead` with `has_unresolved_findings === false`
+ *    (`has_any_findings` counts earlier, resolved rounds too, so it is not read);
+ *  - `security_review` is absent or idle (`status` null), or completed clean on the same head.
+ * Anything else (no marker, unparseable JSON, another head, a run in progress, a stale write) is no verdict.
+ * A Codex record that names this head and is not wholly clean (findings, a run still going, a missing flag) vetoes
+ * any other record, whenever it was written (Codex 4437620372).
+ */
+export function codexStateRecordClears(issueComments, expectedHead, readyAtMs) {
+  let clears = false;
+  for (const comment of issueComments ?? []) {
+    if (!isCodexActor(comment)) continue;
+    const match = /<!--\s*codex-review-state:v1\s+([\s\S]*?)\s*-->/u.exec(String(comment?.body ?? ''));
+    if (!match) continue;
+    let record;
+    try { record = JSON.parse(match[1]); } catch { continue; }
+    const code = record?.code_review;
+    const security = record?.security_review;
+    const codeClean = code?.status === 'completed' && code?.commit_sha === expectedHead && code?.has_unresolved_findings === false;
+    const securityClean = security == null || security.status == null
+      || (security.status === 'completed' && security.commit_sha === expectedHead && security.has_unresolved_findings === false);
+    // Codex 4437620372 — any record that names this head and is not wholly clean (a run still going, findings, a
+    // missing flag) vetoes, whenever it was written: a clean record never outranks an unfinished or failing one
+    const namesHead = code?.commit_sha === expectedHead || security?.commit_sha === expectedHead;
+    if (namesHead && !(codeClean && securityClean)) return false;
+    const writtenMs = Date.parse(comment?.updated_at ?? comment?.created_at);
+    if (Number.isFinite(writtenMs) && writtenMs >= readyAtMs && codeClean && securityClean) clears = true;
+  }
+  return clears;
+}
+
 export function classifyCodexState({
   expectedHead,
   readyAt,
@@ -132,6 +167,8 @@ export function classifyCodexState({
   reviews = [],
   comments = [],
   reactions = [],
+  // #1254 — the PR's issue comments, for Codex's review-state record (`codexStateRecordClears`)
+  issueComments = [],
   // Owner decision 2026-10-08: `{ reached, changedLines }` from `reviewCapState`. Past the cap, only a
   // P0/P1 on a changed line blocks; the rest is returned as `deferred` on a `clear` result.
   cap = null,
@@ -241,6 +278,15 @@ export function classifyCodexState({
       state: 'clear',
       findingCount: 0,
       detail: 'fresh Codex +1 for this review attempt',
+    };
+  }
+
+  // #1254 — reached only with no current-head Codex comment or review and no fresh +1
+  if (codexStateRecordClears(issueComments, expectedHead, readyAtMs)) {
+    return {
+      state: 'clear',
+      findingCount: 0,
+      detail: 'Codex completed this exact head with no unresolved findings',
     };
   }
 

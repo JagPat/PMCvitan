@@ -416,3 +416,95 @@ test('times out after the bounded deadline', () => {
     detail: 'Codex did not respond before the deadline',
   });
 });
+
+// #1254 (Jagrut's choice, #1094 6564512390) — Codex's review-state record, the shape seen on #1254 head 30511ae
+function stateRecord({ head = HEAD, unresolved = false, status = 'completed', security = null, login = CODEX_LOGIN, at = '2026-07-27T10:04:00Z', raw } = {}) {
+  const record = {
+    code_review: { commit_sha: head, has_any_findings: true, has_unresolved_findings: unresolved, status },
+    security_review: security ?? { commit_sha: null, has_any_findings: null, has_unresolved_findings: null, status: null },
+  };
+  return {
+    user: { login },
+    created_at: '2026-07-27T09:00:00Z',
+    updated_at: at,
+    body: `<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 ${raw ?? JSON.stringify(record)} -->\n\n## Codex Review Summary`,
+  };
+}
+
+test('#1254 — a completed clean Codex record on the exact head, written after readyAt, clears', () => {
+  assert.deepEqual(classifyCodexState(input({ issueComments: [stateRecord()] })), {
+    state: 'clear',
+    findingCount: 0,
+    detail: 'Codex completed this exact head with no unresolved findings',
+  });
+  // the same record past the deadline still clears rather than timing out
+  assert.equal(classifyCodexState(input({ now: '2026-07-27T10:15:01Z', issueComments: [stateRecord()] })).state, 'clear');
+});
+
+test('#1254 — a record for another head, a run not completed, or one before readyAt is no verdict', () => {
+  for (const record of [
+    stateRecord({ head: OLD_HEAD }),
+    stateRecord({ status: 'in_progress' }),
+    stateRecord({ at: '2026-07-27T09:59:59Z' }),
+  ]) {
+    assert.equal(classifyCodexState(input({ issueComments: [record] })).state, 'pending');
+    assert.equal(classifyCodexState(input({ now: '2026-07-27T10:15:01Z', issueComments: [record] })).state, 'timed_out');
+  }
+});
+
+test('#1254 — a record with unresolved findings never clears, and vetoes another clean record', () => {
+  assert.equal(classifyCodexState(input({ issueComments: [stateRecord({ unresolved: true })] })).state, 'pending');
+  assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), stateRecord({ unresolved: true })] })).state, 'pending');
+  // a missing flag is not "no findings"
+  assert.equal(classifyCodexState(input({ issueComments: [stateRecord({ unresolved: null })] })).state, 'pending');
+  // nor does a security review with unresolved findings, or one still running on this head
+  for (const security of [
+    { commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: 'completed' },
+    { commit_sha: HEAD, has_any_findings: null, has_unresolved_findings: null, status: 'in_progress' },
+  ]) {
+    assert.equal(classifyCodexState(input({ issueComments: [stateRecord({ security })] })).state, 'pending');
+  }
+});
+
+test('#1254 — a record from a non-Codex actor, or one that does not parse, is ignored', () => {
+  for (const record of [
+    stateRecord({ login: 'github-actions[bot]' }),
+    stateRecord({ login: CODEX_GRAPHQL_LOGIN }),
+    stateRecord({ raw: '{"code_review":' }),
+    { ...stateRecord(), body: 'codex-review-state:v1 without the marker' },
+  ]) {
+    assert.equal(classifyCodexState(input({ issueComments: [record] })).state, 'pending');
+  }
+});
+
+test('#1254 — the record never outranks a current-head finding or an unstable snapshot', () => {
+  const finding = { user: { login: CODEX_LOGIN }, original_commit_id: HEAD, path: 'x.ts', line: 1, body: 'P2 finding' };
+  assert.equal(classifyCodexState(input({ comments: [finding], issueComments: [stateRecord()] })).state, 'changes_required');
+  const review = { id: 5, user: { login: CODEX_LOGIN }, commit_id: HEAD, body: 'review-level finding', state: 'COMMENTED' };
+  assert.equal(classifyCodexState(input({ reviews: [review], issueComments: [stateRecord()] })).state, 'changes_required');
+  assert.equal(classifyCodexState(input({ stable: false, issueComments: [stateRecord()] })).state, 'unsettled');
+});
+
+test('#1254 — a security review counts only on the same head, and its unresolved findings veto across records', () => {
+  // security finished clean on an OLDER head: it does not stand in for this head
+  const olderSecurity = { commit_sha: OLD_HEAD, has_any_findings: false, has_unresolved_findings: false, status: 'completed' };
+  assert.equal(classifyCodexState(input({ issueComments: [stateRecord({ security: olderSecurity })] })).state, 'pending');
+  // one Codex record clean, another with security findings unresolved on this head: the veto holds in either order
+  const vetoing = stateRecord({ security: { commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: 'completed' } });
+  assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), vetoing] })).state, 'pending');
+  assert.equal(classifyCodexState(input({ issueComments: [vetoing, stateRecord()] })).state, 'pending');
+});
+
+test('Codex 4437620372 — a same-head record that is not wholly clean vetoes a clean one, in either order and at any age', () => {
+  const running = [
+    stateRecord({ status: 'in_progress' }),
+    stateRecord({ status: 'running', at: '2026-07-27T09:00:00Z' }),
+    stateRecord({ security: { commit_sha: HEAD, has_any_findings: null, has_unresolved_findings: false, status: 'in_progress' } }),
+  ];
+  for (const other of running) {
+    assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), other] })).state, 'pending');
+    assert.equal(classifyCodexState(input({ issueComments: [other, stateRecord()] })).state, 'pending');
+  }
+  // a record for another head is no veto
+  assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), stateRecord({ head: OLD_HEAD, status: 'in_progress' })] })).state, 'clear');
+});
