@@ -6,7 +6,7 @@ import { VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { replayOutboxOp, type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitFile, type SiteVisitRemoval } from '@/data/apiGateway';
-import { deleteRemovedVisitPhoto, fileVisitPhoto, listVisitPhotos, putVisitPhoto, REMOVED_VISIT_PHOTO_PREFIX, removedVisitPhotos, visitPhotoScope, VisitPhotoUnreadable, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
+import { deleteRemovedVisitPhoto, deleteVisitPhoto, fileVisitPhoto, listVisitPhotos, putVisitPhoto, REMOVED_VISIT_PHOTO_PREFIX, removedVisitPhotos, visitPhotoScope, VisitPhotoUnreadable, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
 import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
 
 /**
@@ -509,6 +509,25 @@ describe('#1179 R3: taking a file off a visit', () => {
     await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key, newValue: '1' })); });
     expect(within(screen.getByTestId('sv-visit-v-1')).queryByTestId('sv-file-ck-t')).toBeNull();
     localStorage.removeItem(key);
+  });
+
+  it('a removal another tab recorded and then settled leaves the phone\'s copy hidden on an open screen', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    await filedCopy(scope, project, 'ck-c');
+    const { gw } = server(visit());
+    const card = await mount('consultant', CONSULTANT, gw);
+    expect(within(card).getByTestId('sv-file-ck-c')).toBeTruthy();
+    // the other tab recorded the removal, then deleted the row and cleared the record; this tab hears only the clear
+    const key = `${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-c`;
+    localStorage.setItem(key, '1');
+    await deleteVisitPhoto(scope, project, 'ck-c');
+    localStorage.removeItem(key);
+    await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key, oldValue: '1', newValue: null })); });
+    await settled();
+    expect(within(screen.getByTestId('sv-visit-v-1')).queryByTestId('sv-file-ck-c')).toBeNull();
   });
 
   it('a send whose answer was lost, replayed after its file was removed, is settled: never "not sent"', async () => {

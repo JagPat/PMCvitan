@@ -462,12 +462,6 @@ export function useSiteVisits() {
   // still be shown until a read settles it: neither brings it back
   const removedFiles = useRef(new Set<string>());
   const [removedTurn, setRemovedTurn] = useState(0);
-  // another tab recorded a removal its phone could not apply (#1241): shown files are filtered again
-  useEffect(() => {
-    const heard = (e: StorageEvent) => { if (e.key?.startsWith(REMOVED_VISIT_PHOTO_PREFIX)) setRemovedTurn((n) => n + 1); };
-    globalThis.addEventListener?.('storage', heard);
-    return () => globalThis.removeEventListener?.('storage', heard);
-  }, []);
 
   /** Ends any markup: an open in flight is aborted with its timer, and the editor closes with its photo. */
   const stopMarkup = useCallback(() => {
@@ -507,6 +501,18 @@ export function useSiteVisits() {
       // not read: what is shown stays, and it is read again on the visit photo retry
       .catch(() => { if (live(scope)) useStore.getState().retrySiteVisits(); });
   }, []);
+  // another tab recorded a removal its phone could not apply, or cleared one once its row went (#1241): shown files are
+  // filtered again at once, and the phone's rows are read again, so a cleared record never lets a row read before it
+  // was deleted show the removed file again
+  useEffect(() => {
+    const heard = (e: StorageEvent) => {
+      if (!e.key?.startsWith(REMOVED_VISIT_PHOTO_PREFIX)) return;
+      setRemovedTurn((n) => n + 1);
+      readKept();
+    };
+    globalThis.addEventListener?.('storage', heard);
+    return () => globalThis.removeEventListener?.('storage', heard);
+  }, [readKept]);
 
   /** Every page shown and every open visit, together. `fresh` starts over from the first page (a new project or
    *  sign-in); otherwise it is a refresh that reads again every page already shown. Every open visit is in the open
