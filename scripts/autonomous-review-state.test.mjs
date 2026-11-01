@@ -495,6 +495,23 @@ test('#1254 — a security review counts only on the same head, and its unresolv
   assert.equal(classifyCodexState(input({ issueComments: [vetoing, stateRecord()] })).state, 'pending');
 });
 
+test('Codex 4437814263 — an idle security section is clean only when wholly empty', () => {
+  // status null, yet naming this head with unresolved findings: never clean, and it vetoes a clean record either way
+  const contradictory = stateRecord({ security: { commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: null } });
+  assert.equal(classifyCodexState(input({ issueComments: [contradictory] })).state, 'pending');
+  assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), contradictory] })).state, 'pending');
+  assert.equal(classifyCodexState(input({ issueComments: [contradictory, stateRecord()] })).state, 'pending');
+  // status null with unresolved findings and no head, or naming another head: not idle, so no clear
+  for (const security of [
+    { commit_sha: null, has_any_findings: true, has_unresolved_findings: true, status: null },
+    { commit_sha: OLD_HEAD, has_any_findings: null, has_unresolved_findings: null, status: null },
+  ]) {
+    assert.equal(classifyCodexState(input({ issueComments: [stateRecord({ security })] })).state, 'pending');
+  }
+  // Codex's real idle section (all null) still clears
+  assert.equal(classifyCodexState(input({ issueComments: [stateRecord()] })).state, 'clear');
+});
+
 test('Codex 4437620372 — a same-head record that is not wholly clean vetoes a clean one, in either order and at any age', () => {
   const running = [
     stateRecord({ status: 'in_progress' }),
