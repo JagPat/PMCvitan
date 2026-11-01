@@ -8,6 +8,7 @@ import { PrismaService } from '../../src/prisma.service';
 import type { Role } from '../../src/common/auth';
 import { EmailService } from '../../src/platform/email.service';
 import { OutboxBootstrap } from '../../src/platform/outbox/outbox.bootstrap';
+import { SPEECH_PROVIDER, type SpeechProvider } from '../../src/media/speech/speech-provider';
 
 export interface TestApp {
   app: NestExpressApplication;
@@ -28,6 +29,8 @@ export interface TestAppOptions {
   capturePasswordCode?: (email: string, code: string) => void;
   /** #827 — mail is "configured" and phone sign-in codes are captured here instead of sent (throw to fail a send). */
   capturePhoneCode?: (email: string, code: string) => void;
+  /** #1177 VT2 — the speech provider a voice note's words are asked of (a fake; production's is Sarvam, when keyed). */
+  speechProvider?: SpeechProvider;
 }
 
 export async function createTestApp(options: TestAppOptions = {}): Promise<TestApp> {
@@ -55,6 +58,7 @@ export async function createTestApp(options: TestAppOptions = {}): Promise<TestA
     }
     builder.overrideProvider(EmailService).useValue(email);
   }
+  if (options.speechProvider) builder.overrideProvider(SPEECH_PROVIDER).useValue(options.speechProvider);
   const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>();
   configureApp(app);
