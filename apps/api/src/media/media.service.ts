@@ -138,13 +138,14 @@ export class MediaService {
    *  And never a photo the caller cannot see now: one filed (before #881) on another member's private
    *  draft is answered as if it did not exist, as the snapshot and re-filing already answer it (#884).
    *  For EVERY role, the PMC and the engineer too (#904), the row is the caller's own and is what this request would
-   *  have stored: the same kind and the same inspection and item. A key another person used, or the caller's own key
-   *  sent for something else, is refused rather than answered with a photo the request did not upload, which would
-   *  leave its evidence unstored while the device counts it as sent. `decisionId` and `dailyLogId` are not compared:
-   *  the request names them by a ref resolved only after this check, and the uploader check already refuses another
-   *  person's row; the device resends a stored upload's own input, so its own replay matches. */
+   *  have stored: the same kind, decision, day's log, inspection and item. A key another person used, or the caller's
+   *  own key sent for something else, is refused rather than answered with a photo the request did not upload, which
+   *  would leave its evidence unstored while the device counts it as sent. Each link is stored as the request sent it
+   *  (`resolveRefInProject` returns the id it checked; an empty one is none) and is never rewritten after, so a stored
+   *  upload's own replay matches. The place (`nodeId`) is not compared: a photo may be re-filed to another place. */
   private async replayed(projectId: string, user: AuthUser, input: CreateMediaInput, row: ReplayRow): Promise<UploadedMedia> {
     if (row.uploadedBy !== user.sub || row.kind !== input.kind
+      || row.decisionId !== (input.decisionId || null) || row.dailyLogId !== (input.dailyLogId || null)
       || row.inspectionId !== (input.inspectionId ?? null) || row.inspectionItemId !== (input.inspectionItemId ?? null)) {
       throw new ForbiddenException('This upload key belongs to another photo');
     }

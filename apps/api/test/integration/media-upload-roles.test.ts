@@ -130,9 +130,14 @@ describe('who may add a site photo (live PG)', () => {
     expect(client.status).toBe(201);
     const taken = await upload(tokens[role], { kind: 'progress', clientKey: `904-client-${role}` });
     expect([taken.status, taken.body.id]).toEqual([403, undefined]);
-    // nor is their own key sent for something else: another kind, or an inspection the stored photo is not on
+    // nor is their own key sent for something else: another kind, or a decision, day's log or inspection the stored
+    // photo is not on (Codex on #1255: the request's links are stored as sent, so each is compared)
     expect((await upload(tokens[role], { kind: 'progress', clientKey: `904-own-${role}` })).status).toBe(403);
-    expect((await upload(tokens[role], { kind: 'material', inspectionId: 'not-this', clientKey: `904-own-${role}` })).status).toBe(403);
+    for (const link of [{ decisionId: 'not-this' }, { dailyLogId: 'not-this' }, { inspectionId: 'not-this' }]) {
+      expect((await upload(tokens[role], { kind: 'material', ...link, clientKey: `904-own-${role}` })).status, JSON.stringify(link)).toBe(403);
+    }
+    // an empty link is none, as the upload stored it
+    expect((await upload(tokens[role], { kind: 'material', decisionId: '', dailyLogId: '', clientKey: `904-own-${role}` })).body.id).toBe(first.body.id);
     // nothing new was stored, and the two photos are as they were
     const rows = await t.prisma.media.findMany({ where: { projectId: f.projectA.id, clientKey: { in: [`904-own-${role}`, `904-client-${role}`] } }, orderBy: { clientKey: 'asc' } });
     expect(rows.map((r) => [r.clientKey, r.kind, r.uploadedBy])).toEqual([
