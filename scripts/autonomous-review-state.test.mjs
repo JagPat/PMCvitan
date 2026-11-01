@@ -494,3 +494,17 @@ test('#1254 — a security review counts only on the same head, and its unresolv
   assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), vetoing] })).state, 'pending');
   assert.equal(classifyCodexState(input({ issueComments: [vetoing, stateRecord()] })).state, 'pending');
 });
+
+test('Codex 4437620372 — a same-head record that is not wholly clean vetoes a clean one, in either order and at any age', () => {
+  const running = [
+    stateRecord({ status: 'in_progress' }),
+    stateRecord({ status: 'running', at: '2026-07-27T09:00:00Z' }),
+    stateRecord({ security: { commit_sha: HEAD, has_any_findings: null, has_unresolved_findings: false, status: 'in_progress' } }),
+  ];
+  for (const other of running) {
+    assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), other] })).state, 'pending');
+    assert.equal(classifyCodexState(input({ issueComments: [other, stateRecord()] })).state, 'pending');
+  }
+  // a record for another head is no veto
+  assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), stateRecord({ head: OLD_HEAD, status: 'in_progress' })] })).state, 'clear');
+});
