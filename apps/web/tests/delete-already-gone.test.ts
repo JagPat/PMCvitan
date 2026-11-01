@@ -71,6 +71,15 @@ describe('a delete whose record is already gone is done, not refused', () => {
     await settled();
     expect(useStore.getState().toast).toBe(SCT.phaseRemoved.en);
     expect(snapshot).toHaveBeenCalled();
+    // the same text with any other status is a refusal, not a record gone
+    snapshot.mockClear();
+    for (const status of [403, 409, 410]) {
+      deletePhase.mockRejectedValue(refusal(status, PHASE_NOT_FOUND_MESSAGE));
+      useStore.getState().deletePhase('p1');
+      await settled();
+      expect(useStore.getState().toast).toBe(`Couldn't remove this phase — ${PHASE_NOT_FOUND_MESSAGE}`);
+    }
+    expect(snapshot).not.toHaveBeenCalled();
   });
 
   it('an override: its own 404 text reads as revoked; any other refusal says the server\'s reason', async () => {
@@ -92,6 +101,42 @@ describe('a delete whose record is already gone is done, not refused', () => {
     useStore.getState().revokeOverride('a1', 'o1');
     await settled();
     expect(useStore.getState().toast).not.toMatch(/refused/);
+  });
+
+  it('a gone answer that lands after a project switch says nothing and reads nothing', async () => {
+    const useStore = await load();
+    const snapshot = vi.fn().mockResolvedValue(snap());
+    let reject!: (e: unknown) => void;
+    const deleteActivity = vi.fn(() => new Promise((_, r) => { reject = r; }));
+    useStore.getState()._setGateway(tracked({ deleteActivity, snapshot }) as never);
+    useStore.setState({ toast: null } as never);
+    const done = useStore.getState().deleteActivity('a1');
+    useStore.setState({ activeProjectId: 'villa-c', projectScopeGeneration: 2 } as never);
+    reject(refusal(404, activityNotFoundMessage('a1')));
+    expect(await done).toBe(false);
+    await settled();
+    expect(useStore.getState().toast).toBeNull();
+    expect(snapshot).not.toHaveBeenCalled();
+  });
+
+  it('a company answered gone after a project switch: the new project\'s list is untouched and nothing is said', async () => {
+    const useStore = await load();
+    let reject!: (e: unknown) => void;
+    const removeCompany = vi.fn(() => new Promise((_, r) => { reject = r; }));
+    useStore.setState({ companies: [{ id: 'c1', name: 'Shree Tiles' }], toast: null } as never);
+    useStore.getState()._setGateway(tracked({ removeCompany }) as never);
+    useStore.getState().removeCompany('c1');
+    useStore.setState({ activeProjectId: 'villa-c', projectScopeGeneration: 2, companies: [{ id: 'c1', name: 'Shree Tiles' }] } as never);
+    reject(refusal(404, COMPANY_NOT_FOUND_MESSAGE));
+    await settled();
+    expect(useStore.getState().companies.map((c) => c.id)).toEqual(['c1']);
+    expect(useStore.getState().toast).toBeNull();
+  });
+
+  it('the server\'s texts, as its routes answer them, are the shared ones', () => {
+    // pinned to the bytes, so an edit to a constant shows here as well as in the API's delete-race test
+    expect([activityNotFoundMessage('a1'), PHASE_NOT_FOUND_MESSAGE, overrideNotFoundMessage('o1'), COMPANY_NOT_FOUND_MESSAGE, NOT_AN_ORG_MEMBER_MESSAGE])
+      .toEqual(['Activity a1 not found', 'Phase not found', 'Override o1 not found', 'Company not found on this project', 'Not a member of this org']);
   });
 
   it('a company: its own 404 text drops it as removed; any other failure keeps it', async () => {
