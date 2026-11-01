@@ -1748,4 +1748,47 @@ describe('a site photo picked offline is kept in a row, not as bytes in the stor
       delete (navigator as { locks?: unknown }).locks;
     }
   });
+
+  it('OP6 (Stage 1 UA-P1): a write past its bound that still commits (its abort came too late) leaves no row beside the outbox copy', async () => {
+    const A = await tab();
+    startWork(A as never);
+    A.getState()._setGateway({ uploadMedia: vi.fn(), snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.setState({ online: false } as never);
+    const rows = await rowsOf();
+    const hold = await holdDatabase();
+    const bound = deferred<() => void>();
+    rows.setSitePhotoDeadline((fire) => { bound.resolve(fire); return () => {}; });
+    // the stop does not reach the transaction (it had finished, or the browser ignores it)
+    vi.spyOn(IDBTransaction.prototype, 'abort').mockImplementation(() => { throw new Error('InvalidStateError'); });
+    A.getState().addProgressPhoto(PNG);
+    await hold.writeAsked;
+    (await bound.promise)();
+    rows.setSitePhotoDeadline(null);
+    await hold.release();
+    await until(A, (s) => s.outbox.length > 0);
+    const op = A.getState().outbox[0] as { t: string; input: { clientKey: string } };
+    expect(op.t).toBe('uploadMedia');
+    await settled();
+    // the row that landed late goes, so a reload does not rebuild a second op for it
+    expect(await rows.getSitePhotoRow(ROWS, 'villa-b', op.input.clientKey)).toBeNull();
+  });
+
+  it('OP7 (Stage 1 UA-P2): the signal back while the row is written: it is sent at once, not on the retry', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const up = uploads();
+    A.getState()._setGateway({ uploadMedia: up.fn, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.setState({ online: false } as never);
+    const hold = await holdDatabase();
+    A.getState().addProgressPhoto(PNG);
+    await hold.writeAsked;
+    A.setState({ online: true } as never);
+    await hold.release();
+    await until(A, (s) => s.toast === SAVED);
+    // the flush asked in the turn it was queued reaches the server before any timer could
+    await up.called();
+    up.calls[0]!.answer.resolve({ id: 'm1', url: '/media/m1' });
+    await settled();
+    expect(up.fn).toHaveBeenCalledTimes(1);
+  });
 });
