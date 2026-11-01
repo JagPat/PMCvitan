@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, devices, type BrowserContext, type Page } from '@playwright/test';
 // the product's own role list, so this file cannot drift from it (#584 review round 11)
 import { rolesFor } from '../../src/lib/screens';
 
@@ -524,11 +524,14 @@ test('the states only real data reaches hold the 44px floor too', async ({ page 
  * measured, and dismissed with Escape, and the page is reloaded between surfaces so a control
  * that changed state cannot leak into the next one.
  */
-test('every dialog a surface can open holds the 44px floor', async ({ page }) => {
+test('every dialog a surface can open holds the 44px floor', async ({ page: firstPage, browser, baseURL, viewport }) => {
   // pressing every control on every surface is minutes of work, not seconds, and the project
   // default is 30s. The cost is the price of discovery: a named list runs in two seconds and is
   // wrong one round later, which this file has now demonstrated three times.
   test.setTimeout(900_000);
+  let page = firstPage;
+  // held in an object: a `let` assigned only inside openSurface is narrowed to null at the end
+  const own: { context: BrowserContext | null } = { context: null };
 
   // #584 review round 10, finding 2 — AND THE SURFACES ARE DISCOVERED TOO.
   //
@@ -560,7 +563,17 @@ test('every dialog a surface can open holds the 44px floor', async ({ page }) =>
   ).toBeGreaterThan(3);
   const seen: string[] = [];
 
+  // EACH SURFACE LOAD IS A NEW BROWSER CONTEXT (#1259 residual). One page reloaded for every press
+  // kept ~2 MB of Chromium shared memory per dev-server module per load (in /tmp, as Playwright runs
+  // it) until the disk was full; from then every browser on the machine, the other worker's
+  // included, failed its module requests (`ERR_INSUFFICIENT_RESOURCES`) and drew an empty page. A
+  // closed PAGE is not enough: its renderer stays and the next page starts another. Closing the
+  // context ends its renderer and gives the memory back. Probes: notes/tests/mobile-fields-1259/.
   const openSurface = async (surface: string): Promise<void> => {
+    const next = await browser.newContext({ ...devices['Desktop Chrome'], baseURL, viewport });
+    await own.context?.close();
+    own.context = next;
+    page = await next.newPage();
     await page.goto('/');
     await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('pmc');
     if (surface.startsWith('more-item-')) {
@@ -595,6 +608,7 @@ test('every dialog a surface can open holds the 44px floor', async ({ page }) =>
       }
     }
   }
+  await own.context?.close();
   const opened = new Set(seen).size;
 
   // and the count is part of the claim, exactly as it is for the field sweeps: an arm that
