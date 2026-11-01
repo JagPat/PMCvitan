@@ -1791,4 +1791,31 @@ describe('a site photo picked offline is kept in a row, not as bytes in the stor
     await settled();
     expect(up.fn).toHaveBeenCalledTimes(1);
   });
+
+  it('OP8 (Codex 4436044675): a row not written after the signal came back is sent at once from the outbox, not left for a later flush', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const up = uploads();
+    A.getState()._setGateway({ uploadMedia: up.fn, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.setState({ online: false } as never);
+    const rows = await rowsOf();
+    const hold = await holdDatabase();
+    const bound = deferred<() => void>();
+    rows.setSitePhotoDeadline((fire) => { bound.resolve(fire); return () => {}; });
+    A.getState().addProgressPhoto(PNG);
+    await hold.writeAsked;
+    // the signal returns while the row is being written (the reconnect's flush finds nothing queued), then the write
+    // passes its bound
+    A.setState({ online: true } as never);
+    (await bound.promise)();
+    rows.setSitePhotoDeadline(null);
+    await hold.release();
+    // the photo falls back to the outbox and is sent by the flush asked in that same turn
+    await up.called();
+    expect(up.calls[0]!.input).toMatchObject({ data: PNG.split(',')[1] });
+    up.calls[0]!.answer.resolve({ id: 'm1', url: '/media/m1' });
+    await settled();
+    expect(A.getState().outbox).toEqual([]);
+    expect(up.fn).toHaveBeenCalledTimes(1);
+  });
 });

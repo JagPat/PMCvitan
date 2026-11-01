@@ -6504,8 +6504,11 @@ export const useStore = create<Store>()(
                 sitePhotoRowChanges.set(clientKey, () => drop().then(() => { sitePhotoRowChanges.delete(clientKey); letGo(); }, () => {}));
                 retrySitePhotos();
               });
-              if (here) queueInOutbox();
-              else get().flash(DLT.photoUploadFailed[get().lang]);
+              if (here) {
+                queueInOutbox();
+                // the signal came back while the row was being written: sent now, as a kept row is above (Codex 4436044675)
+                if (get().online) void get().flushOutbox();
+              } else get().flash(DLT.photoUploadFailed[get().lang]);
             }));
           return;
         }
