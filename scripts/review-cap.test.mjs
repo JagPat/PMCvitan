@@ -13,7 +13,7 @@ import {
   GITHUB_PR_FILES_LIMIT,
 } from './review-cap.mjs';
 import { classifyCodexState } from './autonomous-review-state.mjs';
-import { capDefersStoredFailure, capFiles, cappedSuccessDetail, EVIDENCE_SNAPSHOT_ATTEMPTS, fileDeferredFindings, publishBlockingVerdict, publishSettledSuccess, readCodexEvidence, settleFinalCodexEvidence, SETTLING_DESCRIPTION, unionDeferred } from './autonomous-review-gate.mjs';
+import { capDefersStoredFailure, capFiles, cappedSuccessDetail, EVIDENCE_SNAPSHOT_ATTEMPTS, fileDeferredFindings, publishBlockingVerdict, publishSettledSuccess, readCodexEvidence, reclassifyCurrentCodexEvidence, reviewAttempt, settleFinalCodexEvidence, SETTLING_DESCRIPTION, unionDeferred } from './autonomous-review-gate.mjs';
 import { pendingFollowUpHeads } from './review-follow-up.mjs';
 import { FOLLOW_UP_RETRY, isRetryableReviewFailureDescription, REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
@@ -788,4 +788,52 @@ test('Codex 4229880987 — no write after a gate-written pending status can leav
   const direct = gate.slice(0, gate.indexOf('export function publishSettledSuccess'));
   assert.doesNotMatch(direct.slice(direct.indexOf('export async function ensureTerminalReviewState')), /client\.setStatus\(\s*expectedHead,\s*'success'/u);
   assert.equal([...gate.matchAll(/await publishSettledSuccess\(/gu)].length, 2, 'the ordinary path and recovery');
+});
+
+// #1254 (Jagrut's choice, #1094 6564512390) — the gate passes Codex's review-state record to the classifier at both
+// places that can clear a head: the poll (reviewAttempt) and the verification re-read before success
+// (reclassifyCurrentCodexEvidence). The record is the only evidence here: no review, comment or +1.
+function recordClient({ status = 'completed', head = HEAD } = {}) {
+  const pullRequest = {
+    number: 9, state: 'open', changed_files: 1,
+    head: { sha: HEAD, ref: 'claude/unit', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  };
+  const record = { code_review: { commit_sha: head, has_any_findings: true, has_unresolved_findings: false, status },
+    security_review: { commit_sha: null, has_any_findings: null, has_unresolved_findings: null, status: null } };
+  // the poll reads the pull request four times before its first evidence read; any later read answers closed, so a
+  // poll that does not clear on its first read ends as `superseded` instead of waiting out the review deadline
+  let reads = 0;
+  return {
+    pullRequest: async () => { reads += 1; return reads <= 4 ? pullRequest : { ...pullRequest, state: 'closed' }; },
+    setDraft: async () => pullRequest,
+    updateStickyComment: async () => {},
+    pullRequestFiles: async () => [],
+    reviews: async () => [],
+    reviewComments: async () => [],
+    reactions: async () => [],
+    issueComments: async () => [{ user: { login: CODEX }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      body: `<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 ${JSON.stringify(record)} -->` }],
+  };
+}
+
+test('#1254 — a clean exact-head record alone clears the poll and the verification re-read', async () => {
+  const readyAt = new Date(Date.now() - 60_000).toISOString();
+  const polled = await reviewAttempt(recordClient(), { number: 9 }, HEAD, 1, readyAt);
+  assert.equal(polled.state, 'clear');
+  assert.equal(polled.detail, 'Codex completed this exact head with no unresolved findings');
+  const verified = await reclassifyCurrentCodexEvidence(recordClient(), 9, HEAD, readyAt);
+  assert.equal(verified.state, 'clear');
+});
+
+test('#1254 — a record back in progress at the verification re-read is not clear, so no success is published', async () => {
+  const readyAt = new Date(Date.now() - 60_000).toISOString();
+  for (const client of [recordClient({ status: 'in_progress' }), recordClient({ head: 'd'.repeat(40) })]) {
+    const verified = await reclassifyCurrentCodexEvidence(client, 9, HEAD, readyAt);
+    assert.equal(verified.state, 'pending');
+  }
+  // the orchestrator publishes success only on a `clear` re-read; anything else is a blocking verdict
+  const { readFile } = await import('node:fs/promises');
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  assert.match(gate, /const verifiedResult = await reclassifyCurrentCodexEvidence\([\s\S]*?if \(verifiedResult\.state !== 'clear'\) \{[\s\S]*?publishBlockingVerdict\(/u);
 });

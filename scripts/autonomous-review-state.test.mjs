@@ -484,3 +484,13 @@ test('#1254 — the record never outranks a current-head finding or an unstable 
   assert.equal(classifyCodexState(input({ reviews: [review], issueComments: [stateRecord()] })).state, 'changes_required');
   assert.equal(classifyCodexState(input({ stable: false, issueComments: [stateRecord()] })).state, 'unsettled');
 });
+
+test('#1254 — a security review counts only on the same head, and its unresolved findings veto across records', () => {
+  // security finished clean on an OLDER head: it does not stand in for this head
+  const olderSecurity = { commit_sha: OLD_HEAD, has_any_findings: false, has_unresolved_findings: false, status: 'completed' };
+  assert.equal(classifyCodexState(input({ issueComments: [stateRecord({ security: olderSecurity })] })).state, 'pending');
+  // one Codex record clean, another with security findings unresolved on this head: the veto holds in either order
+  const vetoing = stateRecord({ security: { commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: 'completed' } });
+  assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), vetoing] })).state, 'pending');
+  assert.equal(classifyCodexState(input({ issueComments: [vetoing, stateRecord()] })).state, 'pending');
+});

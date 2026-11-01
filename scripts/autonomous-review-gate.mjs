@@ -2308,7 +2308,8 @@ async function capFor(client, number, expectedHead, reviews, comments, changedFi
   return reviewCapState({ expectedHead, reviews, comments, files, changedFiles });
 }
 
-async function reviewAttempt(
+// exported for the #1254 wiring rows in review-cap.test.mjs; the orchestrator is its only production caller
+export async function reviewAttempt(
   client,
   pullRequest,
   expectedHead,
@@ -2378,7 +2379,7 @@ async function reviewAttempt(
   }
 }
 
-async function reclassifyCurrentCodexEvidence(
+export async function reclassifyCurrentCodexEvidence(
   client,
   number,
   expectedHead,
