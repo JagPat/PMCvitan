@@ -76,6 +76,8 @@ function make(
     put: vi.fn(async () => ({ url: storagePutUrl })),
     presignGet: vi.fn(async () => presignedGet),
     remove: vi.fn(async () => {}),
+    // the real one's contract: never throws (a failure is a warn line); removal itself is `remove`, asserted below
+    removeOrLog: vi.fn(async (key: string, _why: string) => { await (storage.remove as (k: string) => Promise<void>)(key).catch(() => undefined); }),
   };
   const signed = { mediaPath: vi.fn((id: string) => `/media/${id}?t=tok`) };
   const dispatcher = { dispatchCommitted: vi.fn() };
