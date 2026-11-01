@@ -749,6 +749,8 @@ export const dailyLogToast = {
   noCrewRows: { en: 'No crew rows on this log yet — add trades on the daily log first.', hi: 'इस लॉग में अभी कारीगरों की पंक्तियाँ नहीं हैं — पहले काम के प्रकार जोड़ें।', gu: 'આ લૉગમાં હજી કારીગરોની હાર નથી — પહેલાં કામના પ્રકાર ઉમેરો.' },
   qrScanned: { en: 'Worker checked in via QR · Helper · 9:03 AM · face verified.', hi: 'कारीगर की QR से हाज़िरी लगी · हेल्पर · 09:03 · चेहरा जाँचा गया।', gu: 'કારીગરની QR થી હાજરી પુરાઈ · હેલ્પર · 09:03 · ચહેરો ચકાસાયો.' },
   photoUnreadable: { en: 'Could not read that photo — please try again.', hi: 'यह फ़ोटो पढ़ी नहीं जा सकी — फिर कोशिश करें।', gu: 'આ ફોટો વાંચી ન શકાયો — ફરી પ્રયાસ કરો.' },
+  // #918: a type the upload does not take, refused before it is kept or sent (hi/gu approved by Jagrut, 1 Nov)
+  photoTypeRefused: { en: 'This photo\'s format can\'t be uploaded. Choose a JPEG, PNG or HEIC photo.', hi: 'इस फ़ोटो का फ़ॉर्मैट अपलोड नहीं हो सकता। JPEG, PNG या HEIC फ़ोटो चुनें।', gu: 'આ ફોટાનું ફોર્મેટ અપલોડ થઈ શકતું નથી. JPEG, PNG અથવા HEIC ફોટો પસંદ કરો.' },
   photoOffline: { en: 'Photo saved offline — will upload when signal returns.', hi: 'फ़ोटो ऑफ़लाइन सहेजी — नेटवर्क आते ही अपलोड होगी।', gu: 'ફોટો ઓફલાઇન સાચવ્યો — નેટવર્ક આવતાં અપલોડ થશે.' },
   photoUploadedStamped: { en: 'Progress photo uploaded — stamped from the photo, visible to PMC.', hi: 'काम की फ़ोटो अपलोड हुई — फ़ोटो के समय-जगह के साथ, PMC देख सकते हैं।', gu: 'કામનો ફોટો અપલોડ થયો — ફોટાના સમય-જગ્યા સાથે, PMC જોઈ શકે છે.' },
   photoUploaded: { en: 'Progress photo uploaded — visible to PMC.', hi: 'काम की फ़ोटो अपलोड हुई — PMC देख सकते हैं।', gu: 'કામનો ફોટો અપલોડ થયો — PMC જોઈ શકે છે.' },

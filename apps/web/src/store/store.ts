@@ -72,6 +72,7 @@ import {
 } from '@vitan/shared';
 import { routableScreensFor, screensFor } from '@/lib/screens';
 import { deleteWaitsForUpload, uploadQueued, type KeptSitePhoto } from '@/lib/queuedSitePhotos';
+import { UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
 import { deleteSitePhotoRow, dropSentMarkers, holdSitePhotoLock, isSitePhotoSent, listSitePhotoRows, markSitePhotoSent, putSitePhotoRow, sitePhotosLocked, SITE_PHOTO_SENT_KEEP_MS, sitePhotoStorageAvailable, SitePhotoBusy, SitePhotoUnreadable, type SitePhotoRow } from '@/data/sitePhotoStore';
 import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
@@ -6400,6 +6401,15 @@ export const useStore = create<Store>()(
         return;
       }
       const [, mime, base64] = m;
+      // #918: only the types the upload takes (`RASTER_IMAGE_MIMES`, compared as the server compares them). Another is
+      // refused here, before anything is kept, queued, shown or sent: the server would refuse it, and a queued one would be
+      // discarded later. The pickers keep `image/*` (naming HEIC there can stop iOS Safari from converting a library HEIC
+      // photo to JPEG), so this is the check
+      if (!UPLOAD_IMAGE_MIMES.includes(mime)) {
+        emitGuideOutcome('site-photo-add-failed', null, guideRun);
+        get().flash(DLT.photoTypeRefused[get().lang]);
+        return;
+      }
       // The day's log this photo was taken for (#482): fixed when it was picked, filed on it, and shown only in
       // THAT log. A replay that lands after the log was sent, or after a refresh brought the next log, still
       // belongs to it, and never adds to the count of a log the server did not file it on.
