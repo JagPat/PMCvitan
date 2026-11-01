@@ -513,6 +513,25 @@ describe('#1179 R3: taking a file off a visit', () => {
     del.mockRestore();
   });
 
+  it('a recorded removal lets go of its own row\'s hold only: another queued row of the same visit, and another visit, stay held (#1265)', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    const add = (visitId: string, key: string) => ({
+      t: 'siteVisitAddFile', visitId, idempotencyKey: `idem-${key}`, scope,
+      file: { id: key, mime: 'image/jpeg' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
+    } as SiteVisitAddFileOp);
+    await putVisitPhoto(scope, project, add('v-1', 'ck-a'), 'AAAA');
+    await putVisitPhoto(scope, project, add('v-1', 'ck-b'), 'AAAA');
+    await putVisitPhoto(scope, project, add('v-2', 'ck-c'), 'AAAA');
+    const del = vi.spyOn(IDBObjectStore.prototype, 'delete').mockImplementation(() => { throw new Error('storage down'); });
+    await expect(deleteRemovedVisitPhoto(scope, project, 'ck-a')).resolves.toBe('kept');
+    del.mockRestore();
+    expect(visitsHeldByPhotos(scope, project)).toEqual(new Set(['v-1', 'v-2']));
+    localStorage.removeItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-a`);
+  });
+
   it('the queue\'s own read of the rows deletes a row recorded as removed, and its record, with no visit screen open (#1265)', async () => {
     useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
     const st = useStore.getState();
