@@ -354,6 +354,8 @@ export async function deleteRemovedVisitPhoto(userScope: string, projectId: stri
       const storage = globalThis.localStorage;
       if (!storage) throw new Error('no localStorage');
       storage.setItem(`${removedPrefix(userScope, projectId)}${clientKey}`, '1');
+      // the server has the file and removed it: no act of its visit waits behind its row any more (#1265)
+      letGoOf(userScope, projectId, [clientKey]);
       return 'kept';
     } catch {
       throw new VisitPhotoUnreadable();

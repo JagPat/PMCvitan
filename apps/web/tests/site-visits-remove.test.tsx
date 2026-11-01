@@ -6,7 +6,7 @@ import { VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
 import { replayOutboxOp, type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitFile, type SiteVisitRemoval } from '@/data/apiGateway';
-import { deleteRemovedVisitPhoto, deleteVisitPhoto, fileVisitPhoto, listVisitPhotos, putVisitPhoto, REMOVED_VISIT_PHOTO_PREFIX, removedVisitPhotos, visitPhotoScope, VisitPhotoUnreadable, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
+import { deleteRemovedVisitPhoto, deleteVisitPhoto, fileVisitPhoto, listVisitPhotos, putVisitPhoto, REMOVED_VISIT_PHOTO_PREFIX, removedVisitPhotos, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
 import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
 
 /**
@@ -490,6 +490,46 @@ describe('#1179 R3: taking a file off a visit', () => {
     // once the phone can delete it, the next replay does, and the record goes
     del.mockRestore();
     await expect(replayOutboxOp(gw as unknown as ApiGateway, op as unknown as OutboxOp, st.projectScopeGeneration)).resolves.toBeNull();
+    expect(await listVisitPhotos(scope, project)).toEqual([]);
+    expect(removedVisitPhotos(scope, project).size).toBe(0);
+  });
+
+  it('a removal recorded while its row cannot be deleted holds no act of its visit behind that row (#1265)', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    const op = {
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: 'idem-h', scope,
+      file: { id: 'ck-h', mime: 'image/jpeg' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
+    } as SiteVisitAddFileOp;
+    // a queued photo holds its visit's later acts while the phone's rows cannot be read
+    await putVisitPhoto(scope, project, op, 'AAAA');
+    expect(visitsHeldByPhotos(scope, project)).toEqual(new Set(['v-1']));
+    const del = vi.spyOn(IDBObjectStore.prototype, 'delete').mockImplementation(() => { throw new Error('storage down'); });
+    await expect(deleteRemovedVisitPhoto(scope, project, 'ck-h')).resolves.toBe('kept');
+    // the server has the file and removed it: nothing of its visit waits behind its row any more
+    expect(visitsHeldByPhotos(scope, project)).toEqual(new Set());
+    del.mockRestore();
+  });
+
+  it('the queue\'s own read of the rows deletes a row recorded as removed, and its record, with no visit screen open (#1265)', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    const op = {
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: 'idem-q', scope,
+      file: { id: 'ck-q', mime: 'image/jpeg' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
+    } as SiteVisitAddFileOp;
+    // after a reload: the row is still kept and its removal recorded, and the queue holds no act for it
+    await putVisitPhoto(scope, project, op, 'AAAA');
+    localStorage.setItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-q`, '1');
+    const gw = { project, uploadMedia: vi.fn(async () => ({ id: 'm-q' })), listSiteVisits: vi.fn(async () => []) };
+    useStore.getState()._setGateway(tracked(gw) as unknown as ApiGateway);
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    await settled();
+    expect(gw.uploadMedia).not.toHaveBeenCalled();
     expect(await listVisitPhotos(scope, project)).toEqual([]);
     expect(removedVisitPhotos(scope, project).size).toBe(0);
   });
