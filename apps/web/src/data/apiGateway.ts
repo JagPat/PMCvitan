@@ -2089,7 +2089,7 @@ export function isPlaceGone(err: unknown): boolean {
  *  (Codex 4436483105). An API older than that answer names none: nothing is said. The second send's own answer is taken
  *  the same way: a photo another tab sent under the key, stored on the place once it was back, is answered with that
  *  place, and is not said to be without it (Codex 4436566611). */
-export async function uploadSitePhotoInput(gw: Pick<ApiGateway, 'uploadMedia'>, input: UploadMediaInput): Promise<{ id: string; url: string; at?: string; placeDropped?: true }> {
+export async function uploadSitePhotoInput(gw: Pick<ApiGateway, 'uploadMedia'>, input: UploadMediaInput): Promise<{ id: string; url: string; at?: string; nodeId?: string | null; placeDropped?: true }> {
   try {
     const res = await gw.uploadMedia(input);
     return input.nodeId && res.nodeId === null ? { ...res, placeDropped: true } : res;

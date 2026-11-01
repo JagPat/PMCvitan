@@ -259,6 +259,20 @@ describe('an online site photo whose place was removed (#919)', () => {
     const row = await rows.getSitePhotoRow(ROWS, 'villa-b', up.inputs[0]!.clientKey as string);
     expect(row).not.toHaveProperty('placeDropped');
   });
+
+  it('PG19: a send answered by its key with the stored photo, filed since on another place: listed on that place, nothing said', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const up = uploads({ id: 'm1', url: '/media/m1', nodeId: 'room-2' });
+    gatewayOf(A, up.fn);
+    A.getState().addProgressPhoto(PNG, 'room-1');
+    await until(A, (s) => s.photos.some((p) => p.id === 'm1'));
+    // the server's answer is the truth, not the place asked (Codex 4436983880)
+    expect(A.getState().photos.find((p) => p.id === 'm1')).toMatchObject({ nodeId: 'room-2' });
+    await settled();
+    expect(up.inputs).toHaveLength(1);
+    expect(A.getState().toast ?? '').not.toBe(DROPPED);
+  });
 });
 
 describe('a queued site photo whose place was removed (#919)', () => {

@@ -6565,7 +6565,9 @@ export const useStore = create<Store>()(
           // a place removed since the pick: saved without it, and the person told so (#919)
           void uploadSitePhotoInput(sendGateway, input)
             .then((res) => {
-              const placed = res.placeDropped ? undefined : nodeId;
+              // the place the server filed it on, when its answer says (a keyed replay answers the stored photo, which may
+              // have been re-filed since: Codex 4436983880); an older API's answer names none, and the asked place stands
+              const placed = res.placeDropped ? undefined : res.nodeId !== undefined ? (res.nodeId ?? undefined) : nodeId;
               rowSent(res.placeDropped === true);
               if (!scopeStillCurrent(scope)) { set((s) => settle(s, true)); return; }
               set((s) => {

@@ -3,6 +3,8 @@ import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { treeLockKey } from '../../src/common/tree-lock';
+import { SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
 
 /**
  * #919 part 1 (Codex 4436483105) — a site photo's upload answer names the place it is filed on (null for none), on a
@@ -63,5 +65,71 @@ describe('a site photo upload answers with its place (live PG)', () => {
     expect(replay.status).toBe(201);
     expect(replay.body).toMatchObject({ id: second.body.id, nodeId: null });
     expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: 'answers-dropped' } })).toBe(1);
+  });
+
+  const waitingOn = async (lockTypes: string[], ms = 10_000): Promise<boolean> => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT COUNT(*)::bigint AS n FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+          WHERE NOT l.granted AND l.locktype = ANY($1::text[]) AND a.datname = current_database() AND l.pid <> pg_backend_pid()`, lockTypes,
+      );
+      if (Number(rows[0]?.n ?? 0) > 0) return true;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    return false;
+  };
+  /** Runs `during` under the project's exclusive tree lock, as a place's removal holds it, until released. */
+  const underTreeLock = (during: (q: Parameters<Parameters<TestApp['prisma']['$transaction']>[0]>[0]) => Promise<unknown>) => {
+    let held!: () => void; const heldP = new Promise<void>((r) => { held = r; });
+    let release!: () => void; const releaseP = new Promise<void>((r) => { release = r; });
+    const done = t.prisma.$transaction(async (q) => {
+      await q.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, treeLockKey(f.projectA.id));
+      await during(q);
+      held();
+      await releaseP;
+    }, { timeout: 30_000 });
+    return { held: heldP, release, done };
+  };
+
+  // Codex 4436983883: the replay's answer reads the place under the tree lock's shared side, so a removal in flight
+  // (which files the photo off the place) finishes first and the answer names no place, not the one it had.
+  it('a replay while its place is being removed waits for the removal and is answered with no place', async () => {
+    const room = await t.prisma.projectNode.create({
+      data: { id: `${f.projectA.id}-answers-racing`, projectId: f.projectA.id, name: 'racing', kind: 'zone', publishedAt: new Date(), authorId: f.memberUser.id },
+    });
+    const first = await upload({ clientKey: 'answers-racing', nodeId: room.id });
+    expect(first.body.nodeId).toBe(room.id);
+    const removal = underTreeLock(async (q) => {
+      await q.$executeRawUnsafe(`UPDATE "Media" SET "nodeId" = NULL WHERE "nodeId" = $1`, room.id);
+      await q.$executeRawUnsafe(`DELETE FROM "ProjectNode" WHERE "id" = $1`, room.id);
+    });
+    await removal.held;
+    const replaying = upload({ clientKey: 'answers-racing', nodeId: room.id }).then((r) => r);
+    expect(await waitingOn(['advisory'])).toBe(true);
+    removal.release();
+    await removal.done;
+    const replay = await replaying;
+    expect(replay.status).toBe(201);
+    expect(replay.body).toMatchObject({ id: first.body.id, nodeId: null });
+  });
+
+  // Stage 1 r1 fold: the photo itself deleted while the replay waited is answered as deleted (410), never as a photo
+  // saved without its place
+  it('a replay while its photo is being deleted waits and is answered as deleted, not as unplaced', async () => {
+    const room = await t.prisma.projectNode.create({
+      data: { id: `${f.projectA.id}-answers-deleting`, projectId: f.projectA.id, name: 'deleting', kind: 'zone', publishedAt: new Date(), authorId: f.memberUser.id },
+    });
+    const first = await upload({ clientKey: 'answers-deleting', nodeId: room.id });
+    expect(first.body.nodeId).toBe(room.id);
+    const deletion = underTreeLock((q) => q.$executeRawUnsafe(`DELETE FROM "Media" WHERE "id" = $1`, first.body.id));
+    await deletion.held;
+    const replaying = upload({ clientKey: 'answers-deleting', nodeId: room.id }).then((r) => r);
+    expect(await waitingOn(['advisory'])).toBe(true);
+    deletion.release();
+    await deletion.done;
+    const replay = await replaying;
+    expect(replay.status).toBe(410);
+    expect(replay.body.message).toBe(SITE_PHOTO_DELETED_MESSAGE);
   });
 });

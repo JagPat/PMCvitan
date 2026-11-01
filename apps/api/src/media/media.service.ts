@@ -145,10 +145,24 @@ export class MediaService {
       const plain = (row.kind === 'progress' || row.kind === 'visit') && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
       if (!plain || row.uploadedBy !== user.sub) throw new ForbiddenException('This upload key belongs to another photo');
     }
-    if (row.nodeId && (await this.prisma.$transaction((tx) => isPlaceHiddenFrom(tx, projectId, row.nodeId, user.sub)))) {
-      throw new NotFoundException('Media not found');
+    let nodeId = row.nodeId;
+    if (row.nodeId) {
+      const placed = row.nodeId;
+      const seen = await this.prisma.$transaction(async (tx) => {
+        if (await isPlaceHiddenFrom(tx, projectId, placed, user.sub)) return null;
+        // #919 — read again under the tree's shared lock, which the check above took: a place removed while this replay
+        // waited for it has let the photo go by now, and the answer says so (Codex 4436983883)
+        const still = await tx.media.findUnique({ where: { id: row.id }, select: { nodeId: true } });
+        // the photo itself deleted while this replay waited: answered as deleted, never as saved without its place
+        if (!still) return 'deleted' as const;
+        const now = still.nodeId;
+        return now !== null && now !== placed && (await isPlaceHiddenFrom(tx, projectId, now, user.sub)) ? null : { nodeId: now };
+      });
+      if (seen === 'deleted') throw new GoneException(DELETED_PHOTO);
+      if (!seen) throw new NotFoundException('Media not found');
+      nodeId = seen.nodeId;
     }
-    return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString(), nodeId: row.nodeId };
+    return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString(), nodeId };
   }
 
   /** The photo a marked-up copy is drawn on: an image of this project that is a file on the same visit. The copy takes
