@@ -20,6 +20,7 @@ import {
   isOwnershipInconsistentScopeDetail,
   isBodyOnlyOwnershipRecoveryDetail,
   REVIEW_ROUND_CAP,
+  CODEX_RUN_HELD_DETAIL,
 } from './review-policy.mjs';
 export {
   requiredChecksForPullRequest,
@@ -1550,6 +1551,9 @@ export async function capDefersStoredFailure(client, pullRequest, expectedHead, 
   if (!/current-head Codex finding|Codex submitted a current-head review/u.test(description)) return false;
   try {
     const evidence = await finalCodexEvidence(client, pullRequest, expectedHead);
+    // G2 — a same-head Codex run still going is neither a deferral nor the stored failure: the caller replaces
+    // the failure with the retryable hold (`publishHeldReview`), so the head is re-judged once the run ends
+    if (evidence.held) return 'held';
     return evidence.state === 'clear' && evidence.deferred.length > 0;
   } catch {
     // unreadable evidence decides nothing: the stored failure stands (fail closed)
@@ -1582,7 +1586,12 @@ export async function ensureTerminalReviewState(
     // an already-enabled native auto-merge; the rest of recovery then re-earns it through the single writer.
     await withdrawUntokenedSuccess(client, pullRequest, expectedHead, status);
     const latched = persistentReviewFailure(statuses);
-    if (latched && !(await capDefersStoredFailure(client, pullRequest, expectedHead, latched))) {
+    const latchedDeferral = latched ? await capDefersStoredFailure(client, pullRequest, expectedHead, latched) : false;
+    if (latchedDeferral === 'held') {
+      await publishHeldReview(client, pullRequest, expectedHead);
+      return true;
+    }
+    if (latched && !latchedDeferral) {
       await client.setStatus(
         expectedHead,
         'failure',
@@ -1679,7 +1688,12 @@ export async function ensureTerminalReviewState(
   } else {
     // Codex 4225790715 — a stored findings failure the cap now defers is not preserved: the ordinary review
     // path runs instead, which files the deferred findings and completes the head without a new push
-    if (await capDefersStoredFailure(client, pullRequest, expectedHead, status)) return false;
+    const deferral = await capDefersStoredFailure(client, pullRequest, expectedHead, status);
+    if (deferral === 'held') {
+      await publishHeldReview(client, pullRequest, expectedHead);
+      return true;
+    }
+    if (deferral) return false;
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
     );
@@ -2264,7 +2278,7 @@ function sameReviewSet(before, after) {
  * up to EVIDENCE_SNAPSHOT_ATTEMPTS times. An unstable snapshot is returned with `stable: false`, which
  * `classifyCodexState` reads as `unsettled`: never clear, never "nothing new". Reactions are read last.
  */
-export async function readCodexEvidence(client, number, { reactions = false } = {}) {
+export async function readCodexEvidence(client, number, { reactions = false, record = false } = {}) {
   let snapshot;
   for (let attempt = 1; attempt <= EVIDENCE_SNAPSHOT_ATTEMPTS; attempt += 1) {
     const before = await client.reviews(number);
@@ -2273,10 +2287,12 @@ export async function readCodexEvidence(client, number, { reactions = false } = 
     snapshot = { reviews, comments, stable: sameReviewSet(before, reviews) };
     if (snapshot.stable) break;
   }
-  if (!reactions) return snapshot;
+  if (!reactions && !record) return snapshot;
   // #1254 — Codex's review-state record (an issue comment) is read last, with the reactions: like a +1, it can
-  // only clear a head that the snapshot above shows no current-head finding on
-  const withReactions = { ...snapshot, reactions: await client.reactions(number) };
+  // only clear a head that the snapshot above shows no current-head finding on. G2 (Codex 4437688608) — the final
+  // read (`finalCodexEvidence`: the settlement and the recovery) asks for the record without reactions, so a
+  // same-head run still going holds there too
+  const withReactions = reactions ? { ...snapshot, reactions: await client.reactions(number) } : snapshot;
   // a client with no reader yields no record, which is no verdict (fail closed)
   return { ...withReactions, issueComments: typeof client.issueComments === 'function' ? await client.issueComments(number) : [] };
 }
@@ -2532,7 +2548,8 @@ export async function guardAgainstCurrentHeadFinding(
  * 4214321785) or, past the cap, is deferred with the rest (Codex 4214270293).
  */
 export async function finalCodexEvidence(client, pullRequest, expectedHead) {
-  const { reviews, comments, stable } = await readCodexEvidence(client, pullRequest.number);
+  // G2 (Codex 4437688608) — with Codex's review-state record, so a same-head run still going is `held`
+  const { reviews, comments, stable, issueComments } = await readCodexEvidence(client, pullRequest.number, { record: true });
   const now = new Date();
   const result = classifyCodexState({
     stable,
@@ -2543,10 +2560,13 @@ export async function finalCodexEvidence(client, pullRequest, expectedHead) {
     reviews,
     comments,
     reactions: [],
+    issueComments,
     cap: await capFor(client, pullRequest.number, expectedHead, reviews, comments, pullRequest.changed_files),
   });
   return {
     state: result.state,
+    // G2 — a same-head Codex run still going: never "nothing arrived", never "nothing to file"
+    held: result.held === true,
     detail: result.detail,
     // Codex 4220861349 — past the cap a blocking verdict carries its non-blocking findings too
     deferred: result.deferred ?? [],
@@ -2612,7 +2632,9 @@ async function settleAfterWithdrawal(client, pullRequest, expectedHead, earlierD
   // So it admits exactly two outcomes: `clear` (past the cap, everything deferrable) and `pending` (no
   // current-head finding and no current-head review — nothing arrived since the clean result). Every other
   // state, present or future, fails closed rather than falling through to a success.
-  if (evidence.state !== 'clear' && evidence.state !== 'pending') return blockingSettlement(evidence, earlierDeferred);
+  // G2 (Codex 4437688608) — a held head (a same-head Codex run still going) is a retryable non-success: the
+  // settlement admits it neither as `pending` nor as "nothing to file"
+  if (evidence.held || (evidence.state !== 'clear' && evidence.state !== 'pending')) return blockingSettlement(evidence, earlierDeferred);
   // Codex 4229881000 — filing takes time, and Codex can land a finding meanwhile (a late first invocation, after
   // a second one supplied the clean result). So the evidence is read AGAIN after every filing, and the head
   // settles only on a read taken after the last write: a blocker found then blocks, a new deferrable finding is
@@ -2629,7 +2651,7 @@ async function settleAfterWithdrawal(client, pullRequest, expectedHead, earlierD
     followUp = await fileDeferredFindings(client, pullRequest, expectedHead, deferred);
     for (const finding of deferred) filed.add(findingIdentity(finding));
     current = await finalCodexEvidence(client, pullRequest, expectedHead);
-    if (current.state !== 'clear' && current.state !== 'pending') return blockingSettlement(current, deferred);
+    if (current.held || (current.state !== 'clear' && current.state !== 'pending')) return blockingSettlement(current, deferred);
   }
 }
 
@@ -2637,17 +2659,29 @@ async function settleAfterWithdrawal(client, pullRequest, expectedHead, earlierD
 function blockingSettlement(evidence, deferred) {
   return {
     state: 'changes_required',
-    detail: evidence.state === 'changes_required'
-      ? evidence.detail
-      // an unsettled read is retryable (review-policy RETRYABLE_REVIEW_FAILURES), never a latched finding
-      : evidence.state === 'unsettled'
-        ? 'review: Codex evidence changed during final verification'
-        : `review: final Codex evidence is ${evidence.state}; not merging on it`,
+    detail: evidence.held
+      // G2 — a same-head Codex run still going is retryable (review-policy RETRYABLE_REVIEW_FAILURES)
+      ? `review: ${CODEX_RUN_HELD_DETAIL}`
+      : evidence.state === 'changes_required'
+        ? evidence.detail
+        // an unsettled read is retryable (review-policy RETRYABLE_REVIEW_FAILURES), never a latched finding
+        : evidence.state === 'unsettled'
+          ? 'review: Codex evidence changed during final verification'
+          : `review: final Codex evidence is ${evidence.state}; not merging on it`,
     // Codex 4220861349 — what was deferrable stays deferrable beside a blocker; the caller files it
     deferred: unionDeferred(deferred, evidence.deferred),
-    // Codex 4226440219 — an unsettled read is an infrastructure retry, published on the recovery path
-    retryable: evidence.state === 'unsettled',
+    // Codex 4226440219 — an unsettled read is an infrastructure retry, published on the recovery path; G2 — so is
+    // a held one
+    retryable: evidence.state === 'unsettled' || evidence.held === true,
   };
+}
+
+/**
+ * G2 — publish the retryable hold on a head whose same-head Codex run is still going, in place of a stored
+ * success or findings failure. Not drafted (as with a read retry): the run ends and recovery re-judges the head.
+ */
+export async function publishHeldReview(client, pullRequest, expectedHead) {
+  await client.setStatus(expectedHead, 'failure', `review: ${CODEX_RUN_HELD_DETAIL}`, pullRequest.html_url);
 }
 
 /**

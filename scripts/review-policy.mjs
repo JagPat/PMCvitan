@@ -223,6 +223,12 @@ export function reviewHistoryPolicy(findingHeads) {
 // correction is owed, so the watchdog opens no lease and no author push is asked for (Codex 4229506042, 4229506050).
 export const FOLLOW_UP_RETRY = 'review: Codex follow-up filing did not complete; the gate retries this head';
 
+/**
+ * G2 (#1094 6565074822) — the detail of a head whose same-head Codex run is still going (or whose security review
+ * reports findings the gate cannot see). It is a retryable review failure: the run ends, and the head is re-judged.
+ */
+export const CODEX_RUN_HELD_DETAIL = 'a Codex review of this exact head is still running or reports security findings';
+
 const RETRYABLE_REVIEW_FAILURES = [
   FOLLOW_UP_RETRY,
   'Codex review timed out',
@@ -235,6 +241,7 @@ const RETRYABLE_REVIEW_FAILURES = [
   // watchdog to open no correction lease. A later unit publishes this status; here the consumers recognise it.
   OWNERSHIP_READ_RETRY,
   WORK_ITEM_READ_RETRY,
+  CODEX_RUN_HELD_DETAIL,
 ];
 
 export function isRetryableReviewFailureDescription(description) {

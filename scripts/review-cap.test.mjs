@@ -13,9 +13,9 @@ import {
   GITHUB_PR_FILES_LIMIT,
 } from './review-cap.mjs';
 import { classifyCodexState } from './autonomous-review-state.mjs';
-import { capDefersStoredFailure, capFiles, cappedSuccessDetail, EVIDENCE_SNAPSHOT_ATTEMPTS, fileDeferredFindings, publishBlockingVerdict, publishSettledSuccess, readCodexEvidence, reclassifyCurrentCodexEvidence, reviewAttempt, settleFinalCodexEvidence, SETTLING_DESCRIPTION, unionDeferred } from './autonomous-review-gate.mjs';
+import { capDefersStoredFailure, capFiles, cappedSuccessDetail, ensureTerminalReviewState, EVIDENCE_SNAPSHOT_ATTEMPTS, fileDeferredFindings, finalCodexEvidence, publishBlockingVerdict, publishSettledSuccess, readCodexEvidence, reclassifyCurrentCodexEvidence, reviewAttempt, settleFinalCodexEvidence, SETTLING_DESCRIPTION, unionDeferred } from './autonomous-review-gate.mjs';
 import { pendingFollowUpHeads } from './review-follow-up.mjs';
-import { FOLLOW_UP_RETRY, isRetryableReviewFailureDescription, REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
+import { CODEX_RUN_HELD_DETAIL, FOLLOW_UP_RETRY, isRetryableReviewFailureDescription, REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
 // M3c C1 — the gate stamps the run id and records a receipt from the Actions env; in CI that env is the test
 // runner's own, so clear it to keep the suite hermetic and the runner's GITHUB_ENV untouched.
@@ -564,8 +564,9 @@ test('Codex 4225790715 — a stored findings failure that the cap now defers no 
   const { readFile } = await import('node:fs/promises');
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState'), gate.indexOf('async function waitForRequiredChecks'));
-  assert.match(recovery, /if \(latched && !\(await capDefersStoredFailure\(/u);
-  assert.match(recovery, /\} else \{[\s\S]{0,400}if \(await capDefersStoredFailure\(client, pullRequest, expectedHead, status\)\) return false;/u);
+  // (G2 — each also turns a 'held' answer into the retryable hold before preserving anything)
+  assert.match(recovery, /const latchedDeferral = latched \? await capDefersStoredFailure\([\s\S]{0,200}if \(latchedDeferral === 'held'\) \{\s*await publishHeldReview\([\s\S]{0,80}if \(latched && !latchedDeferral\)/u);
+  assert.match(recovery, /\} else \{[\s\S]{0,400}const deferral = await capDefersStoredFailure\(client, pullRequest, expectedHead, status\);\s*if \(deferral === 'held'\) \{\s*await publishHeldReview\([\s\S]{0,80}if \(deferral\) return false;/u);
 });
 
 test('Codex 4226080917 — a failed follow-up filing is retried by the next controller run on the same head', async () => {
@@ -836,4 +837,98 @@ test('#1254 — a record back in progress at the verification re-read is not cle
   const { readFile } = await import('node:fs/promises');
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   assert.match(gate, /const verifiedResult = await reclassifyCurrentCodexEvidence\([\s\S]*?if \(verifiedResult\.state !== 'clear'\) \{[\s\S]*?publishBlockingVerdict\(/u);
+});
+
+// G2 (#1094 6565074822) — Codex's REAL record for a head it commented on is `completed` with has_unresolved_findings:
+// true (every sampled PR with current-head Codex findings: #1270, #1269, #1267, #1262, #1261, #1255, #1232). That is no
+// hold: the findings are visible to the gate. Only a same-head run still going (or security findings) holds, and a
+// hold is a retryable non-success everywhere: the poll, the cap deferral, the settlement and the recovery.
+const codexRecord = (code) => ({ user: { login: CODEX }, created_at: '2026-10-08T00:00:40Z', updated_at: '2026-10-08T00:00:40Z',
+  body: `<!-- codex-review-state:v1 ${JSON.stringify({ code_review: { commit_sha: HEAD, has_any_findings: true, ...code }, security_review: { commit_sha: null, has_any_findings: null, has_unresolved_findings: null, status: null } })} -->` });
+const doneWithFindings = codexRecord({ has_unresolved_findings: true, status: 'completed' });
+const stillRunning = codexRecord({ has_any_findings: null, has_unresolved_findings: null, status: 'running' });
+
+test('G2 — past the cap: Codex\'s real record still defers (PROBE-A); a running same-head record holds', () => {
+  const base = { expectedHead: HEAD, readyAt: '2026-10-08T00:00:00Z', deadline: '2026-10-08T01:00:00Z', now: '2026-10-08T00:01:00Z',
+    comments: [finding({ p: 2, id: 60 })], reviews: [], cap: { reached: true, changedLines: changedLinesFromFiles(FILES) } };
+  const withRecord = classifyCodexState({ ...base, issueComments: [doneWithFindings] });
+  assert.equal(withRecord.state, 'clear');
+  assert.deepEqual(withRecord.deferred.map((f) => f.id), [60]);
+  assert.equal(classifyCodexState({ ...base, now: '2026-10-08T01:00:01Z', issueComments: [doneWithFindings] }).state, 'clear');
+  const held = classifyCodexState({ ...base, issueComments: [stillRunning] });
+  assert.equal(held.state, 'pending');
+  assert.equal(held.held, true);
+  assert.equal(classifyCodexState({ ...base, now: '2026-10-08T01:00:01Z', issueComments: [stillRunning] }).state, 'timed_out');
+  // a blocking finding still blocks, record or not
+  assert.equal(classifyCodexState({ ...base, comments: [finding()], issueComments: [stillRunning] }).state, 'changes_required');
+});
+
+test('G2 — PROBE-B: a stored failure the cap would defer is re-judged with Codex\'s real record; a running one answers held', async () => {
+  const rounds = [finding({ head: 'a'.repeat(40), id: 50 }), finding({ head: 'b'.repeat(40), id: 51 })];
+  const client = (issueComments) => ({ reviews: async () => [], reviewComments: async () => [...rounds, finding({ p: 2, id: 52 })], pullRequestFiles: async () => FILES, issueComments: async () => issueComments });
+  const failure = { context: 'codex-current-head', state: 'failure', description: 'review: 1 current-head Codex finding' };
+  assert.equal(await capDefersStoredFailure(client([doneWithFindings]), { number: 9, changed_files: 2 }, HEAD, failure), true);
+  assert.equal(await capDefersStoredFailure(client([]), { number: 9, changed_files: 2 }, HEAD, failure), true);
+  assert.equal(await capDefersStoredFailure(client([stillRunning]), { number: 9, changed_files: 2 }, HEAD, failure), 'held');
+});
+
+test('G2 — PROBE-C: the settlement files a deferrable finding beside Codex\'s real record; a running record is a retryable hold', async () => {
+  const earlier = [finding({ head: 'a'.repeat(40), id: 1 }), finding({ head: 'b'.repeat(40), id: 2 })];
+  const settle = async (record) => {
+    const fake = fakeGitHub({ comments: [...earlier, finding({ p: 2, id: 3 })] });
+    const own = fake.client.issueComments;
+    fake.client.issueComments = async (number) => [...(await own(number)), ...(number === 9 ? [record] : [])];
+    return { ...fake, settled: await settleFinalCodexEvidence(fake.client, { number: 9 }, HEAD) };
+  };
+  const clean = await settle(doneWithFindings);
+  assert.equal(clean.settled.state, 'clear');
+  assert.match(clean.listed(clean.settled.followUp), /discussion_r3/u, 'the settlement files the deferrable finding before a success');
+  // Codex 4437688608 — the settlement reads the record too: a same-head run still going is never "nothing to file"
+  const held = await settle(stillRunning);
+  assert.equal(held.settled.state, 'changes_required');
+  assert.equal(held.settled.retryable, true);
+  assert.equal(held.settled.detail, `review: ${CODEX_RUN_HELD_DETAIL}`);
+  assert.equal(isRetryableReviewFailureDescription(held.settled.detail), true);
+  assert.deepEqual(held.state.statuses.map((s) => s.state), ['pending'], 'no success, and nothing filed while held');
+  assert.equal(held.state.issues.length, 0);
+  // with nothing deferrable either, a held head is still no clear
+  const quiet = fakeGitHub({ comments: [] });
+  quiet.client.issueComments = async () => [stillRunning];
+  const quietSettled = await settleFinalCodexEvidence(quiet.client, { number: 9 }, HEAD);
+  assert.equal(quietSettled.retryable, true);
+  quiet.client.issueComments = async () => [];
+  assert.equal((await settleFinalCodexEvidence(quiet.client, { number: 9 }, HEAD)).state, 'clear');
+});
+
+test('G2 — the final read takes Codex\'s record without reactions, and reports a hold', async () => {
+  const reads = [];
+  const client = {
+    reviews: async () => { reads.push('reviews'); return []; },
+    reviewComments: async () => { reads.push('comments'); return []; },
+    reactions: async () => { reads.push('reactions'); return []; },
+    issueComments: async () => { reads.push('issueComments'); return [stillRunning]; },
+    pullRequestFiles: async () => FILES,
+  };
+  const evidence = await finalCodexEvidence(client, { number: 9, changed_files: 2 }, HEAD);
+  assert.equal(evidence.held, true);
+  assert.equal(evidence.state, 'pending');
+  assert.ok(!reads.includes('reactions'));
+  assert.equal(reads.filter((r) => r !== 'pullRequestFiles').at(-1), 'issueComments');
+  // the snapshot read alone (the convergence and lifecycle paths) still reads no record
+  reads.length = 0;
+  const snapshot = await readCodexEvidence(client, 9);
+  assert.equal(snapshot.issueComments, undefined);
+  assert.ok(!reads.includes('issueComments'));
+});
+
+test('G2 — recovery of a stored findings failure on a held head publishes the retryable hold, undrafted', async () => {
+  const rounds = [finding({ head: 'a'.repeat(40), id: 50 }), finding({ head: 'b'.repeat(40), id: 51 })];
+  const pr = { number: 9, html_url: 'u', state: 'open', draft: false, changed_files: 2, body: '<!-- correction-owner: claude -->', head: { sha: HEAD, ref: 'b', repo: { full_name: 'o/r' } }, base: { ref: 'main', repo: { full_name: 'o/r' } } };
+  const { client, state } = fakeGitHub({ comments: [...rounds, finding({ p: 2, id: 52 })], pr });
+  client.issueComments = async () => [stillRunning];
+  const failure = { id: 1, context: 'codex-current-head', state: 'failure', description: 'review: 1 current-head Codex finding' };
+  assert.equal(await ensureTerminalReviewState(client, pr, HEAD, failure, [failure]), true);
+  assert.deepEqual(state.statuses.map((s) => [s.state, s.description]), [['failure', `review: ${CODEX_RUN_HELD_DETAIL}`]]);
+  assert.ok(!state.log.includes('draft:true'));
+  assert.equal(isRetryableReviewFailureDescription(state.statuses[0].description), true);
 });
