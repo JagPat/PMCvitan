@@ -1732,7 +1732,7 @@ model SignInAttempt {
   kind        String
   emailHash   String
   addressHash String
-  at          DateTime @default(now())
+  at          DateTime @default(now()) @db.Timestamptz(3)
 
   @@index([emailHash, at])
   @@index([at])

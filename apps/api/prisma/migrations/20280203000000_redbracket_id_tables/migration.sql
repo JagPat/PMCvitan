@@ -17,6 +17,8 @@
 --   "SignInAttempt": one row per sign-in or password-reset attempt, counted BEFORE the issuer is called (5 per email
 --     and address in 15 min, 10 per email in 1 h, rows older than a day deleted). No email and no address: only a
 --     64-hex digest of each (A3 computes HMAC-SHA-256 under a server secret).
+--     Its time is TIMESTAMPTZ, an instant: the 15-minute and 1-hour windows compare instants, so a writer and a counter
+--     in different session time zones (a raw insert under Asia/Kolkata, a count under UTC) still agree.
 --   "IdentityRetirement": an older account switched off when its email first signed in through Redbracket ID: the
 --     email it had (now set aside on the user row) and when. It is the record that lets an operator undo it.
 --     Falls with its user.
@@ -32,7 +34,9 @@
 -- trigger refuses any change, and any direct delete, so no raw-SQL UPDATE can move a `sub` to another user (or a
 -- delete then an insert do the same), and no update can rewrite the before-image an operator's undo trusts. The
 -- cascade when the user itself is deleted still runs: it fires from the foreign key's action trigger, so its depth is
--- above 1 (the pattern of "DrawingHubLink"'s seal). Because "User"."id" never changes, the foreign keys' ON UPDATE CASCADE
+-- above 1 (the pattern of "DrawingHubLink"'s seal). A TRUNCATE fires no row trigger, so a statement-level seal refuses
+-- it too; the sanctioned reset of a disposable database (`prisma/sanctioned-reset.ts`, which a CASCADE from "User"
+-- reaches) bypasses it by name. Because "User"."id" never changes, the foreign keys' ON UPDATE CASCADE
 -- would be refused too, which is intended. "SignInAttempt" is not sealed: it is a counter whose old rows A3 deletes.
 --
 -- ITS END. Lasting tables, not a residual. With IDENTITY_OIDC off they stay unread.
@@ -70,7 +74,7 @@ CREATE TABLE IF NOT EXISTS public."SignInAttempt" (
   "kind"        TEXT NOT NULL,
   "emailHash"   TEXT NOT NULL,
   "addressHash" TEXT NOT NULL,
-  "at"          TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "at"          TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT "SignInAttempt_pkey" PRIMARY KEY ("id")
 );
 
@@ -135,6 +139,12 @@ BEGIN
   RETURN OLD;
 END $$;
 
+CREATE OR REPLACE FUNCTION public.platform_identity_record_no_truncate() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  RAISE EXCEPTION 'identity: % rows are records and are never truncated; each goes only with its user', TG_TABLE_NAME;
+END $$;
+
 DROP TRIGGER IF EXISTS "PlatformPersonLink_sealed" ON public."PlatformPersonLink";
 CREATE TRIGGER "PlatformPersonLink_sealed"
   BEFORE UPDATE OR DELETE ON public."PlatformPersonLink"
@@ -143,5 +153,13 @@ DROP TRIGGER IF EXISTS "IdentityRetirement_sealed" ON public."IdentityRetirement
 CREATE TRIGGER "IdentityRetirement_sealed"
   BEFORE UPDATE OR DELETE ON public."IdentityRetirement"
   FOR EACH ROW EXECUTE FUNCTION public.platform_identity_record_sealed();
+DROP TRIGGER IF EXISTS "PlatformPersonLink_no_truncate" ON public."PlatformPersonLink";
+CREATE TRIGGER "PlatformPersonLink_no_truncate"
+  BEFORE TRUNCATE ON public."PlatformPersonLink"
+  FOR EACH STATEMENT EXECUTE FUNCTION public.platform_identity_record_no_truncate();
+DROP TRIGGER IF EXISTS "IdentityRetirement_no_truncate" ON public."IdentityRetirement";
+CREATE TRIGGER "IdentityRetirement_no_truncate"
+  BEFORE TRUNCATE ON public."IdentityRetirement"
+  FOR EACH STATEMENT EXECUTE FUNCTION public.platform_identity_record_no_truncate();
 
 COMMIT;

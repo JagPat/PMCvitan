@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { sanctionedReset, TRUNCATE_SEALS } from '../../prisma/sanctioned-reset';
 
 /**
  * Redbracket ID A1: `20280203000000_redbracket_id_tables` adds "PlatformPersonLink" (which issuer person a PMC user is),
@@ -158,6 +159,30 @@ describe('Redbracket ID A1: the link, attempt and retirement tables (live PG)', 
     await expect(attempt('sign-in', e, a, `'infinity'::timestamp`)).rejects.toThrow(/SignInAttempt_shape_check/);
   });
 
+  it('keeps an attempt’s time an instant: a writer and a counter in different session time zones agree', async () => {
+    const e = hex('tz@example.in');
+    const a = hex('203.0.113.8');
+    const cols = await t.prisma.$queryRawUnsafe<Array<{ data_type: string }>>(
+      `SELECT data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'SignInAttempt' AND column_name = 'at'`);
+    expect(cols).toEqual([{ data_type: 'timestamp with time zone' }]);
+    // a raw insert taking the default under Asia/Kolkata (UTC+5:30), counted under UTC and under America/Los_Angeles
+    await t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(`SET LOCAL TimeZone = 'Asia/Kolkata'`),
+      t.prisma.$executeRawUnsafe(`INSERT INTO "SignInAttempt" ("kind", "emailHash", "addressHash") VALUES ('sign-in', $1, $2)`, e, a),
+    ]);
+    for (const zone of ['UTC', 'America/Los_Angeles']) {
+      const [, rows] = await t.prisma.$transaction([
+        t.prisma.$executeRawUnsafe(`SET LOCAL TimeZone = '${zone}'`),
+        t.prisma.$queryRawUnsafe<Array<{ n: number }>>(
+          `SELECT count(*)::int AS n FROM "SignInAttempt" WHERE "emailHash" = $1 AND "at" > now() - interval '15 minutes' AND "at" <= now()`, e),
+      ]);
+      expect(rows, zone).toEqual([{ n: 1 }]);
+    }
+    // and a Prisma Date (what A3 writes and compares) is the same instant
+    const [row] = await t.prisma.$queryRawUnsafe<Array<{ at: Date }>>(`SELECT "at" FROM "SignInAttempt" WHERE "emailHash" = $1`, e);
+    expect(Math.abs(row!.at.getTime() - Date.now())).toBeLessThan(60_000);
+  });
+
   it('answers the rate limit’s two counts and the one-day clean-up from its indexes’ columns', async () => {
     const e = hex('qa.limit@example.in');
     const here = hex('203.0.113.7');
@@ -206,7 +231,30 @@ describe('Redbracket ID A1: the link, attempt and retirement tables (live PG)', 
     expect(left).toEqual([{ links: 0, retired: 0 }]);
     const triggers = await t.prisma.$queryRawUnsafe<Array<{ tgname: string }>>(
       `SELECT tgname FROM pg_trigger WHERE tgrelid IN ('"PlatformPersonLink"'::regclass, '"IdentityRetirement"'::regclass) AND NOT tgisinternal ORDER BY tgname`);
-    expect(triggers.map((r) => r.tgname)).toEqual(['IdentityRetirement_sealed', 'PlatformPersonLink_sealed']);
+    expect(triggers.map((r) => r.tgname)).toEqual([
+      'IdentityRetirement_no_truncate', 'IdentityRetirement_sealed', 'PlatformPersonLink_no_truncate', 'PlatformPersonLink_sealed',
+    ]);
+  });
+
+  it('refuses TRUNCATE of a link or a retirement, while the sanctioned reset still clears them by name', async () => {
+    const u = await newUser();
+    await link(u, 'sub-truncate');
+    await retire(u, 'kept@example.in');
+    for (const table of ['PlatformPersonLink', 'IdentityRetirement']) {
+      await expect(t.prisma.$executeRawUnsafe(`TRUNCATE "${table}"`), table).rejects.toThrow(/are records and are never truncated/);
+      expect(TRUNCATE_SEALS).toContainEqual({ table, trigger: `${table}_no_truncate` });
+    }
+    const kept = await t.prisma.$queryRawUnsafe<Array<{ links: number; retired: number }>>(
+      `SELECT (SELECT count(*) FROM "PlatformPersonLink" WHERE "userId" = $1)::int AS links,
+              (SELECT count(*) FROM "IdentityRetirement" WHERE "userId" = $1)::int AS retired`, u);
+    expect(kept).toEqual([{ links: 1, retired: 1 }]);
+    await sanctionedReset(t.prisma, ['PlatformPersonLink', 'IdentityRetirement']);
+    const left = await t.prisma.$queryRawUnsafe<Array<{ links: number; retired: number }>>(
+      `SELECT (SELECT count(*) FROM "PlatformPersonLink")::int AS links, (SELECT count(*) FROM "IdentityRetirement")::int AS retired`);
+    expect(left).toEqual([{ links: 0, retired: 0 }]);
+    const states = await t.prisma.$queryRawUnsafe<Array<{ enabled: string }>>(
+      `SELECT tgenabled::text AS enabled FROM pg_trigger WHERE tgname IN ('PlatformPersonLink_no_truncate', 'IdentityRetirement_no_truncate')`);
+    expect(states.map((x) => x.enabled)).toEqual(['O', 'O']);
   });
 
   it('the file re-runs on a database that has it, changing nothing', async () => {
