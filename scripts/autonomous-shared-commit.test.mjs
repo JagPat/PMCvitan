@@ -105,11 +105,13 @@ async function runGate({ number, pulls, statuses, mode = null, trigger = 'ci' })
   }
 }
 
+// A run() row that does not stop at the refusal (a mutant) would poll for Codex: each run() row is bounded, so it fails
+// within its limit instead of hanging the suite
 const reviewStatuses = (log) => log.filter(([k, , , context]) => k === 'status' && context === 'codex-current-head');
 
 // The scope note's row (notes/gate-codex-silent/2a3-scope-note.md): two PRs at one commit with different body verdicts each
 // get only the commit's own verdict, never the other's body verdict, and neither is green.
-test('2A3a — two open PRs at one commit with different body verdicts: each gets only the shared-commit refusal, never the other\'s', async () => {
+test('2A3a — two open PRs at one commit with different body verdicts: each gets only the shared-commit refusal, never the other\'s', { timeout: 30_000 }, async () => {
   const pulls = new Map([
     [610, pullAt(610, { auto_merge: queued })],
     // a body the scope would refuse (no size marker, no owner marker)
@@ -143,7 +145,7 @@ test('2A3a — two open PRs at one commit with different body verdicts: each get
 });
 
 // Once one of them closes, the remaining PR's re-judge proceeds to its own verdict.
-test('2A3a — once the other PR closes, the re-judge goes on to this PR\'s own verdict', async () => {
+test('2A3a — once the other PR closes, the re-judge goes on to this PR\'s own verdict', { timeout: 30_000 }, async () => {
   const pulls = new Map([[610, pullAt(610)], [611, pullAt(611)]]);
   const statuses = [];
   const shared = await runGate({ number: 610, pulls, statuses });
@@ -155,7 +157,7 @@ test('2A3a — once the other PR closes, the re-judge goes on to this PR\'s own 
 });
 
 // The relabel guard (a body edit) writes a body-derived verdict only while this PR is alone at its head.
-test('2A3a — the relabel guard writes no body verdict at a shared commit: the shared-commit refusal instead', async () => {
+test('2A3a — the relabel guard writes no body verdict at a shared commit: the shared-commit refusal instead', { timeout: 30_000 }, async () => {
   const candidate = '<!-- review-size: standard -->\n<!-- correction-owner: codex -->';
   const pulls = new Map([[610, pullAt(610, { body: candidate })], [611, pullAt(611, { auto_merge: queued })]]);
   const statuses = [];
@@ -200,7 +202,7 @@ test('2A3a — a disarm that fails still writes the refusal: a red required stat
 });
 
 // A recovery request the run adopted is settled by the refusal, so the watchdog's next ask is for the new failure.
-test('2A3a — the refusal settles the adopted recovery request; the watchdog then asks about the new refusal', async () => {
+test('2A3a — the refusal settles the adopted recovery request; the watchdog then asks about the new refusal', { timeout: 30_000 }, async () => {
   const request = { id: 7001, context: 'codex-recovery-request/6100', state: 'pending', description: 'recovery: requested terminal status 6100' };
   const statuses = [request, { id: 6100, context: 'codex-current-head', state: 'failure', description: SHARED }];
   const pulls = new Map([[610, pullAt(610)], [611, pullAt(611)]]);
