@@ -97,10 +97,10 @@ import { isDone } from '@/store/queueLedger';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, uploadSitePhotoInput, PlaceCheckFailed, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
-import { clearVisitPhotoStart, clearVisitPoster, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, posterLapsed, posterWaits, removedVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { clearVisitPhotoStart, clearVisitPoster, deleteVisitPhoto, failVisitPhotosOn, forgetRemovedVisitPhoto, listVisitPhotos, moveVisitPhotos, posterLapsed, posterWaits, removedVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { parseLocation } from '@/lib/screens';
 import { setClampedTimeout, type ClampedTimer } from '@/lib/clampedTimer';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
@@ -2849,8 +2849,9 @@ export const useStore = create<Store>()(
      *  rebuilt photo goes after its visit's start and before that visit's later acts: it was taken while the visit was
      *  not closed. Putting back is idempotent, so it is done on every load and at the start of every flush: a row
      *  whose act the queue lost for any reason (a reload, a photo kept just after its refused start was settled, Codex
-     *  4321084743) has it again by the next send. Returns whether anything was put back. */
-    const putBackVisitPhotos = (rows: VisitPhotoRow[]): boolean => {
+     *  4321084743) has it again by the next send. Returns whether anything was put back, or `'unreadable'` when the
+     *  removal records cannot be read (#1266): then nothing is put back, and the caller treats the rows as not read. */
+    const putBackVisitPhotos = (rows: VisitPhotoRow[]): boolean | 'unreadable' => {
       let rebuilt = false;
       // when each queued photo was taken: its row's creation time, else when its act was queued
       const created = new Map(rows.map((r) => [r.op.idempotencyKey, r.createdAt]));
@@ -2865,8 +2866,17 @@ export const useStore = create<Store>()(
       for (const row of rows) {
         if (posterLapsed(row)) void withinWait(() => clearVisitPoster(row.userScope, row.projectId, row.clientKey)).catch(() => {});
       }
-      // #1241: a row whose file the server removed (recorded when the phone could not delete it) is never put back
-      const removed = rows.length > 0 ? removedVisitPhotos(rows[0].userScope, rows[0].projectId) : new Set<string>();
+      // #1241: a row whose file the server removed (recorded when the phone could not delete it) is never put back, and
+      // it is deleted here, its record going once it is, so its bytes do not wait for the Site Visits screen (#1265)
+      const recorded = rows.length > 0 ? removedVisitPhotos(rows[0].userScope, rows[0].projectId) : new Set<string>();
+      // #1266: records that cannot be read may hold any row: nothing is put back or deleted until they can be
+      if (recorded === 'unreadable') return 'unreadable';
+      const removed: ReadonlySet<string> = recorded;
+      for (const row of rows) {
+        if (!removed.has(row.clientKey)) continue;
+        void withinWait(() => deleteVisitPhoto(row.userScope, row.projectId, row.clientKey))
+          .then(() => forgetRemovedVisitPhoto(row.userScope, row.projectId, row.clientKey), () => {});
+      }
       set((s) => {
         const queued = new Set(s.outbox.filter(isSiteVisitOp).map((o) => o.idempotencyKey));
         for (const row of rows) {
@@ -2950,7 +2960,13 @@ export const useStore = create<Store>()(
           }
           return;
         }
-        if (putBackVisitPhotos(rows) && get().online) void get().flushOutbox();
+        const put = putBackVisitPhotos(rows);
+        // records that cannot be read: a row's act is not rebuilt, so this is a read that failed (below)
+        if (put === 'unreadable') {
+          if (keepsVisitPhotos(scope, projectId)) retryVisitPhotos();
+          return;
+        }
+        if (put && get().online) void get().flushOutbox();
       } catch {
         // not read: a photo may be waiting with no act queued, so the flush that reads again is not left to chance. A
         // phone keeping none for this project has none to wait for (Codex 4322430052)
@@ -6558,13 +6574,24 @@ export const useStore = create<Store>()(
           // refusal, which then settles the row) (Codex 4389428586, Stage 1 r3)
           let rowChange: (() => Promise<void>) | null = null;
           let rowGone: Promise<boolean> = Promise.resolve(true);
+          // #919: saved without its removed place, and the marker that records it not yet written. Said once the marker is
+          // written (on the site photo retry): a tab closed first leaves the row's replay to say it (Codex 4436783078)
+          let placeDropNoticeOwed = false;
           const changeRow = (make: () => Promise<void>): void => { rowChange = make; rowGone = make().then(() => true, () => false); };
           const letRowGo = (): void => changeRow(() => deleteSitePhotoRow(rowScope, rowProject, clientKey));
-          const rowSent = (): void => changeRow(() => (sitePhotoStorageAvailable() ? markSitePhotoSent(rowScope, rowProject, clientKey) : Promise.resolve()));
-          void sendGateway
-            .uploadMedia(input)
-            .then((res) => {
-              rowSent();
+          // saved without its removed place: the marker says so to a copy of its op another tab holds (Codex 4436566600)
+          const rowSent = (placeDropped: boolean): void => changeRow(() => (sitePhotoStorageAvailable() ? markSitePhotoSent(rowScope, rowProject, clientKey, placeDropped) : Promise.resolve()));
+          // a place removed since the pick: saved without it, and the person told so (#919)
+          void uploadSitePhotoInput(sendGateway, input)
+            // the photo was taken but the tree read that says whether its place was removed failed: with no row kept,
+            // nothing can send it again, so its answer is the photo, listed as the server filed it and nothing said about
+            // a place. A kept row is queued as for a lost answer, and its replay asks again (Codex 4438007023)
+            .catch((err: unknown) => { if (err instanceof PlaceCheckFailed && !saved) return err.answer; throw err; })
+            .then((res: Awaited<ReturnType<typeof uploadSitePhotoInput>>) => {
+              // the place the server filed it on, when its answer says (a keyed replay answers the stored photo, which may
+              // have been re-filed since: Codex 4436983880); an older API's answer names none, and the asked place stands
+              const placed = res.placeDropped ? undefined : res.nodeId !== undefined ? (res.nodeId ?? undefined) : nodeId;
+              rowSent(res.placeDropped === true);
               if (!scopeStillCurrent(scope)) { set((s) => settle(s, true)); return; }
               set((s) => {
                 settle(s, true);
@@ -6579,7 +6606,7 @@ export const useStore = create<Store>()(
                 if (!s.photos.some((p) => p.id === res.id) && !s.myDeletablePhotos.some((p) => p.id === res.id)) {
                   // after any photo this device picked later whose reply came back first
                   const at = s.photos.findIndex((p) => (photoPickedAt.get(p.id) ?? 0) < pickSeq);
-                  s.photos.splice(at < 0 ? s.photos.length : at, 0, { id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(nodeId ? { nodeId } : {}),
+                  s.photos.splice(at < 0 ? s.photos.length : at, 0, { id: res.id, url: resolveMediaUrl(res.url), kind: 'progress', ...stamped, ...(placed ? { nodeId: placed } : {}),
                     // who and when (#482): this viewer, at the time the server recorded it. No role yet: the role the
                     // viewer acts in can come through the org rather than a project membership, and the next snapshot
                     // says the project role, so nothing is claimed here that the server would not say.
@@ -6611,9 +6638,20 @@ export const useStore = create<Store>()(
               // #482 site photos: the snapshot says until when the new photo is the viewer's to delete
               void requestFreshSnapshot(scope);
               // say what the photo actually carried, not what the feature is called
-              get().flash(
-                hasStamp(stamped) ? DLT.photoUploadedStamped[get().lang] : DLT.photoUploaded[get().lang],
-              );
+              const added = hasStamp(stamped) ? DLT.photoUploadedStamped[get().lang] : DLT.photoUploaded[get().lang];
+              if (!res.placeDropped) get().flash(added);
+              // a dropped place is said once the "sent" marker that records it is written, as a replay's is: until then the
+              // row still holds the photo, and its replay after a reload would say it again (Codex 4436783078)
+              else {
+                void rowGone.then((done) => {
+                  // the person moved to another project meanwhile: nothing is said there (the retry's notice checks the same)
+                  if (!scopeStillCurrent(scope)) return;
+                  // no row was kept (its write failed before the send): nothing can replay it, so it is said now
+                  if (done || !saved) { get().flash(DLT.photoPlaceDropped[get().lang]); return; }
+                  placeDropNoticeOwed = true;
+                  get().flash(added);
+                });
+              }
             }, (err: unknown) => {
               // the upload's own answer only: a fault in handling a yes is never taken for a lost answer
               // #1228: the server's 410 for a photo deleted since an earlier send of this key landed (another tab's replay
@@ -6670,7 +6708,11 @@ export const useStore = create<Store>()(
                 // a row never written needs no change: the one try made is enough, and a phone whose database is failing
                 // is not asked again for the tab's life (Codex 4391469488)
                 if (done || !make || !saved) { letGo(); return; }
-                sitePhotoRowChanges.set(clientKey, () => make().then(() => { sitePhotoRowChanges.delete(clientKey); letGo(); }, () => {}));
+                sitePhotoRowChanges.set(clientKey, () => make().then(() => {
+                  sitePhotoRowChanges.delete(clientKey);
+                  letGo();
+                  if (placeDropNoticeOwed && scopeStillCurrent(scope)) get().flash(DLT.photoPlaceDropped[get().lang]);
+                }, () => {}));
                 retrySitePhotos();
               });
               set((s) => { s.photoUploadsSending = s.photoUploadsSending.filter((k) => k !== clientKey); });
@@ -6891,8 +6933,9 @@ export const useStore = create<Store>()(
           (rows) => {
             // a read that came too late, or for a queue no longer on show, puts nothing back: the next flush reads again
             if (late || !scopeStillCurrent(readScope) || outboxKey() !== readKey) return false;
-            putBackVisitPhotos(rows);
-            return true;
+            // #1266 (Codex 4438228520): rows whose removal records cannot be read put no act back, so this read holds
+            // the visits a photo may be kept on, as a read that failed does: a close never overtakes a photo not rebuilt
+            return putBackVisitPhotos(rows) !== 'unreadable';
           },
           () => false,
         );
@@ -7042,6 +7085,8 @@ export const useStore = create<Store>()(
       // the doors stand, an ineligible state, a lesser client under an active chain) is reported as the
       // server's own words, one line per act, instead of joining the anonymous "discarded" count.
       const chainRefusals: string[] = [];
+      // #919: queued site photos saved without their place, because the place was removed: said in the same line
+      let placesDropped = 0;
       // Site Visits (#792, F53): the moves made for refused starts, applied to acts queued during this flush too
       // (to null: the refused start's acts went with it)
       const visitMoves: [string, string | null][] = [];
@@ -7169,7 +7214,7 @@ export const useStore = create<Store>()(
         try {
           let photoGone = false;
           let goneEvidence: { url: string; inspectionId?: string; inspectionItemId?: string } | undefined;
-          const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation, (local) => { photoGone = true; goneEvidence = local; }, flushPerson);
+          const snap = await replayOutboxOp(flushGateway, ops[i], flushScope.generation, (local) => { photoGone = true; goneEvidence = local; }, flushPerson, () => { placesDropped += 1; });
           const startCleared = afterSent(ops[i], snap, photoGone);
           // #482: a photo settled by the server's 410 is settled as a delete is (settleDeleted). Its local copies leave at
           // once, matched by the send's own key: one an earlier pull recorded is never shown past the server's word (Codex
@@ -7431,7 +7476,7 @@ export const useStore = create<Store>()(
       // the chain refusals carry the server's words, so they are not folded into the count, but they are said in the same
       // line: the command's line and everything else this flush did are one line, so none hides another (#1134 r1
       // 4376641802, Stage 1 re-check of 62c8d1e)
-      const rest = [...(parts.length ? [SYNC.join(parts, lang)] : []), ...chainRefusals].join(' ');
+      const rest = [...(parts.length ? [SYNC.join(parts, lang)] : []), ...chainRefusals, ...(placesDropped > 0 ? [SYNC.placeDropped(placesDropped, lang)] : [])].join(' ');
       // the caller says this flush's word with its own only if it can say it now; otherwise the flush says it, as main did
       const handing = !!own && (opts?.saysNow?.() ?? true);
       let toldWith: string | undefined;
