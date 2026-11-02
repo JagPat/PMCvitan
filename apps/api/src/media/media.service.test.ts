@@ -47,6 +47,7 @@ function make(
       }),
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (where.id === 'med1' ? { id: 'med1', projectId: 'ambli' } : null)),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'med1', ...data })),
+      updateMany: vi.fn(async () => ({ count: 1 })),
       delete: vi.fn(async () => ({})),
     },
     // #482 — no key here was ever retired
@@ -418,13 +419,13 @@ describe('MediaService — location spine (nodeId)', () => {
   it('setNode refuses another author\'s private draft and writes nothing', async () => {
     const { svc, prisma } = make(null, null, [{ id: 'd1', projectId: 'ambli', publishedAt: null, authorId: 'someone-else' }]);
     await expect(svc.setNode('med1', 'ambli', 'd1', user)).rejects.toBeInstanceOf(BadRequestException);
-    expect(prisma.media.update).not.toHaveBeenCalled();
+    expect(prisma.media.updateMany).not.toHaveBeenCalled();
   });
 
   it('setNode re-files onto a node and returns a snapshot', async () => {
     const { svc, prisma, snapshot } = make(null, null, [{ id: 'r1', projectId: 'ambli' }]);
     const out = await svc.setNode('med1', 'ambli', 'r1', user);
-    expect(prisma.media.update).toHaveBeenCalledWith({ where: { id: 'med1' }, data: { nodeId: 'r1' } });
+    expect(prisma.media.updateMany).toHaveBeenCalledWith({ where: { id: 'med1', projectId: 'ambli' }, data: { nodeId: 'r1' } });
     expect(snapshot.build).toHaveBeenCalled();
     expect(out).toEqual({ ok: true });
   });
@@ -432,7 +433,14 @@ describe('MediaService — location spine (nodeId)', () => {
   it('setNode with null unfiles the photo', async () => {
     const { svc, prisma } = make(null);
     await svc.setNode('med1', 'ambli', null, user);
-    expect(prisma.media.update).toHaveBeenCalledWith({ where: { id: 'med1' }, data: { nodeId: null } });
+    expect(prisma.media.updateMany).toHaveBeenCalledWith({ where: { id: 'med1', projectId: 'ambli' }, data: { nodeId: null } });
+  });
+
+  it('setNode answers a photo deleted before its write as not found and builds nothing', async () => {
+    const { svc, prisma, snapshot } = make(null, null, [{ id: 'r1', projectId: 'ambli' }]);
+    prisma.media.updateMany.mockResolvedValueOnce({ count: 0 });
+    await expect(svc.setNode('med1', 'ambli', 'r1', user)).rejects.toBeInstanceOf(NotFoundException);
+    expect(snapshot.build).not.toHaveBeenCalled();
   });
 
   it('setNode answers a photo on someone else\'s private draft as not found and writes nothing', async () => {
@@ -442,7 +450,7 @@ describe('MediaService — location spine (nodeId)', () => {
     (prisma.projectNode as unknown as { findFirst: unknown }).findFirst = vi.fn(async () => ({ id: 'd1' }));
     await expect(svc.setNode('med1', 'ambli', 'r1', user)).rejects.toBeInstanceOf(NotFoundException);
     await expect(svc.setNode('med1', 'ambli', null, user)).rejects.toBeInstanceOf(NotFoundException);
-    expect(prisma.media.update).not.toHaveBeenCalled();
+    expect(prisma.media.updateMany).not.toHaveBeenCalled();
   });
 
   it('setNode refuses media from another project', async () => {
