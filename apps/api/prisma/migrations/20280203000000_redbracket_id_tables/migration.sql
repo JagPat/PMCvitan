@@ -29,10 +29,10 @@
 --   follows the database collation, so a look-alike outside ASCII (U+FF10, U+00E9) could pass under one collation.
 --
 -- SEALED RECORDS. A link and a retirement are records, written once. A3 only inserts them. A BEFORE UPDATE OR DELETE
--- trigger refuses any change, and any delete while the owning "User" row still stands, so no raw-SQL UPDATE can move a
--- `sub` to another user (or a delete then an insert do the same), and no update can rewrite the before-image an
--- operator's undo trusts. The cascade when the user itself is deleted still runs: the trigger fires after the user
--- row is gone, so the existence check passes. Because "User"."id" never changes, the foreign keys' ON UPDATE CASCADE
+-- trigger refuses any change, and any direct delete, so no raw-SQL UPDATE can move a `sub` to another user (or a
+-- delete then an insert do the same), and no update can rewrite the before-image an operator's undo trusts. The
+-- cascade when the user itself is deleted still runs: it fires from the foreign key's action trigger, so its depth is
+-- above 1 (the pattern of "DrawingHubLink"'s seal). Because "User"."id" never changes, the foreign keys' ON UPDATE CASCADE
 -- would be refused too, which is intended. "SignInAttempt" is not sealed: it is a counter whose old rows A3 deletes.
 --
 -- ITS END. Lasting tables, not a residual. With IDENTITY_OIDC off they stay unread.
@@ -126,7 +126,10 @@ BEGIN
   IF TG_OP = 'UPDATE' THEN
     RAISE EXCEPTION 'identity: a % row is a record and is never changed', TG_TABLE_NAME;
   END IF;
-  IF EXISTS (SELECT 1 FROM public."User" u WHERE u."id" = OLD."userId") THEN
+  -- a direct DELETE runs at trigger depth 1; the cascade from the user's own delete runs inside the foreign key's
+  -- action trigger, one level deeper. Depth, not a read of the user table: that table is orgs-owned, and a platform
+  -- function never reads an orgs table (phase6-t4d-i-seal-stripped round 33).
+  IF pg_catalog.pg_trigger_depth() = 1 THEN
     RAISE EXCEPTION 'identity: a % row is a record and is never deleted; it goes only with its user', TG_TABLE_NAME;
   END IF;
   RETURN OLD;
