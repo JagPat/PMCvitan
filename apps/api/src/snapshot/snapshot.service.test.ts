@@ -40,7 +40,7 @@ describe('SnapshotService.build — the decision slice and the feed are one snap
       decisionsQuery as never,
       { snapshotSlice: vi.fn(async () => ({ dailyLog: null })) } as never,
       { snapshotSlice: vi.fn(async () => []) } as never,
-      { snapshotSlice: vi.fn(async () => ({ placedInspections: [], reviews: [], review: null, reinspectionCreated: [], checklist: null, openChecklists: [] })), responsibleMembers: vi.fn(async () => []) } as never,
+      { snapshotSlice: vi.fn(async () => ({ placedInspections: [], reviews: [], review: null, reinspectionCreated: [], checklist: null, openChecklists: [] })), responsibleMembers: vi.fn(async () => []), openItems: vi.fn(async () => []) } as never,
       { snapshotSlice: vi.fn(async () => ({ activities: [], phases: [] })) } as never,
       { projectUploaders: vi.fn(async () => new Map()) } as never,
       { disposable: vi.fn(async () => new Set()) } as never,

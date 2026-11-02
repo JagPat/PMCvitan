@@ -160,13 +160,14 @@ const EXPECT: Record<string, Spec> = {
     keys: ['id', 'number', 'title', 'discipline', 'zone', 'activityId', 'decisionId', 'nodeId', 'draft', 'current', 'ackedByMe', 'recipientOfCurrent', 'revisions'].sort(),
     optional: ['nodeId', 'draft', 'recipientOfCurrent'].sort(), nullable: ['zone', 'activityId', 'decisionId', 'current'].sort(),
   },
+  OpenItemDto: { keys: ['inspectionId', 'title', 'zone', 'nodeId', 'status', 'failedItems'].sort(), optional: [], nullable: ['nodeId'] },
   ProofPhotoDto: { keys: ['id', 'url', 'inspectionId', 'inspectionItemId', 'by', 'byRole', 'at'].sort(), optional: ['by', 'byRole'].sort(), nullable: [] },
   PhotoDto: { keys: ['id', 'url', 'takenAt', 'nodeId', 'kind', 'by', 'byRole', 'at', 'clientKey', 'deletable', 'deletableUntil'].sort(), optional: ['takenAt', 'nodeId', 'by', 'byRole', 'clientKey', 'deletable', 'deletableUntil'].sort(), nullable: [] },
   DailyLogDto: { keys: ['id', 'date', 'logDate', 'checkedIn', 'checkinTime', 'submitted', 'crew', 'previous', 'materials', 'progress', 'photos', 'photoCount', 'myPhotoKeys'].sort(), optional: ['id', 'previous'].sort(), nullable: ['logDate', 'checkinTime', 'previous'].sort() },
   CompanyDto: { keys: ['id', 'name', 'kind', 'contactName', 'contactEmail', 'contactPhone', 'notes'].sort(), optional: [], nullable: [] },
   NodeDto: { keys: ['id', 'parentId', 'name', 'kind', 'order', 'draft'].sort(), optional: ['draft'], nullable: ['parentId'] },
   SnapshotDto: {
-    keys: ['project', 'decisions', 'activities', 'placedInspections', 'checklist', 'openChecklists', 'reviews', 'review', 'reinspectionCreated', 'drawings', 'phases', 'dailyLog', 'notifications', 'companies', 'nodes', 'photos', 'myDeletablePhotos', 'proofs', 'responsibleMembers', 'materials'].sort(),
+    keys: ['project', 'decisions', 'activities', 'placedInspections', 'checklist', 'openChecklists', 'reviews', 'review', 'reinspectionCreated', 'drawings', 'phases', 'dailyLog', 'notifications', 'companies', 'nodes', 'photos', 'myDeletablePhotos', 'proofs', 'responsibleMembers', 'openItems', 'materials'].sort(),
     optional: [], nullable: ['checklist', 'review', 'dailyLog'].sort(),
   },
 };
