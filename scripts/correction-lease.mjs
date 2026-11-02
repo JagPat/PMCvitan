@@ -134,7 +134,7 @@ export function gateRecoveryStatus(combinedStatus) {
 
 /**
  * G3 (gap-check F2) — the green that nothing will arm: this exact head's required status is a success carrying an
- * approval token, the pull request is ready (not draft) and has no auto-merge queued, and the gate has never been
+ * approval token, the pull request is open and ready (not draft) and has no auto-merge queued, and the gate has never been
  * asked to re-judge this success (no `codex-recovery-request/<id>` status for it, pending or settled). The gate
  * disarms a queued auto-merge before each success and re-arms only after the merge's authorization, so a re-arm lost
  * on any path (a failed re-arm whose hold could not be written, a moved-head dispatch that failed, a read that lagged
@@ -144,7 +144,7 @@ export function gateRecoveryStatus(combinedStatus) {
  * re-judge is asked again on a later tick, never twice for one success.
  */
 export function gateRearmStatus(combinedStatus, pullRequest) {
-  if (pullRequest?.draft !== false || pullRequest?.auto_merge) return null;
+  if (pullRequest?.state !== 'open' || pullRequest?.draft !== false || pullRequest?.auto_merge) return null;
   const statuses = combinedStatus?.statuses ?? [];
   const newest = statuses.find((status) => status?.context === CORRECTION_STATUS_CONTEXT) ?? null;
   if (newest?.state !== 'success' || !parseApprovalToken(newest.description)) return null;

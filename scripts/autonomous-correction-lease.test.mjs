@@ -780,6 +780,9 @@ test('G3: a ready, tokened green with no auto-merge queued is handed to the gate
     ['an auto-merge already queued', { pull: ready({ auto_merge: armedNow }) }],
     ['armed since the snapshot (the live read decides)', { pull: ready(), live: ready({ auto_merge: armedNow }) }],
     ['a draft', { pull: ready({ draft: true }) }],
+    ['a draft on the live read', { pull: ready(), live: ready({ draft: true }) }],
+    ['a closed pull request', { pull: ready({ state: 'closed' }) }],
+    ['closed on the live read', { pull: ready(), live: ready({ state: 'closed' }) }],
     ['a success without an approval token', { statuses: [{ ...tokened, description: 'review: clean' }] }],
     ['a success the gate was already asked about (pending)', { statuses: [
       { context: 'codex-recovery-request/6100', state: 'pending', id: 6101, description: 'recovery: requested terminal status 6100' }, tokened] }],
