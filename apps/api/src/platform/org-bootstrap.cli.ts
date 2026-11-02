@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { PrismaService } from '../prisma.service';
-import { bootstrapOrg, bootstrapSpecSchema } from './org-bootstrap';
+import { bootstrapOrg, bootstrapSpecSchema, parseBootstrapArgs } from './org-bootstrap';
 
 /**
  * Fresh start — make one company, its first project and its people on a database that has none
@@ -13,10 +13,8 @@ import { bootstrapOrg, bootstrapSpecSchema } from './org-bootstrap';
  * committed bootstrap; 1 means nothing was changed; 2 means the command line or the spec is wrong.
  */
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const specAt = args.indexOf('--spec');
-  const specPath = specAt >= 0 ? args[specAt + 1] : undefined;
-  if (!specPath) {
+  const { specPath, commit, wrong } = parseBootstrapArgs(process.argv.slice(2));
+  if (!specPath || wrong) {
     process.stderr.write('usage: org:bootstrap --spec <spec.json> [--commit]\n');
     process.exitCode = 2;
     return;
@@ -37,7 +35,7 @@ async function main(): Promise<void> {
   }
   const prisma = new PrismaService();
   try {
-    const record = await bootstrapOrg(prisma, parsed.data, { commit: args.includes('--commit') });
+    const record = await bootstrapOrg(prisma, parsed.data, { commit });
     process.stdout.write(JSON.stringify(record, null, 2) + '\n');
     if (!record.ok) process.exitCode = 1;
   } catch (e) {

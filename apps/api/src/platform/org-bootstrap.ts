@@ -5,6 +5,7 @@ import type { PrismaService } from '../prisma.service';
 import { fromIsoCivilDate } from '../common/civil-date';
 import { lockOrgStanding, lockProjectReadiness } from '../common/readiness-lock';
 import { lockOrgStandingWriters } from '../orgs/org-standing';
+import { timeZoneSchema } from '../contracts';
 
 /**
  * Fresh start (Jagrut, 1 Nov 2026) — make one company from nothing: the company, its first project,
@@ -30,7 +31,8 @@ const personSchema = z
     phone: z.string().trim().regex(/^\d{10}$/, 'phone: 10 digits').optional(),
     companyRole: z.enum(COMPANY_ROLES).optional(),
     projectRole: z.enum(PROJECT_ROLES).optional(),
-    discipline: z.string().trim().min(1).optional(),
+    // the same bound as the app's member add and update (`disciplineField` in contracts.ts)
+    discipline: z.string().trim().min(1).max(40).optional(),
   })
   .strict()
   // the app keeps a discipline only on a consultant (members.service `disciplineFor`)
@@ -48,7 +50,8 @@ export const bootstrapSpecSchema = z
         stage: z.string().trim().default('Planning'),
         siteCode: z.string().trim().min(1),
         location: z.string().trim().default(''),
-        timeZone: z.string().trim().default('Asia/Kolkata'),
+        // the app's own zone check, so an unknown zone is a bad spec (exit 2), not a failed run
+        timeZone: timeZoneSchema.default('Asia/Kolkata'),
       })
       .strict(),
     people: z.array(personSchema).min(1),
@@ -68,6 +71,21 @@ export interface BootstrapRecord {
 }
 
 class DryRunRollback extends Error {}
+
+/** The command line: exactly `--spec <path>` and an optional `--commit`. Anything else (a misspelled
+ *  `--commmit`, a stray word, a repeated flag) is `wrong`, never a silent dry run. */
+export function parseBootstrapArgs(args: readonly string[]): { specPath?: string; commit: boolean; wrong: boolean } {
+  let specPath: string | undefined;
+  let commit = false;
+  let wrong = false;
+  for (let i = 0; i < args.length; i++) {
+    const next = args[i + 1];
+    if (args[i] === '--spec' && specPath === undefined && next !== undefined && !next.startsWith('--')) specPath = args[++i];
+    else if (args[i] === '--commit' && !commit) commit = true;
+    else wrong = true;
+  }
+  return { specPath, commit, wrong };
+}
 
 function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'org';
