@@ -65,6 +65,8 @@ function fakePrisma(seed: UserRow[]) {
         return { ...user };
       }),
     },
+    // Redbracket ID A3: no account here was set aside by a first Redbracket ID sign-in
+    identityRetirement: { count: vi.fn(async () => 0) },
     passwordCredentialChallenge: {
       create: vi.fn(async ({ data }: { data: ChallengeRow }) => {
         const row = { ...data };

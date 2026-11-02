@@ -76,7 +76,16 @@ describe('phone sign-in code by email (live PostgreSQL)', () => {
     expect(mailbox).toEqual([{ to: (await t.prisma.user.findUniqueOrThrow({ where: { id: f.memberUser.id } })).email, code: expect.stringMatching(/^\d{4}$/) }]);
     const { code } = mailbox[0];
 
+    // the redeem asks the sign-in rule inside its transaction through that transaction's client (Redbracket ID A3:
+    // the rule reads retirement and standing; the root client would need a second connection the full pool never frees)
+    const phones = t.app.get(PhoneSignInService);
+    const verify = phones.verify.bind(phones);
+    const asked2: unknown[] = [];
+    vi.spyOn(phones, 'verify').mockImplementation((phone, typed, eligible) =>
+      verify(phone, typed, async (db, userId) => { asked2.push(db); return eligible(db, userId); }));
     const signedIn = await redeem(PHONE.member, code).expect(201);
+    expect(asked2).toHaveLength(1);
+    expect(asked2[0]).not.toBe(t.prisma);
     expect(t.app.get(JwtService).verify(signedIn.body.token)).toMatchObject({ sub: f.memberUser.id });
     expect(await liveChallenges(f.memberUser.id)).toBe(0);
     expect(await t.prisma.securityAuditEvent.count({ where: { targetUserId: f.memberUser.id, action: 'auth.phone_sign_in' } })).toBe(1);

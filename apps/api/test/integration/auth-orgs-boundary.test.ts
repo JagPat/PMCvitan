@@ -192,8 +192,8 @@ describe('#482 auth reads orgs-owned rows only through the orgs participant (liv
   it('the project list and the project switch, and the switch\'s last-project stamp, go through the participant', async () => {
     const seen = await observe(async () => {
       await auth.listMemberships(f.ownerUser.id);
-      await expect(auth.switchProject(f.ownerUser.id, f.projectA.id)).resolves.toMatchObject({ role: 'pmc' });
-      await expect(auth.switchProject(f.memberUser.id, ids.archived)).rejects.toThrow('archived');
+      await expect(auth.switchProject(f.ownerUser.id, f.projectA.id, 0)).resolves.toMatchObject({ role: 'pmc' });
+      await expect(auth.switchProject(f.memberUser.id, ids.archived, 0)).rejects.toThrow('archived');
     });
     expect(seen.some((a) => a.startsWith('membership.'))).toBe(true);
     expect(seen.some((a) => a.startsWith('user.update'))).toBe(true);

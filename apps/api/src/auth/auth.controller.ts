@@ -1,4 +1,5 @@
-import { Body, Controller, ForbiddenException, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Post, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { AuthService } from './auth.service';
 import { PasswordCredentialsService } from './password-credentials.service';
 import { ZodPipe } from '../common/zod.pipe';
@@ -6,6 +7,8 @@ import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { AllowAnyRole, Public } from '../common/roles';
 import { Throttle, ThrottleGuard } from '../common/throttle';
 import { isProduction } from '../config';
+import { identitySwitchOn } from './identity/identity-config';
+import { IdentitySignInService } from './identity/identity-sign-in.service';
 
 /** Rate-limit window shared by the auth endpoints. */
 const WINDOW = 10 * 60 * 1000; // 10 minutes
@@ -36,12 +39,18 @@ import {
   type SwitchProjectInput,
 } from '../contracts';
 
+/** The caller's address as Express reads it behind PMC's one proxy (`trust proxy` 1); only ever hashed. */
+function callerAddress(req: Request): string {
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
 @Controller('auth')
 @UseGuards(ThrottleGuard)
 export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly passwordCredentials: PasswordCredentialsService,
+    private readonly identity: IdentitySignInService,
   ) {}
 
   /** Re-scope the session to another project the user belongs to (project switch). */
@@ -49,7 +58,7 @@ export class AuthController {
   @UseGuards(JwtGuard)
   @AllowAnyRole('AuthService.switchProject verifies the caller is a member of the target project')
   switch(@CurrentUser() user: AuthUser, @Body(new ZodPipe(switchProjectSchema)) body: SwitchProjectInput) {
-    return this.auth.switchProject(user.sub, body.projectId);
+    return this.auth.switchProject(user.sub, body.projectId, user.credentialVersion ?? 0);
   }
 
   /**
@@ -73,14 +82,18 @@ export class AuthController {
   @Public()
   @Throttle(15, WINDOW)
   @Post('login')
-  login(@Body(new ZodPipe(loginSchema)) body: LoginInput) {
+  async login(@Body(new ZodPipe(loginSchema)) body: LoginInput, @Req() req: Request) {
+    // Redbracket ID A3: only `IDENTITY_OIDC` exactly `1` reaches the issuer; anything else is today's sign-in, unchanged
+    if (identitySwitchOn()) return this.auth.signInIdentity(await this.identity.login(body, callerAddress(req)));
     return this.auth.login(body);
   }
 
   @Public()
   @Throttle(5, WINDOW)
   @Post('password/request')
-  passwordRequest(@Body(new ZodPipe(passwordCredentialRequestSchema)) body: PasswordCredentialRequestInput) {
+  async passwordRequest(@Body(new ZodPipe(passwordCredentialRequestSchema)) body: PasswordCredentialRequestInput, @Req() req: Request) {
+    // with Redbracket ID on, a spent per-person limit sends nothing and answers exactly as a sent request does
+    if (identitySwitchOn() && !(await this.identity.mayRequestReset(body.email, callerAddress(req)))) return this.passwordCredentials.unsent();
     return this.passwordCredentials.request(body);
   }
 
@@ -95,6 +108,7 @@ export class AuthController {
   @Throttle(10, WINDOW)
   @Post('password/complete')
   async passwordComplete(@Body(new ZodPipe(passwordCredentialCompleteSchema)) body: PasswordCredentialCompleteInput) {
+    if (identitySwitchOn()) return this.auth.signInIdentity(await this.passwordCredentials.completeThroughIssuer(body, this.identity));
     const user = await this.passwordCredentials.complete(body);
     return this.auth.signInUser(user);
   }
