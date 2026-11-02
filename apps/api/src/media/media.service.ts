@@ -87,7 +87,7 @@ export const LEGACY_REPLAY_MS = 7 * 24 * 60 * 60 * 1000;
 /** #1283 — uploads stored before this time carry no upload source (`"Media"."uploadSourceMediaId"`, 20280204000000): the
  *  code that writes it went live after it. Such a row is judged as before (see sameSource), and only within
  *  {@link LEGACY_REPLAY_MS} of its storing, so that reading ends at this time plus seven days. */
-export const UPLOAD_SOURCE_SINCE = new Date('2026-11-06T00:00:00.000Z');
+export const UPLOAD_SOURCE_SINCE = new Date('2026-11-05T11:00:00.000Z');
 
 /** #904 — a stored file is these bytes: by its digest when it has one; else, within {@link LEGACY_REPLAY_MS} of its
  *  upload, by its byte count (a count of 0 is a row written without one, the column's default, and is not compared). */
