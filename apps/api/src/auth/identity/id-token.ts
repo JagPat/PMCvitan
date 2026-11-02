@@ -3,7 +3,8 @@
  *
  * Only RS256 (the header's `alg` exactly, no `crit`), signed by a key the issuer publishes (`/oauth/v2/keys`, looked
  * up by `kid`); `iss` exactly the configured issuer; `aud` holding PMC's client id (and, when it names more than one
- * audience, `azp` equal to it); the `nonce` this sign-in sent; not expired (60 s leeway) and not issued in the future.
+ * audience, `azp` equal to it; an `azp` that is present is always PMC's client); the `nonce` this sign-in sent; a
+ * numeric `iat`; not expired (60 s leeway) and not issued in the future; an RSA key of at least 2048 bits.
  * `sub` must be 1 to 255 printable ASCII characters. Anything else is no token. Plain `node:crypto`, no extra library.
  *
  * What comes back is only who the person is. No claim is ever read as a PMC role (roles stay in PMC's Membership).
@@ -61,12 +62,16 @@ export async function checkIdToken(token: string, check: IdTokenCheck): Promise<
     if (!kid) return null;
     const key = await check.key(kid);
     if (!key || key.asymmetricKeyType !== 'rsa') return null;
+    // a weak RSA key is no signature PMC relies on (NIST SP 800-131A: at least 2048 bits)
+    if ((key.asymmetricKeyDetails?.modulusLength ?? 0) < 2048) return null;
     if (!verifySignature('RSA-SHA256', Buffer.from(`${h}.${p}`, 'ascii'), key, Buffer.from(s, 'base64url'))) return null;
 
     if (payload.iss !== check.issuer) return null;
     const aud = payload.aud;
     const audiences = typeof aud === 'string' ? [aud] : Array.isArray(aud) && aud.every((a) => typeof a === 'string') ? (aud as string[]) : [];
     if (!audiences.includes(check.clientId)) return null;
+    // an authorized party, when present, must be PMC's client whatever the audience count (OIDC Core 3.1.3.7)
+    if (payload.azp !== undefined && payload.azp !== check.clientId) return null;
     if (audiences.length > 1 && payload.azp !== check.clientId) return null;
     if (payload.nonce !== check.nonce || !check.nonce) return null;
     const exp = payload.exp;

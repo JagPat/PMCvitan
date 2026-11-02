@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import { IdentityClient, readLookup, searchBody, challenge } from './identity-client';
 import { keyFromJwks, checkIdToken } from './id-token';
 import { readIdentityConfig, identitySwitchOn, REDBRACKET_ISSUER } from './identity-config';
@@ -118,6 +118,8 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     const all = fake.requests.map((q) => `${q.path}\n${q.body}`).join('\n');
     expect(all).not.toMatch(/\$2[aby]\$\d\d\$/);
     const sent = fake.requests.filter((q) => q.path === '/v2/sessions').map((q) => JSON.parse(q.body).checks.password.password);
+    // every issuer session PMC opens carries a bounded lifetime, so a failed delete never leaves one alive
+    expect(fake.requests.filter((q) => q.path === '/v2/sessions').map((q) => JSON.parse(q.body).lifetime)).toEqual(['60s', '60s']);
     expect(sent).toEqual(['Typed-pass-1', 'other-typed']);
   });
 
@@ -197,7 +199,7 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(fake.requests.some((q) => q.path === '/v2/sessions')).toBe(false);
   });
 
-  for (const spoil of ['issuer', 'alg-none', 'alg-hs256', 'state', 'nonce', 'audience', 'expired', 'kid', 'signature', 'no-iat'] as const) {
+  for (const spoil of ['issuer', 'alg-none', 'alg-hs256', 'state', 'nonce', 'audience', 'expired', 'kid', 'signature', 'no-iat', 'azp'] as const) {
     it(`an id token or callback spoiled by ${spoil} opens no session`, async () => {
       fake.addPerson('g@example.in', 'Right-pass-123');
       fake.spoil = spoil;
@@ -256,5 +258,18 @@ describe('Redbracket ID A2: the id token check alone', () => {
     const token = 'eyJhbGciOiJSUzI1NiIsImtpZCI6ImEifQ.e30.AAAA';
     expect(await checkIdToken(token, { issuer: 'x', clientId: 'c', nonce: 'n', now: 0, key: async () => ec.publicKey })).toBeNull();
     expect(await checkIdToken('a.b', { issuer: 'x', clientId: 'c', nonce: 'n', now: 0, key: async () => rsa.publicKey })).toBeNull();
+  });
+
+  it('accepts a well-formed token, and refuses the same token signed with a weak (1024-bit) RSA key', async () => {
+    const sign = async (bits: number) => {
+      const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: bits });
+      const now = 1_800_000_000;
+      const enc = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url');
+      const input = `${enc({ alg: 'RS256', kid: 'k' })}.${enc({ iss: 'https://id.x.in', aud: 'c', sub: 's1', nonce: 'n', iat: now, exp: now + 60 })}`;
+      const token = `${input}.${cryptoSign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
+      return checkIdToken(token, { issuer: 'https://id.x.in', clientId: 'c', nonce: 'n', now, key: async () => publicKey });
+    };
+    expect(await sign(2048)).toMatchObject({ sub: 's1' });
+    expect(await sign(1024)).toBeNull();
   });
 });

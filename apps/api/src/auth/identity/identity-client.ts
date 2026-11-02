@@ -25,6 +25,8 @@ import type { IdentityConfig } from './identity-config';
 import { checkIdToken, keyFromJwks, type IdClaims } from './id-token';
 
 export const IDENTITY_TIMEOUT_MS = 4000;
+/** How long an issuer session PMC opens may live (a protobuf Duration): a sign-in finishes well inside it. */
+export const ISSUER_SESSION_LIFETIME = '60s';
 const BODY_LIMIT = 1_000_000;
 
 /** `down`: no usable answer (timeout, network, 5xx, PMC's service token refused). `rejected`: the issuer said no. */
@@ -77,7 +79,8 @@ export class IdentityClient {
       if (!authRequest) return { ok: false, failure: 'down' };
 
       const session = await this.send('POST', '/v2/sessions', {
-        json: { checks: { user: { loginName: email }, password: { password } } },
+        // a bounded lifetime: Zitadel keeps a session with none until it is deleted, and the delete below is best effort
+        json: { checks: { user: { loginName: email }, password: { password } }, lifetime: ISSUER_SESSION_LIFETIME },
         service: true,
       });
       if (session.status === 400 || session.status === 404 || session.status === 412) return { ok: false, failure: 'rejected' };
@@ -128,7 +131,7 @@ export class IdentityClient {
     try {
       await this.send('POST', '/zitadel.session.v2.SessionService/DeleteSession', { json: { sessionId, sessionToken }, service: true });
     } catch {
-      // best effort: the issuer's session expires on its own
+      // best effort: the issuer's session also expires on its own (ISSUER_SESSION_LIFETIME, set at creation)
     }
   }
 
