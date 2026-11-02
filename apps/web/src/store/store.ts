@@ -82,7 +82,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoDeletable, sitePhotoLabels as SPL, PHASE_NOT_FOUND_MESSAGE, activityNotFoundMessage, overrideNotFoundMessage, COMPANY_NOT_FOUND_MESSAGE, NOT_AN_ORG_MEMBER_MESSAGE } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoDeletable, sitePhotoLabels as SPL, PHASE_NOT_FOUND_MESSAGE, activityNotFoundMessage, overrideNotFoundMessage, COMPANY_NOT_FOUND_MESSAGE, NOT_AN_ORG_MEMBER_MESSAGE, responsibleMemberLabels as RML } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -414,6 +414,8 @@ export interface AppState {
   /** #482 site photos — the viewer's own site photos still in their delete hour past the newest window `photos` holds
    *  (the snapshot's `myDeletablePhotos`), so that hour's Delete is never out of reach; never counted as photos */
   myDeletablePhotos: Photo[];
+  /** #482 "Who fixes this?" — who is named to fix each inspection (the snapshot's list; PMC and engineer only) */
+  responsibleMembers: Array<{ inspectionId: string; memberId: string }>;
   /** #482 site photos — a delete took a photo out of a full window: its count stays a floor until a snapshot rebuilds
    *  the window (Codex 4337661439) */
   photosWindowShort: boolean;
@@ -806,6 +808,9 @@ export interface AppActions {
   createPhase: (name: string) => void;
   deletePhase: (phaseId: string) => void;
   issueChecklist: (input: { title: string; zone: string; items: string[]; nodeId?: string }) => void;
+  /** #482 "Who fixes this?" (RM-w1) — name (or clear, `null`) the member who fixes an inspection's failed work. ONLINE ONLY:
+   *  refused with a line while offline. Resolves true when the server accepted it. */
+  setResponsibleMember: (inspectionId: string, memberId: string | null) => Promise<boolean>;
   startDailyLog: () => void;
   addSiteMaterial: (input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string; nodeId?: string }) => void;
   /** Read the project's team; resolves false when the read failed (Site Visits' picker then offers a retry). */
@@ -1489,6 +1494,7 @@ export function getInitialState(): AppState {
     drawings: structuredClone(SEED_DRAWINGS),
     photos: structuredClone(SEED_PHOTOS), // placed site photos for the demo Site Map
     myDeletablePhotos: [],
+    responsibleMembers: [],
     photosWindowShort: false,
     sitePhotosKept: [],
     materials: structuredClone(SEED_MATERIALS), // placed deliveries for the demo Site Map
@@ -2049,6 +2055,8 @@ export const useStore = create<Store>()(
         // #482 site photos — the viewer's own photos in their hour past that window: under the same lease, so a pull
         // superseded by a delete can no more refill this list than the window
         s.myDeletablePhotos = (snap.myDeletablePhotos ?? []).map((p) => ({ ...p, url: resolveMediaUrl(p.url) }));
+        // #482 "Who fixes this?" — read live by the server, never from the inspections module read, so it follows the snapshot
+        s.responsibleMembers = [...(snap.responsibleMembers ?? [])];
         // (s.materials + s.dailyLog are set together under the daily-log XOR below)
         // pmc/engineer get the placed inspections; other roles get [] from the server
         // XOR (Task 10 Module 3): the Site-Map inspection placements follow the same ownership.
@@ -6141,6 +6149,26 @@ export const useStore = create<Store>()(
           if (!scopeStillCurrent(lease.scope)) return;
           emitGuideOutcome('checklist-issue-failed');
           get().flash('Could not reach the server — please try again.');
+        });
+    },
+    setResponsibleMember: (inspectionId, memberId) => {
+      const lang = get().lang;
+      // online only (Stage 1, 2 Nov): no outbox kind, so a choice is never held for later and never sent twice
+      if (!gateway || !get().online) {
+        get().flash(RML.offline[lang]);
+        return Promise.resolve(false);
+      }
+      const lease = beginSnapshotLease(currentScope());
+      return gateway
+        .setResponsibleMember(inspectionId, memberId, newIdempotencyKey())
+        .then((snap) => {
+          consumeSnapshotResult(acceptSnapshot(snap, lease), undefined, lease.scope);
+          return true;
+        })
+        .catch(() => {
+          // a 4xx is final (the member no longer stands, or the caller's role changed): say so, never retry
+          if (scopeStillCurrent(lease.scope)) get().flash(RML.saveFailed[get().lang]);
+          return false;
         });
     },
     startDailyLog: () => {

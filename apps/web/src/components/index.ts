@@ -23,3 +23,4 @@ export { CountersignControls } from './CountersignControls';
 export { ItemNotFound } from './ItemNotFound';
 export { RecordBoundary } from './RecordBoundary';
 export { DatePicker, pickerLabel, inclusiveDays } from './DatePicker';
+export { ResponsiblePicker } from './ResponsiblePicker';

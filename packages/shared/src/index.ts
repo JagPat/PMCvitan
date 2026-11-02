@@ -52,5 +52,6 @@ export * from './i18n/actionItems';
 export * from './i18n/drawings';
 export * from './i18n/decisions';
 export * from './i18n/inspectionReview';
+export * from './i18n/responsibleMember';
 export * from './i18n/signIn';
 export * from './i18n/sitePhoto';

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { reviewDecisionWaits, useStore } from '@/store/store';
 import { selectActiveReview } from '@/store/selectors';
-import { Eyebrow, ResultChip, Button, LocationContext, EditState, ItemNotFound, ConfirmDialog } from '@/components';
+import { Eyebrow, ResultChip, Button, LocationContext, EditState, ItemNotFound, ConfirmDialog, ResponsiblePicker } from '@/components';
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
 import { X, Plus } from '@/lib/icons';
 import { EmptyHint } from '@/guide/EmptyHint';
@@ -265,6 +265,8 @@ export function InspectionReviewScreen() {
             {/* a served "18 Oct 2026" day reads in the viewer's calendar; any other text as recorded */}
             <span>{servedDayIn(review.date, lang)}</span>
           </div>
+          {/* #482 "Who fixes this?" — the PMC names the contractor or consultant who fixes this inspection's failed work */}
+          <ResponsiblePicker inspectionId={review.id} testId={`review-responsible-${review.id}`} />
         </div>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, padding: '5px 11px', border: '1px solid var(--amber-border)', background: 'var(--amber-chip)', color: 'var(--amber-text)', borderRadius: 20 }}>
           {review.decided ? L.reviewed[lang] : L.awaiting[lang]}
@@ -410,6 +412,10 @@ function OutstandingChecklists({ items, focused, lang }: { items: Checklist[]; f
             <span style={{ fontSize: 13.5, color: 'var(--ink)', flex: 1, minWidth: 160 }}>{inspectionTitle(c, lang)}</span>
             <span style={{ fontSize: 12, color: 'var(--muted)' }}>{T.items(c.items.length, lang)}</span>
             <LocationContext nodeId={c.nodeId} fallback={c.zone} lang={lang} />
+            {/* #482 "Who fixes this?" — named right after issuing, from the row the new checklist appears on */}
+            <div style={{ flexBasis: '100%' }}>
+              <ResponsiblePicker inspectionId={c.id} testId={`outstanding-responsible-${c.id}`} />
+            </div>
           </div>
         ))}
       </div>
