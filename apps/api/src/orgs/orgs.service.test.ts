@@ -654,6 +654,7 @@ describe('OrgsService invitation-email correction', () => {
     passwordHash?: string | null;
     emailVerifiedAt?: Date | null;
     duplicateEmail?: boolean;
+    claimedBySetup?: boolean;
   } = {}) {
     const target = {
       id: 'target1',
@@ -685,6 +686,7 @@ describe('OrgsService invitation-email correction', () => {
         }),
       },
       passwordCredentialChallenge: {
+        findFirst: vi.fn(async () => (options.claimedBySetup ? { id: 'claimed1' } : null)),
         updateMany: vi.fn(async ({ where, data }: { where: { userId: string; consumedAt: null }; data: { consumedAt: Date } }) => {
           let count = 0;
           for (const challenge of challenges) {
@@ -737,6 +739,19 @@ describe('OrgsService invitation-email correction', () => {
     const { svc } = makeEmailCorrection(state);
     await expect(svc.correctInvitationEmail('org1', 'caller1', 'target1', { email: 'new@vitan.in' }))
       .rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('refuses correction once a password setup claimed its code, and changes nothing', async () => {
+    const { svc, prisma, target, challenges, audits } = makeEmailCorrection({ claimedBySetup: true });
+    await expect(svc.correctInvitationEmail('org1', 'caller1', 'target1', { email: 'new@vitan.in' }))
+      .rejects.toThrow(/already confirmed by a password setup/);
+    expect(prisma.passwordCredentialChallenge.findFirst).toHaveBeenCalledWith({
+      where: { userId: 'target1', purpose: 'password_setup_or_reset', verifiedAt: { not: null }, consumedAt: { not: null }, setupTokenExpiresAt: null },
+      select: { id: true },
+    });
+    expect(target.email).toBe('wrong@vitan.in');
+    expect(challenges[0]!.consumedAt).toBeNull();
+    expect(audits).toEqual([]);
   });
 
   it('returns a generic conflict when the corrected email is already used', async () => {

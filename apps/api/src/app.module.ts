@@ -19,6 +19,7 @@ import { EmailService } from './platform/email.service';
 import { InvitationsService } from './orgs/invitations.service';
 import { GoogleAuthService } from './auth/google.service';
 import { PasswordCredentialsService } from './auth/password-credentials.service';
+import { IdentitySignInService } from './auth/identity/identity-sign-in.service';
 import { PhoneSignInService } from './auth/phone-sign-in.service';
 import { SnapshotService } from './snapshot/snapshot.service';
 import { ProjectController } from './snapshot/project.controller';
@@ -229,6 +230,7 @@ import { MediaParticipant } from './media/media.participant';
     EmailService,
     GoogleAuthService,
     PasswordCredentialsService,
+    IdentitySignInService,
     PhoneSignInService,
     SnapshotService,
     NotificationsSeenService,

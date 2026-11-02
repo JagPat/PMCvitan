@@ -36,7 +36,7 @@ describe('AuthController /auth/session dev-auth gate (secure by default)', () =>
   it('403s when ALLOW_DEV_AUTH is unset', () => {
     delete process.env.ALLOW_DEV_AUTH;
     const { svc, calls } = fakeAuth();
-    expect(() => new AuthController(svc, fakeCredentials()).session(body)).toThrow(ForbiddenException);
+    expect(() => new AuthController(svc, fakeCredentials(), {} as never).session(body)).toThrow(ForbiddenException);
     expect(calls).toHaveLength(0);
   });
 
@@ -44,14 +44,14 @@ describe('AuthController /auth/session dev-auth gate (secure by default)', () =>
     for (const v of ['false', '1', 'yes', 'TRUE', '']) {
       process.env.ALLOW_DEV_AUTH = v;
       const { svc } = fakeAuth();
-      expect(() => new AuthController(svc, fakeCredentials()).session(body)).toThrow(ForbiddenException);
+      expect(() => new AuthController(svc, fakeCredentials(), {} as never).session(body)).toThrow(ForbiddenException);
     }
   });
 
   it('allows dev auth only when ALLOW_DEV_AUTH === "true"', () => {
     process.env.ALLOW_DEV_AUTH = 'true';
     const { svc, calls } = fakeAuth();
-    const res = new AuthController(svc, fakeCredentials()).session(body);
+    const res = new AuthController(svc, fakeCredentials(), {} as never).session(body);
     expect(calls).toHaveLength(1);
     expect(res).toMatchObject({ role: 'pmc' });
   });
@@ -61,7 +61,7 @@ describe('AuthController /auth/session dev-auth gate (secure by default)', () =>
     process.env.NODE_ENV = 'production';
     try {
       const { svc, calls } = fakeAuth();
-      expect(() => new AuthController(svc, fakeCredentials()).session(body)).toThrow(ForbiddenException);
+      expect(() => new AuthController(svc, fakeCredentials(), {} as never).session(body)).toThrow(ForbiddenException);
       expect(calls).toHaveLength(0);
     } finally {
       process.env.NODE_ENV = 'test';
@@ -72,7 +72,7 @@ describe('AuthController /auth/session dev-auth gate (secure by default)', () =>
 describe('AuthController password credential flow', () => {
   it('returns a setup token but no application session after OTP verification', async () => {
     const { svc } = fakeAuth();
-    const result = await new AuthController(svc, fakeCredentials()).passwordVerify({ requestId: 'req-id', code: '123456' } as never);
+    const result = await new AuthController(svc, fakeCredentials(), {} as never).passwordVerify({ requestId: 'req-id', code: '123456' } as never);
     expect(result).toEqual({ setupToken: 'setup-token', expiresInSeconds: 600 });
     expect(result).not.toHaveProperty('token');
   });
@@ -81,7 +81,7 @@ describe('AuthController password credential flow', () => {
     const auth = {
       signInUser: async (user: unknown) => ({ token: 'JWT', role: 'pmc', projectId: 'ambli', name: (user as { name: string }).name }),
     } as unknown as AuthService;
-    const controller = new AuthController(auth, fakeCredentials());
+    const controller = new AuthController(auth, fakeCredentials(), {} as never);
     await expect(controller.passwordComplete({ setupToken: 'x'.repeat(32), password: 'a long internal passphrase' } as never)).resolves.toEqual({
       token: 'JWT', role: 'pmc', projectId: 'ambli', name: 'User',
     });

@@ -6,7 +6,7 @@ import { CLOCK, type Clock } from '../common/clock';
 import { addCivilDays, fromIsoCivilDate } from '../common/civil-date';
 import { nextSeqId } from '../domain/ids';
 import { ddMmmYyyy } from '../domain/dates';
-import { lockUserCredential } from '../common/credential-lock';
+import { lockUserCredential, PASSWORD_SETUP_PURPOSE } from '../common/credential-lock';
 import { resolveActor, type Actor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import { NodeInitParticipant } from '../nodes/node-init.participant';
@@ -412,6 +412,18 @@ export class OrgsService {
         if (!target) throw new NotFoundException(NOT_AN_ORG_MEMBER_MESSAGE);
         if (target.user.passwordHash || target.user.emailVerifiedAt) {
           throw new BadRequestException('This account has already established its sign-in credential');
+        }
+        // a password setup that claimed its code (under this same lock) proved the address, and may already have made
+        // the person at Redbracket ID with it: the address is no longer a typo to correct, even if that setup failed later
+        // (a redeemed phone code is consumed and verified with no expiry too, and proves nothing about the address)
+        const claimed = await tx.passwordCredentialChallenge.findFirst({
+          where: { userId, purpose: PASSWORD_SETUP_PURPOSE, verifiedAt: { not: null }, consumedAt: { not: null }, setupTokenExpiresAt: null },
+          select: { id: true },
+        });
+        if (claimed) {
+          throw new BadRequestException(
+            'This address was already confirmed by a password setup. Remove the person and invite the right address instead.',
+          );
         }
 
         const user = await tx.user.update({ where: { id: userId }, data: { email } }).catch(rethrowQaLock);

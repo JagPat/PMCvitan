@@ -9,3 +9,6 @@ import { Prisma } from '@prisma/client';
 export async function lockUserCredential(tx: Prisma.TransactionClient, userId: string): Promise<void> {
   await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${'credential:' + userId}, 0))`);
 }
+
+/** The purpose of an emailed password setup or reset code (a phone sign-in code has its own purpose). */
+export const PASSWORD_SETUP_PURPOSE = 'password_setup_or_reset';
