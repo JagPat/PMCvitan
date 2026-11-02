@@ -117,7 +117,12 @@ Nobody owes a correction, and the watchdog neither routes one nor asks the gate
 again while a fresh list still shows another such pull request at the head. The
 watchdog also runs when a pull request closes, so closing all but one is asked
 about at once (once per close), and that re-judge goes on to the remaining pull
-request's own verdict. Pushing a distinct commit clears it too.
+request's own verdict. Pushing a distinct commit clears it too. When the open
+pull requests at a head cannot be listed, the gate fails closed with the retryable
+`review: open pull requests at this commit could not be read` and drafts the pull
+request. The watchdog routes no correction for a verdict written for another pull
+request (its status target names that pull request); this pull request's own run
+writes its own verdict.
 Before publishing a new pending status or changing readiness, the owner checks live
 current-head Codex reviews and inline comments. A finding that arrived after a
 timeout is republished as the required failure and requires a new SHA; recovery

@@ -191,7 +191,7 @@ test('G3a — structural: both writers take the one disarm-then-success step; on
   const step = gate.slice(gate.indexOf('export async function publishDisarmedSuccess('), gate.indexOf('const AUTOMERGE_RETRY_NEXT'));
   assert.ok(step.indexOf('disarmQueuedAutoMerge(client') > 0 && step.indexOf('disarmQueuedAutoMerge(client') < step.indexOf('await publishSettledSuccess('));
   // 2A3a — a shared commit takes the shared-commit refusal and stops; every other disarm failure the retryable hold
-  assert.match(step, /if \(!\(error instanceof AutoMergeDisarmFailed\)\) throw error;\s*(?:\/\/[^\n]*\n\s*)?if \(error instanceof SharedCommitRefused\) \{\s*await publishSharedCommitRefusal\(client, pullRequest, expectedHead, error\.others, recoveryRequest\);\s*return null;\s*\}\s*await publishRetryableHold\(client, pullRequest, expectedHead, recoveryRequest, \{\s*detail: CODEX_AUTOMERGE_DISARM_FAILED,[^;]*;\s*throw error;/u);
+  assert.match(step, /if \(!\(error instanceof AutoMergeDisarmFailed\)\) throw error;\s*(?:\/\/[^\n]*\n\s*)*if \(error instanceof SharedCommitRefused\) \{\s*const outcome = await publishSharedCommitRefusal\(client, pullRequest, expectedHead, error\.others, recoveryRequest\);\s*if \(outcome !== 'alone'\) return null;\s*\}\s*await publishRetryableHold\(client, pullRequest, expectedHead, recoveryRequest, \{\s*detail: CODEX_AUTOMERGE_DISARM_FAILED,[^;]*;\s*throw error;/u);
   assert.equal([...gate.matchAll(/await publishSettledSuccess\(/gu)].length, 1, 'the success writer is called only by the shared step');
   assert.equal([...gate.matchAll(/await publishDisarmedSuccess\(/gu)].length, 2, 'the review path and the recovered success');
   const arms = [...gate.matchAll(/client\.enableAutoMerge\(/gu)].map((m) => m.index);
@@ -326,6 +326,21 @@ test('G3a (Codex 4440931056) — every open pull request at this commit with a m
   assert.ok(kinds.indexOf('disable:901') >= 0, kinds.join(','));
   assert.equal(kinds.includes('status:success'), false, kinds.join(','));
   assert.equal(client.log.filter(([k]) => k === 'status').at(-1)[3], `review: ${CODEX_SHARED_COMMIT_DETAIL}`);
+});
+
+// #1311 Codex 4446635304 — a sibling at the last list that is gone when the refusal lists again: no refusal naming it,
+// and the success is still withheld on this run (the retryable hold; the gate re-judges this head with it alone)
+test('#1311 Codex 4446635304 — a sibling gone between the last list and the refusal: the success is withheld by the retryable hold', async () => {
+  const sibling = pr(HEAD, { number: 901, node_id: 'PR_901', head: { sha: HEAD, ref: 'claude/other', repo } });
+  const lists = [[pr()], [pr(), sibling], [pr()], [pr()]];
+  let reads = 0;
+  const client = gateClient({ live: () => pr() });
+  client.openPullRequestsAt = async () => lists[Math.min(reads++, lists.length - 1)];
+  await assert.rejects(publishDisarmedSuccess(client, pr(), HEAD, 'review: clean'), AutoMergeDisarmFailed);
+  const written = client.log.filter(([k]) => k === 'status');
+  assert.equal(written.some(([, , state]) => state === 'success'), false, 'no success');
+  assert.equal(written.at(-1)[3], `review: ${CODEX_AUTOMERGE_DISARM_FAILED}`, 'the retryable hold, not a refusal naming a gone sibling');
+  assert.equal(written.some(([, , , description]) => description === `review: ${CODEX_SHARED_COMMIT_DETAIL}`), false);
 });
 
 test('G3a (Codex 4440931056) — the open pull requests at a commit are those whose head is that commit', async () => {

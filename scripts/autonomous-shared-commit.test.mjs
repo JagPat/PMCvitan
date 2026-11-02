@@ -4,9 +4,9 @@ import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GitHubClient, REQUIRED_CHECKS, refuseSharedCommit, run } from './autonomous-review-gate.mjs';
-import { handOffCorrectionLease, otherOpenPullRequestAt, sharedHeadCheck } from './autonomous-handoff.mjs';
+import { handOffCorrectionLease, otherOpenPullRequestAt, sharedHeadCheck, writtenForAnotherPullRequest } from './autonomous-handoff.mjs';
 import { gateRecoveryStatus } from './correction-lease.mjs';
-import { CODEX_SHARED_COMMIT_DETAIL, isRetryableReviewFailureDescription } from './review-policy.mjs';
+import { CODEX_SHARED_COMMIT_DETAIL, CODEX_SHARED_COMMIT_UNREADABLE, isRetryableReviewFailureDescription } from './review-policy.mjs';
 
 /**
  * 2A3a (Stage 1's ruling (b) on notes/gate-codex-silent/2a3/design.md) — one open pull request per commit. A commit status
@@ -38,7 +38,7 @@ const queued = { enabled_at: '2026-11-02T00:00:00Z', merge_method: 'squash' };
  * `run()` itself, with every GitHubClient method replaced by a recorder (the G3b X2g harness). `pulls` is the live set
  * of open pull requests, shared by every run of a scenario, so one PR's run disarming another is seen by the next.
  */
-async function runGate({ number, pulls, statuses, mode = null, trigger = 'ci' }) {
+async function runGate({ number, pulls, statuses, mode = null, trigger = 'ci', overrides = {} }) {
   const log = [];
   let nextId = 6200;
   const stubs = {
@@ -81,7 +81,7 @@ async function runGate({ number, pulls, statuses, mode = null, trigger = 'ci' })
     for (const name of names) {
       Object.defineProperty(GitHubClient.prototype, name, {
         configurable: true, writable: true,
-        value: stubs[name] ?? (async function unstubbed() { log.push(['unstubbed', name]); return undefined; }),
+        value: overrides[name] ?? stubs[name] ?? (async function unstubbed() { log.push(['unstubbed', name]); return undefined; }),
       });
     }
     const eventPath = join(dir, 'event.json');
@@ -343,5 +343,135 @@ test('2A3a (gap-check F2) — a fork or other-base sibling holds nothing, but it
     assert.ok(result.log.some(([k, n]) => k === 'disable' && n === sibling.number), `${name}: its queued merge is disarmed`);
     assert.equal(pulls.get(sibling.number).auto_merge, null, name);
     assert.ok(reviewStatuses(result.log).some(([, state]) => state === 'success'), `${name}: this PR goes on to its own green`);
+  }
+});
+
+// #1311 round 1 (Codex 4446635304) — the commit is listed again after the disarm: a sibling gone by then is not named, and
+// with none left this pull request is alone and nothing is written.
+test('#1311 Codex 4446635304 — a sibling that leaves during the refusal is not named; with none left nothing is written', async () => {
+  for (const [name, lists, expected] of [
+    ['the only sibling closed', [[pullAt(610), pullAt(611)], [pullAt(610)]], null],
+    ['one of two left', [[pullAt(610), pullAt(611), pullAt(612)], [pullAt(610), pullAt(612)]], 'refused'],
+  ]) {
+    const log = [];
+    let reads = 0;
+    const client = {
+      async openPullRequestsAt() { const list = lists[Math.min(reads, lists.length - 1)]; reads += 1; return list.map((p) => ({ ...p })); },
+      async pullRequest(n) { return pullAt(n); },
+      async setStatus(sha, state, description) { log.push(['status', state, description]); return { id: 1 }; },
+      async setDraft(current, draft) { log.push(['draft', draft]); return { ...current, draft }; },
+      async updateStickyComment(n, body) { log.push(['sticky', body]); },
+    };
+    assert.equal(await refuseSharedCommit(client, pullAt(610), HEAD), expected, name);
+    if (expected === null) {
+      assert.deepEqual(log, [], `${name}: nothing written, the run goes on to its own verdict`);
+    } else {
+      const sticky = log.find(([k]) => k === 'sticky')[1];
+      assert.match(sticky, /#612\b/u, name);
+      assert.doesNotMatch(sticky, /#611\b/u, `${name}: the closed sibling is not named`);
+    }
+  }
+  // a list that cannot be read again keeps the earlier one: the refusal fails closed
+  let reads = 0;
+  const log = [];
+  const flaky = {
+    async openPullRequestsAt() { reads += 1; if (reads === 1) return [pullAt(610), pullAt(611)]; if (reads === 2) return [pullAt(610), pullAt(611)]; throw new Error('502'); },
+    async pullRequest(n) { return pullAt(n); },
+    async setStatus(sha, state, description) { log.push(['status', state, description]); return { id: 1 }; },
+    async setDraft(current, draft) { return { ...current, draft }; },
+    async updateStickyComment(n, body) { log.push(['sticky', body]); },
+  };
+  assert.equal(await refuseSharedCommit(flaky, pullAt(610), HEAD), 'refused');
+  assert.deepEqual(log.find(([k]) => k === 'status'), ['status', 'failure', SHARED]);
+});
+
+// #1311 round 1 (Codex 4446635309) — on the CI-triggered path a head already shared gets the refusal even when the
+// disarm fails: it is checked before the disarm that throws, and the refusal's own disarm writes it anyway.
+test('#1311 Codex 4446635309 — a shared head whose disarm fails still gets the shared-commit refusal on a CI-triggered run', { timeout: 30_000 }, async () => {
+  const pulls = new Map([[610, pullAt(610, { auto_merge: queued })], [611, pullAt(611, { auto_merge: queued })]]);
+  const statuses = [tokenedSuccess()];
+  const result = await runGate({ number: 610, pulls, statuses, overrides: { async disableAutoMerge(pull) { throw new Error(`GraphQL down for #${pull.number}`); } } });
+  const written = reviewStatuses(result.log).filter(([, state]) => state !== 'pending').map(([, state, description]) => [state, description]);
+  assert.deepEqual(written, [['failure', SHARED]], 'the actionable refusal, not the generic disarm hold');
+  const sticky = result.log.filter(([k]) => k === 'sticky').at(-1)[2];
+  assert.match(sticky, /#611\b/u);
+  assert.equal(result.log.some(([k]) => k === 'scope-read' || k === 'arm' || k === 'merge'), false);
+});
+
+// #1311 round 1 (Codex 4446635311) — no re-arm is asked about while a sibling has the head on a fresh list.
+test('#1311 Codex 4446635311 — the watchdog asks no re-arm while another open pull request has the head', async () => {
+  const green = { ...tokenedSuccess(), updated_at: '2026-11-02T11:00:00Z' };
+  const dispatched = [];
+  const client = {
+    combinedStatus: async () => ({ statuses: [green] }),
+    pullRequest: async (n) => pullAt(n),
+    dispatchRecovery: async (ref, inputs) => { dispatched.push(inputs); },
+    comment: async () => { throw new Error('no notice expected'); },
+  };
+  const shared = await handOffCorrectionLease(client, pullAt(610), 'JagPat/PMCvitan', 'main', {
+    now: '2026-11-02T12:00:00Z', sharesHead: async (head, number, { fresh = false } = {}) => fresh,
+  });
+  assert.equal(shared?.state, 'shared_commit');
+  assert.deepEqual(dispatched, []);
+  // alone, the same green is asked about: the row is live
+  const alone = await handOffCorrectionLease(client, pullAt(610), 'JagPat/PMCvitan', 'main', {
+    now: '2026-11-02T12:00:00Z', sharesHead: async () => false,
+  });
+  assert.equal(alone?.state, 'rearm_dispatched');
+  assert.equal(dispatched.length, 1);
+});
+
+// #1311 round 1 (Codex 4446635318) — a verdict written for another pull request is not routed to this one, even after
+// that pull request has closed (its target names it); this pull request's own run writes its own verdict.
+test('#1311 Codex 4446635318 — a verdict written for another pull request routes no correction here, even once that PR is closed', async () => {
+  const owedFor = (number) => ({ id: 9, context: 'codex-current-head', state: 'failure', description: 'scope: missing review-size marker',
+    updated_at: '2026-11-01T00:00:00Z', target_url: `https://github.com/JagPat/PMCvitan/pull/${number}` });
+  const posted = [];
+  const clientFor = (owed) => ({
+    combinedStatus: async () => ({ statuses: [owed] }),
+    comments: async () => [], reviews: async () => [], reviewComments: async () => [],
+    pullRequest: async () => pullAt(610),
+    comment: async (number, body) => { posted.push(body); return { id: 1 }; },
+  });
+  const inherited = await handOffCorrectionLease(clientFor(owedFor(611)), pullAt(610), 'JagPat/PMCvitan', 'main', {
+    now: '2026-11-02T12:00:00Z', sharesHead: async () => false,
+  });
+  assert.equal(inherited?.state, 'inherited');
+  assert.deepEqual(posted, []);
+  // its own verdict is still routed: the row is live
+  const own = await handOffCorrectionLease(clientFor(owedFor(610)), pullAt(610), 'JagPat/PMCvitan', 'main', {
+    now: '2026-11-02T12:00:00Z', sharesHead: async () => false,
+  });
+  assert.notEqual(own?.state, 'inherited');
+  assert.equal(posted.length, 1, 'its own verdict is routed');
+  // the fresh read before posting judges it again: a verdict that became another PR's is not posted
+  let reads = 0;
+  const flipping = { ...clientFor(owedFor(610)), combinedStatus: async () => ({ statuses: [reads++ === 0 ? owedFor(610) : owedFor(611)] }) };
+  const late = await handOffCorrectionLease(flipping, pullAt(610), 'JagPat/PMCvitan', 'main', { now: '2026-11-02T12:00:00Z', sharesHead: async () => false });
+  assert.equal(late?.state, 'superseded');
+  assert.equal(posted.length, 1);
+  assert.equal(writtenForAnotherPullRequest({ target_url: 'u' }, pullAt(610)), false, 'no pull request target: read as this one\'s');
+  assert.equal(writtenForAnotherPullRequest({}, pullAt(610)), false);
+});
+
+// #1311 round 1 (Codex 4446635322) — a shared-head list that cannot be read fails closed, on the relabel guard and on the
+// orchestrate path: the previous green is replaced by the retryable hold and the pull request drafted (dropping its queued
+// merge); nothing derived from the body is read or written.
+test('#1311 Codex 4446635322 — an unreadable shared-head list fails closed: the green is replaced and the PR drafted', { timeout: 30_000 }, async () => {
+  const UNREADABLE = `review: ${CODEX_SHARED_COMMIT_UNREADABLE}`;
+  assert.equal(isRetryableReviewFailureDescription(UNREADABLE), true, 'retryable: the gate re-judges this exact head');
+  const candidate = '<!-- review-size: standard -->\n<!-- correction-owner: codex -->';
+  for (const [name, options] of [
+    ['relabel guard', { mode: 'relabel-guard', trigger: 'relabel', body: candidate, ref: 'codex/unit-610' }],
+    ['orchestrate', { trigger: 'ci', body: VALID_BODY, ref: 'claude/unit-610' }],
+  ]) {
+    const pulls = new Map([[610, pullAt(610, { body: options.body, head: { sha: HEAD, ref: options.ref, repo }, auto_merge: queued })]]);
+    const statuses = [tokenedSuccess()];
+    const result = await runGate({ number: 610, pulls, statuses, mode: options.mode ?? null, trigger: options.trigger,
+      overrides: { async openPullRequestsAt() { throw new Error('pulls list 502'); } } });
+    assert.equal(statuses.find((s) => s.context === 'codex-current-head').description, UNREADABLE, `${name}: the green is replaced`);
+    assert.ok(result.log.some(([k, n, draft]) => k === 'draft' && n === 610 && draft === true), `${name}: drafted`);
+    assert.equal(pulls.get(610).auto_merge, null, `${name}: its queued merge is dropped`);
+    assert.equal(result.log.some(([k]) => k === 'scope-read' || k === 'arm' || k === 'merge'), false, `${name}: nothing body-derived`);
   }
 });

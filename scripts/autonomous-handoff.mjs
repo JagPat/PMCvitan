@@ -561,6 +561,17 @@ export function otherOpenPullRequestAt(open, head, number) {
 }
 
 /**
+ * 2A3a (#1311 Codex 4446635318) — was this status written for another pull request? The gate writes every
+ * `codex-current-head` status with the pull request it judged as its target (`html_url`), so a target naming a different
+ * pull request number is that pull request's verdict. A status with no such target is read as this
+ * pull request's, as before.
+ */
+export function writtenForAnotherPullRequest(status, pullRequest) {
+  const match = /\/pull\/([0-9]+)\/?$/u.exec(String(status?.target_url ?? ''));
+  return Boolean(match) && Number(match[1]) !== Number(pullRequest?.number);
+}
+
+/**
  * 2A3a — the watchdog loop's shared-head check: from the open-PR snapshot, or with `fresh`, from a new list read now
  * (gap-check F3). Only the pull requests the gate judges count (same repository, the default-branch base), as in the
  * gate's own refusal (Stage 1's ruling on gap-check F2).
@@ -647,6 +658,11 @@ export async function handOffCorrectionLease(
     const live = await client.pullRequest(pullRequest.number);
     if (live?.head?.sha === head) unarmed = gateRearmStatus(combined, live, now);
   }
+  // 2A3a (#1311 Codex 4446635311) — and no re-arm is asked about while another open pull request has this head on a fresh
+  // list: the re-judge could only write the shared-commit refusal. The sibling's close runs this watchdog, which asks then
+  if (unarmed && sharesHead && await sharesHead(head, pullRequest.number, { fresh: true })) {
+    return { state: 'shared_commit', head, body: null, reason: 'another open pull request still has this exact head' };
+  }
   if (unarmed) {
     await client.dispatchRecovery(defaultBranch, {
       pr_number: String(pullRequest.number),
@@ -667,6 +683,13 @@ export async function handOffCorrectionLease(
   // gate writes the commit's own shared-commit refusal, which is retryable and asks nobody for a correction
   if (sharesHead && await sharesHead(head, pullRequest.number)) {
     return { state: 'shared_commit', head, body: null, reason: 'another open pull request has this exact head' };
+  }
+  // 2A3a (#1311 Codex 4446635318) — a verdict written for ANOTHER pull request (its target names that pull request) is not
+  // this one's, even once that pull request has closed: a body verdict left at the commit by a pull request that closed
+  // before any run here wrote the shared-commit refusal. No correction is routed for it; this pull request's own run (its
+  // open or push runs CI, then the gate) writes its own verdict, and a notice follows that if one is owed
+  if (writtenForAnotherPullRequest(owed, pullRequest)) {
+    return { state: 'inherited', head, body: null, reason: 'the newest verdict at this head was written for another pull request' };
   }
 
   const [comments, reviewComments, reviews] = await Promise.all([
@@ -755,6 +778,7 @@ export async function handOffCorrectionLease(
     // 2A3a — and the head is still this pull request's alone, on a fresh list
     if (
       fresh?.state !== 'notify' || fresh.body !== assessment.body || live.body !== assessed.body
+      || writtenForAnotherPullRequest(freshOwed, pullRequest)
       || (sharesHead && await sharesHead(head, pullRequest.number, { fresh: true }))
     ) {
       return {

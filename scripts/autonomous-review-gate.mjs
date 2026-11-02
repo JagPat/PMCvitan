@@ -26,6 +26,7 @@ import {
   CODEX_AUTOMERGE_DISARM_FAILED,
   CODEX_AUTOMERGE_REARM_FAILED,
   CODEX_SHARED_COMMIT_DETAIL,
+  CODEX_SHARED_COMMIT_UNREADABLE,
   CODEX_SECURITY_FINDINGS_DETAIL,
   REARM_ATTEMPT_FAILED,
   REARM_CONSUMED_OUTCOME,
@@ -1792,10 +1793,20 @@ async function publishSharedCommitRefusal(client, pullRequest, expectedHead, oth
     if (!(error instanceof AutoMergeDisarmFailed)) throw error;
     console.warn(`Could not disarm every queued merge at a shared commit; the refusal is written anyway: ${error.message}`);
   }
+  // #1311 Codex 4446635304 — the commit is listed again after the disarm: a sibling that closed or moved off this commit
+  // meanwhile is no longer named, and when none is left this pull request is alone ('alone': nothing is written, and the
+  // caller goes on to its own verdict). A list that cannot be read keeps the earlier one: the refusal fails closed
+  let current = others;
+  try {
+    current = otherOpenPullRequests(await client.openPullRequestsAt(expectedHead), pullRequest.number);
+  } catch (error) {
+    console.warn(`Could not list the open pull requests again; the earlier list stands: ${error?.message ?? error}`);
+  }
+  if (current.length === 0) return 'alone';
   await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
     detail: CODEX_SHARED_COMMIT_DETAIL,
     attempt: 0,
-    next: `This exact commit is also the head of ${others.map((pull) => `#${pull.number}`).join(', ')}. Close all but one `
+    next: `This exact commit is also the head of ${current.map((pull) => `#${pull.number}`).join(', ')}. Close all but one `
       + 'of these pull requests, or push a distinct commit; the gate re-judges this exact head.',
     settleReason: 'shared commit refusal',
   });
@@ -1805,12 +1816,30 @@ async function publishSharedCommitRefusal(client, pullRequest, expectedHead, oth
 /**
  * 2A3a — the check every run that writes `codex-current-head` makes before anything derived from this pull request: when
  * another open pull request has this head, the shared-commit refusal is written instead and the run stops. Returns null
- * when this pull request is alone at its head, else the refusal's outcome.
+ * when this pull request is alone at its head, else the outcome ('refused', 'superseded' or 'unreadable').
+ *
+ * #1311 Codex 4446635322 — a list that cannot be read fails closed: whether the head is shared is unknown, so the
+ * retryable `CODEX_SHARED_COMMIT_UNREADABLE` hold replaces the previous verdict (a green included) and drafts the pull
+ * request, which drops its queued merge; the watchdog asks the gate to re-judge this exact head.
  */
 export async function refuseSharedCommit(client, pullRequest, expectedHead, recoveryRequest = null) {
-  const others = otherOpenPullRequests(await client.openPullRequestsAt(expectedHead), pullRequest.number);
+  let open;
+  try {
+    open = await client.openPullRequestsAt(expectedHead);
+  } catch (error) {
+    console.warn(`Could not list the open pull requests at this head; holding it: ${error?.message ?? error}`);
+    const held = await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
+      detail: CODEX_SHARED_COMMIT_UNREADABLE,
+      attempt: 0,
+      next: 'The open pull requests at this exact commit could not be read; the gate re-judges this exact head.',
+      settleReason: 'shared commit unreadable',
+    });
+    return held ? 'unreadable' : 'superseded';
+  }
+  const others = otherOpenPullRequests(open, pullRequest.number);
   if (others.length === 0) return null;
-  return publishSharedCommitRefusal(client, pullRequest, expectedHead, others, recoveryRequest);
+  const outcome = await publishSharedCommitRefusal(client, pullRequest, expectedHead, others, recoveryRequest);
+  return outcome === 'alone' ? null : outcome;
 }
 
 /**
@@ -1830,9 +1859,11 @@ export async function publishDisarmedSuccess(client, pullRequest, expectedHead, 
   } catch (error) {
     if (!(error instanceof AutoMergeDisarmFailed)) throw error;
     // 2A3a — another open pull request at this commit: the shared-commit refusal instead of the success, and the run stops
+    // (#1311 Codex 4446635304: a sibling gone by then leaves this pull request alone, and the success is still withheld
+    // on this run; the retryable hold below asks the gate to re-judge it)
     if (error instanceof SharedCommitRefused) {
-      await publishSharedCommitRefusal(client, pullRequest, expectedHead, error.others, recoveryRequest);
-      return null;
+      const outcome = await publishSharedCommitRefusal(client, pullRequest, expectedHead, error.others, recoveryRequest);
+      if (outcome !== 'alone') return null;
     }
     await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
       detail: CODEX_AUTOMERGE_DISARM_FAILED,
@@ -3525,20 +3556,24 @@ export async function run() {
     recordAdoptedRearmRequest(expectedHead, pullRequest.number, pendingRearm);
   }
   await withdrawUntokenedSuccess(client, pullRequest, expectedHead, existingStatus);
+  // 2A3a — before anything derived from this pull request (the scope, the ownership hold, the candidate hold, a review):
+  // while another open pull request has this head, the commit gets the shared-commit refusal and the run stops.
+  // #1311 Codex 4446635309 — checked before the CI-triggered disarm too: that disarm throws when it fails, so a head
+  // already shared would get only its generic hold, never the refusal telling anyone to close a pull request; the
+  // refusal's own disarm writes the refusal even when it fails. Checked again after it, for a sibling arriving meanwhile
+  const sharedCommit = async () => {
+    const shared = await refuseSharedCommit(client, pullRequest, expectedHead, pendingRecoveryRequest(existingStatuses, pullRequest.number));
+    if (shared) console.log(`Another open pull request may have this exact head; shared-commit refusal: ${shared}.`);
+    return shared;
+  };
+  if (await sharedCommit()) return;
   if (context.trigger === 'ci') {
     pullRequest = await disarmBeforeRun(client, pullRequest, expectedHead, existingStatuses);
     if (!pullRequest) {
       console.log('Workflow event was superseded by a newer pull-request head.');
       return;
     }
-  }
-
-  // 2A3a — before anything derived from this pull request (the scope, the ownership hold, the candidate hold, a review):
-  // while another open pull request has this head, the commit gets the shared-commit refusal and the run stops
-  const shared = await refuseSharedCommit(client, pullRequest, expectedHead, pendingRecoveryRequest(existingStatuses, pullRequest.number));
-  if (shared) {
-    console.log(`Another open pull request has this exact head; shared-commit refusal: ${shared}.`);
-    return;
+    if (await sharedCommit()) return;
   }
 
   // 2B2: when the newest current-head review is a candidate ownership hold, the exact head is
