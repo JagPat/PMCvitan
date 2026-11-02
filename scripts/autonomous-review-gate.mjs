@@ -2712,7 +2712,24 @@ async function withFollowUpRetry(client, pullRequest, expectedHead, work) {
   try {
     return await work();
   } catch (error) {
-    await client.setStatus(expectedHead, 'failure', error?.readRetry ?? FOLLOW_UP_RETRY, pullRequest.html_url).catch(() => {});
+    const detail = error?.readRetry ?? FOLLOW_UP_RETRY;
+    await client.setStatus(expectedHead, 'failure', detail, pullRequest.html_url).catch(() => {});
+    // #1287/#1288 audit (Stage 1) — a `review_clean` sticky written before a failed success write or filing must not
+    // stay on this non-green head: best effort, only while this head is current (the sticky is the PR's singleton),
+    // and a failure here never replaces the original error
+    try {
+      if (await refreshCurrentHead(client, pullRequest.number, expectedHead)) {
+        await client.updateStickyComment(pullRequest.number, statusBody({
+          state: 'review_retry',
+          head: expectedHead,
+          detail,
+          attempt: 0,
+          next: 'A follow-up write failed after Codex\'s review settled; the gate re-judges this exact head.',
+        }));
+      }
+    } catch {
+      // the original error is the one recovery acts on
+    }
     throw error;
   }
 }

@@ -1299,3 +1299,32 @@ test('G2 gap 2 — the security marker is keyed on the structured flag, and the 
   assert.equal([...gate.matchAll(/security: (?:result|verifiedResult|settled)\.security === true/gu)].length, 6, 'the final evidence read, then its publishers: the guard, the review loop, final verification, the settlement, the recovery');
   assert.doesNotMatch(gate, /description === `review: \$\{CODEX_SECURITY_FINDINGS_DETAIL\}`/u);
 });
+
+// #1287/#1288 audit (Stage 1) — a follow-up write that fails after Codex's review settled (a filing, the success write)
+// leaves the retryable failure AND replaces the sticky with `review_retry`, so a `review_clean` sticky never stays on a
+// non-green head. Best effort: only while the head is current, and a sticky write that fails never replaces the error.
+test('#1287/#1288 audit — a failed follow-up write replaces the clean sticky with review_retry, best effort', async () => {
+  const rounds = [finding({ head: 'a'.repeat(40), id: 110 }), finding({ head: 'b'.repeat(40), id: 111 })];
+  const pr = { number: 9, html_url: 'u', changed_files: 2, state: 'open', draft: false, head: { sha: HEAD, repo: { full_name: 'o/r' } }, base: { ref: 'main', repo: { full_name: 'o/r' } } };
+  const failingFiling = (extra = {}) => {
+    const run = fakeGitHub({ comments: [...rounds, finding({ p: 2, id: 112 })], pr });
+    run.state.fail.createIssue = 1;
+    const stickies = [];
+    Object.assign(run.client, { updateStickyComment: async (number, body) => { stickies.push(body); } }, extra);
+    return { ...run, stickies };
+  };
+  const plain = failingFiling();
+  await assert.rejects(settleFinalCodexEvidence(plain.client, pr, HEAD), /issues API down/u);
+  assert.equal(plain.state.statuses.at(-1).description, FOLLOW_UP_RETRY);
+  assert.equal(plain.stickies.length, 1);
+  assert.match(plain.stickies[0], /`review_retry`/u);
+  assert.doesNotMatch(plain.stickies[0], /Correction owner|`changes_required`|`review_clean`/u);
+  // the sticky write itself fails: the ORIGINAL error is what the caller sees
+  const brokenSticky = failingFiling({ updateStickyComment: async () => { throw new Error('comments API down'); } });
+  await assert.rejects(settleFinalCodexEvidence(brokenSticky.client, pr, HEAD), /issues API down/u);
+  assert.equal(brokenSticky.state.statuses.at(-1).description, FOLLOW_UP_RETRY);
+  // a head no longer current: the PR's singleton sticky belongs to another head, so it is left alone
+  const moved = failingFiling({ pullRequest: async () => ({ ...pr, head: { ...pr.head, sha: 'f'.repeat(40) } }) });
+  await assert.rejects(settleFinalCodexEvidence(moved.client, pr, HEAD), /issues API down/u);
+  assert.equal(moved.stickies.length, 0);
+});
