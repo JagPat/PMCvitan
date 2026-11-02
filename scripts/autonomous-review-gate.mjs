@@ -1620,11 +1620,13 @@ export async function disarmQueuedAutoMerge(client, number, expectedHead) {
 }
 
 /**
- * Codex 4441198763 on #1295 — the last read before the success: every open pull request at this commit is listed again
- * and none may have a merge queued. One armed after the disarm's own list (a person queuing it, or its branch moving
- * onto this commit with a merge queued) would merge on this success before its own authorization read its record, so
- * the success is withheld and the retryable hold is written instead. No GitHub API makes this check and the status
- * write one step; the gap left between them is G3a's residual, ended by 2A3 (the merge-time re-check).
+ * Codex 4441198763 on #1295 — the last read before the success: `publishSettledSuccess` runs it after the approval
+ * token's reads, immediately before the status write (its `beforeWrite`). Every open pull request at this commit is
+ * listed again and none may have a merge queued. One armed after the disarm's own list (a person queuing it, or its
+ * branch moving onto this commit with a merge queued) would merge on this success before its own authorization read its
+ * record, so the success is withheld and the retryable hold is written instead. No GitHub API makes this check and the
+ * status write one step; the gap left between them (this list's reply, then the write) is G3a's residual, ended by 2A3
+ * (the merge-time re-check).
  */
 async function confirmNoQueuedMergeAt(client, expectedHead) {
   let open;
@@ -1637,15 +1639,19 @@ async function confirmNoQueuedMergeAt(client, expectedHead) {
 }
 
 /**
- * G3a (gap-check F4) — the ONE step both success writers take: disarm, then the success. A disarm that is not confirmed
- * takes the retryable hold and rethrows; a head no longer current returns null and writes nothing. Returns the live
- * pull request the success was written against.
+ * G3a (gap-check F4) — the ONE step both success writers take: disarm, then the success, whose last read before the
+ * write is `confirmNoQueuedMergeAt`. A disarm or that last list not confirmed takes the retryable hold (over any
+ * follow-up failure the success writer left) and rethrows; a head no longer current returns null and writes nothing.
+ * Returns the live pull request the success was written against.
  */
 export async function publishDisarmedSuccess(client, pullRequest, expectedHead, description, { recoveryRequest = null, attempt = 0 } = {}) {
-  let live;
   try {
-    live = await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead);
-    if (live) await confirmNoQueuedMergeAt(client, expectedHead);
+    const live = await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead);
+    if (!live) return null;
+    await publishSettledSuccess(client, live, expectedHead, description, {
+      beforeWrite: () => confirmNoQueuedMergeAt(client, expectedHead),
+    });
+    return live;
   } catch (error) {
     if (!(error instanceof AutoMergeDisarmFailed)) throw error;
     await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
@@ -1655,9 +1661,6 @@ export async function publishDisarmedSuccess(client, pullRequest, expectedHead, 
     });
     throw error;
   }
-  if (!live) return null;
-  await publishSettledSuccess(client, live, expectedHead, description);
-  return live;
 }
 
 /**
@@ -3006,7 +3009,7 @@ function blockingSettlement(evidence, deferred) {
  * Publish the success a settlement has earned. It is the last write after the settlement's pending status, so it
  * is guarded like the rest (Codex 4229880987): a failed write leaves the retryable follow-up failure.
  */
-export function publishSettledSuccess(client, pullRequest, expectedHead, description) {
+export function publishSettledSuccess(client, pullRequest, expectedHead, description, { beforeWrite = null } = {}) {
   return withFollowUpRetry(client, pullRequest, expectedHead, async () => {
     // M3c (v3 §A2) — the ONLY writer of a `codex-current-head` success. It earns the approval token itself, in this
     // run, after the settlement that precedes it, and writes nothing without one: a cited head whose work item
@@ -3018,6 +3021,9 @@ export function publishSettledSuccess(client, pullRequest, expectedHead, descrip
       // (work item or ownership) rather than the follow-up filing retry the wrapper otherwise publishes.
       throw Object.assign(new Error(`success withheld: ${approval.refused}`), { readRetry: approval.readRetry ?? null });
     }
+    // G3a (Codex 4441198763 on #1295, Stage 1's re-check G1) — the caller's last check runs here, after every read
+    // above, so nothing but its own reply stands between it and the write
+    if (beforeWrite) await beforeWrite();
     const written = await client.setStatus(expectedHead, 'success', withApprovalToken(description, approval.token), pullRequest.html_url);
     recordApprovalReceipt(expectedHead, approval.verification);
     return written;

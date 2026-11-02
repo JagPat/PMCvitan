@@ -356,37 +356,46 @@ test('G3a (Codex 4441198800) — a failure after the clean success replaces the 
 });
 
 // Codex 4441198763 on #1295 — a sibling queued after the disarm's own list would merge on this success before its own
-// authorization: the commit's open pull requests are listed again right before the success, and any merge queued there
-// withholds it (the retryable hold, as a disarm that fails)
+// authorization: the commit's open pull requests are listed again as the last read before the success write (after
+// the approval token's reads: Stage 1's re-check G1), and any merge queued there withholds it (the retryable hold, as
+// a disarm that fails, over the follow-up failure the success writer leaves)
 test('G3a (Codex 4441198763) — a merge queued at this commit after the disarm withholds the success: the retryable hold', async () => {
   const sibling = (extra = {}) => pr(HEAD, { number: 901, node_id: 'PR_901', head: { sha: HEAD, ref: 'claude/other', repo }, ...extra });
   const queued = () => sibling({ auto_merge: { enabled_at: '2026-11-02T00:00:00Z', merge_method: 'squash' } });
-  const run = async (lists) => {
+  const run = (lists) => {
     const client = gateClient();
     let n = 0;
     client.openPullRequestsAt = async (sha) => { client.log.push(['list', sha]); const next = lists[Math.min(n, lists.length - 1)]; n += 1; return next(); };
+    const commit = client.commit;
+    client.commit = async (...args) => { client.log.push(['commit']); return commit(...args); };
+    const statuses = client.statuses;
+    client.statuses = async (...args) => { client.log.push(['statuses']); return statuses(...args); };
     return client;
   };
-  // the disarm's list is clean; a sibling (or this PR) is queued by the re-list; or the re-list cannot be read
+  // the disarm's list is clean; a sibling, this PR alone, or this PR beside a sibling is queued by the last list; or
+  // the last list cannot be read
   for (const [name, second] of [
     ['sibling queued', () => [pr(), queued()]],
+    ['this PR queued, alone', () => [armed()]],
     ['this PR queued', () => [armed(), sibling()]],
-    ['re-list unreadable', () => { throw new Error('GitHub 502'); }],
+    ['last list unreadable', () => { throw new Error('GitHub 502'); }],
   ]) {
-    const client = await run([() => [pr(), sibling()], second]);
+    const client = run([() => [pr(), sibling()], second]);
     await assert.rejects(publishDisarmedSuccess(client, pr(), HEAD, 'review: clean'), AutoMergeDisarmFailed, name);
     const statuses = client.log.filter(([k]) => k === 'status');
     assert.equal(statuses.some(([, , state]) => state === 'success'), false, `${name}: nothing green`);
     assert.deepEqual(statuses.at(-1).slice(2), ['failure', `review: ${CODEX_AUTOMERGE_DISARM_FAILED}`], name);
-    assert.match(client.log.find(([k]) => k === 'sticky')?.[1] ?? '', /review_retry/u, name);
+    assert.match(client.log.filter(([k]) => k === 'sticky').at(-1)?.[1] ?? '', /review_retry/u, name);
     assert.equal(client.log.filter(([k]) => k === 'list').length, 2, `${name}: listed twice`);
   }
-  // a clean re-list: the one success follows it, and nothing is written between them
-  const clean = await run([() => [pr(), sibling()], () => [pr(), sibling()]]);
+  // a clean last list: it comes after the approval token's reads, and the one success follows it with nothing read or
+  // written between them
+  const clean = run([() => [pr(), sibling()], () => [pr(), sibling()]]);
   await publishDisarmedSuccess(clean, pr(), HEAD, 'review: clean');
   const kinds = clean.log.map(([k, , state]) => (k === 'status' ? `status:${state}` : k));
   const lastList = kinds.lastIndexOf('list');
   const green = kinds.indexOf('status:success');
-  assert.ok(lastList >= 0 && green > lastList, kinds.join(','));
-  assert.equal(kinds.slice(lastList + 1, green).some((k) => k.startsWith('status') || k === 'disable'), false, kinds.join(','));
+  assert.ok(kinds.includes('commit') && kinds.lastIndexOf('commit') < lastList, kinds.join(','));
+  assert.ok(kinds.lastIndexOf('statuses') < lastList, kinds.join(','));
+  assert.equal(green, lastList + 1, kinds.join(','));
 });
