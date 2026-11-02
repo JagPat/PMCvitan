@@ -1611,8 +1611,8 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
     throw new CodexRecordUnreadable(error);
   }
   const record = codexStateRecordVerdict(issueComments, expectedHead, 0);
-  if (record === 'hold') return { allowed: false, state: 'codex_review_held' };
   if (record === 'security') return { allowed: false, state: 'codex_review_security' };
+  if (record === 'hold') return { allowed: false, state: 'codex_review_held' };
   return { allowed: true, state: 'authorized', pullRequest: finalLive };
 }
 
