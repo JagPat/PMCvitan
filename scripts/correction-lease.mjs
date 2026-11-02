@@ -5,6 +5,7 @@ import {
   isOwnershipInconsistentScopeDetail,
   OWNERSHIP_CANDIDATE_HELD,
   REARM_SETTLEMENTS,
+  REARM_ATTEMPT_FAILED,
   STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT,
 } from './review-policy.mjs';
 export { CORRECTION_LEASE_GRACE_MS, STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT } from './review-policy.mjs';
@@ -155,7 +156,9 @@ export function gateRearmStatus(combinedStatus, pullRequest) {
   if (newest?.state !== 'success' || !parseApprovalToken(newest.description)) return null;
   const id = String(newest.id ?? '');
   if (!id) return null;
-  if (statuses.some((status) => status?.context === `${RECOVERY_REQUEST_CONTEXT}${id}`)) return null;
+  // a request for this success, pending or settled, holds the ask; one whose re-judge threw (#1289 round 1) does not
+  const asked = statuses.find((status) => status?.context === `${RECOVERY_REQUEST_CONTEXT}${id}`);
+  if (asked && String(asked.description ?? '') !== REARM_ATTEMPT_FAILED) return null;
   // once per head: this head already had its success re-judged (or that request was superseded)
   if (statuses.some((status) => String(status?.context ?? '').startsWith(RECOVERY_REQUEST_CONTEXT)
     && REARM_SETTLEMENTS.includes(String(status?.description ?? '')))) return null;

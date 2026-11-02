@@ -256,6 +256,9 @@ export const REARM_CONSUMED_OUTCOME = 'recovered success re-authorization';
 export const REARM_REQUEST_SUPERSEDED = 'recovery: re-arm request superseded by newer review state';
 /** The head-scoped record that a re-arm was asked for and settled: the watchdog asks once per head. */
 export const REARM_SETTLEMENTS = Object.freeze([`recovery: consumed by ${REARM_CONSUMED_OUTCOME}`, REARM_REQUEST_SUPERSEDED]);
+/** G3 (#1289 round 1, Codex 4439713463) — a re-arm's re-judge that threw before it ended: not a settlement, so the
+ *  watchdog asks again for that success on its next pass. */
+export const REARM_ATTEMPT_FAILED = 'recovery: re-arm attempt failed';
 
 const RETRYABLE_REVIEW_FAILURES = [
   FOLLOW_UP_RETRY,

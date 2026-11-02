@@ -27,6 +27,7 @@ import {
   CODEX_AUTOMERGE_REARM_FAILED,
   REARM_CONSUMED_OUTCOME,
   REARM_REQUEST_SUPERSEDED,
+  REARM_ATTEMPT_FAILED,
   CODEX_SECURITY_FINDINGS_DETAIL,
 } from './review-policy.mjs';
 export {
@@ -3039,16 +3040,14 @@ async function eventContext() {
 
 /**
  * A pending recovery request that names no terminal status recovery can resume. G3 — one that names this head's
- * newest tokened success (a re-arm: the watchdog's or a moved-head disarm's hint) is consumed, and the success is
- * re-judged by the ordinary recovery, which re-arms only after its own authorization. Any other is superseded; a
- * superseded one that named a success keeps that on the head (Stage 1 re-check G1), so the watchdog's once-per-head
- * re-arm bound (`gateRearmStatus`) still holds after it. Either way the caller continues without the request.
+ * newest tokened success (a re-arm: the watchdog's or a moved-head disarm's hint) is returned as 'rearm' with nothing
+ * written: the success is re-judged by the ordinary recovery, which re-arms only after its own authorization, and
+ * `withRearmSettlement` settles the request only once that re-judge has ended (#1289 round 1, Codex 4439713463). Any
+ * other is superseded; a superseded one that named a success keeps that on the head (Stage 1 re-check G1), so the
+ * watchdog's once-per-head re-arm bound (`gateRearmStatus`) still holds after it.
  */
 export async function settleUnmatchedRecoveryRequest(client, pullRequest, expectedHead, statuses, recoveryRequest) {
-  if (newestTokenedSuccess(statuses, recoveryRequest.terminalStatusId)) {
-    await settleRecoveryRequest(client, expectedHead, pullRequest, recoveryRequest, REARM_CONSUMED_OUTCOME);
-    return 'consumed';
-  }
+  if (newestTokenedSuccess(statuses, recoveryRequest.terminalStatusId)) return 'rearm';
   const namedSuccess = statuses.some((status) => status.context === STATUS_CONTEXT
     && String(status.id) === String(recoveryRequest.terminalStatusId) && status.state === 'success');
   await client.setStatus(
@@ -3059,6 +3058,30 @@ export async function settleUnmatchedRecoveryRequest(client, pullRequest, expect
     recoveryRequest.status.context,
   );
   return 'superseded';
+}
+
+/**
+ * G3 (#1289 round 1, Codex 4439713463) — the re-arm request stays pending while its re-judge runs, so the watchdog
+ * holds its ask. When the re-judge ends without throwing (re-armed, merged, held for other gates, or a hold or finding
+ * published) the request is consumed, which spends the head's one re-arm (`REARM_SETTLEMENTS`). When it throws, the
+ * request is marked `REARM_ATTEMPT_FAILED`, which is no settlement, so the watchdog asks again for that success; a
+ * failed mark never replaces the original error. With no re-arm request this is the step alone.
+ */
+export async function withRearmSettlement(client, pullRequest, expectedHead, rearmRequest, step) {
+  if (!rearmRequest) return step();
+  let result;
+  try {
+    result = await step();
+  } catch (error) {
+    try {
+      await client.setStatus(expectedHead, 'failure', REARM_ATTEMPT_FAILED, pullRequest.html_url, rearmRequest.status.context);
+    } catch {
+      // the original error is the one that matters; a request left pending holds the watchdog (residual, 2A3)
+    }
+    throw error;
+  }
+  await settleRecoveryRequest(client, expectedHead, pullRequest, rearmRequest, REARM_CONSUMED_OUTCOME);
+  return result;
 }
 
 export async function run() {
@@ -3179,8 +3202,10 @@ export async function run() {
     existingStatuses,
     recoveryRequest,
   );
+  let rearmRequest = null;
   if (recoveryRequest && !requestedTerminalStatus) {
     const settledRequest = await settleUnmatchedRecoveryRequest(client, pullRequest, expectedHead, existingStatuses, recoveryRequest);
+    if (settledRequest === 'rearm') rearmRequest = recoveryRequest;
     recoveryRequest = null;
     if (settledRequest === 'superseded' && !terminalStatus) {
       throw new Error(
@@ -3189,29 +3214,28 @@ export async function run() {
     }
   }
 
-  const existingFinding = await guardAgainstCurrentHeadFinding(
-    client,
-    pullRequest,
-    expectedHead,
-    recoveryRequest,
-  );
-  if (existingFinding) throw new Error(existingFinding);
-
-  if (!requestedTerminalStatus && terminalStatus) {
-    if (
-      await ensureTerminalReviewState(
+  const recovered = await withRearmSettlement(client, pullRequest, expectedHead, rearmRequest, async () => {
+    const existingFinding = await guardAgainstCurrentHeadFinding(
+      client,
+      pullRequest,
+      expectedHead,
+      recoveryRequest,
+    );
+    if (existingFinding) throw new Error(existingFinding);
+    return Boolean(!requestedTerminalStatus && terminalStatus
+      && await ensureTerminalReviewState(
         client,
         pullRequest,
         expectedHead,
         terminalStatus,
         existingStatuses,
-      )
-    ) {
-      console.log(
-        'Exact head already has a recoverable terminal Codex state; no review will be requested.',
-      );
-      return;
-    }
+      ));
+  });
+  if (recovered) {
+    console.log(
+      'Exact head already has a recoverable terminal Codex state; no review will be requested.',
+    );
+    return;
   }
 
   await client.setStatus(

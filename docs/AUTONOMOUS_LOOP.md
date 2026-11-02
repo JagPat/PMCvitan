@@ -76,8 +76,9 @@ head's newest status, carries an approval token and is named exactly: that one
 asks the owner to re-judge a green whose auto-merge was lost (the gate disarms a
 queued auto-merge before every success and re-arms it only after the merge's own
 authorization; the watchdog dispatches such a ready, unarmed green once per head:
-after one re-judge, consumed or superseded, a head still unarmed waits for a real
-change such as CI completing, a push or a review event). The owner re-reads the
+after one re-judge that ended, consumed or superseded, a head still unarmed waits
+for a real change such as CI completing, a push or a review event; a re-judge that
+threw marks its request failed and is asked again). The owner re-reads the
 head and Codex's record itself and re-arms only through that authorization.
 The dispatch job only writes a durable `codex-recovery-request/<terminal-id>`
 marker; it never

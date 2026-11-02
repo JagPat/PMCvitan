@@ -225,19 +225,24 @@ test('G3 — structural: both writers take the one disarm-then-success step; onl
   for (const detail of [CODEX_AUTOMERGE_DISARM_FAILED, CODEX_AUTOMERGE_REARM_FAILED]) {
     assert.equal(isRetryableReviewFailureDescription(`review: ${detail}`), true, detail);
   }
-  const settle = gate.slice(gate.indexOf('export async function settleUnmatchedRecoveryRequest('), gate.indexOf('export async function run()'));
-  const consume = settle.indexOf('REARM_CONSUMED_OUTCOME');
-  assert.ok(consume > 0 && consume < settle.indexOf("'recovery: request superseded by newer review state'"));
+  // #1289 round 1 (Codex 4439713463) — the hint is not settled up front; the re-judge (the finding guard and the
+  // terminal recovery) runs inside the one step that settles it only once it has ended
+  const settle = gate.slice(gate.indexOf('export async function settleUnmatchedRecoveryRequest('), gate.indexOf('export async function withRearmSettlement('));
+  assert.match(settle, /if \(newestTokenedSuccess\(statuses, recoveryRequest\.terminalStatusId\)\) return 'rearm';/u);
+  assert.doesNotMatch(settle, /REARM_CONSUMED_OUTCOME/u);
   const runBody = gate.slice(gate.indexOf('export async function run()'));
-  assert.ok(runBody.indexOf('await settleUnmatchedRecoveryRequest(') > 0
-    && runBody.indexOf('await settleUnmatchedRecoveryRequest(') < runBody.indexOf('await guardAgainstCurrentHeadFinding('));
+  const wrap = runBody.indexOf('await withRearmSettlement(client, pullRequest, expectedHead, rearmRequest, async () => {');
+  assert.ok(runBody.indexOf('await settleUnmatchedRecoveryRequest(') > 0 && wrap > runBody.indexOf('await settleUnmatchedRecoveryRequest('));
+  const inside = runBody.slice(wrap, runBody.indexOf('\n  });\n', wrap));
+  assert.ok(inside.includes('await guardAgainstCurrentHeadFinding(') && inside.includes('await ensureTerminalReviewState('),
+    'the guard and the terminal recovery both run inside the settling step');
 });
 
 // Stage 1 re-check G2 (mutant M13) — the orchestrate run tells a re-arm request from a stale one: the request naming
 // this head's newest tokened success is CONSUMED (a success settlement, then the success's own recovery), never
 // marked superseded; a request naming an older success is superseded under the re-arm name, so the watchdog's
 // once-per-head bound holds; any other is superseded as before.
-test('G3 — an unmatched recovery request: the re-arm hint is consumed, a stale one superseded', async () => {
+test('G3 — an unmatched recovery request: the re-arm hint is kept for its re-judge, a stale one superseded', async () => {
   const { settleUnmatchedRecoveryRequest } = await import('./autonomous-review-gate.mjs');
   const { REARM_REQUEST_SUPERSEDED, REARM_SETTLEMENTS } = await import('./review-policy.mjs');
   const head = 'c'.repeat(40);
@@ -251,13 +256,57 @@ test('G3 — an unmatched recovery request: the re-arm hint is consumed, a stale
     return { outcome, writes };
   };
   const hint = await settle([success(6100)], request(6100));
-  assert.equal(hint.outcome, 'consumed');
-  assert.deepEqual(hint.writes, [{ state: 'success', description: 'recovery: consumed by recovered success re-authorization', context: 'codex-recovery-request/6100' }]);
-  assert.ok(REARM_SETTLEMENTS.includes(hint.writes[0].description));
+  assert.equal(hint.outcome, 'rearm');
+  assert.deepEqual(hint.writes, [], 'nothing is settled before the re-judge runs (#1289 round 1)');
   const stale = await settle([success(6300), success(6100)], request(6100));
   assert.equal(stale.outcome, 'superseded');
   assert.deepEqual(stale.writes, [{ state: 'failure', description: REARM_REQUEST_SUPERSEDED, context: 'codex-recovery-request/6100' }]);
   const failure = { id: 6050, context: 'codex-current-head', state: 'failure', description: 'review: Codex review timed out after two attempts' };
   const other = await settle([success(6300), failure], request(6050));
   assert.deepEqual(other.writes.map((w) => w.description), ['recovery: request superseded by newer review state']);
+});
+
+// #1289 round 1 (Codex 4439713463) — the re-arm request is settled only once its re-judge has ended. A re-judge that
+// ends is consumed (the head's one re-arm is spent); one that throws marks the request failed, which is no
+// settlement, so the watchdog asks again for that success; a failed mark never replaces the original error.
+test('G3 — withRearmSettlement: consumed after the re-judge ends, re-askable when it throws', async () => {
+  const { withRearmSettlement } = await import('./autonomous-review-gate.mjs');
+  const { gateRearmStatus } = await import('./correction-lease.mjs');
+  const { REARM_ATTEMPT_FAILED, REARM_SETTLEMENTS } = await import('./review-policy.mjs');
+  const head = 'c'.repeat(40);
+  const pull = { number: 7, html_url: 'u' };
+  const request = { terminalStatusId: '6100', status: { context: 'codex-recovery-request/6100' } };
+  const make = (failWrite = false) => {
+    const writes = [];
+    return { writes, client: { async setStatus(sha, state, description, url, context) {
+      if (failWrite) throw new Error('status write 502');
+      writes.push({ state, description, context }); return { id: 1 };
+    } } };
+  };
+  // ends: the step runs first, then the consumption
+  const ok = make();
+  const order = [];
+  assert.equal(await withRearmSettlement(ok.client, pull, head, request, async () => { order.push(ok.writes.length); return true; }), true);
+  assert.deepEqual(order, [0], 'nothing written before the step');
+  assert.deepEqual(ok.writes, [{ state: 'success', description: 'recovery: consumed by recovered success re-authorization', context: 'codex-recovery-request/6100' }]);
+  assert.ok(REARM_SETTLEMENTS.includes(ok.writes[0].description));
+  // throws: the request is marked failed, the original error surfaces, and nothing consumes it
+  const bad = make();
+  await assert.rejects(withRearmSettlement(bad.client, pull, head, request, async () => { throw new Error('record read 502'); }), /record read 502/u);
+  assert.deepEqual(bad.writes, [{ state: 'failure', description: REARM_ATTEMPT_FAILED, context: 'codex-recovery-request/6100' }]);
+  assert.equal(REARM_SETTLEMENTS.includes(REARM_ATTEMPT_FAILED), false);
+  // a failed mark keeps the original error
+  const down = make(true);
+  await assert.rejects(withRearmSettlement(down.client, pull, head, request, async () => { throw new Error('record read 502'); }), /record read 502/u);
+  // no re-arm request: the step alone, nothing written
+  const none = make();
+  assert.equal(await withRearmSettlement(none.client, pull, head, null, async () => 'x'), 'x');
+  assert.deepEqual(none.writes, []);
+  // the watchdog: a failed attempt is asked again; pending or consumed holds it
+  const pr = { state: 'open', draft: false, auto_merge: null };
+  const green = { id: 6100, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head [wi:none]' };
+  const req = (state, description) => ({ id: 9, context: 'codex-recovery-request/6100', state, description });
+  assert.equal(gateRearmStatus({ statuses: [green, req('failure', REARM_ATTEMPT_FAILED)] }, pr)?.id, 6100);
+  assert.equal(gateRearmStatus({ statuses: [green, req('pending', 'recovery: requested terminal status 6100')] }, pr), null);
+  assert.equal(gateRearmStatus({ statuses: [green, req('success', 'recovery: consumed by recovered success re-authorization')] }, pr), null);
 });
