@@ -3317,6 +3317,10 @@ model Inspection {
   // read; the composite FK keeps it a membership of THIS project (soft-removed, never deleted). Nullable, no backfill.
   responsibleMember   Membership?   @relation("InspectionResponsible", fields: [projectId, responsibleMemberId], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
   responsibleMemberId String?
+  // The member's count of standing-changing membership transitions when they were named (orgs' answer, under the
+  // readiness key). The name is served only while the count is unchanged: a member who left and came back is not named
+  // again until someone names them. Set and cleared with the id (a CHECK in 20280206000000 keeps the pair whole).
+  responsibleStandingMark Int?
   dueDate          DateTime?        @db.Date // real civil due date (decide-day + N days, PMC-overridable)
   // attribution (Phase 1 global rule): who submitted / decided
   submittedById    String?

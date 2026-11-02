@@ -7,7 +7,8 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 /**
  * #482 proof photos, "Who fixes this?": `20280206000000_inspection_responsible_member` adds the nullable
  * "Inspection"."responsibleMemberId", with a composite foreign key to "Membership"("projectId", "userId") and an index
- * for a member's open items. This proves that an inspection written as the previous release writes it (never naming the
+ * for a member's open items, and the nullable "responsibleStandingMark" beside it, kept whole with the id by a CHECK.
+ * This proves that an inspection written as the previous release writes it (never naming the
  * column) still goes in and reads NULL, that the key takes a member of the inspection's own project and refuses anyone
  * else (another project's member, or nobody's), that a soft-removed membership is never blocked by it, and that the file
  * re-runs.
@@ -43,14 +44,27 @@ describe('#482: the inspection\'s responsible member column (live PG)', () => {
     made.push(id);
     return t.prisma.inspection.create({
       data: { id, projectId: f.projectA.id, kind: 'review', title: 'Slab check', zone: 'Zone A', date: '2 Nov' },
-      select: { id: true, responsibleMemberId: true },
+      select: { id: true, responsibleMemberId: true, responsibleStandingMark: true },
     });
   };
-  const setResponsible = (id: string, value: string | null) =>
-    t.prisma.$executeRawUnsafe(`UPDATE "Inspection" SET "responsibleMemberId" = $1 WHERE "id" = $2`, value, id);
+  /** names a member with a mark, or clears both, as the API writes them: always together */
+  const setResponsible = (id: string, value: string | null, mark: number | null = value === null ? null : 0) =>
+    t.prisma.$executeRawUnsafe(`UPDATE "Inspection" SET "responsibleMemberId" = $1, "responsibleStandingMark" = $2 WHERE "id" = $3`, value, mark, id);
 
-  it('an inspection written without it goes in and reads NULL', async () => {
-    expect((await plainInspection()).responsibleMemberId).toBeNull();
+  it('an inspection written without them goes in and reads NULL for both', async () => {
+    const row = await plainInspection();
+    expect(row.responsibleMemberId).toBeNull();
+    expect(row.responsibleStandingMark).toBeNull();
+  });
+
+  it('the pair CHECK refuses a name without a mark, a mark without a name, and a negative mark', async () => {
+    const { id } = await plainInspection();
+    await expect(setResponsible(id, contractor, null)).rejects.toThrow(/Inspection_responsible_mark_pair_check/);
+    await expect(setResponsible(id, null, 3)).rejects.toThrow(/Inspection_responsible_mark_pair_check/);
+    await expect(setResponsible(id, contractor, -1)).rejects.toThrow(/Inspection_responsible_mark_pair_check/);
+    expect(await setResponsible(id, contractor, 4)).toBe(1);
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id }, select: { responsibleStandingMark: true } })).responsibleStandingMark).toBe(4);
+    expect(await setResponsible(id, null)).toBe(1);
   });
 
   it('names a member of the inspection\'s own project, and back to nobody', async () => {
@@ -82,11 +96,14 @@ describe('#482: the inspection\'s responsible member column (live PG)', () => {
     `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = '"Inspection"'::regclass AND conname = 'Inspection_projectId_responsibleMemberId_fkey'`))[0]?.def;
   const indexDef = async () => (await t.prisma.$queryRawUnsafe<Array<{ def: string }>>(
     `SELECT pg_get_indexdef('"Inspection_projectId_responsibleMemberId_idx"'::regclass) AS def`))[0]?.def;
+  const checkDef = async () => (await t.prisma.$queryRawUnsafe<Array<{ def: string }>>(
+    `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = '"Inspection"'::regclass AND conname = 'Inspection_responsible_mark_pair_check'`))[0]?.def;
   const runFile = () => {
     const url = (process.env.DATABASE_URL ?? '').split('?')[0]!;
     execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url, '-f', MIGRATION], { stdio: 'pipe' });
   };
   const KEY = 'FOREIGN KEY ("projectId", "responsibleMemberId") REFERENCES "Membership"("projectId", "userId")';
+  const CHECK = 'CHECK (((("responsibleMemberId" IS NULL) AND ("responsibleStandingMark" IS NULL)) OR (("responsibleMemberId" IS NOT NULL) AND ("responsibleStandingMark" IS NOT NULL) AND ("responsibleStandingMark" >= 0))))';
   const INDEX = 'CREATE INDEX "Inspection_projectId_responsibleMemberId_idx" ON public."Inspection" USING btree ("projectId", "responsibleMemberId")';
 
   it('the key is exactly the two-column key with NO ACTION, and the index exactly the two-column btree', async () => {
@@ -95,6 +112,7 @@ describe('#482: the inspection\'s responsible member column (live PG)', () => {
       `SELECT confdeltype AS del, confupdtype AS upd FROM pg_constraint WHERE conname = 'Inspection_projectId_responsibleMemberId_fkey'`);
     expect(rule[0]).toEqual({ del: 'a', upd: 'a' }); // 'a' = NO ACTION
     expect((await indexDef())?.replace(/ public\./, ' ')).toBe(INDEX.replace(/ public\./, ' '));
+    expect(await checkDef()).toBe(CHECK);
   });
 
   it('a hard delete of a membership named as responsible is refused (23503); the row and the name stay', async () => {
@@ -116,6 +134,7 @@ describe('#482: the inspection\'s responsible member column (live PG)', () => {
     runFile();
     expect(await keyDef()).toBe(KEY);
     expect(await indexDef()).toBe(INDEX);
+    expect(await checkDef()).toBe(CHECK);
     expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id }, select: { responsibleMemberId: true } })).responsibleMemberId).toBe(contractor);
   });
 
@@ -134,5 +153,14 @@ describe('#482: the inspection\'s responsible member column (live PG)', () => {
     await t.prisma.$executeRawUnsafe(`DROP INDEX "Inspection_projectId_responsibleMemberId_idx"`);
     runFile();
     expect(await indexDef()).toBe(INDEX);
+
+    // a looser check under the same name (no lower bound on the mark) is refused too
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "Inspection" DROP CONSTRAINT "Inspection_responsible_mark_pair_check"`);
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "Inspection" ADD CONSTRAINT "Inspection_responsible_mark_pair_check"
+      CHECK (("responsibleMemberId" IS NULL) = ("responsibleStandingMark" IS NULL))`);
+    expect(runFile).toThrow(/already stands as something else/);
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "Inspection" DROP CONSTRAINT "Inspection_responsible_mark_pair_check"`);
+    runFile();
+    expect(await checkDef()).toBe(CHECK);
   });
 });
