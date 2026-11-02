@@ -2489,12 +2489,14 @@ test('one polled Codex invocation owns terminal success and merge completion', a
   const finalEvidence = clearBranch.lastIndexOf(
     'reclassifyCurrentCodexEvidence',
   );
-  const publishedSuccess = clearBranch.lastIndexOf('publishDisarmedSuccess('); // G3a — the shared disarm-then-success step
-  const mergeCompletion = clearBranch.lastIndexOf(
-    'completeReviewedPullRequest',
-  );
+  // G3a — the success and the merge are one step, `completeCleanReview`: the disarmed success, then the completion
+  const cleanEnding = clearBranch.lastIndexOf('completeCleanReview(');
+  const helper = gate.slice(gate.indexOf('export async function completeCleanReview('), gate.indexOf('const AUTOMERGE_RETRY_NEXT = {'));
+  const publishedSuccess = helper.indexOf('publishDisarmedSuccess(');
+  const mergeCompletion = helper.indexOf('completeReviewedPullRequest(');
   assert.ok(finalEvidence >= 0);
-  assert.ok(publishedSuccess > finalEvidence);
+  assert.ok(cleanEnding > finalEvidence);
+  assert.ok(publishedSuccess >= 0);
   assert.ok(mergeCompletion > publishedSuccess);
   assert.doesNotMatch(clearBranch, /TERMINAL_SETTLE_MS/);
   assert.doesNotMatch(clearBranch, /admitAutoMerge/);
@@ -2517,11 +2519,10 @@ test('the clean verdict is published while the PR is still open', async () => {
   // status and BEFORE merge completion — it is the success path's only
   // guaranteed-delivery wake event for watching sessions.
   const publishedClean = clearBranch.indexOf("state: 'review_clean'");
-  const publishedSuccess = clearBranch.lastIndexOf('publishDisarmedSuccess('); // G3a — the shared disarm-then-success step
-  const mergeCompletion = clearBranch.lastIndexOf('completeReviewedPullRequest');
+  // G3a — the success and the merge completion are the one `completeCleanReview` step
+  const publishedSuccess = clearBranch.lastIndexOf('completeCleanReview(');
   assert.ok(publishedClean >= 0);
   assert.ok(publishedSuccess > publishedClean);
-  assert.ok(mergeCompletion > publishedClean);
   // and the pre-merge update must precede the post-merge 'clear' update
   const clearUpdate = clearBranch.lastIndexOf("state: 'clear'");
   assert.ok(clearUpdate > publishedClean);

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   AutoMergeDisarmFailed,
+  completeCleanReview,
   completeReviewedPullRequest,
   disarmQueuedAutoMerge,
   publishDisarmedSuccess,
@@ -87,6 +88,11 @@ test('G3a (gap-check F1) — every failure inside the disarm is the retryable Au
     await assert.rejects(disarmQueuedAutoMerge(client, 900, HEAD), AutoMergeDisarmFailed, name);
   }
 });
+
+/** Line and block comments removed; a `//` inside a string (a URL) is kept. */
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/(^|[^:'"`\\])\/\/.*$/gmu, '$1');
+}
 
 const eligibleCommit = { commit: { message: 'fix: something\n\nCorrection-Owner: claude\n' } };
 const greenChecks = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
@@ -176,6 +182,23 @@ test('G3a — structural: both writers take the one disarm-then-success step; on
   const complete = gate.indexOf('export async function completeReviewedPullRequest(');
   assert.ok(arms[0] > gate.indexOf('authorizeExactHeadMerge(client', complete) && arms[0] > complete);
   assert.equal([...gate.matchAll(/client\.disableAutoMerge\(/gu)].length, 1, 'one disable, inside the shared helper');
+  // gap-check F2 on 764669d9 — the same, with comments stripped and any access form (`.x(` or `['x']`): no call left in a
+  // comment counts, and none is hidden behind a bracket
+  const code = stripComments(gate);
+  const tokens = (name) => [...code.matchAll(new RegExp(`\\b${name}\\b`, 'gu'))].map((m) => m.index);
+  const within = (index, name) => index > code.indexOf(`export async function ${name}(`)
+    && index < code.indexOf('\nexport ', code.indexOf(`export async function ${name}(`) + 1);
+  const clientClass = [code.indexOf('class GitHubClient'), code.indexOf('\n}\n', code.indexOf('class GitHubClient'))];
+  const inClient = (index) => index > clientClass[0] && index < clientClass[1];
+  for (const index of tokens('enableAutoMerge')) assert.ok(inClient(index) || within(index, 'completeReviewedPullRequest'), `enableAutoMerge at ${index}`);
+  for (const index of tokens('disableAutoMerge')) assert.ok(inClient(index) || within(index, 'disarmQueuedAutoMerge'), `disableAutoMerge at ${index}`);
+  const settled = tokens('publishSettledSuccess');
+  assert.ok(settled.every((index) => within(index, 'publishDisarmedSuccess') || index === code.indexOf('export function publishSettledSuccess(') + 'export function '.length), 'publishSettledSuccess only in the shared step');
+  const runBody = code.slice(code.indexOf('export async function run()'));
+  assert.equal([...runBody.matchAll(/await completeCleanReview\(/gu)].length, 1, 'the review path ends through the one clean step');
+  assert.doesNotMatch(runBody, /\b(enableAutoMerge|disableAutoMerge|publishSettledSuccess|publishDisarmedSuccess|completeReviewedPullRequest)\b/u);
+  const recovery = code.slice(code.indexOf('export async function ensureTerminalReviewState('));
+  assert.match(recovery.slice(0, recovery.indexOf('\nexport ', 1)), /await publishDisarmedSuccess\(/u);
   // #1290 fold — the auto-merge holds are the shared retryable hold (failure, draft, settle, `review_retry`, no notice),
   // and both of their details are ones recovery re-judges
   const rearm = gate.slice(gate.indexOf('export async function completeReviewedPullRequest('), gate.indexOf('export class AutoMergeDisarmFailed'));
@@ -200,4 +223,54 @@ test('G3a — a recovered success on a drafted pull request writes nothing and a
   const green = success(6100);
   assert.equal(await ensureTerminalReviewState(client, pr(), HEAD, green, [green]), false);
   assert.deepEqual(calls, ['pullRequest'], 'one live read, then nothing written, disabled or armed');
+});
+
+// gap-check F2 on 764669d9 — the ordinary review's clean ending, behaviourally: over a PR armed from an earlier green, the
+// queued merge is disabled before the one success, the merge authorization reads Codex's record after it, and only
+// then is this exact head armed again; when the record shows a security finding by then, nothing is armed.
+test('G3a (gap-check F2) — the review path\'s clean ending disarms first and arms only after the merge authorization', async () => {
+  const scenario = (records) => {
+    let armedNow = true;
+    let successWritten = false;
+    const client = gateClient({ live: () => (armedNow ? armed() : pr()), disable: async () => { armedNow = false; } });
+    const setStatus = client.setStatus;
+    client.setStatus = async (sha, state, description, ...rest) => {
+      if (state === 'success' && !/^recovery:/u.test(description)) successWritten = true;
+      return setStatus(sha, state, description, ...rest);
+    };
+    client.issueComments = async () => { client.log.push(['record']); return successWritten ? records : []; };
+    return client;
+  };
+  const clean = scenario([]);
+  const ended = await completeCleanReview(clean, armed(), HEAD, 'review: Codex found no blocking issue on this exact head', verdict);
+  assert.equal(ended.completion, 'queued');
+  const kinds = clean.log.map(([k, , state]) => (k === 'status' ? `status:${state}` : k));
+  const disable = kinds.indexOf('disable');
+  const green = kinds.indexOf('status:success');
+  const arm = kinds.indexOf('arm');
+  assert.ok(disable >= 0 && disable < green, kinds.join(','));
+  assert.ok(arm > green && kinds.slice(green, arm).includes('record'), kinds.join(','));
+  assert.deepEqual(clean.log.filter(([k]) => k === 'arm'), [['arm', 900, HEAD]]);
+  // a security finding at the merge's last record read: nothing armed, and the green is replaced
+  const securityRecord = {
+    user: { login: 'chatgpt-codex-connector[bot]' }, created_at: '2026-11-02T00:00:00Z',
+    body: `<!-- codex-review-state:v1 ${JSON.stringify({
+      code_review: { commit_sha: HEAD, has_any_findings: false, has_unresolved_findings: false, status: 'completed' },
+      security_review: { commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: 'completed' },
+    })} -->`,
+  };
+  const refused = scenario([securityRecord]);
+  refused.createIssueComment = async () => ({ id: 1 });
+  refused.markReplacementRequired = async () => {};
+  refused.reviews = async () => [];
+  refused.reviewComments = async () => [];
+  const out = await completeCleanReview(refused, armed(), HEAD, 'review: Codex found no blocking issue on this exact head', verdict);
+  assert.equal(out.completion, 'review_refused');
+  assert.equal(refused.log.some(([k]) => k === 'arm'), false);
+  assert.ok(refused.log.findIndex(([k]) => k === 'disable') >= 0);
+  assert.equal(refused.log.filter(([k]) => k === 'status').at(-1)[2], 'failure');
+  // a head no longer current after the success: nothing more is written or armed
+  const moved = gateClient({ live: () => (moved?.log.some(([k, , state]) => k === 'status' && state === 'success') ? pr(NEXT) : pr()) });
+  assert.equal(await completeCleanReview(moved, pr(), HEAD, 'review: clean', verdict), null);
+  assert.equal(moved.log.some(([k]) => k === 'arm'), false);
 });

@@ -1607,6 +1607,22 @@ export async function publishDisarmedSuccess(client, pullRequest, expectedHead, 
   return live;
 }
 
+/**
+ * G3a (gap-check F2 on 764669d9) — the ordinary review's clean ending, as one step: a queued native auto-merge is
+ * disarmed before the success it would act on (`publishDisarmedSuccess`), the recovery request is settled, and only
+ * the merge's own authorization re-arms it (`completeReviewedPullRequest`). Returns the live pull request and the
+ * completion, or null when this head is no longer current.
+ */
+export async function completeCleanReview(client, pullRequest, expectedHead, description, verdict, { recoveryRequest = null, attempt = 0 } = {}) {
+  let live = await publishDisarmedSuccess(client, pullRequest, expectedHead, description, { recoveryRequest, attempt });
+  if (!live) return null;
+  await settleRecoveryRequest(client, expectedHead, live, recoveryRequest, 'clean review');
+  live = await refreshCurrentHead(client, live.number, expectedHead);
+  if (!live) return null;
+  const completion = await completeReviewedPullRequest(client, live, expectedHead, verdict, { recoveryRequest, attempt });
+  return { pullRequest: live, completion };
+}
+
 const AUTOMERGE_RETRY_NEXT = {
   [CODEX_AUTOMERGE_DISARM_FAILED]: 'A queued auto-merge could not be disarmed before success; the gate re-judges this exact head.',
   [CODEX_AUTOMERGE_REARM_FAILED]: 'Auto-merge could not be re-armed after authorization; the gate re-judges this exact head.',
@@ -3415,38 +3431,20 @@ export async function run() {
       // One run polls one Codex invocation to its mutually exclusive terminal
       // result: finding-bearing evidence or the clean reaction. Review webhooks
       // never enter this orchestrator, so no second writer can race admission.
-      // G3a — a queued native auto-merge is disarmed before the success it would act on (the shared step); only the
-      // merge's own authorization re-arms it (`completeReviewedPullRequest`)
-      pullRequest = await publishDisarmedSuccess(
+      // G3a — the success, the settlement and the merge, in that order (`completeCleanReview`)
+      const cleaned = await completeCleanReview(
         client,
         pullRequest,
         expectedHead,
         settled.followUp === null
           ? 'review: Codex found no blocking issue on this exact head'
           : cappedSuccessDetail(settled),
-        { recoveryRequest, attempt },
-      );
-      if (!pullRequest) return;
-      await settleRecoveryRequest(
-        client,
-        expectedHead,
-        pullRequest,
-        recoveryRequest,
-        'clean review',
-      );
-      pullRequest = await refreshCurrentHead(
-        client,
-        pullRequest.number,
-        expectedHead,
-      );
-      if (!pullRequest) return;
-      const completion = await completeReviewedPullRequest(
-        client,
-        pullRequest,
-        expectedHead,
         finalPolicy.verdict,
         { recoveryRequest, attempt },
       );
+      if (!cleaned) return;
+      pullRequest = cleaned.pullRequest;
+      const { completion } = cleaned;
       // G2 (#1280 round 1, gap-check) — the merge's last record read refused it and replaced the green: no `clear`
       if (completion === 'review_refused') return;
       await client.updateStickyComment(

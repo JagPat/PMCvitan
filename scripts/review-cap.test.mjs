@@ -1263,9 +1263,12 @@ test('G2 gap 1 — a merge the review-state record refuses never leaves the head
   // and the review path writes no `clear` sticky over a refusal
   const { readFile } = await import('node:fs/promises');
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
-  const completion = gate.indexOf('const completion = await completeReviewedPullRequest(');
+  // G3a — the review path's completion is in `completeCleanReview`, which hands the refusal its request and attempt
+  const helper = gate.slice(gate.indexOf('export async function completeCleanReview('), gate.indexOf('const AUTOMERGE_RETRY_NEXT = {'));
+  assert.match(helper, /completeReviewedPullRequest\(client, live, expectedHead, verdict, \{ recoveryRequest, attempt \}\)/u);
+  const completion = gate.indexOf('const cleaned = await completeCleanReview(');
   // the review path hands its recovery request and attempt to the refusal (the finding's settle and sticky)
-  assert.match(gate.slice(completion, completion + 300), /finalPolicy\.verdict,\s*\{ recoveryRequest, attempt \},\s*\);/u);
+  assert.match(gate.slice(completion, completion + 400), /finalPolicy\.verdict,\s*\{ recoveryRequest, attempt \},\s*\);/u);
   assert.ok(completion > 0 && gate.indexOf("if (completion === 'review_refused') return;", completion) > completion
     && gate.indexOf("if (completion === 'review_refused') return;", completion) < gate.indexOf("state: 'clear'", completion));
 });
