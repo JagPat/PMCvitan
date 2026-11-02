@@ -618,6 +618,9 @@ if echo "$out" | grep -q "P3005"; then
   #
   # The file digest (#904, 20280202000000) is here because of its CHECK and trigger, which a db-push baseline does not have.
   # IF NOT EXISTS and a guarded constraint, re-runnable.
+  #
+  # The upload source (#1283, 20280204000000) is here because of its trigger, which a db-push baseline does not have.
+  # IF NOT EXISTS, re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -673,7 +676,8 @@ if echo "$out" | grep -q "P3005"; then
 20280130000000_voice_transcript_running_since
 20280131000000_voice_transcript_busy_index
 20280201000000_command_key_sighting
-20280202000000_media_content_sha256"
+20280202000000_media_content_sha256
+20280204000000_media_upload_source"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
