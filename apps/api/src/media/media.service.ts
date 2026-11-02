@@ -237,18 +237,22 @@ export class MediaService {
     return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString(), nodeId: seen.nodeId };
   }
 
-  /** Whether a stored copy names the photo this request names (Codex round 3 on #1255). The one compared field the
-   *  database writes after the upload: the link is cleared (`ON DELETE SET NULL ("sourceMediaId")`) when the original
-   *  is deleted. A copy's original is always a file on the copy's visit, and such a file leaves only with that visit's
-   *  removal line. So a stored file that names none matches a copy's request only when the photo it names was taken
-   *  off the request's visit and is gone from the project; otherwise (a photo still there, an id that never existed,
-   *  another project's photo) the stored file was never its copy. */
+  /** Whether a stored copy names the photo this request names (Codex round 3 on #1255). A file stored with an upload
+   *  source (#1283, `"Media"."uploadSourceMediaId"`: written with the copy, fixed at its insert and never cleared) matches
+   *  exactly that source, so a copy's key resent as a plain file, or as a copy of another photo, is refused whether or
+   *  not its original is still there. A file stored without one is a plain file, or a copy stored before the upload
+   *  source was written ({@link UPLOAD_SOURCE_SINCE}). Its link is the one compared field the database writes after the
+   *  upload: it is cleared (`ON DELETE SET NULL ("sourceMediaId")`) when the original is deleted. So such a file names
+   *  none and matches a copy's request only when it was stored before {@link UPLOAD_SOURCE_SINCE}, within
+   *  {@link LEGACY_REPLAY_MS}, and the photo the request names was taken off the request's visit and is gone from the
+   *  project (a copy's original is always a file on the copy's visit, and leaves only with that visit's removal line). */
   private async sameSource(projectId: string, row: ReplayRow, input: CreateMediaInput): Promise<boolean> {
     const sent = input.sourceMediaId ?? null;
+    // #1283 — the source the file was uploaded as, fixed at its insert and never cleared, decides alone: a copy matches
+    // only a request naming its original, and a plain request never, whether or not its original is still there
+    if (row.uploadSourceMediaId != null) return row.uploadSourceMediaId === sent;
     if (row.sourceMediaId === sent) return true;
     if (row.sourceMediaId !== null || sent === null || input.siteVisit === undefined) return false;
-    // #1283 — the source the copy was uploaded as, fixed at its insert and never cleared: a cleared link matches only it
-    if (row.uploadSourceMediaId !== null) return row.uploadSourceMediaId === sent;
     // a row stored since the source is written names none, so it was never a copy (#1262 discussion_r4438869095)
     if (row.createdAt.getTime() >= UPLOAD_SOURCE_SINCE.getTime() || Date.now() - row.createdAt.getTime() > LEGACY_REPLAY_MS) return false;
     if (!(await this.siteVisitFiles.wasRemovedFrom(this.prisma, projectId, input.siteVisit.visitId, sent))) return false;

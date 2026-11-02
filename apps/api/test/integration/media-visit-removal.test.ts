@@ -338,7 +338,8 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
       const plain = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId }, clientKey: plainKey });
       expect(plain.status, plain.text).toBe(201);
       expect((await removeIt(original.body.id)).status).toBe(200);
-      await storedAt(plain.body.id, UPLOAD_SOURCE_SINCE);
+      // stored at or after the cutoff on any day this runs (gap-check: so a dropped cutoff stays caught after 13 Nov)
+      await storedAt(plain.body.id, new Date(Math.max(Date.now(), UPLOAD_SOURCE_SINCE.getTime())));
       const asCopy = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, sourceMediaId: original.body.id, siteVisit: { visitId }, clientKey: plainKey });
       expect([asCopy.status, asCopy.body.id]).toEqual([403, undefined]);
       expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: plainKey } })).toBe(1);
@@ -366,6 +367,42 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
       }
     });
 
+    it('a copy\'s key resent as a plain file is refused, before and after its original\'s removal (gap-check)', async () => {
+      const original = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
+      expect(original.status, original.text).toBe(201);
+      const clientKey = `svr-1283p-${run}-${randomUUID()}`;
+      const copy = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, sourceMediaId: original.body.id, siteVisit: { visitId }, clientKey });
+      expect(copy.status, copy.text).toBe(201);
+      const plain = { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId }, clientKey };
+      expect((await upload(pmcToken, plain)).status).toBe(403);
+      expect((await removeIt(original.body.id)).status).toBe(200);
+      expect((await upload(pmcToken, plain)).status).toBe(403);
+      expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey } })).toBe(1);
+    });
+
+    it('a stored source decides alone: a copy stored before the cutoff, within seven days, is not another removed photo\'s copy (gap-check)', async () => {
+      const original = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
+      const other = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
+      expect([original.status, other.status]).toEqual([201, 201]);
+      const clientKey = `svr-1283q-${run}-${randomUUID()}`;
+      const body = { kind: 'visit', mime: 'image/png', data: px, sourceMediaId: original.body.id, siteVisit: { visitId }, clientKey };
+      const copy = await upload(pmcToken, body);
+      expect(copy.status, copy.text).toBe(201);
+      expect((await removeIt(original.body.id)).status).toBe(200);
+      expect((await removeIt(other.body.id)).status).toBe(200);
+      const now = UPLOAD_SOURCE_SINCE.getTime() - 60 * 60_000;
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+      try {
+        const token = t.issueProjectToken(f.memberUser.id, f.projectA.id);
+        await storedAt(copy.body.id, new Date(now - 60_000));
+        expect((await upload(token, { ...body, sourceMediaId: other.body.id })).status).toBe(403);
+        const again = await upload(token, body);
+        expect([again.status, again.body.id]).toEqual([201, copy.body.id]);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
     it('a file stored before the source was written is judged as before, and only for seven days (#1262 residual)', async () => {
       const original = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
       expect(original.status, original.text).toBe(201);
@@ -382,12 +419,19 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
       } finally {
         await t.prisma.$executeRawUnsafe('ALTER TABLE "Media" ENABLE TRIGGER "Media_upload_source_fixed"');
       }
-      const before = new Date(Math.min(Date.now(), UPLOAD_SOURCE_SINCE.getTime()) - 60_000);
-      await storedAt(copy.body.id, before);
-      const again = await upload(pmcToken, body);
-      expect([again.status, again.body.id]).toEqual([201, copy.body.id]);
-      await storedAt(copy.body.id, new Date(Date.now() - LEGACY_REPLAY_MS - 60_000));
-      expect((await upload(pmcToken, body)).status).toBe(403);
+      // the replay is read as of an hour before the cutoff, so the case holds whatever the day it runs (gap-check)
+      const now = UPLOAD_SOURCE_SINCE.getTime() - 60 * 60_000;
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+      try {
+        const token = t.issueProjectToken(f.memberUser.id, f.projectA.id); // minted on the same clock
+        await storedAt(copy.body.id, new Date(now - 60_000));
+        const again = await upload(token, body);
+        expect([again.status, again.body.id]).toEqual([201, copy.body.id]);
+        await storedAt(copy.body.id, new Date(now - LEGACY_REPLAY_MS - 60_000));
+        expect((await upload(token, body)).status).toBe(403);
+      } finally {
+        clock.mockRestore();
+      }
     });
   });
 
