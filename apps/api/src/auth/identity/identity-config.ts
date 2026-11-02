@@ -12,7 +12,8 @@
  *   and port), for tests. The issuer's NAME stays the `https://` one above. In production setting it at all makes
  *   sign-in unavailable: requests always go to the issuer itself.
  * - `IDENTITY_CLIENT_ID`: PMC's own OIDC client at the issuer (public, PKCE). Never Hub's.
- * - `IDENTITY_REDIRECT_URI`: the redirect URI registered for that client, an `https://` URL on PMC's own host. The
+ * - `IDENTITY_REDIRECT_URI`: the redirect URI registered for PMC's client, any `https://` URL with no user info or
+ *   fragment (PMC does not pin the host here; the issuer refuses a redirect its client does not have registered). The
  *   browser is never sent there; the API reads the code from the issuer's answer itself.
  * - `IDENTITY_SERVICE_TOKEN`: PMC's own service account token at the issuer (a machine user with IAM_LOGIN_CLIENT).
  *   Never Hub's. It is sent as a header, so it must be one run of visible ASCII.

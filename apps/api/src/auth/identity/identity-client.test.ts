@@ -116,12 +116,31 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(sent).toEqual(['Typed-pass-1', 'other-typed']);
   });
 
-  it('a slow issuer is down within the limit, not an open wait', async () => {
+  it('an issuer that never answers is down: PMC’s own abort ends the wait', async () => {
     fake.addPerson('c@example.in', 'Right-pass-123');
-    fake.delayMs = 2000;
-    const started = Date.now();
+    fake.hold = true;
     expect(await client.login('c@example.in', 'Right-pass-123')).toEqual({ ok: false, failure: 'down' });
-    expect(Date.now() - started).toBeLessThan(1500);
+    expect(await client.find('c@example.in')).toEqual({ found: 'down' });
+    expect(await client.create({ email: 'c2@example.in', password: 'New-pass-123', verified: true })).toEqual({ ok: false, taken: false, failure: 'down' });
+  });
+
+  it('a locked person (412) is rejected, not an outage, and no token is asked for', async () => {
+    fake.addPerson('l@example.in', 'Right-pass-123').locked = true;
+    expect(await client.login('l@example.in', 'Right-pass-123')).toEqual({ ok: false, failure: 'rejected' });
+    expect(fake.requests.some((q) => q.path === '/oauth/v2/token')).toBe(false);
+  });
+
+  it('an answer over 1 MB is down, never read in full', async () => {
+    fake.addPerson('m@example.in', 'Right-pass-123');
+    fake.oversize = '/v2/users';
+    expect(await client.find('m@example.in')).toEqual({ found: 'down' });
+    fake.oversize = '/v2/sessions';
+    expect(await client.login('m@example.in', 'Right-pass-123')).toEqual({ ok: false, failure: 'down' });
+  });
+
+  it('a create answered 2xx with no user id is down (the issuer’s fault)', async () => {
+    fake.createAnswersNoId = true;
+    expect(await client.create({ email: 'n@example.in', password: 'New-pass-123', verified: true })).toEqual({ ok: false, taken: false, failure: 'down' });
   });
 
   it('the default limit is 4 seconds', async () => {
@@ -147,6 +166,13 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     fake.force = {};
     const badToken = new IdentityClient({ issuer: fake.issuer, endpoint: fake.url, clientId: fake.clientId, redirectUri, serviceToken: 'not-pmc' }, { timeoutMs: 500 });
     expect(await badToken.login('e@example.in', 'Right-pass-123')).toEqual({ ok: false, failure: 'down' });
+    // PMC's service token refused on the write calls is down too, never "your details were refused"
+    const p = fake.addPerson('e2@example.in', 'Right-pass-123', false);
+    expect(await badToken.create({ email: 'e3@example.in', password: 'New-pass-123', verified: true })).toEqual({ ok: false, taken: false, failure: 'down' });
+    expect(await badToken.setPassword(p.userId, 'Other-pass-456')).toBe('down');
+    expect(await badToken.markVerified(p.userId, 'e2@example.in')).toBe('down');
+    expect([fake.people.get(p.userId)!.password, fake.people.get(p.userId)!.verified, [...fake.people.values()].some((q) => q.email === 'e3@example.in')])
+      .toEqual(['Right-pass-123', false, false]);
   });
 
   it('PMC’s client unknown at the issuer (no auth request) is down, not a wrong password', async () => {

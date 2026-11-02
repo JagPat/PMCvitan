@@ -4,14 +4,15 @@
  * It answers the same paths the live issuer does (authorize, `/v2/sessions`, `/v2/oidc/auth_requests/{id}`, the token
  * exchange with PKCE, the key set, ListUsers with v4.16's "no user" shape, create, set password, UpdateUser,
  * DeleteSession), signs RS256 id tokens with its own key, and records every request it gets (method, path, headers,
- * body), so a test can prove what PMC sent and that it sent nothing at all. Knobs let a test make it slow, fail a path,
- * or spoil the token (another issuer, another algorithm, another state, another nonce).
+ * body), so a test can prove what PMC sent and that it sent nothing at all. Knobs let a test make it slow or hold every
+ * answer until close, fail a path, send an answer too large to read, lock a person, or spoil the token (another issuer,
+ * another algorithm, another state, another nonce). Nothing it schedules outlives close().
  */
 import { createHash, generateKeyPairSync, randomUUID, sign, type KeyObject } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-export type FakePerson = { userId: string; email: string; password: string; verified: boolean; givenName: string; familyName: string };
+export type FakePerson = { userId: string; email: string; password: string; verified: boolean; givenName: string; familyName: string; locked?: boolean };
 export type Recorded = { method: string; path: string; headers: IncomingMessage['headers']; body: string };
 export type Spoil = 'none' | 'issuer' | 'alg-none' | 'alg-hs256' | 'state' | 'nonce' | 'audience' | 'expired' | 'kid' | 'signature';
 
@@ -26,6 +27,12 @@ export type FakeIssuer = {
   requests: Recorded[];
   /** milliseconds every answer waits (to reach PMC's 4 s limit) */
   delayMs: number;
+  /** answer nothing until close() (proves PMC's own abort ends the wait, by its signal and not a stopwatch) */
+  hold: boolean;
+  /** a path prefix whose answer is a 200 over 1 MB, e.g. '/v2/users' */
+  oversize: string | null;
+  /** create answers 201 with no userId (a malformed answer) */
+  createAnswersNoId: boolean;
   /** a status forced on a path prefix, e.g. { '/v2/sessions': 503 } */
   force: Record<string, number>;
   spoil: Spoil;
@@ -55,6 +62,9 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     people: new Map<string, FakePerson>(),
     requests: [] as Recorded[],
     delayMs: 0,
+    hold: false,
+    oversize: null as string | null,
+    createAnswersNoId: false,
     force: {} as Record<string, number>,
     spoil: 'none' as Spoil,
     noneShape: 'details-only' as FakeIssuer['noneShape'],
@@ -99,6 +109,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     const url = new URL(req.url ?? '/', fake.url);
     const path = url.pathname;
     for (const [prefix, status] of Object.entries(fake.force)) if (path.startsWith(prefix)) return send(res, status, { message: 'forced' });
+    if (fake.oversize && path.startsWith(fake.oversize)) return send(res, 200, { padding: 'x'.repeat(1024 * 1024 + 1) });
     const json = (): Record<string, any> => { try { return JSON.parse(body || '{}'); } catch { return {}; } };
 
     if (req.method === 'GET' && path === '/oauth/v2/authorize') {
@@ -130,6 +141,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       const b = json();
       const person = byEmail(String(b?.checks?.user?.loginName ?? ''));
       if (!person) return send(res, 404, { message: 'Errors.User.NotFound' });
+      if (person.locked) return send(res, 412, { message: 'Errors.User.Locked' });
       if (b?.checks?.password?.password !== person.password) return send(res, 400, { message: 'Errors.User.Password.Invalid' });
       const sessionId = randomUUID();
       const token = randomUUID();
@@ -171,7 +183,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       const p = fake.addPerson(String(b.email.email), String(b.password.password), b.email.isVerified === true);
       p.givenName = String(b?.profile?.givenName ?? '');
       p.familyName = String(b?.profile?.familyName ?? '');
-      return send(res, 201, { userId: p.userId, details: {} });
+      return send(res, 201, fake.createAnswersNoId ? { details: {} } : { userId: p.userId, details: {} });
     }
     const pw = /^\/v2\/users\/([^/]+)\/password$/.exec(path);
     if (req.method === 'POST' && pw) {
@@ -190,6 +202,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     return send(res, 404, { code: 5, message: 'Not Found' });
   };
 
+  const timers = new Set<NodeJS.Timeout>();
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
@@ -197,11 +210,20 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       const body = Buffer.concat(chunks).toString('utf8');
       fake.requests.push({ method: req.method ?? '', path: req.url ?? '', headers: req.headers, body });
       const go = () => { try { handle(req, res, body); } catch { send(res, 500, { message: 'fake failed' }); } };
-      if (fake.delayMs > 0) setTimeout(go, fake.delayMs); else go();
+      if (fake.hold) return; // answered by no one: close() drops the connection
+      if (fake.delayMs > 0) {
+        const t = setTimeout(() => { timers.delete(t); go(); }, fake.delayMs);
+        timers.add(t);
+      } else go();
     });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   fake.url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  fake.close = () => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); });
+  fake.close = () => new Promise<void>((resolve) => {
+    for (const t of timers) clearTimeout(t);
+    timers.clear();
+    server.closeAllConnections();
+    server.close(() => resolve());
+  });
   return fake;
 }

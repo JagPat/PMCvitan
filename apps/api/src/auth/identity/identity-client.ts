@@ -181,7 +181,8 @@ export class IdentityClient {
       if (r.status === 409) return { ok: false, taken: true };
       if (r.status < 200 || r.status > 299) return { ok: false, taken: false, failure: serviceFailure(r.status) };
       const userId = str(json(r.body).userId);
-      return userId ? { ok: true, userId } : { ok: false, taken: false, failure: 'rejected' };
+      // a 2xx with no user id is a malformed answer: the issuer's fault, not the person's
+      return userId ? { ok: true, userId } : { ok: false, taken: false, failure: 'down' };
     } catch {
       return { ok: false, taken: false, failure: 'down' };
     }
