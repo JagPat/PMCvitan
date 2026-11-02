@@ -78,17 +78,61 @@ describe('#482: the inspection\'s responsible member column (live PG)', () => {
     expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id }, select: { responsibleMemberId: true } })).responsibleMemberId).toBe(removed);
   });
 
-  it('has the open-items index, and the file re-runs on a database that has it, changing nothing', async () => {
-    const { id } = await plainInspection();
-    await setResponsible(id, contractor);
+  const keyDef = async () => (await t.prisma.$queryRawUnsafe<Array<{ def: string }>>(
+    `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = '"Inspection"'::regclass AND conname = 'Inspection_projectId_responsibleMemberId_fkey'`))[0]?.def;
+  const indexDef = async () => (await t.prisma.$queryRawUnsafe<Array<{ def: string }>>(
+    `SELECT pg_get_indexdef('"Inspection_projectId_responsibleMemberId_idx"'::regclass) AS def`))[0]?.def;
+  const runFile = () => {
     const url = (process.env.DATABASE_URL ?? '').split('?')[0]!;
     execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url, '-f', MIGRATION], { stdio: 'pipe' });
-    const keys = await t.prisma.$queryRawUnsafe<Array<{ n: number }>>(
-      `SELECT count(*)::int AS n FROM pg_constraint WHERE conrelid = '"Inspection"'::regclass AND conname = 'Inspection_projectId_responsibleMemberId_fkey'`);
-    expect(keys[0]!.n).toBe(1);
-    const indexes = await t.prisma.$queryRawUnsafe<Array<{ n: number }>>(
-      `SELECT count(*)::int AS n FROM pg_indexes WHERE tablename = 'Inspection' AND indexname = 'Inspection_projectId_responsibleMemberId_idx'`);
-    expect(indexes[0]!.n).toBe(1);
+  };
+  const KEY = 'FOREIGN KEY ("projectId", "responsibleMemberId") REFERENCES "Membership"("projectId", "userId")';
+  const INDEX = 'CREATE INDEX "Inspection_projectId_responsibleMemberId_idx" ON public."Inspection" USING btree ("projectId", "responsibleMemberId")';
+
+  it('the key is exactly the two-column key with NO ACTION, and the index exactly the two-column btree', async () => {
+    expect(await keyDef()).toBe(KEY);
+    const rule = await t.prisma.$queryRawUnsafe<Array<{ del: string; upd: string }>>(
+      `SELECT confdeltype AS del, confupdtype AS upd FROM pg_constraint WHERE conname = 'Inspection_projectId_responsibleMemberId_fkey'`);
+    expect(rule[0]).toEqual({ del: 'a', upd: 'a' }); // 'a' = NO ACTION
+    expect((await indexDef())?.replace(/ public\./, ' ')).toBe(INDEX.replace(/ public\./, ' '));
+  });
+
+  it('a hard delete of a membership named as responsible is refused (23503); the row and the name stay', async () => {
+    const named = `${f.projectA.id}-resp-hard`;
+    await t.prisma.user.create({ data: { id: named, projectId: f.projectA.id, role: 'contractor', name: 'Another contractor', email: `${named}@test.local` } });
+    await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: named, role: 'contractor', status: 'active' } });
+    users.push(named);
+    const { id } = await plainInspection();
+    await setResponsible(id, named);
+    await expect(t.prisma.$executeRawUnsafe(`DELETE FROM "Membership" WHERE "projectId" = $1 AND "userId" = $2`, f.projectA.id, named))
+      .rejects.toThrow(/23503|Inspection_projectId_responsibleMemberId_fkey/);
+    expect(await t.prisma.membership.count({ where: { projectId: f.projectA.id, userId: named } })).toBe(1);
+    await setResponsible(id, null);
+  });
+
+  it('the file re-runs on a database that has it, changing nothing', async () => {
+    const { id } = await plainInspection();
+    await setResponsible(id, contractor);
+    runFile();
+    expect(await keyDef()).toBe(KEY);
+    expect(await indexDef()).toBe(INDEX);
     expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id }, select: { responsibleMemberId: true } })).responsibleMemberId).toBe(contractor);
+  });
+
+  it('a re-run refuses a same-named key or index that is not this file\'s, rather than keeping it', async () => {
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "Inspection" DROP CONSTRAINT "Inspection_projectId_responsibleMemberId_fkey"`);
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "Inspection" ADD CONSTRAINT "Inspection_projectId_responsibleMemberId_fkey"
+      FOREIGN KEY ("projectId", "responsibleMemberId") REFERENCES "Membership"("projectId", "userId") ON DELETE CASCADE`);
+    expect(runFile).toThrow(/already stands as something else/);
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "Inspection" DROP CONSTRAINT "Inspection_projectId_responsibleMemberId_fkey"`);
+    runFile();
+    expect(await keyDef()).toBe(KEY);
+
+    await t.prisma.$executeRawUnsafe(`DROP INDEX "Inspection_projectId_responsibleMemberId_idx"`);
+    await t.prisma.$executeRawUnsafe(`CREATE INDEX "Inspection_projectId_responsibleMemberId_idx" ON "Inspection"("responsibleMemberId")`);
+    expect(runFile).toThrow(/already stands as something else/);
+    await t.prisma.$executeRawUnsafe(`DROP INDEX "Inspection_projectId_responsibleMemberId_idx"`);
+    runFile();
+    expect(await indexDef()).toBe(INDEX);
   });
 });
