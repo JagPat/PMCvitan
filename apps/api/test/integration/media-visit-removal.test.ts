@@ -9,6 +9,7 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { StorageService } from '../../src/media/storage.service';
 import { MediaQueryService } from '../../src/media/media.query';
 import { SiteVisitFilesParticipant } from '../../src/site-visits/site-visit-files.participant';
+import { LEGACY_REPLAY_MS, UPLOAD_SOURCE_SINCE } from '../../src/media/media.service';
 import { base64, webmTimed } from '../unit-support/voice-files';
 import { clipWebmTimed } from '../unit-support/video-files';
 import { SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
@@ -312,6 +313,126 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
     const copy = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: copyBytes, sourceMediaId: original.body.id, siteVisit: { visitId }, clientKey: plainKey });
     expect([copy.status, copy.body.id]).toEqual([403, undefined]);
     expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: plainKey } })).toBe(1);
+  });
+
+  describe('#1283: a removed original\'s copy is told from a plain file by the source it was uploaded as', () => {
+    const px = Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64');
+    const storedAt = (id: string, createdAt: Date) => t.prisma.media.update({ where: { id }, data: { createdAt } });
+    const source = (id: string) => t.prisma.media.findUniqueOrThrow({ where: { id }, select: { sourceMediaId: true, uploadSourceMediaId: true } });
+
+    it('the upload writes the source a copy is made of, and none for a plain file', async () => {
+      const original = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
+      expect(original.status, original.text).toBe(201);
+      const copy = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, sourceMediaId: original.body.id, siteVisit: { visitId } });
+      expect(copy.status, copy.text).toBe(201);
+      expect(await source(copy.body.id)).toEqual({ sourceMediaId: original.body.id, uploadSourceMediaId: original.body.id });
+      expect(await source(original.body.id)).toEqual({ sourceMediaId: null, uploadSourceMediaId: null });
+      expect((await removeIt(original.body.id)).status).toBe(200);
+      expect(await source(copy.body.id)).toEqual({ sourceMediaId: null, uploadSourceMediaId: original.body.id });
+    });
+
+    it('a plain file\'s key, same bytes, is not taken for a copy of a photo this visit has lost (discussion_r4438869095)', async () => {
+      const original = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
+      expect(original.status, original.text).toBe(201);
+      const plainKey = `svr-1283-${run}-${randomUUID()}`;
+      const plain = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId }, clientKey: plainKey });
+      expect(plain.status, plain.text).toBe(201);
+      expect((await removeIt(original.body.id)).status).toBe(200);
+      // stored at or after the cutoff on any day this runs (gap-check: so a dropped cutoff stays caught after 13 Nov)
+      await storedAt(plain.body.id, new Date(Math.max(Date.now(), UPLOAD_SOURCE_SINCE.getTime())));
+      const asCopy = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, sourceMediaId: original.body.id, siteVisit: { visitId }, clientKey: plainKey });
+      expect([asCopy.status, asCopy.body.id]).toEqual([403, undefined]);
+      expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: plainKey } })).toBe(1);
+      // the plain file's own resend is still itself
+      const again = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId }, clientKey: plainKey });
+      expect([again.status, again.body.id]).toEqual([201, plain.body.id]);
+    });
+
+    it('a copy whose original was removed is still itself, and only for that original', async () => {
+      const original = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
+      const other = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
+      expect([original.status, other.status]).toEqual([201, 201]);
+      const clientKey = `svr-1283c-${run}-${randomUUID()}`;
+      const body = { kind: 'visit', mime: 'image/png', data: px, sourceMediaId: original.body.id, siteVisit: { visitId }, clientKey };
+      const copy = await upload(pmcToken, body);
+      expect(copy.status, copy.text).toBe(201);
+      expect((await removeIt(original.body.id)).status).toBe(200);
+      expect((await removeIt(other.body.id)).status).toBe(200);
+      for (const at of [UPLOAD_SOURCE_SINCE, new Date(Date.now() - LEGACY_REPLAY_MS - 60_000)]) {
+        await storedAt(copy.body.id, at);
+        const again = await upload(pmcToken, body);
+        expect([at.toISOString(), again.status, again.body.id]).toEqual([at.toISOString(), 201, copy.body.id]);
+        // another photo the visit also lost is not this copy's original
+        expect((await upload(pmcToken, { ...body, sourceMediaId: other.body.id })).status).toBe(403);
+      }
+    });
+
+    it('a copy\'s key resent as a plain file is refused, before and after its original\'s removal (gap-check)', async () => {
+      const original = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
+      expect(original.status, original.text).toBe(201);
+      const clientKey = `svr-1283p-${run}-${randomUUID()}`;
+      const copy = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, sourceMediaId: original.body.id, siteVisit: { visitId }, clientKey });
+      expect(copy.status, copy.text).toBe(201);
+      const plain = { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId }, clientKey };
+      expect((await upload(pmcToken, plain)).status).toBe(403);
+      expect((await removeIt(original.body.id)).status).toBe(200);
+      expect((await upload(pmcToken, plain)).status).toBe(403);
+      expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey } })).toBe(1);
+    });
+
+    it('a stored source decides alone: a copy stored before the cutoff, within seven days, is not another removed photo\'s copy (gap-check)', async () => {
+      const original = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
+      const other = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
+      expect([original.status, other.status]).toEqual([201, 201]);
+      const clientKey = `svr-1283q-${run}-${randomUUID()}`;
+      const body = { kind: 'visit', mime: 'image/png', data: px, sourceMediaId: original.body.id, siteVisit: { visitId }, clientKey };
+      const copy = await upload(pmcToken, body);
+      expect(copy.status, copy.text).toBe(201);
+      expect((await removeIt(original.body.id)).status).toBe(200);
+      expect((await removeIt(other.body.id)).status).toBe(200);
+      const now = UPLOAD_SOURCE_SINCE.getTime() - 60 * 60_000;
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+      try {
+        const token = t.issueProjectToken(f.memberUser.id, f.projectA.id);
+        await storedAt(copy.body.id, new Date(now - 60_000));
+        expect((await upload(token, { ...body, sourceMediaId: other.body.id })).status).toBe(403);
+        const again = await upload(token, body);
+        expect([again.status, again.body.id]).toEqual([201, copy.body.id]);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it('a file stored before the source was written is judged as before, and only for seven days (#1262 residual)', async () => {
+      const original = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
+      expect(original.status, original.text).toBe(201);
+      const clientKey = `svr-1283l-${run}-${randomUUID()}`;
+      const body = { kind: 'visit', mime: 'image/png', data: px, sourceMediaId: original.body.id, siteVisit: { visitId }, clientKey };
+      const copy = await upload(pmcToken, body);
+      expect(copy.status, copy.text).toBe(201);
+      expect((await removeIt(original.body.id)).status).toBe(200);
+      // as the previous release stored it: no upload source (raw SQL: the column's trigger takes no change, so the
+      // row is written again without it)
+      await t.prisma.$executeRawUnsafe('ALTER TABLE "Media" DISABLE TRIGGER "Media_upload_source_fixed"');
+      try {
+        await t.prisma.$executeRaw`UPDATE "Media" SET "uploadSourceMediaId" = NULL WHERE "id" = ${copy.body.id}`;
+      } finally {
+        await t.prisma.$executeRawUnsafe('ALTER TABLE "Media" ENABLE TRIGGER "Media_upload_source_fixed"');
+      }
+      // the replay is read as of an hour before the cutoff, so the case holds whatever the day it runs (gap-check)
+      const now = UPLOAD_SOURCE_SINCE.getTime() - 60 * 60_000;
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+      try {
+        const token = t.issueProjectToken(f.memberUser.id, f.projectA.id); // minted on the same clock
+        await storedAt(copy.body.id, new Date(now - 60_000));
+        const again = await upload(token, body);
+        expect([again.status, again.body.id]).toEqual([201, copy.body.id]);
+        await storedAt(copy.body.id, new Date(now - LEGACY_REPLAY_MS - 60_000));
+        expect((await upload(token, body)).status).toBe(403);
+      } finally {
+        clock.mockRestore();
+      }
+    });
   });
 
   it('a marked-up copy of a removed photo stays on the visit, its original link cleared', async () => {
