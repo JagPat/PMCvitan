@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { NotFoundException, BadRequestException, ConflictException, ForbiddenException, GoneException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { MediaService } from './media.service';
@@ -133,6 +134,8 @@ const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
 const uploader = { sub: 'user-1', role: 'pmc', projectId: 'ambli' } as never;
 
 const input: CreateMediaInput = { kind: 'progress', mime: 'image/jpeg', data: Buffer.from('hello').toString('base64') };
+/** #904 — the digest the upload of `input` stores, which its replay is compared with */
+const HELLO_SHA256 = createHash('sha256').update('hello').digest('hex');
 
 describe('MediaService.create', () => {
   it('dev stub: keeps bytes in the row and returns a signed serve path (no public url stored)', async () => {
@@ -145,6 +148,7 @@ describe('MediaService.create', () => {
     expect(row.data.toString()).toBe('hello');
     expect(row.url).toBeNull(); // never persist a public bucket URL
     expect(row.sizeBytes).toBe(5);
+    expect(row.contentSha256).toBe(HELLO_SHA256);
     expect(row.uploadedBy).toBe('user-1');
     // the fresh upload hands its committed event to the single sender exactly once (signal-only)
     expect(dispatcher.dispatchCommitted).toHaveBeenCalledTimes(1);
@@ -301,7 +305,7 @@ describe('MediaService — a replayed upload key (#482)', () => {
     const { svc, prisma, storage } = make(null);
     prisma.media.create.mockRejectedValueOnce(p2002());
     Object.assign(prisma.media, {
-      findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null, nodeId: null }),
+      findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null, mime: 'image/jpeg', sizeBytes: 5, contentSha256: HELLO_SHA256, sourceMediaId: null, takenAt: null, geoLat: null, geoLng: null, nodeId: null }),
       findFirst: vi.fn(async () => null),
     });
     expect(await svc.create('ambli', contractor, { ...input, clientKey: 'k' })).toEqual({ id: 'own', url: '/media/own?t=tok', at: '2026-10-19T09:30:00.000Z', nodeId: null });
@@ -368,7 +372,7 @@ describe('MediaService — a replayed upload key (#482)', () => {
     const { svc, prisma, storage } = make(null);
     prisma.media.create.mockRejectedValueOnce(p2002());
     Object.assign(prisma.media, {
-      findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null, nodeId: null }),
+      findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null, mime: 'image/jpeg', sizeBytes: 5, contentSha256: HELLO_SHA256, sourceMediaId: null, takenAt: null, geoLat: null, geoLng: null, nodeId: null }),
       findFirst: vi.fn(async () => ({ id: 'own' })),
     });
     expect(await svc.create('ambli', contractor, { ...input, clientKey: 'k' })).toEqual({ id: 'own', url: '/media/own?t=tok', at: '2026-10-19T09:30:00.000Z', nodeId: null });
