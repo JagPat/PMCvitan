@@ -685,7 +685,8 @@ if echo "$out" | grep -q "P3005"; then
 20280202000000_media_content_sha256
 20280203000000_redbracket_id_tables
 20280204000000_media_upload_source
-20280206000000_inspection_responsible_member"
+20280206000000_inspection_responsible_member
+20280207000000_inspection_responsible_catalog"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
@@ -867,8 +868,41 @@ if echo "$out" | grep -q "P3005"; then
     esac
   fi
 
+  # "Who fixes this?" RM-e-m — THE SAME RULE, ONE GENERATION LATER AGAIN. U5m's catalog file is on ALWAYS_EXECUTE
+  # and its immutable foreign-generation audit admits the six generations it knew, gated on the retirement marker or
+  # the serving witness; on a database migrated through RM-e-m that never served (no lease), its replay refuses
+  # RM-e's generation (`e356309f…`) and the deploy aborts. A database holding RM-e's generation evidences U5m's
+  # catalog file ran to completion (20280207's prerequisite is U5m's generation as well as SV1-a's, and U5m's own
+  # readback verified it), and it carries U5m's generation, so SV1-a's catalog file is resolved by the rule above.
+  # So on such a database U5m's catalog file is RESOLVED as applied. It installs no function, so no other replay
+  # depends on it. `scripts/upgrade-proof.sh` mirrors this rule in its ledger-lost replays, and
+  # `scripts/ledger-lost-runner-proof.sh` runs this runner over it.
+  T4D_RME_SUPERSEDED="20280127000000_hub_catalog_generation"
+  CARRIES_RME=0
+  if [ "$CARRIES_HUB_U5M" -eq 1 ]; then
+    rme_out=$(node -e '
+      const { PrismaClient } = require("@prisma/client");
+      const prisma = new PrismaClient();
+      prisma.$queryRawUnsafe(
+        "SELECT EXISTS (SELECT 1 FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = \x27e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093\x27) AS rme"
+      ).then((rows) => { console.log(rows[0] && rows[0].rme === true ? "carries" : "before"); })
+        .catch((e) => { console.log("error " + (e && e.message ? e.message.split("\n")[0] : e)); })
+        .finally(() => prisma.$disconnect());
+    ' 2>/dev/null)
+    case "$rme_out" in
+      carries) CARRIES_RME=1; echo "[migrate] this database CARRIES the responsible-member RM-e catalog generation — Hub U5m's catalog file will be resolved as applied rather than replayed (its catalog audit would refuse RM-e's generation)" ;;
+      before) echo "[migrate] this database does not carry the responsible-member RM-e catalog generation — Hub U5m's catalog file stays pending" ;;
+      *) echo "[migrate] could not read the responsible-member RM-e catalog generation ($rme_out) — Hub U5m's catalog file stays pending" ;;
+    esac
+  fi
+
   for dir in prisma/migrations/*/; do
     name=$(basename "$dir")
+    if [ "$CARRIES_RME" -eq 1 ] && printf '%s\n' "$T4D_RME_SUPERSEDED" | grep -qx "$name"; then
+      echo "[migrate] resolving $name as applied: a database carrying the responsible-member RM-e generation ran it (docs/RUNBOOK.md §P6T4D)"
+      npx prisma migrate resolve --applied "$name" || exit 1
+      continue
+    fi
     if [ "$CARRIES_HUB_U5M" -eq 1 ] && printf '%s\n' "$T4D_HUB_SUPERSEDED" | grep -qx "$name"; then
       echo "[migrate] resolving $name as applied: a database carrying Hub U5m's generation ran it (docs/RUNBOOK.md §P6T4D)"
       npx prisma migrate resolve --applied "$name" || exit 1

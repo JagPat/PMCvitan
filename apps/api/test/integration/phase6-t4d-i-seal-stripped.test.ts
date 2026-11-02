@@ -225,6 +225,8 @@ function buildBase(): void {
     '20280125000000_site_visit_file_removal',
     // Hub #1118 U5m seeds its generation beside SV1-a's (its prerequisite): built on SV1-a, excluded with it.
     '20280127000000_hub_catalog_generation',
+    // RM-e-m seeds its generation beside SV1-a's and U5m's (both its prerequisites): built on them, excluded with them.
+    '20280207000000_inspection_responsible_catalog',
     // The org role change written in place re-issues 4d-i's `phase6_t4d_org_authority`: built on 4d-i, excluded with
     // the rest (applied to this pre-4d base it would install a `phase6_t4d_*` function before the unit under test).
     '20280119000000_org_authority_role_change_in_place',
