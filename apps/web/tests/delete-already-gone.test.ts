@@ -133,6 +133,36 @@ describe('a delete whose record is already gone is done, not refused', () => {
     expect(useStore.getState().toast).toBeNull();
   });
 
+  it('an org member answered gone after a project switch: the new roster is untouched, nothing is read or said', async () => {
+    const useStore = await load();
+    let reject!: (e: unknown) => void;
+    const removeOrgMember = vi.fn(() => new Promise((_, r) => { reject = r; }));
+    const listOrgMembers = vi.fn().mockResolvedValue([{ userId: 'old-u', orgRole: 'owner' }]);
+    const newRoster = [{ userId: 'new-u', orgRole: 'owner' }];
+    useStore.getState()._setGateway(tracked({ removeOrgMember, listOrgMembers }) as never);
+    useStore.setState({ toast: null } as never);
+    useStore.getState().removeOrgMember('org-old', 'u2');
+    useStore.setState({ activeProjectId: 'villa-c', projectScopeGeneration: 2, orgMembers: newRoster } as never);
+    reject(refusal(404, NOT_AN_ORG_MEMBER_MESSAGE));
+    await settled();
+    expect(listOrgMembers).not.toHaveBeenCalled();
+    expect(useStore.getState().orgMembers).toEqual(newRoster);
+    expect(useStore.getState().toast).toBeNull();
+  });
+
+  it('an older roster read that finishes last never replaces the newer one', async () => {
+    const useStore = await load();
+    const answers: Array<(m: unknown) => void> = [];
+    const listOrgMembers = vi.fn(() => new Promise((res) => { answers.push(res); }));
+    useStore.getState()._setGateway(tracked({ listOrgMembers }) as never);
+    useStore.getState().loadOrgMembers('org-old');
+    useStore.getState().loadOrgMembers('org-new');
+    answers[1]([{ userId: 'new-u', orgRole: 'owner' }]); // the newer answers first,
+    answers[0]([{ userId: 'old-u', orgRole: 'owner' }]); // the older one lands after it
+    await settled();
+    expect(useStore.getState().orgMembers).toEqual([{ userId: 'new-u', orgRole: 'owner' }]);
+  });
+
   it('the server\'s texts, as its routes answer them, are the shared ones', () => {
     // pinned to the bytes, so an edit to a constant shows here as well as in the API's delete-race test
     expect([activityNotFoundMessage('a1'), PHASE_NOT_FOUND_MESSAGE, overrideNotFoundMessage('o1'), COMPANY_NOT_FOUND_MESSAGE, NOT_AN_ORG_MEMBER_MESSAGE])

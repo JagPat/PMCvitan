@@ -1632,6 +1632,10 @@ export const useStore = create<Store>()(
     const scopeStillCurrent = (scope: ProjectScope): boolean =>
       isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope);
 
+    /** Org roster loads: only the newest load may write `orgMembers`, so an older read
+     *  (another org's, before a project switch) that finishes last never replaces it. */
+    let orgMembersSeq = 0;
+
     // ---- gate round 11/12/13: central snapshot-ordering coordinator ----
     // Ownership and refresh coalescing are keyed by FULL scope (project + generation),
     // not one store-global slot (gate round 12, finding 1). A monotonic sequence
@@ -6206,7 +6210,11 @@ export const useStore = create<Store>()(
     loadOrgMembers: (orgId) => {
       if (!gateway) return;
       const tok = get().sessionToken; // session-scoped: drop replies after sign-out / re-auth
-      gateway.listOrgMembers(orgId).then((m) => set((s) => { if (s.sessionToken === tok) s.orgMembers = m; })).catch(() => set((s) => { s.orgMembers = []; }));
+      const seq = ++orgMembersSeq; // newest load wins: an older org's read never lands last
+      const current = () => seq === orgMembersSeq && get().sessionToken === tok;
+      gateway.listOrgMembers(orgId)
+        .then((m) => { if (current()) set((s) => { s.orgMembers = m; }); })
+        .catch(() => { if (current()) set((s) => { s.orgMembers = []; }); });
     },
     loadOrgModules: (orgId) => {
       if (!gateway) return;
@@ -6252,38 +6260,45 @@ export const useStore = create<Store>()(
         get().flash('Managing the org roster needs the server.');
         return;
       }
+      const scope = currentScope();
       gateway
         .addOrgMember(orgId, input)
-        .then(() => { get().loadOrgMembers(orgId); get().flash(input.name + ' added as org ' + input.role + '.'); })
+        .then(() => { if (!scopeStillCurrent(scope)) return; get().loadOrgMembers(orgId); get().flash(input.name + ' added as org ' + input.role + '.'); })
         .catch(() => get().flash('Could not add to the roster — check the details / your access.'));
     },
     updateOrgMemberRole: (orgId, userId, role) => {
       if (!gateway) return;
+      const scope = currentScope();
       gateway
         .updateOrgMemberRole(orgId, userId, role)
-        .then(() => { get().loadOrgMembers(orgId); get().flash('Org role changed to ' + role + '.'); })
+        .then(() => { if (!scopeStillCurrent(scope)) return; get().loadOrgMembers(orgId); get().flash('Org role changed to ' + role + '.'); })
         .catch(() => get().flash('Could not change the role — the org must keep at least one owner.'));
     },
     correctInvitationEmail: (orgId, userId, email) => {
       if (!gateway) return;
       const normalized = email.trim().toLowerCase();
+      const scope = currentScope();
       gateway
         .correctInvitationEmail(orgId, userId, normalized)
-        .then(() => { get().loadOrgMembers(orgId); get().flash('Invitation email corrected.'); })
+        .then(() => { if (!scopeStillCurrent(scope)) return; get().loadOrgMembers(orgId); get().flash('Invitation email corrected.'); })
         .catch(() => get().flash('Could not correct the email — it may already be active or in use.'));
     },
     removeOrgMember: (orgId, userId) => {
       if (!gateway) return;
+      // the roster reload + flash belong to the project scope the removal was issued in:
+      // after a switch (maybe to another org) the answer is dropped, like removeCompany
+      const scope = currentScope();
+      const removed = () => {
+        if (!scopeStillCurrent(scope)) return;
+        get().loadOrgMembers(orgId);
+        get().flash('Removed from the org roster.');
+      };
       gateway
         .removeOrgMember(orgId, userId)
-        .then(() => { get().loadOrgMembers(orgId); get().flash('Removed from the org roster.'); })
+        .then(removed)
         .catch((err: unknown) => {
           // already off the roster (an earlier try whose answer was lost, or another owner's removal): removed (S1)
-          if (isGone(err, NOT_AN_ORG_MEMBER_MESSAGE)) {
-            get().loadOrgMembers(orgId);
-            get().flash('Removed from the org roster.');
-            return;
-          }
+          if (isGone(err, NOT_AN_ORG_MEMBER_MESSAGE)) return removed();
           get().flash('Could not remove — you can’t remove yourself or the last owner.');
         });
     },
