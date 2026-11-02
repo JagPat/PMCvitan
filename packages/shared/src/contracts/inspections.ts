@@ -31,6 +31,8 @@ export const INSPECTIONS_QUERIES = [
   'inspections.projectionSlice',
   'inspections.existsInProject',
   'inspections.resolveRef',
+  // #482 site photos unit 4 — a proof photo's item: this project's, and failed now (held FOR SHARE in the upload)
+  'inspections.proofTarget',
 ] as const;
 export type InspectionsQuery = (typeof INSPECTIONS_QUERIES)[number];
 

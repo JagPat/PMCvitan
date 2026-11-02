@@ -12,7 +12,7 @@ import { SITE_PHOTO_DELETE_WINDOW_MS, SNAPSHOT_SITE_PHOTO_LIMIT, can } from '@vi
 import { ddMmmYyyy } from '../domain/dates';
 import type { Role } from '../common/auth';
 import type { DecisionsContract } from '../common/decisions-contract';
-import type { ProjectShellCounts, SnapshotDto } from './types';
+import type { ProjectShellCounts, ProofPhotoDto, SnapshotDto } from './types';
 import { readViewerFeed, servedNotifications } from './served-notifications';
 import { hiddenDraftNodeIds } from '../nodes/node-scope';
 import { hiddenMediaIds, mediaOnNodes } from './hidden-media';
@@ -228,6 +228,30 @@ export class SnapshotService {
       ...(disposable.has(m.id) ? { deletable: true, ...(ownWindow(m) ? { deletableUntil: new Date(m.createdAt.getTime() + SITE_PHOTO_DELETE_WINDOW_MS).toISOString() } : {}) } : {}),
     });
     const photoDtos = siteMedia.map(photoDto);
+
+    // #482 site photos unit 4 — proof photos: a contractor or consultant shows a failed inspection item fixed. The PMC
+    // and the engineer see every one; the member who added one sees their own; nobody else sees any. They are never
+    // site photos (above): not on the Site Map, the Dashboard or a day's log. The list has no cap: it promises every
+    // proof (staff) or every own proof (a member), and a proof exists only for a failed item, so it grows with failures,
+    // not with day-to-day photos (Codex 4439186913)
+    const proofWhere = SITE_RECORD_ROLES.has(role) ? {} : userId && (role === 'contractor' || role === 'consultant') ? { uploadedBy: userId } : null;
+    const proofMedia = proofWhere
+      ? await this.prisma.media.findMany({
+          where: { projectId, kind: 'proof', ...proofWhere },
+          orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+          select: { id: true, uploadedBy: true, createdAt: true, inspectionId: true, inspectionItemId: true },
+        })
+      : [];
+    const prover = await this.orgs.projectUploaders(this.prisma, projectId, [...new Set(proofMedia.map((m) => m.uploadedBy))]);
+    const proofDtos: ProofPhotoDto[] = proofMedia.map((m) => ({
+      id: m.id,
+      url: this.signed.mediaPath(m.id),
+      inspectionId: m.inspectionId!,
+      inspectionItemId: m.inspectionItemId!,
+      by: prover.get(m.uploadedBy)?.name,
+      byRole: prover.get(m.uploadedBy)?.role,
+      at: m.createdAt.toISOString(),
+    }));
     // only what the viewer may still delete: the list exists for that Delete alone
     const myDeletablePhotos = ownOverflow.filter((m) => disposable.has(m.id)).map(photoDto);
 
@@ -305,6 +329,7 @@ export class SnapshotService {
         .map((n) => ({ id: n.id, parentId: n.parentId ?? null, name: n.name, kind: n.kind as 'zone' | 'room' | 'element', order: n.order, draft: n.publishedAt === null })),
       // The location spine's reality layer: placed (and unplaced) site photos for the Place view.
       photos: photoDtos,
+      proofs: proofDtos,
       // #482 site photos — the viewer's own site photos still in their delete hour that the window above left out
       myDeletablePhotos,
       // All materials delivered across the project, with their place — the Site Map's "materials

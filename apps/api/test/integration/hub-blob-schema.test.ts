@@ -140,7 +140,7 @@ describe('#1118 U1a-3 — the Hub fetched-blob ledger (live PG)', () => {
     let media: z.ZodTypeAny = createMediaSchema;
     while (media instanceof z.ZodEffects) media = media.innerType();
     const kinds = ['drawings', ...(media as z.AnyZodObject).shape.kind.options as string[]];
-    expect(kinds).toEqual(['drawings', 'progress', 'inspection', 'decision', 'attendance', 'material', 'visit']);
+    expect(kinds).toEqual(['drawings', 'progress', 'inspection', 'decision', 'attendance', 'material', 'visit', 'proof']);
     for (const kind of kinds) {
       for (const mime of ['application/pdf', 'image/jpeg', 'image/png', 'image/vnd.dwg', 'audio/webm', 'audio/mp4', 'application/x-unknown']) {
         const key = storage.keyFor(p, kind, mime);
