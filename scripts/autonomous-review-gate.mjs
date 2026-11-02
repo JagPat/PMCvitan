@@ -1687,21 +1687,11 @@ async function refuseReviewedGreen(client, pullRequest, expectedHead, { refusal,
       security: true,
     });
   }
-  const detail = refusal === 'unreadable' ? CODEX_RECORD_UNREADABLE_DETAIL : CODEX_RUN_HELD_DETAIL;
-  const live = await publishBlockingVerdict(client, pullRequest, expectedHead, { description: `review: ${detail}` });
-  if (!live) return null;
-  await settleRecoveryRequest(client, expectedHead, live, recoveryRequest, 'changed review evidence');
-  await client.updateStickyComment(
-    pullRequest.number,
-    statusBody({
-      state: 'review_retry',
-      head: expectedHead,
-      detail,
-      attempt,
-      next: 'The merge was refused at its last check; the gate re-judges this exact head once Codex\'s review state settles.',
-    }),
-  );
-  return live;
+  return publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
+    detail: refusal === 'unreadable' ? CODEX_RECORD_UNREADABLE_DETAIL : CODEX_RUN_HELD_DETAIL,
+    attempt,
+    next: 'The merge was refused at its last check; the gate re-judges this exact head once Codex\'s review state settles.',
+  });
 }
 
 /** The common mandatory guard for both direct merge and auto-merge entrypoints. */
@@ -1758,8 +1748,8 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
     throw new CodexRecordUnreadable(error);
   }
   const record = codexStateRecordVerdict(issueComments, expectedHead, 0);
-  if (record === 'hold') return { allowed: false, state: 'codex_review_held' };
   if (record === 'security') return { allowed: false, state: 'codex_review_security' };
+  if (record === 'hold') return { allowed: false, state: 'codex_review_held' };
   return { allowed: true, state: 'authorized', pullRequest: finalLive };
 }
 
@@ -1816,18 +1806,12 @@ export async function ensureTerminalReviewState(
     // success (as before G2), so a tokened success never stays green through the hold. Its text is one
     // capDefersStoredFailure re-judges, so once the run ends a later recovery still defers and files
     if (latched && latchedDeferral !== true) {
-      await client.setStatus(
-        expectedHead,
-        'failure',
-        'review: current-head Codex finding latched during recovery',
-        pullRequest.html_url,
-      );
-      await setDraftForCurrentHead(
-        client,
-        pullRequest.number,
-        expectedHead,
-        true,
-      );
+      // #1287/#1288 root-cause audit — a latched finding is a finding: the finding writer replaces the success's
+      // `review_clean`/`clear` sticky with the correction notice (a security verdict's marker predates it)
+      await publishCurrentHeadFinding(client, pullRequest, expectedHead, null, {
+        detail: LATCHED_FINDING_DETAIL,
+        attempt: 0,
+      });
       return true;
     }
     const live = await refreshCurrentHead(
@@ -1884,9 +1868,23 @@ export async function ensureTerminalReviewState(
     // branch protection (and a queued auto-merge) acts on, so a blocking finding that landed since the
     // original success must turn the head red without a green window in which it could merge
     const settled = await settleFinalCodexEvidence(client, finalPolicy.pullRequest, expectedHead);
+    // #1287/#1288 root-cause audit — recovery publishes through the same two writers as the ordinary path, so its
+    // sticky never stays `review_clean`/`clear` beneath a non-green head. A retryable settlement (a same-head run
+    // still going, an unsettled read) is the retryable hold: no correction notice. Every other blocking settlement
+    // (findings, and security findings with their marker: Codex 4439305279) is a finding: convergence and the
+    // `changes_required` sticky with the correction notice.
+    if (settled.state === 'changes_required' && settled.retryable === true) {
+      await publishRetryableHold(client, finalPolicy.pullRequest, expectedHead, null, {
+        detail: settled.detail,
+        attempt: 0,
+        next: 'Recovery found Codex\'s review state still moving on this head; the gate re-judges this exact head once it settles.',
+      });
+      return true;
+    }
     if (settled.state === 'changes_required') {
-      await publishBlockingVerdict(client, finalPolicy.pullRequest, expectedHead, {
-        description: settled.detail,
+      await publishCurrentHeadFinding(client, finalPolicy.pullRequest, expectedHead, null, {
+        detail: settled.detail,
+        attempt: 0,
         deferred: settled.deferred ?? [],
         security: settled.security === true,
       });
@@ -2683,6 +2681,40 @@ export async function publishBlockingVerdict(client, pullRequest, expectedHead, 
   return live;
 }
 
+/** The detail a latched finding is re-published under over a withdrawn success (recovery). */
+export const LATCHED_FINDING_DETAIL = 'current-head Codex finding latched during recovery';
+
+/**
+ * #1287/#1288 root-cause audit — the ONE writer of a retryable `review:` hold: a same-head run still going, a record
+ * that could not be read, evidence that changed or stayed unsettled, required CI that changed, a review timeout.
+ * Every one is in `RETRYABLE_REVIEW_FAILURES`, so recovery re-judges this exact head and no author owes anything:
+ * the failure (with the draft, through `publishBlockingVerdict`), the recovery request settled, and a `review_retry`
+ * sticky with no correction notice. Findings and security findings go through `publishCurrentHeadFinding` instead;
+ * these two are the only callers of `publishBlockingVerdict`. Returns the live PR, or null when no longer current.
+ */
+export async function publishRetryableHold(
+  client,
+  pullRequest,
+  expectedHead,
+  recoveryRequest,
+  { detail, attempt, next, settleReason = 'changed review evidence' },
+) {
+  // Stage 1 gap-check F1 — the hold's promise (recovery re-judges, no author owes anything) holds only for a detail
+  // recovery classifies as retryable: anything else is refused before a single write, never published under a
+  // `review_retry` sticky that contradicts its status
+  if (!isRetryableReviewFailureDescription(reviewDescription(detail))) {
+    throw new Error(`publishRetryableHold refused a non-retryable detail: ${detail}`);
+  }
+  const live = await publishBlockingVerdict(client, pullRequest, expectedHead, { description: reviewDescription(detail) });
+  if (!live) return null;
+  await settleRecoveryRequest(client, expectedHead, live, recoveryRequest, settleReason);
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({ state: 'review_retry', head: expectedHead, detail, attempt, next }),
+  );
+  return live;
+}
+
 export async function publishCurrentHeadFinding(
   client,
   pullRequest,
@@ -2834,7 +2866,24 @@ async function withFollowUpRetry(client, pullRequest, expectedHead, work) {
   try {
     return await work();
   } catch (error) {
-    await client.setStatus(expectedHead, 'failure', error?.readRetry ?? FOLLOW_UP_RETRY, pullRequest.html_url).catch(() => {});
+    const detail = error?.readRetry ?? FOLLOW_UP_RETRY;
+    await client.setStatus(expectedHead, 'failure', detail, pullRequest.html_url).catch(() => {});
+    // #1287/#1288 audit (Stage 1) — a `review_clean` sticky written before a failed success write or filing must not
+    // stay on this non-green head: best effort, only while this head is current (the sticky is the PR's singleton),
+    // and a failure here never replaces the original error
+    try {
+      if (await refreshCurrentHead(client, pullRequest.number, expectedHead)) {
+        await client.updateStickyComment(pullRequest.number, statusBody({
+          state: 'review_retry',
+          head: expectedHead,
+          detail,
+          attempt: 0,
+          next: 'A follow-up write failed after Codex\'s review settled; the gate re-judges this exact head.',
+        }));
+      }
+    } catch {
+      // the original error is the one recovery acts on
+    }
     throw error;
   }
 }
@@ -3278,9 +3327,12 @@ export async function run() {
         reviewNotBefore,
       );
       if (verifiedResult.state !== 'clear') {
+        // #1288 (Codex 4439305276) — a same-head run that started after the poll is the retryable hold, by name
         const detail = verifiedResult.state === 'changes_required'
           ? verifiedResult.detail
-          : 'Codex evidence changed during final verification';
+          : verifiedResult.held === true
+            ? CODEX_RUN_HELD_DETAIL
+            : 'Codex evidence changed during final verification';
         if (verifiedResult.state === 'changes_required') {
           const published = await publishCurrentHeadFinding(
             client,
@@ -3292,29 +3344,14 @@ export async function run() {
           if (published.superseded) return;
           throw new Error(detail);
         }
-        pullRequest = await publishBlockingVerdict(client, pullRequest, expectedHead, { description: `review: ${detail}` });
+        // #1288 (Codex 4439305276) — both details here are retryable (RETRYABLE_REVIEW_FAILURES): recovery re-judges
+        // this exact head, and no author owes a correction, so it is the retryable hold
+        pullRequest = await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
+          detail,
+          attempt,
+          next: 'Codex\'s evidence changed or a review is still running on this head; the gate re-judges this exact head.',
+        });
         if (!pullRequest) return;
-        await settleRecoveryRequest(
-          client,
-          expectedHead,
-          pullRequest,
-          recoveryRequest,
-          'changed review evidence',
-        );
-        const evidenceNotice = correctionNotice(pullRequest, { detail, reason: 'review' });
-        await client.updateStickyComment(
-          pullRequest.number,
-          statusBody({
-            state: 'changes_required',
-            advisory: await freshAdvisory(client, pullRequest),
-            head: expectedHead,
-            detail,
-            attempt,
-            owner: evidenceNotice.owner ?? 'undeclared',
-            correctionState: noticeState(evidenceNotice),
-                  next: evidenceNotice.instruction,
-          }),
-        );
         throw new Error(detail);
       }
       const finalStatuses = await client.statuses(expectedHead);
@@ -3326,37 +3363,15 @@ export async function run() {
         finalCheckSummary.state !== 'success'
         || hasCiFailureAfterPending(finalStatuses)
       ) {
-        pullRequest = await setDraftForCurrentHead(
-          client,
-          pullRequest.number,
-          expectedHead,
-          true,
-        );
-        if (!pullRequest) return;
+        // retryable (RETRYABLE_REVIEW_FAILURES): the retryable hold, with no correction notice
         const detail = 'Required CI changed during current-head Codex review';
-        await client.setStatus(
-          expectedHead,
-          'failure',
-          `review: ${detail}`,
-          pullRequest.html_url,
-        );
-        await settleRecoveryRequest(
-          client,
-          expectedHead,
-          pullRequest,
-          recoveryRequest,
-          'changed CI',
-        );
-        await client.updateStickyComment(
-          pullRequest.number,
-          statusBody({
-            state: 'blocked',
-            head: expectedHead,
-            detail,
-            attempt,
-            next: 'Re-dispatch after required CI is green on this exact head.',
-          }),
-        );
+        pullRequest = await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
+          detail,
+          attempt,
+          next: 'Re-dispatch after required CI is green on this exact head.',
+          settleReason: 'changed CI',
+        });
+        if (!pullRequest) return;
         throw new Error(detail);
       }
       // Shadow evidence is non-authoritative and MUST NOT affect merge eligibility:
@@ -3448,21 +3463,14 @@ export async function run() {
       const settled = await settleFinalCodexEvidence(client, pullRequest, expectedHead, verifiedResult.deferred ?? []);
       if (settled.retryable) {
         // Codex 4226440219 — recovery-only publication: no correction instruction; recovery reruns this head
-        pullRequest = await publishBlockingVerdict(client, pullRequest, expectedHead, { description: settled.detail });
-        if (!pullRequest) return;
-        await settleRecoveryRequest(client, expectedHead, pullRequest, recoveryRequest, 'changed review evidence');
         // G2 (#1280 round 2, Codex 4438874587) — replace the `review_clean` sticky published above, as the refusal
         // path does: the head is not clean while its settlement is unsettled. No correction instruction.
-        await client.updateStickyComment(
-          pullRequest.number,
-          statusBody({
-            state: 'review_retry',
-            head: expectedHead,
-            detail: settled.detail,
-            attempt,
-            next: 'The final settlement was unsettled; the gate re-judges this exact head once Codex\'s review state settles.',
-          }),
-        );
+        pullRequest = await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
+          detail: settled.detail,
+          attempt,
+          next: 'The final settlement was unsettled; the gate re-judges this exact head once Codex\'s review state settles.',
+        });
+        if (!pullRequest) return;
         throw new Error(settled.detail);
       }
       if (settled.state === 'changes_required') {
@@ -3550,36 +3558,14 @@ export async function run() {
     }
   }
 
-  pullRequest = await setDraftForCurrentHead(
-    client,
-    pullRequest.number,
-    expectedHead,
-    true,
-  );
+  // retryable (RETRYABLE_REVIEW_FAILURES): the retryable hold, with no correction notice
+  pullRequest = await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
+    detail: 'Codex review timed out after two attempts',
+    attempt: MAX_REVIEW_ATTEMPTS,
+    next: 'Re-dispatch this workflow after the Codex integration is healthy.',
+    settleReason: 'review timeout',
+  });
   if (!pullRequest) return;
-  await client.setStatus(
-    expectedHead,
-    'failure',
-    'review: Codex review timed out after two attempts',
-    pullRequest.html_url,
-  );
-  await settleRecoveryRequest(
-    client,
-    expectedHead,
-    pullRequest,
-    recoveryRequest,
-    'review timeout',
-  );
-  await client.updateStickyComment(
-    pullRequest.number,
-    statusBody({
-      state: 'blocked',
-      head: expectedHead,
-      detail: 'Codex review timed out after two attempts',
-      attempt: MAX_REVIEW_ATTEMPTS,
-      next: 'Re-dispatch this workflow after the Codex integration is healthy.',
-    }),
-  );
   throw new Error('Codex review timed out after two attempts');
 }
 
