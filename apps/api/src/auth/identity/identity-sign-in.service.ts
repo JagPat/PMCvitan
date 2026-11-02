@@ -18,7 +18,7 @@
  * Each sign-in writes one log line: the route, the outcome and the try's id. Never an email, password, token or code.
  */
 import { BadRequestException, ConflictException, HttpException, HttpStatus, Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
-import type { Prisma, User } from '@prisma/client';
+import { Prisma as PrismaErrors, type Prisma, type User } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../../prisma.service';
 import { lockUserCredential } from '../../common/credential-lock';
@@ -140,7 +140,7 @@ export class IdentitySignInService {
       this.line('login', attempt, 'wrong password');
       throw new UnauthorizedException(WRONG_PASSWORD);
     }
-    const settled = await this.prisma.$transaction(async (tx): Promise<Settled | { kind: 'stale' } | { kind: 'other-account' }> => {
+    const settled = await this.prisma.$transaction(async (tx): Promise<Settled | { kind: 'stale' } | { kind: 'other-account' } | { kind: 'timed-out' }> => {
       const found = await settleSignIn(tx, read.config.issuer, result.claims);
       // an account this sign-in just made has no earlier credential; any other is judged against the epoch read before
       // the proof, under its credential lock (the lock a reset's `endSessions` takes to move it on), so a reset either
@@ -151,7 +151,16 @@ export class IdentitySignInService {
       if (!before || !current || before.id !== current.id) return { kind: 'other-account' };
       if (current.credentialVersion !== before.credentialVersion) return { kind: 'stale' };
       return { kind: 'account', user: current, fresh: false };
+    }).catch((err: unknown) => {
+      // a transaction the server closed (its time ran out waiting on the account's lock, held by a reset) is
+      // "unavailable", as the issuer being down is, never a server error (as break-glass, AuthService.breakGlassSession)
+      if (err instanceof PrismaErrors.PrismaClientKnownRequestError && err.code === 'P2028') return { kind: 'timed-out' as const };
+      throw err;
     });
+    if (settled.kind === 'timed-out') {
+      this.line('login', attempt, 'transaction timed out');
+      throw new ServiceUnavailableException(UNAVAILABLE);
+    }
     if (settled.kind === 'stale') {
       this.line('login', attempt, 'password changed during sign-in');
       throw new UnauthorizedException(PASSWORD_CHANGED);

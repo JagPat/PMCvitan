@@ -774,6 +774,36 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     expect(r.body.message).toBe('This email cannot be set up here. Ask your PMC for help.');
   });
 
+  it('the issuer email naming another PMC account than the linked one opens no session', async () => {
+    const linked = await invitee('linked-elsewhere');
+    await setPassword(linked.email!, 'a long issuer passphrase', 201);
+    const issuerEmail = linked.email!;
+    await t.prisma.user.update({ where: { id: linked.id }, data: { email: `elsewhere-${Date.now()}@test.local` } });
+    const other = await t.prisma.user.create({ data: { projectId: f.projectA.id, role: 'pmc', name: 'other', email: issuerEmail, emailVerifiedAt: new Date() } });
+    made.push(other.id);
+    await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: other.id, role: 'pmc', status: 'active' } });
+    const lines = vi.spyOn(IdentitySignInService.prototype as unknown as { line: (r: string, a: string, o: string) => void }, 'line');
+    const r = await login(issuerEmail, 'a long issuer passphrase').expect(401);
+    expect(r.body).toMatchObject({ message: 'This email cannot be set up here. Ask your PMC for help.' });
+    expect(r.body.token).toBeUndefined();
+    expect(lines.mock.calls.map((c) => c[2])).toEqual(['email names another account']);
+  });
+
+  it('a sign-in whose settle transaction the server closed (its time ran out on the account lock) is unavailable, never a 500', async () => {
+    const user = await invitee('lock-held');
+    await setPassword(user.email!, 'a long issuer passphrase', 201);
+    const lines = vi.spyOn(IdentitySignInService.prototype as unknown as { line: (r: string, a: string, o: string) => void }, 'line');
+    // the settle is the sign-in's only transaction: closed by the server as a lock held past its time closes it
+    const tx = vi.spyOn(t.prisma, '$transaction').mockRejectedValueOnce(new Prisma.PrismaClientKnownRequestError('Transaction already closed: timeout', { code: 'P2028', clientVersion: 'test' }));
+    const r = await login(user.email!, 'a long issuer passphrase').expect(503);
+    expect(tx).toHaveBeenCalledTimes(1);
+    expect(r.body.message).toBe('Sign-in is unavailable just now. Try again in a few minutes.');
+    expect(lines.mock.calls.map((c) => c[2])).toEqual(['transaction timed out']);
+    // any other failure stays what it is
+    vi.spyOn(t.prisma, '$transaction').mockRejectedValueOnce(new Prisma.PrismaClientKnownRequestError('unique', { code: 'P2002', clientVersion: 'test' }));
+    await login(user.email!, 'a long issuer passphrase').expect(500);
+  });
+
   it('a test account address is never linked or retired', async () => {
     const qa = await t.prisma.user.create({ data: { projectId: f.projectA.id, role: 'pmc', name: 'qa', email: `qa.rbid${Date.now().toString(36).replace(/[0-9]/g, 'x')}@vitan.in`, passwordHash: 'x', emailVerifiedAt: new Date() } });
     made.push(qa.id);

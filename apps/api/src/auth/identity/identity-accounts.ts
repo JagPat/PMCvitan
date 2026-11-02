@@ -5,7 +5,8 @@
  *
  * So, for an issuer person (`issuer`, `sub`) who has just proved their password at the issuer:
  *
- * - already linked to a PMC account: that account, whatever its email is now.
+ * - already linked to a PMC account: that account. A password sign-in (`IdentitySignInService.login`) also needs the
+ *   typed email to name that same account, with the credential version it had before the issuer proved the password.
  * - an unlinked PMC account holds the same email and was never set up (an invitation: no password, mailbox never
  *   proved): it is linked only on the invitation's own acceptance (`acceptInvite`, after PMC's emailed code), never on
  *   a plain sign-in, which refuses with `invite-pending`.
