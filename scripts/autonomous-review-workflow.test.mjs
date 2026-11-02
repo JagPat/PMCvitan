@@ -4048,3 +4048,82 @@ test('#766 Codex 4237403349 / 4237403345 — an approval-time read failure keeps
   const status = await readFile(new URL('../docs/STATUS.md', import.meta.url), 'utf8');
   assert.match(status, /^open_pr: (none|\d+)$/mu);
 });
+
+// G3 (Stage 1 re-check, condition 2 for the watchdog caller) — end to end: the watchdog's re-arm of a ready, tokened,
+// unarmed green, the dispatch's authorization, and the orchestrate run's recovery of that success. It arms only after
+// `authorizeExactHeadMerge` allows; when Codex's record shows a security finding by then, it refuses and arms nothing.
+test('G3 — a watchdog re-arm runs through request-recovery and recovery, and arms only after the merge authorization', async () => {
+  const { gateRearmStatus } = await import('./correction-lease.mjs');
+  const head = 'e'.repeat(40);
+  const scenario = async ({ securityAfterSuccess }) => {
+    const statuses = [{ id: 6100, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head [wi:none]' }];
+    const pull = {
+      number: 260, state: 'open', draft: false, auto_merge: null,
+      body: '<!-- correction-owner: claude -->',
+      head: { sha: head, ref: 'claude/unit', repo: { full_name: 'JagPat/PMCvitan' } },
+      base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
+      html_url: 'https://github.com/JagPat/PMCvitan/pull/260',
+    };
+    const log = [];
+    let nextId = 6200;
+    let successWritten = false;
+    const securityRecord = {
+      user: { login: 'chatgpt-codex-connector[bot]' }, created_at: '2026-11-02T00:00:00Z',
+      body: `<!-- codex-review-state:v1 ${JSON.stringify({
+        code_review: { commit_sha: head, has_any_findings: false, has_unresolved_findings: false, status: 'completed' },
+        security_review: { commit_sha: head, has_any_findings: true, has_unresolved_findings: true, status: 'completed' },
+      })} -->`,
+    };
+    const client = {
+      ...automatedMergeEvidence(pull),
+      async pullRequest() { return { ...pull }; },
+      async statuses() { return statuses; },
+      async setStatus(sha, state, description, url, context = 'codex-current-head') {
+        const status = { id: nextId += 1, context, state, description };
+        statuses.unshift(status);
+        log.push(['status', state, description]);
+        if (state === 'success' && context === 'codex-current-head') successWritten = true;
+        return status;
+      },
+      async issueComments() {
+        log.push(['record']);
+        return securityAfterSuccess && successWritten ? [securityRecord] : [];
+      },
+      async reviewComments() { return []; },
+      async reviews() { return []; },
+      async markReplacementRequired() {},
+      async setDraft(current, draft) { log.push(['draft', draft]); pull.draft = draft; return { ...current, draft }; },
+      async updateStickyComment(number, body) { log.push(['sticky', body.match(/`([a-z_]+)`/u)?.[1]]); },
+      async createIssueComment() { log.push(['marker']); return { id: 1 }; },
+      async mergeExactHead() { log.push(['merge']); return { merged: false, message: 'Pull request is not mergeable yet' }; },
+      async enableAutoMerge(current, expected) { log.push(['arm', expected]); },
+      async disableAutoMerge() { log.push(['disable']); },
+      async dispatchHandoff() {},
+    };
+    // the watchdog: a ready, tokened green with nothing queued, never asked about
+    const hint = gateRearmStatus({ statuses }, pull);
+    assert.equal(hint?.id, 6100);
+    // request-recovery: the hint authorizes only this head's newest tokened success, named exactly
+    assert.equal(reviewGate.authorizeRecoveryDispatch(statuses, String(hint.id))?.id, 6100);
+    assert.equal(reviewGate.authorizeRecoveryDispatch(statuses, '6099'), null, 'a stale id is refused');
+    // orchestrate: the request is consumed by the success re-judge, which is the recovery of that success
+    assert.ok(reviewGate.newestTokenedSuccess(statuses, String(hint.id)));
+    const terminal = reviewGate.recoverableTerminalReviewStatus(statuses);
+    assert.equal(terminal?.id, 6100);
+    await reviewGate.ensureTerminalReviewState(client, pull, head, terminal, [...statuses]);
+    return log;
+  };
+
+  const clean = await scenario({ securityAfterSuccess: false });
+  const arm = clean.findIndex(([k]) => k === 'arm');
+  const success = clean.findIndex(([k, state]) => k === 'status' && state === 'success');
+  assert.ok(success >= 0 && arm > success, 'armed after the republished success');
+  assert.ok(clean.slice(success, arm).some(([k]) => k === 'record'), 'and after the merge authorization read Codex\'s record');
+  assert.deepEqual(clean[arm], ['arm', head], 'for this exact head');
+
+  const refused = await scenario({ securityAfterSuccess: true });
+  assert.equal(refused.some(([k]) => k === 'arm'), false, 'a security finding by the authorization arms nothing');
+  assert.equal(refused.some(([k]) => k === 'merge'), false);
+  const last = refused.filter(([k]) => k === 'status').at(-1);
+  assert.equal(last[1], 'failure', 'the green it would have acted on is replaced');
+});
