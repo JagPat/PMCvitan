@@ -370,4 +370,11 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   for (const name of REQUIRED_CHECKS) {
     assert.equal((await authorizeExactHeadMerge(makeClient({ runs: checks.map(run => run.name === name ? { ...run, conclusion: 'failure' } : run) }), pull, head)).state, 'gates_not_green');
   }
+  // G3 (#1289 round 2, Codex 4440043724) — a merge whose validation raced a base or head change says so: the re-arm
+  // asks again; every other hold is a gate still owed, whose own event wakes the gate
+  const { completeReviewedPullRequest } = await import('./autonomous-review-gate.mjs');
+  assert.equal(await completeReviewedPullRequest(makeClient({ pulls: [pull, { ...pull, base: { ...pull.base, sha: 'd'.repeat(40) } }] }), pull, head), 'held_changed');
+  assert.equal(await completeReviewedPullRequest(makeClient({ pulls: [pull, { ...pull, head: { ...pull.head, sha: 'c'.repeat(40) } }] }), pull, head), 'held_changed');
+  assert.equal(await completeReviewedPullRequest(makeClient({ statuses: [] }), pull, head), 'held_for_gates');
+  assert.equal(await completeReviewedPullRequest(makeClient({ commit: { commit: { message: 'no trailer here' } } }), pull, head), 'held_for_gates');
 });

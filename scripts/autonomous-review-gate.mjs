@@ -1525,7 +1525,9 @@ export async function completeReviewedPullRequest(
       });
       return 'review_refused';
     }
-    return 'held_for_gates';
+    // G3 (#1289 round 2, Codex 4440043724) — the head, base or readiness moved between the merge's reads: a race,
+    // not a gate still owed. A base push wakes no run on this head, so a re-arm that ends here is asked again
+    return authorization.state === 'changed_during_validation' ? 'held_changed' : 'held_for_gates';
   }
   pullRequest = authorization.pullRequest;
   const direct = await client.mergeExactHead(
@@ -1789,6 +1791,7 @@ export async function ensureTerminalReviewState(
   expectedHead,
   status,
   statuses,
+  outcome = null,
 ) {
   if (!isTerminalReviewStatus(status)) return false;
   if (status.state === 'success') {
@@ -1899,12 +1902,14 @@ export async function ensureTerminalReviewState(
         : 'review: recovered prior clean Codex result on this exact head',
     );
     if (!armedSafe) return true;
-    await completeReviewedPullRequest(
+    const recoveredCompletion = await completeReviewedPullRequest(
       client,
       finalPolicy.pullRequest,
       expectedHead,
       finalPolicy.verdict,
     );
+    // G3 (#1289 round 2) — the re-arm's settlement reads how the merge ended
+    if (outcome) outcome.completion = recoveredCompletion;
   } else {
     // Codex 4225790715 — a stored findings failure the cap now defers is not preserved: the ordinary review
     // path runs instead, which files the deferred findings and completes the head without a new push
@@ -3067,7 +3072,7 @@ export async function settleUnmatchedRecoveryRequest(client, pullRequest, expect
  * request is marked `REARM_ATTEMPT_FAILED`, which is no settlement, so the watchdog asks again for that success; a
  * failed mark never replaces the original error. With no re-arm request this is the step alone.
  */
-export async function withRearmSettlement(client, pullRequest, expectedHead, rearmRequest, step) {
+export async function withRearmSettlement(client, pullRequest, expectedHead, rearmRequest, step, outcome = {}) {
   if (!rearmRequest) return step();
   let result;
   try {
@@ -3079,6 +3084,12 @@ export async function withRearmSettlement(client, pullRequest, expectedHead, rea
       // the original error is the one that matters; a run that dies here is marked by the owner job's cleanup step
     }
     throw error;
+  }
+  if (outcome.completion === 'held_changed') {
+    // G3 (#1289 round 2, Codex 4440043724) — the merge's validation raced a base, head or readiness change: nothing
+    // armed and nothing will wake this head, so the attempt is marked failed (the watchdog asks again), not consumed
+    await client.setStatus(expectedHead, 'failure', REARM_ATTEMPT_FAILED, pullRequest.html_url, rearmRequest.status.context);
+    return result;
   }
   await settleRecoveryRequest(client, expectedHead, pullRequest, rearmRequest, REARM_CONSUMED_OUTCOME);
   return result;
@@ -3261,6 +3272,7 @@ export async function run() {
     }
   }
 
+  const rearmOutcome = {};
   const recovered = await withRearmSettlement(client, pullRequest, expectedHead, rearmRequest, async () => {
     const existingFinding = await guardAgainstCurrentHeadFinding(
       client,
@@ -3276,8 +3288,9 @@ export async function run() {
         expectedHead,
         terminalStatus,
         existingStatuses,
+        rearmOutcome,
       ));
-  });
+  }, rearmOutcome);
   if (recovered) {
     console.log(
       'Exact head already has a recoverable terminal Codex state; no review will be requested.',

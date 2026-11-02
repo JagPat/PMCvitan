@@ -380,3 +380,47 @@ test('G3 — structural: the owner job runs the cleanup on failure or cancel; ru
   const adopt = runBody.indexOf('recordAdoptedRearmRequest(expectedHead, rearmRequest);');
   assert.ok(adopt > 0 && adopt < runBody.indexOf('await withRearmSettlement('), 'recorded before its re-judge runs');
 });
+
+// #1289 round 2 (Codex 4440043724) — a re-judge whose merge validation raced a base, head or readiness change is
+// marked a failed attempt (the watchdog asks again), not consumed; any other ending still spends the head's re-arm.
+// The recovered success records how its merge ended for the settlement.
+test('G3 — a re-arm whose merge raced its validation stays re-askable', async () => {
+  const { withRearmSettlement } = await import('./autonomous-review-gate.mjs');
+  const { REARM_ATTEMPT_FAILED } = await import('./review-policy.mjs');
+  const head = 'c'.repeat(40);
+  const pull = { number: 7, html_url: 'u' };
+  const request = { terminalStatusId: '6100', status: { context: 'codex-recovery-request/6100' } };
+  const settle = async (completion) => {
+    const writes = [];
+    const client = { async setStatus(sha, state, description, url, context) { writes.push({ state, description, context }); return { id: 1 }; } };
+    const outcome = {};
+    const result = await withRearmSettlement(client, pull, head, request, async () => { outcome.completion = completion; return true; }, outcome);
+    return { result, writes };
+  };
+  const raced = await settle('held_changed');
+  assert.equal(raced.result, true);
+  assert.deepEqual(raced.writes, [{ state: 'failure', description: REARM_ATTEMPT_FAILED, context: 'codex-recovery-request/6100' }]);
+  for (const completion of ['held_for_gates', 'queued', 'merged', 'review_refused', undefined]) {
+    const ended = await settle(completion);
+    assert.deepEqual(ended.writes.map((w) => w.description), ['recovery: consumed by recovered success re-authorization'], String(completion));
+  }
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState('), gate.indexOf('async function waitForRequiredChecks'));
+  assert.match(recovery, /const recoveredCompletion = await completeReviewedPullRequest\([\s\S]{0,200}if \(outcome\) outcome\.completion = recoveredCompletion;/u);
+  const runBody = gate.slice(gate.indexOf('export async function run()'));
+  assert.match(runBody, /existingStatuses,\s*rearmOutcome,\s*\)\);\s*\}, rearmOutcome\);/u);
+});
+
+// #1289 round 2 (Codex 4440043736) — a retryable failure buried under the head's newest success is no recovery the
+// gate will authorize, so the watchdog does not ask about it: the unarmed green goes to the re-arm instead.
+test('G3 — a buried retryable failure does not starve the re-arm', async () => {
+  const { gateRecoveryStatus, gateRearmStatus } = await import('./correction-lease.mjs');
+  const green = { id: 6100, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head [wi:none]' };
+  const buried = { id: 6050, context: 'codex-current-head', state: 'failure', description: 'review: Codex review timed out after two attempts' };
+  const combined = { statuses: [green, buried] };
+  assert.equal(gateRecoveryStatus(combined), null);
+  assert.equal(gateRearmStatus(combined, { state: 'open', draft: false, auto_merge: null })?.id, 6100);
+  assert.equal(authorizeRecoveryDispatch([green, buried], '6050'), null, 'the buried failure is refused by the gate anyway');
+  // the newest retryable failure is still asked about
+  assert.equal(gateRecoveryStatus({ statuses: [buried, green] })?.id, 6050);
+});

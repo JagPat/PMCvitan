@@ -123,6 +123,11 @@ function hasPendingRecoveryRequest(statuses, terminalStatusId) {
  */
 export function gateRecoveryStatus(combinedStatus) {
   const statuses = combinedStatus?.statuses ?? [];
+  // G3 (#1289 round 2, Codex 4440043736) — a head whose newest review status is a success has no failure the gate
+  // will recover (`authorizeRecoveryDispatch` refuses every failure id beneath it), so a retryable failure buried
+  // under it is not asked about: the green is judged by the re-arm (`gateRearmStatus`) instead
+  const newest = statuses.find((status) => status?.context === CORRECTION_STATUS_CONTEXT);
+  if (newest?.state === 'success') return null;
   const failing = statuses.find(
     (status) => status?.context === CORRECTION_STATUS_CONTEXT
       && status?.state === 'failure'
