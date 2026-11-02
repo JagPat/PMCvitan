@@ -11,7 +11,7 @@
  * end-to-end in CI (the sandbox has no Postgres). Validate it once the API is
  * deployed and `VITE_API_URL` points at it.
  */
-import { clearVisitPoster, deleteVisitPhoto, failVisitPhoto, fileVisitPhoto, forgetRemovedVisitPhoto, getVisitPhoto, posterWaits, removedVisitPhotos, withinWait, type CommittedPhoto } from './visitPhotoStore';
+import { clearVisitPoster, deleteVisitPhoto, failVisitPhoto, fileVisitPhoto, forgetRemovedVisitPhoto, getVisitPhoto, posterWaits, removedVisitPhotos, VisitPhotoUnreadable, withinWait, type CommittedPhoto } from './visitPhotoStore';
 import { deleteEvidence, getEvidence, markEvidenceFailed } from './evidenceStore';
 import { MEDIA_NOT_FOUND_MESSAGE, NOT_A_VISIT_FILE_MESSAGE, SITE_PHOTO_DELETED_MESSAGE, VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
 import { deleteSitePhotoRow, getSitePhotoRow, ifSitePhotoUnlocked, isSitePhotoSent, markSitePhotoRefused, markSitePhotoSent, SitePhotoBusy, SitePhotoUnreadable } from './sitePhotoStore';
@@ -554,6 +554,11 @@ export const AWAITING_CLIENT_TIMEOUT_MS = 15_000;
 
 /** #995 V2b-2 — how long a clip's still frame (at most ~225 KB) may take to send before the flush goes on without it. */
 export const POSTER_SEND_WAIT_MS = 30_000;
+
+/** #1273 — how long a visit file removal may wait for the server's answer. A request that gets none by then is given
+ *  up, and the person is told no answer came (or that there is no signal), with the visit read again: a stalled
+ *  connection never leaves Remove busy for as long as it stays open. */
+export const REMOVE_VISIT_FILE_WAIT_MS = 20_000;
 
 /** A signal that aborts with a TimeoutError after `ms`. Browsers without AbortSignal.timeout (Mobile Safari
  *  before 16.4) get the same behaviour from a controller and a timer, so the read still fails instead of throwing. */
@@ -1515,8 +1520,11 @@ export class ApiGateway {
     if (page.status) q.set('status', page.status);
     if (page.limit) q.set('limit', String(page.limit));
     const qs = q.toString();
+    // #1239: the time each removal offer has left counts from when the read was asked, so its end is never late
+    const asked = askedAt();
     // M3: a read the person no longer waits for (a markup open stopped or past its bound) is cancelled with it
-    return this.req<SiteVisit[]>(`/projects/${this.projectId}/site-visits${qs ? `?${qs}` : ''}`, signal ? { signal } : undefined);
+    return this.req<SiteVisit[]>(`/projects/${this.projectId}/site-visits${qs ? `?${qs}` : ''}`, signal ? { signal } : undefined)
+      .then((page) => offersFrom(page, asked));
   }
   startSiteVisit(input: StartSiteVisitBody, idempotencyKey: string): Promise<SiteVisit> {
     return this.visitAct('', input, idempotencyKey);
@@ -1545,14 +1553,17 @@ export class ApiGateway {
     return this.req<{ ok: true }>(`/projects/${this.projectId}/media/${mediaId}/visit-removal`, {
       method: 'POST',
       body: JSON.stringify(reason === undefined ? {} : { reason }),
+      signal: timeoutSignal(REMOVE_VISIT_FILE_WAIT_MS),
     });
   }
   private visitAct(path: string, body: unknown, idempotencyKey: string): Promise<SiteVisit> {
+    // #1239: an act answers with the whole visit, its removal offers included, and the screen shows that answer
+    const asked = askedAt();
     return this.req<SiteVisit>(`/projects/${this.projectId}/site-visits${path}`, {
       method: 'POST',
       body: body === undefined ? undefined : JSON.stringify(body),
       headers: { 'Idempotency-Key': idempotencyKey },
-    });
+    }).then((v) => offersFrom([v], asked)[0]!);
   }
 }
 
@@ -1626,7 +1637,41 @@ export interface SiteVisitFile {
   /** #1179 — whether the viewer may remove it now, as the server read its rule: a reason is needed, and until when the
    *  offer lasts (the end of the viewer's hour on their own file; null for the PMC's offer on anyone's). Null when the
    *  viewer may not; absent from an API before removals and on a file the phone still holds. */
-  removable?: { reasonRequired: boolean; until: string | null } | null;
+  removable?: RemovalOffer | null;
+}
+/** #1179 — a removal offer as the server read its rule. `remainingMs` (#1239) is how long the offer had left at that
+ *  read, on the server's clock; absent from an API before it. `endsAt` and `endsAtWall` are never sent: this page sets
+ *  them when the answer arrives (`offersFrom`), the same time left counted on its steady clock (`performance.now()`)
+ *  and on the phone's clock (`Date.now()`), each from when it asked. The offer ends at whichever comes first: the
+ *  steady clock is untouched when the phone's clock is set, and the phone's clock keeps counting while a phone that
+ *  stops the steady clock sleeps. Either way the end is never later than the server's. */
+export interface RemovalOffer {
+  reasonRequired: boolean;
+  until: string | null;
+  remainingMs?: number | null;
+  endsAt?: number;
+  endsAtWall?: number;
+}
+
+/** When a read or an act was asked, on both clocks a removal offer's end is kept on (#1239). */
+export function askedAt(): { steady: number; wall: number } {
+  return { steady: performance.now(), wall: Date.now() };
+}
+
+/** #1239: marks each file's removal offer in an answer with when it ends, counted from `asked` (when the read or act
+ *  was asked, so the end is early by the round trip at most, never late). An offer from an API before `remainingMs`
+ *  is left as it was, and ends at its `until` on the phone's clock, as before. */
+export function offersFrom(visits: SiteVisit[], asked: { steady: number; wall: number }): SiteVisit[] {
+  for (const v of visits) {
+    for (const f of v.files ?? []) {
+      const r = f.removable;
+      if (r && typeof r.remainingMs === 'number' && Number.isFinite(r.remainingMs)) {
+        r.endsAt = asked.steady + r.remainingMs;
+        r.endsAtWall = asked.wall + r.remainingMs;
+      }
+    }
+  }
+  return visits;
 }
 /** A photo queued for a visit: the upload's own fields, under its `clientKey` (`id`), so a replay is the same file. The
  *  bytes are not here: they wait in `visitPhotoStore` beside this act (localStorage cannot hold photos). */
@@ -2274,7 +2319,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
       };
       // #1241: a file the server removed whose row this phone could not delete then is settled here, unsent, whatever
       // the row still says: its act goes, and its row is deleted when the phone can (the record stays until then)
-      if (removedVisitPhotos(op.scope, gw.project).has(id)) {
+      // #1266: records that cannot be read may hold this one: the act is held for this visit alone, never uploaded
+      const removed = removedVisitPhotos(op.scope, gw.project);
+      if (removed === 'unreadable') return Promise.reject(new VisitPhotoUnreadable());
+      if (removed.has(id)) {
         return withinWait(() => deleteVisitPhoto(op.scope, gw.project, id)).then(() => forgetRemovedVisitPhoto(op.scope, gw.project, id), () => {}).then(() => null);
       }
       // every read and write of the phone's record is bounded: one that fails or never answers rejects with

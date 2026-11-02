@@ -5,8 +5,8 @@ import type { Lang, ProjectMember, Role } from '@vitan/shared';
 import { VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
-import { replayOutboxOp, type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitFile, type SiteVisitRemoval } from '@/data/apiGateway';
-import { deleteRemovedVisitPhoto, deleteVisitPhoto, fileVisitPhoto, listVisitPhotos, putVisitPhoto, REMOVED_VISIT_PHOTO_PREFIX, removedVisitPhotos, visitPhotoScope, VisitPhotoUnreadable, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
+import { replayOutboxOp, tellSiteVisits, type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitFile, type SiteVisitRemoval } from '@/data/apiGateway';
+import { deleteRemovedVisitPhoto, deleteVisitPhoto, fileVisitPhoto, listVisitPhotos, putVisitPhoto, REMOVED_VISIT_PHOTO_PREFIX, removedVisitPhotos, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
 import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
 
 /**
@@ -279,6 +279,60 @@ describe('#1179 R3: taking a file off a visit', () => {
     expect(within(card).queryByTestId('sv-remove-m-v')).toBeNull();
   });
 
+  it('the offer ends when the server\'s count says, whatever the phone\'s clock says (#1239)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let steady = 1_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => steady);
+    // the phone's clock two hours behind: by it, `until` is far off; the server said a minute is left
+    now = NOW - 2 * 60 * 60 * 1000;
+    const slow = voice({ removable: { reasonRequired: false, until: new Date(NOW + 60_000).toISOString(), remainingMs: 60_000, endsAt: steady + 60_000 } });
+    const card = await mount('consultant', CONSULTANT, server(visit({ files: [slow] })).gw);
+    expect(within(card).getByTestId('sv-remove-m-v')).toBeTruthy();
+    steady += 60_001;
+    await act(async () => { vi.advanceTimersByTime(60_100); });
+    expect(within(card).queryByTestId('sv-remove-m-v')).toBeNull();
+  });
+
+  it('a timer that fires before the offer\'s end looks again, and the offer leaves at its end (#1239)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let steady = 1_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => steady);
+    const soon = voice({ removable: { reasonRequired: false, until: new Date(NOW + 60_000).toISOString(), remainingMs: 60_000, endsAt: steady + 60_000 } });
+    const card = await mount('consultant', CONSULTANT, server(visit({ files: [soon] })).gw);
+    // the page slept: its timer fires with half the time still left on the steady clock
+    steady += 30_000;
+    await act(async () => { vi.advanceTimersByTime(60_100); });
+    expect(within(card).getByTestId('sv-remove-m-v')).toBeTruthy();
+    steady += 30_001;
+    await act(async () => { vi.advanceTimersByTime(30_100); });
+    expect(within(card).queryByTestId('sv-remove-m-v')).toBeNull();
+  });
+
+  it('a phone whose steady clock stops while it sleeps still ends the offer by its own clock (gap-check)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.spyOn(performance, 'now').mockReturnValue(1_000);
+    const asleep = voice({ removable: { reasonRequired: false, until: new Date(NOW + 60_000).toISOString(), remainingMs: 60_000, endsAt: 61_000, endsAtWall: NOW + 60_000 } });
+    const card = await mount('consultant', CONSULTANT, server(visit({ files: [asleep] })).gw);
+    expect(within(card).getByTestId('sv-remove-m-v')).toBeTruthy();
+    // the steady clock did not move while the phone slept; the phone's clock did
+    now = NOW + 60_001;
+    await act(async () => { vi.advanceTimersByTime(60_100); });
+    expect(within(card).queryByTestId('sv-remove-m-v')).toBeNull();
+  });
+
+  it('a phone whose clock is ahead keeps the offer for the time the server said is left (#1239)', async () => {
+    let steady = 1_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => steady);
+    // the phone's clock two hours ahead: by it, `until` has passed; the server said ten minutes are left
+    now = NOW + 2 * 60 * 60 * 1000;
+    const fast = voice({ removable: { reasonRequired: false, until: new Date(NOW + 600_000).toISOString(), remainingMs: 600_000, endsAt: steady + 600_000 } });
+    const card = await mount('consultant', CONSULTANT, server(visit({ files: [fast] })).gw);
+    expect(within(card).getByTestId('sv-remove-m-v')).toBeTruthy();
+    steady += 599_000;
+    await click(within(card).getByTestId('sv-remove-m-v'));
+    expect(within(card).getByTestId('sv-remove-yes-m-v')).not.toBeDisabled();
+  });
+
   it('lists each removal line with what it was, in the viewer\'s language', async () => {
     const lines = [
       line({ mediaId: 'm-p', kind: 'photo', removedById: PMC, removedByName: 'Priya Shah', removedByRole: 'pmc', reason: 'Wrong site' }),
@@ -420,7 +474,7 @@ describe('#1179 R3: taking a file off a visit', () => {
     expect(screen.queryByText('File removed.')).toBeNull();
     expect(within(card).getByTestId('sv-file-m-n')).toBeTruthy();
     expect((await listVisitPhotos(scope, project)).map((r) => r.clientKey)).toEqual(['ck-n']);
-    expect(removedVisitPhotos(scope, project).size).toBe(0);
+    expect(removedVisitPhotos(scope, project)).toEqual(new Set());
   });
 
   it('a removed file whose copy the phone cannot delete just then is never shown from it again, and goes on the next read', async () => {
@@ -456,7 +510,7 @@ describe('#1179 R3: taking a file off a visit', () => {
     await mount('consultant', CONSULTANT, gw);
     await settled();
     expect(await listVisitPhotos(scope, project)).toEqual([]);
-    expect(removedVisitPhotos(scope, project).size).toBe(0);
+    expect(removedVisitPhotos(scope, project)).toEqual(new Set());
   });
 
   it('a queued send of a file recorded as removed is settled unsent, and never put back, even while its row cannot be deleted', async () => {
@@ -491,7 +545,189 @@ describe('#1179 R3: taking a file off a visit', () => {
     del.mockRestore();
     await expect(replayOutboxOp(gw as unknown as ApiGateway, op as unknown as OutboxOp, st.projectScopeGeneration)).resolves.toBeNull();
     expect(await listVisitPhotos(scope, project)).toEqual([]);
-    expect(removedVisitPhotos(scope, project).size).toBe(0);
+    expect(removedVisitPhotos(scope, project)).toEqual(new Set());
+  });
+
+  it('a removal recorded while its row cannot be deleted holds no act of its visit behind that row (#1265)', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    const op = {
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: 'idem-h', scope,
+      file: { id: 'ck-h', mime: 'image/jpeg' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
+    } as SiteVisitAddFileOp;
+    // a queued photo holds its visit's later acts while the phone's rows cannot be read
+    await putVisitPhoto(scope, project, op, 'AAAA');
+    expect(visitsHeldByPhotos(scope, project)).toEqual(new Set(['v-1']));
+    const del = vi.spyOn(IDBObjectStore.prototype, 'delete').mockImplementation(() => { throw new Error('storage down'); });
+    await expect(deleteRemovedVisitPhoto(scope, project, 'ck-h')).resolves.toBe('kept');
+    // the server has the file and removed it: nothing of its visit waits behind its row any more
+    expect(visitsHeldByPhotos(scope, project)).toEqual(new Set());
+    del.mockRestore();
+  });
+
+  it('a recorded removal lets go of its own row\'s hold only: another queued row of the same visit, and another visit, stay held (#1265)', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    const add = (visitId: string, key: string) => ({
+      t: 'siteVisitAddFile', visitId, idempotencyKey: `idem-${key}`, scope,
+      file: { id: key, mime: 'image/jpeg' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
+    } as SiteVisitAddFileOp);
+    await putVisitPhoto(scope, project, add('v-1', 'ck-a'), 'AAAA');
+    await putVisitPhoto(scope, project, add('v-1', 'ck-b'), 'AAAA');
+    await putVisitPhoto(scope, project, add('v-2', 'ck-c'), 'AAAA');
+    const del = vi.spyOn(IDBObjectStore.prototype, 'delete').mockImplementation(() => { throw new Error('storage down'); });
+    await expect(deleteRemovedVisitPhoto(scope, project, 'ck-a')).resolves.toBe('kept');
+    del.mockRestore();
+    expect(visitsHeldByPhotos(scope, project)).toEqual(new Set(['v-1', 'v-2']));
+    localStorage.removeItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-a`);
+  });
+
+  it('the queue\'s own read of the rows deletes a row recorded as removed, and its record, with no visit screen open (#1265)', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    const op = {
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: 'idem-q', scope,
+      file: { id: 'ck-q', mime: 'image/jpeg' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
+    } as SiteVisitAddFileOp;
+    // after a reload: the row is still kept and its removal recorded, and the queue holds no act for it
+    await putVisitPhoto(scope, project, op, 'AAAA');
+    localStorage.setItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-q`, '1');
+    const gw = { project, uploadMedia: vi.fn(async () => ({ id: 'm-q' })), listSiteVisits: vi.fn(async () => []) };
+    useStore.getState()._setGateway(tracked(gw) as unknown as ApiGateway);
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    await settled();
+    expect(gw.uploadMedia).not.toHaveBeenCalled();
+    expect(await listVisitPhotos(scope, project)).toEqual([]);
+    expect(removedVisitPhotos(scope, project)).toEqual(new Set());
+  });
+
+  it('removal records that cannot be read hold the queue and the screen closed: nothing uploaded, put back or shown from the phone (#1266)', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    const op = {
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: 'idem-u', scope,
+      file: { id: 'ck-u', mime: 'image/jpeg' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
+    } as SiteVisitAddFileOp;
+    await putVisitPhoto(scope, project, op, 'AAAA');
+    await filedCopy(scope, project, 'ck-f');
+    // a record was made, and then localStorage cannot be read
+    localStorage.setItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-u`, '1');
+    const unreadable = vi.spyOn(Storage.prototype, 'key').mockImplementation(() => { throw new Error('storage blocked'); });
+    expect(removedVisitPhotos(scope, project)).toBe('unreadable');
+    // a replay of its act is held, never uploaded
+    const gw = { project, uploadMedia: vi.fn(async () => ({ id: 'm-u' })), listSiteVisits: vi.fn(async () => [visit()]) };
+    await expect(replayOutboxOp(gw as unknown as ApiGateway, op as unknown as OutboxOp, st.projectScopeGeneration)).rejects.toBeInstanceOf(VisitPhotoUnreadable);
+    // the queue's own read of the rows puts nothing back
+    let putBack = false;
+    const stop = useStore.subscribe((x) => { if (x.outbox.some((o) => (o as { idempotencyKey?: string }).idempotencyKey === 'idem-u')) putBack = true; });
+    useStore.getState()._setGateway(tracked(gw) as unknown as ApiGateway);
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    await settled();
+    stop();
+    expect(putBack).toBe(false);
+    expect(gw.uploadMedia).not.toHaveBeenCalled();
+    // the screen shows no file from the phone's copies, and deletes none
+    const card = await mount('consultant', CONSULTANT, server(visit()).gw);
+    expect(within(card).queryByTestId('sv-file-ck-f')).toBeNull();
+    unreadable.mockRestore();
+    expect((await listVisitPhotos(scope, project)).map((r) => r.clientKey).sort()).toEqual(['ck-f', 'ck-u']);
+    localStorage.removeItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-u`);
+  });
+
+  it('removal records that cannot be read hold a visit\'s later acts behind its kept photo: its end never overtakes it (#1266, Codex 4438228520)', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    const op = {
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: 'idem-k', scope,
+      file: { id: 'ck-k', mime: 'image/jpeg' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
+    } as SiteVisitAddFileOp;
+    // after a reload: the photo is kept with no act queued, and its visit's end is queued behind it
+    await putVisitPhoto(scope, project, op, 'AAAA');
+    const end = { t: 'siteVisitEnd', visitId: 'v-1', claimedAt: new Date(NOW).toISOString(), idempotencyKey: 'idem-end' } as OutboxOp;
+    useStore.setState({ outbox: [end] });
+    const unreadable = vi.spyOn(Storage.prototype, 'key').mockImplementation(() => { throw new Error('storage blocked'); });
+    const gw = { project, uploadMedia: vi.fn(async () => ({ id: 'm-k' })), endSiteVisit: vi.fn(async () => visit()), listSiteVisits: vi.fn(async () => [visit()]) };
+    useStore.getState()._setGateway(tracked(gw) as unknown as ApiGateway);
+    await act(async () => { await useStore.getState().flushOutbox(); });
+    await settled();
+    unreadable.mockRestore();
+    expect(gw.uploadMedia).not.toHaveBeenCalled();
+    expect(gw.endSiteVisit).not.toHaveBeenCalled();
+    expect(useStore.getState().outbox.map((o) => (o as { idempotencyKey?: string }).idempotencyKey)).toContain('idem-end');
+  });
+
+  it('removal records that cannot be read leave out a filed copy whose act is still queued here (#1266, Codex 4438228523)', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    await filedCopy(scope, project, 'ck-a');
+    const row = (await listVisitPhotos(scope, project)).find((r) => r.clientKey === 'ck-a')!;
+    // a record was made, and then localStorage cannot be read
+    localStorage.setItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-a`, '1');
+    const unreadable = vi.spyOn(Storage.prototype, 'key').mockImplementation(() => { throw new Error('storage blocked'); });
+    const card = await mount('consultant', CONSULTANT, server(visit()).gw);
+    // this tab still holds the act of a row another tab filed
+    await act(async () => { useStore.setState({ online: false, outbox: [row.op] }); });
+    await settled();
+    expect(within(card).queryByTestId('sv-file-ck-a')).toBeNull();
+    unreadable.mockRestore();
+    localStorage.removeItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-a`);
+  });
+
+  it('removal records that cannot be read leave out a queued send too: its answer may have been lost and its file removed (#1266, Codex 4438362505)', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    const op = {
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: 'idem-ck-l', scope,
+      file: { id: 'ck-l', mime: 'image/jpeg' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
+    } as SiteVisitAddFileOp;
+    await putVisitPhoto(scope, project, op, 'AAAA');
+    localStorage.setItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-l`, '1');
+    const unreadable = vi.spyOn(Storage.prototype, 'key').mockImplementation(() => { throw new Error('storage blocked'); });
+    const card = await mount('consultant', CONSULTANT, server(visit()).gw);
+    // the send is still queued in this tab, its row still queued on the phone
+    await act(async () => { useStore.setState({ online: false, outbox: [op as unknown as OutboxOp] }); });
+    await settled();
+    expect(within(card).queryByTestId('sv-file-ck-l')).toBeNull();
+    unreadable.mockRestore();
+    localStorage.removeItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-l`);
+  });
+
+  it('removal records that cannot be read keep the visit photo retry armed, and its next read shows the phone\'s copies once they can be read (#1279)', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    await filedCopy(scope, project, 'ck-r');
+    localStorage.setItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-z`, '1');
+    const unreadable = vi.spyOn(Storage.prototype, 'key').mockImplementation(() => { throw new Error('storage blocked'); });
+    const retry = vi.spyOn(useStore.getState(), 'retrySiteVisits').mockImplementation(() => {});
+    const card = await mount('consultant', CONSULTANT, server(visit()).gw);
+    // hidden while the records cannot be read, with the retry armed: a filed copy the server has not listed yet always
+    // keeps it armed, so no event from storage itself is needed
+    expect(within(card).queryByTestId('sv-file-ck-r')).toBeNull();
+    expect(retry).toHaveBeenCalled();
+    unreadable.mockRestore();
+    retry.mockRestore();
+    // the retry's read, once the records can be read again, shows the copy
+    const now2 = useStore.getState();
+    await act(async () => { tellSiteVisits({ kind: 'retry', project: now2.activeProjectId, generation: now2.projectScopeGeneration }); });
+    await settled();
+    expect(within(card).getByTestId('sv-file-ck-r')).toBeTruthy();
+    localStorage.removeItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-z`);
   });
 
   it('a removal another tab recorded hides the phone\'s copy on an open screen at once', async () => {

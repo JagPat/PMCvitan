@@ -8,6 +8,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { StorageService } from '../../src/media/storage.service';
 import { MediaQueryService } from '../../src/media/media.query';
+import { SiteVisitFilesParticipant } from '../../src/site-visits/site-visit-files.participant';
 import { base64, webmTimed } from '../unit-support/voice-files';
 import { clipWebmTimed } from '../unit-support/video-files';
 import { SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
@@ -115,7 +116,7 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
     const id = await voice(consultantToken);
     const key = (await t.prisma.media.findUniqueOrThrow({ where: { id }, select: { storageKey: true } })).storageKey;
     const offered = (await visit(visitId, consultantToken)).files.find((x: { mediaId: string }) => x.mediaId === id);
-    expect(offered.removable).toEqual({ reasonRequired: false, until: expect.any(String) });
+    expect(offered.removable).toEqual({ reasonRequired: false, until: expect.any(String), remainingMs: expect.any(Number) });
     const res = await removeIt(id, consultantToken);
     expect(res.status, res.text).toBe(200);
     expect(res.body).toEqual({ ok: true });
@@ -179,7 +180,7 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
   it('the PMC removes anyone\'s file with a reason, after the hour too; without one, or with a blank one, it is refused', async () => {
     const id = await voice(consultantToken);
     await backdate(id);
-    expect((await visit()).files.find((x: { mediaId: string }) => x.mediaId === id).removable).toEqual({ reasonRequired: true, until: null });
+    expect((await visit()).files.find((x: { mediaId: string }) => x.mediaId === id).removable).toEqual({ reasonRequired: true, until: null, remainingMs: null });
     const none = await removeIt(id);
     expect(none.status).toBe(400);
     expect(none.body.message).toMatch(/Say why/);
@@ -267,14 +268,76 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
     expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey } })).toBe(0);
   });
 
+  it('#904: a replay that read its file just before the file\'s removal committed is answered as removed, 410, not refused (Codex round 3 on #1255)', async () => {
+    const clientKey = `svr-race-${run}-${randomUUID()}`;
+    const id = await voice(consultantToken, visitId, { clientKey });
+    // forced order: the replay has read the file's row; the removal commits before it reads the file's visit link
+    const files = t.app.get(SiteVisitFilesParticipant);
+    const linkOf = files.linkOf.bind(files);
+    const spy = vi.spyOn(files, 'linkOf').mockImplementationOnce(async (...args) => {
+      expect((await removeIt(id, consultantToken)).status).toBe(200);
+      return linkOf(...args);
+    });
+    try {
+      const replay = await upload(consultantToken, { kind: 'visit', mime: 'audio/webm', data: base64(webmTimed(4)), durationSec: 4, siteVisit: { visitId }, clientKey });
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect([replay.status, replay.body.message]).toEqual([410, SITE_PHOTO_DELETED_MESSAGE]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey } })).toBe(0);
+  });
+
+  it('#904: a voice note\'s replay that states another length is refused, as its upload would be (Codex 4437021486)', async () => {
+    const clientKey = `svr-len-${run}-${randomUUID()}`;
+    const id = await voice(pmcToken, visitId, { clientKey });
+    const body = { kind: 'visit', mime: 'audio/webm', data: base64(webmTimed(4)), siteVisit: { visitId }, clientKey };
+    expect((await upload(pmcToken, { ...body, durationSec: 9 })).status).toBe(403);
+    for (const durationSec of [4, 5, undefined]) {
+      const again = await upload(pmcToken, { ...body, durationSec });
+      expect([durationSec, again.status, again.body.id]).toEqual([durationSec, 201, id]);
+    }
+  });
+
+  it('#904: a plain file\'s key is not taken for a copy of a photo this visit has lost: the copy\'s bytes are its own (Codex 4437021483)', async () => {
+    const px = Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64');
+    const original = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
+    expect(original.status, original.text).toBe(201);
+    const plainKey = `svr-lost-${run}`;
+    const plain = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId }, clientKey: plainKey });
+    expect(plain.status, plain.text).toBe(201);
+    expect((await removeIt(original.body.id)).status).toBe(200);
+    // a copy is a new encode of its original, so its bytes are not the plain file's, even at the same type and length
+    const copyBytes = Buffer.from([0x89, 0x50, 0x4e, 0x48]).toString('base64');
+    const copy = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: copyBytes, sourceMediaId: original.body.id, siteVisit: { visitId }, clientKey: plainKey });
+    expect([copy.status, copy.body.id]).toEqual([403, undefined]);
+    expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: plainKey } })).toBe(1);
+  });
+
   it('a marked-up copy of a removed photo stays on the visit, its original link cleared', async () => {
     const px = Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64');
     const original = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
     expect(original.status, original.text).toBe(201);
-    const copy = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, sourceMediaId: original.body.id, siteVisit: { visitId } });
+    const clientKey = `svr-copy-${run}`;
+    const copyBody = { kind: 'visit', mime: 'image/png', data: px, sourceMediaId: original.body.id, siteVisit: { visitId }, clientKey };
+    const copy = await upload(pmcToken, copyBody);
     expect(copy.status, copy.text).toBe(201);
+    // a plain file's key is not taken for a copy of a photo that is still there (#904, Codex round 3 on #1255)
+    const plainKey = `svr-plain-${run}`;
+    const plain = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId }, clientKey: plainKey });
+    expect(plain.status, plain.text).toBe(201);
+    expect((await upload(pmcToken, { ...copyBody, clientKey: plainKey })).status).toBe(403);
+    // nor for a copy of a photo this visit never lost: an id that never existed, or another project's photo (#904)
+    expect((await upload(pmcToken, { ...copyBody, clientKey: plainKey, sourceMediaId: randomUUID() })).status).toBe(403);
+    const elsewhere = await http().post(`/projects/${f.projectB.id}/media`).set('Authorization', `Bearer ${otherToken}`)
+      .send({ kind: 'progress', mime: 'image/png', data: px });
+    expect(elsewhere.status, elsewhere.text).toBe(201);
+    expect((await upload(pmcToken, { ...copyBody, clientKey: plainKey, sourceMediaId: elsewhere.body.id })).status).toBe(403);
     expect((await removeIt(original.body.id)).status).toBe(200);
     expect(await t.prisma.media.findUniqueOrThrow({ where: { id: copy.body.id }, select: { sourceMediaId: true } })).toEqual({ sourceMediaId: null });
+    // the copy's own resend, still naming the removed original, is the same copy (Codex round 3 on #1255)
+    const again = await upload(pmcToken, copyBody);
+    expect([again.status, again.body.id]).toEqual([201, copy.body.id]);
     expect((await visit()).files.map((x: { mediaId: string }) => x.mediaId)).toContain(copy.body.id);
     expect((await t.prisma.siteVisitFileRemoval.findUniqueOrThrow({ where: { mediaId: original.body.id } })).fileKind).toBe('photo');
   });
@@ -344,7 +407,7 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
       await t.prisma.activity.deleteMany({ where: { id: activityId } });
     }
     // once nothing cites it, it is offered again
-    expect((await visit()).files.find((x: { mediaId: string }) => x.mediaId === id).removable).toEqual({ reasonRequired: false, until: expect.any(String) });
+    expect((await visit()).files.find((x: { mediaId: string }) => x.mediaId === id).removable).toEqual({ reasonRequired: false, until: expect.any(String), remainingMs: expect.any(Number) });
   });
 
   it('the offer judges the hour on the database\'s clock, as the removal does, not the API\'s (Codex 4397416735)', async () => {
@@ -361,5 +424,23 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
     }
     expect(offer).toBeNull();
     expect((await removeIt(id, consultantToken)).status).toBe(403);
+  });
+
+  it('the offer says how long it has left on the database\'s clock, so a phone whose clock is off ends it in time (#1239)', async () => {
+    const id = await voice(consultantToken);
+    // the API's clock half an hour behind: the time left is still measured from the database's now, not the API's
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 30 * 60 * 1000);
+    let offer: { until: string; remainingMs: number };
+    try {
+      offer = (await visit(visitId, consultantToken)).files.find((x: { mediaId: string }) => x.mediaId === id).removable;
+    } finally {
+      clock.mockRestore();
+    }
+    const [{ now }] = await t.prisma.$queryRaw<Array<{ now: Date }>>`SELECT site_visits_now() AS "now"`;
+    // the time left ends at `until` on the database's clock (the read came a moment before this one)
+    expect(offer.remainingMs).toBeGreaterThan(0);
+    expect(offer.remainingMs).toBeLessThanOrEqual(60 * 60 * 1000);
+    expect(Date.parse(offer.until) - now.getTime()).toBeLessThanOrEqual(offer.remainingMs);
+    expect(Date.parse(offer.until) - now.getTime()).toBeGreaterThan(offer.remainingMs - 60_000);
   });
 });

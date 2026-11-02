@@ -103,8 +103,9 @@ export function blocksUnderCap(comment, changedLines) {
  * thread, `in_reply_to_id` set) opens no finding, so it never makes its thread's head a review round;
  * only thread-opening comments and Codex's own reviews count.
  */
-export function findingRoundHeads(comments = [], reviews = []) {
-  const heads = new Set(codexFindingHeads(comments.filter((comment) => comment?.in_reply_to_id == null), []));
+export function findingRoundHeads(comments = [], reviews = [], issueComments = []) {
+  // Codex 4438607048 — a security-only head counts as a round through the shared predicate's markers
+  const heads = new Set(codexFindingHeads(comments.filter((comment) => comment?.in_reply_to_id == null), [], issueComments));
   // Reviews are judged against the FULL comment set: the replies are exactly the evidence
   // `isCodexReplyOnlyReview` needs to recognise a blank reply-only review (Codex 4214359522); filtering them
   // out first would count that review as a round.
@@ -127,8 +128,8 @@ export function findingRoundHeads(comments = [], reviews = []) {
 /** The pull-request files endpoint returns at most this many files, however it is paginated. */
 export const GITHUB_PR_FILES_LIMIT = 3000;
 
-export function reviewCapState({ expectedHead, reviews = [], comments = [], files = [], changedFiles = null }) {
-  const priorRounds = [...findingRoundHeads(comments, reviews)].filter((head) => head !== expectedHead).length;
+export function reviewCapState({ expectedHead, reviews = [], comments = [], files = [], changedFiles = null, issueComments = [] }) {
+  const priorRounds = [...findingRoundHeads(comments, reviews, issueComments)].filter((head) => head !== expectedHead).length;
   // complete only when the list was read, is under GitHub's cap, and (when the PR's own count is known)
   // accounts for every changed file
   const list = Array.isArray(files) ? files : [];
