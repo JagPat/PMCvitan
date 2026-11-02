@@ -37,6 +37,7 @@ export const TEST_ACCOUNT = 'Test accounts sign in through the operator door.';
 export const EMAIL_UNVERIFIED = 'Your email is not confirmed yet. Use "Set or reset password" to confirm it.';
 export const ISSUER_ACCOUNT_EXISTS = 'This email already has a Redbracket ID. Enter that password here to join with it.';
 export const NEEDS_HELP = 'This email cannot be set up here. Ask your PMC for help.';
+export const PASSWORD_CHANGED = 'Your password was just changed. Sign in with the new one.';
 const TOO_MANY = 'Too many attempts. Try again in a few minutes.';
 /** The bcrypt cost new PMC passwords use (password-credentials.service.ts); every break-glass try does this much work. */
 const EVEN_COST = 12;
@@ -130,13 +131,35 @@ export class IdentitySignInService {
     const attempt = await this.counted('sign-in', 'login', email, address);
     const read = readIdentityConfig();
     if (read.state !== 'on') return this.breakGlass(email, input.password, attempt, 'settings incomplete');
+    // the account's credential epoch before the issuer checks the password: a reset that commits while that check is in
+    // flight moves it on, and a proof of the password from before the reset must not open a session after it
+    const before = await this.orgs.accountByAddress(this.prisma, { email });
     const result = await this.clientFor(read.config).login(email, input.password);
     if (!result.ok && result.failure === 'down') return this.breakGlass(email, input.password, attempt, 'issuer unavailable');
     if (!result.ok) {
       this.line('login', attempt, 'wrong password');
       throw new UnauthorizedException(WRONG_PASSWORD);
     }
-    const settled = await this.prisma.$transaction((tx) => settleSignIn(tx, read.config.issuer, result.claims));
+    const settled = await this.prisma.$transaction(async (tx): Promise<Settled | { kind: 'stale' } | { kind: 'other-account' }> => {
+      const found = await settleSignIn(tx, read.config.issuer, result.claims);
+      // an account this sign-in just made has no earlier credential; any other is judged against the epoch read before
+      // the proof, under its credential lock (the lock a reset's `endSessions` takes to move it on), so a reset either
+      // committed first (refused here) or ends this session when it commits
+      if (found.kind !== 'account' || found.fresh) return found;
+      await lockUserCredential(tx, found.user.id);
+      const current = await this.orgs.accountById(tx, found.user.id);
+      if (!before || !current || before.id !== current.id) return { kind: 'other-account' };
+      if (current.credentialVersion !== before.credentialVersion) return { kind: 'stale' };
+      return { kind: 'account', user: current, fresh: false };
+    });
+    if (settled.kind === 'stale') {
+      this.line('login', attempt, 'password changed during sign-in');
+      throw new UnauthorizedException(PASSWORD_CHANGED);
+    }
+    if (settled.kind === 'other-account') {
+      this.line('login', attempt, 'email names another account');
+      throw new UnauthorizedException(NEEDS_HELP);
+    }
     return this.landed('login', attempt, settled);
   }
 

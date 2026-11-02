@@ -21,6 +21,7 @@ import { IdentitySignInService } from '../../src/auth/identity/identity-sign-in.
 import { PHONE_SIGN_IN_PURPOSE } from '../../src/auth/phone-sign-in.service';
 import { PasswordCredentialsService } from '../../src/auth/password-credentials.service';
 import { SignInAttempts } from '../../src/auth/identity/sign-in-attempts';
+import { IdentityClient } from '../../src/auth/identity/identity-client';
 import { OrgsParticipant } from '../../src/orgs/orgs.participant';
 import { lockOrgStanding, orgStandingLockKey } from '../../src/common/readiness-lock';
 import { Prisma } from '@prisma/client';
@@ -741,6 +742,36 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     expect(limited.body).toEqual({ accepted: true, requestId: expect.any(String) });
     expect(lines.mock.calls.map((c) => [c[0], c[2]])).toEqual([['password request', 'limited']]);
     expect(notSent).not.toHaveBeenCalled();
+  });
+
+  it('a password proof the issuer gave before a reset committed opens no session; the new password signs in', async () => {
+    const user = await invitee('proof-race');
+    await setPassword(user.email!, 'the old issuer passphrase', 201);
+    await t.prisma.signInAttempt.deleteMany({});
+    const original = IdentityClient.prototype.login;
+    // the issuer accepts the old password; before PMC settles that sign-in, a whole reset runs and finishes
+    vi.spyOn(IdentityClient.prototype, 'login').mockImplementationOnce(async function (this: IdentityClient, ...args: Parameters<IdentityClient['login']>) {
+      const proof = await original.apply(this, args);
+      await setPassword(user.email!, 'the new issuer passphrase', 201);
+      return proof;
+    });
+    const lines = vi.spyOn(IdentitySignInService.prototype as unknown as { line: (r: string, a: string, o: string) => void }, 'line');
+    const raced = await login(user.email!, 'the old issuer passphrase').expect(401);
+    expect(raced.body.message).toBe('Your password was just changed. Sign in with the new one.');
+    expect(raced.body.token).toBeUndefined();
+    expect(lines.mock.calls.filter((c) => c[0] === 'login').map((c) => c[2])).toEqual(['password changed during sign-in']);
+    await login(user.email!, 'the old issuer passphrase').expect(401);
+    const ok = await login(user.email!, 'the new issuer passphrase').expect(201);
+    expect(sub(ok.body.token)).toBe(user.id);
+  });
+
+  it('a linked account whose PMC email no longer names it is not signed in by the issuer email', async () => {
+    const user = await invitee('moved-email');
+    await setPassword(user.email!, 'a long issuer passphrase', 201);
+    const issuerEmail = user.email!;
+    await t.prisma.user.update({ where: { id: user.id }, data: { email: `moved-${Date.now()}@test.local` } });
+    const r = await login(issuerEmail, 'a long issuer passphrase').expect(401);
+    expect(r.body.message).toBe('This email cannot be set up here. Ask your PMC for help.');
   });
 
   it('a test account address is never linked or retired', async () => {
