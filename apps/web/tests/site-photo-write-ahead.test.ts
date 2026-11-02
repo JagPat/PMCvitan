@@ -3,7 +3,8 @@ import { IDBFactory } from 'fake-indexeddb';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { queuedSitePhotos, uploadQueued } from '@/lib/queuedSitePhotos';
 import { warmImports } from './warm-imports';
-import { settled, startWork } from './site-visit-work';
+import { forgetStaleWork, settled, staleWork, startWork } from './site-visit-work';
+import { makeLockManager } from '@/test/lockManager';
 import { queueWritten, storedQueue } from './queueWrites';
 
 await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/data/sitePhotoStore'), () => import('@/store/queueLedger'));
@@ -58,6 +59,14 @@ function uploads() {
   return { fn, calls, called };
 }
 
+/** Every tab this test opened: closed when it ends (`closeTabs`), as a browser ends a closed tab's timers. */
+const opened: Array<{ getState(): { _setGateway: (g: null) => void }; setState(p: object): void }> = [];
+/** Closes this test's tabs: no server and no signal, so a retry a tab scheduled on the real clock (`retrySitePhotos`,
+ *  5 s doubling to 60 s) finds itself no longer current when it fires in a later test, and sends nothing there. */
+const closeTabs = (): void => {
+  for (const t of opened.splice(0)) { t.setState({ online: false }); t.getState()._setGateway(null); }
+};
+
 /** One tab: its own store (and its own copy of the row store), over this test's database and storage. */
 async function tab() {
   vi.stubEnv('VITE_API_URL', 'http://api.test');
@@ -66,6 +75,7 @@ async function tab() {
   const scope = await import('@/store/projectScope');
   useStore.setState(getInitialState());
   useStore.setState({ ...scope.emptyProjectData(), activeProjectId: 'villa-b', projectScopeGeneration: 1, projectLoadState: 'ready', online: true, lang: 'en' } as never);
+  opened.push(useStore as never);
   return useStore;
 }
 /** The row store the last tab loaded. */
@@ -86,13 +96,22 @@ const withoutDatabase = (fn: () => void): void => {
 };
 const storedOutboxes = (): string[] => Object.keys(localStorage).filter((k) => k.startsWith('vitan.outbox')).map((k) => localStorage.getItem(k) ?? '');
 
+// this test's Web Locks: a fresh manager, as a fresh browser has, so a photo lock an earlier test held on purpose (an
+// upload it never answered) is not held here
+let testLocks: unknown;
 beforeEach(() => {
   // a fresh phone database for every test: nothing one test leaves is read by the next
   globalThis.indexedDB = new IDBFactory();
   localStorage.clear();
+  testLocks = makeLockManager();
+  Object.defineProperty(globalThis.navigator, 'locks', { value: testLocks, configurable: true });
 });
 
 afterEach(async () => {
+  closeTabs();
+  // GUARD: nothing an earlier test opened acted in this one, and this test put back the Web Locks it was given
+  expect(staleWork(), 'a tab an earlier test left open acted in this one').toEqual([]);
+  expect((globalThis.navigator as { locks?: unknown }).locks, 'this test did not put back navigator.locks').toBe(testLocks);
   (await rowsOf()).setSitePhotoDeadline(null);
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
@@ -217,8 +236,8 @@ describe('an online site photo the server answers (#917)', () => {
 
 // this tab's own claim on its send: the row's Web Lock, and, in a browser without Web Locks, the tab's own record
 describe.each([['with', true], ['without', false]])('this tab\'s own unanswered send, in a browser %s Web Locks (#917)', (_label, withLocks) => {
-  const setup = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
-  beforeEach(() => { if (!withLocks) Object.defineProperty(globalThis.navigator, 'locks', { value: undefined, configurable: true }); });
+  let setup: PropertyDescriptor | undefined;
+  beforeEach(() => { setup = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks'); if (!withLocks) Object.defineProperty(globalThis.navigator, 'locks', { value: undefined, configurable: true }); });
   afterEach(() => { if (setup) Object.defineProperty(globalThis.navigator, 'locks', setup); });
 
   it('a flush while its send is unanswered gives its copy no op, so it is sent once', async () => {
@@ -1745,7 +1764,7 @@ describe('a site photo picked offline is kept in a row, not as bytes in the stor
       expect(A.getState().sitePhotosKept.map((k) => k.clientKey)).toEqual([key]);
       expect(A.getState().dailyLog!.progress).toBe(1);
     } finally {
-      delete (navigator as { locks?: unknown }).locks;
+      Object.defineProperty(navigator, 'locks', { value: testLocks, configurable: true });
     }
   });
 
@@ -1817,5 +1836,51 @@ describe('a site photo picked offline is kept in a row, not as bytes in the stor
     await settled();
     expect(A.getState().outbox).toEqual([]);
     expect(up.fn).toHaveBeenCalledTimes(1);
+  });
+});
+
+// GUARD (the write-ahead hang under load, 2 Nov): a tab an earlier test left open had its real-clock retry fire in a
+// later test, read that test's rows and flush them through its own never-answered upload, holding the photo's lock; the
+// later test's `settled()` then waited on it for ever. Each test now closes its tabs, gets fresh Web Locks, and fails
+// (the file's `afterEach`) if a store of an earlier test acted in it or `navigator.locks` was not put back.
+describe('every test closes the tabs it opened (guard)', () => {
+  // a tab the first row leaves open on purpose (taken off this test's list, so it is not closed), for the second row
+  let leftOpen: Store | null = null;
+  it('(a tab left open on purpose for the next row)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    A.getState()._setGateway({ uploadMedia: vi.fn(), snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    opened.splice(opened.indexOf(A as never), 1);
+    leftOpen = A;
+  });
+
+  it('a flush of a store an earlier test left open is recorded against the test it ran in, and fails it', async () => {
+    const B = await tab();
+    startWork(B as never);
+    expect(leftOpen).not.toBeNull();
+    await leftOpen!.getState().flushOutbox();
+    expect(staleWork()).toEqual([expect.stringMatching(/a flush of a store opened in ".*a tab left open on purpose/)]);
+    // (recorded on purpose here: forgotten, so the file's guard judges only what follows)
+    forgetStaleWork();
+    leftOpen!.setState({ online: false } as never);
+    leftOpen!.getState()._setGateway(null as never);
+    leftOpen = null;
+  });
+
+  it('a closed tab sends nothing when its retry fires: no server, no signal', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const up = uploads();
+    A.getState()._setGateway({ uploadMedia: up.fn, snapshot: vi.fn().mockResolvedValue(snap), project: 'villa-b' } as never);
+    A.setState({ online: false } as never);
+    A.getState().addProgressPhoto(PNG);
+    await until(A, (s) => s.toast === SAVED);
+    await settled();
+    closeTabs();
+    // what its retry does when it fires: a flush, which finds no server and no signal
+    await A.getState().flushOutbox();
+    await settled();
+    expect(up.fn).not.toHaveBeenCalled();
+    expect(A.getState().online).toBe(false);
   });
 });

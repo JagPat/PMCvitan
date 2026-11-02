@@ -1,5 +1,5 @@
 import { act } from '@testing-library/react';
-import { vi } from 'vitest';
+import { expect, vi } from 'vitest';
 
 /**
  * The signals the SV2 photo tests wait on instead of a clock (#792). Every piece of work a photo test starts is followed
@@ -28,6 +28,8 @@ const flushes = new Set<Promise<unknown>>();
 const calls = new Map<string, number>();
 const unfollowed = new Set<string>();
 const waiters: Array<{ name: string; n: number; done: () => void }> = [];
+// flushes asked of a store whose test has ended: a tab an earlier test left open acting in this one (staleWork)
+const stale: Array<{ in: string | undefined; what: string }> = [];
 
 // the real timer, kept before any test fakes one: a turn here must pass whether or not the test's own clock is faked
 const later = globalThis.setTimeout.bind(globalThis);
@@ -85,10 +87,16 @@ export function startWork(useStore: Store) {
   calls.clear();
   unfollowed.clear();
   waiters.length = 0;
+  // the test that opened this store, by name (two tabs of one test each call startWork, and are both its own)
+  const owner = expect.getState().currentTestName;
   const flush = useStore.getState().flushOutbox;
   useStore.setState({
     flushOutbox: (...args: never[]) => {
       const p = flush(...args);
+      // a store of an earlier test is not this test's work: it is never waited on here, and it is recorded, so the test
+      // that let it act fails (staleWork)
+      const now = expect.getState().currentTestName;
+      if (owner !== now) { stale.push({ in: now, what: `a flush of a store opened in "${owner}"` }); return p; }
       flushes.add(p);
       const out = () => { flushes.delete(p); };
       p.then(out, out);
@@ -129,6 +137,11 @@ const quiet = async (flushes: boolean) => {
     if (!busy(flushes) && started === before) return;
   }
 };
+
+/** What stores of earlier tests did in this one (each a flush): empty while every test closes the tabs it opened. */
+export const staleWork = (): string[] => stale.filter((x) => x.in === expect.getState().currentTestName).map((x) => x.what);
+/** Forgets what earlier tests' stores did in this test: only for the guard's own row, which makes one act on purpose. */
+export const forgetStaleWork = (): void => { stale.length = 0; };
 
 /** Every flush, storage call, file read and server call has ended, and a turn has passed with none started. */
 export const settled = () => quiet(true);
