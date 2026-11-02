@@ -1623,6 +1623,9 @@ model User {
   orgMemberships               OrgMembership[]
   memberships                  Membership[]
   passwordChallenges           PasswordCredentialChallenge[]
+  // Redbracket ID A1 (20280203000000) — the issuer person this user is, when linked, and its switch-off record
+  platformPersonLink           PlatformPersonLink?
+  identityRetirement           IdentityRetirement?
   securityEvents               SecurityAuditEvent[]           @relation("SecurityEventTarget")
   securityActorEvents          SecurityAuditEvent[]           @relation("SecurityEventActor")
   requirementRootsCreated      ActivityRequirementRoot[]      @relation("requirementRootsCreated")
@@ -1686,6 +1689,48 @@ model User {
   paymentsReversed             PaymentReversal[]              @relation("paymentsReversed")
   advancesPaid                 VendorAdvance[]                @relation("advancesPaid")
   hubLinkEvents                DrawingHubLinkEvent[]          @relation("hubLinkEventsBy")
+}
+
+// Redbracket ID A1 (20280203000000; notes/auth/redbracket-id/plan.md) — which Redbracket ID person (the issuer's `sub`)
+// a PMC user is. At most one per user and one user per (issuer, subject). No password, hash, token or email. Falls with
+// its user. matchedOn: 'signup' (a new account made on a person's first Redbracket ID sign-in) or 'invite' (a
+// never-used invited account, linked after PMC's own emailed code proved the mailbox). Never by an email match alone
+// (Board fresh-join rule). The CHECK (one spelling of an https issuer, 1-255 printable ASCII subject, the two matchedOn
+// values, finite time) is in the migration. Nothing reads or writes it yet.
+model PlatformPersonLink {
+  userId    String   @id
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  issuer    String
+  subject   String
+  matchedOn String
+  createdAt DateTime @default(now())
+
+  @@unique([issuer, subject])
+}
+
+// Redbracket ID A1 (20280203000000) — an older account switched off when its email first signed in through Redbracket
+// ID: the email it had (set aside on the user row) and when, so an operator can undo it. Falls with its user. The CHECK
+// (non-blank email, finite time) is in the migration. Nothing reads or writes it yet.
+model IdentityRetirement {
+  userId    String   @id
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email     String
+  retiredAt DateTime @default(now())
+}
+
+// Redbracket ID A1 (20280203000000) — one row per sign-in or password-reset attempt, counted before the issuer is
+// called (5 per email and address in 15 min, 10 per email in 1 h; rows older than a day deleted). Only a 64-hex digest
+// (HMAC-SHA-256 under a server secret, computed by A3) of the email and the client address, never either itself. The CHECK (kind 'sign-in' | 'reset', 64-hex hashes, finite
+// time) is in the migration. Nothing reads or writes it yet.
+model SignInAttempt {
+  id          BigInt   @id @default(autoincrement())
+  kind        String
+  emailHash   String
+  addressHash String
+  at          DateTime @default(now())
+
+  @@index([emailHash, at])
+  @@index([at])
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
