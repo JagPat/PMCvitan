@@ -6,7 +6,7 @@ import { CLOCK, type Clock } from '../common/clock';
 import { addCivilDays, fromIsoCivilDate } from '../common/civil-date';
 import { nextSeqId } from '../domain/ids';
 import { ddMmmYyyy } from '../domain/dates';
-import { lockUserCredential } from '../common/credential-lock';
+import { lockUserCredential, PASSWORD_SETUP_PURPOSE } from '../common/credential-lock';
 import { resolveActor, type Actor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import { NodeInitParticipant } from '../nodes/node-init.participant';
@@ -415,8 +415,9 @@ export class OrgsService {
         }
         // a password setup that claimed its code (under this same lock) proved the address, and may already have made
         // the person at Redbracket ID with it: the address is no longer a typo to correct, even if that setup failed later
+        // (a redeemed phone code is consumed and verified with no expiry too, and proves nothing about the address)
         const claimed = await tx.passwordCredentialChallenge.findFirst({
-          where: { userId, verifiedAt: { not: null }, consumedAt: { not: null }, setupTokenExpiresAt: null },
+          where: { userId, purpose: PASSWORD_SETUP_PURPOSE, verifiedAt: { not: null }, consumedAt: { not: null }, setupTokenExpiresAt: null },
           select: { id: true },
         });
         if (claimed) {

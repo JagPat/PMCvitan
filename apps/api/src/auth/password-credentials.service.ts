@@ -9,13 +9,13 @@ import type {
   PasswordCredentialVerifyInput,
 } from '../contracts';
 import { PrismaService } from '../prisma.service';
-import { lockUserCredential } from '../common/credential-lock';
+import { lockUserCredential, PASSWORD_SETUP_PURPOSE } from '../common/credential-lock';
 import { EmailService } from '../platform/email.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import type { IdentityOutcome, IdentitySignInService } from './identity/identity-sign-in.service';
 import { isRetired } from './identity/identity-accounts';
 
-const PURPOSE = 'password_setup_or_reset';
+const PURPOSE = PASSWORD_SETUP_PURPOSE;
 const LIFETIME_MS = 10 * 60_000;
 const MAX_ATTEMPTS = 5;
 const BCRYPT_COST = 12;

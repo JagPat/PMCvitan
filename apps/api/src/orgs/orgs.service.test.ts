@@ -746,7 +746,7 @@ describe('OrgsService invitation-email correction', () => {
     await expect(svc.correctInvitationEmail('org1', 'caller1', 'target1', { email: 'new@vitan.in' }))
       .rejects.toThrow(/already confirmed by a password setup/);
     expect(prisma.passwordCredentialChallenge.findFirst).toHaveBeenCalledWith({
-      where: { userId: 'target1', verifiedAt: { not: null }, consumedAt: { not: null }, setupTokenExpiresAt: null },
+      where: { userId: 'target1', purpose: 'password_setup_or_reset', verifiedAt: { not: null }, consumedAt: { not: null }, setupTokenExpiresAt: null },
       select: { id: true },
     });
     expect(target.email).toBe('wrong@vitan.in');

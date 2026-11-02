@@ -84,7 +84,7 @@ function fakePrisma(seed: UserRow[]) {
           if (data.consumedAt instanceof Date) row.consumedAt = data.consumedAt;
           if (data.verifiedAt instanceof Date) row.verifiedAt = data.verifiedAt;
           if (typeof data.setupTokenHash === 'string') row.setupTokenHash = data.setupTokenHash;
-          if (data.setupTokenExpiresAt instanceof Date) row.setupTokenExpiresAt = data.setupTokenExpiresAt;
+          if (data.setupTokenExpiresAt instanceof Date || data.setupTokenExpiresAt === null) row.setupTokenExpiresAt = data.setupTokenExpiresAt;
           if (typeof data.attempts === 'object' && data.attempts && 'increment' in data.attempts) {
             row.attempts += Number((data.attempts as { increment: number }).increment);
           }
@@ -252,6 +252,8 @@ describe('PasswordCredentialsService', () => {
     expect(await bcrypt.compare('a long internal passphrase', updated.passwordHash!)).toBe(true);
     expect(updated.emailVerifiedAt).toEqual(new Date('2026-07-15T10:00:00.000Z'));
     expect(updated.credentialVersion).toBe(1);
+    // the claim spends the code and clears its expiry: the durable mark an invitation-email correction refuses on
+    expect(prisma.challenges[0]).toMatchObject({ consumedAt: expect.any(Date), verifiedAt: expect.any(Date), setupTokenExpiresAt: null });
     expect(prisma.events).toEqual([
       expect.objectContaining({ action: 'auth.password_requested', targetUserId: 'u-active' }),
       expect.objectContaining({
