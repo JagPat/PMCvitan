@@ -330,8 +330,9 @@ export class MediaService {
         // project key, and the insert key-share locks a linked decision, which a forward holding this person's
         // anchor exclusive waits on; taking the anchor only at the emit would close the cycle
         await lockStandingAnchors(tx, { read: [user.sub] });
-        // a proof's item is held FOR SHARE until this commits, after the anchor as an evidence link's checks are: a write
-        // that clears it waits, or this sees it cleared
+        // a proof's inspection is held FOR UPDATE and its item FOR SHARE until this commits, before the insert and the
+        // emit: a write that clears the item waits, or this sees it cleared, and an evidence upload on the inspection
+        // meets this at the inspection row before either holds the event stream (U-4 gap-check, probe D1)
         if (proof) await this.inspections.assertProofTarget(projectId, proof.inspectionId, proof.inspectionItemId, tx);
         const created = await tx.media.create({
           data: {
@@ -446,6 +447,8 @@ export class MediaService {
   async setNode(id: string, projectId: string, nodeId: string | null, user: AuthUser): Promise<SnapshotDto> {
     const row = await this.prisma.media.findUnique({ where: { id } });
     if (!row || row.projectId !== projectId) throw new NotFoundException('Media not found');
+    // #482 site photos unit 4: a proof photo is filed on its inspection item only, never on a place (its kind never changes)
+    if (row.kind === 'proof') throw new BadRequestException('A proof photo stays on its inspection item and is never filed on a place');
     const actor = await resolveActor(this.prisma, user);
     const ev = await this.prisma.$transaction(async (tx) => {
       // a photo on someone else's private draft (filed before #881) is answered as if it did not exist:

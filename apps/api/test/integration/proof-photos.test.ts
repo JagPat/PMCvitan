@@ -21,7 +21,7 @@ describe('a contractor or consultant adds a proof photo on a failed inspection i
   const px = Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64');
   const inspectionId = () => `${f.projectA.id}-proof-insp`;
   const otherInspectionId = () => `${f.projectA.id}-proof-insp-2`;
-  const item = {} as Record<'failed' | 'passed' | 'rejected' | 'other' | 'racing' | 'deciding', string>;
+  const item = {} as Record<'failed' | 'passed' | 'rejected' | 'other' | 'racing' | 'deciding' | 'evidenced' | 'proven' | 'second', string>;
 
   const http = () => request(t.app.getHttpServer());
   const upload = (token: string, body: Record<string, unknown>) =>
@@ -57,6 +57,9 @@ describe('a contractor or consultant adds a proof photo on a failed inspection i
     item.racing = await mk(inspectionId(), 'Joints', { state: 'fail' });
     item.deciding = await mk(inspectionId(), 'Drains', { state: 'fail' });
     item.other = await mk(otherInspectionId(), 'Plaster', { state: 'fail' });
+    item.evidenced = await mk(inspectionId(), 'Rebar', { state: 'fail' });
+    item.proven = await mk(inspectionId(), 'Formwork', { state: 'fail' });
+    item.second = await mk(inspectionId(), 'Grout', { state: 'fail' });
   });
 
   afterAll(async () => {
@@ -127,6 +130,27 @@ describe('a contractor or consultant adds a proof photo on a failed inspection i
     expect(again.body.id).toBe(first.body.id);
     expect((await proof('consultant', item.failed, { clientKey: 'proof-replay' })).status).toBe(403);
     expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: 'proof-replay' } })).toBe(1);
+  });
+
+  it('a replay of the key naming another item returns the original proof, and stores nothing', async () => {
+    // a send key names one photo, whatever a later send of it carries (every media kind answers a replay this way)
+    const first = await proof('contractor', item.failed, { clientKey: 'proof-replay-item' });
+    expect(first.status).toBe(201);
+    const n = await proofCount();
+    const other = await proof('contractor', item.second, { clientKey: 'proof-replay-item' });
+    expect(other.status).toBe(201);
+    expect(other.body.id).toBe(first.body.id);
+    expect(await proofCount()).toBe(n);
+    expect(await t.prisma.media.findUniqueOrThrow({ where: { id: first.body.id } })).toMatchObject({ inspectionItemId: item.failed });
+  });
+
+  it('a proof is never filed on a place: re-filing one is refused, and it stays as it was', async () => {
+    const own = (await proof('contractor', item.failed)).body.id as string;
+    for (const nodeId of ['n1', null]) {
+      const res = await http().patch(`/projects/${f.projectA.id}/media/${own}/node`).set('Authorization', `Bearer ${tokens.pmc}`).send({ nodeId });
+      expect(res.status).toBe(400);
+    }
+    expect(await t.prisma.media.findUniqueOrThrow({ where: { id: own } })).toMatchObject({ kind: 'proof', nodeId: null });
   });
 
   it('the PMC and the engineer see every proof; a member sees their own; a client sees none; none is a site photo', async () => {
@@ -209,7 +233,7 @@ describe('a contractor or consultant adds a proof photo on a failed inspection i
     const blockedOnInspection = async (): Promise<boolean> =>
       (await t.prisma.$queryRaw<Array<{ n: number }>>`
         SELECT count(*)::int AS n FROM pg_stat_activity
-        WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%FROM "Inspection"%FOR KEY SHARE%'`)[0]!.n > 0;
+        WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%FROM "Inspection"%FOR UPDATE%'`)[0]!.n > 0;
     const deadline = Date.now() + 10_000;
     while (!(await blockedOnInspection())) {
       if (Date.now() > deadline) { release(); await deciding; await adding; throw new Error('the proof never waited on the inspection row'); }
@@ -219,6 +243,47 @@ describe('a contractor or consultant adds a proof photo on a failed inspection i
     await deciding;
     // the item is still failed (sent back now), so the proof is taken after the decide
     expect((await adding).status).toBe(201);
+  });
+
+  it('an evidence upload and a proof on one inspection, both queued on the event stream: both are taken, no deadlock', async () => {
+    // U-4 gap-check, probe D1: the evidence upload holds the project's event stream before its inspection lock; a proof
+    // that held the inspection only KEY SHARE and then waited on the stream closed a ring with it (a 500, "deadlock
+    // detected"). A blocker holds the stream row so both uploads queue with what they locked before their emit
+    const waiting = async (like: string): Promise<number> =>
+      (await t.prisma.$queryRawUnsafe<Array<{ n: number }>>(
+        `SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE $1`, like))[0]!.n;
+    const until = async (pred: () => Promise<boolean>, what: string): Promise<void> => {
+      const deadline = Date.now() + 10_000;
+      while (!(await pred())) {
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let locked!: () => void;
+    const isLocked = new Promise<void>((r) => { locked = r; });
+    const blocker = t.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT 1 FROM "ProjectEventStream" WHERE "projectId" = ${f.projectA.id} FOR UPDATE`;
+      locked();
+      await held;
+    }, { timeout: 30_000 });
+    await isLocked;
+    const stream = '%ProjectEventStream%';
+    const base = await waiting(stream);
+    // the engineer (the inspection's assignee) adds evidence: its insert key-shares the inspection, then it emits
+    const evidence = upload(tokens.engineer, { kind: 'inspection', inspectionId: inspectionId(), inspectionItemId: item.evidenced }).then((r) => r);
+    await until(async () => (await waiting(stream)) >= base + 1, 'the evidence upload queued at its emit');
+    // the contractor's proof on another failed item of the same inspection
+    const adding = proof('contractor', item.proven).then((r) => r);
+    try {
+      await until(async () => (await waiting(stream)) >= base + 2 || (await waiting('%FROM "Inspection"%FOR UPDATE%')) >= 1, 'the proof queued');
+    } finally {
+      release();
+    }
+    await blocker;
+    const [e, p] = await Promise.all([evidence, adding]);
+    expect([e.status, p.status]).toEqual([201, 201]);
   });
 
   it('an item passed before the proof is asked: the same refusal', async () => {

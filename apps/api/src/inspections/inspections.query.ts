@@ -271,11 +271,14 @@ export class InspectionsQueryService {
   /** #482 site photos unit 4 — a proof photo goes only on an item of this project's inspection that is FAILED now.
    *  Inside a transaction (`db`) the item row is held FOR SHARE until it commits, so a write that clears the item
    *  waits for the proof, or the proof sees it cleared; outside one it is the early no before any byte is stored.
-   *  The inspection row is taken first (FOR KEY SHARE, which the proof's own foreign key takes anyway), the order a
-   *  decide takes them in (the inspection FOR UPDATE, then its items), so the two never wait on each other in a ring. */
+   *  The inspection row is taken first, FOR UPDATE, as a decide, a submit and an evidence upload's own check take it:
+   *  an evidence upload holds the project's event stream before its inspection lock, so a proof holding the inspection
+   *  only KEY SHARE (as its foreign key would) and then waiting on the stream would close a ring with it. FOR UPDATE
+   *  conflicts with the evidence insert's key share, so the two meet at the inspection row before either holds the
+   *  stream (U-4 gap-check, probe D1). Proofs on one inspection go one at a time. */
   async assertProofTarget(projectId: string, inspectionId: string, inspectionItemId: string, db?: Prisma.TransactionClient): Promise<void> {
     const client = db ?? this.prisma;
-    if (db) await db.$executeRaw`SELECT 1 FROM "Inspection" WHERE "id" = ${inspectionId} AND "projectId" = ${projectId} FOR KEY SHARE`;
+    if (db) await db.$executeRaw`SELECT 1 FROM "Inspection" WHERE "id" = ${inspectionId} AND "projectId" = ${projectId} FOR UPDATE`;
     const [item] = await client.$queryRaw<Array<{ rejected: boolean; result: string | null; state: string | null }>>(Prisma.sql`
       SELECT it."rejected", it."result"::text AS "result", it."state"
       FROM "InspectionItem" it
