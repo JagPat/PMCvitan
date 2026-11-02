@@ -213,7 +213,7 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // cycle-exempt channel), each dispatching once post-commit (13 total).
   'inventory/inventory.service.ts': { domain: 'inventory', foreign: {}, dispatch: 13 },
   // edges 2/3 (sign-off done/revert) → activity.participant.applySignOff/revertSignOff
-  'inspections/inspections.service.ts': { domain: 'inspections', foreign: {}, dispatch: 3 },
+  'inspections/inspections.service.ts': { domain: 'inspections', foreign: {}, dispatch: 4 },
   'drawings/drawings.service.ts': { domain: 'drawings', foreign: {}, dispatch: 5 },
   // #1118 U3 — Hub's webhook receiver records refused and ignored deliveries in the drawings-owned receipt ledger (and
   // audits a refusal through `recordAudit`); it emits no domain event, so it dispatches nothing
@@ -641,7 +641,7 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
     it('84 external-effect dispatch sites total across the pillar services (82 + Phase-6 unit 4c-ii request/respond consultation)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(93); // +3: Site Visits SV1-b start, end, close; +1: SV1-b unit 2's one shared site for the visitor's edits; +1: #1179 R2 a file's removal from its visit
+      expect(total).toBe(94); // +3: Site Visits SV1-b start, end, close; +1: SV1-b unit 2's one shared site for the visitor's edits; +1: #1179 R2 a file's removal from its visit; +1: #482 RM-e-c naming who fixes an inspection
     });
   });
 

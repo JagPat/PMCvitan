@@ -216,19 +216,18 @@ describe('4d-ii-a / A7d — the catalog change: the widened generation, the froz
     expect(listConsumers().find((c) => c.name === DECISIONS_EFFECTS)?.kind).toBe('ordered');
     expect(compiledCatalogVersion()).toBe(3);
     const gens = await t.prisma.$queryRawUnsafe<Array<{ v: string; n: number }>>(`SELECT "coverageVersion" AS v, count(*)::int AS n FROM "ExternalEffectCatalog" GROUP BY 1 ORDER BY 1`);
-    // Site Visits SV1-a (20280111) seeded a FIFTH generation beside A7d's: the compiled catalog is now
-    // A7d's plus the eight site-visit keys, and A7d's widened generation stays for the drain. Hub
-    // U5m (20280127) seeded a SIXTH ahead of the code that compiles it: the compiled catalog plus the
-    // two Hub keys, which nothing reads yet. RM-e-m (20280207) seeded a SEVENTH beside it: the compiled
-    // catalog plus `inspection.responsible_set`, which nothing reads yet either.
+    // Site Visits SV1-a (20280111) seeded a FIFTH generation beside A7d's (A7d's plus the eight site-visit
+    // keys), and A7d's widened generation stays for the drain. Hub U5m (20280127) seeded a SIXTH ahead: SV1-a's
+    // plus the two Hub keys, which nothing compiles. RM-e-m (20280207) seeded a SEVENTH beside it: SV1-a's plus
+    // `inspection.responsible_set`, which RM-e-c compiles, so it is the compiled catalog now.
     expect(gens).toHaveLength(7);
-    expect(gens.find((g) => g.v === effectCoverageVersion())?.n).toBe(Object.keys(EXTERNAL_EFFECTS).length);
-    expect(gens.find((g) => g.v === '63679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848')?.n)
-      .toBe(Object.keys(EXTERNAL_EFFECTS).length + 2);
-    expect(gens.find((g) => g.v === 'e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093')?.n)
-      .toBe(Object.keys(EXTERNAL_EFFECTS).length + 1);
+    const compiled = Object.keys(EXTERNAL_EFFECTS).length;
+    expect(effectCoverageVersion()).toBe('e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093');
+    expect(gens.find((g) => g.v === effectCoverageVersion())?.n).toBe(compiled);
+    expect(gens.find((g) => g.v === 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36')?.n).toBe(compiled - 1);
+    expect(gens.find((g) => g.v === '63679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848')?.n).toBe(compiled - 1 + 2);
     expect(gens.find((g) => g.v === '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c')?.n)
-      .toBe(Object.keys(EXTERNAL_EFFECTS).filter((k) => !k.startsWith('sitevisit.')).length);
+      .toBe(Object.keys(EXTERNAL_EFFECTS).filter((k) => !k.startsWith('sitevisit.') && k !== 'inspection.responsible_set').length);
   });
 
   // ── the seals ────────────────────────────────────────────────────────────────────────────────

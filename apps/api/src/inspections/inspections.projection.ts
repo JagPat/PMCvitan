@@ -30,6 +30,9 @@ import { computeInspectionsBase } from './inspections-serialize';
 
 export const INSPECTIONS_PROJECTION = 'inspections.inbox';
 
+/** Inspection event types whose change is not part of the stored base, so the projection neither needs nor takes them. */
+export const NOT_PROJECTED: ReadonlySet<string> = new Set(['inspection.responsible_set']);
+
 /** Refresh the project's single generation-scoped inspection base from CANONICAL inspection state. */
 async function refreshRow(tx: Prisma.TransactionClient, generationId: string, projectId: string): Promise<void> {
   const base = await computeInspectionsBase(tx, projectId);
@@ -59,7 +62,13 @@ export function makeInspectionsProjectionConsumer(): OutboxConsumer {
     catalogVersion: 2,
     // 4d-ii-a / A6c — the persisted rule the catalog row carries; from A6d it is what derives this
     // consumer's delivery rows (`deliveryRowsFor`), so a rule change is a contract change.
-    dispatchRule: { kind: 'types', eventTypes: eventTypesUnder('inspection.') },
+    //
+    // #482 RM-e-c — `inspection.responsible_set` is an inspection event the projection does NOT subscribe to. The
+    // stored base carries no responsible member (`computeInspectionsBase` never reads it; the name is read live and
+    // judged for standing at read), so the event changes nothing this row holds. Leaving it out keeps the persisted
+    // rule exactly the one A6c's migration wrote: adding it would be a contract change the startup drift check
+    // refuses until a catalog-rule migration rewrites the row, for a delivery that could only be a no-op refresh.
+    dispatchRule: { kind: 'types', eventTypes: eventTypesUnder('inspection.').filter((t) => !NOT_PROJECTED.has(t)) },
     projection: {
       rebuildSeed: async (tx, target) => {
         const max = await tx.domainEvent.aggregate({ where: { projectId: target.projectId }, _max: { streamPosition: true } });

@@ -6,6 +6,9 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { SnapshotService } from '../../src/snapshot/snapshot.service';
+import { effectCoverageVersion } from '../../src/platform/external-effects';
+import { SOCKET_CONSUMER, PUSH_CONSUMER } from '../../src/platform/outbox/consumers';
+import { INSPECTIONS_PROJECTION } from '../../src/inspections/inspections.projection';
 
 /**
  * #482 proof photos, "Who fixes this?" (Jagrut, 14 Oct 2026) — the PMC or the engineer names the contractor or
@@ -129,6 +132,35 @@ describe('the PMC or engineer names who fixes an inspection\'s failed work (live
     expect((await put('pmc', ids.consultant!, inspectionId(), key)).status).toBe(200);
     expect(await t.prisma.auditLog.count({ where: { projectId: f.projectA.id, action: 'inspection.responsible' } })).toBe(before + 1);
     await put('pmc', null);
+  });
+
+  it('RM-e-c: each naming emits one `inspection.responsible_set` that refreshes open tabs and announces nothing; a refusal and a replay emit none', async () => {
+    const events = () => t.prisma.domainEvent.findMany({
+      where: { projectId: f.projectA.id, eventType: 'inspection.responsible_set', entityId: inspectionId() },
+      orderBy: { streamPosition: 'asc' },
+    });
+    const before = (await events()).length;
+    const key = randomUUID();
+    expect((await put('engineer', ids.contractor!, inspectionId(), key)).status).toBe(200);
+    expect((await put('engineer', ids.contractor!, inspectionId(), key)).status).toBe(200); // the replay
+    expect((await put('contractor', ids.consultant!)).status).toBe(403); // refused by role
+    expect((await put('pmc', ids.engineer2!)).status).toBe(400); // refused by standing
+    expect((await put('pmc', null)).status).toBe(200);
+    const emitted = (await events()).slice(before);
+    expect(emitted.map((e) => [e.actorId, e.payload])).toEqual([
+      [ids.engineer, { from: null, to: ids.contractor }],
+      [ids.pmc, { from: ids.contractor, to: null }],
+    ]);
+    for (const e of emitted) {
+      // under the generation this build compiles, which RM-e-m seeded a release ahead: invalidate, never push
+      expect(e.dispatchIntent).toEqual({ effectKey: 'inspection.responsible_set', coverageVersion: effectCoverageVersion(), invalidate: true });
+      const rows = await t.prisma.outboxDelivery.findMany({ where: { eventId: e.eventId }, select: { consumer: true, deliveryAction: true } });
+      const action = new Map(rows.map((r) => [r.consumer, r.deliveryAction]));
+      expect(action.get(SOCKET_CONSUMER), 'other open tabs re-read').toBe('dispatch');
+      expect(action.get(PUSH_CONSUMER), 'naming someone is not an announcement').toBe('noop');
+      // the stored inspections base holds no responsible member, so the projection's persisted rule leaves it out
+      expect(action.get(INSPECTIONS_PROJECTION)).toBe('noop');
+    }
   });
 
   it('a named member is removed through the real route: the removal goes through, and the read names no one while the record keeps the name', async () => {

@@ -45,6 +45,8 @@ export const inspectionsManifest: ModuleManifest = {
     'inspection.evidence_removed',
     'inspection.relabeled',
     'inspection.unfiled',
+    // #482 RM-e-c — who fixes this inspection was named or cleared (`setResponsible`). Signal-only.
+    'inspection.responsible_set',
     'activity.signed_off',
     'activity.signoff_rejected',
   ],

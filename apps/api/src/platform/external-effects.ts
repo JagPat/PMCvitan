@@ -304,6 +304,10 @@ export const EXTERNAL_EFFECTS = {
   'inspection.evidence_removed': { eventType: 'inspection.evidence_removed', invalidate: true, push: null },
   'inspection.relabeled': { eventType: 'inspection.relabeled', invalidate: true, push: null },
   'inspection.unfiled': { eventType: 'inspection.unfiled', invalidate: true, push: null },
+  // #482 "Who fixes this?" RM-e-c — the PMC or engineer named (or cleared) who fixes an inspection. Its own event
+  // type, signal-only: other open tabs re-read; no push (naming someone is not an announcement). RM-e-m seeded the
+  // generation this key belongs to (`e356309f…`) a release ahead, so this build's compiled coverage is already held.
+  'inspection.responsible_set': { eventType: 'inspection.responsible_set', invalidate: true, push: null },
   // ── drawings ───────────────────────────────────────────────────────────────────────────────
   'drawing.issued': { eventType: 'drawing.issued', invalidate: true, push: ['engineer', 'contractor'] },
   // a draft issue emits the same event type but reaches no one (private).

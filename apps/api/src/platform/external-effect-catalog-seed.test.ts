@@ -32,14 +32,14 @@ const MIGRATION_4D_I_B = join(MIGRATIONS, '20271224000000_phase6_t4d_i_b_u3_pair
  *  two frozen families with their constant bodies. Since Site Visits SV1-a it is the PREVIOUS
  *  generation: this source with the eight site-visit keys removed. */
 const MIGRATION_4D_II_A7D = join(MIGRATIONS, '20280104000000_phase6_t4d_ii_a7d_catalog_change', 'migration.sql');
-/** Site Visits #792 SV1-a's seed: the generation THIS source compiles — A7d's plus exactly the eight
- *  site-visit keys (invalidate, never push, pairing-required). */
+/** Site Visits #792 SV1-a's seed: A7d's plus exactly the eight site-visit keys (invalidate, never push,
+ *  pairing-required). Since RM-e-c it is the PREVIOUS generation: this source without `inspection.responsible_set`. */
 const MIGRATION_SV1A = join(MIGRATIONS, '20280111000000_site_visits_sv1a_catalog', 'migration.sql');
-/** Hub #1118 U5m's seed: the NEXT generation, seeded ahead of the code that compiles it — SV1-a's plus
- *  exactly the two Hub keys. U5k compiles them, and then this literal becomes the current one. */
+/** Hub #1118 U5m's seed: a generation seeded ahead of code that never compiled it — SV1-a's plus exactly the two
+ *  Hub keys. RM-e-c compiled RM-e's sibling generation first, so U5k must seed its own over this source (U5k README). */
 const MIGRATION_HUB_U5M = join(MIGRATIONS, '20280127000000_hub_catalog_generation', 'migration.sql');
-/** "Who fixes this?" RM-e-m's seed: a SECOND next generation, BESIDE U5m's rather than on top of it — SV1-a's
- *  plus exactly `inspection.responsible_set`. RM-e-c compiles it, and then this literal becomes the current one. */
+/** "Who fixes this?" RM-e-m's seed: SV1-a's plus exactly `inspection.responsible_set`, seeded a release ahead and
+ *  BESIDE U5m's. RM-e-c compiles it: this literal is the generation THIS source compiles. */
 const MIGRATION_RME = join(MIGRATIONS, '20280207000000_inspection_responsible_catalog', 'migration.sql');
 
 /**
@@ -90,11 +90,11 @@ const HUB_KEYS: Record<string, Def> = {
 };
 
 /**
- * "Who fixes this?" RM-e-m — SIX LITERALS NOW, and TWO are ahead of the source, side by side. RM-e-m seeds the
- * generation RM-e-c will compile: this source plus `inspection.responsible_set` (a NEW event type, invalidate,
- * never push, no pairing claim), WITHOUT the Hub keys. U5m's stays this source plus the two Hub keys, without
- * this one. Whichever compiles first turns its literal into 'current'; the other unit must then seed a fresh
- * generation over the source it finds (notes/hub/u5k/README.md for U5k).
+ * "Who fixes this?" RM-e-m seeded, and RM-e-c COMPILES, `inspection.responsible_set` (a NEW event type, invalidate,
+ * never push, no pairing claim). RM-e's literal is therefore 'current'; SV1-a's is the previous generation, DERIVED
+ * from this source with that key removed, and every older generation lacks it too. U5m's literal stays SV1-a's plus
+ * the two Hub keys ('next' is that derivation), and no source will ever compile it: U5k seeds a fresh generation
+ * over the source it finds (notes/hub/u5k/README.md).
  */
 const RME_KEYS: Record<string, Def> = {
   'inspection.responsible_set': { eventType: 'inspection.responsible_set', invalidate: true, push: null },
@@ -172,15 +172,16 @@ function seededRows(migration: string, seedTable: string): Row[] {
  * (the five-element preimage the 4d-i release hashed, the flag false everywhere) — the two
  * generations whose literals ship, both derived from ONE source.
  */
-type Generation = 'rme' | 'next' | 'current' | 'a7d' | 'pairing' | 'previous';
+type Generation = 'next' | 'current' | 'sv1a' | 'a7d' | 'pairing' | 'previous';
 
-/** The catalog as a PREVIOUS generation saw it: SV1-a's keys removed; before A7d, A7d's keys removed
- *  and its role widening undone. */
+/** The catalog as a PREVIOUS generation saw it: RM-e's key removed; before SV1-a, SV1-a's keys removed; before
+ *  A7d, A7d's keys removed and its role widening undone. U5m's 'next' is SV1-a's plus the two Hub keys. */
 function catalogBefore(generation: Generation): Record<string, Def> {
-  const catalog = EXTERNAL_EFFECTS as Record<string, Def>;
+  const compiled = EXTERNAL_EFFECTS as Record<string, Def>;
+  if (generation === 'current') return compiled;
+  const catalog: Record<string, Def> = Object.fromEntries(Object.entries(compiled).filter(([k]) => !(k in RME_KEYS)));
+  if (generation === 'sv1a') return catalog;
   if (generation === 'next') return { ...catalog, ...HUB_KEYS };
-  if (generation === 'rme') return { ...catalog, ...RME_KEYS };
-  if (generation === 'current') return catalog;
   const out: Record<string, Def> = {};
   for (const k of Object.keys(catalog)) {
     if (ADDED_BY_SV1A.has(k)) continue;
@@ -237,24 +238,23 @@ function compiledRows(generation: Generation): Row[] {
  *  sixth element. `phase6-t4d-i-catalog-generations.test.ts` pins the same derivation against
  *  the migration's own `_t4d_catalog_incoming` literal; here it is what the 4d-i literal is
  *  compared to, key by key. */
-function previousCoverageVersion(generation: 'rme' | 'next' | 'a7d' | 'pairing' | 'previous'): string {
+function previousCoverageVersion(generation: 'sv1a' | 'next' | 'a7d' | 'pairing' | 'previous'): string {
   const catalog = catalogBefore(generation);
   const preimage = JSON.stringify(Object.keys(catalog).sort().map((k) => {
     const d = catalog[k]!;
     const five = [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(), d.pushFamily ?? null];
-    // SV1-a — A7d's generation is this source's EIGHT-element preimage over its own keys; Hub U5m's
-    // NEXT generation is the same preimage over this source's keys plus the two Hub keys.
-    // RM-e-m's generation is the same eight-element preimage over this source's keys plus its one key.
-    if (generation === 'a7d' || generation === 'next' || generation === 'rme') return [...five, d.pairingRequired === true, d.frozenAudience === true, d.pushBody ?? null];
+    // SV1-a — A7d's generation is this source's EIGHT-element preimage over its own keys; SV1-a's is the same
+    // preimage over this source's keys without RM-e's; Hub U5m's is SV1-a's keys plus the two Hub keys.
+    if (generation === 'a7d' || generation === 'next' || generation === 'sv1a') return [...five, d.pairingRequired === true, d.frozenAudience === true, d.pushBody ?? null];
     return generation === 'pairing' ? [...five, d.pairingRequired === true] : five;
   }));
   return createHash('sha256').update(preimage).digest('hex');
 }
 
 const GENERATIONS = [
-  ['responsible-member RM-e (next, beside U5m)', MIGRATION_RME, '_rme_catalog_seed', 'rme'],
-  ['hub U5m (next)', MIGRATION_HUB_U5M, '_hub_catalog_seed', 'next'],
-  ['site-visits SV1-a (current)', MIGRATION_SV1A, '_sv1a_catalog_seed', 'current'],
+  ['responsible-member RM-e (current)', MIGRATION_RME, '_rme_catalog_seed', 'current'],
+  ['hub U5m (seeded ahead, beside RM-e)', MIGRATION_HUB_U5M, '_hub_catalog_seed', 'next'],
+  ['site-visits SV1-a', MIGRATION_SV1A, '_sv1a_catalog_seed', 'sv1a'],
   ['4d-ii-a A7d', MIGRATION_4D_II_A7D, '_t4dii_catalog_seed', 'a7d'],
   ['4d-i-b (pairing)', MIGRATION_4D_I_B, '_t4dib_catalog_seed', 'pairing'],
   ['4d-i (previous)', MIGRATION_4D_I, '_t4d_catalog_seed', 'previous'],
@@ -373,7 +373,7 @@ describe('site visits #792 SV1-a — the new literal is A7d\'s plus exactly the 
       expect(policyNow, `${row.effectKey}: a shared key moved between A7d and SV1-a`).toEqual(policyThen);
     }
     expect(cur[0]!.coverageVersion).not.toBe(prev.values().next().value!.coverageVersion);
-    expect(cur[0]!.coverageVersion).toBe(effectCoverageVersion());
+    expect(cur[0]!.coverageVersion).toBe('f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36');
     expect(prev.values().next().value!.coverageVersion).toBe('23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c');
   });
 });
@@ -414,7 +414,7 @@ describe('hub #1118 U5m — the next literal is SV1-a\'s plus exactly the two Hu
       expect(policyNow, `${row.effectKey}: a shared key moved between SV1-a and U5m`).toEqual(policyThen);
     }
     expect(next[0]!.coverageVersion).toBe('63679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848');
-    expect(prev.values().next().value!.coverageVersion).toBe(effectCoverageVersion());
+    expect(prev.values().next().value!.coverageVersion).toBe(previousCoverageVersion('sv1a'));
   });
 
   it('this release does NOT compile the Hub keys yet — U5k does, and that change must turn U5m\'s literal into the current one', () => {
@@ -426,7 +426,7 @@ describe('hub #1118 U5m — the next literal is SV1-a\'s plus exactly the two Hu
   });
 });
 
-describe('"who fixes this?" RM-e-m — the RM-e literal is SV1-a\'s plus exactly `inspection.responsible_set`, beside U5m\'s', () => {
+describe('"who fixes this?" RM-e — the RM-e literal (compiled since RM-e-c) is SV1-a\'s plus exactly `inspection.responsible_set`, beside U5m\'s', () => {
   it('one key added (its own new event type, invalidate, never push, no pairing claim), every shared key equal in every column but the version', () => {
     const prev = new Map(seededRows(MIGRATION_SV1A, '_sv1a_catalog_seed').map((r) => [r.effectKey, r]));
     const next = seededRows(MIGRATION_RME, '_rme_catalog_seed');
@@ -452,8 +452,9 @@ describe('"who fixes this?" RM-e-m — the RM-e literal is SV1-a\'s plus exactly
           pushBody: null,
           pairingRequired: false,
         });
-        // a NEW event type: no compiled key, and no key of any shipped literal, carries it yet
-        expect(Object.values(EXTERNAL_EFFECTS as Record<string, Def>).some((d) => d.eventType === added.eventType)).toBe(false);
+        // a NEW event type: the compiled key is the only one carrying it, and no other shipped literal does
+        expect(Object.entries(EXTERNAL_EFFECTS as Record<string, Def>).filter(([, d]) => d.eventType === added.eventType).map(([k]) => k))
+          .toEqual([row.effectKey]);
         for (const [, migration, seedTable] of GENERATIONS.filter(([, m]) => m !== MIGRATION_RME)) {
           expect(seededRows(migration, seedTable).some((r) => r.eventType === added.eventType), `${migration} carries the type`).toBe(false);
         }
@@ -465,7 +466,8 @@ describe('"who fixes this?" RM-e-m — the RM-e literal is SV1-a\'s plus exactly
       expect(policyNow, `${row.effectKey}: a shared key moved between SV1-a and RM-e`).toEqual(policyThen);
     }
     expect(next[0]!.coverageVersion).toBe('e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093');
-    expect(prev.values().next().value!.coverageVersion).toBe(effectCoverageVersion());
+    expect(next[0]!.coverageVersion).toBe(effectCoverageVersion());
+    expect(prev.values().next().value!.coverageVersion).toBe(previousCoverageVersion('sv1a'));
   });
 
   it('it sits BESIDE U5m\'s, not on top of it: neither literal carries the other\'s keys, and the two versions differ', () => {
@@ -476,12 +478,22 @@ describe('"who fixes this?" RM-e-m — the RM-e literal is SV1-a\'s plus exactly
     expect(rme[0]!.coverageVersion).not.toBe(hub[0]!.coverageVersion);
   });
 
-  it('this release does NOT compile `inspection.responsible_set` yet — RM-e-c does, and that change must turn RM-e\'s literal into the current one', () => {
-    // The tripwire for the hand-over: the day the key lands in `EXTERNAL_EFFECTS`, the compiled version must
-    // equal RM-e's seeded one (or the envelope seal refuses every event of that release), and this suite must
-    // be re-pointed: 'rme' becomes 'current', SV1-a's becomes the previous generation, and U5m's literal is no
-    // longer "this source plus the Hub keys" (U5k then seeds its own generation one step later).
-    for (const k of Object.keys(RME_KEYS)) expect(k in EXTERNAL_EFFECTS, `${k} is compiled already`).toBe(false);
-    expect(previousCoverageVersion('rme')).not.toBe(effectCoverageVersion());
+  it('RM-e-c COMPILES `inspection.responsible_set`: the compiled version is the one RM-e-m seeded, and U5m\'s is no longer the source plus the Hub keys', () => {
+    // The hand-over the RM-e-m tripwire asked for: the key is in `EXTERNAL_EFFECTS` with exactly the seeded shape,
+    // so the envelope seal finds this build's (version, key) pairs in the rows RM-e-m wrote a release earlier.
+    for (const [k, d] of Object.entries(RME_KEYS)) expect((EXTERNAL_EFFECTS as Record<string, Def>)[k], `${k} is compiled as seeded`).toEqual(d);
+    expect(effectCoverageVersion()).toBe('e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093');
+    // U5m's literal stays SV1-a's plus the Hub keys; adding them to THIS source gives a version no migration seeded,
+    // which is why U5k must seed its own generation one step later (notes/hub/u5k/README.md).
+    const withHub: Record<string, Def> = { ...(EXTERNAL_EFFECTS as Record<string, Def>), ...HUB_KEYS };
+    const preimage = JSON.stringify(Object.keys(withHub).sort().map((k) => {
+      const d = withHub[k]!;
+      return [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].sort(), d.pushFamily ?? null, d.pairingRequired === true, d.frozenAudience === true, d.pushBody ?? null];
+    }));
+    const sourcePlusHub = createHash('sha256').update(preimage).digest('hex');
+    expect(sourcePlusHub).not.toBe(previousCoverageVersion('next'));
+    for (const [, migration, seedTable] of GENERATIONS) {
+      expect(seededRows(migration, seedTable)[0]!.coverageVersion, `${migration} seeds the source plus the Hub keys`).not.toBe(sourcePlusHub);
+    }
   });
 });
