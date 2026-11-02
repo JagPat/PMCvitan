@@ -164,6 +164,7 @@ describe('Task 10 — the inspections module implements its shared command/query
       'resolveRefInProject',
       'assertProofTarget',
       'responsibleMembers',
+      'openItems',
     ] as const) {
       expect(typeof InspectionsQueryService.prototype[method]).toBe('function');
     }

@@ -37,6 +37,8 @@ export const INSPECTIONS_QUERIES = [
   'inspections.proofTarget',
   // #482 proof photos — who is named to fix each inspection's failed work, kept only while they still stand
   'inspections.responsibleMembers',
+  // #482 proof photos, "Your open items" — the open inspections a contractor or consultant is named to fix, and their failed items
+  'inspections.openItems',
 ] as const;
 export type InspectionsQuery = (typeof INSPECTIONS_QUERIES)[number];
 

@@ -380,6 +380,18 @@ export interface PhotoDto {
   deletableUntil?: string;
 }
 
+/** #482 proof photos, "Your open items" — one open inspection the viewer is named to fix. */
+export interface OpenItemDto {
+  inspectionId: string;
+  title: string;
+  zone: string;
+  nodeId: string | null;
+  /** `issued` (with the engineer), `in-review` (waiting on the PMC) or `reinspection` (rejected; re-inspection under way) */
+  status: 'issued' | 'in-review' | 'reinspection';
+  /** the failed items a proof photo goes on; `proofCount` is every member's proofs on the item (`PROOF_PHOTOS_PER_ITEM` caps it) */
+  failedItems: Array<{ itemId: string; name: string; proofCount: number }>;
+}
+
 /** #482 site photos unit 4 — a proof photo: a contractor or consultant shows a failed inspection item fixed. It is not
  *  evidence (the inspection is unchanged by it) and never a site photo. */
 export interface ProofPhotoDto {
@@ -501,6 +513,10 @@ export interface SnapshotDto {
   /** #482 proof photos, "Who fixes this?" — the contractor or consultant named to fix each inspection's failed work, for
    *  the PMC and the engineer; empty for everyone else. A member who no longer stands is left out. */
   responsibleMembers: Array<{ inspectionId: string; memberId: string }>;
+  /** #482 proof photos, "Your open items" — for a contractor or consultant, the open inspections they are named to fix
+   *  (only while the naming holds), each with its failed items and how many proof photos each item holds (everyone's,
+   *  the count the per-item cap counts); empty for every other role. */
+  openItems: OpenItemDto[];
   /** All material deliveries across the project, with their place — the Site Map's "materials here". */
   materials: MaterialDto[];
 }
