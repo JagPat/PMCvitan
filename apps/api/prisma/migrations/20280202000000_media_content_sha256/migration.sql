@@ -11,6 +11,14 @@
 -- on every writer, raw SQL included: a BEFORE UPDATE trigger refuses any change to a non-NULL digest (another digest or
 -- NULL). Only the first write is taken: NULL to a digest. Writing the same value again is no change.
 --
+-- AND SO DO ITS BYTES (Codex 4437981825). A digest is only the bytes' own while the bytes stay: the same trigger refuses,
+-- once a row has a digest, any change to the three fields `MediaService.fetch` serves the file from ("data" for the
+-- dev stub, "storageKey" for the bucket, "url" for a legacy public row). No application writer changes them after the
+-- insert. A row with no digest is not held: it keeps the byte-length comparison (#1262's residual).
+--
+-- SHAPE, WHATEVER THE COLLATION (Codex 4437981832). The CHECK names the sixteen characters one by one: a bracket range
+-- such as 0-9 is read in the column's collating sequence, which can place other characters inside it.
+--
 -- SAFE UNDER THE PREVIOUS RELEASE. The previous release never names the column: its Prisma client neither selects nor
 -- writes it, and its inserts leave it NULL, which the CHECK takes.
 --
@@ -33,7 +41,7 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint
                   WHERE conrelid = 'public."Media"'::regclass AND conname = 'Media_contentSha256_shape_check') THEN
     ALTER TABLE public."Media" ADD CONSTRAINT "Media_contentSha256_shape_check"
-      CHECK ("contentSha256" IS NULL OR "contentSha256" ~ '^[0-9a-f]{64}$');
+      CHECK ("contentSha256" IS NULL OR "contentSha256" ~ '^[0123456789abcdef]{64}$');
   END IF;
 END $$;
 
@@ -44,12 +52,17 @@ BEGIN
     RAISE EXCEPTION 'media: the file % keeps the digest it was stored with', OLD."id"
       USING ERRCODE = 'check_violation';
   END IF;
+  IF OLD."contentSha256" IS NOT NULL AND (NEW."data" IS DISTINCT FROM OLD."data"
+      OR NEW."storageKey" IS DISTINCT FROM OLD."storageKey" OR NEW."url" IS DISTINCT FROM OLD."url") THEN
+    RAISE EXCEPTION 'media: the file % keeps the bytes its digest was taken from', OLD."id"
+      USING ERRCODE = 'check_violation';
+  END IF;
   RETURN NEW;
 END $$;
 
 DROP TRIGGER IF EXISTS "Media_content_sha256_fixed" ON public."Media";
 CREATE TRIGGER "Media_content_sha256_fixed"
-  BEFORE UPDATE OF "contentSha256" ON public."Media"
+  BEFORE UPDATE OF "contentSha256", "data", "storageKey", "url" ON public."Media"
   FOR EACH ROW EXECUTE FUNCTION public.media_content_sha256_fixed();
 
 COMMIT;

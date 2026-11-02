@@ -52,12 +52,44 @@ describe('#904: the file digest column (live PG)', () => {
 
   it('refuses any other shape: upper case, too short, too long, not hex, empty', async () => {
     const { id } = await plainRow();
-    for (const bad of [digest.toUpperCase(), digest.slice(1), `${digest}0`, `${digest.slice(1)}g`, '']) {
+    // Codex 4437981832: non-ASCII digits and letters too (full-width, Arabic-Indic, accented)
+    for (const bad of [digest.toUpperCase(), digest.slice(1), `${digest}0`, `${digest.slice(1)}g`, '', `${digest.slice(1)}\uFF10`, `${digest.slice(1)}\u0660`, `${digest.slice(1)}\u00E9`]) {
       await expect(setDigest(id, bad)).rejects.toThrow(/Media_contentSha256_shape_check/);
     }
     expect(await setDigest(id, digest)).toBe(1);
     const { id: other } = await plainRow();
     expect(await setDigest(other, null)).toBe(1);
+    // and the CHECK names its characters, so no collation can widen it: no bracket range is left to read
+    const defs = await t.prisma.$queryRawUnsafe<Array<{ def: string }>>(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = '"Media"'::regclass AND conname = 'Media_contentSha256_shape_check'`);
+    expect(defs[0]!.def).toContain('[0123456789abcdef]{64}');
+    expect(defs[0]!.def).not.toMatch(/[0-9a-z]-[0-9a-z]/);
+  });
+
+  it('keeps the bytes a digest was taken from: data, storageKey and url are fixed once a digest is stored (Codex 4437981825)', async () => {
+    const other = Buffer.from('another photo');
+    const { id } = await plainRow();
+    // no digest: the row is not held
+    expect(await t.prisma.$executeRawUnsafe(`UPDATE "Media" SET "data" = $1 WHERE "id" = $2`, other, id)).toBe(1);
+    expect(await t.prisma.$executeRawUnsafe(`UPDATE "Media" SET "data" = $1 WHERE "id" = $2`, bytes, id)).toBe(1);
+    expect(await setDigest(id, digest)).toBe(1);
+    const held = /keeps the bytes its digest was taken from/;
+    await expect(t.prisma.$executeRawUnsafe(`UPDATE "Media" SET "data" = $1 WHERE "id" = $2`, other, id)).rejects.toThrow(held);
+    await expect(t.prisma.$executeRawUnsafe(`UPDATE "Media" SET "data" = NULL WHERE "id" = $1`, id)).rejects.toThrow(held);
+    await expect(t.prisma.$executeRawUnsafe(`UPDATE "Media" SET "storageKey" = 'projects/x/other.jpg' WHERE "id" = $1`, id)).rejects.toThrow(held);
+    await expect(t.prisma.$executeRawUnsafe(`UPDATE "Media" SET "url" = 'https://example.invalid/other.jpg' WHERE "id" = $1`, id)).rejects.toThrow(held);
+    await expect(t.prisma.media.update({ where: { id }, data: { data: other } })).rejects.toThrow(held);
+    // the same bytes again are no change, and other fields still move
+    expect(await t.prisma.$executeRawUnsafe(`UPDATE "Media" SET "data" = $1 WHERE "id" = $2`, bytes, id)).toBe(1);
+    await t.prisma.media.update({ where: { id }, data: { mime: 'image/jpeg' } });
+    // a bucket row created with its digest keeps its key
+    const bucket = await t.prisma.media.create({
+      data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', storageKey: 'projects/x/a.jpg', sizeBytes: bytes.length, uploadedBy: f.memberUser.id, contentSha256: digest },
+      select: { id: true },
+    });
+    await expect(t.prisma.media.update({ where: { id: bucket.id }, data: { storageKey: 'projects/x/b.jpg' } })).rejects.toThrow(held);
+    const kept = await t.prisma.media.findUniqueOrThrow({ where: { id: bucket.id }, select: { storageKey: true } });
+    expect(kept.storageKey).toBe('projects/x/a.jpg');
   });
 
   it('keeps a stored digest on every writer: only NULL to a digest is taken (Codex 4437816190)', async () => {
