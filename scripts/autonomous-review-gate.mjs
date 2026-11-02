@@ -23,6 +23,8 @@ import {
   REVIEW_ROUND_CAP,
   CODEX_RUN_HELD_DETAIL,
   CODEX_RECORD_UNREADABLE_DETAIL,
+  CODEX_AUTOMERGE_DISARM_FAILED,
+  CODEX_AUTOMERGE_REARM_FAILED,
   CODEX_SECURITY_FINDINGS_DETAIL,
 } from './review-policy.mjs';
 export {
@@ -978,6 +980,25 @@ export class GitHubClient {
     );
   }
 
+  // Codex 4440931056 on #1295 — the open pull requests whose head is this commit (a commit status is theirs alike)
+  async openPullRequestsAt(sha) {
+    const open = await this.paginated(`/repos/${this.repository}/pulls?state=open`);
+    return open.filter((pullRequest) => pullRequest.head?.sha === sha);
+  }
+
+  // G3a — not head-scoped: GitHub cancels whatever auto-merge the PR has queued. Callers check the head first and
+  // re-read after (`disarmQueuedAutoMerge`).
+  async disableAutoMerge(pullRequest) {
+    await this.graphql(
+      `mutation($id: ID!) {
+        disablePullRequestAutoMerge(input: { pullRequestId: $id }) {
+          pullRequest { id autoMergeRequest { enabledAt } }
+        }
+      }`,
+      { id: pullRequest.node_id },
+    );
+  }
+
   async mergeExactHead(number, expectedHead) {
     const response = await fetch(
       `${API_ROOT}/repos/${this.repository}/pulls/${number}/merge`,
@@ -1451,6 +1472,15 @@ export function candidateBodyHold(pullRequest, verdict) {
   return { ...verdict, outcome: 'candidate', mergeEligible: false, owner: declaration.owner };
 }
 
+/**
+ * G3a′ (Replaces #1295; Codex 4441669671, root cause of 4441198800 and 4440931048) — the merge or the arm of a head this
+ * run has just turned green, as ONE guarded tail. Both callers write the success first (`publishDisarmedSuccess`, which
+ * disarmed any queued merge), so every throw from the authorization to a merge that landed or an arm that took would
+ * leave the head green with nothing queued and nothing scheduled. Every such throw takes the one re-arm hold here
+ * (`holdUnarmedGreen`), whichever call threw: the authorization's reads, the first exact-head merge, the arm, or the
+ * clean-status retry. An unreadable Codex record has already replaced the green with its own refusal, so it only
+ * rethrows. A refusal by the authorization writes its own state and returns (G2), and a hold for gates returns as before.
+ */
 export async function completeReviewedPullRequest(
   client,
   pullRequest,
@@ -1458,6 +1488,62 @@ export async function completeReviewedPullRequest(
   verdict,
   { recoveryRequest = null, attempt = 0 } = {},
 ) {
+  let completed;
+  try {
+    completed = await mergeOrArmAuthorizedHead(client, pullRequest, expectedHead, verdict, { recoveryRequest, attempt });
+  } catch (error) {
+    if (!(error instanceof CodexRecordUnreadable)) {
+      try {
+        await holdUnarmedGreen(client, pullRequest, expectedHead, { recoveryRequest, attempt });
+      } catch (holdError) {
+        // G3a′ gap-check F2 — a hold that fails never replaces the error recovery acts on (as `withFollowUpRetry`)
+        console.warn(`Could not write the re-arm hold after a failed merge or arm: ${holdError instanceof Error ? holdError.message : String(holdError)}`);
+      }
+    }
+    throw error;
+  }
+  // the hand-off follows a merge that landed or an arm that took: outside the tail, so its failure never holds a head
+  // that is merged or queued
+  if (completed.outcome === 'merged' || completed.outcome === 'queued') {
+    await client.dispatchHandoff(completed.pullRequest.base.ref, completed.pullRequest.number);
+  }
+  return completed.outcome;
+}
+
+/**
+ * G3a′ (Stage 1's condition 2) — a throw may be a merge that in fact landed (a reply lost after GitHub merged), or the
+ * head may have moved on: the pull request is read again, and a merged one, or one whose head is no longer this commit,
+ * gets no hold, so no failure is left that could block anything. A closed, unmerged one on this head is held: harmless
+ * (nothing merges it) and fail closed. A head whose newest `codex-current-head` status is no longer the success (a
+ * refusal or finding the authorization's writers already put over the green, then threw after: gap-check F1) keeps
+ * that status: it is not overwritten with the retryable hold. Otherwise, and when either read fails, the green is
+ * replaced by the retryable re-arm hold (fail closed), and recovery re-judges the head.
+ */
+async function holdUnarmedGreen(client, pullRequest, expectedHead, { recoveryRequest = null, attempt = 0 } = {}) {
+  let live = null;
+  try {
+    live = await client.pullRequest(pullRequest.number);
+  } catch {
+    live = null;
+  }
+  if (live && (live.merged === true || Boolean(live.merged_at) || live.head?.sha !== expectedHead)) return;
+  try {
+    const newest = (await client.statuses(expectedHead)).find((status) => status.context === STATUS_CONTEXT);
+    if (newest && newest.state !== 'success') return;
+  } catch {
+    // unreadable: hold (fail closed)
+  }
+  await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
+    detail: CODEX_AUTOMERGE_REARM_FAILED,
+    attempt,
+    next: AUTOMERGE_RETRY_NEXT[CODEX_AUTOMERGE_REARM_FAILED],
+    settleReason: 'auto-merge re-arm failed',
+  });
+}
+
+/** The tail itself: called only by `completeReviewedPullRequest`, which holds every throw from it. Returns the outcome
+ *  and the pull request it acted on. */
+async function mergeOrArmAuthorizedHead(client, pullRequest, expectedHead, verdict, { recoveryRequest = null, attempt = 0 } = {}) {
   let authorization;
   try {
     authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead, verdict);
@@ -1477,24 +1563,21 @@ export async function completeReviewedPullRequest(
         recoveryRequest,
         attempt,
       });
-      return 'review_refused';
+      return { outcome: 'review_refused', pullRequest };
     }
-    return 'held_for_gates';
+    return { outcome: 'held_for_gates', pullRequest };
   }
   pullRequest = authorization.pullRequest;
   const direct = await client.mergeExactHead(
     pullRequest.number,
     expectedHead,
   );
-  if (direct?.merged) {
-    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-    return 'merged';
-  }
+  if (direct?.merged) return { outcome: 'merged', pullRequest };
 
   try {
+    // G3a (gap-check F2d) — a re-arm that fails, other than GitHub's clean-status answer, is held by the tail
     await client.enableAutoMerge(pullRequest, expectedHead);
-    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-    return 'queued';
+    return { outcome: 'queued', pullRequest };
   } catch (error) {
     if (
       !(error instanceof Error)
@@ -1502,20 +1585,149 @@ export async function completeReviewedPullRequest(
     ) {
       throw error;
     }
+    // Codex 4440931048 on #1295 — the clean-status retry; when it does not merge either, the tail holds it
     const raced = await client.mergeExactHead(
       pullRequest.number,
       expectedHead,
     );
-    if (raced?.merged) {
-      await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-      return 'merged';
-    }
+    if (raced?.merged) return { outcome: 'merged', pullRequest };
     throw new Error(
       `GitHub reported a clean pull request but refused the exact-head merge: ${raced?.message ?? 'unknown reason'}`,
       { cause: error },
     );
   }
 }
+
+/** G3a — a queued native auto-merge could not be confirmed disarmed before a success write: retryable, nothing green. */
+export class AutoMergeDisarmFailed extends Error {
+  constructor(cause) {
+    super(`review: ${CODEX_AUTOMERGE_DISARM_FAILED}${cause instanceof Error ? `: ${cause.message}` : ''}`, { cause });
+    this.name = 'AutoMergeDisarmFailed';
+  }
+}
+
+/**
+ * G3a (#1280 Codex 4438874584; replaces #1289, split per notes/gate-codex-silent/g3/split-plan.md) — the ONE step every
+ * success writer takes before `publishSettledSuccess`: a native auto-merge queued from an earlier green would merge the
+ * moment the success lands, before `authorizeExactHeadMerge` reads Codex's record, so it is disarmed first and re-armed
+ * only by `completeReviewedPullRequest` after that authorization.
+ *
+ * Order: check the head, disable, re-read. `disablePullRequestAutoMerge` is not head-scoped, so a push landing between
+ * the check and the disable could have its own head's arming cancelled: the re-read sees the moved head and this run
+ * writes nothing (it is superseded). That head's own CI run writes its success through this same step and arms through
+ * its own authorization; a head whose run had already finished stays green and unarmed (G3a's residual, ended by G3b).
+ *
+ * Every other open pull request whose head is this same commit is disarmed too (Codex 4440931056 on #1295): a commit
+ * status is shared by them all, so a sibling with a merge queued would merge on this success before its own
+ * authorization read its own record. It is not armed again here; its own run arms it after its authorization (until
+ * then it stays green and unarmed: G3a's residual, ended by G3b).
+ *
+ * Returns the live pull request (disarmed or never armed), or null when this head is no longer current. Throws
+ * `AutoMergeDisarmFailed` on ANY failure inside it (gap-check F1): a read or the disable that throws, or a re-read that
+ * still shows a queued auto-merge. Its callers' settlement has already written the settling pending status, which
+ * nothing resumes, so every failure here must take the retryable hold.
+ */
+export async function disarmQueuedAutoMerge(client, number, expectedHead) {
+  try {
+    let live = await refreshCurrentHead(client, number, expectedHead);
+    if (!live) return null;
+    // Codex 4440931056 on #1295 — the success is the commit's, not the PR's: every open PR whose head is this commit
+    // and has a merge queued would consume it, so each is disarmed, this PR first. A sibling is not armed again here;
+    // only its own run's authorization arms it
+    const siblings = (await client.openPullRequestsAt(expectedHead)).filter((pull) => pull.number !== number);
+    for (const pull of [live, ...siblings]) {
+      if (!pull.auto_merge) continue;
+      await client.disableAutoMerge(pull);
+      const after = await client.pullRequest(pull.number);
+      if (pull.number === number) {
+        if (!isCurrentReviewUnit(after, expectedHead)) return null;
+        live = after;
+      }
+      // a sibling that moved off this commit or closed no longer consumes it
+      if (after.auto_merge && after.state === 'open' && after.head?.sha === expectedHead) throw new AutoMergeDisarmFailed();
+    }
+    return live;
+  } catch (error) {
+    throw error instanceof AutoMergeDisarmFailed ? error : new AutoMergeDisarmFailed(error);
+  }
+}
+
+/**
+ * Codex 4441198763 on #1295 — the last read before the success: `publishSettledSuccess` runs it after the approval
+ * token's reads, immediately before the status write (its `beforeWrite`). Every open pull request at this commit is
+ * listed again and none may have a merge queued. One armed after the disarm's own list (a person queuing it, or its
+ * branch moving onto this commit with a merge queued) would merge on this success before its own authorization read its
+ * record, so the success is withheld and the retryable hold is written instead. No GitHub API makes this check and the
+ * status write one step; the gap left between them (this list's reply, then the write) is G3a's residual, ended by 2A3
+ * (the merge-time re-check).
+ */
+async function confirmNoQueuedMergeAt(client, expectedHead) {
+  let open;
+  try {
+    open = await client.openPullRequestsAt(expectedHead);
+  } catch (error) {
+    throw new AutoMergeDisarmFailed(error);
+  }
+  if (open.some((pull) => pull.auto_merge)) throw new AutoMergeDisarmFailed();
+}
+
+/**
+ * G3a (gap-check F4) — the ONE step both success writers take: disarm, then the success, whose last read before the
+ * write is `confirmNoQueuedMergeAt`. A disarm or that last list not confirmed takes the retryable hold (over any
+ * follow-up failure the success writer left) and rethrows; a head no longer current returns null and writes nothing.
+ * Returns the live pull request the success was written against.
+ */
+export async function publishDisarmedSuccess(client, pullRequest, expectedHead, description, { recoveryRequest = null, attempt = 0 } = {}) {
+  try {
+    const live = await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead);
+    if (!live) return null;
+    await publishSettledSuccess(client, live, expectedHead, description, {
+      beforeWrite: () => confirmNoQueuedMergeAt(client, expectedHead),
+    });
+    return live;
+  } catch (error) {
+    if (!(error instanceof AutoMergeDisarmFailed)) throw error;
+    await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
+      detail: CODEX_AUTOMERGE_DISARM_FAILED,
+      attempt,
+      next: AUTOMERGE_RETRY_NEXT[CODEX_AUTOMERGE_DISARM_FAILED],
+    });
+    throw error;
+  }
+}
+
+/**
+ * G3a (gap-check F2 on 764669d9) — the ordinary review's clean ending, as one step: a queued native auto-merge is
+ * disarmed before the success it would act on (`publishDisarmedSuccess`), the recovery request is settled, and only
+ * the merge's own authorization re-arms it (`completeReviewedPullRequest`). Returns the live pull request and the
+ * completion, or null when this head is no longer current.
+ */
+export async function completeCleanReview(client, pullRequest, expectedHead, description, verdict, { recoveryRequest = null, attempt = 0 } = {}) {
+  let live = await publishDisarmedSuccess(client, pullRequest, expectedHead, description, { recoveryRequest, attempt });
+  if (!live) return null;
+  const disarmed = live;
+  try {
+    await settleRecoveryRequest(client, expectedHead, live, recoveryRequest, 'clean review');
+    live = await refreshCurrentHead(client, live.number, expectedHead);
+  } catch (error) {
+    // Codex 4441198800 on #1295 — after the success the queue is disarmed and, with the request unsettled, the
+    // watchdog would not ask again: the green is replaced by the re-arm hold, which settles the request
+    await publishRetryableHold(client, disarmed, expectedHead, recoveryRequest, {
+      detail: CODEX_AUTOMERGE_REARM_FAILED,
+      attempt,
+      next: AUTOMERGE_RETRY_NEXT[CODEX_AUTOMERGE_REARM_FAILED],
+    });
+    throw error;
+  }
+  if (!live) return null;
+  const completion = await completeReviewedPullRequest(client, live, expectedHead, verdict, { recoveryRequest, attempt });
+  return { pullRequest: live, completion };
+}
+
+const AUTOMERGE_RETRY_NEXT = {
+  [CODEX_AUTOMERGE_DISARM_FAILED]: 'A queued auto-merge could not be disarmed before success; the gate re-judges this exact head.',
+  [CODEX_AUTOMERGE_REARM_FAILED]: 'Auto-merge could not be re-armed after authorization; the gate re-judges this exact head.',
+};
 
 /** G2 (#1280 round 1, gap-check) — Codex's review-state record could not be read at the merge's last check. */
 export class CodexRecordUnreadable extends Error {
@@ -1746,15 +1958,19 @@ export async function ensureTerminalReviewState(
     // Codex 4226684322 — the settlement withdrew the recovered success, so success is ALWAYS republished here,
     // after the filing completed. Codex 4220431600 — a settlement that filed a follow-up issue writes the SAME
     // follow-up-aware description the ordinary success path writes: operators are sent to this status for the
-    // deferred findings
-    await publishSettledSuccess(
+    // deferred findings. G3a — through the shared step: a queued native auto-merge is disarmed first
+    const disarmed = await publishDisarmedSuccess(
       client,
-      pullRequest,
+      finalPolicy.pullRequest,
       expectedHead,
       settled.followUp !== null && settled.followUp !== undefined
         ? cappedSuccessDetail(settled)
         : 'review: recovered prior clean Codex result on this exact head',
     );
+    if (!disarmed) return true;
+    // Codex 4441198783 on #1295 — the re-arm never acts on this object: `completeReviewedPullRequest` arms the
+    // pull request `authorizeExactHeadMerge` reads fresh after the disarm (its `pullRequest`), so a stale `auto_merge`
+    // here cannot skip it (the end-to-end row below runs GitHubClient's own skip-if-queued guard)
     await completeReviewedPullRequest(
       client,
       finalPolicy.pullRequest,
@@ -2826,7 +3042,7 @@ function blockingSettlement(evidence, deferred) {
  * Publish the success a settlement has earned. It is the last write after the settlement's pending status, so it
  * is guarded like the rest (Codex 4229880987): a failed write leaves the retryable follow-up failure.
  */
-export function publishSettledSuccess(client, pullRequest, expectedHead, description) {
+export function publishSettledSuccess(client, pullRequest, expectedHead, description, { beforeWrite = null } = {}) {
   return withFollowUpRetry(client, pullRequest, expectedHead, async () => {
     // M3c (v3 §A2) — the ONLY writer of a `codex-current-head` success. It earns the approval token itself, in this
     // run, after the settlement that precedes it, and writes nothing without one: a cited head whose work item
@@ -2838,6 +3054,9 @@ export function publishSettledSuccess(client, pullRequest, expectedHead, descrip
       // (work item or ownership) rather than the follow-up filing retry the wrapper otherwise publishes.
       throw Object.assign(new Error(`success withheld: ${approval.refused}`), { readRetry: approval.readRetry ?? null });
     }
+    // G3a (Codex 4441198763 on #1295, Stage 1's re-check G1) — the caller's last check runs here, after every read
+    // above, so nothing but its own reply stands between it and the write
+    if (beforeWrite) await beforeWrite();
     const written = await client.setStatus(expectedHead, 'success', withApprovalToken(description, approval.token), pullRequest.html_url);
     recordApprovalReceipt(expectedHead, approval.verification);
     return written;
@@ -3319,34 +3538,20 @@ export async function run() {
       // One run polls one Codex invocation to its mutually exclusive terminal
       // result: finding-bearing evidence or the clean reaction. Review webhooks
       // never enter this orchestrator, so no second writer can race admission.
-      await publishSettledSuccess(
+      // G3a — the success, the settlement and the merge, in that order (`completeCleanReview`)
+      const cleaned = await completeCleanReview(
         client,
         pullRequest,
         expectedHead,
         settled.followUp === null
           ? 'review: Codex found no blocking issue on this exact head'
           : cappedSuccessDetail(settled),
-      );
-      await settleRecoveryRequest(
-        client,
-        expectedHead,
-        pullRequest,
-        recoveryRequest,
-        'clean review',
-      );
-      pullRequest = await refreshCurrentHead(
-        client,
-        pullRequest.number,
-        expectedHead,
-      );
-      if (!pullRequest) return;
-      const completion = await completeReviewedPullRequest(
-        client,
-        pullRequest,
-        expectedHead,
         finalPolicy.verdict,
         { recoveryRequest, attempt },
       );
+      if (!cleaned) return;
+      pullRequest = cleaned.pullRequest;
+      const { completion } = cleaned;
       // G2 (#1280 round 1, gap-check) — the merge's last record read refused it and replaced the green: no `clear`
       if (completion === 'review_refused') return;
       await client.updateStickyComment(

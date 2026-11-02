@@ -71,7 +71,10 @@ replaces the abandoned owner through the same concurrency lane; it cannot create
 second owner. Timeout, changed-CI, changed provider evidence, and the documented
 bootstrap marker are retryable. A current-head Codex finding or review is not:
 Claude must fix it and push a new SHA. Successful, finding-bearing, superseded, or
-non-current pending status IDs fail closed.
+non-current pending status IDs fail closed. The gate disarms a queued native
+auto-merge before every success it writes and re-arms it only after the merge's
+own authorization has read Codex's record; a disarm or re-arm it cannot confirm
+replaces the success with a retryable failure, which this recovery re-judges.
 The dispatch job only writes a durable `codex-recovery-request/<terminal-id>`
 marker; it never
 changes draft state, invokes Codex, publishes `codex-current-head`, or queues a
