@@ -15,5 +15,7 @@ describe('project:remove stays outside the server', () => {
     expect(loaded.length, 'the runtime program was built').toBeGreaterThan(100);
     expect(loaded.some((f) => f.endsWith('/platform/capabilities.service.ts')), 'platform services are loaded').toBe(true);
     expect(loaded.filter((f) => /\/platform\/project-remove(\.cli)?\.ts$/.test(f))).toEqual([]);
+    // the fresh-start bootstrap writes orgs tables too, and is the same kind of operator-only tool
+    expect(loaded.filter((f) => /\/platform\/org-bootstrap(\.cli)?\.ts$/.test(f))).toEqual([]);
   }, 120_000); // building the whole server's program takes seconds, more under a parallel run
 });

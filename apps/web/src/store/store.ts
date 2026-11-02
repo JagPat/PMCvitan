@@ -72,6 +72,7 @@ import {
 } from '@vitan/shared';
 import { routableScreensFor, screensFor } from '@/lib/screens';
 import { deleteWaitsForUpload, uploadQueued, type KeptSitePhoto } from '@/lib/queuedSitePhotos';
+import { UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
 import { deleteSitePhotoRow, dropSentMarkers, holdSitePhotoLock, isSitePhotoSent, listSitePhotoRows, markSitePhotoSent, putSitePhotoRow, sitePhotosLocked, SITE_PHOTO_SENT_KEEP_MS, sitePhotoStorageAvailable, SitePhotoBusy, SitePhotoUnreadable, type SitePhotoRow } from '@/data/sitePhotoStore';
 import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
@@ -99,7 +100,7 @@ import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, isGone, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
-import { clearVisitPhotoStart, clearVisitPoster, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, posterLapsed, posterWaits, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { clearVisitPhotoStart, clearVisitPoster, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, posterLapsed, posterWaits, removedVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { parseLocation } from '@/lib/screens';
 import { setClampedTimeout, type ClampedTimer } from '@/lib/clampedTimer';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
@@ -2873,9 +2874,12 @@ export const useStore = create<Store>()(
       for (const row of rows) {
         if (posterLapsed(row)) void withinWait(() => clearVisitPoster(row.userScope, row.projectId, row.clientKey)).catch(() => {});
       }
+      // #1241: a row whose file the server removed (recorded when the phone could not delete it) is never put back
+      const removed = rows.length > 0 ? removedVisitPhotos(rows[0].userScope, rows[0].projectId) : new Set<string>();
       set((s) => {
         const queued = new Set(s.outbox.filter(isSiteVisitOp).map((o) => o.idempotencyKey));
         for (const row of rows) {
+          if (removed.has(row.clientKey)) continue;
           if (posterWaits(row)) {
             if (!queued.has(row.op.idempotencyKey)) {
               s.outbox.push(row.op);
@@ -6442,6 +6446,15 @@ export const useStore = create<Store>()(
         return;
       }
       const [, mime, base64] = m;
+      // #918: only the types the upload takes (`RASTER_IMAGE_MIMES`, compared as the server compares them). Another is
+      // refused here, before anything is kept, queued, shown or sent: the server would refuse it, and a queued one would be
+      // discarded later. The pickers keep `image/*` (naming HEIC there can stop iOS Safari from converting a library HEIC
+      // photo to JPEG), so this is the check
+      if (!UPLOAD_IMAGE_MIMES.includes(mime)) {
+        emitGuideOutcome('site-photo-add-failed', null, guideRun);
+        get().flash(DLT.photoTypeRefused[get().lang]);
+        return;
+      }
       // The day's log this photo was taken for (#482): fixed when it was picked, filed on it, and shown only in
       // THAT log. A replay that lands after the log was sent, or after a refresh brought the next log, still
       // belongs to it, and never adds to the count of a log the server did not file it on.

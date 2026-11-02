@@ -66,6 +66,7 @@ describe('#1118 U3 — Hub webhook receiver (live PG)', () => {
     vi.stubEnv('HUB_OFFICE_TOKEN', officeToken);
     vi.stubEnv('HUB_WEBHOOK_SECRET', secret);
     vi.stubEnv('HUB_ORG_ID', orgId);
+    vi.stubEnv('HUB_OFFICE_ID', '7');
   };
   const project = async (tag: string, orgId = f.orgA.id) => {
     const id = `it-hubrx-${tag}-${run}`;
@@ -155,7 +156,7 @@ describe('#1118 U3 — Hub webhook receiver (live PG)', () => {
   });
 
   it('is closed: Nest\'s unrouted 404 without every HUB_*, and for any org but HUB_ORG_ID; nothing is written', async () => {
-    for (const name of ['HUB_BASE_URL', 'HUB_OFFICE_TOKEN', 'HUB_WEBHOOK_SECRET', 'HUB_ORG_ID']) vi.stubEnv(name, '');
+    for (const name of ['HUB_BASE_URL', 'HUB_OFFICE_TOKEN', 'HUB_WEBHOOK_SECRET', 'HUB_ORG_ID', 'HUB_OFFICE_ID']) vi.stubEnv(name, '');
     const unrouted = await request(t.app.getHttpServer()).post(`/integrations/hub/${f.orgA.id}/nothing-here`).send({});
     const { id, r } = deliver(event([]));
     const closed = await r;
@@ -164,6 +165,10 @@ describe('#1118 U3 — Hub webhook receiver (live PG)', () => {
 
     open();
     vi.stubEnv('HUB_WEBHOOK_SECRET', 'whsec_short');
+    expect((await deliver(event([]), { id }).r).status).toBe(404);
+    // U3o: the other four set and good, but no Hub office: still closed
+    open();
+    vi.stubEnv('HUB_OFFICE_ID', '');
     expect((await deliver(event([]), { id }).r).status).toBe(404);
     open();
     const other = await deliver(event([]), { id, orgId: f.orgB.id }).r;
@@ -244,7 +249,7 @@ describe('#1118 U3 — Hub webhook receiver (live PG)', () => {
     // 300 KiB, over what the raw reader takes: anywhere it doesn't read, the global parser takes it and Nest answers 404
     const big = { type: 'webhook.test', pad: 'x'.repeat(300 * 1024) };
     const unrouted = (path: string, body: { message: string }) => expect(body).toMatchObject({ statusCode: 404, message: `Cannot POST ${path}` });
-    for (const name of ['HUB_BASE_URL', 'HUB_OFFICE_TOKEN', 'HUB_WEBHOOK_SECRET', 'HUB_ORG_ID']) vi.stubEnv(name, '');
+    for (const name of ['HUB_BASE_URL', 'HUB_OFFICE_TOKEN', 'HUB_WEBHOOK_SECRET', 'HUB_ORG_ID', 'HUB_OFFICE_ID']) vi.stubEnv(name, '');
     const closed = await deliver(big).r;
     expect(closed.status).toBe(404);
     unrouted(`/integrations/hub/${f.orgA.id}/events`, closed.body);
@@ -316,6 +321,11 @@ describe('#1118 U3 — Hub webhook receiver (live PG)', () => {
       ['another org\'s linked project', event([elsewhere]), 'not_linked'],
       ['a mismatched Hub project', event([linked], 43), 'hub_project_mismatch'],
       ['a mismatched Hub project as a string', event([linked], '042'), 'hub_project_mismatch'],
+      // U3o: another Hub office's event is refused before its project is looked at, even one naming a linked project
+      ['another Hub office', event([linked], 42, { office: { id: '8' } }), 'office_mismatch'],
+      ['another Hub office, as a number', event([linked], 42, { office: { id: 70 } }), 'office_mismatch'],
+      ['another Hub office naming no project', event([], 42, { office: { id: '8' } }), 'office_mismatch'],
+      ['an office with no id', event([linked], 42, { office: {} }), 'malformed'],
     ];
     for (const [what, payload, reason] of refused) {
       const { id, r } = deliver(payload);
@@ -328,7 +338,10 @@ describe('#1118 U3 — Hub webhook receiver (live PG)', () => {
 
     // each of two links to one Hub project resolves its own PMC project, by the id Hub names; a numeric Hub id matches
     for (const [payload, what] of [[event([linked]), 'linked'], [event([twin], '42'), 'twin'], [event([linked], 42, {}, 'drawing.superseded'), 'superseded'],
-      [event([linked], 42, { toStage: 'SHARED' }, 'drawing.status_changed'), 'shared']] as const) {
+      [event([linked], 42, { toStage: 'SHARED' }, 'drawing.status_changed'), 'shared'],
+      // U3o: this org's own Hub office, as a string or a number, and an event from before Hub named the office
+      [event([linked], 42, { office: { id: '7' } }), 'own office'], [event([linked], 42, { office: { id: 7 } }), 'own office as a number'],
+      [event([linked], 42, { office: null }), 'office null']] as const) {
       const { id, r } = deliver(payload);
       expect((await r).status, what).toBe(503);
       expect(await receipts(id), what).toEqual([]);

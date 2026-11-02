@@ -13,6 +13,7 @@ const full = (over: Record<string, string | undefined> = {}): NodeJS.ProcessEnv 
   HUB_OFFICE_TOKEN: 'office-token-for-tests',
   HUB_WEBHOOK_SECRET: whsec(K1),
   HUB_ORG_ID: 'org-hub-test',
+  HUB_OFFICE_ID: '7',
   ...over,
 });
 const faults = (env: NodeJS.ProcessEnv) => {
@@ -20,13 +21,13 @@ const faults = (env: NodeJS.ProcessEnv) => {
   return r.open ? [] : r.faults;
 };
 
-describe('#1118 U2 — Hub configuration (closed unless all four HUB_* are set and well formed)', () => {
+describe('#1118 U2 — Hub configuration (closed unless all five HUB_* are set and well formed)', () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  it('opens with all four set, and normalises what it keeps', () => {
+  it('opens with all five set, and normalises what it keeps', () => {
     const r = readHubConfig(full({ HUB_BASE_URL: ' https://Hub.Example.test/ ', HUB_ORG_ID: ' org-hub-test ' }));
     expect(r).toEqual({ open: true, config: {
-      baseUrl: 'https://hub.example.test', officeToken: 'office-token-for-tests', webhookSecrets: [K1], orgId: 'org-hub-test',
+      baseUrl: 'https://hub.example.test', officeToken: 'office-token-for-tests', webhookSecrets: [K1], orgId: 'org-hub-test', officeId: '7',
     } });
   });
 
@@ -109,12 +110,20 @@ describe('#1118 U2 — Hub configuration (closed unless all four HUB_* are set a
     }
   });
 
+  it('U3o: HUB_OFFICE_ID is a Hub id: visible ASCII, at most 256', () => {
+    expect(readHubConfig(full({ HUB_OFFICE_ID: ' cmp_42 ' }))).toMatchObject({ open: true, config: { officeId: 'cmp_42' } });
+    expect(readHubConfig(full({ HUB_OFFICE_ID: 'x'.repeat(256) }))).toMatchObject({ open: true });
+    for (const value of ['two words', 'naïve', 'x'.repeat(257)]) {
+      expect(faults(full({ HUB_OFFICE_ID: value })), value).toEqual([{ name: 'HUB_OFFICE_ID', problem: 'malformed' }]);
+    }
+  });
+
   it('never puts a value in its result, and never logs', () => {
     const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => {}));
     const secret = whsec(key());
-    const env = full({ HUB_BASE_URL: 'https://hub.example.test/secret-path', HUB_OFFICE_TOKEN: 'tok en-value', HUB_WEBHOOK_SECRET: `${secret},whsec_bad`, HUB_ORG_ID: 'org id' });
+    const env = full({ HUB_BASE_URL: 'https://hub.example.test/secret-path', HUB_OFFICE_TOKEN: 'tok en-value', HUB_WEBHOOK_SECRET: `${secret},whsec_bad`, HUB_ORG_ID: 'org id', HUB_OFFICE_ID: 'office id' });
     const result = JSON.stringify(readHubConfig(env));
-    for (const value of ['secret-path', 'tok en-value', 'en-value', secret, secret.slice(6), 'whsec_bad', 'org id']) expect(result).not.toContain(value);
+    for (const value of ['secret-path', 'tok en-value', 'en-value', secret, secret.slice(6), 'whsec_bad', 'org id', 'office id']) expect(result).not.toContain(value);
     expect(JSON.parse(result)).toEqual({ open: false, faults: HUB_ENV.map((name) => ({ name, problem: 'malformed' })) });
     for (const spy of spies) expect(spy).not.toHaveBeenCalled();
     vi.restoreAllMocks();

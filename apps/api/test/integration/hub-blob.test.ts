@@ -64,6 +64,7 @@ describe('#1118 U4 — a Hub version fetched into storage (live PG)', () => {
     vi.stubEnv('HUB_OFFICE_TOKEN', `hub_${randomBytes(16).toString('hex')}`);
     vi.stubEnv('HUB_WEBHOOK_SECRET', `whsec_${randomBytes(32).toString('base64')}`);
     vi.stubEnv('HUB_ORG_ID', f.orgA.id);
+    vi.stubEnv('HUB_OFFICE_ID', '7');
   };
   const project = async (tag: string) => {
     const id = `it-hubf-${tag}-${run}`;
