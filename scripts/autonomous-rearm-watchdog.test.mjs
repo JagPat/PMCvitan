@@ -304,10 +304,14 @@ test('G3b — a CI-triggered run disarms its own queued merge first; a disarm no
       async statuses() { return []; },
     } };
   };
-  // nothing queued: no read, no write
-  const quiet = make({ reads: [] });
+  // nothing queued: the live read and the list only; nothing disabled or written
+  const quiet = make({ reads: [unarmed] });
   assert.equal(await disarmBeforeRun(quiet.client, unarmed, HEAD), unarmed);
-  assert.deepEqual(quiet.calls, []);
+  assert.deepEqual(quiet.calls.map(([k]) => k), ['read', 'list']);
+  // Codex 4444444798: a merge queued after the snapshot was read is found on the live read and disabled
+  const late = make({ reads: [armed, unarmed] });
+  assert.equal((await disarmBeforeRun(late.client, unarmed, HEAD)).auto_merge, null);
+  assert.deepEqual(late.calls.map(([k]) => k), ['read', 'list', 'disable', 'read']);
   // queued: check the head, disable, re-read; the disarmed PR is the run's
   const ok = make({ reads: [armed, unarmed] });
   assert.equal((await disarmBeforeRun(ok.client, armed, HEAD)).auto_merge, null);
@@ -324,7 +328,11 @@ test('G3b — a CI-triggered run disarms its own queued merge first; a disarm no
   const first = runBody.indexOf("if (context.trigger === 'ci') {\n    pullRequest = await disarmBeforeRun(client, pullRequest, expectedHead, existingStatuses);");
   assert.ok(withdraw > 0 && first > withdraw, 'after the withdrawal');
   assert.ok(first < runBody.indexOf('await enforceReviewScope('), 'before the scope read');
-  assert.ok(first < runBody.indexOf('pendingRecoveryRequest(existingStatuses'), 'before the recovery request');
+  assert.ok(first < runBody.indexOf('let recoveryRequest = pendingRecoveryRequest(existingStatuses'), 'before the recovery request is settled');
+  // Codex 4444444820: this PR's pending re-arm request is recorded for the cleanup step before the withdrawal, the
+  // disarm and every scope, check or recovery read
+  const early = runBody.indexOf('recordAdoptedRearmRequest(expectedHead, pullRequest.number, pendingRearm);');
+  assert.ok(early > 0 && early < withdraw, 'the pending re-arm is recorded before any further fallible read');
 });
 
 // G3b gap-check G1 (Stage 1 probe p1-consumed-then-disarmed) — a watchdog re-arm republished S2, armed the PR and
@@ -368,10 +376,11 @@ test('G3b (gap-check G1) — a consumption from an earlier re-arm stops holding 
   // a lift that fails keeps the disarm's outcome; (b) then ends the strand
   const failed = make(true);
   assert.equal((await disarmBeforeRun(failed.client, armed, HEAD, [consumed, s2])).auto_merge, null);
-  // nothing queued: no read, nothing lifted
+  // nothing queued on the live read: nothing disabled, nothing lifted
   const quiet = make();
-  assert.equal(await disarmBeforeRun(quiet.client, unarmed, HEAD, [consumed, s2]), unarmed);
-  assert.deepEqual(quiet.calls, []);
+  quiet.client.pullRequest = async () => { quiet.calls.push(['read']); return unarmed; };
+  assert.equal((await disarmBeforeRun(quiet.client, unarmed, HEAD, [consumed, s2])).auto_merge, null);
+  assert.equal(quiet.calls.some(([k]) => k === 'disable' || k === 'status'), false);
   // Stage 1's re-check of bf39f441: the snapshot showed a queued merge but the live read shows none (already gone):
   // nothing disabled, so nothing lifted
   const gone = make();

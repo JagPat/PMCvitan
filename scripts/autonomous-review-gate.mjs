@@ -1618,8 +1618,11 @@ async function mergeOrArmAuthorizedHead(client, pullRequest, expectedHead, verdi
     // G3b (#1289 round 2, Codex 4440043724; audit) — the head, base or readiness moved between the merge's reads, or
     // the PR is a draft: a race or a hold no gate event ends (a base push and a draft marked ready wake no run on this
     // head), so a re-arm that ends here is asked again. Every other hold is a gate whose own event wakes the gate
+    // Codex 4444444810: a candidate marker in the mutable body is the same kind of hold (a body edit restoring it
+    // wakes no run on this head), so it is asked again too; an ineligible trailer waits on a push
     return {
       outcome: authorization.state === 'changed_during_validation' || authorization.state === 'draft'
+        || (authorization.state === 'ownership_not_eligible' && authorization.bodyHold)
         ? 'held_changed'
         : 'held_for_gates',
       pullRequest,
@@ -1840,7 +1843,9 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   // green status left on a head whose trailer is candidate/invalid/unreadable never merges.
   const mergeVerdict = verdict ?? await readShaMergeVerdict(client, expectedHead);
   if (!mergeVerdict?.mergeEligible || candidateBodyHold(live, mergeVerdict)) {
-    return { allowed: false, state: 'ownership_not_eligible' };
+    // G3b (Codex 4444444810) — `bodyHold`: the trailer is eligible and only the mutable body holds it, a hold a body
+    // edit can lift without waking this head's gate, so a re-arm that ends here is asked again
+    return { allowed: false, state: 'ownership_not_eligible', bodyHold: Boolean(mergeVerdict?.mergeEligible) };
   }
   // M3c (v3 §A6) — second line only (native auto-merge never consults this guard): the green this merge acts on
   // must carry an approval token that agrees with the exact head's immutable `Work-Item` trailer, taken from the
@@ -1861,7 +1866,7 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   // The body is mutable: a candidate marker that appears between the first read and this one still holds
   // (Codex finding 4098699869 on #628). The PR this returns, and the merge acts on, is the one checked.
   if (candidateBodyHold(finalLive, mergeVerdict)) {
-    return { allowed: false, state: 'ownership_not_eligible' };
+    return { allowed: false, state: 'ownership_not_eligible', bodyHold: true };
   }
   // Codex 4438607053 — Codex's review-state record is read LAST, after every other remote read: a same-head run that
   // started after the settlement's read (or security findings on this head) refuses this green, as the settlement
@@ -3295,7 +3300,8 @@ export function newestConsumedRearmSettlement(statuses, pullNumber) {
 }
 
 export async function disarmBeforeRun(client, pullRequest, expectedHead, statuses = []) {
-  if (!pullRequest.auto_merge) return pullRequest;
+  // Codex 4444444798 — the snapshot never decides: a merge queued since it was read is found by the disarm's own live
+  // read, so the disarm runs on every CI-triggered run
   try {
     // Stage 1's re-check of bf39f441: the consumption is lifted only when this run actually disabled this PR's queued
     // merge on its live read, never because the snapshot showed one that was already gone
@@ -3404,6 +3410,13 @@ export async function run() {
   // job is cancelled can never leave it standing beneath an already-queued native auto-merge. The relabel-guard
   // and request-recovery modes above return without re-earning anything, so they never withdraw: a withdrawal
   // there would strand the head pending with no path back to green.
+  // G3b (Codex 4444444820) — this PR's pending re-arm request is recorded for the owner job's cleanup step before any
+  // further read that can throw (the withdrawal, the disarm, the scope, check and recovery reads), so a run that fails
+  // anywhere after this point marks it failed and the watchdog asks again at once, not after the abandoned limit
+  const pendingRearm = pendingRecoveryRequest(existingStatuses, pullRequest.number);
+  if (pendingRearm && /\/pr-[0-9]+$/u.test(pendingRearm.status.context)) {
+    recordAdoptedRearmRequest(expectedHead, pullRequest.number, pendingRearm);
+  }
   await withdrawUntokenedSuccess(client, pullRequest, expectedHead, existingStatus);
   if (context.trigger === 'ci') {
     pullRequest = await disarmBeforeRun(client, pullRequest, expectedHead, existingStatuses);

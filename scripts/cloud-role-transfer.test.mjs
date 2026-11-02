@@ -379,4 +379,11 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   assert.equal(await completeReviewedPullRequest(makeClient({ pulls: [{ ...pull, draft: true }] }), pull, head), 'held_changed');
   assert.equal(await completeReviewedPullRequest(makeClient({ statuses: [] }), pull, head), 'held_for_gates');
   assert.equal(await completeReviewedPullRequest(makeClient({ commit: { commit: { message: 'no trailer here' } } }), pull, head), 'held_for_gates');
+  // Codex 4444444810 — a candidate marker in the mutable body, over an eligible trailer, is a hold a body edit can
+  // lift without waking this head's gate: asked again, whether it was there at the first read or appeared by the last
+  assert.equal(await completeReviewedPullRequest(makeClient({ pulls: [candidatePull, candidatePull] }), candidatePull, head), 'held_changed');
+  assert.equal(await completeReviewedPullRequest(makeClient({ pulls: [pull, candidatePull] }), pull, head), 'held_changed');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [pull, candidatePull] }), pull, head)).bodyHold, true);
+  // an ineligible trailer is not a body hold: it waits on a push
+  assert.equal((await authorizeExactHeadMerge(makeClient({ commit: { commit: { message: 'no trailer here' } } }), pull, head)).bodyHold, false);
 });
