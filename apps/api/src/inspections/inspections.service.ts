@@ -518,6 +518,12 @@ export class InspectionsService {
           Prisma.sql`SELECT "responsibleMemberId" FROM "Inspection" WHERE "id" = ${inspectionId} AND "projectId" = ${projectId} FOR UPDATE`,
         );
         if (!insp) throw new NotFoundException(`Inspection ${inspectionId} not found`);
+        // Codex #1297 r2 — the CALLER's authority is re-read here, under the readiness key and with their standing rows
+        // locked, as decide does: a PMC or engineer re-roled or removed after the guard read their token must not name
+        // anyone. Locked after Inspection, so Membership still follows Inspection on every path.
+        if (!(await this.orgs.hasProjectRoleStanding(tx, projectId, user.sub, [user.role], { forUpdate: true }))) {
+          throw new ForbiddenException('Your project standing changed — the role that allowed naming who fixes this is no longer yours');
+        }
         if (memberId !== null && !(await standsAsResponsible(this.orgs, tx, projectId, memberId, { forUpdate: true }))) {
           throw new BadRequestException(`Only an active ${RESPONSIBLE_ROLES.join(' or ')} on this project can be named to fix this.`);
         }

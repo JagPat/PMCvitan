@@ -228,4 +228,34 @@ describe('the PMC or engineer names who fixes an inspection\'s failed work (live
     expect(await listed('engineer', ids.engineer2!)).toContainEqual({ inspectionId: assignedInspection(), memberId: ids.contractor });
     expect((await put('engineer2', null, assignedInspection())).status).toBe(200);
   });
+
+  it('an engineer re-roled while naming: the naming waits on the caller\'s own standing and is refused (403), naming no one', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let changed!: (pid: number) => void;
+    const isChanged = new Promise<number>((r) => { changed = r; });
+    // engineer2 becomes a contractor and the change is not yet committed: the guard already read their token
+    const rerole = t.prisma.$transaction(async (tx) => {
+      const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      await tx.membership.update({ where: { projectId_userId: { projectId: f.projectA.id, userId: ids.engineer2! } }, data: { role: 'contractor' } });
+      changed(pid);
+      await held;
+    }, { timeout: 20_000 });
+    const reroler = await isChanged;
+    const naming = put('engineer2', ids.contractor!).then((r) => r);
+    const waiting = async (): Promise<boolean> =>
+      (await t.prisma.$queryRaw<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE datname = current_database() AND ${reroler}::int = ANY(pg_blocking_pids(pid))`)[0]!.n > 0;
+    const deadline = Date.now() + 10_000;
+    while (!(await waiting())) {
+      if (Date.now() > deadline) { release(); await rerole; await naming; throw new Error('the naming never waited for the caller\'s re-role'); }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    release();
+    await rerole;
+    const res = await naming;
+    expect(res.status).toBe(403);
+    expect(await stored()).toBeNull();
+  });
 });
