@@ -473,7 +473,7 @@ test('Codex 4220861349 — the non-blocking findings beside a blocker are kept a
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   // every call (not the definition), wherever it sits in the file
   const calls = [...gate.matchAll(/(?<!function )publishCurrentHeadFinding\(/gu)].map((match) => gate.slice(match.index + match[0].length));
-  assert.equal(calls.length, 5);
+  assert.equal(calls.length, 6, '#1288 — + recovery\'s security verdict');
   // G2 — except the merge refusal's security verdict: it reads only Codex's record (no findings to hand over), after
   // the settlement already filed this head's deferrable findings
   const refusal = calls.filter((call) => call.slice(0, 400).includes('detail: CODEX_SECURITY_FINDINGS_DETAIL'));

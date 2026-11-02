@@ -1737,6 +1737,18 @@ export async function ensureTerminalReviewState(
     // branch protection (and a queued auto-merge) acts on, so a blocking finding that landed since the
     // original success must turn the head red without a green window in which it could merge
     const settled = await settleFinalCodexEvidence(client, finalPolicy.pullRequest, expectedHead);
+    // #1288 (Codex 4439305279) — security findings found by recovery are a finding like any other: the one finding
+    // publisher writes the marker, the failure, convergence, and the `changes_required` sticky with the correction
+    // notice, as the ordinary path does (a security verdict is non-retryable: an author change is owed)
+    if (settled.state === 'changes_required' && settled.security === true) {
+      await publishCurrentHeadFinding(client, finalPolicy.pullRequest, expectedHead, null, {
+        detail: settled.detail,
+        attempt: 0,
+        deferred: settled.deferred ?? [],
+        security: true,
+      });
+      return true;
+    }
     if (settled.state === 'changes_required') {
       await publishBlockingVerdict(client, finalPolicy.pullRequest, expectedHead, {
         description: settled.detail,
@@ -3112,9 +3124,12 @@ export async function run() {
         reviewNotBefore,
       );
       if (verifiedResult.state !== 'clear') {
+        // #1288 (Codex 4439305276) — a same-head run that started after the poll is the retryable hold, by name
         const detail = verifiedResult.state === 'changes_required'
           ? verifiedResult.detail
-          : 'Codex evidence changed during final verification';
+          : verifiedResult.held === true
+            ? CODEX_RUN_HELD_DETAIL
+            : 'Codex evidence changed during final verification';
         if (verifiedResult.state === 'changes_required') {
           const published = await publishCurrentHeadFinding(
             client,
@@ -3135,18 +3150,17 @@ export async function run() {
           recoveryRequest,
           'changed review evidence',
         );
-        const evidenceNotice = correctionNotice(pullRequest, { detail, reason: 'review' });
+        // #1288 (Codex 4439305276) — both details here are retryable (RETRYABLE_REVIEW_FAILURES): recovery re-judges
+        // this exact head, and no author owes a correction, so the `review_clean` sticky is replaced by `review_retry`
+        // with no correction instruction, as the final settlement's unsettled path does
         await client.updateStickyComment(
           pullRequest.number,
           statusBody({
-            state: 'changes_required',
-            advisory: await freshAdvisory(client, pullRequest),
+            state: 'review_retry',
             head: expectedHead,
             detail,
             attempt,
-            owner: evidenceNotice.owner ?? 'undeclared',
-            correctionState: noticeState(evidenceNotice),
-                  next: evidenceNotice.instruction,
+            next: 'Codex\'s evidence changed or a review is still running on this head; the gate re-judges this exact head.',
           }),
         );
         throw new Error(detail);

@@ -1431,7 +1431,7 @@ test('the trusted owner observes review history after CI without requiring repla
   assert.match(gate, /reviewComments\(number\)[\s\S]*?this\.paginated/u);
   assert.equal(
     [...gate.matchAll(/await publishCurrentHeadFinding\(/gu)].length,
-    4, // + the final evidence settlement before success (Codex 4214321785)
+    5, // + the final evidence settlement before success (Codex 4214321785); #1288 + recovery's security verdict
     'every finding-result path must re-evaluate the reset before directing another push',
   );
 });
@@ -4047,4 +4047,68 @@ test('#766 Codex 4237403349 / 4237403345 — an approval-time read failure keeps
   // the runner's STATUS parser treats only `none`/empty as no PR, so the Now block must never say `null`
   const status = await readFile(new URL('../docs/STATUS.md', import.meta.url), 'utf8');
   assert.match(status, /^open_pr: (none|\d+)$/mu);
+});
+
+// #1288 (Codex 4439305279) — recovery that finds completed security findings publishes them through the one finding
+// publisher: the marker, the failure, and the `changes_required` sticky with its correction notice, never a bare
+// failure that leaves the sticky on its earlier clean state.
+test('#1288 — a recovered success that meets security findings publishes them as a finding, sticky and notice included', async () => {
+  const head = 'd'.repeat(40);
+  const statuses = [{ id: 7100, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head [wi:none]' }];
+  const pull = {
+    number: 261, state: 'open', draft: false, auto_merge: null,
+    body: '<!-- correction-owner: claude -->',
+    head: { sha: head, ref: 'claude/unit', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/261',
+  };
+  const log = [];
+  const securityRecord = {
+    user: { login: 'chatgpt-codex-connector[bot]' }, created_at: '2026-11-02T00:00:00Z',
+    body: `<!-- codex-review-state:v1 ${JSON.stringify({
+      code_review: { commit_sha: head, has_any_findings: false, has_unresolved_findings: false, status: 'completed' },
+      security_review: { commit_sha: head, has_any_findings: true, has_unresolved_findings: true, status: 'completed' },
+    })} -->`,
+  };
+  const client = {
+    ...automatedMergeEvidence(pull),
+    async pullRequest() { return { ...pull }; },
+    async statuses() { return statuses; },
+    async setStatus(sha, state, description) { log.push(['status', state, description]); return { id: 1 }; },
+    async issueComments() { return [securityRecord]; },
+    async reviewComments() { return []; },
+    async reviews() { return []; },
+    async markReplacementRequired() {},
+    async setDraft(current, draft) { log.push(['draft', draft]); return { ...current, draft }; },
+    async updateStickyComment(number, body) { log.push(['sticky', body]); },
+    async createIssueComment() { log.push(['marker']); return { id: 1 }; },
+    async mergeExactHead() { log.push(['merge']); return { merged: false }; },
+    async enableAutoMerge() { log.push(['arm']); },
+    async disableAutoMerge() { log.push(['disable']); },
+    async dispatchHandoff() {},
+  };
+  assert.equal(await reviewGate.ensureTerminalReviewState(client, pull, head, statuses[0], statuses), true);
+  assert.ok(log.some(([k]) => k === 'marker'), 'the security marker is written');
+  const failure = log.filter(([k, state]) => k === 'status' && state === 'failure').at(-1);
+  assert.match(failure[2], /Codex security review reports unresolved findings/u);
+  const sticky = log.filter(([k]) => k === 'sticky').at(-1)?.[1] ?? '';
+  assert.match(sticky, /`changes_required`/u, 'the sticky leaves its clean state');
+  assert.equal(log.some(([k]) => k === 'arm' || k === 'merge'), false);
+  assert.equal(log.some(([k, state]) => k === 'status' && state === 'success'), false);
+});
+
+// #1288 (Codex 4439305276) — the verification re-read before success: a same-head run that started after the poll,
+// or evidence that changed, is the retryable hold by name, with a `review_retry` sticky and no correction notice.
+test('#1288 — a held or changed verification re-read is published as a retry, never as a correction', async () => {
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const start = gate.indexOf('const verifiedResult = await reclassifyCurrentCodexEvidence(');
+  const branch = gate.slice(start, gate.indexOf('const finalStatuses = await client.statuses(expectedHead);', start));
+  assert.match(branch, /verifiedResult\.held === true\s*\?\s*CODEX_RUN_HELD_DETAIL/u);
+  const retry = branch.slice(branch.indexOf('publishBlockingVerdict('));
+  assert.match(retry, /state: 'review_retry'/u);
+  assert.doesNotMatch(retry, /correctionNotice|changes_required/u);
+  assert.equal(reviewGate.isRetryableReviewFailureDescription?.(`review: ${'x'}`) ?? true, true);
+  const { isRetryableReviewFailureDescription, CODEX_RUN_HELD_DETAIL } = await import('./review-policy.mjs');
+  assert.equal(isRetryableReviewFailureDescription(`review: ${CODEX_RUN_HELD_DETAIL}`), true);
+  assert.equal(isRetryableReviewFailureDescription('review: Codex evidence changed during final verification'), true);
 });
