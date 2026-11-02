@@ -27,8 +27,12 @@ export { CORRECTION_LEASE_GRACE_MS, STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT 
 // file implements it.
 //
 // It publishes a comment and nothing else. It never touches
-// `codex-current-head`, draft state, auto-merge, or Codex.
+// `codex-current-head`, draft state, auto-merge, or Codex. (It may ask the gate
+// to recover a head, through the gate's own dispatch: `gateRecoveryStatus`,
+// `gateRearmStatus`.)
 import { createHash } from 'node:crypto';
+
+import { parseApprovalToken } from './work-item-approval.mjs';
 
 import {
   AWAKENABLE_FROM_GITHUB,
@@ -126,6 +130,27 @@ export function gateRecoveryStatus(combinedStatus) {
   // Per terminal status id, because that is what the gate authorises against: a
   // request for an older failure says nothing about this one.
   return hasPendingRecoveryRequest(statuses, failing.id) ? null : failing;
+}
+
+/**
+ * G3 (gap-check F2) — the green that nothing will arm: this exact head's required status is a success carrying an
+ * approval token, the pull request is ready (not draft) and has no auto-merge queued, and the gate has never been
+ * asked to re-judge this success (no `codex-recovery-request/<id>` status for it, pending or settled). The gate
+ * disarms a queued auto-merge before each success and re-arms only after the merge's authorization, so a re-arm lost
+ * on any path (a failed re-arm whose hold could not be written, a moved-head dispatch that failed, a read that lagged
+ * on a push) leaves exactly this. The watchdog hands it to the gate's recovery once per success, which re-judges the
+ * head from Codex's record and re-arms only through its own authorization (`authorizeRecoveryDispatch` accepts the
+ * newest tokened success named exactly). A republished success is a new id, so a head still unarmed after that
+ * re-judge is asked again on a later tick, never twice for one success.
+ */
+export function gateRearmStatus(combinedStatus, pullRequest) {
+  if (pullRequest?.draft !== false || pullRequest?.auto_merge) return null;
+  const statuses = combinedStatus?.statuses ?? [];
+  const newest = statuses.find((status) => status?.context === CORRECTION_STATUS_CONTEXT) ?? null;
+  if (newest?.state !== 'success' || !parseApprovalToken(newest.description)) return null;
+  const id = String(newest.id ?? '');
+  if (!id) return null;
+  return statuses.some((status) => status?.context === `${RECOVERY_REQUEST_CONTEXT}${id}`) ? null : newest;
 }
 
 /** The failing required status on this exact head, or null. */

@@ -244,6 +244,11 @@ export const CODEX_SECURITY_FINDINGS_DETAIL = 'Codex security review reports unr
  * before its success would be republished. It is retryable: no success is written, and the head is re-judged.
  */
 export const CODEX_AUTOMERGE_DISARM_FAILED = 'queued auto-merge could not be disarmed before success';
+/**
+ * G3 (gap-check F2d) — the detail of a head whose merge authorization passed but whose auto-merge could not be armed
+ * again: the green it would have left unarmed is replaced, so the head is re-judged rather than stranded.
+ */
+export const CODEX_AUTOMERGE_REARM_FAILED = 'auto-merge could not be re-armed after authorization';
 
 const RETRYABLE_REVIEW_FAILURES = [
   FOLLOW_UP_RETRY,
@@ -260,6 +265,7 @@ const RETRYABLE_REVIEW_FAILURES = [
   CODEX_RUN_HELD_DETAIL,
   CODEX_RECORD_UNREADABLE_DETAIL,
   CODEX_AUTOMERGE_DISARM_FAILED,
+  CODEX_AUTOMERGE_REARM_FAILED,
 ];
 
 export function isRetryableReviewFailureDescription(description) {

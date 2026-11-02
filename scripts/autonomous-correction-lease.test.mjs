@@ -756,3 +756,42 @@ test('L33: a branch-reservation inconsistency gives a resolving action, never on
   });
   assert.match(other.published, /set the body marker to match a valid head trailer/u, 'non-claude branch: general reconcile action');
 });
+
+// G3 (gap-check F2) — a green that nothing will arm: the gate disarms a queued auto-merge before each success and
+// re-arms only after the merge's authorization, so a re-arm lost on any path leaves a ready, tokened, unarmed head
+// that no failure will ever dispatch. The watchdog hands it to the gate's recovery once per success.
+test('G3: a ready, tokened green with no auto-merge queued is handed to the gate once per success', async () => {
+  const tokened = { ...status('review: Codex found no blocking issue on this exact head [wi:none]', 'success'), id: 6100 };
+  const ready = (extra = {}) => ({ ...pullRequest(), draft: false, auto_merge: null, ...extra });
+  const run = async ({ pull = ready(), live = pull, statuses = [tokened] } = {}) => {
+    const { client, calls } = fakeClient({ pull, live, statuses });
+    const assessment = await handOffCorrectionLease(client, pull, REPOSITORY, 'main', { now: DUE });
+    return { assessment, calls };
+  };
+
+  const dispatched = await run();
+  assert.deepEqual(dispatched.calls.dispatched, [{ ref: 'main', inputs: { pr_number: '358', head_sha: HEAD, terminal_status_id: '6100' } }]);
+  assert.equal(dispatched.assessment?.state, 'rearm_dispatched');
+  assert.deepEqual(dispatched.calls.posted, [], 'no lease comment');
+  assert.deepEqual(dispatched.calls.forbidden, [], 'and no gate state touched');
+
+  const armedNow = { enabled_at: '2026-08-17T10:00:00Z', merge_method: 'squash' };
+  for (const [name, options] of [
+    ['an auto-merge already queued', { pull: ready({ auto_merge: armedNow }) }],
+    ['armed since the snapshot (the live read decides)', { pull: ready(), live: ready({ auto_merge: armedNow }) }],
+    ['a draft', { pull: ready({ draft: true }) }],
+    ['a success without an approval token', { statuses: [{ ...tokened, description: 'review: clean' }] }],
+    ['a success the gate was already asked about (pending)', { statuses: [
+      { context: 'codex-recovery-request/6100', state: 'pending', id: 6101, description: 'recovery: requested terminal status 6100' }, tokened] }],
+    ['a success the gate already re-judged (settled)', { statuses: [
+      { context: 'codex-recovery-request/6100', state: 'success', id: 6102, description: 'recovery: consumed by recovered success re-authorization' }, tokened] }],
+  ]) {
+    const { calls } = await run(options);
+    assert.deepEqual(calls.dispatched, [], `${name}: nothing dispatched`);
+  }
+
+  // a request about an older success says nothing about this one
+  const older = await run({ statuses: [
+    { context: 'codex-recovery-request/5000', state: 'success', id: 5001, description: 'recovery: consumed by recovered success re-authorization' }, tokened] });
+  assert.equal(older.calls.dispatched.length, 1);
+});

@@ -706,8 +706,9 @@ test('Codex 4226684322 — the settlement withdraws any earlier green before it 
   const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState'), gate.indexOf('async function waitForRequiredChecks'));
   const settle = recovery.indexOf('await settleFinalCodexEvidence(');
   assert.ok(settle > 0);
-  assert.doesNotMatch(recovery.slice(0, settle), /client\.setStatus\(\s*expectedHead,\s*'success'|publishSettledSuccess\(/u, 'no success is written before the settlement');
-  assert.match(recovery.slice(settle), /await publishSettledSuccess\(/u, 'the withdrawn success is always republished after it');
+  assert.doesNotMatch(recovery.slice(0, settle), /client\.setStatus\(\s*expectedHead,\s*'success'|publishSettledSuccess\(|publishDisarmedSuccess\(/u, 'no success is written before the settlement');
+  // G3 — through the shared disarm-then-success step
+  assert.match(recovery.slice(settle), /await publishDisarmedSuccess\(/u, 'the withdrawn success is always republished after it');
 });
 
 test('Codex 4226684328 — a substantive review body is deferred alongside its review\'s inline findings; a bare summary is not', () => {
@@ -802,7 +803,11 @@ test('Codex 4229880987 — no write after a gate-written pending status can leav
   // (the only other success write is settleRecoveryRequest's, on its own recovery-request context)
   const direct = gate.slice(0, gate.indexOf('export function publishSettledSuccess'));
   assert.doesNotMatch(direct.slice(direct.indexOf('export async function ensureTerminalReviewState')), /client\.setStatus\(\s*expectedHead,\s*'success'/u);
-  assert.equal([...gate.matchAll(/await publishSettledSuccess\(/gu)].length, 2, 'the ordinary path and recovery');
+  // G3 — one call, inside the shared disarm-then-success step, which the ordinary path and recovery each take
+  const calls = [...gate.matchAll(/await publishSettledSuccess\(/gu)].map((m) => m.index);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0] > gate.indexOf('export async function publishDisarmedSuccess(') && calls[0] < gate.indexOf('const AUTOMERGE_RETRY_NEXT'));
+  assert.equal([...gate.matchAll(/await publishDisarmedSuccess\(/gu)].length, 2, 'the ordinary path and recovery');
 });
 
 // #1254 (Jagrut's choice, #1094 6564512390) — the gate passes Codex's review-state record to the classifier at both

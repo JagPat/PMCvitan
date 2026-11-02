@@ -20,6 +20,7 @@ import {
 import {
   assessCorrectionLease,
   correctionReasonFor,
+  gateRearmStatus,
   gateRecoveryStatus,
   owedCorrectionStatus,
 } from './correction-lease.mjs';
@@ -588,6 +589,24 @@ export async function handOffCorrectionLease(
         + `terminal status ${recoverable.id}.`,
     );
     return { state: 'dispatched', head, terminalStatusId: recoverable.id ?? null };
+  }
+
+  // G3 (gap-check F2) — a green no auto-merge is queued behind: a re-arm lost after the gate's disarm. The gate is
+  // asked once per success to re-judge it; it re-arms only through its own authorization (`gateRearmStatus`).
+  // The open-PR snapshot is a filter only: the live pull request decides, so an arming since the snapshot is seen.
+  const unarmed = gateRearmStatus(combined, pullRequest)
+    && gateRearmStatus(combined, await client.pullRequest(pullRequest.number));
+  if (unarmed) {
+    await client.dispatchRecovery(defaultBranch, {
+      pr_number: String(pullRequest.number),
+      head_sha: head,
+      terminal_status_id: String(unarmed.id),
+    });
+    console.log(
+      `Dispatched gate re-arm for PR #${pullRequest.number} head ${head} `
+        + `success status ${unarmed.id}.`,
+    );
+    return { state: 'rearm_dispatched', head, terminalStatusId: unarmed.id ?? null };
   }
 
   const owed = owedCorrectionStatus(combined);

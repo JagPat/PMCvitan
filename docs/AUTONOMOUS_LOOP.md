@@ -70,8 +70,14 @@ input name is retained for workflow-dispatch compatibility. Pending recovery
 replaces the abandoned owner through the same concurrency lane; it cannot create a
 second owner. Timeout, changed-CI, changed provider evidence, and the documented
 bootstrap marker are retryable. A current-head Codex finding or review is not:
-Claude must fix it and push a new SHA. Successful, finding-bearing, superseded, or
-non-current pending status IDs fail closed.
+Claude must fix it and push a new SHA. Finding-bearing, superseded, or
+non-current pending status IDs fail closed, and so does a success unless it is the
+head's newest status, carries an approval token and is named exactly: that one
+asks the owner to re-judge a green whose auto-merge was lost (the gate disarms a
+queued auto-merge before every success and re-arms it only after the merge's own
+authorization; the hourly watchdog dispatches such a ready, unarmed green once per
+success). The owner re-reads the head and Codex's record itself and re-arms only
+through that authorization.
 The dispatch job only writes a durable `codex-recovery-request/<terminal-id>`
 marker; it never
 changes draft state, invokes Codex, publishes `codex-current-head`, or queues a

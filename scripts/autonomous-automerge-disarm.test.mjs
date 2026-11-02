@@ -7,9 +7,14 @@ import {
   completeReviewedPullRequest,
   disarmQueuedAutoMerge,
   newestTokenedSuccess,
+  publishDisarmedSuccess,
   REQUIRED_CHECKS,
 } from './autonomous-review-gate.mjs';
-import { CODEX_AUTOMERGE_DISARM_FAILED, isRetryableReviewFailureDescription } from './review-policy.mjs';
+import {
+  CODEX_AUTOMERGE_DISARM_FAILED,
+  CODEX_AUTOMERGE_REARM_FAILED,
+  isRetryableReviewFailureDescription,
+} from './review-policy.mjs';
 
 /**
  * G3 (#1280 Codex 4438874584; notes/gate-codex-silent/g3/design.md). A native auto-merge queued from an earlier green
@@ -101,59 +106,121 @@ test('G3 — the dispatch\'s status id is a hint: only this head\'s newest token
   assert.equal(authorizeRecoveryDispatch([timedOut], '503'), timedOut);
 });
 
-test('G3 — the re-arm names this head (expectedHeadOid), and a re-arm that fails leaves the head green and unarmed', async () => {
-  const eligibleCommit = { commit: { message: 'fix: something\n\nCorrection-Owner: claude\n' } };
-  const checks = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
-  const makeClient = ({ enable }) => {
-    const writes = [];
-    return {
-      writes,
-      repository: 'JagPat/PMCvitan',
-      async pullRequest() { return pr(); },
-      async statuses() { return [success(600)]; },
-      async checkRuns() { return checks; },
-      async commit() { return eligibleCommit; },
-      async issueComments() { return []; },
-      async mergeExactHead() { return { merged: false, message: 'Pull request is not mergeable yet' }; },
-      async enableAutoMerge(pull, head) { writes.push(['arm', pull.number, head]); return enable(); },
-      async dispatchHandoff() { writes.push(['handoff']); },
-      async setStatus(...args) { writes.push(['status', ...args]); },
-    };
+test('G3 (gap-check F1) — every failure inside the disarm is the retryable AutoMergeDisarmFailed, never a raw error', async () => {
+  const cases = {
+    'the first read': fakeClient({ reads: [] }),
+    'the re-read after the disable': fakeClient({ reads: [armed()] }),
+    'the moved head\'s status read': { ...fakeClient({ reads: [armed(), pr(NEXT)] }), async statuses() { throw new Error('GitHub 502'); } },
+    'the moved-head dispatch': { ...fakeClient({ reads: [armed(), pr(NEXT)], statuses: { [NEXT]: [success(77)] } }), async dispatchGateRecovery() { throw new Error('dispatch 500'); } },
   };
-  const verdict = { outcome: 'eligible', mergeEligible: true, owner: 'claude' };
-  const ok = makeClient({ enable: async () => {} });
-  assert.equal(await completeReviewedPullRequest(ok, pr(), HEAD, verdict), 'queued');
-  assert.deepEqual(ok.writes.filter(([k]) => k === 'arm'), [['arm', 900, HEAD]], 'armed once, for this exact head');
-  const failing = makeClient({ enable: async () => { throw new Error('GraphQL down'); } });
-  await assert.rejects(completeReviewedPullRequest(failing, pr(), HEAD, verdict), /GraphQL down/u);
-  // nothing withdrew the green and nothing armed: today's not-armed state, which the next re-judge repeats
-  assert.deepEqual(failing.writes, [['arm', 900, HEAD]]);
+  for (const [name, client] of Object.entries(cases)) {
+    const reads = client.pullRequest;
+    client.pullRequest = async (number) => { const next = await reads.call(client, number); if (!next) throw new Error('ECONNRESET'); return next; };
+    await assert.rejects(disarmQueuedAutoMerge(client, 900, HEAD), AutoMergeDisarmFailed, name);
+  }
 });
 
-test('G3 — structural: every success writer disarms first; only the merge authorization re-arms', async () => {
-  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
-  const writers = [...gate.matchAll(/await publishSettledSuccess\(/gu)].map((m) => m.index);
-  assert.equal(writers.length, 2, 'the review path and the recovered success');
-  for (const at of writers) {
-    const fnStart = Math.max(gate.lastIndexOf('\nexport async function ', at), gate.lastIndexOf('\nasync function ', at));
-    const before = gate.slice(fnStart, at);
-    const disarm = before.lastIndexOf('disarmQueuedAutoMerge(client');
-    assert.ok(disarm > 0, 'a disarm precedes the success in its function');
-    assert.ok(!before.slice(disarm).includes('await publishSettledSuccess('), 'no other success between them');
+const eligibleCommit = { commit: { message: 'fix: something\n\nCorrection-Owner: claude\n' } };
+const greenChecks = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
+const verdict = { outcome: 'eligible', mergeEligible: true, owner: 'claude' };
+
+/** A fake for the success and merge paths: every write is logged in order, and `live` is what each PR read returns. */
+function gateClient({ live = () => pr(), statuses = [success(600)], enable = async () => {}, disable = async () => {} } = {}) {
+  const log = [];
+  const client = {
+    log,
+    repository: 'JagPat/PMCvitan',
+    async pullRequest() { log.push(['read']); return live(); },
+    async disableAutoMerge(pull) { log.push(['disable', pull.number]); return disable(); },
+    async statuses() { return statuses; },
+    async checkRuns() { return greenChecks; },
+    async commit() { return eligibleCommit; },
+    async issueComments() { return []; },
+    async mergeExactHead() { return { merged: false, message: 'Pull request is not mergeable yet' }; },
+    // GitHub's own guard: an already-armed pull request is not armed again
+    async enableAutoMerge(pull, head) { if (pull.auto_merge) return; log.push(['arm', pull.number, head]); return enable(); },
+    async dispatchHandoff() { log.push(['handoff']); },
+    async setStatus(sha, state, description) { log.push(['status', sha, state, description]); return { id: 1 }; },
+    async setDraft(pull, draft) { log.push(['draft', draft]); return { ...pull, draft }; },
+    async updateStickyComment(number, body) { log.push(['sticky', body]); },
+    async dispatchGateRecovery() { log.push(['dispatch']); },
+  };
+  return client;
+}
+
+test('G3 (gap-check F4) — the shared success step: an armed head is disabled before the success is written', async () => {
+  let armedNow = true;
+  const client = gateClient({ live: () => (armedNow ? armed() : pr()), disable: async () => { armedNow = false; } });
+  const live = await publishDisarmedSuccess(client, armed(), HEAD, 'review: clean');
+  assert.equal(live.auto_merge, null);
+  const kinds = client.log.map(([k, , state]) => (k === 'status' ? `status:${state}` : k));
+  assert.ok(kinds.indexOf('disable') >= 0 && kinds.indexOf('disable') < kinds.indexOf('status:success'), kinds.join(','));
+  assert.equal(kinds.filter((k) => k === 'status:success').length, 1);
+});
+
+test('G3 (gap-check F1/F4) — the shared success step: a disarm that fails writes the retryable hold and no success', async () => {
+  for (const client of [
+    gateClient({ live: () => armed(), disable: async () => { throw new Error('GraphQL down'); } }),
+    gateClient({ live: () => armed() }),
+    (() => { let n = 0; const c = gateClient({ live: () => { n += 1; if (n === 2) throw new Error('ECONNRESET'); return n === 1 ? armed() : pr(); } }); return c; })(),
+  ]) {
+    await assert.rejects(publishDisarmedSuccess(client, armed(), HEAD, 'review: clean'), AutoMergeDisarmFailed);
+    const statuses = client.log.filter(([k]) => k === 'status');
+    assert.equal(statuses.some(([, , state]) => state === 'success'), false, 'nothing green');
+    assert.deepEqual(statuses.at(-1).slice(2), ['failure', `review: ${CODEX_AUTOMERGE_DISARM_FAILED}`]);
+    assert.match(client.log.find(([k]) => k === 'sticky')?.[1] ?? '', /review_retry/u);
   }
+  // a head no longer current: nothing written at all
+  const moved = gateClient({ live: () => pr(NEXT) });
+  assert.equal(await publishDisarmedSuccess(moved, pr(), HEAD, 'review: clean'), null);
+  assert.equal(moved.log.some(([k]) => k === 'status'), false);
+});
+
+test('G3 (gap-check F3) — the re-arm reads the fresh post-disarm pull request, not a stale armed object, and names this head', async () => {
+  const client = gateClient();
+  assert.equal(await completeReviewedPullRequest(client, armed(), HEAD, verdict), 'queued');
+  assert.deepEqual(client.log.filter(([k]) => k === 'arm'), [['arm', 900, HEAD]], 'armed once, for this exact head (expectedHeadOid)');
+});
+
+test('G3 (gap-check F2d) — a re-arm that fails replaces the green with the retryable hold, so recovery re-judges the head', async () => {
+  const client = gateClient({ enable: async () => { throw new Error('GraphQL down'); } });
+  await assert.rejects(completeReviewedPullRequest(client, pr(), HEAD, verdict), /GraphQL down/u);
+  const statuses = client.log.filter(([k]) => k === 'status');
+  assert.deepEqual(statuses.at(-1).slice(2), ['failure', `review: ${CODEX_AUTOMERGE_REARM_FAILED}`]);
+  assert.equal(isRetryableReviewFailureDescription(`review: ${CODEX_AUTOMERGE_REARM_FAILED}`), true);
+  assert.match(client.log.find(([k]) => k === 'sticky')?.[1] ?? '', /review_retry/u);
+  assert.equal(client.log.some(([k]) => k === 'handoff'), false);
+  // GitHub's "clean status" answer is not a re-arm failure: the exact-head merge is retried as before, no hold
+  const clean = gateClient({ enable: async () => { throw new Error('Pull request is in clean status'); } });
+  clean.mergeExactHead = async () => ({ merged: true });
+  assert.equal(await completeReviewedPullRequest(clean, pr(), HEAD, verdict), 'merged');
+  assert.equal(clean.log.some(([k]) => k === 'status'), false);
+});
+
+test('G3 (gap-check F2c) — the hint is judged before an older non-retryable failure beneath the newest success', () => {
+  const finding = { id: 70, context: 'codex-current-head', state: 'failure', description: 'review: current-head Codex finding on this exact head' };
+  assert.equal(authorizeRecoveryDispatch([success(77), finding], '77')?.id, 77);
+  // the latch still refuses everything else it refused before
+  assert.equal(authorizeRecoveryDispatch([success(77, 'review: clean'), finding], '77'), null);
+  assert.equal(authorizeRecoveryDispatch([finding], '70'), null);
+});
+
+test('G3 — structural: both writers take the one disarm-then-success step; only the merge authorization re-arms', async () => {
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const step = gate.slice(gate.indexOf('export async function publishDisarmedSuccess('), gate.indexOf('const AUTOMERGE_RETRY_NEXT'));
+  assert.ok(step.indexOf('disarmQueuedAutoMerge(client') > 0 && step.indexOf('disarmQueuedAutoMerge(client') < step.indexOf('await publishSettledSuccess('));
+  assert.match(step, /if \(!\(error instanceof AutoMergeDisarmFailed\)\) throw error;\s*await holdAutoMergeRetry\(client, pullRequest, expectedHead, CODEX_AUTOMERGE_DISARM_FAILED[^;]*;\s*throw error;/u);
+  assert.equal([...gate.matchAll(/await publishSettledSuccess\(/gu)].length, 1, 'the success writer is called only by the shared step');
+  assert.equal([...gate.matchAll(/await publishDisarmedSuccess\(/gu)].length, 2, 'the review path and the recovered success');
   const arms = [...gate.matchAll(/client\.enableAutoMerge\(/gu)].map((m) => m.index);
   assert.equal(arms.length, 1);
   const complete = gate.indexOf('export async function completeReviewedPullRequest(');
   assert.ok(arms[0] > gate.indexOf('authorizeExactHeadMerge(client', complete) && arms[0] > complete);
   assert.equal([...gate.matchAll(/client\.disableAutoMerge\(/gu)].length, 1, 'one disable, inside the shared helper');
-  // a disarm not confirmed is held at both writers: the retryable failure and review_retry sticky, then the throw
-  const holds = [...gate.matchAll(/if \(!\(error instanceof AutoMergeDisarmFailed\)\) throw error;\s*await holdUndisarmedHead\([^;]*;\s*throw error;/gu)];
-  assert.equal(holds.length, 2);
-  const hold = gate.slice(gate.indexOf('async function holdUndisarmedHead('), gate.indexOf('/** G3 — the head moved under a disarm'));
-  assert.match(hold, /publishBlockingVerdict\(client, pullRequest, expectedHead, \{ description: `review: \$\{CODEX_AUTOMERGE_DISARM_FAILED\}` \}\)/u);
+  const hold = gate.slice(gate.indexOf('async function holdAutoMergeRetry('), gate.indexOf('/** G3 — the head moved under a disarm'));
+  assert.match(hold, /publishBlockingVerdict\(client, pullRequest, expectedHead, \{ description: `review: \$\{detail\}` \}\)/u);
   assert.match(hold, /state: 'review_retry'/u);
   assert.doesNotMatch(hold, /correctionNotice|changes_required/u);
-  // a request naming the newest tokened success is consumed before the "superseded" write, and the success recovered
   const consume = gate.indexOf("'recovered success re-authorization'");
   assert.ok(consume > 0 && consume < gate.indexOf("'recovery: request superseded by newer review state'"));
 });
