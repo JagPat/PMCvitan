@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GitHubClient, REQUIRED_CHECKS, completeReviewedPullRequest, contextForEvent, run } from './autonomous-review-gate.mjs';
 import { codexRecordRunningOn } from './autonomous-review-state.mjs';
+import { securityVerdictMarker } from './security-verdict-marker.mjs';
 import {
-  CODEX_RUN_HELD_DETAIL, CODEX_SHARED_COMMIT_DETAIL, CODEX_AUTOMERGE_DISARM_FAILED, CODEX_AUTOMERGE_REARM_FAILED, OWNERSHIP_CANDIDATE_HELD,
+  CODEX_RUN_HELD_DETAIL, CODEX_SECURITY_FINDINGS_DETAIL, CODEX_SHARED_COMMIT_DETAIL, CODEX_AUTOMERGE_DISARM_FAILED, CODEX_AUTOMERGE_REARM_FAILED, OWNERSHIP_CANDIDATE_HELD,
 } from './review-policy.mjs';
 
 /**
@@ -14,6 +15,9 @@ import {
  * that invalidates a queued merge (a push, an arm on a shared commit, a Codex run on the head, a withholding ownership
  * verdict) the gate disarms within seconds, from trusted default-branch code, and never arms or writes a success.
  */
+// the real client methods, captured before any harness swaps the prototype
+const realRequest = GitHubClient.prototype.request;
+const realIssueComment = GitHubClient.prototype.issueComment;
 const HEAD = 'e'.repeat(40);
 const OLD = 'd'.repeat(40);
 const repo = { full_name: 'JagPat/PMCvitan' };
@@ -414,6 +418,10 @@ function armTailClient(afterArm) {
     async setStatus(sha, state, description, url, context = 'codex-current-head') { log.push(['status', state, description, context]); return { id: 1 }; },
     async setDraft(pull, draft) { log.push(['draft', pull.number, draft]); if (draft) armedNow = false; return { ...pull, draft }; },
     async updateStickyComment(number, body) { log.push(['sticky', number, body]); },
+    async createIssueComment(number, body) { log.push(['marker', number, body]); return { id: 901 }; },
+    // the finding path's convergence read: no inline review evidence
+    async reviews() { return []; },
+    async reviewComments() { return []; },
   };
   return client;
 }
@@ -441,6 +449,58 @@ test('2A3b-2 (gap 4) — a Codex run found after the arm disarms and takes the h
   await assert.rejects(completeReviewedPullRequest(unreadable, armTailPull(), HEAD, eligible), /502/u);
   assert.deepEqual(written(unreadable.log), [['failure', `review: ${CODEX_AUTOMERGE_REARM_FAILED}`]], 'the tail\'s retryable hold');
   assert.ok(unreadable.log.some(([k, n, draft]) => k === 'draft' && draft === true), 'drafted, which drops the queued merge');
+});
+
+// Fold check of 190a20b4 (1) — security findings completed on the head after the arm: the refusal routes them for
+// correction (the durable marker, then CODEX_SECURITY_FINDINGS_DETAIL), never the retryable run-held state
+test('2A3b-2 (fold 1) — security findings found after the arm disarm before any status and go through the finding path, not the hold', { timeout: 30_000 }, async () => {
+  const findings = {
+    id: 79, user: { login: 'chatgpt-codex-connector[bot]' }, updated_at: '2026-11-02T21:00:00Z',
+    body: `<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 ${JSON.stringify({
+      code_review: { commit_sha: HEAD, has_any_findings: false, has_unresolved_findings: false, status: 'completed' },
+      security_review: { commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: 'completed' },
+    })} -->`,
+  };
+  const client = armTailClient(() => [findings]);
+  assert.equal(await completeReviewedPullRequest(client, armTailPull(), HEAD, eligible), 'review_refused');
+  const kinds = client.log.map(([k]) => k);
+  assert.ok(kinds.indexOf('arm') >= 0 && kinds.indexOf('disable') > kinds.indexOf('arm'), kinds.join(','));
+  assert.ok(kinds.indexOf('status') > kinds.indexOf('disable'), 'the disable comes before any status');
+  assert.deepEqual(client.log.filter(([k]) => k === 'marker'), [['marker', PR, securityVerdictMarker(HEAD)]], 'the durable security marker');
+  assert.ok(kinds.indexOf('marker') < kinds.lastIndexOf('status'), 'the marker precedes the verdict');
+  assert.deepEqual(written(client.log).filter(([state]) => state === 'failure'), [['failure', `review: ${CODEX_SECURITY_FINDINGS_DETAIL}`]]);
+  assert.equal(client.log.some(([k, , description]) => k === 'status' && String(description).includes(CODEX_RUN_HELD_DETAIL)), false, 'never the run-held state');
+  assert.equal(kinds.includes('handoff'), false);
+});
+
+// Fold check of 190a20b4 (2) — the client method behind the live re-read: the scoped path, and a 404 from the real
+// request() is the "gone" the reader treats as no record (null), so nothing is disarmed
+test('2A3b-2 (fold 2) — issueComment reads this repository\'s comment by id; a real 404 makes the record gone', { timeout: 30_000 }, async () => {
+  const client = new GitHubClient({ repository: 'JagPat/PMCvitan', token: 'test-token' });
+  const calls = [];
+  client.request = async (path, options = {}) => { calls.push([options.method ?? 'GET', path]); return { id: 77 }; };
+  await client.issueComment(77);
+  assert.deepEqual(calls, [['GET', '/repos/JagPat/PMCvitan/issues/comments/77']]);
+
+  // through run(): the real issueComment and request(), over a fetch that answers 404 for the comment
+  const savedFetch = globalThis.fetch;
+  const fetched = [];
+  globalThis.fetch = async (url, init = {}) => {
+    fetched.push([init.method ?? 'GET', String(url)]);
+    return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 });
+  };
+  try {
+    const pulls = new Map([[12, pullAt(12, { auto_merge: queued })]]);
+    const { log, error } = await runDisarm({
+      number: 12, pulls, statuses: [tokenedSuccess()], event: events.record(12, codexRecord(HEAD, 'in_progress')),
+      overrides: { request: realRequest, issueComment: realIssueComment },
+    });
+    assert.equal(error, null);
+    assert.deepEqual(fetched, [['GET', 'https://api.github.com/repos/JagPat/PMCvitan/issues/comments/77']]);
+    assert.equal(log.some(([k]) => k === 'disable' || k === 'status' || k === 'draft'), false, 'a gone record disarms and writes nothing');
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
 });
 
 test('2A3b-2 (gap 4) — structural: the record re-read follows the one arm, inside the guarded tail', async () => {

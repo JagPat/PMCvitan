@@ -1537,9 +1537,13 @@ export function candidateBodyHold(pullRequest, verdict) {
  * run has just turned green, as ONE guarded tail. Both callers write the success first (`publishDisarmedSuccess`, which
  * disarmed any queued merge), so every throw from the authorization to a merge that landed or an arm that took would
  * leave the head green with nothing queued and nothing scheduled. Every such throw takes the one re-arm hold here
- * (`holdUnarmedGreen`), whichever call threw: the authorization's reads, the first exact-head merge, the arm, or the
- * clean-status retry. An unreadable Codex record has already replaced the green with its own refusal, so it only
- * rethrows. A refusal by the authorization writes its own state and returns (G2), and a hold for gates returns as before.
+ * (`holdUnarmedGreen`), whichever call threw: the authorization's reads, the first exact-head merge, the arm, the
+ * clean-status retry, or (2A3b-2) the re-read of Codex's record after the arm, its disarm and its refusal. An unreadable
+ * Codex record has already replaced the green with its own refusal, so it only rethrows. A refusal by the authorization
+ * writes its own state and returns (G2), and a hold for gates returns as before. 2A3b-2 — after the arm the record is
+ * read again: a run that started on the head, or security findings completed on it, since the authorization's read
+ * disarms the queued merge and takes the refusal (`review_refused`), so a run the comment-event disarm read before the
+ * arm landed is still caught.
  */
 export async function completeReviewedPullRequest(
   client,
