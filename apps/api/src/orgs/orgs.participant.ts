@@ -952,7 +952,16 @@ export class OrgsParticipant {
    * time, on purpose: a transition's `at` is its transaction's START, so a removal that began before a naming and
    * committed after it would carry an earlier time than the naming. Exact under the project's readiness key, which every
    * member writer takes before it inserts a transition (`MembersService` add, role and remove): a caller that holds it
-   * sees every transition committed before it, and any other commits after it. Rows are removed only with the project.
+   * sees every transition committed before it, and any other commits after it.
+   *
+   * The count only moves up because the register is APPEND-ONLY: `MembershipTransition_t4d_append_only` refuses every
+   * UPDATE and DELETE (a delete only as the cascade of the project's own deletion, which removes the inspections too),
+   * and `MembershipTransition_t4d_no_truncate` refuses TRUNCATE, so no delete-then-insert can leave a count unchanged.
+   * Its only writer is `MembersService.recordTransition` (add, role, remove).
+   *
+   * THE RULE, exactly: a transition counts when EITHER side is outside `roles` x `active`, i.e. unless
+   * `fromRole IN roles AND fromStatus = 'active' AND toRole IN roles AND toStatus = 'active'` (an add's NULL from-side
+   * counts).
    */
   async standingChangeCounts(
     tx: OrgsParticipantClient | Prisma.TransactionClient,

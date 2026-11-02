@@ -190,6 +190,12 @@ describe('the PMC or engineer names who fixes an inspection\'s failed work (live
     // a move between the two named roles, while active, is not a break
     await role('consultant');
     expect(await shown()).toEqual([{ inspectionId: inspectionId(), memberId: uid }]);
+    // and neither is a discipline edit, which keeps the role and writes no transition
+    const transitions = await t.prisma.membershipTransition.count({ where: { projectId: f.projectA.id, userId: uid } });
+    expect((await asPmc(http().patch(`/projects/${f.projectA.id}/members/${uid}`)).send({ role: 'consultant', discipline: 'mep' })).status).toBe(200);
+    expect((await t.prisma.membership.findUniqueOrThrow({ where: { projectId_userId: { projectId: f.projectA.id, userId: uid } } })).discipline).toBe('mep');
+    expect(await t.prisma.membershipTransition.count({ where: { projectId: f.projectA.id, userId: uid } })).toBe(transitions);
+    expect(await shown()).toEqual([{ inspectionId: inspectionId(), memberId: uid }]);
 
     // removed, then added back: no one, and the stored name stays as the record
     expect((await asPmc(http().delete(`/projects/${f.projectA.id}/members/${uid}`))).status).toBe(200);
