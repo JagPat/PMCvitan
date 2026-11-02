@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma.service';
 import { SignedUrlService } from '../media/signed-url.service';
 import { bakeInspections, computeInspectionsBase, type InspectionsBase, type InspectionsSlices } from './inspections-serialize';
 import { bindingAssigneeIds } from './assignment-eligibility';
+import { heldNamings } from './responsible-member';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { INSPECTIONS_PROJECTION } from './inspections.projection';
 import { readServableGeneration } from '../platform/projections/generation';
@@ -74,6 +75,32 @@ export class InspectionsQueryService {
   async snapshotSlice(projectId: string, role: string, viewerId?: string, hiddenEvidence: ReadonlySet<string> = NONE_HIDDEN): Promise<InspectionsSlices> {
     const base = await computeInspectionsBase(this.prisma, projectId);
     return bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base), hiddenEvidence });
+  }
+
+  /**
+   * #482 proof photos, "Who fixes this?" — who is named to fix each inspection's failed work, for the PMC and the engineer
+   * (the roles that name them); empty for every other role. Read live from "Inspection" (this module's own table), never
+   * from the projection's stored base, so it is current on every read.
+   *
+   * A name is served only while its member has stood WITHOUT A BREAK since it was set: they stand now as an active
+   * contractor or consultant, and their standing mark (orgs' count of their standing changes) is the one stored with the
+   * name. A member who was removed or re-roled is no one responsible, and stays no one if they come back, until someone
+   * names them again (Stage 1's RM-a gap-check, G1).
+   *
+   * Every PMC and engineer gets every inspection's naming, as `placedInspections` gives them every inspection (the "mine"
+   * filter hides only another engineer's OPEN assigned checklist, and failed items sit on submitted inspections). The
+   * PUT admits the same two roles on any inspection of the project, so the read and the write agree.
+   */
+  async responsibleMembers(projectId: string, role: string): Promise<Array<{ inspectionId: string; memberId: string }>> {
+    if (role !== 'pmc' && role !== 'engineer') return [];
+    const named = await this.prisma.inspection.findMany({
+      where: { projectId, responsibleMemberId: { not: null } },
+      orderBy: { id: 'asc' },
+      select: { id: true, responsibleMemberId: true, responsibleStandingMark: true },
+    });
+    const held = await heldNamings(this.orgs, this.prisma, projectId,
+      named.map((i) => ({ inspectionId: i.id, memberId: i.responsibleMemberId!, mark: i.responsibleStandingMark! })));
+    return held.map(({ inspectionId, memberId }) => ({ inspectionId, memberId }));
   }
 
   /**

@@ -13,7 +13,8 @@ import { CLOCK, type Clock } from '../common/clock';
 import { addCivilDays, fromIsoCivilDate } from '../common/civil-date';
 import { nextSeqId } from '../domain/ids';
 import type { AuthUser } from '../common/auth';
-import type { CreateInspectionInput, DecideReviewInput, SubmitInspectionInput } from '../contracts';
+import type { CreateInspectionInput, DecideReviewInput, SetResponsibleMemberInput, SubmitInspectionInput } from '../contracts';
+import { RESPONSIBLE_ROLES, standingMark, standsAsResponsible } from './responsible-member';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
@@ -484,6 +485,60 @@ export class InspectionsService {
       events = outcome.events;
     }
     await this.dispatcher.dispatchCommitted(events);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /**
+   * #482 proof photos, "Who fixes this?" — the PMC or the engineer names the contractor or consultant member who fixes
+   * this inspection's failed work, or nobody (`null`). Any inspection of the project, at any stage: an issue is named when
+   * it is raised, a failed item when it fails, and either may be changed later.
+   *
+   * Lock order: the project's readiness key, then the inspection row FOR UPDATE, then the project row (`isProjectOperable`,
+   * FOR NO KEY UPDATE: an archive committed first refuses this with 403), then the caller's and the member's standing rows
+   * FOR UPDATE through the owner (`hasProjectRoleStanding`). A removal or re-role of the member either commits
+   * first (this refuses, 400) or waits for this commit (and the read then serves no one). The composite foreign key keeps
+   * the name inside this project for every writer.
+   *
+   * No domain event: the name is not part of the inspections projection's stored base. It is read live and judged for
+   * standing at read (`InspectionsQueryService.responsibleMembers`), so the projection never holds a stale name and the
+   * event list and its consumer catalog are untouched. The change is audited (`inspection.responsible`).
+   */
+  async setResponsible(projectId: string, inspectionId: string, input: SetResponsibleMemberInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const memberId = input.memberId;
+    const requestHash = hashRequest({ inspectionId, memberId });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'inspections.setResponsible', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
+    await executeCommand(this.prisma, {
+      scope, actor, commandType: 'inspections.setResponsible', idempotencyKey, requestHash,
+      run: async (tx) => {
+        await lockProjectReadiness(tx, projectId);
+        const [insp] = await tx.$queryRaw<Array<{ responsibleMemberId: string | null }>>(
+          Prisma.sql`SELECT "responsibleMemberId" FROM "Inspection" WHERE "id" = ${inspectionId} AND "projectId" = ${projectId} FOR UPDATE`,
+        );
+        if (!insp) throw new NotFoundException(`Inspection ${inspectionId} not found`);
+        // Codex #1297 r4 — the PROJECT is re-read too, under its row lock (the owner's `FOR NO KEY UPDATE`): an archive
+        // takes no readiness key, so one that commits after the guard's unlocked read would otherwise leave this naming
+        // free to write on an archived project. The archive either commits first (refused here) or waits for this commit.
+        if (!(await this.orgs.isProjectOperable(tx, projectId))) throw new ForbiddenException('Project is unavailable');
+        // Codex #1297 r2 — the CALLER's authority is re-read here, under the readiness key and with their standing rows
+        // locked, as decide does: a PMC or engineer re-roled or removed after the guard read their token must not name
+        // anyone. Locked after Inspection, so Membership still follows Inspection on every path.
+        if (!(await this.orgs.hasProjectRoleStanding(tx, projectId, user.sub, [user.role], { forUpdate: true }))) {
+          throw new ForbiddenException('Your project standing changed — the role that allowed naming who fixes this is no longer yours');
+        }
+        if (memberId !== null && !(await standsAsResponsible(this.orgs, tx, projectId, memberId, { forUpdate: true }))) {
+          throw new BadRequestException(`Only an active ${RESPONSIBLE_ROLES.join(' or ')} on this project can be named to fix this.`);
+        }
+        // the mark is read under the readiness key held above, so it counts exactly the member's changes committed before
+        const mark = memberId === null ? null : await standingMark(this.orgs, tx, projectId, memberId);
+        await tx.inspection.update({ where: { id: inspectionId }, data: { responsibleMemberId: memberId, responsibleStandingMark: mark } });
+        await recordAudit(tx, { projectId, actor, action: 'inspection.responsible', entity: 'Inspection', entityId: inspectionId, payload: { from: insp.responsibleMemberId, to: memberId } });
+        return { resultRef: inspectionId, events: [] };
+      },
+    });
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 

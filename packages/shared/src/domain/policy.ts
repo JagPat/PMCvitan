@@ -210,6 +210,9 @@ export const ROLE_POLICY = {
   // The dead end is closed at its source instead: corrective work is assigned to an engineer.
   'inspection.submit': ['engineer', 'pmc'],
   'inspection.decide': ['pmc'],
+  // #482 proof photos, "Who fixes this?" (Jagrut, 14 Oct 2026): the PMC or the engineer names the contractor or consultant
+  // who fixes an inspection's failed work, and may change it later
+  'inspection.responsible': ['pmc', 'engineer'],
   // Site Visits (#792, D5/Q3): the PMC or a consultant starts and ends their own visit (architects visit as
   // consultant members until their role opens); the service narrows end to the visit's own visitor. Only the
   // PMC closes a visit left open (S1).
