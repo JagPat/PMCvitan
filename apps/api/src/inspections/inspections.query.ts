@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { InspectionsModuleResult, ReadinessInspection } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
@@ -9,6 +9,7 @@ import { OrgsParticipant } from '../orgs/orgs.participant';
 import { INSPECTIONS_PROJECTION } from './inspections.projection';
 import { readServableGeneration } from '../platform/projections/generation';
 import { nextSeqId } from '../domain/ids';
+import { isFailedItem } from './failed-item';
 import { AuditQuery } from '../platform/audit.query';
 
 /** The CHECKLIST-definition structure a project-copy/module-extract reads from a source project through
@@ -265,6 +266,24 @@ export class InspectionsQueryService {
       const item = await this.prisma.inspectionItem.findUnique({ where: { id: inspectionItemId }, select: { inspectionId: true } });
       if (!item || item.inspectionId !== inspectionId) throw new BadRequestException('The item does not belong to that inspection');
     }
+  }
+
+  /** #482 site photos unit 4 — a proof photo goes only on an item of this project's inspection that is FAILED now.
+   *  Inside a transaction (`db`) the item row is held FOR SHARE until it commits, so a write that clears the item
+   *  waits for the proof, or the proof sees it cleared; outside one it is the early no before any byte is stored.
+   *  The inspection row is taken first (FOR KEY SHARE, which the proof's own foreign key takes anyway), the order a
+   *  decide takes them in (the inspection FOR UPDATE, then its items), so the two never wait on each other in a ring. */
+  async assertProofTarget(projectId: string, inspectionId: string, inspectionItemId: string, db?: Prisma.TransactionClient): Promise<void> {
+    const client = db ?? this.prisma;
+    if (db) await db.$executeRaw`SELECT 1 FROM "Inspection" WHERE "id" = ${inspectionId} AND "projectId" = ${projectId} FOR KEY SHARE`;
+    const [item] = await client.$queryRaw<Array<{ rejected: boolean; result: string | null; state: string | null }>>(Prisma.sql`
+      SELECT it."rejected", it."result"::text AS "result", it."state"
+      FROM "InspectionItem" it
+      WHERE it."id" = ${inspectionItemId} AND it."inspectionId" = ${inspectionId}
+        AND EXISTS (SELECT 1 FROM "Inspection" i WHERE i."id" = it."inspectionId" AND i."projectId" = ${projectId})
+      ${db ? Prisma.sql`FOR SHARE` : Prisma.empty}`);
+    if (!item) throw new BadRequestException('The item does not belong to an inspection of this project');
+    if (!isFailedItem(item)) throw new ConflictException('A proof photo goes on an item that has failed, and this one has not');
   }
 
   /** Does inspection `inspectionId` exist in project `projectId`? The tenant-ownership check a consumer

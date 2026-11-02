@@ -57,6 +57,15 @@ function isSiteVisitFile(input: CreateMediaInput): boolean {
     && !input.decisionId && !input.dailyLogId && !input.inspectionId && !input.inspectionItemId;
 }
 
+/** A proof photo (#482 site photos unit 4, Board 14 Oct 2026): a contractor or consultant shows a failed inspection
+ *  item fixed. It names the item and is filed on nothing else (the contract holds that shape). It is not evidence:
+ *  no inspection link is written, so it never changes the inspection. */
+function isProofPhoto(input: CreateMediaInput): boolean {
+  return input.kind === 'proof' && input.inspectionId !== undefined && input.inspectionItemId !== undefined;
+}
+/** Who adds a proof photo: the members whose work an inspection checks. The PMC and the engineer add evidence. */
+const PROOF_ROLES: ReadonlySet<string> = new Set(['contractor', 'consultant']);
+
 /** What a clientKey replay must read to decide whether the caller may have the stored row back. */
 const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true } as const;
 type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null };
@@ -144,7 +153,7 @@ export class MediaService {
   private async replayed(projectId: string, user: AuthUser, row: ReplayRow, clientKey: string): Promise<UploadedMedia> {
     if (!SITE_RECORD_ROLES.has(user.role)) {
       const plain = (row.kind === 'progress' || row.kind === 'visit') && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
-      if (!plain || row.uploadedBy !== user.sub) throw new ForbiddenException('This upload key belongs to another photo');
+      if (!(plain || row.kind === 'proof') || row.uploadedBy !== user.sub) throw new ForbiddenException('This upload key belongs to another photo');
     }
     // #919 — the answer is read again under two locks, both taken before the read: the send key's (its transaction's
     // first statement, as the upload and the delete take it), so a delete of this photo in flight finishes first and the
@@ -211,7 +220,10 @@ export class MediaService {
         throw new BadRequestException('A video is added on a site visit');
       }
     }
-    if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input) && !isSiteVisitFile(input)) {
+    if (isProofPhoto(input) && !PROOF_ROLES.has(user.role)) {
+      throw new ForbiddenException('A proof photo is added by the contractor or consultant whose work failed; add evidence instead');
+    }
+    if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input) && !isSiteVisitFile(input) && !isProofPhoto(input)) {
       throw new ForbiddenException('Your role may add a site photo, not evidence linked to a record');
     }
     // idempotency fast-path: this exact photo already landed
@@ -268,7 +280,10 @@ export class MediaService {
     if (input.inspectionItemId && !input.inspectionId) {
       throw new BadRequestException('inspectionItemId requires its inspectionId');
     }
-    if (input.inspectionId) {
+    const proof = isProofPhoto(input) ? { inspectionId: input.inspectionId!, inspectionItemId: input.inspectionItemId! } : null;
+    // a proof's item is this project's and failed now (an early no; asked again under the item's lock below)
+    if (proof) await this.inspections.assertProofTarget(projectId, proof.inspectionId, proof.inspectionItemId);
+    else if (input.inspectionId) {
       await this.inspections.assertEvidenceTarget(projectId, input.inspectionId, input.inspectionItemId);
       // AUTHORITY BEFORE BYTES (#571 round 10, finding 2). The authoritative check runs inside the
       // transaction below, where it cannot be overtaken — but `storage.put` has already written the
@@ -315,6 +330,9 @@ export class MediaService {
         // project key, and the insert key-share locks a linked decision, which a forward holding this person's
         // anchor exclusive waits on; taking the anchor only at the emit would close the cycle
         await lockStandingAnchors(tx, { read: [user.sub] });
+        // a proof's item is held FOR SHARE until this commits, after the anchor as an evidence link's checks are: a write
+        // that clears it waits, or this sees it cleared
+        if (proof) await this.inspections.assertProofTarget(projectId, proof.inspectionId, proof.inspectionItemId, tx);
         const created = await tx.media.create({
           data: {
             projectId,
@@ -345,7 +363,7 @@ export class MediaService {
         // Task 10 (Module 3) correction — ITEM-LEVEL evidence (both ids present) links through the
         // inspections participant, which writes the inspection-owned InspectionEvidence row AND appends
         // `inspection.evidence_added`, so the inspections.inbox projection observes the new evidence.
-        if (input.inspectionId && input.inspectionItemId) {
+        if (input.inspectionId && input.inspectionItemId && !proof) {
           // #571 round 9, finding 1 — containment is not authority. `assertEvidenceTarget` above
           // proves the item belongs to the inspection and the inspection to this project; it says
           // nothing about whether this actor may change THIS inspection's evidence. Asked here,
