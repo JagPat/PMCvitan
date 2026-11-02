@@ -619,8 +619,11 @@ if echo "$out" | grep -q "P3005"; then
   # The file digest (#904, 20280202000000) is here because of its CHECK and trigger, which a db-push baseline does not have.
   # IF NOT EXISTS and a guarded constraint, re-runnable.
   #
-  # The Redbracket ID tables (A1, 20280203000000) are here because of their CHECKs and foreign keys, which a db-push baseline does not
-  # have. IF NOT EXISTS and guarded constraints, re-runnable.
+  # The Redbracket ID tables (A1, 20280203000000) are here because of their CHECKs, foreign keys and seals, which a db-push baseline
+  # does not have. IF NOT EXISTS, guarded constraints and re-issued triggers, re-runnable.
+  #
+  # The upload source (#1283, 20280204000000) is here because of its trigger, which a db-push baseline does not have.
+  # IF NOT EXISTS, re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -677,7 +680,8 @@ if echo "$out" | grep -q "P3005"; then
 20280131000000_voice_transcript_busy_index
 20280201000000_command_key_sighting
 20280202000000_media_content_sha256
-20280203000000_redbracket_id_tables"
+20280203000000_redbracket_id_tables
+20280204000000_media_upload_source"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

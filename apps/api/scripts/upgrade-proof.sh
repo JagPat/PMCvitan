@@ -5688,7 +5688,8 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20280131000000_voice_transcript_busy_index
 20280201000000_command_key_sighting
 20280202000000_media_content_sha256
-20280203000000_redbracket_id_tables"
+20280203000000_redbracket_id_tables
+20280204000000_media_upload_source"
 # 4d-ii-a / A7d — THE RUNNER'S RULE, MIRRORED (scripts/migrate.sh, the P3005 baseline path): on a database
 # that CARRIES A7d (its two claimant seals and the re-issued actor seal standing beside 4d-i's own seal
 # functions) 4d-i's two halves and 4d-i-b U3 are resolved as applied rather than replayed, because each
@@ -5905,6 +5906,10 @@ assert "#904: after the replay the file rows keep their nullable digest column, 
 assert "Redbracket ID A1: after the replay the link and retirement keep their foreign keys and seals, and all three tables their shape checks" \
   "SELECT (SELECT count(*) FROM pg_constraint WHERE conname IN ('PlatformPersonLink_userId_fkey', 'IdentityRetirement_userId_fkey') AND contype = 'f')::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conname IN ('PlatformPersonLink_shape_check', 'SignInAttempt_shape_check', 'IdentityRetirement_shape_check') AND contype = 'c')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgname IN ('PlatformPersonLink_sealed', 'IdentityRetirement_sealed') AND tgenabled = 'O')::text;" \
   "2|3|2"
+# #1283 — the upload source (on ALWAYS_EXECUTE): its nullable text column with no foreign key, and its fixed-at-insert trigger.
+assert "#1283: after the replay the file rows keep their nullable upload-source column, with no foreign key, and its fixed-at-insert trigger" \
+  "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'Media' AND column_name = 'uploadSourceMediaId' AND data_type = 'text' AND is_nullable = 'YES' AND column_default IS NULL)::text || '|' || (SELECT count(*) FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey) WHERE c.conrelid = '\"Media\"'::regclass AND c.contype = 'f' AND a.attname = 'uploadSourceMediaId')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"Media\"'::regclass AND tgname = 'Media_upload_source_fixed' AND NOT tgisinternal)::text;" \
+  "1|0|1"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \
