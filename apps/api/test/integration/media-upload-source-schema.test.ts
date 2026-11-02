@@ -52,6 +52,30 @@ describe('#1283: the upload source column (live PG)', () => {
     expect(copy.uploadSourceMediaId).toBe(original.id);
   });
 
+  it('is taken at the insert only as a copy of that very file (Stage 1 gap-check)', async () => {
+    const original = await plainRow();
+    const other = await plainRow();
+    const named = /names an upload source only as a copy of that file/;
+    // a plain row (no sourceMediaId) naming a source: refused, through the model and raw SQL
+    await expect(t.prisma.media.create({
+      data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', data: bytes, sizeBytes: bytes.length, uploadedBy: f.memberUser.id, uploadSourceMediaId: original.id },
+    })).rejects.toThrow(named);
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "Media" ("id", "projectId", "kind", "mime", "data", "sizeBytes", "uploadedBy", "uploadSourceMediaId") VALUES ('raw-plain-src', $1, 'progress', 'image/png', $2, $3, $4, $5)`,
+      f.projectA.id, bytes, bytes.length, f.memberUser.id, original.id)).rejects.toThrow(named);
+    // a copy naming another file than its own source: refused
+    await expect(t.prisma.media.create({
+      data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', data: bytes, sizeBytes: bytes.length, uploadedBy: f.memberUser.id, sourceMediaId: original.id, uploadSourceMediaId: other.id },
+    })).rejects.toThrow(named);
+    // a copy without one (as the previous release writes it) and a copy naming its own source are taken
+    const oldCopy = await t.prisma.media.create({
+      data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', data: bytes, sizeBytes: bytes.length, uploadedBy: f.memberUser.id, sourceMediaId: original.id },
+      select: { uploadSourceMediaId: true },
+    });
+    expect(oldCopy.uploadSourceMediaId).toBeNull();
+    expect((await copyOf(original.id)).uploadSourceMediaId).toBe(original.id);
+  });
+
   it('is fixed at the insert on every writer: no change, NULL to a value included', async () => {
     const original = await plainRow();
     const other = await plainRow();
