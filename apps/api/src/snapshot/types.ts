@@ -498,6 +498,9 @@ export interface SnapshotDto {
   /** #482 site photos unit 4 — proof photos on failed inspection items: every one for the PMC and the engineer, their own
    *  for a contractor or consultant, none for anyone else. */
   proofs: ProofPhotoDto[];
+  /** #482 proof photos, "Who fixes this?" — the contractor or consultant named to fix each inspection's failed work, for
+   *  the PMC and the engineer; empty for everyone else. A member who no longer stands is left out. */
+  responsibleMembers: Array<{ inspectionId: string; memberId: string }>;
   /** All material deliveries across the project, with their place — the Site Map's "materials here". */
   materials: MaterialDto[];
 }

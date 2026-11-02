@@ -163,6 +163,7 @@ describe('Task 10 — the inspections module implements its shared command/query
       'existsInProject',
       'resolveRefInProject',
       'assertProofTarget',
+      'responsibleMembers',
     ] as const) {
       expect(typeof InspectionsQueryService.prototype[method]).toBe('function');
     }
@@ -173,7 +174,8 @@ describe('Task 10 — the inspections module implements its shared command/query
     const _create: Parameters<InspectionsService['create']>[3] = 'k' as string | undefined;
     const _submit: Parameters<InspectionsService['submit']>[4] = 'k' as string | undefined;
     const _decide: Parameters<InspectionsService['decide']>[4] = 'k' as string | undefined;
-    void [_create, _submit, _decide];
+    const _setResponsible: Parameters<InspectionsService['setResponsible']>[4] = 'k' as string | undefined;
+    void [_create, _submit, _decide, _setResponsible];
     expect(true).toBe(true);
   });
 

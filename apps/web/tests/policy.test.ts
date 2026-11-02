@@ -103,6 +103,7 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'inspection.create': ['pmc'],
   'inspection.submit': ['engineer', 'pmc'],
   'inspection.decide': ['pmc'],
+  'inspection.responsible': ['pmc', 'engineer'],
   // Site Visits (#792): the PMC or a consultant starts and ends their own visit; only the PMC closes one left open.
   'siteVisit.start': ['pmc', 'consultant'],
   'siteVisit.end': ['pmc', 'consultant'],

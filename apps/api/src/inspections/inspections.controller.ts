@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Put, UseGuards } from '@nestjs/common';
 import { InspectionsService } from './inspections.service';
 import { InspectionsQueryService } from './inspections.query';
 import { SnapshotService } from '../snapshot/snapshot.service';
@@ -12,6 +12,8 @@ import {
   type CreateInspectionInput,
   type DecideReviewInput,
   type SubmitInspectionInput,
+  setResponsibleMemberSchema,
+  type SetResponsibleMemberInput,
 } from '../contracts';
 
 @Controller('projects/:projectId/inspections')
@@ -70,5 +72,19 @@ export class InspectionsController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.inspections.decide(projectId, inspectionId, body, user, idempotencyKey);
+  }
+
+  /** #482 proof photos, "Who fixes this?" — the PMC or the engineer names the contractor or consultant who fixes this
+   *  inspection's failed work, or nobody (null). */
+  @Put(':inspectionId/responsible')
+  @RolesFor('inspection.responsible')
+  setResponsible(
+    @Param('projectId') projectId: string,
+    @Param('inspectionId') inspectionId: string,
+    @Body(new ZodPipe(setResponsibleMemberSchema)) body: SetResponsibleMemberInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.inspections.setResponsible(projectId, inspectionId, body, user, idempotencyKey);
   }
 }

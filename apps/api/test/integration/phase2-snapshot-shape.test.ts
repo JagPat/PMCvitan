@@ -166,7 +166,7 @@ const EXPECT: Record<string, Spec> = {
   CompanyDto: { keys: ['id', 'name', 'kind', 'contactName', 'contactEmail', 'contactPhone', 'notes'].sort(), optional: [], nullable: [] },
   NodeDto: { keys: ['id', 'parentId', 'name', 'kind', 'order', 'draft'].sort(), optional: ['draft'], nullable: ['parentId'] },
   SnapshotDto: {
-    keys: ['project', 'decisions', 'activities', 'placedInspections', 'checklist', 'openChecklists', 'reviews', 'review', 'reinspectionCreated', 'drawings', 'phases', 'dailyLog', 'notifications', 'companies', 'nodes', 'photos', 'myDeletablePhotos', 'proofs', 'materials'].sort(),
+    keys: ['project', 'decisions', 'activities', 'placedInspections', 'checklist', 'openChecklists', 'reviews', 'review', 'reinspectionCreated', 'drawings', 'phases', 'dailyLog', 'notifications', 'companies', 'nodes', 'photos', 'myDeletablePhotos', 'proofs', 'responsibleMembers', 'materials'].sort(),
     optional: [], nullable: ['checklist', 'review', 'dailyLog'].sort(),
   },
 };

@@ -330,6 +330,7 @@ export class SnapshotService {
       // The location spine's reality layer: placed (and unplaced) site photos for the Place view.
       photos: photoDtos,
       proofs: proofDtos,
+      responsibleMembers: await this.inspectionsQuery.responsibleMembers(projectId, role),
       // #482 site photos — the viewer's own site photos still in their delete hour that the window above left out
       myDeletablePhotos,
       // All materials delivered across the project, with their place — the Site Map's "materials
