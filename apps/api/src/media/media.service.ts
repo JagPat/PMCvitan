@@ -73,8 +73,8 @@ const sameCoordinate = (stored: number | null, sent: number | undefined): boolea
   stored === null || sent === undefined ? stored === (sent ?? null) : Math.abs(stored - sent) <= 1e-9;
 
 /** What a clientKey replay must read to decide whether the caller may have the stored row back. */
-const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true, mime: true, sizeBytes: true, contentSha256: true, sourceMediaId: true, takenAt: true, geoLat: true, geoLng: true } as const;
-type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null; mime: string; sizeBytes: number; contentSha256: string | null; sourceMediaId: string | null; takenAt: string | null; geoLat: number | null; geoLng: number | null };
+const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true, mime: true, sizeBytes: true, contentSha256: true, sourceMediaId: true, uploadSourceMediaId: true, takenAt: true, geoLat: true, geoLng: true } as const;
+type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null; mime: string; sizeBytes: number; contentSha256: string | null; sourceMediaId: string | null; uploadSourceMediaId: string | null; takenAt: string | null; geoLat: number | null; geoLng: number | null };
 
 /** #904 — the SHA-256 of a file's decoded bytes, as `"Media"."contentSha256"` holds it: 64 lowercase hex characters. */
 const sha256Hex = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
@@ -83,6 +83,11 @@ const sha256Hex = (bytes: Buffer): string => createHash('sha256').update(bytes).
  *  from its byte count. Past it the key is refused, so no replay is answered on type and length alone for longer than
  *  this after the digest write is live (Stage 1's ruling on #1262, 1 Nov 19:30Z). */
 export const LEGACY_REPLAY_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** #1283 — uploads stored before this time carry no upload source (`"Media"."uploadSourceMediaId"`, 20280204000000): the
+ *  code that writes it went live after it. Such a row is judged as before (see sameSource), and only within
+ *  {@link LEGACY_REPLAY_MS} of its storing, so that reading ends at this time plus seven days. */
+export const UPLOAD_SOURCE_SINCE = new Date('2026-11-06T00:00:00.000Z');
 
 /** #904 — a stored file is these bytes: by its digest when it has one; else, within {@link LEGACY_REPLAY_MS} of its
  *  upload, by its byte count (a count of 0 is a row written without one, the column's default, and is not compared). */
@@ -242,6 +247,10 @@ export class MediaService {
     const sent = input.sourceMediaId ?? null;
     if (row.sourceMediaId === sent) return true;
     if (row.sourceMediaId !== null || sent === null || input.siteVisit === undefined) return false;
+    // #1283 — the source the copy was uploaded as, fixed at its insert and never cleared: a cleared link matches only it
+    if (row.uploadSourceMediaId !== null) return row.uploadSourceMediaId === sent;
+    // a row stored since the source is written names none, so it was never a copy (#1262 discussion_r4438869095)
+    if (row.createdAt.getTime() >= UPLOAD_SOURCE_SINCE.getTime() || Date.now() - row.createdAt.getTime() > LEGACY_REPLAY_MS) return false;
     if (!(await this.siteVisitFiles.wasRemovedFrom(this.prisma, projectId, input.siteVisit.visitId, sent))) return false;
     return (await this.prisma.media.findFirst({ where: { projectId, id: sent }, select: { id: true } })) === null;
   }
@@ -451,6 +460,8 @@ export class MediaService {
             geoLng: source ? source.geoLng : input.geoLng,
             takenAt: source ? source.takenAt : input.takenAt,
             sourceMediaId: source?.id ?? null,
+            // #1283 — the same source again, on a column nothing clears (its trigger takes it only at the insert)
+            uploadSourceMediaId: source?.id ?? null,
             durationSec,
             decisionId,
             dailyLogId,
