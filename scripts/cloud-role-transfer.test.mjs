@@ -332,6 +332,11 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   const completed = record({ has_any_findings: true, has_unresolved_findings: true, status: 'completed' });
   assert.equal((await authorizeExactHeadMerge(makeClient({ records: [running] }), pull, head)).state, 'codex_review_held');
   assert.equal((await authorizeExactHeadMerge(makeClient({ records: [securityFindings] }), pull, head)).state, 'codex_review_security');
+  // Codex 4439117340 — security findings outrank a run still going: the merge is refused as a finding, not a hold
+  const runningWithSecurity = record({ has_any_findings: null, has_unresolved_findings: null, status: 'running' },
+    { commit_sha: head, has_any_findings: true, has_unresolved_findings: true, status: 'completed' });
+  assert.equal((await authorizeExactHeadMerge(makeClient({ records: [runningWithSecurity] }), pull, head)).state, 'codex_review_security');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ records: [running, securityFindings] }), pull, head)).state, 'codex_review_security');
   assert.equal((await authorizeExactHeadMerge(makeClient({ records: [completed] }), pull, head)).allowed, true);
   const unreadable = { ...makeClient(), async issueComments() { throw new Error('GitHub 502'); } };
   await assert.rejects(authorizeExactHeadMerge(unreadable, pull, head), /GitHub 502/u);
