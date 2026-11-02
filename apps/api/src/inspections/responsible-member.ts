@@ -28,23 +28,23 @@ export function standsAsResponsible(
 /** The member's standing mark now: their count of standing changes in the responsible roles (orgs' answer). Taken at
  *  naming under the readiness key and stored with the name; the name is served only while it is unchanged. */
 export async function standingMark(
-  orgs: Pick<OrgsParticipant, 'roleStandingMarks'>,
+  orgs: Pick<OrgsParticipant, 'responsibleStanding'>,
   client: OrgsParticipantClient | Prisma.TransactionClient,
   projectId: string,
   userId: string,
 ): Promise<number> {
-  return (await orgs.roleStandingMarks(client, projectId, [userId], RESPONSIBLE_ROLES)).get(userId)?.mark ?? 0;
+  return (await orgs.responsibleStanding(client, projectId, [userId], RESPONSIBLE_ROLES)).get(userId)?.mark ?? 0;
 }
 
 /** Of these namings, which still hold: the member stands now AND their standing mark is the one stored with the name.
  *  Both come from ONE orgs statement, so one snapshot: a re-role between the two roles can never fall between reads. */
 export async function heldNamings<T extends { memberId: string; mark: number }>(
-  orgs: Pick<OrgsParticipant, 'roleStandingMarks'>,
+  orgs: Pick<OrgsParticipant, 'responsibleStanding'>,
   client: OrgsParticipantClient | Prisma.TransactionClient,
   projectId: string,
   namings: readonly T[],
 ): Promise<T[]> {
   if (namings.length === 0) return [];
-  const now = await orgs.roleStandingMarks(client, projectId, namings.map((n) => n.memberId), RESPONSIBLE_ROLES);
+  const now = await orgs.responsibleStanding(client, projectId, namings.map((n) => n.memberId), RESPONSIBLE_ROLES);
   return namings.filter((n) => { const m = now.get(n.memberId); return m !== undefined && m.stands && m.mark === n.mark; });
 }

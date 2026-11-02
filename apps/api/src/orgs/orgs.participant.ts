@@ -967,13 +967,13 @@ export class OrgsParticipant {
    * One statement on purpose (Codex #1297 r1): read as separate statements under READ COMMITTED, a re-role between two
    * of `roles` committing in between could be missed by both role reads and hide a naming that never broke.
    */
-  async roleStandingMarks(
+  async responsibleStanding(
     tx: OrgsParticipantClient | Prisma.TransactionClient,
     projectId: string,
     userIds: readonly string[],
     roles: readonly string[],
   ): Promise<Map<string, { stands: boolean; mark: number }>> {
-    if (roles.includes('pmc')) throw new Error('orgs: roleStandingMarks does not apply the org owner arm; pmc is not admitted');
+    if (roles.includes('pmc')) throw new Error('orgs: responsibleStanding does not apply the org owner arm; pmc is not admitted');
     const answer = new Map<string, { stands: boolean; mark: number }>();
     const wanted = [...new Set(userIds)];
     if (wanted.length === 0 || roles.length === 0) {
