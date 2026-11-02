@@ -399,3 +399,121 @@ test('G3a (Codex 4441198763) — a merge queued at this commit after the disarm 
   assert.ok(kinds.lastIndexOf('statuses') < lastList, kinds.join(','));
   assert.equal(green, lastList + 1, kinds.join(','));
 });
+
+// G3a′ (Replaces #1295; Codex 4441669671, root cause of 4441198800 and 4440931048) — every await from the first green
+// write to a merge that landed or an arm that took, for both writers, is found by running the clean path once and
+// recording each client call after the success; then each one, at each of its occurrences, is made to throw. Whatever
+// throws, the head ends merged, armed, or with a failure over the green: never green with nothing queued.
+function tracedClient(base, { fail = null } = {}) {
+  const seen = [];
+  let greened = false;
+  const counts = {};
+  const client = { ...base };
+  for (const [name, fn] of Object.entries(base)) {
+    if (typeof fn !== 'function') continue;
+    client[name] = async (...args) => {
+      if (greened && !['setStatus', 'setDraft', 'updateStickyComment'].includes(name)) {
+        counts[name] = (counts[name] ?? 0) + 1;
+        seen.push(`${name}#${counts[name]}`);
+        if (fail === `${name}#${counts[name]}`) throw new Error(`GitHub 502 at ${fail}`);
+      }
+      const result = await fn.apply(client, args);
+      if (name === 'setStatus' && args[1] === 'success' && /^review: /u.test(args[2])) greened = true;
+      return result;
+    };
+  }
+  client.seen = seen;
+  return client;
+}
+const endsSafe = (log) => {
+  const last = log.filter(([k, , , description]) => k === 'status' && !/^recovery: /u.test(description)).at(-1);
+  return log.some(([k]) => k === 'arm') || last?.[2] === 'failure';
+};
+const writers = {
+  // the review path: `run()` → `completeCleanReview`
+  review: (client) => completeCleanReview(client, pr(), HEAD, 'review: clean', verdict, { recoveryRequest: { status: { id: 7001, context: 'codex-recovery-request/6100' } }, attempt: 1 }),
+  // the recovered success: `ensureTerminalReviewState` → `publishDisarmedSuccess`, then `completeReviewedPullRequest`
+  // with nothing awaited between them (structural row below)
+  recovered: async (client) => {
+    const disarmed = await publishDisarmedSuccess(client, pr(), HEAD, 'review: recovered prior clean Codex result on this exact head');
+    if (disarmed) await completeReviewedPullRequest(client, pr(), HEAD, verdict);
+  },
+};
+
+test('G3a′ (Codex 4441669671) — a throw at any await between the green and the arm, on either writer, ends held, never green and unqueued', async () => {
+  for (const [writer, write] of Object.entries(writers)) {
+    const clean = tracedClient(gateClient());
+    await write(clean);
+    assert.ok(clean.log.some(([k]) => k === 'arm'), `${writer}: the clean path arms`);
+    // the table: every call between the green and the arm (the hand-off follows the arm and is checked below)
+    const calls = clean.seen.slice(0, clean.seen.indexOf('enableAutoMerge#1') + 1);
+    for (const expected of ['pullRequest#1', 'mergeExactHead#1', 'enableAutoMerge#1']) assert.ok(calls.includes(expected), `${writer}: ${expected} in ${calls}`);
+    for (const point of calls) {
+      const client = tracedClient(gateClient(), { fail: point });
+      // a read with its own retry (the head commit's message) recovers and arms; any other throw ends the run
+      const failed = await write(client).then(() => false, () => true);
+      assert.ok(endsSafe(client.log), `${writer} at ${point}: ${JSON.stringify(client.log.filter(([k]) => k !== 'sticky'))}`);
+      if (failed) assert.equal(client.log.some(([k]) => k === 'arm'), false, `${writer} at ${point}: nothing armed`);
+      else assert.ok(client.log.some(([k]) => k === 'arm'), `${writer} at ${point}: recovered and armed`);
+    }
+    // the clean-status retry: it throws, or it does not merge either — held
+    for (const retry of [async () => { throw new Error('GitHub 502'); }, async () => ({ merged: false, message: 'Base branch was modified' })]) {
+      const client = tracedClient(gateClient({ enable: async () => { throw new Error('Pull request is in clean status'); } }));
+      let merges = 0;
+      const merge = client.mergeExactHead;
+      client.mergeExactHead = async (...args) => { merges += 1; return merges === 1 ? merge(...args) : retry(); };
+      await assert.rejects(write(client), undefined, `${writer}: clean-status retry`);
+      assert.deepEqual(client.log.filter(([k, , , description]) => k === 'status' && !/^recovery: /u.test(description)).at(-1).slice(2), ['failure', `review: ${CODEX_AUTOMERGE_REARM_FAILED}`], `${writer}: clean-status retry`);
+    }
+    // a hand-off that fails after the arm took holds nothing: the head is queued
+    const handoff = tracedClient(gateClient(), { fail: 'dispatchHandoff#1' });
+    await assert.rejects(write(handoff), /GitHub 502/u, `${writer}: hand-off`);
+    assert.ok(handoff.log.some(([k]) => k === 'arm'));
+    assert.equal(handoff.log.some(([k, , state, description]) => k === 'status' && state === 'failure' && description === `review: ${CODEX_AUTOMERGE_REARM_FAILED}`), false, `${writer}: hand-off`);
+  }
+});
+
+// Stage 1's condition 2 — a throw that is a merge that in fact landed, or a head that moved, leaves no hold; a re-read
+// that fails too leaves the hold (fail closed)
+test('G3a′ — the tail re-reads before holding: merged or moved gets no hold; an unreadable re-read is held', async () => {
+  for (const [name, after, held] of [
+    ['merged', () => pr(HEAD, { state: 'closed', merged: true, merged_at: '2026-11-02T11:00:00Z' }), false],
+    ['head moved', () => pr(NEXT), false],
+    ['still open on this head', () => pr(), true],
+    ['re-read fails', () => { throw new Error('ECONNRESET'); }, true],
+  ]) {
+    let thrown = false;
+    const client = gateClient({ live: () => (thrown ? after() : pr()) });
+    client.mergeExactHead = async () => { thrown = true; throw new Error('socket hang up'); };
+    await assert.rejects(completeReviewedPullRequest(client, pr(), HEAD, verdict), undefined, name);
+    const hold = client.log.some(([k, , state, description]) => k === 'status' && state === 'failure' && description === `review: ${CODEX_AUTOMERGE_REARM_FAILED}`);
+    assert.equal(hold, held, name);
+  }
+});
+
+test('G3a′ — structural: no client call after the authorization sits outside the one guarded tail', async () => {
+  const gate = stripComments(await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8'));
+  const body = (name) => {
+    const start = gate.search(new RegExp(`\\n(export )?async function ${name}\\(`, 'u'));
+    return gate.slice(start, gate.indexOf('\n}\n', start) + 2);
+  };
+  const complete = body('completeReviewedPullRequest');
+  // the tail is called once, inside the one try, and every throw from it but the unreadable record's refusal is held
+  assert.equal([...gate.matchAll(/\bmergeOrArmAuthorizedHead\(/gu)].length, 2, 'defined once, called once');
+  assert.match(complete, /try \{\s*completed = await mergeOrArmAuthorizedHead\(client, pullRequest, expectedHead, verdict, \{ recoveryRequest, attempt \}\);\s*\} catch \(error\) \{\s*if \(!\(error instanceof CodexRecordUnreadable\)\) await holdUnarmedGreen\(client, pullRequest, expectedHead, \{ recoveryRequest, attempt \}\);\s*throw error;\s*\}/u);
+  // the only other client call in it is the hand-off, after a merge that landed or an arm that took
+  assert.deepEqual([...complete.matchAll(/\bclient\s*(?:\.|\[\s*['"`])(\w+)/gu)].map((m) => m[1]), ['dispatchHandoff'], 'one client call outside the tail: the hand-off');
+  assert.match(complete, /if \(completed\.outcome === 'merged' \|\| completed\.outcome === 'queued'\) \{\s*await client\.dispatchHandoff\(/u);
+  // the tail holds nothing itself: the one hold is `holdUnarmedGreen`'s
+  const tail = body('mergeOrArmAuthorizedHead');
+  assert.doesNotMatch(tail, /publishRetryableHold|dispatchHandoff/u);
+  assert.match(tail, /authorizeExactHeadMerge\(client/u);
+  assert.equal([...gate.matchAll(/\bholdUnarmedGreen\(/gu)].length, 2, 'defined once, called once');
+  // the recovered success: nothing awaited between its success and the completion
+  const recovery = body('ensureTerminalReviewState');
+  const between = recovery.slice(recovery.indexOf('await publishDisarmedSuccess('), recovery.indexOf('await completeReviewedPullRequest('));
+  assert.equal([...between.matchAll(/\bawait\b/gu)].length, 1, 'only the success itself');
+  // the review path: the settlement and the re-read after its success are held (Codex 4441198800 row), then the completion
+  const clean = body('completeCleanReview');
+  assert.ok(clean.indexOf('await completeReviewedPullRequest(') > clean.indexOf('catch (error)'));
+});

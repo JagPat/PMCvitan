@@ -1472,6 +1472,15 @@ export function candidateBodyHold(pullRequest, verdict) {
   return { ...verdict, outcome: 'candidate', mergeEligible: false, owner: declaration.owner };
 }
 
+/**
+ * G3a′ (Replaces #1295; Codex 4441669671, root cause of 4441198800 and 4440931048) — the merge or the arm of a head this
+ * run has just turned green, as ONE guarded tail. Both callers write the success first (`publishDisarmedSuccess`, which
+ * disarmed any queued merge), so every throw from the authorization to a merge that landed or an arm that took would
+ * leave the head green with nothing queued and nothing scheduled. Every such throw takes the one re-arm hold here
+ * (`holdUnarmedGreen`), whichever call threw: the authorization's reads, the first exact-head merge, the arm, or the
+ * clean-status retry. An unreadable Codex record has already replaced the green with its own refusal, so it only
+ * rethrows. A refusal by the authorization writes its own state and returns (G2), and a hold for gates returns as before.
+ */
 export async function completeReviewedPullRequest(
   client,
   pullRequest,
@@ -1479,6 +1488,45 @@ export async function completeReviewedPullRequest(
   verdict,
   { recoveryRequest = null, attempt = 0 } = {},
 ) {
+  let completed;
+  try {
+    completed = await mergeOrArmAuthorizedHead(client, pullRequest, expectedHead, verdict, { recoveryRequest, attempt });
+  } catch (error) {
+    if (!(error instanceof CodexRecordUnreadable)) await holdUnarmedGreen(client, pullRequest, expectedHead, { recoveryRequest, attempt });
+    throw error;
+  }
+  // the hand-off follows a merge that landed or an arm that took: outside the tail, so its failure never holds a head
+  // that is merged or queued
+  if (completed.outcome === 'merged' || completed.outcome === 'queued') {
+    await client.dispatchHandoff(completed.pullRequest.base.ref, completed.pullRequest.number);
+  }
+  return completed.outcome;
+}
+
+/**
+ * G3a′ (Stage 1's condition 2) — a throw may be a merge that in fact landed (a reply lost after GitHub merged), or the
+ * head may have moved on: the pull request is read again, and a merged one, or one whose head is no longer this commit,
+ * gets no hold, so no failure is left that could block anything. Otherwise, and when that read fails too, the green is
+ * replaced by the retryable re-arm hold (fail closed), and recovery re-judges the head.
+ */
+async function holdUnarmedGreen(client, pullRequest, expectedHead, { recoveryRequest = null, attempt = 0 } = {}) {
+  let live = null;
+  try {
+    live = await client.pullRequest(pullRequest.number);
+  } catch {
+    live = null;
+  }
+  if (live && (live.merged === true || Boolean(live.merged_at) || live.head?.sha !== expectedHead)) return;
+  await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
+    detail: CODEX_AUTOMERGE_REARM_FAILED,
+    attempt,
+    next: AUTOMERGE_RETRY_NEXT[CODEX_AUTOMERGE_REARM_FAILED],
+  });
+}
+
+/** The tail itself: called only by `completeReviewedPullRequest`, which holds every throw from it. Returns the outcome
+ *  and the pull request it acted on. */
+async function mergeOrArmAuthorizedHead(client, pullRequest, expectedHead, verdict, { recoveryRequest = null, attempt = 0 } = {}) {
   let authorization;
   try {
     authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead, verdict);
@@ -1498,37 +1546,21 @@ export async function completeReviewedPullRequest(
         recoveryRequest,
         attempt,
       });
-      return 'review_refused';
+      return { outcome: 'review_refused', pullRequest };
     }
-    return 'held_for_gates';
+    return { outcome: 'held_for_gates', pullRequest };
   }
   pullRequest = authorization.pullRequest;
   const direct = await client.mergeExactHead(
     pullRequest.number,
     expectedHead,
   );
-  if (direct?.merged) {
-    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-    return 'merged';
-  }
+  if (direct?.merged) return { outcome: 'merged', pullRequest };
 
   try {
-    try {
-      await client.enableAutoMerge(pullRequest, expectedHead);
-    } catch (error) {
-      if (error instanceof Error && error.message.includes('is in clean status')) throw error;
-      // G3a (gap-check F2d) — a re-arm that fails would leave this head green with nothing queued and nothing
-      // scheduled. The green is replaced by the retryable hold, so recovery re-judges the head and re-arms it through
-      // this same authorization
-      await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
-        detail: CODEX_AUTOMERGE_REARM_FAILED,
-        attempt,
-        next: AUTOMERGE_RETRY_NEXT[CODEX_AUTOMERGE_REARM_FAILED],
-      });
-      throw error;
-    }
-    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-    return 'queued';
+    // G3a (gap-check F2d) — a re-arm that fails, other than GitHub's clean-status answer, is held by the tail
+    await client.enableAutoMerge(pullRequest, expectedHead);
+    return { outcome: 'queued', pullRequest };
   } catch (error) {
     if (
       !(error instanceof Error)
@@ -1536,29 +1568,13 @@ export async function completeReviewedPullRequest(
     ) {
       throw error;
     }
-    let raced;
-    let refusal;
-    try {
-      raced = await client.mergeExactHead(
-        pullRequest.number,
-        expectedHead,
-      );
-    } catch (mergeError) {
-      refusal = mergeError;
-    }
-    if (raced?.merged) {
-      await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-      return 'merged';
-    }
-    // Codex 4440931048 on #1295 — the clean-status retry did not merge either: with the queue disarmed before the
-    // success, nothing is queued and nothing scheduled, so the green is replaced by the same retryable hold as a failed
-    // re-arm, and recovery re-judges the head
-    await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
-      detail: CODEX_AUTOMERGE_REARM_FAILED,
-      attempt,
-      next: AUTOMERGE_RETRY_NEXT[CODEX_AUTOMERGE_REARM_FAILED],
-    });
-    throw refusal ?? new Error(
+    // Codex 4440931048 on #1295 — the clean-status retry; when it does not merge either, the tail holds it
+    const raced = await client.mergeExactHead(
+      pullRequest.number,
+      expectedHead,
+    );
+    if (raced?.merged) return { outcome: 'merged', pullRequest };
+    throw new Error(
       `GitHub reported a clean pull request but refused the exact-head merge: ${raced?.message ?? 'unknown reason'}`,
       { cause: error },
     );
