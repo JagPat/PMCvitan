@@ -1651,8 +1651,20 @@ export async function publishDisarmedSuccess(client, pullRequest, expectedHead, 
 export async function completeCleanReview(client, pullRequest, expectedHead, description, verdict, { recoveryRequest = null, attempt = 0 } = {}) {
   let live = await publishDisarmedSuccess(client, pullRequest, expectedHead, description, { recoveryRequest, attempt });
   if (!live) return null;
-  await settleRecoveryRequest(client, expectedHead, live, recoveryRequest, 'clean review');
-  live = await refreshCurrentHead(client, live.number, expectedHead);
+  const disarmed = live;
+  try {
+    await settleRecoveryRequest(client, expectedHead, live, recoveryRequest, 'clean review');
+    live = await refreshCurrentHead(client, live.number, expectedHead);
+  } catch (error) {
+    // Codex 4441198800 on #1295 — after the success the queue is disarmed and, with the request unsettled, the
+    // watchdog would not ask again: the green is replaced by the re-arm hold, which settles the request
+    await publishRetryableHold(client, disarmed, expectedHead, recoveryRequest, {
+      detail: CODEX_AUTOMERGE_REARM_FAILED,
+      attempt,
+      next: AUTOMERGE_RETRY_NEXT[CODEX_AUTOMERGE_REARM_FAILED],
+    });
+    throw error;
+  }
   if (!live) return null;
   const completion = await completeReviewedPullRequest(client, live, expectedHead, verdict, { recoveryRequest, attempt });
   return { pullRequest: live, completion };
@@ -1902,6 +1914,9 @@ export async function ensureTerminalReviewState(
         : 'review: recovered prior clean Codex result on this exact head',
     );
     if (!disarmed) return true;
+    // Codex 4441198783 on #1295 — the re-arm never acts on this object: `completeReviewedPullRequest` arms the
+    // pull request `authorizeExactHeadMerge` reads fresh after the disarm (its `pullRequest`), so a stale `auto_merge`
+    // here cannot skip it (the end-to-end row below runs GitHubClient's own skip-if-queued guard)
     await completeReviewedPullRequest(
       client,
       finalPolicy.pullRequest,

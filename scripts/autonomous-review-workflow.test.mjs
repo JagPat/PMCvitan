@@ -4100,7 +4100,8 @@ test('G3a — a recovered success disarms first and arms only after the merge au
       async updateStickyComment(number, body) { log.push(['sticky', body.match(/`([a-z_]+)`/u)?.[1]]); },
       async createIssueComment() { log.push(['marker']); return { id: 1 }; },
       async mergeExactHead() { log.push(['merge']); return { merged: false, message: 'Pull request is not mergeable yet' }; },
-      async enableAutoMerge(current, expected) { log.push(['arm', expected]); },
+      // GitHubClient's own guard (Codex 4441198783): a pull request that still shows a queued merge is not armed again
+      async enableAutoMerge(current, expected) { if (current.auto_merge) return; log.push(['arm', expected]); },
       async disableAutoMerge() { log.push(['disable']); pull.auto_merge = null; },
       async dispatchHandoff() {},
     };
@@ -4293,7 +4294,7 @@ test('#1287/#1288 audit — the retryable-hold writer: failure, draft, settle, t
   // and its call sites are exactly the audited ones, each passing one of those details or a retryable settlement
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const calls = [...gate.matchAll(/(?<!function )publishRetryableHold\(/gu)].map((m) => gate.slice(m.index, m.index + 400));
-  assert.equal(calls.length, 9, 'merge refusal, recovery, verification re-read, changed CI, unsettled settlement, timeout, and G3a\'s re-arm, clean-status retry and disarm');
+  assert.equal(calls.length, 10, 'merge refusal, recovery, verification re-read, changed CI, unsettled settlement, timeout, and G3a\'s re-arm, clean-status retry, post-success settlement and disarm');
   // Stage 1 gap-check F1 (mutant M5) — the literal details the call sites actually pass (inline, or the `const detail`
   // just above the call) are each retryable, so a renamed one fails here and not only at runtime
   const sites = [...gate.matchAll(/(?<!function )publishRetryableHold\(/gu)].map((m) => gate.slice(Math.max(0, m.index - 300), m.index + 300));

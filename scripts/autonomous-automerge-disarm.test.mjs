@@ -331,3 +331,26 @@ test('G3a (Codex 4440931056) — the open pull requests at a commit are those wh
   assert.deepEqual(at.map((pull) => pull.number), [900, 904]);
   assert.deepEqual(paths, ['/repos/JagPat/PMCvitan/pulls?state=open']);
 });
+
+// Codex 4441198800 on #1295 — after the success the queue is disarmed: a settlement or head re-read that fails there
+// replaces the green with the re-arm hold (which settles the request), so the watchdog asks again
+test('G3a (Codex 4441198800) — a failure after the clean success replaces the green with the retryable hold', async () => {
+  const request = { status: { id: 7001, context: 'codex-recovery-request/6100' } };
+  for (const fail of ['settle', 'refresh']) {
+    let reads = 0;
+    const client = gateClient({ live: () => { reads += 1; if (fail === 'refresh' && reads === 2) throw new Error('GitHub 502'); return pr(); } });
+    const setStatus = client.setStatus;
+    let settleFailed = false;
+    client.setStatus = async (sha, state, description, url, context) => {
+      if (fail === 'settle' && !settleFailed && /^recovery: consumed by clean review/u.test(description)) { settleFailed = true; throw new Error('GitHub 502'); }
+      return setStatus(sha, state, description, url, context);
+    };
+    await assert.rejects(completeCleanReview(client, pr(), HEAD, 'review: clean', verdict, { recoveryRequest: request, attempt: 1 }), /GitHub 502/u, fail);
+    const statuses = client.log.filter(([k]) => k === 'status');
+    const green = statuses.findIndex(([, , state, description]) => state === 'success' && description.startsWith('review: clean'));
+    const hold = statuses.findIndex(([, , state, description]) => state === 'failure' && description === `review: ${CODEX_AUTOMERGE_REARM_FAILED}`);
+    assert.ok(green >= 0 && hold > green, `${fail}: the green is replaced`);
+    assert.match(client.log.find(([k]) => k === 'sticky')?.[1] ?? '', /review_retry/u, fail);
+    assert.equal(client.log.some(([k]) => k === 'arm'), false, fail);
+  }
+});
