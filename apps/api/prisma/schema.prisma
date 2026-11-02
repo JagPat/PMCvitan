@@ -1107,7 +1107,9 @@ model Membership {
   // drawing distributions frozen against this membership (Phase 1 Task 3)
   drawingRecipients           DrawingRecipient[]
   // corrective/reinspection work assigned to this membership (Phase 1 Task 4)
-  inspectionAssignments       Inspection[]
+  inspectionAssignments       Inspection[]           @relation("InspectionAssignee")
+  // inspections whose failed work this member is named to fix (#482 proof photos)
+  inspectionsToFix            Inspection[]           @relation("InspectionResponsible")
   // completion claims recorded against this membership (Phase 1 Task 5)
   completionClaims            Activity[]             @relation("CompletionClaims")
   // decisions this member withdrew (Phase 6 task 4a) — attribution is FK-backed, never free-text
@@ -3352,8 +3354,18 @@ model Inspection {
   reinspections    Inspection[]     @relation("Reinspection")
   // WHO must correct the work: an ACTIVE engineer/contractor member (service-validated;
   // the Membership FK is the backstop — memberships are soft-removed, never deleted).
-  assignee         Membership?      @relation(fields: [projectId, assigneeId], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
+  assignee         Membership?      @relation("InspectionAssignee", fields: [projectId, assigneeId], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
   assigneeId       String?
+  // #482 proof photos (Jagrut, 14 Oct 2026): WHO fixes the failed work, a contractor or consultant member, named in
+  // "Who fixes this?" and changeable later by the PMC or the engineer; their open items and proof photos follow from it.
+  // Not the assignee above (an engineer, whose re-inspection it is). The role is checked by the service and again at
+  // read; the composite FK keeps it a membership of THIS project (soft-removed, never deleted). Nullable, no backfill.
+  responsibleMember   Membership?   @relation("InspectionResponsible", fields: [projectId, responsibleMemberId], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
+  responsibleMemberId String?
+  // The member's count of standing-changing membership transitions when they were named (orgs' answer, under the
+  // readiness key). The name is served only while the count is unchanged: a member who left and came back is not named
+  // again until someone names them. Set and cleared with the id (a CHECK in 20280206000000 keeps the pair whole).
+  responsibleStandingMark Int?
   dueDate          DateTime?        @db.Date // real civil due date (decide-day + N days, PMC-overridable)
   // attribution (Phase 1 global rule): who submitted / decided
   submittedById    String?
@@ -3369,6 +3381,7 @@ model Inspection {
 
   @@unique([projectId, id]) // composite identity — tenant-safe reference target (Task 4)
   @@index([nodeId])
+  @@index([projectId, responsibleMemberId]) // a member's open items (#482 proof photos)
 }
 
 model InspectionItem {

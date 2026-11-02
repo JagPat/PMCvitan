@@ -624,6 +624,9 @@ if echo "$out" | grep -q "P3005"; then
   #
   # The upload source (#1283, 20280204000000) is here because of its trigger, which a db-push baseline does not have.
   # IF NOT EXISTS, re-runnable.
+  #
+  # The responsible member (#482 proof photos, 20280206000000) is here because of its pair CHECK, which a db-push
+  # baseline does not have. IF NOT EXISTS and guarded definitions, re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -681,7 +684,8 @@ if echo "$out" | grep -q "P3005"; then
 20280201000000_command_key_sighting
 20280202000000_media_content_sha256
 20280203000000_redbracket_id_tables
-20280204000000_media_upload_source"
+20280204000000_media_upload_source
+20280206000000_inspection_responsible_member"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
