@@ -203,7 +203,12 @@ export class PasswordCredentialsService {
     return { challenge, setupTokenHash };
   }
 
-  /** Consumes the challenge once (a second use is refused) and re-reads that its account may hold a credential. */
+  /**
+   * Consumes the challenge once (a second use is refused) and re-reads that its account may hold a credential. A
+   * completion's claim clears the token's expiry, which a revocation never does: the row then stays as the durable mark
+   * that the address was proven by a setup, so an invitation-email correction (OrgsService.correctInvitationEmail) is
+   * refused from that moment, even while the issuer steps that follow are still running or after they failed.
+   */
   private async claimChallenge(tx: Prisma.TransactionClient, challengeId: string, userId: string, setupTokenHash: string, now: Date) {
     const claimed = await tx.passwordCredentialChallenge.updateMany({
       where: {
@@ -213,7 +218,7 @@ export class PasswordCredentialsService {
         setupTokenHash,
         setupTokenExpiresAt: { gt: now },
       },
-      data: { consumedAt: now },
+      data: { consumedAt: now, setupTokenExpiresAt: null },
     });
     if (claimed.count !== 1) throw this.genericError();
     const eligible = await this.userById(tx, userId);

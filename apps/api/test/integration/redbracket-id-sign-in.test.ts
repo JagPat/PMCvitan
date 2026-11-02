@@ -585,8 +585,11 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
   it('a reset that joins an established account fresh is recorded on the new account; the old one records its retirement', async () => {
     const old = await invitee('trail');
     await t.prisma.user.update({ where: { id: old.id }, data: { passwordHash: await bcrypt.hash('the old local passphrase', 4), emailVerifiedAt: new Date() } });
+    const lines = vi.spyOn(IdentitySignInService.prototype as unknown as { line: (r: string, a: string, o: string) => void }, 'line');
     const done = await setPassword(old.email!, 'a new redbracket passphrase', 401); // set at the issuer; the new account holds no project
     expect(done.body.message).toMatch(/not on any PMC project yet/);
+    // one try, one line: the fresh join is reported by the setup alone, never also as a sign-in
+    expect(lines.mock.calls.map((c) => [c[0], c[2]])).toEqual([['password', 'set, new account']]);
     const fresh = await t.prisma.user.findUniqueOrThrow({ where: { email: old.email! } });
     made.push(fresh.id);
     expect(fresh.id).not.toBe(old.id);
@@ -597,6 +600,36 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const retiredEvent = onOld.find((e) => e.action === 'auth.identity_retired')!;
     expect(retiredEvent.actorUserId).toBe(fresh.id);
     expect(retiredEvent.correlationId).toBe(onFresh[0]!.correlationId); // both name the reset code that did it
+  });
+
+  it('a setup that claimed its code holds the address: the invitation email can no longer be corrected, even after the setup failed', async () => {
+    const user = await invitee('claimed');
+    await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: user.id, role: 'member' } });
+    const correct = (email: string) =>
+      http()
+        .patch(`/orgs/${f.orgA.id}/members/${user.id}/invitation-email`)
+        .set('Authorization', `Bearer ${t.issueOrgOwnerToken(f.ownerUser.id, f.projectA.id, f.orgA.id)}`)
+        .send({ email });
+    // a code asked for and never used is revoked by a correction, which stays open
+    await http().post('/auth/password/request').send({ email: user.email }).expect(201);
+    await correct(`rbid-claimed-typo-${Date.now()}@test.local`).expect(200);
+    // and a code that was only revoked (spent by that correction) never holds the address
+    const first = `rbid-claimed-first-${Date.now()}@test.local`;
+    await correct(first).expect(200);
+    // the code is claimed, then the issuer goes down before the person is made: the setup fails, the claim stands
+    fake.force = { '/v2/users': 503 };
+    await setPassword(first, 'a passphrase never set', 503);
+    const claimed = await t.prisma.passwordCredentialChallenge.findMany({ where: { userId: user.id, verifiedAt: { not: null }, setupTokenExpiresAt: null } });
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]).toMatchObject({ verifiedAt: expect.any(Date), consumedAt: expect.any(Date) });
+    const refused = await correct(`rbid-claimed-second-${Date.now()}@test.local`).expect(400);
+    expect(refused.body.message).toMatch(/already confirmed by a password setup/);
+    const row = await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(row.email).toBe(first);
+    expect(await t.prisma.securityAuditEvent.count({ where: { targetUserId: user.id, action: 'auth.invitation_email_changed' } })).toBe(2); // the two corrections before the claim, none after
+    // and the setup itself is not blocked: with the issuer back, a new code finishes it on the same address
+    fake.force = {};
+    await setPassword(first, 'a long issuer passphrase', 201);
   });
 
   it('issuer unavailable (down, 5xx, past 4 s): "unavailable" for an ordinary person; a company owner may use the PMC password', async () => {

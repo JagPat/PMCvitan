@@ -413,6 +413,17 @@ export class OrgsService {
         if (target.user.passwordHash || target.user.emailVerifiedAt) {
           throw new BadRequestException('This account has already established its sign-in credential');
         }
+        // a password setup that claimed its code (under this same lock) proved the address, and may already have made
+        // the person at Redbracket ID with it: the address is no longer a typo to correct, even if that setup failed later
+        const claimed = await tx.passwordCredentialChallenge.findFirst({
+          where: { userId, verifiedAt: { not: null }, consumedAt: { not: null }, setupTokenExpiresAt: null },
+          select: { id: true },
+        });
+        if (claimed) {
+          throw new BadRequestException(
+            'This address was already confirmed by a password setup. Remove the person and invite the right address instead.',
+          );
+        }
 
         const user = await tx.user.update({ where: { id: userId }, data: { email } }).catch(rethrowQaLock);
         await tx.passwordCredentialChallenge.updateMany({

@@ -327,6 +327,8 @@ export class IdentitySignInService {
     }
     // an account set up before Redbracket ID joins fresh, exactly as a sign-in would (identity-accounts.ts)
     const settled = await settleSignIn(tx, issuer, { ...claims, email, emailVerified: true }, attempt);
+    // a fresh join is reported once, by `setPassword` ('set, new account'); only a refusal is logged here (and throws)
+    if (settled.kind === 'account') return { account: settled.user, fresh: settled.fresh };
     return this.landed('password', attempt, settled);
   }
 
