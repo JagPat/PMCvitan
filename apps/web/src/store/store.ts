@@ -2488,6 +2488,18 @@ export const useStore = create<Store>()(
      *  instead of the network copy that would send them retrying a request that will never succeed. */
     // `unreachable`: the network-failure line in the viewer's language, passed only by callers whose screen
     // is translated (#827); every other caller keeps the English line, so an English screen stays English
+    /** #1278 round 2 (Codex 4438923112) — an org-roster command's reply (reload + flash) belongs to the SESSION and
+     *  the ORG it was issued for, not to the project: the roster on screen is the active project's org's
+     *  (TeamScreen's `activeOrgId`), and it is not re-read on a switch between projects of the same org. So the
+     *  reply holds while the same session is signed in and the active project's org is still `orgId`; a switch to
+     *  another org, a sign-out or a re-auth drops it. */
+    const rosterReplyHolds = (orgId: string): (() => boolean) => {
+      const tok = get().sessionToken;
+      return () => {
+        const s = get();
+        return s.sessionToken === tok && s.memberships.find((m) => m.projectId === s.activeProjectId)?.orgId === orgId;
+      };
+    };
     /** Delete races (S1): a delete whose record is already gone is done, not refused. `when` names the route's own
      *  "not found" (`isGone` with its exact text); `say` is the delete's own line. The answer carries no snapshot, so
      *  the screen is read again for the record's absence. */
@@ -2500,7 +2512,9 @@ export const useStore = create<Store>()(
           if (!scopeStillCurrent(lease.scope)) return false;
           if (gone?.when(err)) {
             get().flash(gone.say());
-            void requestFreshSnapshot(lease.scope);
+            // #1278 round 2 (Codex 4438923114) — owed, not just asked for: a command obligation (as the photo
+            // delete's gone path records) keeps the screen's Retry boundary if this read fails
+            scheduleReconcile(lease.scope, { kind: 'command', createdAfterSequence: snapshotSeq });
             return true;
           }
           // a terminal refusal is never reported as a network failure, even when its body carried no
@@ -6276,36 +6290,35 @@ export const useStore = create<Store>()(
         get().flash('Managing the org roster needs the server.');
         return;
       }
-      const scope = currentScope();
+      const holds = rosterReplyHolds(orgId);
       gateway
         .addOrgMember(orgId, input)
-        .then(() => { if (!scopeStillCurrent(scope)) return; get().loadOrgMembers(orgId); get().flash(input.name + ' added as org ' + input.role + '.'); })
+        .then(() => { if (!holds()) return; get().loadOrgMembers(orgId); get().flash(input.name + ' added as org ' + input.role + '.'); })
         .catch(() => get().flash('Could not add to the roster — check the details / your access.'));
     },
     updateOrgMemberRole: (orgId, userId, role) => {
       if (!gateway) return;
-      const scope = currentScope();
+      const holds = rosterReplyHolds(orgId);
       gateway
         .updateOrgMemberRole(orgId, userId, role)
-        .then(() => { if (!scopeStillCurrent(scope)) return; get().loadOrgMembers(orgId); get().flash('Org role changed to ' + role + '.'); })
+        .then(() => { if (!holds()) return; get().loadOrgMembers(orgId); get().flash('Org role changed to ' + role + '.'); })
         .catch(() => get().flash('Could not change the role — the org must keep at least one owner.'));
     },
     correctInvitationEmail: (orgId, userId, email) => {
       if (!gateway) return;
       const normalized = email.trim().toLowerCase();
-      const scope = currentScope();
+      const holds = rosterReplyHolds(orgId);
       gateway
         .correctInvitationEmail(orgId, userId, normalized)
-        .then(() => { if (!scopeStillCurrent(scope)) return; get().loadOrgMembers(orgId); get().flash('Invitation email corrected.'); })
+        .then(() => { if (!holds()) return; get().loadOrgMembers(orgId); get().flash('Invitation email corrected.'); })
         .catch(() => get().flash('Could not correct the email — it may already be active or in use.'));
     },
     removeOrgMember: (orgId, userId) => {
       if (!gateway) return;
-      // the roster reload + flash belong to the project scope the removal was issued in:
-      // after a switch (maybe to another org) the answer is dropped, like removeCompany
-      const scope = currentScope();
+      // the roster reload + flash belong to the session and org the removal was issued in (rosterReplyHolds)
+      const holds = rosterReplyHolds(orgId);
       const removed = () => {
-        if (!scopeStillCurrent(scope)) return;
+        if (!holds()) return;
         get().loadOrgMembers(orgId);
         get().flash('Removed from the org roster.');
       };

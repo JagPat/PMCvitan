@@ -20,6 +20,8 @@ const snap = (extra: Record<string, unknown> = {}) => ({
   decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
   drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [], ...extra,
 });
+/** a project the viewer can switch to, in its org (the roster on screen is the active project's org's) */
+const member = (projectId: string, orgId: string) => ({ projectId, orgId, name: projectId, role: 'pmc' });
 const refusal = (status: number, serverMessage?: string) => Object.assign(new Error(`DELETE ${status}`), { status, serverMessage });
 
 async function load() {
@@ -133,14 +135,14 @@ describe('a delete whose record is already gone is done, not refused', () => {
     expect(useStore.getState().toast).toBeNull();
   });
 
-  it('an org member answered gone after a project switch: the new roster is untouched, nothing is read or said', async () => {
+  it('an org member answered gone after a switch to another org\'s project: the new roster is untouched, nothing is read or said', async () => {
     const useStore = await load();
     let reject!: (e: unknown) => void;
     const removeOrgMember = vi.fn(() => new Promise((_, r) => { reject = r; }));
     const listOrgMembers = vi.fn().mockResolvedValue([{ userId: 'old-u', orgRole: 'owner' }]);
     const newRoster = [{ userId: 'new-u', orgRole: 'owner' }];
     useStore.getState()._setGateway(tracked({ removeOrgMember, listOrgMembers }) as never);
-    useStore.setState({ toast: null } as never);
+    useStore.setState({ toast: null, memberships: [member('villa-b', 'org-old'), member('villa-c', 'org-new')] } as never);
     useStore.getState().removeOrgMember('org-old', 'u2');
     useStore.setState({ activeProjectId: 'villa-c', projectScopeGeneration: 2, orgMembers: newRoster } as never);
     reject(refusal(404, NOT_AN_ORG_MEMBER_MESSAGE));
@@ -148,6 +150,64 @@ describe('a delete whose record is already gone is done, not refused', () => {
     expect(listOrgMembers).not.toHaveBeenCalled();
     expect(useStore.getState().orgMembers).toEqual(newRoster);
     expect(useStore.getState().toast).toBeNull();
+  });
+
+  it('#1278 round 2 (Codex 4438923112): a roster answer after a switch WITHIN the same org still reloads and says it', async () => {
+    const useStore = await load();
+    const answers: Array<() => void> = [];
+    const pending = () => new Promise<void>((res) => { answers.push(res); });
+    const addOrgMember = vi.fn(pending);
+    const updateOrgMemberRole = vi.fn(pending);
+    const correctInvitationEmail = vi.fn(pending);
+    let reject!: (e: unknown) => void;
+    const removeOrgMember = vi.fn(() => new Promise((_, r) => { reject = r; }));
+    const listOrgMembers = vi.fn().mockResolvedValue([{ userId: 'u9', orgRole: 'owner' }]);
+    useStore.getState()._setGateway(tracked({ addOrgMember, updateOrgMemberRole, correctInvitationEmail, removeOrgMember, listOrgMembers }) as never);
+    useStore.setState({ toast: null, memberships: [member('villa-b', 'org1'), member('villa-c', 'org1')] } as never);
+    const said: string[] = [];
+    const unsubscribe = useStore.subscribe((s, before) => { if (s.toast && s.toast !== before.toast) said.push(s.toast); });
+    useStore.getState().addOrgMember('org1', { name: 'Asha', role: 'member', email: 'asha@example.test' } as never);
+    useStore.getState().updateOrgMemberRole('org1', 'u2', 'admin' as never);
+    useStore.getState().correctInvitationEmail('org1', 'u3', 'u3@example.test');
+    useStore.getState().removeOrgMember('org1', 'u4');
+    // the viewer moves to another project of the SAME org: the roster on screen is still org1's, and is not re-read
+    useStore.setState({ activeProjectId: 'villa-c', projectScopeGeneration: 2 } as never);
+    for (const answer of answers) answer();
+    reject(refusal(404, NOT_AN_ORG_MEMBER_MESSAGE));
+    await settled();
+    unsubscribe();
+    expect(said).toEqual(['Asha added as org member.', 'Org role changed to admin.', 'Invitation email corrected.', 'Removed from the org roster.']);
+    expect(listOrgMembers).toHaveBeenCalledTimes(4);
+    expect(listOrgMembers.mock.calls.every(([orgId]) => orgId === 'org1')).toBe(true);
+    expect(useStore.getState().orgMembers).toEqual([{ userId: 'u9', orgRole: 'owner' }]);
+  });
+
+  it('#1278 round 2: a roster answer after a sign-out or re-auth is dropped', async () => {
+    const useStore = await load();
+    let answer!: () => void;
+    const addOrgMember = vi.fn(() => new Promise<void>((res) => { answer = res; }));
+    const listOrgMembers = vi.fn().mockResolvedValue([]);
+    useStore.getState()._setGateway(tracked({ addOrgMember, listOrgMembers }) as never);
+    useStore.setState({ toast: null, sessionToken: 'tok-1', memberships: [member('villa-b', 'org1')] } as never);
+    useStore.getState().addOrgMember('org1', { name: 'Asha', role: 'member', email: 'asha@example.test' } as never);
+    useStore.setState({ sessionToken: 'tok-2' } as never);
+    answer();
+    await settled();
+    expect(listOrgMembers).not.toHaveBeenCalled();
+    expect(useStore.getState().toast).toBeNull();
+  });
+
+  it('#1278 round 2 (Codex 4438923114): a gone answer whose read fails stays owed, so the screen keeps its Retry', async () => {
+    const useStore = await load();
+    const deleteActivity = vi.fn().mockRejectedValue(refusal(404, activityNotFoundMessage('a1')));
+    const snapshot = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    useStore.getState()._setGateway(tracked({ deleteActivity, snapshot }) as never);
+    expect(useStore.getState().commandReconcilePending).toBe(false);
+    const done = useStore.getState().deleteActivity('a1');
+    await settled();
+    expect(await done).toBe(true);
+    expect(snapshot).toHaveBeenCalled();
+    expect(useStore.getState().commandReconcilePending).toBe(true);
   });
 
   it('an older roster read that finishes last never replaces the newer one', async () => {
@@ -190,6 +250,7 @@ describe('a delete whose record is already gone is done, not refused', () => {
     const removeOrgMember = vi.fn().mockRejectedValue(refusal(404, NOT_AN_ORG_MEMBER_MESSAGE));
     const listOrgMembers = vi.fn().mockResolvedValue([]);
     useStore.getState()._setGateway(tracked({ removeOrgMember, listOrgMembers }) as never);
+    useStore.setState({ memberships: [member('villa-b', 'org1')] } as never);
     useStore.getState().removeOrgMember('org1', 'u2');
     await settled();
     expect(useStore.getState().toast).toBe('Removed from the org roster.');
