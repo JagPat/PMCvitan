@@ -3076,7 +3076,7 @@ export async function withRearmSettlement(client, pullRequest, expectedHead, rea
     try {
       await client.setStatus(expectedHead, 'failure', REARM_ATTEMPT_FAILED, pullRequest.html_url, rearmRequest.status.context);
     } catch {
-      // the original error is the one that matters; a request left pending holds the watchdog (residual, 2A3)
+      // the original error is the one that matters; a run that dies here is marked by the owner job's cleanup step
     }
     throw error;
   }
@@ -3084,7 +3084,51 @@ export async function withRearmSettlement(client, pullRequest, expectedHead, rea
   return result;
 }
 
+/**
+ * G3 (#1289 round 1, Stage 1 option c) — record which re-arm request this run adopted, in the job environment, so
+ * the owner job's cleanup step (`if: failure() || cancelled()`, which Actions also runs on a timeout or a cancel) can
+ * mark it if the run dies before `withRearmSettlement` settles it. Outside Actions (no GITHUB_ENV) it does nothing.
+ */
+export function recordAdoptedRearmRequest(expectedHead, rearmRequest, env = process.env) {
+  if (!rearmRequest || !env.GITHUB_ENV) return false;
+  appendFileSync(env.GITHUB_ENV, `REARM_HEAD_SHA=${expectedHead}\nREARM_REQUEST_ID=${rearmRequest.terminalStatusId}\n`);
+  return true;
+}
+
+/**
+ * G3 (#1289 round 1, Stage 1 option c) — the owner job's cleanup after a failed, timed-out or cancelled run. When
+ * this head's request for `terminalStatusId` is still pending and names a success (a re-arm), it is marked
+ * `REARM_ATTEMPT_FAILED`, which the watchdog asks again. A request already settled, or one for a failure, is left
+ * as it is. Returns what it did.
+ */
+export async function markAbandonedRearmRequest(client, head, terminalStatusId, targetUrl) {
+  const id = String(terminalStatusId ?? '');
+  if (!/^[0-9a-f]{40}$/u.test(String(head ?? '')) || !/^[0-9]+$/u.test(id)) return 'skipped';
+  const statuses = await client.statuses(head);
+  const context = recoveryRequestContext(id);
+  const request = statuses.find((status) => status.context === context);
+  if (request?.state !== 'pending' || request.description !== `recovery: requested terminal status ${id}`) return 'settled';
+  const named = statuses.find((status) => status.context === STATUS_CONTEXT && String(status.id) === id);
+  if (named?.state !== 'success') return 'not-rearm';
+  await client.setStatus(head, 'failure', REARM_ATTEMPT_FAILED, targetUrl, context);
+  return 'marked';
+}
+
 export async function run() {
+  if (process.env.AUTONOMOUS_REVIEW_MODE === 'rearm-cleanup') {
+    const client = new GitHubClient({
+      repository: requiredEnvironment('GITHUB_REPOSITORY'),
+      token: requiredEnvironment('GITHUB_TOKEN'),
+    });
+    const outcome = await markAbandonedRearmRequest(
+      client,
+      process.env.REARM_HEAD_SHA,
+      process.env.REARM_REQUEST_ID,
+      process.env.REARM_TARGET_URL || null,
+    );
+    console.log(`Re-arm request cleanup: ${outcome}.`);
+    return;
+  }
   const context = await eventContext();
   if (!context?.number) {
     console.log('No pull request is associated with this workflow event.');
@@ -3205,7 +3249,10 @@ export async function run() {
   let rearmRequest = null;
   if (recoveryRequest && !requestedTerminalStatus) {
     const settledRequest = await settleUnmatchedRecoveryRequest(client, pullRequest, expectedHead, existingStatuses, recoveryRequest);
-    if (settledRequest === 'rearm') rearmRequest = recoveryRequest;
+    if (settledRequest === 'rearm') {
+      rearmRequest = recoveryRequest;
+      recordAdoptedRearmRequest(expectedHead, rearmRequest);
+    }
     recoveryRequest = null;
     if (settledRequest === 'superseded' && !terminalStatus) {
       throw new Error(

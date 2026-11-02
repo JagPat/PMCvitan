@@ -83,6 +83,19 @@ jobs:
           STATUS_CONTEXT: codex-current-head
           CLAUDE_REVIEW_APP_SLUG: ${{ vars.CLAUDE_REVIEW_APP_SLUG }}
         run: node scripts/autonomous-review-gate.mjs
+      # G3 (#1289 round 1) — a run that failed, timed out or was cancelled before it settled the re-arm request it
+      # adopted leaves that request pending, which holds the watchdog. This marks it failed so the watchdog asks again.
+      # The orchestrate step records the request it adopted in the job env; a dispatch names it in its inputs.
+      - name: Mark an abandoned re-arm request (G3)
+        if: ${{ failure() || cancelled() }}
+        env:
+          AUTONOMOUS_REVIEW_MODE: rearm-cleanup
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STATUS_CONTEXT: codex-current-head
+          REARM_HEAD_SHA: ${{ env.REARM_HEAD_SHA || inputs.head_sha }}
+          REARM_REQUEST_ID: ${{ env.REARM_REQUEST_ID || inputs.terminal_status_id }}
+          REARM_TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.workflow_run.pull_requests[0].number || inputs.pr_number }}
+        run: node scripts/autonomous-review-gate.mjs
       # M3c C1 — the orchestrate step names a receipt artifact only after it WROTE a cited approval; uploading it
       # makes this run the provenance a later run checks before it reuses that approval without re-reading the issue.
       - name: Upload work-item approval receipt (M3c C1)

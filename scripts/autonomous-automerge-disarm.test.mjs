@@ -310,3 +310,73 @@ test('G3 — withRearmSettlement: consumed after the re-judge ends, re-askable w
   assert.equal(gateRearmStatus({ statuses: [green, req('pending', 'recovery: requested terminal status 6100')] }, pr), null);
   assert.equal(gateRearmStatus({ statuses: [green, req('success', 'recovery: consumed by recovered success re-authorization')] }, pr), null);
 });
+
+// #1289 round 1, Stage 1 option (c) — a run that dies before it settles its re-arm request (a failure, a timeout, a
+// cancel) is cleaned up by the owner job's `failure() || cancelled()` step: a still-pending re-arm request is marked
+// failed, so the watchdog asks again; anything already settled, or a request for a failure, is left as it is.
+test('G3 — the owner job\'s cleanup marks only a still-pending re-arm request', async () => {
+  const { markAbandonedRearmRequest, recordAdoptedRearmRequest } = await import('./autonomous-review-gate.mjs');
+  const { REARM_ATTEMPT_FAILED } = await import('./review-policy.mjs');
+  const { gateRearmStatus } = await import('./correction-lease.mjs');
+  const head = 'c'.repeat(40);
+  const green = { id: 6100, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head [wi:none]' };
+  const pending = { id: 9, context: 'codex-recovery-request/6100', state: 'pending', description: 'recovery: requested terminal status 6100' };
+  const drive = async (statuses, id = '6100', sha = head) => {
+    const writes = [];
+    const client = {
+      async statuses(at) { assert.equal(at, sha); return statuses; },
+      async setStatus(at, state, description, url, context) { writes.push({ at, state, description, url, context }); return { id: 1 }; },
+    };
+    return { outcome: await markAbandonedRearmRequest(client, sha, id, 'https://github.com/JagPat/PMCvitan/pull/7'), writes };
+  };
+  const marked = await drive([pending, green]);
+  assert.equal(marked.outcome, 'marked');
+  assert.deepEqual(marked.writes, [{ at: head, state: 'failure', description: REARM_ATTEMPT_FAILED, url: 'https://github.com/JagPat/PMCvitan/pull/7', context: 'codex-recovery-request/6100' }]);
+  // and the watchdog asks again once it is marked
+  const after = [{ ...pending, id: 10, state: 'failure', description: REARM_ATTEMPT_FAILED }, pending, green];
+  assert.equal(gateRearmStatus({ statuses: after }, { state: 'open', draft: false, auto_merge: null })?.id, 6100);
+  // already settled (consumed, or marked by the run itself): nothing written
+  for (const settled of [
+    { ...pending, id: 10, state: 'success', description: 'recovery: consumed by recovered success re-authorization' },
+    { ...pending, id: 10, state: 'failure', description: REARM_ATTEMPT_FAILED },
+  ]) {
+    const done = await drive([settled, pending, green]);
+    assert.equal(done.outcome, 'settled');
+    assert.deepEqual(done.writes, []);
+  }
+  // a request for a retryable failure is not a re-arm
+  const failure = { id: 6100, context: 'codex-current-head', state: 'failure', description: 'review: Codex review timed out after two attempts' };
+  const notRearm = await drive([pending, failure]);
+  assert.equal(notRearm.outcome, 'not-rearm');
+  assert.deepEqual(notRearm.writes, []);
+  // nothing adopted (a CI-triggered run with no inputs): no read, no write
+  assert.equal((await markAbandonedRearmRequest({ async statuses() { throw new Error('no read'); } }, head, '', null)), 'skipped');
+  assert.equal((await markAbandonedRearmRequest({ async statuses() { throw new Error('no read'); } }, '', '6100', null)), 'skipped');
+  // the orchestrate run records the request it adopted in the job env, for the cleanup step
+  const { mkdtempSync, readFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const envFile = join(mkdtempSync(join(tmpdir(), 'rearm-')), 'env');
+  assert.equal(recordAdoptedRearmRequest(head, { terminalStatusId: '6100' }, { GITHUB_ENV: envFile }), true);
+  assert.equal(readFileSync(envFile, 'utf8'), `REARM_HEAD_SHA=${head}\nREARM_REQUEST_ID=6100\n`);
+  assert.equal(recordAdoptedRearmRequest(head, null, { GITHUB_ENV: envFile }), false);
+  assert.equal(recordAdoptedRearmRequest(head, { terminalStatusId: '6100' }, {}), false);
+});
+
+test('G3 — structural: the owner job runs the cleanup on failure or cancel; run() records the adopted request', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/auto-merge.yml', import.meta.url), 'utf8');
+  const owner = workflow.slice(workflow.indexOf('  orchestrate:'));
+  const orchestrate = owner.indexOf('- name: Orchestrate CI, Codex review, and auto-merge');
+  const cleanup = owner.indexOf('- name: Mark an abandoned re-arm request (G3)');
+  assert.ok(orchestrate > 0 && cleanup > orchestrate, 'the cleanup follows the orchestrate step in the owner job');
+  const step = owner.slice(cleanup, owner.indexOf('run: node scripts/autonomous-review-gate.mjs', cleanup));
+  assert.match(step, /if: \$\{\{ failure\(\) \|\| cancelled\(\) \}\}/u);
+  assert.match(step, /AUTONOMOUS_REVIEW_MODE: rearm-cleanup/u);
+  assert.match(step, /REARM_REQUEST_ID: \$\{\{ env\.REARM_REQUEST_ID \|\| inputs\.terminal_status_id \}\}/u);
+  assert.match(step, /REARM_HEAD_SHA: \$\{\{ env\.REARM_HEAD_SHA \|\| inputs\.head_sha \}\}/u);
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const runBody = gate.slice(gate.indexOf('export async function run()'));
+  assert.ok(runBody.indexOf("process.env.AUTONOMOUS_REVIEW_MODE === 'rearm-cleanup'") < runBody.indexOf('await eventContext()'));
+  const adopt = runBody.indexOf('recordAdoptedRearmRequest(expectedHead, rearmRequest);');
+  assert.ok(adopt > 0 && adopt < runBody.indexOf('await withRearmSettlement('), 'recorded before its re-judge runs');
+});
