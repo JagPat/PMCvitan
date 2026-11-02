@@ -189,6 +189,10 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // org, so only a reset that names them (or truncates with CASCADE) reaches them, and the seals are bypassed here by name.
   { table: 'HubWebhookReceipt', trigger: 'HubWebhookReceipt_no_truncate' },
   { table: 'HubVersionTombstone', trigger: 'HubVersionTombstone_no_truncate' },
+  // Redbracket ID A1 — a user's issuer-person link and the record of an older account set aside refuse TRUNCATE; their
+  // keys cascade from "User", so a reset that truncates it with CASCADE reaches them, and the seals are bypassed here by name.
+  { table: 'PlatformPersonLink', trigger: 'PlatformPersonLink_no_truncate' },
+  { table: 'IdentityRetirement', trigger: 'IdentityRetirement_no_truncate' },
 ];
 
 /**
