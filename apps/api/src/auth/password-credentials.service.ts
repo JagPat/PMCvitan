@@ -12,6 +12,7 @@ import { PrismaService } from '../prisma.service';
 import { lockUserCredential } from '../common/credential-lock';
 import { EmailService } from '../platform/email.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
+import type { IdentityOutcome, IdentitySignInService } from './identity/identity-sign-in.service';
 
 const PURPOSE = 'password_setup_or_reset';
 const LIFETIME_MS = 10 * 60_000;
@@ -135,6 +136,11 @@ export class PasswordCredentialsService {
    * it impossible to tell from outside why a code "did not arrive" (#482, 12 Oct 2026). The server log says so,
    * keyed by the public requestId the caller holds and never by the email address.
    */
+  /** The answer for a request turned away by the Redbracket ID per-person limit: the same as any unsent request. */
+  unsent(): { accepted: true; requestId: string } {
+    return this.notSent(randomUUID());
+  }
+
   private notSent(publicRequestId: string): { accepted: true; requestId: string } {
     this.log.log(`Password credential request ${publicRequestId}: no eligible account; nothing sent`);
     return { accepted: true, requestId: publicRequestId };
@@ -176,34 +182,81 @@ export class PasswordCredentialsService {
     return { setupToken, expiresInSeconds: 600 };
   }
 
-  async complete(input: PasswordCredentialCompleteInput): Promise<CredentialUser> {
+  /** The verified, unspent challenge a setup token names, or the generic refusal. */
+  private async openChallenge(input: PasswordCredentialCompleteInput, now: Date) {
     if (input.password.length < 12 || input.password.length > 128) throw this.genericError();
     const setupTokenHash = this.tokenHash(input.setupToken);
     const challenge = await this.prisma.passwordCredentialChallenge.findUnique({
       where: { setupTokenHash },
     });
-    const now = new Date();
     if (!challenge || challenge.purpose !== PURPOSE || challenge.consumedAt || !challenge.verifiedAt || !challenge.setupTokenExpiresAt || challenge.setupTokenExpiresAt <= now) {
       throw this.genericError();
     }
+    return { challenge, setupTokenHash };
+  }
+
+  /** Consumes the challenge once (a second use is refused) and re-reads that its account may hold a credential. */
+  private async claimChallenge(tx: Prisma.TransactionClient, challengeId: string, userId: string, setupTokenHash: string, now: Date) {
+    const claimed = await tx.passwordCredentialChallenge.updateMany({
+      where: {
+        id: challengeId,
+        consumedAt: null,
+        verifiedAt: { not: null },
+        setupTokenHash,
+        setupTokenExpiresAt: { gt: now },
+      },
+      data: { consumedAt: now },
+    });
+    if (claimed.count !== 1) throw this.genericError();
+    const eligible = await this.userById(tx, userId);
+    if (!eligible?.eligible) throw this.genericError();
+    return eligible;
+  }
+
+  /**
+   * Redbracket ID A3, switch on: the password is set at the issuer, never in `User.passwordHash`
+   * (IdentitySignInService.setPassword); PMC's own emailed code is still what proves the mailbox.
+   */
+  async completeThroughIssuer(input: PasswordCredentialCompleteInput, identity: IdentitySignInService): Promise<IdentityOutcome> {
+    const now = new Date();
+    const { challenge, setupTokenHash } = await this.openChallenge(input, now);
+    const account = await this.userById(this.prisma, challenge.userId);
+    if (!account?.eligible) throw this.genericError();
+    let established = false;
+    return identity.setPassword(
+      account,
+      input.password,
+      challenge.id,
+      // spent before the issuer is touched: a second use of this code is refused, whatever the issuer does next
+      async () => {
+        const eligible = await this.prisma.$transaction(async (tx) => {
+          await lockUserCredential(tx, challenge.userId);
+          return this.claimChallenge(tx, challenge.id, challenge.userId, setupTokenHash, now);
+        });
+        established = Boolean(eligible.passwordHash || eligible.emailVerifiedAt);
+      },
+      async (tx) => {
+        await tx.securityAuditEvent.create({
+          data: {
+            action: established ? 'auth.password_reset' : 'auth.password_enrolled',
+            targetUserId: challenge.userId,
+            actorUserId: challenge.userId,
+            actorKind: 'self',
+            correlationId: challenge.id,
+          },
+        });
+      },
+    );
+  }
+
+  async complete(input: PasswordCredentialCompleteInput): Promise<CredentialUser> {
+    const now = new Date();
+    const { challenge, setupTokenHash } = await this.openChallenge(input, now);
 
     const passwordHash = await bcrypt.hash(input.password, BCRYPT_COST);
     return this.prisma.$transaction(async (tx) => {
       await lockUserCredential(tx, challenge.userId);
-      const claimed = await tx.passwordCredentialChallenge.updateMany({
-        where: {
-          id: challenge.id,
-          consumedAt: null,
-          verifiedAt: { not: null },
-          setupTokenHash,
-          setupTokenExpiresAt: { gt: now },
-        },
-        data: { consumedAt: now },
-      });
-      if (claimed.count !== 1) throw this.genericError();
-
-      const eligible = await this.userById(tx, challenge.userId);
-      if (!eligible?.eligible) throw this.genericError();
+      const eligible = await this.claimChallenge(tx, challenge.id, challenge.userId, setupTokenHash, now);
 
       const user = await tx.user.update({
         where: { id: challenge.userId },

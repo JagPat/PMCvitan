@@ -14,6 +14,7 @@ import { systemActor } from '../common/actor';
 import { OrgsParticipant, QA_ACCOUNT_EMAIL, rethrowQaLock } from '../orgs/orgs.participant';
 import { countersignReloadMessage, understandsCountersign, type DecisionsContract } from '../common/decisions-contract';
 import type { Role } from '../common/auth';
+import { NO_PROJECT, type IdentityOutcome } from './identity/identity-sign-in.service';
 import type {
   SessionInput,
   LoginInput,
@@ -272,6 +273,19 @@ export class AuthService {
       projectId: access.projectId,
       name: user.name,
     };
+  }
+
+  /**
+   * Redbracket ID A3: PMC's own session for the account a Redbracket ID sign-in or password setup landed on, under the
+   * same access rule as every sign-in. An account this sign-in just made holds no project yet, and is told so.
+   */
+  async signInIdentity(outcome: IdentityOutcome): Promise<TokenResult> {
+    try {
+      return await this.signInUser(outcome.account);
+    } catch (err) {
+      if (outcome.fresh && err instanceof UnauthorizedException) throw new UnauthorizedException(NO_PROJECT);
+      throw err;
+    }
   }
 
   /** #827 one-screen sign-in: with no SMS channel but working mail, a phone sign-in's code is emailed to the

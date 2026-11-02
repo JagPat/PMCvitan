@@ -349,6 +349,12 @@ export class OrgsParticipant {
     return null;
   }
 
+  /** Redbracket ID A3 — whether an account is an owner or admin of any company (the issuer-outage break-glass rule). */
+  async administersCompany(db: Prisma.TransactionClient, userId: string): Promise<boolean> {
+    const row = await db.orgMembership.findFirst({ where: { userId, role: { in: ['owner', 'admin'] } }, select: { orgId: true } });
+    return row !== null;
+  }
+
   /** The account a sign-in or a redeemed code names, by id; null when it no longer exists. */
   async accountById(db: Prisma.TransactionClient, userId: string): Promise<User | null> {
     return db.user.findUnique({ where: { id: userId } });
