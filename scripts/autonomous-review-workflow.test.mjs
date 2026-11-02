@@ -4200,8 +4200,12 @@ test('#1287/#1288 audit — the retryable-hold writer: failure, draft, settle, t
   // a head no longer current: no sticky
   log.length = 0;
   const moved = { ...client, async pullRequest() { return { ...pull, head: { ...pull.head, sha: 'f'.repeat(40) } }; } };
-  assert.equal(await reviewGate.publishRetryableHold(moved, pull, head, null, { detail: 'x', attempt: 0, next: 'n' }), null);
+  assert.equal(await reviewGate.publishRetryableHold(moved, pull, head, null, { detail: 'Codex evidence changed during final verification', attempt: 0, next: 'n' }), null);
   assert.equal(log.some(([k]) => k === 'sticky'), false);
+  // Stage 1 gap-check F1 — a detail recovery would not re-judge is refused before any write
+  log.length = 0;
+  await assert.rejects(reviewGate.publishRetryableHold(client, pull, head, request, { detail: '1 current-head Codex finding', attempt: 0, next: 'n' }), /refused a non-retryable detail/u);
+  assert.deepEqual(log, [], 'nothing written for a non-retryable detail');
   // every literal detail its callers pass is one recovery re-judges
   const { isRetryableReviewFailureDescription, CODEX_RUN_HELD_DETAIL, CODEX_RECORD_UNREADABLE_DETAIL } = await import('./review-policy.mjs');
   for (const detail of [CODEX_RUN_HELD_DETAIL, CODEX_RECORD_UNREADABLE_DETAIL, 'Codex evidence changed during final verification',
@@ -4212,6 +4216,12 @@ test('#1287/#1288 audit — the retryable-hold writer: failure, draft, settle, t
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const calls = [...gate.matchAll(/(?<!function )publishRetryableHold\(/gu)].map((m) => gate.slice(m.index, m.index + 400));
   assert.equal(calls.length, 6, 'merge refusal, recovery, verification re-read, changed CI, unsettled settlement, timeout');
+  // Stage 1 gap-check F1 (mutant M5) — the literal details the call sites actually pass (inline, or the `const detail`
+  // just above the call) are each retryable, so a renamed one fails here and not only at runtime
+  const sites = [...gate.matchAll(/(?<!function )publishRetryableHold\(/gu)].map((m) => gate.slice(Math.max(0, m.index - 300), m.index + 300));
+  const literals = sites.flatMap((site) => [...site.matchAll(/detail(?: =|:) '([^']+)'/gu)].map((m) => m[1]));
+  assert.deepEqual([...new Set(literals)].sort(), ['Codex review timed out after two attempts', 'Required CI changed during current-head Codex review']);
+  for (const literal of literals) assert.equal(isRetryableReviewFailureDescription(`review: ${literal}`), true, literal);
   const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState'), gate.indexOf('async function waitForRequiredChecks'));
   assert.match(recovery, /settled\.state === 'changes_required' && settled\.retryable === true\) \{\s*await publishRetryableHold\(/u);
   const run = gate.slice(gate.indexOf('export async function run()'));

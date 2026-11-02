@@ -2551,6 +2551,12 @@ export async function publishRetryableHold(
   recoveryRequest,
   { detail, attempt, next, settleReason = 'changed review evidence' },
 ) {
+  // Stage 1 gap-check F1 — the hold's promise (recovery re-judges, no author owes anything) holds only for a detail
+  // recovery classifies as retryable: anything else is refused before a single write, never published under a
+  // `review_retry` sticky that contradicts its status
+  if (!isRetryableReviewFailureDescription(reviewDescription(detail))) {
+    throw new Error(`publishRetryableHold refused a non-retryable detail: ${detail}`);
+  }
   const live = await publishBlockingVerdict(client, pullRequest, expectedHead, { description: reviewDescription(detail) });
   if (!live) return null;
   await settleRecoveryRequest(client, expectedHead, live, recoveryRequest, settleReason);
