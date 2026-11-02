@@ -288,6 +288,32 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
     expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey } })).toBe(0);
   });
 
+  it('#904: a voice note\'s replay that states another length is refused, as its upload would be (Codex 4437021486)', async () => {
+    const clientKey = `svr-len-${run}-${randomUUID()}`;
+    const id = await voice(pmcToken, visitId, { clientKey });
+    const body = { kind: 'visit', mime: 'audio/webm', data: base64(webmTimed(4)), siteVisit: { visitId }, clientKey };
+    expect((await upload(pmcToken, { ...body, durationSec: 9 })).status).toBe(403);
+    for (const durationSec of [4, 5, undefined]) {
+      const again = await upload(pmcToken, { ...body, durationSec });
+      expect([durationSec, again.status, again.body.id]).toEqual([durationSec, 201, id]);
+    }
+  });
+
+  it('#904: a plain file\'s key is not taken for a copy of a photo this visit has lost: the copy\'s bytes are its own (Codex 4437021483)', async () => {
+    const px = Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64');
+    const original = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });
+    expect(original.status, original.text).toBe(201);
+    const plainKey = `svr-lost-${run}`;
+    const plain = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId }, clientKey: plainKey });
+    expect(plain.status, plain.text).toBe(201);
+    expect((await removeIt(original.body.id)).status).toBe(200);
+    // a copy is a new encode of its original, so its bytes are not the plain file's, even at the same type and length
+    const copyBytes = Buffer.from([0x89, 0x50, 0x4e, 0x48]).toString('base64');
+    const copy = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: copyBytes, sourceMediaId: original.body.id, siteVisit: { visitId }, clientKey: plainKey });
+    expect([copy.status, copy.body.id]).toEqual([403, undefined]);
+    expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: plainKey } })).toBe(1);
+  });
+
   it('a marked-up copy of a removed photo stays on the visit, its original link cleared', async () => {
     const px = Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64');
     const original = await upload(pmcToken, { kind: 'visit', mime: 'image/png', data: px, siteVisit: { visitId } });

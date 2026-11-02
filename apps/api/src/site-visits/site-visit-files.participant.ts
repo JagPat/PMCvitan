@@ -104,10 +104,11 @@ export class SiteVisitFilesParticipant {
     if (!removal) throw new ConflictException('This photo is part of a site visit\'s record and cannot be deleted');
   }
 
-  /** #904 — a file's link as its upload wrote it (its visit, note and rating), read without locks; null when it is on
-   *  none. A link is frozen (the insert is its only write), so an upload's replay is compared with it. */
-  async linkOf(db: Prisma.TransactionClient | PrismaService, projectId: string, mediaId: string): Promise<{ visitId: string; note: string | null; rating: string | null } | null> {
-    return db.siteVisitMedia.findFirst({ where: { projectId, mediaId }, select: { visitId: true, note: true, rating: true } });
+  /** #904 — a file's link as its upload wrote it (its visit, note, rating and the place it showed when added), read
+   *  without locks; null when it is on none. A link is frozen (the insert is its only write; its place is cleared only
+   *  with that place), so an upload's replay is compared with it. */
+  async linkOf(db: Prisma.TransactionClient | PrismaService, projectId: string, mediaId: string): Promise<{ visitId: string; note: string | null; rating: string | null; nodeId: string | null } | null> {
+    return db.siteVisitMedia.findFirst({ where: { projectId, mediaId }, select: { visitId: true, note: true, rating: true, nodeId: true } });
   }
 
   /** #904 — whether a file was taken off this visit ({@link recordRemoval}), read without locks. A file on a visit leaves

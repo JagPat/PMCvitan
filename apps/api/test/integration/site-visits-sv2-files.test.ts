@@ -215,6 +215,23 @@ describe('Site Visits SV2 — adding files to a visit (live PG)', () => {
     expect(await t.prisma.siteVisitMedia.count({ where: { mediaId: first.body.id } })).toBe(1);
   });
 
+  it('#904: a visit file replays only for the place it showed when added, which a refile does not move (Codex 4437021489)', async () => {
+    const key = `sv2f-904-place-${run}`;
+    const first = await visitFile(consultantToken, visitId, { clientKey: key, nodeId: place.id });
+    expect(first.status, first.text).toBe(201);
+    const other = await t.prisma.projectNode.create({
+      data: { projectId: f.projectA.id, name: `Tower B ${run}`, kind: 'zone', order: 1, authorId: f.memberUser.id, publishedAt: new Date() },
+    });
+    // the same file sent for another place, or for none: refused, nothing stored
+    expect((await visitFile(consultantToken, visitId, { clientKey: key, nodeId: other.id })).status).toBe(403);
+    expect((await visitFile(consultantToken, visitId, { clientKey: key })).status).toBe(403);
+    // a refile moves the file, not the place it showed when added: the queued resend still names that place
+    await t.prisma.media.update({ where: { id: first.body.id }, data: { nodeId: other.id } });
+    const again = await visitFile(consultantToken, visitId, { clientKey: key, nodeId: place.id });
+    expect([again.status, again.body.id]).toEqual([201, first.body.id]);
+    expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: key } })).toBe(1);
+  });
+
   it('names a file’s upload key to its uploader only, in the list and in an act’s answer (Codex 4324453890)', async () => {
     const key = `sv2f-own-${run}`;
     const sent = await visitFile(consultantToken, visitId, { clientKey: key });

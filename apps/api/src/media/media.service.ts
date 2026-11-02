@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { BadRequestException, ConflictException, ForbiddenException, GoneException, Injectable, NotFoundException } from '@nestjs/common';
 import { lockStandingAnchors } from '../common/standing-anchor';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -60,8 +61,34 @@ const sameCoordinate = (stored: number | null, sent: number | undefined): boolea
   stored === null || sent === undefined ? stored === (sent ?? null) : Math.abs(stored - sent) <= 1e-9;
 
 /** What a clientKey replay must read to decide whether the caller may have the stored row back. */
-const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true, mime: true, sizeBytes: true, sourceMediaId: true, takenAt: true, geoLat: true, geoLng: true } as const;
-type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null; mime: string; sizeBytes: number; sourceMediaId: string | null; takenAt: string | null; geoLat: number | null; geoLng: number | null };
+const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true, mime: true, sizeBytes: true, contentSha256: true, sourceMediaId: true, takenAt: true, geoLat: true, geoLng: true } as const;
+type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null; mime: string; sizeBytes: number; contentSha256: string | null; sourceMediaId: string | null; takenAt: string | null; geoLat: number | null; geoLng: number | null };
+
+/** #904 — the SHA-256 of a file's decoded bytes, as `"Media"."contentSha256"` holds it: 64 lowercase hex characters. */
+const sha256Hex = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
+
+/** #904 — how long a replay of a file stored before its digest was (a row with no `contentSha256`) is still answered
+ *  from its byte count. Past it the key is refused, so no replay is answered on type and length alone for longer than
+ *  this after the digest write is live (Stage 1's ruling on #1262, 1 Nov 19:30Z). */
+export const LEGACY_REPLAY_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** #904 — a stored file is these bytes: by its digest when it has one; else, within {@link LEGACY_REPLAY_MS} of its
+ *  upload, by its byte count (a count of 0 is a row written without one, the column's default, and is not compared). */
+function sameBytes(row: ReplayRow, bytes: Buffer, now: number): boolean {
+  if (row.contentSha256 !== null) return row.contentSha256 === sha256Hex(bytes);
+  if (now - row.createdAt.getTime() > LEGACY_REPLAY_MS) return false;
+  return row.sizeBytes === 0 || row.sizeBytes === bytes.length;
+}
+
+/** #904 (Codex 4437021486) — a voice note's or video's replay that states its length states the one its upload would
+ *  have been held to: read from the request's own bytes, within the same tolerance as a fresh upload. */
+function sameLength(row: ReplayRow, input: CreateMediaInput, bytes: Buffer): boolean {
+  if (input.durationSec === undefined) return true;
+  const read = row.mime.startsWith('audio/') ? readVoiceRecording(row.mime, bytes)
+    : row.mime.startsWith('video/') ? readVideoClip(row.mime, bytes) : undefined;
+  if (read === undefined) return true;
+  return read !== null && Math.abs(input.durationSec - read.seconds) <= VOICE_NOTE_SEC_TOLERANCE;
+}
 
 /** #482 site photos — one send key at a time: the upload that may store a photo under it, and the delete that retires
  *  it. Always the FIRST statement of its transaction, so no transaction holds another lock while it waits for this one,
@@ -150,11 +177,12 @@ export class MediaService {
    *  (`resolveRefInProject` returns the id it checked; an empty one is none) and is never rewritten after, so a stored
    *  upload's own replay matches. The place (`nodeId`) is not compared: a photo may be re-filed to another place.
    *  The rule (Codex rounds 1 and 2 on #1255): every field the upload stores as the request sent it is compared, and
-   *  only the place is not. That is the file itself (its type and size in bytes; a size of 0 is a row written without
-   *  one, the column's default, and is not compared), its camera time and location (the location to a billionth of a
+   *  only the place is not. That is the file itself (its type, and its bytes by their digest, or by their count for a row
+   *  stored before the digest and only within LEGACY_REPLAY_MS: see sameBytes; and a stated length, see sameLength),
+   *  its camera time and location (the location to a billionth of a
    *  degree, see sameCoordinate; a marked-up copy stores its original's instead, and its request sends none), the photo a
    *  copy was drawn on (see sameSource: the one link the database clears after), and for a visit file its link:
-   *  the visit, note and rating, written with the upload and never changed. The length is read from the file, so the
+   *  the visit, note and rating, and the place it showed when added, written with the upload and never changed. The length is read from the file, so the
    *  same bytes give the same length. */
   private async replayed(projectId: string, user: AuthUser, input: CreateMediaInput, row: ReplayRow): Promise<UploadedMedia> {
     // a file on a place hidden from the caller is answered as not there, before anything about it is compared, so the
@@ -162,10 +190,11 @@ export class MediaService {
     if (row.nodeId && (await this.prisma.$transaction((tx) => isPlaceHiddenFrom(tx, projectId, row.nodeId, user.sub)))) {
       throw new NotFoundException('Media not found');
     }
+    const bytes = Buffer.from(input.data, 'base64');
     if (row.uploadedBy !== user.sub || row.kind !== input.kind
       || row.decisionId !== (input.decisionId || null) || row.dailyLogId !== (input.dailyLogId || null)
       || row.inspectionId !== (input.inspectionId ?? null) || row.inspectionItemId !== (input.inspectionItemId ?? null)
-      || row.mime !== input.mime || (row.sizeBytes !== 0 && row.sizeBytes !== Buffer.from(input.data, 'base64').length)
+      || row.mime !== input.mime || !sameBytes(row, bytes, Date.now()) || !sameLength(row, input, bytes)
       || !(await this.sameSource(projectId, row, input))
       || (input.sourceMediaId === undefined && (row.takenAt !== (input.takenAt ?? null) || !sameCoordinate(row.geoLat, input.geoLat) || !sameCoordinate(row.geoLng, input.geoLng)))
       || !(await this.sameVisitLink(projectId, row, input))) {
@@ -204,8 +233,11 @@ export class MediaService {
       throw new GoneException(DELETED_PHOTO);
     }
     const sent = input.siteVisit;
+    // the place the file showed when it was added (Codex 4437021489): a refile never moves it, so it is compared when it
+    // is still there (it is cleared only with its place)
     return link !== null && sent !== undefined && link.visitId === sent.visitId
-      && link.note === (sent.note ?? null) && link.rating === (sent.rating ?? null);
+      && link.note === (sent.note ?? null) && link.rating === (sent.rating ?? null)
+      && (link.nodeId === null || link.nodeId === (input.nodeId ?? null));
   }
 
   /** The photo a marked-up copy is drawn on: an image of this project that is a file on the same visit. The copy takes
@@ -365,6 +397,8 @@ export class MediaService {
             mime: input.mime,
             uploadedBy,
             sizeBytes: bytes.length,
+            // #904 — the digest a replay of this key is compared with; written once, with its bytes (20280202000000)
+            contentSha256: sha256Hex(bytes),
             storageKey: key,
             data: bucketUrl ? null : bytes, // bucket mode drops the bytes; stub keeps them
             url: null, // never store a public bucket URL (private-file delivery)

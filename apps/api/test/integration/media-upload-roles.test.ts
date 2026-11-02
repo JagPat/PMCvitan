@@ -5,6 +5,8 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { StorageService } from '../../src/media/storage.service';
+import { LEGACY_REPLAY_MS } from '../../src/media/media.service';
+import { createHash } from 'node:crypto';
 
 /**
  * #482 (Board decision, 14 Oct 2026) — every project member adds a site photo: the PMC, the engineer, a
@@ -147,6 +149,34 @@ describe('who may add a site photo (live PG)', () => {
       [`904-client-${role}`, 'progress', f.clientUser.id],
       [`904-own-${role}`, 'material', role === 'pmc' ? f.memberUser.id : `${f.projectA.id}-${role}`],
     ]);
+  });
+
+  it('#904: each upload stores its digest, and a replay is the same bytes, not only the same type and length (Codex on #1262)', async () => {
+    const first = await upload(tokens.pmc, { kind: 'material', clientKey: '904-digest' });
+    expect(first.status).toBe(201);
+    const row = await t.prisma.media.findUniqueOrThrow({ where: { id: first.body.id }, select: { contentSha256: true } });
+    expect(row.contentSha256).toBe(createHash('sha256').update(Buffer.from(px, 'base64')).digest('hex'));
+    // another file of the same type and length under the key: the digest tells it apart
+    const sameLength = Buffer.from([0x89, 0x50, 0x4e, 0x48]).toString('base64');
+    expect((await upload(tokens.pmc, { kind: 'material', data: sameLength, clientKey: '904-digest' })).status).toBe(403);
+    const again = await upload(tokens.pmc, { kind: 'material', clientKey: '904-digest' });
+    expect([again.status, again.body.id]).toEqual([201, first.body.id]);
+  });
+
+  it('#904: a file stored before the digest replays by its length for seven days only (the bounded residual)', async () => {
+    const legacy = (clientKey: string, ageMs: number) => t.prisma.media.create({
+      data: { projectId: f.projectA.id, kind: 'material', mime: 'image/png', data: Buffer.from(px, 'base64'), sizeBytes: 4, uploadedBy: f.memberUser.id, clientKey, createdAt: new Date(Date.now() - ageMs) },
+      select: { id: true, contentSha256: true },
+    });
+    const hour = 60 * 60 * 1000;
+    const inside = await legacy('904-legacy-inside', LEGACY_REPLAY_MS - hour);
+    const outside = await legacy('904-legacy-outside', LEGACY_REPLAY_MS + hour);
+    expect([inside.contentSha256, outside.contentSha256]).toEqual([null, null]);
+    const kept = await upload(tokens.pmc, { kind: 'material', clientKey: '904-legacy-inside' });
+    expect([kept.status, kept.body.id]).toEqual([201, inside.id]);
+    const late = await upload(tokens.pmc, { kind: 'material', clientKey: '904-legacy-outside' });
+    expect([late.status, late.body.message]).toEqual([403, 'This upload key belongs to another photo']);
+    expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: { in: ['904-legacy-inside', '904-legacy-outside'] } } })).toBe(2);
   });
 
   it('#904: a PMC upload that loses its new key to another member\'s at the unique is refused, and its object cleaned up', async () => {

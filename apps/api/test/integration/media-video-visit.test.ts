@@ -82,9 +82,13 @@ describe('Stage 1 video — a clip on a site visit (live PG)', () => {
     const res = await clip(pmcToken, { clientKey: key });
     expect(res.status, res.text).toBe(201);
     expect(put).toHaveBeenCalledTimes(1);
-    // the same clientKey again, even with other bytes, is the same row and stores nothing more
-    const again = await clip(pmcToken, { clientKey: key, data: base64(clipWebmTimed(10)), durationSec: 10 });
+    // the same clientKey again with the same file is the same row and stores nothing more (#904)
+    const again = await clip(pmcToken, { clientKey: key });
+    expect(again.status, again.text).toBe(201);
     expect(again.body.id).toBe(res.body.id);
+    // with other bytes it is not the same file: refused, nothing stored (#904 fold: the stored digest decides)
+    const other = await clip(pmcToken, { clientKey: key, data: base64(clipWebmTimed(10)), durationSec: 10 });
+    expect(other.status, other.text).toBe(403);
     expect(put).toHaveBeenCalledTimes(1);
     const row = await t.prisma.media.findUniqueOrThrow({ where: { id: res.body.id } });
     expect(row).toMatchObject({ kind: 'visit', mime: 'video/webm', durationSec: 42, posterStorageKey: null });
