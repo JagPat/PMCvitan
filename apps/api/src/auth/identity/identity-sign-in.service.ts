@@ -65,13 +65,23 @@ export function paddingCosts(cost: number): number[] {
   return pad;
 }
 
-/** Compares `password` with `hash` (or with nothing, when there is none) at the same total bcrypt work every time. */
+/** A whole bcrypt hash: version, two-digit cost, 53 characters of salt and digest. */
+const BCRYPT_HASH = /^\$2[aby]\$(\d{2})\$[./A-Za-z0-9]{53}$/;
+
+/**
+ * Compares `password` with `hash` (or with nothing, when there is none) at the same total bcrypt work every time.
+ * Only a whole hash of cost 4 to 12 (PMC writes 12; ensure-accounts.ts and the seed write 10) is compared; anything
+ * else (malformed, cut short, cost above 12) costs one cost-12 dummy compare and never matches.
+ */
 async function compareEvenly(password: string, hash: string | null): Promise<boolean> {
-  const cost = hash ? Number.parseInt(hash.slice(4, 6), 10) : EVEN_COST;
-  const real = Number.isFinite(cost) && DUMMY_HASHES[cost] !== undefined ? cost : EVEN_COST;
-  const matches = await bcrypt.compare(password, hash ?? DUMMY_HASHES[EVEN_COST]!);
-  for (const c of paddingCosts(real)) await bcrypt.compare(password, DUMMY_HASHES[c]!);
-  return hash !== null && matches;
+  const cost = Number(hash?.match(BCRYPT_HASH)?.[1] ?? Number.NaN);
+  if (!hash || DUMMY_HASHES[cost] === undefined) {
+    await bcrypt.compare(password, DUMMY_HASHES[EVEN_COST]!);
+    return false;
+  }
+  const matches = await bcrypt.compare(password, hash);
+  for (const c of paddingCosts(cost)) await bcrypt.compare(password, DUMMY_HASHES[c]!);
+  return matches;
 }
 
 /** The account a session is issued for (the fields `AuthService.signInUser` reads). */

@@ -82,4 +82,25 @@ describe('IdentitySignInService break-glass (switch on, settings incomplete = un
       expect((lines.mock.calls[0] as unknown[])[2]).toBe(ok ? 'settings incomplete; break-glass password accepted' : 'settings incomplete');
     }
   });
+  it('a malformed, cut-short or out-of-range stored hash costs the same cost-12 work and never opens break-glass', async () => {
+    process.env.IDENTITY_OIDC = '1';
+    const whole = await bcrypt.hash('local', 4);
+    const odd = ['x', 'legacy-bcrypt-hash', '$2a$10$short', whole.slice(0, -1), whole.replace('$04$', '$03$'), whole.replace('$04$', '$13$'), whole.replace('$04$', '$99$')];
+    const lookup = vi.spyOn(OrgsParticipant.prototype, 'accountByAddress');
+    vi.spyOn(OrgsParticipant.prototype, 'administersCompany').mockResolvedValue(true);
+    const compare = vi.mocked(bcrypt.compare);
+    const service = new IdentitySignInService(prisma);
+    for (const passwordHash of odd) {
+      lookup.mockResolvedValueOnce({ id: 'u9', email: 'd@x.in', passwordHash } as never);
+      compare.mockClear();
+      await expect(service.login({ email: 'd@x.in', password: 'local' }, '127.0.0.1')).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(work(compare.mock.calls)).toBe(2 ** 12);
+      expect(compare.mock.calls.every((call) => call[1] !== passwordHash)).toBe(true);
+    }
+    // the same hash whole and in range is compared, and opens break-glass
+    lookup.mockResolvedValueOnce({ id: 'u9', email: 'd@x.in', passwordHash: whole } as never);
+    compare.mockClear();
+    await expect(service.login({ email: 'd@x.in', password: 'local' }, '127.0.0.1')).resolves.toMatchObject({ breakGlass: true });
+    expect(work(compare.mock.calls)).toBe(2 ** 12);
+  });
 });
