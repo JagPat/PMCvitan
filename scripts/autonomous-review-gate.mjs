@@ -939,9 +939,10 @@ export class GitHubClient {
     return { requiredReplacements, replacementPullRequests: pullRequests };
   }
 
+  // #1307 audit — every page, like every other list this client reads
   reactions(number) {
-    return this.request(
-      `/repos/${this.repository}/issues/${number}/reactions?per_page=100`,
+    return this.paginated(
+      `/repos/${this.repository}/issues/${number}/reactions`,
     );
   }
 
@@ -1133,9 +1134,9 @@ export class GitHubClient {
   }
 
   async updateStickyComment(number, body) {
-    const comments = await this.request(
-      `/repos/${this.repository}/issues/${number}/comments?per_page=100`,
-    );
+    // #1307 audit — every page: on a pull request with more than a hundred comments the sticky one is still found and
+    // edited, never posted a second time
+    const comments = await this.issueComments(number);
     const existing = comments.find(
       (comment) =>
         comment.user?.login === 'github-actions[bot]' &&
@@ -1700,6 +1701,9 @@ export async function disarmQueuedAutoMerge(client, number, expectedHead, observ
       if (!pull.auto_merge) continue;
       await client.disableAutoMerge(pull);
       const after = await client.pullRequest(pull.number);
+      // Codex 4445107594 — every PR whose queued merge this disarm disabled, siblings too, so each one's consumed
+      // re-arm settlement can be lifted (read by disarmBeforeRun)
+      (observed.disabled ??= []).push(pull);
       if (pull.number === number) {
         if (!isCurrentReviewUnit(after, expectedHead)) return null;
         live = after;
@@ -3274,7 +3278,8 @@ export async function markAbandonedRearmRequest(client, head, terminalStatusId, 
  * without a success leaves the head unarmed, and a green left unarmed is the watchdog's (`gateRearmStatus`). A disarm
  * not confirmed takes the retryable hold (fail closed) and rethrows.
  *
- * G3b gap-check G1 (a): a confirmed disarm also lifts this pull request's newest consumed re-arm settlement (marks it
+ * G3b gap-check G1 (a): a confirmed disarm also lifts the newest consumed re-arm settlement of each pull request whose
+ * queued merge it disabled, this one and any sibling at the commit (Codex 4445107594) (marks it
  * `REARM_ATTEMPT_FAILED`). That consumption records a re-judge that armed the head; once this run has disarmed it, it
  * no longer holds the watchdog, which asks again if this run ends without a new success. A mark that fails is logged
  * and the disarm's outcome stands: the consumption then expires after `REARM_REQUEST_ABANDONED_MS` (gap-check G1 b).
@@ -3307,11 +3312,16 @@ export async function disarmBeforeRun(client, pullRequest, expectedHead, statuse
     // merge on its live read, never because the snapshot showed one that was already gone
     const observed = {};
     const disarmed = await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead, observed);
-    const consumed = disarmed && observed.disabledThis
-      ? newestConsumedRearmSettlement(statuses, pullRequest.number) : null;
-    if (consumed) {
+    // Codex 4445107594 — a sibling at this commit whose queued merge this disarm disabled is left green and unarmed
+    // too, so its own newest consumed settlement is lifted the same way; a sibling's settlement is never lifted
+    // unless its merge was actually disabled here (Stage 1's re-check of bf39f441: only an actual disable on the live
+    // read lifts, never the snapshot)
+    const lifts = disarmed ? (observed.disabled ?? []) : [];
+    for (const pull of lifts) {
+      const consumed = newestConsumedRearmSettlement(statuses, pull.number);
+      if (!consumed) continue;
       try {
-        await client.setStatus(expectedHead, 'failure', REARM_ATTEMPT_FAILED, pullRequest.html_url, consumed.context);
+        await client.setStatus(expectedHead, 'failure', REARM_ATTEMPT_FAILED, pull.html_url ?? pullRequest.html_url, consumed.context);
       } catch (markError) {
         console.warn(`Could not lift the consumed re-arm settlement ${consumed.context}: ${markError?.message ?? markError}`);
       }

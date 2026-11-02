@@ -84,7 +84,7 @@ the same commit never holds it. The re-judge republishes the success and then
 consumes the request, so a consumed request newer than the head's newest success
 holds the ask for at most four hours; a success any later run writes is asked
 about once more, and a run that disarms the head again lifts that consumption so
-the next pass asks. A re-judge that threw, whose merge was held by a base, head
+the next pass asks, for every pull request at the commit whose merge it disabled. A re-judge that threw, whose merge was held by a base, head
 or readiness race or a draft, or that fell through to the ordinary review, marks
 its request failed and is asked again; the owner job's `failure() || cancelled()`
 step marks a request its timed-out or cancelled run left pending, and a request
