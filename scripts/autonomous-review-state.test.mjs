@@ -556,7 +556,20 @@ test('G2 gap 2 — completed security findings on this head block like a finding
     assert.equal(result.held, undefined);
     assert.equal(result.detail, 'Codex security review reports unresolved findings on this exact head');
   }
-  // a run still going outranks it (the findings may change when the run ends)
+  // Codex 4439117340 — it outranks a run still going on this head, in one record or across two, before and after the
+  // deadline: a stuck run must not keep a known security finding from being routed for correction
   const running = stateRecord({ status: 'running', unresolved: null });
-  assert.equal(classifyCodexState(input({ issueComments: [running, security] })).held, true);
+  const both = stateRecord({ status: 'running', unresolved: null,
+    security: { commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: 'completed' } });
+  for (const issueComments of [[running, security], [security, running], [both]]) {
+    for (const now of [undefined, '2026-07-27T10:15:01Z']) {
+      const result = classifyCodexState(input({ issueComments, ...(now ? { now } : {}) }));
+      assert.equal(result.state, 'changes_required');
+      assert.equal(result.security, true);
+      assert.equal(result.held, undefined);
+    }
+  }
+  // a security review still running beside a clean code review is a hold, as before
+  const securityRunning = stateRecord({ security: { commit_sha: HEAD, has_any_findings: null, has_unresolved_findings: null, status: 'in_progress' } });
+  assert.equal(classifyCodexState(input({ issueComments: [securityRunning] })).held, true);
 });

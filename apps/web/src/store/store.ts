@@ -82,7 +82,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoDeletable, sitePhotoLabels as SPL } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoDeletable, sitePhotoLabels as SPL, PHASE_NOT_FOUND_MESSAGE, activityNotFoundMessage, overrideNotFoundMessage, COMPANY_NOT_FOUND_MESSAGE, NOT_AN_ORG_MEMBER_MESSAGE } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -97,7 +97,7 @@ import { isDone } from '@/store/queueLedger';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
-import { resolveMediaUrl, replayOutboxOp, uploadSitePhotoInput, PlaceCheckFailed, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, uploadSitePhotoInput, PlaceCheckFailed, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, isGone, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { clearVisitPhotoStart, clearVisitPoster, deleteVisitPhoto, failVisitPhotosOn, forgetRemovedVisitPhoto, listVisitPhotos, moveVisitPhotos, posterLapsed, posterWaits, removedVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
@@ -1632,6 +1632,10 @@ export const useStore = create<Store>()(
     const scopeStillCurrent = (scope: ProjectScope): boolean =>
       isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope);
 
+    /** Org roster loads: only the newest load may write `orgMembers`, so an older read
+     *  (another org's, before a project switch) that finishes last never replaces it. */
+    let orgMembersSeq = 0;
+
     // ---- gate round 11/12/13: central snapshot-ordering coordinator ----
     // Ownership and refresh coalescing are keyed by FULL scope (project + generation),
     // not one store-global slot (gate round 12, finding 1). A monotonic sequence
@@ -2484,12 +2488,38 @@ export const useStore = create<Store>()(
      *  instead of the network copy that would send them retrying a request that will never succeed. */
     // `unreachable`: the network-failure line in the viewer's language, passed only by callers whose screen
     // is translated (#827); every other caller keeps the English line, so an English screen stays English
-    const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: OkMsg, refused?: (why: string) => string, unreachable?: () => string): Promise<boolean> => {
+    /** #1278 round 2 (Codex 4438923112) — an org-roster command's reply (reload + flash) belongs to the SESSION and
+     *  the ORG it was issued for, not to the project: the roster on screen is the active project's org's
+     *  (TeamScreen's `activeOrgId`), and it is not re-read on a switch between projects of the same org. So the
+     *  reply holds while the same person is signed in and the active project's org is still `orgId`; a switch to
+     *  another org, a sign-out or another person's sign-in drops it.
+     *  #1286 (Codex 4439325620) — the person is `sessionUserId` (the token's subject), never the token itself: every
+     *  project switch adopts a newly issued project-scoped token (`applyAuthResult`), so a switch WITHIN the org would
+     *  otherwise drop the reply. */
+    const rosterReplyHolds = (orgId: string): (() => boolean) => {
+      const who = get().sessionUserId;
+      return () => {
+        const s = get();
+        return s.sessionUserId === who && s.memberships.find((m) => m.projectId === s.activeProjectId)?.orgId === orgId;
+      };
+    };
+    /** Delete races (S1): a delete whose record is already gone is done, not refused. `when` names the route's own
+     *  "not found" (`isGone` with its exact text); `say` is the delete's own line. The answer carries no snapshot, so
+     *  the screen is read again for the record's absence. */
+    type Gone = { when: (err: unknown) => boolean; say: () => string };
+    const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: OkMsg, refused?: (why: string) => string, unreachable?: () => string, gone?: Gone): Promise<boolean> => {
       const lease = beginSnapshotLease(currentScope()); // capture BEFORE the request
       return call()
         .then((snap) => { consumeSnapshotResult(acceptSnapshot(snap, lease), typeof okMsg === 'function' ? okMsg(snap) : okMsg, lease.scope); return true; })
         .catch((err: unknown) => {
           if (!scopeStillCurrent(lease.scope)) return false;
+          if (gone?.when(err)) {
+            get().flash(gone.say());
+            // #1278 round 2 (Codex 4438923114) — owed, not just asked for: a command obligation (as the photo
+            // delete's gone path records) keeps the screen's Retry boundary if this read fails
+            scheduleReconcile(lease.scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+            return true;
+          }
           // a terminal refusal is never reported as a network failure, even when its body carried no
           // readable reason (a proxy's error page): retrying it would fail the same way (#699 shadow review)
           if (refused && isTerminalOutboxError(err)) get().flash(refused(refusalMessage(err) ?? 'the server refused it'));
@@ -5783,14 +5813,19 @@ export const useStore = create<Store>()(
         return;
       }
       const scope = currentScope();
+      const removed = () => {
+        if (!scopeStillCurrent(scope)) return;
+        set((s) => { s.companies = s.companies.filter((x) => x.id !== companyId); });
+        get().flash('Company removed.');
+      };
       gateway
         .removeCompany(companyId)
-        .then(() => {
-          if (!scopeStillCurrent(scope)) return;
-          set((s) => { s.companies = s.companies.filter((x) => x.id !== companyId); });
-          get().flash('Company removed.');
-        })
-        .catch(() => get().flash('Could not remove the company — check your access.'));
+        .then(removed)
+        .catch((err: unknown) => {
+          // already gone (an earlier try whose answer was lost, or someone else's removal): removed, not refused (S1)
+          if (isGone(err, COMPANY_NOT_FOUND_MESSAGE)) return removed();
+          get().flash('Could not remove the company — check your access.');
+        });
     },
     issueDecision: (input) => {
       if (!gateway) {
@@ -6047,7 +6082,8 @@ export const useStore = create<Store>()(
         get().flash(SCT.planningNeedsServer[get().lang]);
         return Promise.resolve(false);
       }
-      return runRemote(() => gateway!.deleteActivity(activityId, newIdempotencyKey()), () => SCT.removed[get().lang], (why) => SCX.deleteRefused(why, get().lang), () => DTX.unreachable[get().lang]);
+      return runRemote(() => gateway!.deleteActivity(activityId, newIdempotencyKey()), () => SCT.removed[get().lang], (why) => SCX.deleteRefused(why, get().lang), () => DTX.unreachable[get().lang],
+        { when: (err) => isGone(err, activityNotFoundMessage(activityId)), say: () => SCT.removed[get().lang] });
     },
     // Task 6: a manual readiness exception — attributable, reasoned, expiring (server records it)
     overrideGate: (activityId, input) => {
@@ -6062,7 +6098,9 @@ export const useStore = create<Store>()(
         get().flash(SCT.overridesNeedServer[get().lang]);
         return;
       }
-      runRemote(() => gateway!.revokeOverride(activityId, overrideId, newIdempotencyKey()), () => SCT.overrideRevoked[get().lang], undefined, () => DTX.unreachable[get().lang]);
+      // a refusal says the server's reason, never "Could not reach the server" (S1 follow-up)
+      runRemote(() => gateway!.revokeOverride(activityId, overrideId, newIdempotencyKey()), () => SCT.overrideRevoked[get().lang], (why) => SRV.refused(why, get().lang), () => DTX.unreachable[get().lang],
+        { when: (err) => isGone(err, overrideNotFoundMessage(overrideId)), say: () => SCT.overrideRevoked[get().lang] });
     },
     createPhase: (name) => {
       if (!gateway) {
@@ -6076,7 +6114,8 @@ export const useStore = create<Store>()(
         get().flash(SCT.planningNeedsServer[get().lang]);
         return;
       }
-      runRemote(() => gateway!.deletePhase(phaseId, newIdempotencyKey()), () => SCT.phaseRemoved[get().lang], (why) => SCX.phaseRefused(why, get().lang), () => DTX.unreachable[get().lang]);
+      runRemote(() => gateway!.deletePhase(phaseId, newIdempotencyKey()), () => SCT.phaseRemoved[get().lang], (why) => SCX.phaseRefused(why, get().lang), () => DTX.unreachable[get().lang],
+        { when: (err) => isGone(err, PHASE_NOT_FOUND_MESSAGE), say: () => SCT.phaseRemoved[get().lang] });
     },
     issueChecklist: (input) => {
       if (!gateway) {
@@ -6204,7 +6243,11 @@ export const useStore = create<Store>()(
     loadOrgMembers: (orgId) => {
       if (!gateway) return;
       const tok = get().sessionToken; // session-scoped: drop replies after sign-out / re-auth
-      gateway.listOrgMembers(orgId).then((m) => set((s) => { if (s.sessionToken === tok) s.orgMembers = m; })).catch(() => set((s) => { s.orgMembers = []; }));
+      const seq = ++orgMembersSeq; // newest load wins: an older org's read never lands last
+      const current = () => seq === orgMembersSeq && get().sessionToken === tok;
+      gateway.listOrgMembers(orgId)
+        .then((m) => { if (current()) set((s) => { s.orgMembers = m; }); })
+        .catch(() => { if (current()) set((s) => { s.orgMembers = []; }); });
     },
     loadOrgModules: (orgId) => {
       if (!gateway) return;
@@ -6250,32 +6293,46 @@ export const useStore = create<Store>()(
         get().flash('Managing the org roster needs the server.');
         return;
       }
+      const holds = rosterReplyHolds(orgId);
       gateway
         .addOrgMember(orgId, input)
-        .then(() => { get().loadOrgMembers(orgId); get().flash(input.name + ' added as org ' + input.role + '.'); })
+        .then(() => { if (!holds()) return; get().loadOrgMembers(orgId); get().flash(input.name + ' added as org ' + input.role + '.'); })
         .catch(() => get().flash('Could not add to the roster — check the details / your access.'));
     },
     updateOrgMemberRole: (orgId, userId, role) => {
       if (!gateway) return;
+      const holds = rosterReplyHolds(orgId);
       gateway
         .updateOrgMemberRole(orgId, userId, role)
-        .then(() => { get().loadOrgMembers(orgId); get().flash('Org role changed to ' + role + '.'); })
+        .then(() => { if (!holds()) return; get().loadOrgMembers(orgId); get().flash('Org role changed to ' + role + '.'); })
         .catch(() => get().flash('Could not change the role — the org must keep at least one owner.'));
     },
     correctInvitationEmail: (orgId, userId, email) => {
       if (!gateway) return;
       const normalized = email.trim().toLowerCase();
+      const holds = rosterReplyHolds(orgId);
       gateway
         .correctInvitationEmail(orgId, userId, normalized)
-        .then(() => { get().loadOrgMembers(orgId); get().flash('Invitation email corrected.'); })
+        .then(() => { if (!holds()) return; get().loadOrgMembers(orgId); get().flash('Invitation email corrected.'); })
         .catch(() => get().flash('Could not correct the email — it may already be active or in use.'));
     },
     removeOrgMember: (orgId, userId) => {
       if (!gateway) return;
+      // the roster reload + flash belong to the session and org the removal was issued in (rosterReplyHolds)
+      const holds = rosterReplyHolds(orgId);
+      const removed = () => {
+        if (!holds()) return;
+        get().loadOrgMembers(orgId);
+        get().flash('Removed from the org roster.');
+      };
       gateway
         .removeOrgMember(orgId, userId)
-        .then(() => { get().loadOrgMembers(orgId); get().flash('Removed from the org roster.'); })
-        .catch(() => get().flash('Could not remove — you can’t remove yourself or the last owner.'));
+        .then(removed)
+        .catch((err: unknown) => {
+          // already off the roster (an earlier try whose answer was lost, or another owner's removal): removed (S1)
+          if (isGone(err, NOT_AN_ORG_MEMBER_MESSAGE)) return removed();
+          get().flash('Could not remove — you can’t remove yourself or the last owner.');
+        });
     },
 
     // ---- schedule ----
