@@ -281,9 +281,10 @@ test('G3b — structural: the owner job runs the cleanup on failure or cancel; r
   assert.match(runBody, /existingStatuses,\s*rearmOutcome,\s*\)\);\s*\}, rearmOutcome\);/u);
   const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState('), gate.indexOf('async function waitForRequiredChecks'));
   assert.match(recovery, /const recoveredCompletion = await completeReviewedPullRequest\([\s\S]{0,400}if \(outcome\) outcome\.completion = recoveredCompletion;/u);
-  // the handoff asks with its clock and re-reads the live pull request before dispatching
+  // the handoff asks with its clock, and the live pull request alone decides, on this very head (Codex 4443441231,
+  // 4443441242); the behavioural rows are in autonomous-correction-lease.test.mjs
   const handoff = await readFile(new URL('./autonomous-handoff.mjs', import.meta.url), 'utf8');
-  assert.match(handoff, /gateRearmStatus\(combined, pullRequest, now\)\s*&& gateRearmStatus\(combined, await client\.pullRequest\(pullRequest\.number\), now\)/u);
+  assert.match(handoff, /const live = await client\.pullRequest\(pullRequest\.number\);\s*if \(live\?\.head\?\.sha === head\) unarmed = gateRearmStatus\(combined, live, now\);/u);
 });
 
 // Stage 1's G3a round-2 ruling (Codex 4441198763) — after a push, the pull request's own CI-triggered run disarms its

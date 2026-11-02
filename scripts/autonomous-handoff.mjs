@@ -593,9 +593,17 @@ export async function handOffCorrectionLease(
 
   // G3b — a green no auto-merge is queued behind: a re-arm lost after the gate's disarm (G3a′'s residual). The gate is
   // asked once per re-judged success to re-judge it; it re-arms only through its own authorization (`gateRearmStatus`).
-  // The open-PR snapshot is a filter only: the live pull request decides, so an arming since the snapshot is seen.
-  const unarmed = gateRearmStatus(combined, pullRequest, now)
-    && gateRearmStatus(combined, await client.pullRequest(pullRequest.number), now);
+  // The open-PR snapshot names the pull request and the head whose statuses were read, nothing more: whenever this
+  // head's newest status is a tokened success not yet asked about, the live pull request alone decides, so an arming,
+  // a draft turned ready or a queued merge disabled since the snapshot is seen (Codex 4443441242). A live head that is
+  // no longer this head is not asked about on this head's statuses; that head's own run or the next pass judges it
+  // (Codex 4443441231).
+  const candidate = gateRearmStatus(combined, { number: pullRequest.number, state: 'open', draft: false, auto_merge: null }, now);
+  let unarmed = null;
+  if (candidate) {
+    const live = await client.pullRequest(pullRequest.number);
+    if (live?.head?.sha === head) unarmed = gateRearmStatus(combined, live, now);
+  }
   if (unarmed) {
     await client.dispatchRecovery(defaultBranch, {
       pr_number: String(pullRequest.number),

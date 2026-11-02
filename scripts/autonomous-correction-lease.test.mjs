@@ -793,6 +793,18 @@ test('G3b: a ready, tokened green with no auto-merge queued is handed to the gat
     const { calls } = await run(options);
     assert.deepEqual(calls.dispatched, [], `${name}: nothing dispatched`);
   }
+  // Codex 4443441242: the snapshot never decides. A draft turned ready, or a queued merge disabled, since the snapshot
+  // is the unarmed green this watchdog recovers, so the live read alone judges it
+  for (const [name, snapshot] of [
+    ['ready since the snapshot', ready({ draft: true })],
+    ['disarmed since the snapshot', ready({ auto_merge: armedNow })],
+  ]) {
+    const { calls } = await run({ pull: snapshot, live: ready() });
+    assert.equal(calls.dispatched.length, 1, `${name}: dispatched on the live read`);
+  }
+  // Codex 4443441231: a live head that moved since the statuses were read is not asked about on the old head's success
+  const movedLive = await run({ live: { ...ready(), head: { ...ready().head, sha: 'f'.repeat(40) } } });
+  assert.deepEqual(movedLive.calls.dispatched, [], 'a moved head: nothing dispatched for the old head');
 
   // once per success the re-judge itself wrote: a consumed re-arm settlement for this PR NEWER than the newest success
   // holds the ask; a success written after it is asked about once more; a superseded request holds nothing
