@@ -3,6 +3,8 @@ import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, ApiSnapshot } from '@/data/apiGateway';
 
 const s = () => useStore.getState();
+/** #1278 round 2: an active project in `orgId`, as TeamScreen's roster requires (an org command's reply holds for that org) */
+const inOrg = (orgId: string) => useStore.setState((st) => { st.memberships = [{ projectId: 'p-org', name: 'P', short: 'P', role: 'pmc', orgId, orgName: 'Vitan' }]; st.activeProjectId = 'p-org'; });
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 function makeSnapshot(partial?: Partial<ApiSnapshot>): ApiSnapshot {
@@ -210,6 +212,7 @@ describe('multi-project + team (Orgs Slice 2)', () => {
       listOrgMembers: vi.fn().mockResolvedValue([{ userId: 'u2', name: 'JP', email: 'jp@vitan.in', phone: '8320303515', orgRole: 'owner' }]),
     };
     s()._setGateway(gw as unknown as ApiGateway);
+    inOrg('o'); // the roster on screen is the active project's org's (TeamScreen's activeOrgId)
 
     s().addOrgMember('o', { name: 'JP', role: 'owner', email: 'jp@vitan.in' });
     await flush();
@@ -225,6 +228,7 @@ describe('multi-project + team (Orgs Slice 2)', () => {
       listOrgMembers: vi.fn().mockResolvedValue([{ userId: 'u2', name: 'JP', email: 'jp@vitan.in', phone: null, orgRole: 'admin' }]),
     };
     s()._setGateway(gw as unknown as ApiGateway);
+    inOrg('o'); // the roster on screen is the active project's org's (TeamScreen's activeOrgId)
 
     s().updateOrgMemberRole('o', 'u2', 'admin');
     await flush();
@@ -255,6 +259,7 @@ describe('multi-project + team (Orgs Slice 2)', () => {
       listOrgMembers: vi.fn().mockResolvedValue([{ userId: 'u2', name: 'JP', email: 'correct@vitan.in', phone: null, orgRole: 'member', credentialState: 'not_set' }]),
     };
     s()._setGateway(gw as unknown as ApiGateway);
+    inOrg('o'); // the roster on screen is the active project's org's (TeamScreen's activeOrgId)
 
     s().correctInvitationEmail('o', 'u2', ' Correct@Vitan.in ');
     await flush();

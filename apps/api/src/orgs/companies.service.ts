@@ -1,5 +1,6 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { COMPANY_NOT_FOUND_MESSAGE } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { OrgsParticipant } from './orgs.participant';
 import type { AuthUser } from '../common/auth';
@@ -95,7 +96,7 @@ export class CompaniesService {
   async update(projectId: string, requester: AuthUser, companyId: string, input: UpdateCompanyInput): Promise<CompanyDto> {
     await this.assertCanManage(projectId, requester);
     const existing = await this.prisma.projectCompany.findUnique({ where: { id: companyId } });
-    if (!existing || existing.projectId !== projectId) throw new NotFoundException('Company not found on this project');
+    if (!existing || existing.projectId !== projectId) throw new NotFoundException(COMPANY_NOT_FOUND_MESSAGE);
     // Only overwrite provided keys; empty-string contact fields clear to null.
     const data: Record<string, unknown> = {};
     if (input.name !== undefined) data.name = input.name;
@@ -119,7 +120,7 @@ export class CompaniesService {
         SELECT "partyId", "name" FROM "ProjectCompany"
          WHERE "id" = ${companyId} AND "projectId" = ${projectId}
          FOR UPDATE`;
-      if (current.length === 0) throw new NotFoundException('Company not found on this project');
+      if (current.length === 0) throw new NotFoundException(COMPANY_NOT_FOUND_MESSAGE);
       const pinned = current[0]!;
 
       const row = await tx.projectCompany.update({ where: { id: companyId }, data });
@@ -141,7 +142,7 @@ export class CompaniesService {
   async remove(projectId: string, requester: AuthUser, companyId: string): Promise<{ ok: boolean }> {
     await this.assertCanManage(projectId, requester);
     const existing = await this.prisma.projectCompany.findUnique({ where: { id: companyId } });
-    if (!existing || existing.projectId !== projectId) throw new NotFoundException('Company not found on this project');
+    if (!existing || existing.projectId !== projectId) throw new NotFoundException(COMPANY_NOT_FOUND_MESSAGE);
     // The source row goes with the company by ON DELETE CASCADE, but a cascade cannot decide
     // whether the ASSOCIATION still has a reason to exist. Without the release, removing the only
     // company would leave `ProjectParty` alive with nothing supporting it and the deferred
@@ -150,7 +151,7 @@ export class CompaniesService {
     await this.prisma.$transaction(async (tx) => {
       await tx.projectCompany.delete({ where: { id: companyId } }).catch((e: unknown) => {
         // another removal of this company committed after the read above: it is gone, answered as the read answers
-        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') throw new NotFoundException('Company not found on this project');
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') throw new NotFoundException(COMPANY_NOT_FOUND_MESSAGE);
         throw e;
       });
       await this.party.releasePartyAssociationIfUnsourced(tx, { projectId, partyId: existing.partyId });
