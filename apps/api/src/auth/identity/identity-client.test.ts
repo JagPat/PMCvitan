@@ -195,6 +195,13 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(await client.login('r@example.in', 'Right-pass-123')).toEqual({ ok: false, failure: 'down' });
   });
 
+  it('a signing key the issuer withdraws is not trusted again, even by a client that used it before', async () => {
+    fake.addPerson('k@example.in', 'Right-pass-123');
+    expect((await client.login('k@example.in', 'Right-pass-123')).ok).toBe(true);
+    fake.keysWithdrawn = true;
+    expect(await client.login('k@example.in', 'Right-pass-123')).toEqual({ ok: false, failure: 'down' });
+  });
+
   it('PMC’s client unknown at the issuer (no auth request) is down, not a wrong password', async () => {
     fake.addPerson('f@example.in', 'Right-pass-123');
     const wrongClient = new IdentityClient({ issuer: fake.issuer, endpoint: fake.url, clientId: 'hub-client', redirectUri, serviceToken: fake.serviceToken }, { timeoutMs: 500 });
@@ -202,7 +209,7 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(fake.requests.some((q) => q.path === '/v2/sessions')).toBe(false);
   });
 
-  for (const spoil of ['issuer', 'alg-none', 'alg-hs256', 'state', 'nonce', 'audience', 'expired', 'kid', 'signature', 'no-iat', 'azp'] as const) {
+  for (const spoil of ['issuer', 'alg-none', 'alg-hs256', 'state', 'nonce', 'audience', 'expired', 'kid', 'signature', 'no-iat', 'azp', 'nbf-future'] as const) {
     it(`an id token or callback spoiled by ${spoil} opens no session`, async () => {
       fake.addPerson('g@example.in', 'Right-pass-123');
       fake.spoil = spoil;
@@ -243,6 +250,9 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(await client.create({ email: 'h@example.in', password: 'Takeover-1', verified: true })).toEqual({ ok: false, taken: true });
     expect(fake.people.get(id)!.password).toBe('New-pass-123');
     expect(await client.setPassword(id, 'Reset-pass-456')).toBeNull();
+    // the administrative set (Zitadel v4.16 `case nil:`): no current password and no issuer code are sent
+    const pwBody = JSON.parse(fake.requests.filter((q) => q.path.endsWith('/password')).at(-1)!.body);
+    expect(pwBody).toEqual({ newPassword: { password: 'Reset-pass-456', changeRequired: false } });
     expect(fake.people.get(id)!.password).toBe('Reset-pass-456');
     const u = fake.addPerson('i@example.in', 'x', false);
     expect(await client.markVerified(u.userId, 'i@example.in')).toBeNull();

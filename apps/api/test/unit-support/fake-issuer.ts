@@ -14,7 +14,7 @@ import type { AddressInfo } from 'node:net';
 
 export type FakePerson = { userId: string; email: string; password: string; verified: boolean; givenName: string; familyName: string; locked?: boolean };
 export type Recorded = { method: string; path: string; headers: IncomingMessage['headers']; body: string };
-export type Spoil = 'none' | 'issuer' | 'alg-none' | 'alg-hs256' | 'state' | 'nonce' | 'audience' | 'expired' | 'kid' | 'signature' | 'no-iat' | 'azp';
+export type Spoil = 'none' | 'issuer' | 'alg-none' | 'alg-hs256' | 'state' | 'nonce' | 'audience' | 'expired' | 'kid' | 'signature' | 'no-iat' | 'azp' | 'nbf-future';
 
 export type FakeIssuer = {
   /** where it listens (loopback http); PMC reaches it through IDENTITY_ISSUER_ENDPOINT */
@@ -31,6 +31,8 @@ export type FakeIssuer = {
   hold: boolean;
   /** a path prefix whose answer is a 200 over 1 MB, e.g. '/v2/users' */
   oversize: string | null;
+  /** the key set answers with no keys (the issuer withdrew its signing key) */
+  keysWithdrawn: boolean;
   /** create answers 201 with no userId (a malformed answer) */
   createAnswersNoId: boolean;
   /** a status forced on a path prefix, e.g. { '/v2/sessions': 503 } */
@@ -65,6 +67,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     hold: false,
     oversize: null as string | null,
     createAnswersNoId: false,
+    keysWithdrawn: false,
     force: {} as Record<string, number>,
     spoil: 'none' as Spoil,
     noneShape: 'details-only' as FakeIssuer['noneShape'],
@@ -99,6 +102,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     if (fake.spoil === 'kid') header.kid = 'unknown';
     if (fake.spoil === 'no-iat') delete payload.iat;
     if (fake.spoil === 'azp') payload.azp = 'someone-else';
+    if (fake.spoil === 'nbf-future') payload.nbf = now + 3600;
     if (fake.spoil === 'alg-none') header.alg = 'none';
     if (fake.spoil === 'alg-hs256') header.alg = 'HS256';
     const signingInput = `${b64u(JSON.stringify(header))}.${b64u(JSON.stringify(payload))}`;
@@ -124,6 +128,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       return send(res, 302, undefined, { Location: `/ui/v2/login/login?authRequest=${id}` });
     }
     if (req.method === 'GET' && path === '/oauth/v2/keys') {
+      if (fake.keysWithdrawn) return send(res, 200, { keys: [] });
       return send(res, 200, { keys: [{ ...(publicKey.export({ format: 'jwk' }) as object), kid, use: 'sig', alg: 'RS256' }] });
     }
     if (req.method === 'POST' && path === '/oauth/v2/token') {

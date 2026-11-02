@@ -45,7 +45,6 @@ type Reply = { status: number; body: string; location: string | null };
 export type IdentityClientOptions = { timeoutMs?: number; now?: () => number };
 
 export class IdentityClient {
-  private readonly keys = new Map<string, KeyObject>();
   private readonly timeoutMs: number;
   private readonly now: () => number;
 
@@ -135,15 +134,14 @@ export class IdentityClient {
     }
   }
 
-  /** The issuer's signing key for `kid`, fetched again when it is not known yet. */
+  /**
+   * The issuer's signing key for `kid`, read from its key set on every sign-in. Nothing is cached, so a key the issuer
+   * has withdrawn (or replaced under the same kid) is never trusted again, not even by a long-running API.
+   */
   private async key(kid: string): Promise<KeyObject | null> {
-    const known = this.keys.get(kid);
-    if (known) return known;
     const set = await this.send('GET', '/oauth/v2/keys');
     if (set.status !== 200) return null;
-    const key = keyFromJwks(set.body, kid);
-    if (key) this.keys.set(kid, key);
-    return key;
+    return keyFromJwks(set.body, kid);
   }
 
   // ------------------------------------------------------------------------------------------------- people
@@ -191,7 +189,12 @@ export class IdentityClient {
     }
   }
 
-  /** Sets a new password for a person whose mailbox PMC has just proved. Null when it worked. Never throws. */
+  /**
+   * Sets a new password for a person whose mailbox PMC has just proved. Null when it worked. Never throws.
+   * Zitadel v4.16 SetPassword with no `currentPassword` and no `verificationCode` is the administrative set, allowed by
+   * the caller's user.write permission (PMC's service account): internal/api/grpc/user/v2/password.go, `case nil:`
+   * calls `command.SetPassword`. PMC's own emailed code is the proof of the mailbox, so neither is sent.
+   */
   async setPassword(userId: string, password: string): Promise<IdentityFailure | null> {
     try {
       const r = await this.send('POST', `/v2/users/${encodeURIComponent(userId)}/password`, {

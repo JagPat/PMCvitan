@@ -4,7 +4,7 @@
  * Only RS256 (the header's `alg` exactly, no `crit`), signed by a key the issuer publishes (`/oauth/v2/keys`, looked
  * up by `kid`); `iss` exactly the configured issuer; `aud` holding PMC's client id (and, when it names more than one
  * audience, `azp` equal to it; an `azp` that is present is always PMC's client); the `nonce` this sign-in sent; a
- * numeric `iat`; not expired (60 s leeway) and not issued in the future; an RSA key of at least 2048 bits.
+ * numeric `iat`; not expired (60 s leeway), not issued in the future and not before its `nbf`; an RSA key of at least 2048 bits.
  * `sub` must be 1 to 255 printable ASCII characters. Anything else is no token. Plain `node:crypto`, no extra library.
  *
  * What comes back is only who the person is. No claim is ever read as a PMC role (roles stay in PMC's Membership).
@@ -79,6 +79,9 @@ export async function checkIdToken(token: string, check: IdTokenCheck): Promise<
     if (typeof exp !== 'number' || !Number.isFinite(exp) || exp + SKEW_SECONDS <= check.now) return null;
     // iat is a required id-token claim (OIDC Core 2): a token without one is refused, not let through unchecked
     if (typeof iat !== 'number' || !Number.isFinite(iat) || iat - SKEW_SECONDS > check.now) return null;
+    // a token not yet valid (RFC 7519 4.1.5) is refused with the same leeway; a present nbf must be a number
+    const nbf = payload.nbf;
+    if (nbf !== undefined && (typeof nbf !== 'number' || !Number.isFinite(nbf) || nbf - SKEW_SECONDS > check.now)) return null;
     const sub = str(payload.sub);
     if (!SUB.test(sub)) return null;
     return {
