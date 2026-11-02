@@ -258,4 +258,38 @@ describe('the PMC or engineer names who fixes an inspection\'s failed work (live
     expect(res.status).toBe(403);
     expect(await stored()).toBeNull();
   });
+
+  // LAST: it leaves project A archived (the fixture's cleanup removes it)
+  it('a project archived while naming: the naming waits on the project row and is refused (403), naming no one', async () => {
+    const audits = () => t.prisma.auditLog.count({ where: { projectId: f.projectA.id, action: 'inspection.responsible' } });
+    const before = await audits();
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let changed!: (pid: number) => void;
+    const isChanged = new Promise<number>((r) => { changed = r; });
+    // an org admin's archive, not yet committed: it takes no readiness key, and the guard reads the project unarchived
+    const archive = t.prisma.$transaction(async (tx) => {
+      const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      await tx.project.update({ where: { id: f.projectA.id }, data: { archivedAt: new Date() } });
+      changed(pid);
+      await held;
+    }, { timeout: 20_000 });
+    const archiver = await isChanged;
+    const naming = put('pmc', ids.contractor!).then((r) => r);
+    const waiting = async (): Promise<boolean> =>
+      (await t.prisma.$queryRaw<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE datname = current_database() AND ${archiver}::int = ANY(pg_blocking_pids(pid))`)[0]!.n > 0;
+    const deadline = Date.now() + 10_000;
+    while (!(await waiting())) {
+      if (Date.now() > deadline) { release(); await archive; await naming; throw new Error('the naming never waited for the archive'); }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    release();
+    await archive;
+    const res = await naming;
+    expect(res.status).toBe(403);
+    expect(await stored()).toBeNull();
+    expect(await audits()).toBe(before);
+  });
 });
