@@ -3285,6 +3285,18 @@ export async function run() {
         pullRequest = await publishBlockingVerdict(client, pullRequest, expectedHead, { description: settled.detail });
         if (!pullRequest) return;
         await settleRecoveryRequest(client, expectedHead, pullRequest, recoveryRequest, 'changed review evidence');
+        // G2 (#1280 round 2, Codex 4438874587) — replace the `review_clean` sticky published above, as the refusal
+        // path does: the head is not clean while its settlement is unsettled. No correction instruction.
+        await client.updateStickyComment(
+          pullRequest.number,
+          statusBody({
+            state: 'review_retry',
+            head: expectedHead,
+            detail: settled.detail,
+            attempt,
+            next: 'The final settlement was unsettled; the gate re-judges this exact head once Codex\'s review state settles.',
+          }),
+        );
         throw new Error(settled.detail);
       }
       if (settled.state === 'changes_required') {

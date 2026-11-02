@@ -654,7 +654,13 @@ test('Codex 4226440219 — an unsettled final settlement is published on the rec
   const branch = success.slice(retry, success.indexOf('if (settled.state === \'changes_required\') {'));
   assert.match(branch, /publishBlockingVerdict\(/u);
   assert.match(branch, /'changed review evidence'/u);
-  assert.doesNotMatch(branch, /publishCurrentHeadFinding|updateStickyComment|correctionNotice/u, 'no correction instruction for the author');
+  assert.doesNotMatch(branch, /publishCurrentHeadFinding|correctionNotice|changes_required/u, 'no correction instruction for the author');
+  // G2 (#1280 round 2, Codex 4438874587): the `review_clean` sticky is replaced by `review_retry`, after the verdict and
+  // the settle and before the throw, so a held settlement never reads clean
+  const sticky = branch.indexOf('updateStickyComment(');
+  assert.ok(sticky > branch.indexOf("'changed review evidence'") && sticky < branch.indexOf('throw new Error(settled.detail)'), 'sticky replaced before the throw');
+  assert.match(branch.slice(sticky), /state: 'review_retry'/u);
+  assert.equal([...branch.matchAll(/updateStickyComment\(/gu)].length, 1);
   // and the settlement marks exactly that case retryable
   let reads = 0;
   const client = { ...fakeGitHub().client, reviews: async () => { reads += 1; return [{ id: reads }]; } };
