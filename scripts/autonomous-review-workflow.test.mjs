@@ -48,6 +48,7 @@ function automatedMergeEvidence(pullRequest, commit = ELIGIBLE_HEAD_COMMIT) {
     async statuses() { return [{ context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head [wi:none]' }]; },
     async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
     async commit() { return commit; },
+    async issueComments() { return []; },
   };
 }
 
@@ -3669,6 +3670,7 @@ function m3cClient({ message, statuses = [], issue = () => m3cIssue(750), draft 
     async checkRuns() { log.push('read:checks'); return REQUIRED_CHECKS.map((name) => checkRun(name)); },
     async commit() { log.push('read:commit'); if (message === undefined) throw new Error('GitHub 502'); return { commit: { message } }; },
     async workItemIssue(number) { log.push(`read:issue:${number}`); return issue(number); },
+    async issueComments() { log.push('read:issueComments'); return []; },
     async setStatus(sha, state, description, url, context) {
       log.push(`write:${state}`);
       const status = { sha, state, description, context: context ?? 'codex-current-head' };
