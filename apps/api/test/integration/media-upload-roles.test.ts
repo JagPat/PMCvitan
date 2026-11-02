@@ -174,6 +174,13 @@ describe('who may add a site photo (live PG)', () => {
     expect([inside.contentSha256, outside.contentSha256]).toEqual([null, null]);
     const kept = await upload(tokens.pmc, { kind: 'material', clientKey: '904-legacy-inside' });
     expect([kept.status, kept.body.id]).toEqual([201, inside.id]);
+    // inside the window the byte count still decides: another length is refused (Stage 1's re-check of 0537f309)
+    const longer = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d]).toString('base64');
+    expect((await upload(tokens.pmc, { kind: 'material', data: longer, clientKey: '904-legacy-inside' })).status).toBe(403);
+    // and, documenting the residual, other bytes of the same length are taken as this row (no digest to tell them apart)
+    const sameCount = Buffer.from([0x89, 0x50, 0x4e, 0x48]).toString('base64');
+    const residual = await upload(tokens.pmc, { kind: 'material', data: sameCount, clientKey: '904-legacy-inside' });
+    expect([residual.status, residual.body.id]).toEqual([201, inside.id]);
     const late = await upload(tokens.pmc, { kind: 'material', clientKey: '904-legacy-outside' });
     expect([late.status, late.body.message]).toEqual([403, 'This upload key belongs to another photo']);
     expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: { in: ['904-legacy-inside', '904-legacy-outside'] } } })).toBe(2);
