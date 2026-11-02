@@ -754,6 +754,8 @@ export const dailyLogToast = {
   photoOffline: { en: 'Photo saved offline — will upload when signal returns.', hi: 'फ़ोटो ऑफ़लाइन सहेजी — नेटवर्क आते ही अपलोड होगी।', gu: 'ફોટો ઓફલાઇન સાચવ્યો — નેટવર્ક આવતાં અપલોડ થશે.' },
   photoUploadedStamped: { en: 'Progress photo uploaded — stamped from the photo, visible to PMC.', hi: 'काम की फ़ोटो अपलोड हुई — फ़ोटो के समय-जगह के साथ, PMC देख सकते हैं।', gu: 'કામનો ફોટો અપલોડ થયો — ફોટાના સમય-જગ્યા સાથે, PMC જોઈ શકે છે.' },
   photoUploaded: { en: 'Progress photo uploaded — visible to PMC.', hi: 'काम की फ़ोटो अपलोड हुई — PMC देख सकते हैं।', gu: 'કામનો ફોટો અપલોડ થયો — PMC જોઈ શકે છે.' },
+  // #919: sent without its place, because the place was removed after it was chosen (hi/gu approved by Jagrut, 1 Nov)
+  photoPlaceDropped: { en: 'Photo added. Its place was removed, so it was saved without a place.', hi: 'फ़ोटो जोड़ दी गई। इसकी जगह हटा दी गई थी, इसलिए इसे बिना जगह के सहेजा गया।', gu: 'ફોટો ઉમેરાયો. તેની જગ્યા દૂર કરવામાં આવી હતી, તેથી તેને જગ્યા વગર સાચવ્યો.' },
   photoUploadFailed: { en: 'Could not upload the photo — please try again.', hi: 'फ़ोटो अपलोड नहीं हुई — फिर कोशिश करें।', gu: 'ફોટો અપલોડ ન થયો — ફરી પ્રયાસ કરો.' },
   photoAddedStamped: { en: 'Progress photo added — stamped from the photo.', hi: 'काम की फ़ोटो जुड़ी — फ़ोटो के समय-जगह के साथ।', gu: 'કામનો ફોટો ઉમેરાયો — ફોટાના સમય-જગ્યા સાથે.' },
   photoAdded: { en: 'Progress photo added.', hi: 'काम की फ़ोटो जुड़ी।', gu: 'કામનો ફોટો ઉમેરાયો.' },
@@ -896,6 +898,9 @@ export const syncResultText = {
   pending: (n: number, lang: Lang): string =>
     lang === 'hi' ? `${n} अभी बाकी — नेटवर्क आते ही फिर कोशिश होगी` : lang === 'gu' ? `${n} હજી બાકી — નેટવર્ક આવતાં ફરી પ્રયાસ થશે` : `${n} still pending — will retry when you reconnect`,
   join: (parts: string[], lang: Lang): string => parts.join('; ') + (lang === 'hi' ? '।' : '.'),
+  // #919: queued site photos saved without their place, because the place was removed (hi/gu approved by Jagrut, 1 Nov)
+  placeDropped: (n: number, lang: Lang): string =>
+    lang === 'hi' ? `${n} फ़ोटो बिना जगह के ${n > 1 ? 'सहेजी गईं' : 'सहेजी गई'}, क्योंकि जगह हटा दी गई थी।` : lang === 'gu' ? `${n} ફોટો જગ્યા વગર ${n > 1 ? 'સાચવ્યા' : 'સાચવ્યો'}, કારણ કે જગ્યા દૂર કરવામાં આવી હતી.` : `${n} photo${n > 1 ? 's' : ''} saved without a place, because the place was removed.`,
 };
 
 /** What adding a place (zone, room or object) from the place picker says back. */
