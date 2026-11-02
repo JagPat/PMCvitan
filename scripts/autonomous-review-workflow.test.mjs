@@ -650,6 +650,9 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     async pullRequest() {
       return pullRequest;
     },
+    async openPullRequestsAt() {
+      return [];
+    },
     async setDraft(current, draft) {
       draftTransitions.push(draft);
       current.draft = draft;
@@ -2489,12 +2492,14 @@ test('one polled Codex invocation owns terminal success and merge completion', a
   const finalEvidence = clearBranch.lastIndexOf(
     'reclassifyCurrentCodexEvidence',
   );
-  const publishedSuccess = clearBranch.lastIndexOf('publishSettledSuccess(');
-  const mergeCompletion = clearBranch.lastIndexOf(
-    'completeReviewedPullRequest',
-  );
+  // G3a — the success and the merge are one step, `completeCleanReview`: the disarmed success, then the completion
+  const cleanEnding = clearBranch.lastIndexOf('completeCleanReview(');
+  const helper = gate.slice(gate.indexOf('export async function completeCleanReview('), gate.indexOf('const AUTOMERGE_RETRY_NEXT = {'));
+  const publishedSuccess = helper.indexOf('publishDisarmedSuccess(');
+  const mergeCompletion = helper.indexOf('completeReviewedPullRequest(');
   assert.ok(finalEvidence >= 0);
-  assert.ok(publishedSuccess > finalEvidence);
+  assert.ok(cleanEnding > finalEvidence);
+  assert.ok(publishedSuccess >= 0);
   assert.ok(mergeCompletion > publishedSuccess);
   assert.doesNotMatch(clearBranch, /TERMINAL_SETTLE_MS/);
   assert.doesNotMatch(clearBranch, /admitAutoMerge/);
@@ -2517,11 +2522,10 @@ test('the clean verdict is published while the PR is still open', async () => {
   // status and BEFORE merge completion — it is the success path's only
   // guaranteed-delivery wake event for watching sessions.
   const publishedClean = clearBranch.indexOf("state: 'review_clean'");
-  const publishedSuccess = clearBranch.lastIndexOf('publishSettledSuccess(');
-  const mergeCompletion = clearBranch.lastIndexOf('completeReviewedPullRequest');
+  // G3a — the success and the merge completion are the one `completeCleanReview` step
+  const publishedSuccess = clearBranch.lastIndexOf('completeCleanReview(');
   assert.ok(publishedClean >= 0);
   assert.ok(publishedSuccess > publishedClean);
-  assert.ok(mergeCompletion > publishedClean);
   // and the pre-merge update must precede the post-merge 'clear' update
   const clearUpdate = clearBranch.lastIndexOf("state: 'clear'");
   assert.ok(clearUpdate > publishedClean);
@@ -4049,6 +4053,81 @@ test('#766 Codex 4237403349 / 4237403345 — an approval-time read failure keeps
   assert.match(status, /^open_pr: (none|\d+)$/mu);
 });
 
+// G3a — end to end: the recovery of a tokened success over a queued auto-merge disarms it before the republished
+// success, and arms again only after `authorizeExactHeadMerge` allows; when Codex's record shows a security finding by
+// then, it refuses and arms nothing.
+test('G3a — a recovered success disarms first and arms only after the merge authorization', async () => {
+  const head = 'e'.repeat(40);
+  const scenario = async ({ securityAfterSuccess }) => {
+    const statuses = [{ id: 6100, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head [wi:none]' }];
+    const pull = {
+      number: 260, state: 'open', draft: false, auto_merge: { enabled_at: '2026-11-02T00:00:00Z', merge_method: 'squash' },
+      body: '<!-- correction-owner: claude -->',
+      head: { sha: head, ref: 'claude/unit', repo: { full_name: 'JagPat/PMCvitan' } },
+      base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
+      html_url: 'https://github.com/JagPat/PMCvitan/pull/260',
+    };
+    const log = [];
+    let nextId = 6200;
+    let successWritten = false;
+    const securityRecord = {
+      user: { login: 'chatgpt-codex-connector[bot]' }, created_at: '2026-11-02T00:00:00Z',
+      body: `<!-- codex-review-state:v1 ${JSON.stringify({
+        code_review: { commit_sha: head, has_any_findings: false, has_unresolved_findings: false, status: 'completed' },
+        security_review: { commit_sha: head, has_any_findings: true, has_unresolved_findings: true, status: 'completed' },
+      })} -->`,
+    };
+    const client = {
+      ...automatedMergeEvidence(pull),
+      async pullRequest() { return { ...pull }; },
+      async openPullRequestsAt() { return []; },
+      async statuses() { return statuses; },
+      async setStatus(sha, state, description, url, context = 'codex-current-head') {
+        const status = { id: nextId += 1, context, state, description };
+        statuses.unshift(status);
+        log.push(['status', state, description]);
+        if (state === 'success' && context === 'codex-current-head') successWritten = true;
+        return status;
+      },
+      async issueComments() {
+        log.push(['record']);
+        return securityAfterSuccess && successWritten ? [securityRecord] : [];
+      },
+      async reviewComments() { return []; },
+      async reviews() { return []; },
+      async markReplacementRequired() {},
+      async setDraft(current, draft) { log.push(['draft', draft]); pull.draft = draft; return { ...current, draft }; },
+      async updateStickyComment(number, body) { log.push(['sticky', body.match(/`([a-z_]+)`/u)?.[1]]); },
+      async createIssueComment() { log.push(['marker']); return { id: 1 }; },
+      async mergeExactHead() { log.push(['merge']); return { merged: false, message: 'Pull request is not mergeable yet' }; },
+      // GitHubClient's own guard (Codex 4441198783): a pull request that still shows a queued merge is not armed again
+      async enableAutoMerge(current, expected) { if (current.auto_merge) return; log.push(['arm', expected]); },
+      async disableAutoMerge() { log.push(['disable']); pull.auto_merge = null; },
+      async dispatchHandoff() {},
+    };
+    const terminal = reviewGate.recoverableTerminalReviewStatus(statuses);
+    assert.equal(terminal?.id, 6100);
+    await reviewGate.ensureTerminalReviewState(client, pull, head, terminal, [...statuses]);
+    return log;
+  };
+
+  const clean = await scenario({ securityAfterSuccess: false });
+  const arm = clean.findIndex(([k]) => k === 'arm');
+  const success = clean.findIndex(([k, state]) => k === 'status' && state === 'success');
+  const disable = clean.findIndex(([k]) => k === 'disable');
+  assert.ok(disable >= 0 && disable < success, 'the queued auto-merge is disarmed before the republished success');
+  assert.ok(success >= 0 && arm > success, 'armed after the republished success');
+  assert.ok(clean.slice(success, arm).some(([k]) => k === 'record'), 'and after the merge authorization read Codex\'s record');
+  assert.deepEqual(clean[arm], ['arm', head], 'for this exact head');
+
+  const refused = await scenario({ securityAfterSuccess: true });
+  assert.ok(refused.some(([k]) => k === 'disable'));
+  assert.equal(refused.some(([k]) => k === 'arm'), false, 'a security finding by the authorization arms nothing');
+  assert.equal(refused.some(([k]) => k === 'merge'), false);
+  const last = refused.filter(([k]) => k === 'status').at(-1);
+  assert.equal(last[1], 'failure', 'the green it would have acted on is replaced');
+});
+
 // #1288 (Codex 4439305279) — recovery that finds completed security findings publishes them through the one finding
 // publisher: the marker, the failure, and the `changes_required` sticky with its correction notice, never a bare
 // failure that leaves the sticky on its earlier clean state.
@@ -4215,7 +4294,7 @@ test('#1287/#1288 audit — the retryable-hold writer: failure, draft, settle, t
   // and its call sites are exactly the audited ones, each passing one of those details or a retryable settlement
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const calls = [...gate.matchAll(/(?<!function )publishRetryableHold\(/gu)].map((m) => gate.slice(m.index, m.index + 400));
-  assert.equal(calls.length, 6, 'merge refusal, recovery, verification re-read, changed CI, unsettled settlement, timeout');
+  assert.equal(calls.length, 9, 'merge refusal, recovery, verification re-read, changed CI, unsettled settlement, timeout, and G3a\'s post-success settlement, unarmed-green tail (G3a′: every throw from the authorization to the arm) and disarm');
   // Stage 1 gap-check F1 (mutant M5) — the literal details the call sites actually pass (inline, or the `const detail`
   // just above the call) are each retryable, so a renamed one fails here and not only at runtime
   const sites = [...gate.matchAll(/(?<!function )publishRetryableHold\(/gu)].map((m) => gate.slice(Math.max(0, m.index - 300), m.index + 300));
