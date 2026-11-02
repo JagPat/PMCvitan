@@ -25,6 +25,7 @@ import {
   CODEX_RECORD_UNREADABLE_DETAIL,
   CODEX_AUTOMERGE_DISARM_FAILED,
   CODEX_AUTOMERGE_REARM_FAILED,
+  CODEX_SHARED_COMMIT_DETAIL,
   CODEX_SECURITY_FINDINGS_DETAIL,
   REARM_ATTEMPT_FAILED,
   REARM_CONSUMED_OUTCOME,
@@ -1437,7 +1438,7 @@ async function refreshCurrentHead(client, number, expectedHead) {
 //     but never-merge-eligible owner.
 // This is a PURE predicate over the shared vocabulary and has NO consumer in this unit: it only classifies a
 // status. The auto-merge cancellation/reconciliation that consumes it — including the cross-head serialization
-// a non-head-scoped `disablePullRequestAutoMerge` requires — is deferred to the 2A3 activation unit, where the
+// a non-head-scoped `disablePullRequestAutoMerge` requires — is deferred to the 2A3b activation unit, where the
 // matching re-arm/requeue behaviour can be designed together. Defining the predicate here grants no behaviour.
 export function ownershipStatusWithholdsAutoMerge(status) {
   if (status?.context !== STATUS_CONTEXT || status?.state !== 'failure') return false;
@@ -1726,18 +1727,81 @@ export async function disarmQueuedAutoMerge(client, number, expectedHead, observ
  * token's reads, immediately before the status write (its `beforeWrite`). Every open pull request at this commit is
  * listed again and none may have a merge queued. One armed after the disarm's own list (a person queuing it, or its
  * branch moving onto this commit with a merge queued) would merge on this success before its own authorization read its
- * record, so the success is withheld and the retryable hold is written instead. No GitHub API makes this check and the
- * status write one step; the gap left between them (this list's reply, then the write) is G3a's residual, ended by 2A3
- * (the merge-time re-check).
+ * record, so the success is withheld and the retryable hold is written instead. 2A3a: any other open pull request at
+ * this commit, armed or not, withholds it too (the shared-commit refusal), so the success is written only while this
+ * pull request is the commit's one open pull request. No GitHub API makes this check and the status write one step; the
+ * gap left between them (this list's reply, then the write) can still admit a pull request that arrives at this commit
+ * with a merge already queued. That residual's End is 2A3b (the event-driven disarm on a push or an arm), and, for a
+ * person arming one inside the gap, the Board ruling on #1094.
  */
-async function confirmNoQueuedMergeAt(client, expectedHead) {
+async function confirmNoQueuedMergeAt(client, expectedHead, number) {
   let open;
   try {
     open = await client.openPullRequestsAt(expectedHead);
   } catch (error) {
     throw new AutoMergeDisarmFailed(error);
   }
+  // 2A3a — any other open pull request at this commit, armed or not, withholds the success: the commit's status would be
+  // that pull request's green too, earned on another pull request's body and record
+  const others = otherOpenPullRequests(open, number);
+  if (others.length > 0) throw new SharedCommitRefused(others);
   if (open.some((pull) => pull.auto_merge)) throw new AutoMergeDisarmFailed();
+}
+
+/** 2A3a — the open pull requests at a commit other than this one. */
+function otherOpenPullRequests(open, number) {
+  return (open ?? []).filter((pull) => pull.number !== number);
+}
+
+/** 2A3a — another open pull request has this commit as its head: no success may be written at it. */
+export class SharedCommitRefused extends AutoMergeDisarmFailed {
+  constructor(others) {
+    super();
+    this.message = `review: ${CODEX_SHARED_COMMIT_DETAIL}: ${others.map((pull) => `#${pull.number}`).join(', ')}`;
+    this.name = 'SharedCommitRefused';
+    this.others = others;
+  }
+}
+
+/**
+ * 2A3a (Stage 1's ruling (b) on notes/gate-codex-silent/2a3/design.md; #1307 sibling audit S18) — ONE open pull request per
+ * commit. A commit status belongs to the commit, so while more than one open pull request has this head none of them is
+ * green: every queued merge at it is disarmed (`disarmQueuedAutoMerge`, this pull request first), and the retryable
+ * shared-commit refusal is written, a verdict true of the commit itself and never of one pull request's body. Each pull
+ * request's run writes its own sticky, naming the others. The refusal is retryable, so the watchdog asks the gate again;
+ * once only one open pull request has this head, its re-judge proceeds to its own verdict. With one open pull request per
+ * commit, every verdict the gate derives from a pull request's body and writes to the commit is that pull request's alone.
+ *
+ * A disarm that fails still writes the refusal (a red required status keeps every queued merge at this commit waiting);
+ * a pull request no longer current at this head writes nothing. Returns the outcome: 'refused' or 'superseded'.
+ */
+async function publishSharedCommitRefusal(client, pullRequest, expectedHead, others, recoveryRequest = null) {
+  try {
+    const live = await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead);
+    if (!live) return 'superseded';
+  } catch (error) {
+    if (!(error instanceof AutoMergeDisarmFailed)) throw error;
+    console.warn(`Could not disarm every queued merge at a shared commit; the refusal is written anyway: ${error.message}`);
+  }
+  await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
+    detail: CODEX_SHARED_COMMIT_DETAIL,
+    attempt: 0,
+    next: `This exact commit is also the head of ${others.map((pull) => `#${pull.number}`).join(', ')}. Close all but one `
+      + 'of these pull requests, or push a distinct commit; the gate re-judges this exact head.',
+    settleReason: 'shared commit refusal',
+  });
+  return 'refused';
+}
+
+/**
+ * 2A3a — the check every run that writes `codex-current-head` makes before anything derived from this pull request: when
+ * another open pull request has this head, the shared-commit refusal is written instead and the run stops. Returns null
+ * when this pull request is alone at its head, else the refusal's outcome.
+ */
+export async function refuseSharedCommit(client, pullRequest, expectedHead, recoveryRequest = null) {
+  const others = otherOpenPullRequests(await client.openPullRequestsAt(expectedHead), pullRequest.number);
+  if (others.length === 0) return null;
+  return publishSharedCommitRefusal(client, pullRequest, expectedHead, others, recoveryRequest);
 }
 
 /**
@@ -1751,11 +1815,16 @@ export async function publishDisarmedSuccess(client, pullRequest, expectedHead, 
     const live = await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead);
     if (!live) return null;
     await publishSettledSuccess(client, live, expectedHead, description, {
-      beforeWrite: () => confirmNoQueuedMergeAt(client, expectedHead),
+      beforeWrite: () => confirmNoQueuedMergeAt(client, expectedHead, pullRequest.number),
     });
     return live;
   } catch (error) {
     if (!(error instanceof AutoMergeDisarmFailed)) throw error;
+    // 2A3a — another open pull request at this commit: the shared-commit refusal instead of the success, and the run stops
+    if (error instanceof SharedCommitRefused) {
+      await publishSharedCommitRefusal(client, pullRequest, expectedHead, error.others, recoveryRequest);
+      return null;
+    }
     await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
       detail: CODEX_AUTOMERGE_DISARM_FAILED,
       attempt,
@@ -3398,6 +3467,12 @@ export async function run() {
 
   if (mode === 'relabel-guard') {
     if (context.trigger !== 'relabel') throw new Error('The relabel guard runs only on a pull request body edit');
+    // 2A3a — a body's verdict is written to the commit only while this pull request is alone at it
+    const shared = await refuseSharedCommit(client, pullRequest, expectedHead, pendingRecoveryRequest(existingStatuses, pullRequest.number));
+    if (shared) {
+      console.log(`Relabel guard: shared commit (${shared}).`);
+      return;
+    }
     const outcome = await guardCandidateRelabel(client, pullRequest, expectedHead, existingStatuses);
     console.log(`Relabel guard: ${outcome}.`);
     return;
@@ -3447,6 +3522,14 @@ export async function run() {
       console.log('Workflow event was superseded by a newer pull-request head.');
       return;
     }
+  }
+
+  // 2A3a — before anything derived from this pull request (the scope, the ownership hold, the candidate hold, a review):
+  // while another open pull request has this head, the commit gets the shared-commit refusal and the run stops
+  const shared = await refuseSharedCommit(client, pullRequest, expectedHead, pendingRecoveryRequest(existingStatuses, pullRequest.number));
+  if (shared) {
+    console.log(`Another open pull request has this exact head; shared-commit refusal: ${shared}.`);
+    return;
   }
 
   // 2B2: when the newest current-head review is a candidate ownership hold, the exact head is

@@ -555,6 +555,11 @@ export async function handOffStatusDrift(
   await client.comment(primary.number, [marker, body].join('\n'));
 }
 
+/** 2A3a — whether an open pull request other than `number` has `head` as its head. */
+export function otherOpenPullRequestAt(open, head, number) {
+  return (open ?? []).some((pull) => pull?.number !== number && pull?.head?.sha === head);
+}
+
 // The correction WATCHDOG.
 //
 // Until now this job drained conflicts, merge continuation and status drift, and
@@ -573,7 +578,7 @@ export async function handOffCorrectionLease(
   pullRequest,
   repository,
   defaultBranch,
-  { now = new Date().toISOString() } = {},
+  { now = new Date().toISOString(), sharesHead = null } = {},
 ) {
   if (!isCorrectionEligiblePullRequest(pullRequest, repository, defaultBranch)) return null;
   const head = pullRequest.head?.sha;
@@ -636,6 +641,12 @@ export async function handOffCorrectionLease(
 
   const owed = owedCorrectionStatus(combined);
   if (!owed) return null;
+  // 2A3a (#1307 sibling audit S18) — a commit status is the commit's: while another open pull request has this head, a
+  // verdict on it may be the other pull request's (its body, its owner), so no correction is routed to this one. The
+  // gate writes the commit's own shared-commit refusal, which is retryable and asks nobody for a correction
+  if (sharesHead && await sharesHead(head, pullRequest.number)) {
+    return { state: 'shared_commit', head, body: null, reason: 'another open pull request has this exact head' };
+  }
 
   const [comments, reviewComments, reviews] = await Promise.all([
     client.comments(pullRequest.number),
@@ -720,7 +731,11 @@ export async function handOffCorrectionLease(
     // while the watchdog reads can clear a scope verdict the status has not
     // caught up with, leaving the rendered text identical — and a lease key is
     // claimed forever, so publishing then is a permanent stale wake-up.
-    if (fresh?.state !== 'notify' || fresh.body !== assessment.body || live.body !== assessed.body) {
+    // 2A3a — and the head is still this pull request's alone, on a fresh list
+    if (
+      fresh?.state !== 'notify' || fresh.body !== assessment.body || live.body !== assessed.body
+      || (sharesHead && await sharesHead(head, pullRequest.number, { fresh: true }))
+    ) {
       return {
         ...assessment,
         state: 'superseded',
@@ -806,7 +821,11 @@ export async function run() {
   let retryNeeded = false;
   const watchdogFailures = [];
   const lastBaseMergeAt = await client.lastCommitAt(defaultBranch);
-  for (const pullRequest of await client.openPullRequests()) {
+  const openSnapshot = await client.openPullRequests();
+  // 2A3a — another open pull request at a head: from the snapshot, then on a fresh list just before a notice is posted
+  const sharesHead = async (head, number, { fresh = false } = {}) =>
+    otherOpenPullRequestAt(fresh ? await client.openPullRequests() : openSnapshot, head, number);
+  for (const pullRequest of openSnapshot) {
     try {
       await handOffConflict(client, pullRequest, repository, defaultBranch, { lastBaseMergeAt });
     } catch (error) {
@@ -815,7 +834,7 @@ export async function run() {
       console.warn(error.message);
     }
     try {
-      await handOffCorrectionLease(client, pullRequest, repository, defaultBranch);
+      await handOffCorrectionLease(client, pullRequest, repository, defaultBranch, { sharesHead });
     } catch (error) {
       // Collected rather than thrown here, so one unreadable pull request cannot
       // stop the others from being watched — and rethrown below, so a watchdog

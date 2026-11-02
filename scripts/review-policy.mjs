@@ -249,6 +249,13 @@ export const CODEX_AUTOMERGE_DISARM_FAILED = 'queued auto-merge could not be dis
  * again: the green it would have left unarmed is replaced, so the head is re-judged rather than stranded.
  */
 export const CODEX_AUTOMERGE_REARM_FAILED = 'auto-merge could not be re-armed after authorization';
+/**
+ * 2A3a (#1307 sibling audit S18; G3a′'s same-commit window) — the detail of a commit that more than one open pull request
+ * has as its head. A commit status is the commit's, so no pull request at it may be green: the verdict is true of the
+ * commit itself, never one pull request's body. Retryable: once only one open pull request has this head, the gate
+ * re-judges it.
+ */
+export const CODEX_SHARED_COMMIT_DETAIL = 'commit shared by more than one open pull request';
 
 /**
  * G3b — a re-arm request: the gate's recovery asked to re-judge a head's NEWEST tokened success (the watchdog's
@@ -298,6 +305,7 @@ const RETRYABLE_REVIEW_FAILURES = [
   CODEX_RECORD_UNREADABLE_DETAIL,
   CODEX_AUTOMERGE_DISARM_FAILED,
   CODEX_AUTOMERGE_REARM_FAILED,
+  CODEX_SHARED_COMMIT_DETAIL,
 ];
 
 export function isRetryableReviewFailureDescription(description) {
