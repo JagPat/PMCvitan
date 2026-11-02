@@ -104,6 +104,20 @@ export class SiteVisitFilesParticipant {
     if (!removal) throw new ConflictException('This photo is part of a site visit\'s record and cannot be deleted');
   }
 
+  /** #904 — a file's link as its upload wrote it (its visit, note, rating and the place it showed when added), read
+   *  without locks; null when it is on none. A link is frozen (the insert is its only write; its place is cleared only
+   *  with that place), so an upload's replay is compared with it. */
+  async linkOf(db: Prisma.TransactionClient | PrismaService, projectId: string, mediaId: string): Promise<{ visitId: string; note: string | null; rating: string | null; nodeId: string | null } | null> {
+    return db.siteVisitMedia.findFirst({ where: { projectId, mediaId }, select: { visitId: true, note: true, rating: true, nodeId: true } });
+  }
+
+  /** #904 — whether a file was taken off this visit ({@link recordRemoval}), read without locks. A file on a visit leaves
+   *  only with that line (20280125000000 refuses the delete without it), and the line is never removed on its own. */
+  async wasRemovedFrom(db: Prisma.TransactionClient | PrismaService, projectId: string, visitId: string, mediaId: string): Promise<boolean> {
+    const removal = await db.siteVisitFileRemoval.findFirst({ where: { projectId, visitId, mediaId }, select: { mediaId: true } });
+    return removal !== null;
+  }
+
   /** #1179 — the visit a file is on, read without locks (the removal's early answer and its lock target); null when it is
    *  on none. A link is frozen, so its visit never changes. */
   async visitOf(db: Prisma.TransactionClient | PrismaService, projectId: string, mediaId: string): Promise<string | null> {

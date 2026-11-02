@@ -5,6 +5,8 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { StorageService } from '../../src/media/storage.service';
+import { LEGACY_REPLAY_MS } from '../../src/media/media.service';
+import { createHash } from 'node:crypto';
 
 /**
  * #482 (Board decision, 14 Oct 2026) — every project member adds a site photo: the PMC, the engineer, a
@@ -119,6 +121,104 @@ describe('who may add a site photo (live PG)', () => {
     expect(again.body.id).toBe(first.body.id);
   });
 
+  it.each(['pmc', 'engineer'] as Role[])('#904: a %s\'s replay is their own upload, as it was sent', async (role) => {
+    // an honest retry (a lost answer, a second tab) is the same photo
+    const first = await upload(tokens[role], { kind: 'material', clientKey: `904-own-${role}` });
+    expect(first.status).toBe(201);
+    const again = await upload(tokens[role], { kind: 'material', clientKey: `904-own-${role}` });
+    expect([again.status, again.body.id]).toEqual([201, first.body.id]);
+    // a key another member used is not theirs: refused, not answered with that member's photo
+    const client = await upload(tokens.client, { kind: 'progress', clientKey: `904-client-${role}` });
+    expect(client.status).toBe(201);
+    const taken = await upload(tokens[role], { kind: 'progress', clientKey: `904-client-${role}` });
+    expect([taken.status, taken.body.id]).toEqual([403, undefined]);
+    // nor is their own key sent for something else: another kind, or a decision, day's log or inspection the stored
+    // photo is not on (Codex on #1255: the request's links are stored as sent, so each is compared)
+    expect((await upload(tokens[role], { kind: 'progress', clientKey: `904-own-${role}` })).status).toBe(403);
+    for (const link of [{ decisionId: 'not-this' }, { dailyLogId: 'not-this' }, { inspectionId: 'not-this' }]) {
+      expect((await upload(tokens[role], { kind: 'material', ...link, clientKey: `904-own-${role}` })).status, JSON.stringify(link)).toBe(403);
+    }
+    // nor another file under it: another type, or other bytes (Codex round 2 on #1255)
+    expect((await upload(tokens[role], { kind: 'material', mime: 'image/jpeg', clientKey: `904-own-${role}` })).status).toBe(403);
+    expect((await upload(tokens[role], { kind: 'material', data: Buffer.from([0x89, 0x50, 0x4e]).toString('base64'), clientKey: `904-own-${role}` })).status).toBe(403);
+    // an empty link is none, as the upload stored it
+    expect((await upload(tokens[role], { kind: 'material', decisionId: '', dailyLogId: '', clientKey: `904-own-${role}` })).body.id).toBe(first.body.id);
+    // nothing new was stored, and the two photos are as they were
+    const rows = await t.prisma.media.findMany({ where: { projectId: f.projectA.id, clientKey: { in: [`904-own-${role}`, `904-client-${role}`] } }, orderBy: { clientKey: 'asc' } });
+    expect(rows.map((r) => [r.clientKey, r.kind, r.uploadedBy])).toEqual([
+      [`904-client-${role}`, 'progress', f.clientUser.id],
+      [`904-own-${role}`, 'material', role === 'pmc' ? f.memberUser.id : `${f.projectA.id}-${role}`],
+    ]);
+  });
+
+  it('#904: each upload stores its digest, and a replay is the same bytes, not only the same type and length (Codex on #1262)', async () => {
+    const first = await upload(tokens.pmc, { kind: 'material', clientKey: '904-digest' });
+    expect(first.status).toBe(201);
+    const row = await t.prisma.media.findUniqueOrThrow({ where: { id: first.body.id }, select: { contentSha256: true } });
+    expect(row.contentSha256).toBe(createHash('sha256').update(Buffer.from(px, 'base64')).digest('hex'));
+    // another file of the same type and length under the key: the digest tells it apart
+    const sameLength = Buffer.from([0x89, 0x50, 0x4e, 0x48]).toString('base64');
+    expect((await upload(tokens.pmc, { kind: 'material', data: sameLength, clientKey: '904-digest' })).status).toBe(403);
+    const again = await upload(tokens.pmc, { kind: 'material', clientKey: '904-digest' });
+    expect([again.status, again.body.id]).toEqual([201, first.body.id]);
+  });
+
+  it('#904: a file stored before the digest replays by its length for seven days only (the bounded residual)', async () => {
+    const legacy = (clientKey: string, ageMs: number) => t.prisma.media.create({
+      data: { projectId: f.projectA.id, kind: 'material', mime: 'image/png', data: Buffer.from(px, 'base64'), sizeBytes: 4, uploadedBy: f.memberUser.id, clientKey, createdAt: new Date(Date.now() - ageMs) },
+      select: { id: true, contentSha256: true },
+    });
+    const hour = 60 * 60 * 1000;
+    const inside = await legacy('904-legacy-inside', LEGACY_REPLAY_MS - hour);
+    const outside = await legacy('904-legacy-outside', LEGACY_REPLAY_MS + hour);
+    expect([inside.contentSha256, outside.contentSha256]).toEqual([null, null]);
+    const kept = await upload(tokens.pmc, { kind: 'material', clientKey: '904-legacy-inside' });
+    expect([kept.status, kept.body.id]).toEqual([201, inside.id]);
+    // inside the window the byte count still decides: another length is refused (Stage 1's re-check of 0537f309)
+    const longer = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d]).toString('base64');
+    expect((await upload(tokens.pmc, { kind: 'material', data: longer, clientKey: '904-legacy-inside' })).status).toBe(403);
+    // and, documenting the residual, other bytes of the same length are taken as this row (no digest to tell them apart)
+    const sameCount = Buffer.from([0x89, 0x50, 0x4e, 0x48]).toString('base64');
+    const residual = await upload(tokens.pmc, { kind: 'material', data: sameCount, clientKey: '904-legacy-inside' });
+    expect([residual.status, residual.body.id]).toEqual([201, inside.id]);
+    const late = await upload(tokens.pmc, { kind: 'material', clientKey: '904-legacy-outside' });
+    expect([late.status, late.body.message]).toEqual([403, 'This upload key belongs to another photo']);
+    expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: { in: ['904-legacy-inside', '904-legacy-outside'] } } })).toBe(2);
+  });
+
+  it('#904: a PMC upload that loses its new key to another member\'s at the unique is refused, and its object cleaned up', async () => {
+    const storage = t.app.get(StorageService);
+    // forced order: both requests pass the idempotency read and store their bytes; the client's commits first, and
+    // only then does the PMC's open its transaction and meet the unique (P2002)
+    let pmcStored!: () => void;
+    const pmcAtPut = new Promise<void>((r) => (pmcStored = r));
+    let clientDone!: () => void;
+    const clientAnswered = new Promise<void>((r) => (clientDone = r));
+    const putKeys: string[] = [];
+    const realPut = storage.put.bind(storage);
+    const put = vi.spyOn(storage, 'put').mockImplementation(async (key, bytes, mime) => {
+      putKeys.push(key);
+      const stored = await realPut(key, bytes, mime);
+      if (key.includes('/material/')) { pmcStored(); await clientAnswered; } else await pmcAtPut;
+      return stored;
+    });
+    const remove = vi.spyOn(storage, 'remove').mockResolvedValue(undefined);
+    try {
+      const clientReq = upload(tokens.client, { kind: 'progress', clientKey: '904-race' }).then((r) => { clientDone(); return r; });
+      const [client, pmc] = await Promise.all([clientReq, upload(tokens.pmc, { kind: 'material', clientKey: '904-race' })]);
+      const rows = await t.prisma.media.findMany({ where: { projectId: f.projectA.id, clientKey: '904-race' } });
+      expect(rows.map((r) => [r.kind, r.uploadedBy])).toEqual([['progress', f.clientUser.id]]);
+      expect([client.status, client.body.id]).toEqual([201, rows[0].id]);
+      // the PMC's material photo was never stored: refused, never handed the client's photo as its own
+      expect([pmc.status, pmc.body.id]).toEqual([403, undefined]);
+      expect(putKeys).toHaveLength(2);
+      expect(remove.mock.calls).toEqual([[putKeys.find((k) => k !== rows[0].storageKey)]]);
+    } finally {
+      put.mockRestore();
+      remove.mockRestore();
+    }
+  });
+
   it('two concurrent uploads under one new key keep one row and one object: the loser\'s object is cleaned up', async () => {
     const storage = t.app.get(StorageService);
     // explicit barrier: both requests have passed the idempotency read and stored their bytes, under their
@@ -166,6 +266,22 @@ describe('who may add a site photo (live PG)', () => {
     const replay = await upload(tokens.contractor, { kind: 'progress', clientKey: 'legacy-on-draft' });
     expect(replay.status).toBe(404);
     expect(replay.body.url).toBeUndefined();
+  });
+
+  it('another member\'s key on a place hidden from the caller is not found, never refused as taken (Codex round 1 on #1262)', async () => {
+    // the engineer's private draft, hidden from everyone else; the contractor's photo filed on it before #881
+    const draft = await t.prisma.projectNode.create({
+      data: { id: `${f.projectA.id}-roles-engineer-draft`, projectId: f.projectA.id, name: 'engineer draft', kind: 'zone', publishedAt: null, authorId: `${f.projectA.id}-engineer` },
+    });
+    await t.prisma.media.create({
+      data: { projectId: f.projectA.id, kind: 'progress', mime: 'image/png', data: Buffer.from(px, 'base64'), uploadedBy: `${f.projectA.id}-contractor`, nodeId: draft.id, clientKey: 'hidden-other' },
+    });
+    // the PMC (site-record role) and a narrowed role: both 404, as an unknown record, not 403 'belongs to another photo'
+    for (const role of ['pmc', 'consultant'] as Role[]) {
+      const replay = await upload(tokens[role], { kind: 'progress', clientKey: 'hidden-other' });
+      expect([role, replay.status, replay.body.url]).toEqual([role, 404, undefined]);
+    }
+    expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: 'hidden-other' } })).toBe(1);
   });
 
   it('a contractor\'s photo goes on a published place, never on a draft (the #881 rule holds for the new roles)', async () => {
