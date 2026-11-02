@@ -372,6 +372,27 @@ test('2A3b-2 — the ownership consumer: past a newer status of another context,
   }
 });
 
+// Stage 1's re-check of 5c0102ba (U5) — with nothing queued, the ownership branch still ends the event: a push or a
+// person's arm on a commit another open PR has writes no shared-commit refusal over the withholding verdict
+test('2A3b-2 — the ownership consumer: nothing queued, a shared commit, on a push and on a person\'s arm, writes nothing', { timeout: 30_000 }, async () => {
+  const withholding = { id: 6101, context: 'codex-current-head', state: 'failure', description: `${OWNERSHIP_CANDIDATE_HELD}` };
+  for (const [name, event] of [['a push', events.synchronize(610)], ['a person\'s arm', events.armed(610)]]) {
+    const pulls = new Map([[610, pullAt(610)], [611, pullAt(611)]]);
+    const lines = [];
+    const saved = console.log;
+    console.log = (...args) => { lines.push(args.join(' ')); };
+    let result;
+    try {
+      result = await runDisarm({ number: 610, pulls, statuses: [withholding], event });
+    } finally {
+      console.log = saved;
+    }
+    assert.equal(result.error, null, name);
+    assert.deepEqual(result.log.filter(([k]) => k === 'disable' || k === 'status' || k === 'draft' || k === 'sticky'), [], `${name}: nothing written over the verdict`);
+    assert.ok(lines.some((line) => /^Event disarm \([a-z-]+\): nothing\.$/u.test(line)), `${name}: ${lines.join(' | ')}`);
+  }
+});
+
 test('2A3b-2 — the ownership consumer: a merge queued under a withholding verdict is disarmed, the verdict stays', { timeout: 30_000 }, async () => {
   const withholding = { id: 6101, context: 'codex-current-head', state: 'failure', description: `${OWNERSHIP_CANDIDATE_HELD}` };
   const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
@@ -428,6 +449,7 @@ test('2A3b-2 (#1318 Codex 4448897188) — the record fingerprint: Codex\'s recor
   const note = { id: 5, user: { login: 'someone' }, body: 'note' };
   assert.equal(codexRecordFingerprint([a, b, note]), codexRecordFingerprint([note, b, a]), 'order and other comments do not count');
   assert.notEqual(codexRecordFingerprint([a]), codexRecordFingerprint([codexRecord(HEAD, 'completed')]), 'an edited record changes it');
+  assert.notEqual(codexRecordFingerprint([a]), codexRecordFingerprint([{ ...a, updated_at: '2026-11-02T22:00:00Z' }]), 'a record edited again with the same body changes it');
   assert.equal(codexRecordFingerprint([codexRecord(HEAD, 'in_progress', 'someone')]), '', 'another login carrying the marker');
   assert.equal(codexRecordFingerprint([{ ...note, user: { login: 'chatgpt-codex-connector[bot]' } }]), '', 'Codex without the marker');
   assert.equal(codexRecordFingerprint(null), '');
@@ -602,7 +624,8 @@ test('2A3b-2 (#1318 Codex 4448897188) — a record that turned dirty since the a
 
   for (const [name, before, after] of [
     ['clean, then a new dirty record', () => [cleanRecord(HEAD)], () => [dirtyRecord(HEAD)]],
-    ['dirty, then another review completed dirty', () => [dirtyRecord(HEAD)], () => [{ ...dirtyRecord(HEAD), body: `${dirtyRecord(HEAD).body}\nrerun` }]],
+    // Stage 1's re-check of 5c0102ba — a second review ending dirty with an identical body: only its update time moves
+    ['dirty, then another review completed dirty, same body', () => [dirtyRecord(HEAD)], () => [{ ...dirtyRecord(HEAD), updated_at: '2026-11-02T22:00:00Z' }]],
   ]) {
     const moved = armTailClient(after, before);
     assert.equal(await completeReviewedPullRequest(moved, armTailPull(), HEAD, eligible), 'review_refused', name);
