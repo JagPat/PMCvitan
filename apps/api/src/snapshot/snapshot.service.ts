@@ -231,13 +231,14 @@ export class SnapshotService {
 
     // #482 site photos unit 4 — proof photos: a contractor or consultant shows a failed inspection item fixed. The PMC
     // and the engineer see every one; the member who added one sees their own; nobody else sees any. They are never
-    // site photos (above): not on the Site Map, the Dashboard or a day's log.
+    // site photos (above): not on the Site Map, the Dashboard or a day's log. The list has no cap: it promises every
+    // proof (staff) or every own proof (a member), and a proof exists only for a failed item, so it grows with failures,
+    // not with day-to-day photos (Codex 4439186913)
     const proofWhere = SITE_RECORD_ROLES.has(role) ? {} : userId && (role === 'contractor' || role === 'consultant') ? { uploadedBy: userId } : null;
     const proofMedia = proofWhere
       ? await this.prisma.media.findMany({
           where: { projectId, kind: 'proof', ...proofWhere },
-          orderBy: { createdAt: 'desc' },
-          take: SNAPSHOT_SITE_PHOTO_LIMIT,
+          orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
           select: { id: true, uploadedBy: true, createdAt: true, inspectionId: true, inspectionItemId: true },
         })
       : [];

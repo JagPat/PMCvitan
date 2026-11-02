@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
-import type { Role } from '@vitan/shared';
+import { PROOF_PHOTOS_PER_ITEM, SNAPSHOT_SITE_PHOTO_LIMIT, type Role } from '@vitan/shared';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -172,6 +172,49 @@ describe('a contractor or consultant adds a proof photo on a failed inspection i
     const proofIds = new Set(all.map((m) => m.id));
     expect(pmcSnap.photos.some((p) => proofIds.has(p.id))).toBe(false);
     expect((pmcSnap.dailyLog?.photos ?? []).some((p) => proofIds.has(p.id))).toBe(false);
+  });
+
+  it('past the site-photo cap, every proof is still listed (rows seeded directly): the PMC sees them all, a member all their own (Codex 4439186913)', async () => {
+    const many = Array.from({ length: SNAPSHOT_SITE_PHOTO_LIMIT + 1 }, (_, i) => ({
+      id: `${f.projectA.id}-proof-many-${i}`, projectId: f.projectA.id, kind: 'proof', mime: 'image/png', uploadedBy: ids.consultant,
+      inspectionId: inspectionId(), inspectionItemId: item.failed, createdAt: new Date(Date.now() - (i + 1) * 1000),
+    }));
+    await t.prisma.media.createMany({ data: many });
+    try {
+      const all = await t.prisma.media.findMany({ where: { projectId: f.projectA.id, kind: 'proof' }, select: { id: true, uploadedBy: true } });
+      expect(all.length).toBeGreaterThan(SNAPSHOT_SITE_PHOTO_LIMIT);
+      const idsOf = (rows: { id: string }[]) => rows.map((r) => r.id).sort();
+      expect(idsOf((await snapshot('pmc')).proofs)).toEqual(idsOf(all));
+      const own = (await snapshot('consultant')).proofs;
+      expect(idsOf(own)).toEqual(idsOf(all.filter((m) => m.uploadedBy === ids.consultant)));
+      expect(own.length).toBeGreaterThan(SNAPSHOT_SITE_PHOTO_LIMIT);
+    } finally {
+      await t.prisma.media.deleteMany({ where: { id: { in: many.map((m) => m.id) } } });
+    }
+  });
+
+  it(`an item holds at most ${PROOF_PHOTOS_PER_ITEM} proofs: one more is refused and stores nothing; a replay still answers; a deleted one frees a place`, async () => {
+    const capped = (await t.prisma.inspectionItem.create({ data: { inspectionId: inspectionId(), name: 'Capped', state: 'fail' } })).id;
+    const taken: string[] = [];
+    for (let i = 0; i < PROOF_PHOTOS_PER_ITEM; i++) {
+      const res = await proof(i % 2 ? 'consultant' : 'contractor', capped, { clientKey: `proof-cap-${i}` });
+      expect(res.status).toBe(201);
+      taken.push(res.body.id);
+    }
+    const count = () => t.prisma.media.count({ where: { projectId: f.projectA.id, kind: 'proof', inspectionItemId: capped } });
+    const over = await proof('contractor', capped, { clientKey: 'proof-cap-over' });
+    expect(over.status).toBe(409);
+    expect(await count()).toBe(PROOF_PHOTOS_PER_ITEM);
+    expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: 'proof-cap-over' } })).toBe(0);
+    // a resend of a stored proof's key is that proof, not one more
+    const again = await proof('contractor', capped, { clientKey: 'proof-cap-0' });
+    expect(again.status).toBe(201);
+    expect(again.body.id).toBe(taken[0]);
+    // the PMC deletes one: there is a place again, for exactly one
+    expect((await http().delete(`/media/${taken[1]}`).set('Authorization', `Bearer ${tokens.pmc}`)).status).toBe(200);
+    const both = await Promise.all([proof('contractor', capped), proof('consultant', capped)]);
+    expect(both.map((r) => r.status).sort()).toEqual([201, 409]);
+    expect(await count()).toBe(PROOF_PHOTOS_PER_ITEM);
   });
 
   it('a member may not delete their own proof; the PMC deletes it', async () => {

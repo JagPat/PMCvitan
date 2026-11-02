@@ -25,7 +25,7 @@ import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
 import { VIDEO_CLIP_MAX_SEC, VOICE_NOTE_MAX_SEC, VOICE_NOTE_SEC_TOLERANCE, type AddPosterInput, type CreateMediaInput } from '../contracts';
-import { MEDIA_NOT_FOUND_MESSAGE, NOT_A_VISIT_FILE_MESSAGE, SITE_PHOTO_DELETE_WINDOW_MS, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
+import { MEDIA_NOT_FOUND_MESSAGE, NOT_A_VISIT_FILE_MESSAGE, PROOF_PHOTOS_PER_ITEM, SITE_PHOTO_DELETE_WINDOW_MS, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
@@ -424,7 +424,17 @@ export class MediaService {
         // a proof's inspection is held FOR UPDATE and its item FOR SHARE until this commits, before the insert and the
         // emit: a write that clears the item waits, or this sees it cleared, and an evidence upload on the inspection
         // meets this at the inspection row before either holds the event stream (U-4 gap-check, probe D1)
-        if (proof) await this.inspections.assertProofTarget(projectId, proof.inspectionId, proof.inspectionItemId, tx);
+        if (proof) {
+          await this.inspections.assertProofTarget(projectId, proof.inspectionId, proof.inspectionItemId, tx);
+          // ... and the item holds at most PROOF_PHOTOS_PER_ITEM of them, counted under that inspection lock so two
+          // proofs never both take the last place. A replay of a stored key is not one more: it reaches its own row below.
+          const stored = input.clientKey
+            ? await tx.media.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } }, select: { id: true } })
+            : null;
+          if (!stored && (await tx.media.count({ where: { projectId, kind: 'proof', inspectionId: proof.inspectionId, inspectionItemId: proof.inspectionItemId } })) >= PROOF_PHOTOS_PER_ITEM) {
+            throw new ConflictException(`This item already has ${PROOF_PHOTOS_PER_ITEM} proof photos`);
+          }
+        }
         const created = await tx.media.create({
           data: {
             projectId,
