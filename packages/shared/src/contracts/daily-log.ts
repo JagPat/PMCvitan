@@ -14,6 +14,11 @@
  *  "at least this many" once it holds this many (Codex 4194155412). */
 export const SNAPSHOT_SITE_PHOTO_LIMIT = 300;
 
+/** #482 site photos unit 4 — an inspection item holds at most this many proof photos, from every member together. The
+ *  server refuses one more (409) under the inspection's lock, so the snapshot's uncapped `proofs` list grows only with
+ *  failed items, never with uploads alone (Codex 4439186913). */
+export const PROOF_PHOTOS_PER_ITEM = 10;
+
 /** #482 site photos (Board, 14 Oct 2026) — a member may delete a site photo they added for this long after the
  *  server recorded it; after that it stays. */
 export const SITE_PHOTO_DELETE_WINDOW_MS = 60 * 60 * 1000;

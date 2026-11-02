@@ -380,6 +380,22 @@ export interface PhotoDto {
   deletableUntil?: string;
 }
 
+/** #482 site photos unit 4 — a proof photo: a contractor or consultant shows a failed inspection item fixed. It is not
+ *  evidence (the inspection is unchanged by it) and never a site photo. */
+export interface ProofPhotoDto {
+  id: string;
+  url: string; // resolvable signed serve path
+  /** the failed item it shows fixed, and that item's inspection */
+  inspectionId: string;
+  inspectionItemId: string;
+  /** the name of the member who added it (absent when that account is gone) */
+  by?: string;
+  /** their role on this project */
+  byRole?: string;
+  /** when it was added (ISO) */
+  at: string;
+}
+
 export interface DailyLogDto {
   /** U1 — the log's own id, so a client can tell two logs of the same civil day apart */
   id?: string;
@@ -479,6 +495,9 @@ export interface SnapshotDto {
   /** #482 site photos — the viewer's own plain site photos, still inside their delete hour, that `photos` (the newest
    *  window) leaves out; each is `deletable` with its `deletableUntil`. Empty for the PMC and the engineer. */
   myDeletablePhotos: PhotoDto[];
+  /** #482 site photos unit 4 — proof photos on failed inspection items: every one for the PMC and the engineer, their own
+   *  for a contractor or consultant, none for anyone else. */
+  proofs: ProofPhotoDto[];
   /** All material deliveries across the project, with their place — the Site Map's "materials here". */
   materials: MaterialDto[];
 }

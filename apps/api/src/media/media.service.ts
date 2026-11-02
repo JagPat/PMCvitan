@@ -25,7 +25,7 @@ import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
 import { VIDEO_CLIP_MAX_SEC, VOICE_NOTE_MAX_SEC, VOICE_NOTE_SEC_TOLERANCE, type AddPosterInput, type CreateMediaInput } from '../contracts';
-import { MEDIA_NOT_FOUND_MESSAGE, NOT_A_VISIT_FILE_MESSAGE, SITE_PHOTO_DELETE_WINDOW_MS, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
+import { MEDIA_NOT_FOUND_MESSAGE, NOT_A_VISIT_FILE_MESSAGE, PROOF_PHOTOS_PER_ITEM, SITE_PHOTO_DELETE_WINDOW_MS, SITE_PHOTO_DELETED_MESSAGE } from '@vitan/shared';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
@@ -58,6 +58,14 @@ function isSiteVisitFile(input: CreateMediaInput): boolean {
     && !input.decisionId && !input.dailyLogId && !input.inspectionId && !input.inspectionItemId;
 }
 
+/** A proof photo (#482 site photos unit 4, Board 14 Oct 2026): a contractor or consultant shows a failed inspection
+ *  item fixed. It names the item and is filed on nothing else (the contract holds that shape). It is not evidence:
+ *  no inspection link is written, so it never changes the inspection. */
+function isProofPhoto(input: CreateMediaInput): boolean {
+  return input.kind === 'proof' && input.inspectionId !== undefined && input.inspectionItemId !== undefined;
+}
+/** Who adds a proof photo: the members whose work an inspection checks. The PMC and the engineer add evidence. */
+const PROOF_ROLES: ReadonlySet<string> = new Set(['contractor', 'consultant']);
 /** A stored coordinate against the one a replay sends: none only for none, else equal to a billionth of a degree. A
  *  double can read back from the database a last digit off what was sent (Stage 1's re-check of #1255: 23.033333333333335
  *  reads back as 23.03333333333333), so an exact comparison would refuse an honest resend. */
@@ -218,7 +226,8 @@ export class MediaService {
     }
     if (!SITE_RECORD_ROLES.has(user.role)) {
       const plain = (row.kind === 'progress' || row.kind === 'visit') && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
-      if (!plain) throw new ForbiddenException('This upload key belongs to another photo');
+      // #482 site photos unit 4: a contractor's or consultant's own proof is theirs to have back too
+      if (!plain && row.kind !== 'proof') throw new ForbiddenException('This upload key belongs to another photo');
     }
     return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString(), nodeId: seen.nodeId };
   }
@@ -302,7 +311,10 @@ export class MediaService {
         throw new BadRequestException('A video is added on a site visit');
       }
     }
-    if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input) && !isSiteVisitFile(input)) {
+    if (isProofPhoto(input) && !PROOF_ROLES.has(user.role)) {
+      throw new ForbiddenException('A proof photo is added by the contractor or consultant whose work failed; add evidence instead');
+    }
+    if (!SITE_RECORD_ROLES.has(user.role) && !isPlainSitePhoto(input) && !isSiteVisitFile(input) && !isProofPhoto(input)) {
       throw new ForbiddenException('Your role may add a site photo, not evidence linked to a record');
     }
     // idempotency fast-path: this exact photo already landed
@@ -359,7 +371,10 @@ export class MediaService {
     if (input.inspectionItemId && !input.inspectionId) {
       throw new BadRequestException('inspectionItemId requires its inspectionId');
     }
-    if (input.inspectionId) {
+    const proof = isProofPhoto(input) ? { inspectionId: input.inspectionId!, inspectionItemId: input.inspectionItemId! } : null;
+    // a proof's item is this project's and failed now (an early no; asked again under the item's lock below)
+    if (proof) await this.inspections.assertProofTarget(projectId, proof.inspectionId, proof.inspectionItemId);
+    else if (input.inspectionId) {
       await this.inspections.assertEvidenceTarget(projectId, input.inspectionId, input.inspectionItemId);
       // AUTHORITY BEFORE BYTES (#571 round 10, finding 2). The authoritative check runs inside the
       // transaction below, where it cannot be overtaken — but `storage.put` has already written the
@@ -406,6 +421,20 @@ export class MediaService {
         // project key, and the insert key-share locks a linked decision, which a forward holding this person's
         // anchor exclusive waits on; taking the anchor only at the emit would close the cycle
         await lockStandingAnchors(tx, { read: [user.sub] });
+        // a proof's inspection is held FOR UPDATE and its item FOR SHARE until this commits, before the insert and the
+        // emit: a write that clears the item waits, or this sees it cleared, and an evidence upload on the inspection
+        // meets this at the inspection row before either holds the event stream (U-4 gap-check, probe D1)
+        if (proof) {
+          await this.inspections.assertProofTarget(projectId, proof.inspectionId, proof.inspectionItemId, tx);
+          // ... and the item holds at most PROOF_PHOTOS_PER_ITEM of them, counted under that inspection lock so two
+          // proofs never both take the last place. A replay of a stored key is not one more: it reaches its own row below.
+          const stored = input.clientKey
+            ? await tx.media.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } }, select: { id: true } })
+            : null;
+          if (!stored && (await tx.media.count({ where: { projectId, kind: 'proof', inspectionId: proof.inspectionId, inspectionItemId: proof.inspectionItemId } })) >= PROOF_PHOTOS_PER_ITEM) {
+            throw new ConflictException(`This item already has ${PROOF_PHOTOS_PER_ITEM} proof photos`);
+          }
+        }
         const created = await tx.media.create({
           data: {
             projectId,
@@ -438,7 +467,7 @@ export class MediaService {
         // Task 10 (Module 3) correction — ITEM-LEVEL evidence (both ids present) links through the
         // inspections participant, which writes the inspection-owned InspectionEvidence row AND appends
         // `inspection.evidence_added`, so the inspections.inbox projection observes the new evidence.
-        if (input.inspectionId && input.inspectionItemId) {
+        if (input.inspectionId && input.inspectionItemId && !proof) {
           // #571 round 9, finding 1 — containment is not authority. `assertEvidenceTarget` above
           // proves the item belongs to the inspection and the inspection to this project; it says
           // nothing about whether this actor may change THIS inspection's evidence. Asked here,
@@ -521,6 +550,8 @@ export class MediaService {
   async setNode(id: string, projectId: string, nodeId: string | null, user: AuthUser): Promise<SnapshotDto> {
     const row = await this.prisma.media.findUnique({ where: { id } });
     if (!row || row.projectId !== projectId) throw new NotFoundException('Media not found');
+    // #482 site photos unit 4: a proof photo is filed on its inspection item only, never on a place (its kind never changes)
+    if (row.kind === 'proof') throw new BadRequestException('A proof photo stays on its inspection item and is never filed on a place');
     const actor = await resolveActor(this.prisma, user);
     const ev = await this.prisma.$transaction(async (tx) => {
       // a photo on someone else's private draft (filed before #881) is answered as if it did not exist:
