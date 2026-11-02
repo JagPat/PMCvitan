@@ -132,14 +132,13 @@ describe('a contractor or consultant adds a proof photo on a failed inspection i
     expect(await t.prisma.media.count({ where: { projectId: f.projectA.id, clientKey: 'proof-replay' } })).toBe(1);
   });
 
-  it('a replay of the key naming another item returns the original proof, and stores nothing', async () => {
-    // a send key names one photo, whatever a later send of it carries (every media kind answers a replay this way)
+  it('a replay of the key naming another item is refused, and stores nothing', async () => {
+    // a send key names one upload: the same key sent for another item is not that upload (#904/#1262: every field the
+    // upload stores as sent is compared on a replay, the bytes by their digest)
     const first = await proof('contractor', item.failed, { clientKey: 'proof-replay-item' });
     expect(first.status).toBe(201);
     const n = await proofCount();
-    const other = await proof('contractor', item.second, { clientKey: 'proof-replay-item' });
-    expect(other.status).toBe(201);
-    expect(other.body.id).toBe(first.body.id);
+    expect((await proof('contractor', item.second, { clientKey: 'proof-replay-item' })).status).toBe(403);
     expect(await proofCount()).toBe(n);
     expect(await t.prisma.media.findUniqueOrThrow({ where: { id: first.body.id } })).toMatchObject({ inspectionItemId: item.failed });
   });

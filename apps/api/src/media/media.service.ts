@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { BadRequestException, ConflictException, ForbiddenException, GoneException, Injectable, NotFoundException } from '@nestjs/common';
 import { lockStandingAnchors } from '../common/standing-anchor';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -65,10 +66,41 @@ function isProofPhoto(input: CreateMediaInput): boolean {
 }
 /** Who adds a proof photo: the members whose work an inspection checks. The PMC and the engineer add evidence. */
 const PROOF_ROLES: ReadonlySet<string> = new Set(['contractor', 'consultant']);
+/** A stored coordinate against the one a replay sends: none only for none, else equal to a billionth of a degree. A
+ *  double can read back from the database a last digit off what was sent (Stage 1's re-check of #1255: 23.033333333333335
+ *  reads back as 23.03333333333333), so an exact comparison would refuse an honest resend. */
+const sameCoordinate = (stored: number | null, sent: number | undefined): boolean =>
+  stored === null || sent === undefined ? stored === (sent ?? null) : Math.abs(stored - sent) <= 1e-9;
 
 /** What a clientKey replay must read to decide whether the caller may have the stored row back. */
-const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true } as const;
-type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null };
+const REPLAY_SELECT = { id: true, createdAt: true, kind: true, uploadedBy: true, decisionId: true, dailyLogId: true, inspectionId: true, inspectionItemId: true, nodeId: true, mime: true, sizeBytes: true, contentSha256: true, sourceMediaId: true, takenAt: true, geoLat: true, geoLng: true } as const;
+type ReplayRow = { id: string; createdAt: Date; kind: string; uploadedBy: string; decisionId: string | null; dailyLogId: string | null; inspectionId: string | null; inspectionItemId: string | null; nodeId: string | null; mime: string; sizeBytes: number; contentSha256: string | null; sourceMediaId: string | null; takenAt: string | null; geoLat: number | null; geoLng: number | null };
+
+/** #904 — the SHA-256 of a file's decoded bytes, as `"Media"."contentSha256"` holds it: 64 lowercase hex characters. */
+const sha256Hex = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
+
+/** #904 — how long a replay of a file stored before its digest was (a row with no `contentSha256`) is still answered
+ *  from its byte count. Past it the key is refused, so no replay is answered on type and length alone for longer than
+ *  this after the digest write is live (Stage 1's ruling on #1262, 1 Nov 19:30Z). */
+export const LEGACY_REPLAY_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** #904 — a stored file is these bytes: by its digest when it has one; else, within {@link LEGACY_REPLAY_MS} of its
+ *  upload, by its byte count (a count of 0 is a row written without one, the column's default, and is not compared). */
+function sameBytes(row: ReplayRow, bytes: Buffer, now: number): boolean {
+  if (row.contentSha256 !== null) return row.contentSha256 === sha256Hex(bytes);
+  if (now - row.createdAt.getTime() > LEGACY_REPLAY_MS) return false;
+  return row.sizeBytes === 0 || row.sizeBytes === bytes.length;
+}
+
+/** #904 (Codex 4437021486) — a voice note's or video's replay that states its length states the one its upload would
+ *  have been held to: read from the request's own bytes, within the same tolerance as a fresh upload. */
+function sameLength(row: ReplayRow, input: CreateMediaInput, bytes: Buffer): boolean {
+  if (input.durationSec === undefined) return true;
+  const read = row.mime.startsWith('audio/') ? readVoiceRecording(row.mime, bytes)
+    : row.mime.startsWith('video/') ? readVideoClip(row.mime, bytes) : undefined;
+  if (read === undefined) return true;
+  return read !== null && Math.abs(input.durationSec - read.seconds) <= VOICE_NOTE_SEC_TOLERANCE;
+}
 
 /** #482 site photos — one send key at a time: the upload that may store a photo under it, and the delete that retires
  *  it. Always the FIRST statement of its transaction, so no transaction holds another lock while it waits for this one,
@@ -149,17 +181,29 @@ export class MediaService {
   /** A clientKey replay returns the stored row only when the caller could have created it: for the roles
    *  narrowed to plain site photos, that is their OWN plain photo — never another member's evidence.
    *  And never a photo the caller cannot see now: one filed (before #881) on another member's private
-   *  draft is answered as if it did not exist, as the snapshot and re-filing already answer it (#884). */
-  private async replayed(projectId: string, user: AuthUser, row: ReplayRow, clientKey: string): Promise<UploadedMedia> {
-    if (!SITE_RECORD_ROLES.has(user.role)) {
-      const plain = (row.kind === 'progress' || row.kind === 'visit') && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
-      if (!(plain || row.kind === 'proof') || row.uploadedBy !== user.sub) throw new ForbiddenException('This upload key belongs to another photo');
-    }
+   *  draft is answered as if it did not exist, as the snapshot and re-filing already answer it (#884).
+   *  For EVERY role, the PMC and the engineer too (#904), the row is the caller's own and is what this request would
+   *  have stored: the same kind, decision, day's log, inspection and item. A key another person used, or the caller's
+   *  own key sent for something else, is refused rather than answered with a photo the request did not upload, which
+   *  would leave its evidence unstored while the device counts it as sent. Each link is stored as the request sent it
+   *  (`resolveRefInProject` returns the id it checked; an empty one is none) and is never rewritten after, so a stored
+   *  upload's own replay matches. The place (`nodeId`) is not compared: a photo may be re-filed to another place.
+   *  The rule (Codex rounds 1 and 2 on #1255): every field the upload stores as the request sent it is compared, and
+   *  only the place is not. That is the file itself (its type, and its bytes by their digest, or by their count for a row
+   *  stored before the digest and only within LEGACY_REPLAY_MS: see sameBytes; and a stated length, see sameLength),
+   *  its camera time and location (the location to a billionth of a
+   *  degree, see sameCoordinate; a marked-up copy stores its original's instead, and its request sends none), the photo a
+   *  copy was drawn on (see sameSource: the one link the database clears after), and for a visit file its link:
+   *  the visit, note and rating, and the place it showed when added, written with the upload and never changed. The length is read from the file, so the
+   *  same bytes give the same length. */
+  private async replayed(projectId: string, user: AuthUser, input: CreateMediaInput, row: ReplayRow, clientKey: string): Promise<UploadedMedia> {
     // #919 — the answer is read again under two locks, both taken before the read: the send key's (its transaction's
     // first statement, as the upload and the delete take it), so a delete of this photo in flight finishes first and the
     // answer is "deleted", never a photo that is no longer there (Codex 4437127224); then the tree's shared side, always,
     // whatever place the fast read saw, so a removal of any place in flight finishes first and the answer never names a
     // removed place (Codex 4436983883, 4437307908). Lock order: the send key, then the tree, as the upload takes them.
+    // A file on a place hidden from the caller is answered as not there, before anything about it is compared, so the
+    // answer never tells whether the key is in use (Codex round 1 on #1262)
     const seen = await this.prisma.$transaction(async (tx) => {
       await lockSendKey(tx, projectId, clientKey);
       await lockProjectTreeShared(tx, projectId);
@@ -170,8 +214,55 @@ export class MediaService {
     });
     if (seen === 'deleted') throw new GoneException(DELETED_PHOTO);
     if (!seen) throw new NotFoundException('Media not found');
-    const nodeId = seen.nodeId;
-    return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString(), nodeId };
+    const bytes = Buffer.from(input.data, 'base64');
+    if (row.uploadedBy !== user.sub || row.kind !== input.kind
+      || row.decisionId !== (input.decisionId || null) || row.dailyLogId !== (input.dailyLogId || null)
+      || row.inspectionId !== (input.inspectionId ?? null) || row.inspectionItemId !== (input.inspectionItemId ?? null)
+      || row.mime !== input.mime || !sameBytes(row, bytes, Date.now()) || !sameLength(row, input, bytes)
+      || !(await this.sameSource(projectId, row, input))
+      || (input.sourceMediaId === undefined && (row.takenAt !== (input.takenAt ?? null) || !sameCoordinate(row.geoLat, input.geoLat) || !sameCoordinate(row.geoLng, input.geoLng)))
+      || !(await this.sameVisitLink(projectId, row, input))) {
+      throw new ForbiddenException('This upload key belongs to another photo');
+    }
+    if (!SITE_RECORD_ROLES.has(user.role)) {
+      const plain = (row.kind === 'progress' || row.kind === 'visit') && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
+      // #482 site photos unit 4: a contractor's or consultant's own proof is theirs to have back too
+      if (!plain && row.kind !== 'proof') throw new ForbiddenException('This upload key belongs to another photo');
+    }
+    return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString(), nodeId: seen.nodeId };
+  }
+
+  /** Whether a stored copy names the photo this request names (Codex round 3 on #1255). The one compared field the
+   *  database writes after the upload: the link is cleared (`ON DELETE SET NULL ("sourceMediaId")`) when the original
+   *  is deleted. A copy's original is always a file on the copy's visit, and such a file leaves only with that visit's
+   *  removal line. So a stored file that names none matches a copy's request only when the photo it names was taken
+   *  off the request's visit and is gone from the project; otherwise (a photo still there, an id that never existed,
+   *  another project's photo) the stored file was never its copy. */
+  private async sameSource(projectId: string, row: ReplayRow, input: CreateMediaInput): Promise<boolean> {
+    const sent = input.sourceMediaId ?? null;
+    if (row.sourceMediaId === sent) return true;
+    if (row.sourceMediaId !== null || sent === null || input.siteVisit === undefined) return false;
+    if (!(await this.siteVisitFiles.wasRemovedFrom(this.prisma, projectId, input.siteVisit.visitId, sent))) return false;
+    return (await this.prisma.media.findFirst({ where: { projectId, id: sent }, select: { id: true } })) === null;
+  }
+
+  /** Whether a stored file's visit link is the one this request would have written: none for an upload that names no
+   *  visit (only a visit upload writes one), else the same visit, note and rating. A link goes only with its file
+   *  (cascade), so a visit file read just before its removal committed has none here: the removal wrote the key's
+   *  record in the same statement, and the replay is answered as a deleted photo's, 410, not refused (Codex round 3). */
+  private async sameVisitLink(projectId: string, row: ReplayRow, input: CreateMediaInput): Promise<boolean> {
+    if (input.kind !== 'visit') return true;
+    const link = await this.siteVisitFiles.linkOf(this.prisma, projectId, row.id);
+    if (link === null && input.clientKey
+      && (await this.prisma.mediaTombstone.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } } }))) {
+      throw new GoneException(DELETED_PHOTO);
+    }
+    const sent = input.siteVisit;
+    // the place the file showed when it was added (Codex 4437021489): a refile never moves it, so it is compared when it
+    // is still there (it is cleared only with its place)
+    return link !== null && sent !== undefined && link.visitId === sent.visitId
+      && link.note === (sent.note ?? null) && link.rating === (sent.rating ?? null)
+      && (link.nodeId === null || link.nodeId === (input.nodeId ?? null));
   }
 
   /** The photo a marked-up copy is drawn on: an image of this project that is a file on the same visit. The copy takes
@@ -232,7 +323,7 @@ export class MediaService {
         where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
         select: REPLAY_SELECT,
       });
-      if (existing) return this.replayed(projectId, user, existing, input.clientKey);
+      if (existing) return this.replayed(projectId, user, input, existing, input.clientKey);
       // #482 — its photo was deleted: an early no, before any bytes are stored (asked again under the key's lock below)
       const deleted = await this.prisma.mediaTombstone.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } } });
       if (deleted) throw new GoneException(DELETED_PHOTO);
@@ -341,6 +432,8 @@ export class MediaService {
             mime: input.mime,
             uploadedBy,
             sizeBytes: bytes.length,
+            // #904 — the digest a replay of this key is compared with; written once, with its bytes (20280202000000)
+            contentSha256: sha256Hex(bytes),
             storageKey: key,
             data: bucketUrl ? null : bytes, // bucket mode drops the bytes; stub keeps them
             url: null, // never store a public bucket URL (private-file delivery)
@@ -388,7 +481,7 @@ export class MediaService {
         });
         let replay: UploadedMedia | undefined;
         try {
-          if (winner) replay = await this.replayed(projectId, user, winner, input.clientKey);
+          if (winner) replay = await this.replayed(projectId, user, input, winner, input.clientKey);
           // #482 — no winner any more: "deleted" only on the database's word, its record of the key (written in the
           // delete's own statement); without it the original error stands, unexplained
           else if (await this.prisma.mediaTombstone.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } } })) {
@@ -459,7 +552,10 @@ export class MediaService {
       }
       // the target place's publication under the same shared lock
       const resolved = await resolvePublishedProjectNode(tx, projectId, nodeId);
-      await tx.media.update({ where: { id }, data: { nodeId: resolved } });
+      // a delete that committed after the reads above leaves no row: the refile is answered as one sent after the delete
+      // (404), never a 500 from an update that finds no row (Prisma P2025); a delete still in flight is waited out here
+      const { count } = await tx.media.updateMany({ where: { id, projectId }, data: { nodeId: resolved } });
+      if (count === 0) throw new NotFoundException('Media not found');
       return emitEvent(tx, { projectId, actor, eventType: 'media.refiled', entityType: 'Media', entityId: id, payload: { nodeId: resolved }, effectKey: 'media.refiled', dispatch: {} });
     });
     await this.dispatcher.dispatchCommitted([ev]);

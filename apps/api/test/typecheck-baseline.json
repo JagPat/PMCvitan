@@ -32,7 +32,7 @@
   "src/media/media.service.test.ts": {
     "TS18046: 'row.data' is of type 'unknown'.": 1,
     "TS2304: Cannot find name 'SiteVisitFilesParticipant'.": 1,
-    "TS2339: Property 'findFirst' does not exist on type '{ create: Mock<({ data }: { data: Record<string, unknown>; }) => Promise<{ id: string; createdAt: Date; }>>; findUnique: Mock<({ where }: { where: { id: string; }; }) => Promise<{ id: string; projectId: string; } | null>>; update: Mock<...>; delete: Mock<...>; }'.": 1,
+    "TS2339: Property 'findFirst' does not exist on type '{ create: Mock<({ data }: { data: Record<string, unknown>; }) => Promise<{ id: string; createdAt: Date; }>>; findUnique: Mock<({ where }: { where: { id: string; }; }) => Promise<{ id: string; projectId: string; } | null>>; update: Mock<...>; updateMany: Mock<...>; delete: Mock<...>; }'.": 1,
     "TS2345: Argument of type '{ projectId: string; clientKey: string; }' is not assignable to parameter of type 'null'.": 1,
     "TS2353: Object literal may only specify known properties, and 'mime' does not exist in type '{ id: string; projectId: string; }'.": 3,
     "TS2353: Object literal may only specify known properties, and 'nodeId' does not exist in type '{ id: string; projectId: string; }'.": 1,

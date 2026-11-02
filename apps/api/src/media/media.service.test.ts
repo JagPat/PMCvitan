@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { NotFoundException, BadRequestException, ConflictException, ForbiddenException, GoneException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { MediaService } from './media.service';
@@ -47,6 +48,7 @@ function make(
       }),
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (where.id === 'med1' ? { id: 'med1', projectId: 'ambli' } : null)),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'med1', ...data })),
+      updateMany: vi.fn(async () => ({ count: 1 })),
       delete: vi.fn(async () => ({})),
     },
     // #482 — no key here was ever retired
@@ -132,6 +134,8 @@ const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
 const uploader = { sub: 'user-1', role: 'pmc', projectId: 'ambli' } as never;
 
 const input: CreateMediaInput = { kind: 'progress', mime: 'image/jpeg', data: Buffer.from('hello').toString('base64') };
+/** #904 — the digest the upload of `input` stores, which its replay is compared with */
+const HELLO_SHA256 = createHash('sha256').update('hello').digest('hex');
 
 describe('MediaService.create', () => {
   it('dev stub: keeps bytes in the row and returns a signed serve path (no public url stored)', async () => {
@@ -144,6 +148,7 @@ describe('MediaService.create', () => {
     expect(row.data.toString()).toBe('hello');
     expect(row.url).toBeNull(); // never persist a public bucket URL
     expect(row.sizeBytes).toBe(5);
+    expect(row.contentSha256).toBe(HELLO_SHA256);
     expect(row.uploadedBy).toBe('user-1');
     // the fresh upload hands its committed event to the single sender exactly once (signal-only)
     expect(dispatcher.dispatchCommitted).toHaveBeenCalledTimes(1);
@@ -300,7 +305,7 @@ describe('MediaService — a replayed upload key (#482)', () => {
     const { svc, prisma, storage } = make(null);
     prisma.media.create.mockRejectedValueOnce(p2002());
     Object.assign(prisma.media, {
-      findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null, nodeId: null }),
+      findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null, mime: 'image/jpeg', sizeBytes: 5, contentSha256: HELLO_SHA256, sourceMediaId: null, takenAt: null, geoLat: null, geoLng: null, nodeId: null }),
       findFirst: vi.fn(async () => null),
     });
     expect(await svc.create('ambli', contractor, { ...input, clientKey: 'k' })).toEqual({ id: 'own', url: '/media/own?t=tok', at: '2026-10-19T09:30:00.000Z', nodeId: null });
@@ -367,7 +372,7 @@ describe('MediaService — a replayed upload key (#482)', () => {
     const { svc, prisma, storage } = make(null);
     prisma.media.create.mockRejectedValueOnce(p2002());
     Object.assign(prisma.media, {
-      findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null, nodeId: null }),
+      findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ id: 'own', createdAt: new Date('2026-10-19T09:30:00.000Z'), kind: 'progress', uploadedBy: 'c1', decisionId: null, dailyLogId: null, inspectionId: null, inspectionItemId: null, mime: 'image/jpeg', sizeBytes: 5, contentSha256: HELLO_SHA256, sourceMediaId: null, takenAt: null, geoLat: null, geoLng: null, nodeId: null }),
       findFirst: vi.fn(async () => ({ id: 'own' })),
     });
     expect(await svc.create('ambli', contractor, { ...input, clientKey: 'k' })).toEqual({ id: 'own', url: '/media/own?t=tok', at: '2026-10-19T09:30:00.000Z', nodeId: null });
@@ -418,13 +423,13 @@ describe('MediaService — location spine (nodeId)', () => {
   it('setNode refuses another author\'s private draft and writes nothing', async () => {
     const { svc, prisma } = make(null, null, [{ id: 'd1', projectId: 'ambli', publishedAt: null, authorId: 'someone-else' }]);
     await expect(svc.setNode('med1', 'ambli', 'd1', user)).rejects.toBeInstanceOf(BadRequestException);
-    expect(prisma.media.update).not.toHaveBeenCalled();
+    expect(prisma.media.updateMany).not.toHaveBeenCalled();
   });
 
   it('setNode re-files onto a node and returns a snapshot', async () => {
     const { svc, prisma, snapshot } = make(null, null, [{ id: 'r1', projectId: 'ambli' }]);
     const out = await svc.setNode('med1', 'ambli', 'r1', user);
-    expect(prisma.media.update).toHaveBeenCalledWith({ where: { id: 'med1' }, data: { nodeId: 'r1' } });
+    expect(prisma.media.updateMany).toHaveBeenCalledWith({ where: { id: 'med1', projectId: 'ambli' }, data: { nodeId: 'r1' } });
     expect(snapshot.build).toHaveBeenCalled();
     expect(out).toEqual({ ok: true });
   });
@@ -432,7 +437,14 @@ describe('MediaService — location spine (nodeId)', () => {
   it('setNode with null unfiles the photo', async () => {
     const { svc, prisma } = make(null);
     await svc.setNode('med1', 'ambli', null, user);
-    expect(prisma.media.update).toHaveBeenCalledWith({ where: { id: 'med1' }, data: { nodeId: null } });
+    expect(prisma.media.updateMany).toHaveBeenCalledWith({ where: { id: 'med1', projectId: 'ambli' }, data: { nodeId: null } });
+  });
+
+  it('setNode answers a photo deleted before its write as not found and builds nothing', async () => {
+    const { svc, prisma, snapshot } = make(null, null, [{ id: 'r1', projectId: 'ambli' }]);
+    prisma.media.updateMany.mockResolvedValueOnce({ count: 0 });
+    await expect(svc.setNode('med1', 'ambli', 'r1', user)).rejects.toBeInstanceOf(NotFoundException);
+    expect(snapshot.build).not.toHaveBeenCalled();
   });
 
   it('setNode answers a photo on someone else\'s private draft as not found and writes nothing', async () => {
@@ -442,7 +454,7 @@ describe('MediaService — location spine (nodeId)', () => {
     (prisma.projectNode as unknown as { findFirst: unknown }).findFirst = vi.fn(async () => ({ id: 'd1' }));
     await expect(svc.setNode('med1', 'ambli', 'r1', user)).rejects.toBeInstanceOf(NotFoundException);
     await expect(svc.setNode('med1', 'ambli', null, user)).rejects.toBeInstanceOf(NotFoundException);
-    expect(prisma.media.update).not.toHaveBeenCalled();
+    expect(prisma.media.updateMany).not.toHaveBeenCalled();
   });
 
   it('setNode refuses media from another project', async () => {
