@@ -216,3 +216,10 @@ export interface ActivityRefQuery {
   readonly projectId: string;
   readonly activityId: string;
 }
+
+/** Delete races (S1): the server's 404 texts for a delete of a phase, an activity or an override it no
+ *  longer holds, before the delete or after losing a race to another one. The web reads a 404 on that delete as "already
+ *  removed" only when it carries exactly this text, never a route's or a proxy's 404 (as `MEDIA_NOT_FOUND_MESSAGE`). */
+export const PHASE_NOT_FOUND_MESSAGE = 'Phase not found';
+export const activityNotFoundMessage = (activityId: string): string => `Activity ${activityId} not found`;
+export const overrideNotFoundMessage = (overrideId: string): string => `Override ${overrideId} not found`;
