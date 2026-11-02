@@ -27,8 +27,7 @@ describe('Redbracket ID A1: the link, attempt and retirement tables (live PG)', 
   });
   afterEach(async () => {
     await t.prisma.$executeRawUnsafe(`DELETE FROM "SignInAttempt"`);
-    await t.prisma.$executeRawUnsafe(`DELETE FROM "PlatformPersonLink"`);
-    await t.prisma.$executeRawUnsafe(`DELETE FROM "IdentityRetirement"`);
+    // links and retirements are sealed records: they go only with their user
     if (users.length) await t.prisma.user.deleteMany({ where: { id: { in: users.splice(0) } } });
   });
   afterAll(async () => {
@@ -136,7 +135,7 @@ describe('Redbracket ID A1: the link, attempt and retirement tables (live PG)', 
     expect(await retire(u, 'jp@example.in')).toBe(1);
     await expect(retire(u, 'jp@example.in')).rejects.toThrow(/23505|unique constraint/i);
     const v = await newUser();
-    for (const email of ['', ' ', 'jp', 'jp @example.in', 'x'.repeat(316) + '@a.in']) {
+    for (const email of ['', ' ', 'jp', 'jp @example.in', 'x'.repeat(316) + '@a.in', 'a@@b.in', 'a@b@c.in', '@b.in', 'a@']) {
       await expect(retire(v, email)).rejects.toThrow(/IdentityRetirement_shape_check/);
     }
     await expect(retire(v, 'a@b.in', `'infinity'::timestamp`)).rejects.toThrow(/IdentityRetirement_shape_check/);
@@ -176,6 +175,38 @@ describe('Redbracket ID A1: the link, attempt and retirement tables (live PG)', 
     const indexes = await t.prisma.$queryRawUnsafe<Array<{ indexname: string }>>(
       `SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'SignInAttempt' ORDER BY indexname`);
     expect(indexes.map((i) => i.indexname)).toEqual(['SignInAttempt_at_idx', 'SignInAttempt_emailHash_at_idx', 'SignInAttempt_pkey']);
+  });
+
+  it('seals a link and a retirement: no update, no delete while the user stands, and both still go with the user', async () => {
+    const u = await newUser();
+    const v = await newUser();
+    await link(u, 'sub-sealed');
+    await retire(u, 'before@example.in');
+    const sealed = /is a record and is never (changed|deleted)/;
+    // moving the person to another user, or rewriting the before-image an undo trusts, is refused
+    await expect(t.prisma.$executeRawUnsafe(`UPDATE "PlatformPersonLink" SET "userId" = $1 WHERE "userId" = $2`, v, u)).rejects.toThrow(sealed);
+    await expect(t.prisma.$executeRawUnsafe(`UPDATE "PlatformPersonLink" SET "subject" = 'other' WHERE "userId" = $1`, u)).rejects.toThrow(sealed);
+    await expect(t.prisma.$executeRawUnsafe(`UPDATE "IdentityRetirement" SET "email" = 'wrong@example.in' WHERE "userId" = $1`, u)).rejects.toThrow(sealed);
+    await expect(t.prisma.$executeRawUnsafe(`UPDATE "IdentityRetirement" SET "retiredAt" = now() WHERE "userId" = $1`, u)).rejects.toThrow(sealed);
+    // a delete then an insert cannot move it either: the delete is refused while the user stands
+    await expect(t.prisma.$executeRawUnsafe(`DELETE FROM "PlatformPersonLink" WHERE "userId" = $1`, u)).rejects.toThrow(sealed);
+    await expect(t.prisma.$executeRawUnsafe(`DELETE FROM "IdentityRetirement" WHERE "userId" = $1`, u)).rejects.toThrow(sealed);
+    await expect(t.prisma.platformPersonLink.deleteMany({ where: { userId: u } })).rejects.toThrow(sealed);
+    // a user id change cannot carry the link to another id (refused by the seal or by an older key on "User")
+    await expect(t.prisma.$executeRawUnsafe(`UPDATE "User" SET "id" = $1 WHERE "id" = $2`, `${u}-moved`, u)).rejects.toThrow();
+    const kept = await t.prisma.$queryRawUnsafe<Array<{ userId: string; subject: string; email: string }>>(
+      `SELECT l."userId", l."subject", r."email" FROM "PlatformPersonLink" l JOIN "IdentityRetirement" r USING ("userId") WHERE l."userId" = $1`, u);
+    expect(kept).toEqual([{ userId: u, subject: 'sub-sealed', email: 'before@example.in' }]);
+    // the user's own delete still takes both with it
+    await t.prisma.user.delete({ where: { id: u } });
+    users.splice(users.indexOf(u), 1);
+    const left = await t.prisma.$queryRawUnsafe<Array<{ links: number; retired: number }>>(
+      `SELECT (SELECT count(*) FROM "PlatformPersonLink" WHERE "userId" = $1)::int AS links,
+              (SELECT count(*) FROM "IdentityRetirement" WHERE "userId" = $1)::int AS retired`, u);
+    expect(left).toEqual([{ links: 0, retired: 0 }]);
+    const triggers = await t.prisma.$queryRawUnsafe<Array<{ tgname: string }>>(
+      `SELECT tgname FROM pg_trigger WHERE tgrelid IN ('"PlatformPersonLink"'::regclass, '"IdentityRetirement"'::regclass) AND NOT tgisinternal ORDER BY tgname`);
+    expect(triggers.map((r) => r.tgname)).toEqual(['IdentityRetirement_sealed', 'PlatformPersonLink_sealed']);
   });
 
   it('the file re-runs on a database that has it, changing nothing', async () => {

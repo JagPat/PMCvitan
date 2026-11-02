@@ -22,9 +22,18 @@
 --     Falls with its user.
 --   CHECKs hold the shapes: one spelling of an https issuer (lower-case host, optional port and path; no trailing
 --   slash, query, fragment or whitespace), a sub of 1 to 255 printable ASCII characters (OIDC Core §2), the two
---   `matchedOn` values, the two attempt kinds, 64-hex digests, a non-blank retired email and finite times.
+--   `matchedOn` values, the two attempt kinds, 64-hex digests, a retired email with exactly one `@` between two
+--   non-blank printable ASCII parts (`a@@b` and `a@b@c` refused: the record must hold an address an undo can put
+--   back) and finite times.
 --   Every bracket expression lists its characters one by one (no `a-z`, `0-9` or `!-~` range): a range's meaning
 --   follows the database collation, so a look-alike outside ASCII (U+FF10, U+00E9) could pass under one collation.
+--
+-- SEALED RECORDS. A link and a retirement are records, written once. A3 only inserts them. A BEFORE UPDATE OR DELETE
+-- trigger refuses any change, and any delete while the owning "User" row still stands, so no raw-SQL UPDATE can move a
+-- `sub` to another user (or a delete then an insert do the same), and no update can rewrite the before-image an
+-- operator's undo trusts. The cascade when the user itself is deleted still runs: the trigger fires after the user
+-- row is gone, so the existence check passes. Because "User"."id" never changes, the foreign keys' ON UPDATE CASCADE
+-- would be refused too, which is intended. "SignInAttempt" is not sealed: it is a counter whose old rows A3 deletes.
 --
 -- ITS END. Lasting tables, not a residual. With IDENTITY_OIDC off they stay unread.
 --
@@ -107,8 +116,29 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint
                   WHERE conrelid = 'public."IdentityRetirement"'::regclass AND conname = 'IdentityRetirement_shape_check') THEN
     ALTER TABLE public."IdentityRetirement" ADD CONSTRAINT "IdentityRetirement_shape_check"
-      CHECK ("email" ~ '^[]ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!"#$%&''()*+,./:;<=>?@[\\^_`{|}~-]+@[]ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!"#$%&''()*+,./:;<=>?@[\\^_`{|}~-]+$' AND char_length("email") <= 320 AND isfinite("retiredAt"));
+      CHECK ("email" ~ '^[]ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!"#$%&''()*+,./:;<=>?[\\^_`{|}~-]+@[]ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!"#$%&''()*+,./:;<=>?[\\^_`{|}~-]+$' AND char_length("email") <= 320 AND isfinite("retiredAt"));
   END IF;
 END $$;
+
+CREATE OR REPLACE FUNCTION public.platform_identity_record_sealed() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    RAISE EXCEPTION 'identity: a % row is a record and is never changed', TG_TABLE_NAME;
+  END IF;
+  IF EXISTS (SELECT 1 FROM public."User" u WHERE u."id" = OLD."userId") THEN
+    RAISE EXCEPTION 'identity: a % row is a record and is never deleted; it goes only with its user', TG_TABLE_NAME;
+  END IF;
+  RETURN OLD;
+END $$;
+
+DROP TRIGGER IF EXISTS "PlatformPersonLink_sealed" ON public."PlatformPersonLink";
+CREATE TRIGGER "PlatformPersonLink_sealed"
+  BEFORE UPDATE OR DELETE ON public."PlatformPersonLink"
+  FOR EACH ROW EXECUTE FUNCTION public.platform_identity_record_sealed();
+DROP TRIGGER IF EXISTS "IdentityRetirement_sealed" ON public."IdentityRetirement";
+CREATE TRIGGER "IdentityRetirement_sealed"
+  BEFORE UPDATE OR DELETE ON public."IdentityRetirement"
+  FOR EACH ROW EXECUTE FUNCTION public.platform_identity_record_sealed();
 
 COMMIT;

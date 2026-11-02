@@ -5902,9 +5902,9 @@ assert "#904: after the replay the file rows keep their nullable digest column, 
   "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'Media' AND column_name = 'contentSha256' AND data_type = 'text' AND is_nullable = 'YES' AND column_default IS NULL)::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"Media\"'::regclass AND conname = 'Media_contentSha256_shape_check' AND contype = 'c')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"Media\"'::regclass AND tgname = 'Media_content_sha256_fixed' AND NOT tgisinternal)::text;" \
   "1|1|1"
 # Redbracket ID A1 — the link, attempt and retirement tables (on ALWAYS_EXECUTE): both foreign keys and the three CHECKs.
-assert "Redbracket ID A1: after the replay the link and retirement keep their foreign keys and all three tables their shape checks" \
-  "SELECT (SELECT count(*) FROM pg_constraint WHERE conname IN ('PlatformPersonLink_userId_fkey', 'IdentityRetirement_userId_fkey') AND contype = 'f')::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conname IN ('PlatformPersonLink_shape_check', 'SignInAttempt_shape_check', 'IdentityRetirement_shape_check') AND contype = 'c')::text;" \
-  "2|3"
+assert "Redbracket ID A1: after the replay the link and retirement keep their foreign keys and seals, and all three tables their shape checks" \
+  "SELECT (SELECT count(*) FROM pg_constraint WHERE conname IN ('PlatformPersonLink_userId_fkey', 'IdentityRetirement_userId_fkey') AND contype = 'f')::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conname IN ('PlatformPersonLink_shape_check', 'SignInAttempt_shape_check', 'IdentityRetirement_shape_check') AND contype = 'c')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgname IN ('PlatformPersonLink_sealed', 'IdentityRetirement_sealed') AND tgenabled = 'O')::text;" \
+  "2|3|2"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \

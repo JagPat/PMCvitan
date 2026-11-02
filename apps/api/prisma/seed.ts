@@ -155,6 +155,9 @@ async function main(): Promise<void> {
   await prisma.gateOverride.deleteMany();
   await prisma.drawingRecipient.deleteMany();
   await prisma.passwordCredentialChallenge.deleteMany();
+  // Redbracket ID A1 — the sign-in try count names no user (digests only), so no user delete reaches it; a reseed
+  // that left it would let a recreated account inherit the previous run's tries.
+  await prisma.signInAttempt.deleteMany();
   await prisma.securityAuditEvent.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.notification.deleteMany();
