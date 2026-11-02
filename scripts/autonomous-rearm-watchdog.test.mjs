@@ -1,0 +1,324 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import {
+  AutoMergeDisarmFailed,
+  authorizeRecoveryDispatch,
+  disarmBeforeRun,
+  ensureTerminalReviewState,
+  markAbandonedRearmRequest,
+  newestTokenedSuccess,
+  pendingRecoveryRequest,
+  persistRecoveryRequest,
+  recordAdoptedRearmRequest,
+  settleUnmatchedRecoveryRequest,
+  withRearmSettlement,
+} from './autonomous-review-gate.mjs';
+import { gateRearmStatus, gateRecoveryStatus } from './correction-lease.mjs';
+import {
+  CODEX_AUTOMERGE_DISARM_FAILED,
+  REARM_ATTEMPT_FAILED,
+  REARM_REQUEST_ABANDONED_MS,
+  REARM_REQUEST_SUPERSEDED,
+  REARM_SETTLEMENTS,
+  rearmRequestContext,
+  rearmRequestDescription,
+} from './review-policy.mjs';
+
+/**
+ * G3b — the watchdog re-arm (notes/gate-codex-silent/g3/split-plan.md). G3a′ disarms a queued auto-merge before every
+ * success and re-arms only after the merge's authorization; a green whose arming was lost on any path is left ready,
+ * tokened and unarmed. The handoff's watchdog (`gateRearmStatus`) asks the gate's recovery to re-judge it, once per
+ * re-judged success and per pull request; the re-judge re-arms only through `completeReviewedPullRequest`.
+ */
+const HEAD = 'c'.repeat(40);
+const PR = 7;
+const CONTEXT = rearmRequestContext('6100', PR);
+const ready = (extra = {}) => ({ number: PR, state: 'open', draft: false, auto_merge: null, html_url: 'u', ...extra });
+const success = (id, description = 'review: Codex found no blocking issue on this exact head [wi:none]') =>
+  ({ id, context: 'codex-current-head', state: 'success', description });
+const green = success(6100);
+const requestStatus = (state = 'pending', description = rearmRequestDescription('6100', PR), extra = {}) =>
+  ({ id: 9, context: CONTEXT, state, description, ...extra });
+const adopted = { terminalStatusId: '6100', status: { context: CONTEXT } };
+const writer = (failWrite = false) => {
+  const writes = [];
+  return { writes, client: { async setStatus(sha, state, description, url, context) {
+    if (failWrite) throw new Error('status write 502');
+    writes.push({ state, description, context }); return { id: 1 };
+  } } };
+};
+
+test('G3b — the dispatch\'s status id is a hint: only this head\'s newest tokened success, named exactly, is authorized', () => {
+  const older = success(6099);
+  const pending = { id: 6101, context: 'codex-current-head', state: 'pending', description: 'review: pending required CI and current-head Codex review' };
+  assert.equal(authorizeRecoveryDispatch([green, older], '6100'), green);
+  assert.equal(newestTokenedSuccess([green, older], '6100'), green);
+  assert.equal(authorizeRecoveryDispatch([green, older], '6099'), null, 'a stale id');
+  assert.equal(authorizeRecoveryDispatch([green], '12345'), null, 'another head\'s id');
+  assert.equal(authorizeRecoveryDispatch([success(6102, 'review: clean')], '6102'), null, 'an untokened success');
+  assert.equal(authorizeRecoveryDispatch([pending, green], '6100'), null, 'a success beneath a newer review');
+  assert.equal(newestTokenedSuccess([green], ''), null);
+  // the old contract is unchanged: the active pending status and a retryable failure are still authorized
+  assert.equal(authorizeRecoveryDispatch([pending, green], '6101'), pending);
+  const timedOut = { id: 6103, context: 'codex-current-head', state: 'failure', description: 'review: Codex review timed out' };
+  assert.equal(authorizeRecoveryDispatch([timedOut], '6103'), timedOut);
+  // gap-check F2c on #1289: judged before an older non-retryable failure beneath the newest success
+  const finding = { id: 6000, context: 'codex-current-head', state: 'failure', description: 'review: current-head Codex finding on this exact head' };
+  assert.equal(authorizeRecoveryDispatch([green, finding], '6100')?.id, 6100);
+  assert.equal(authorizeRecoveryDispatch([success(6100, 'review: clean'), finding], '6100'), null);
+  assert.equal(authorizeRecoveryDispatch([finding], '6000'), null);
+});
+
+// #1289 round 3, Codex 4440445763 — a commit status belongs to the commit, `auto_merge` to the pull request. A re-arm
+// request is keyed by its pull request, so a request or settlement for PR A at a commit never holds PR B's watchdog,
+// and B's run never adopts, settles or supersedes A's request.
+test('G3b (Codex 4440445763) — a re-arm request names its pull request; another PR at the same commit holds nothing', async () => {
+  // request-recovery writes the scoped request for a success, the unscoped one for a failure (unchanged)
+  const writes = [];
+  const client = { async setStatus(sha, state, description, url, context) { writes.push({ state, description, context }); return { id: 1 }; } };
+  await persistRecoveryRequest(client, HEAD, ready(), green);
+  await persistRecoveryRequest(client, HEAD, ready(), { id: 6050, state: 'failure' });
+  assert.deepEqual(writes, [
+    { state: 'pending', description: 'recovery: requested terminal status 6100 for pull request #7', context: 'codex-recovery-request/6100/pr-7' },
+    { state: 'pending', description: 'recovery: requested terminal status 6050', context: 'codex-recovery-request/6050' },
+  ]);
+  // the run adopts only its own pull request's re-arm request
+  const mine = requestStatus();
+  const theirs = { ...requestStatus(), context: rearmRequestContext('6100', 8), description: rearmRequestDescription('6100', 8) };
+  assert.equal(pendingRecoveryRequest([theirs, green], PR), null, 'PR 8\'s request is not PR 7\'s');
+  assert.equal(pendingRecoveryRequest([theirs, mine, green], PR)?.status.context, CONTEXT);
+  assert.equal(pendingRecoveryRequest([mine, green]), null, 'with no pull request named, no re-arm request is read');
+  assert.equal(pendingRecoveryRequest([{ ...mine, description: 'recovery: requested terminal status 6100' }], PR), null, 'a mismatched description');
+  // a failure's request is read as before, with or without a pull request
+  const failureRequest = { id: 5, context: 'codex-recovery-request/6050', state: 'pending', description: 'recovery: requested terminal status 6050' };
+  assert.equal(pendingRecoveryRequest([failureRequest], PR)?.terminalStatusId, '6050');
+  assert.equal(pendingRecoveryRequest([failureRequest])?.terminalStatusId, '6050');
+  // the watchdog: PR 8's pending request and PR 8's newer consumption hold nothing for PR 7
+  assert.equal(gateRearmStatus({ statuses: [theirs, green] }, ready())?.id, 6100);
+  const consumedFor = (number) => ({ id: 6101, context: rearmRequestContext('6100', number), state: 'success', description: REARM_SETTLEMENTS[0] });
+  assert.equal(gateRearmStatus({ statuses: [consumedFor(8), green] }, ready())?.id, 6100, 'another PR\'s consumption');
+  assert.equal(gateRearmStatus({ statuses: [consumedFor(PR), green] }, ready()), null, 'its own consumption holds it');
+  assert.equal(gateRearmStatus({ statuses: [consumedFor(17), green] }, ready()).id, 6100, 'PR 17 is not PR 7');
+  // and the cleanup marks only this pull request's request
+  const cleanup = writer();
+  const reads = { async statuses() { return [theirs, green]; } };
+  assert.equal(await markAbandonedRearmRequest({ ...reads, ...cleanup.client }, HEAD, '6100', PR, 'u'), 'settled');
+  assert.deepEqual(cleanup.writes, []);
+});
+
+test('G3b — an unmatched recovery request: the re-arm hint is kept for its re-judge, a stale one superseded', async () => {
+  const settle = async (statuses, req) => {
+    const { client, writes } = writer();
+    return { outcome: await settleUnmatchedRecoveryRequest(client, ready(), HEAD, statuses, req), writes };
+  };
+  const hint = await settle([green], adopted);
+  assert.equal(hint.outcome, 'rearm');
+  assert.deepEqual(hint.writes, [], 'nothing is settled before the re-judge runs (#1289 round 1)');
+  const stale = await settle([success(6300), green], adopted);
+  assert.equal(stale.outcome, 'superseded');
+  assert.deepEqual(stale.writes, [{ state: 'failure', description: REARM_REQUEST_SUPERSEDED, context: CONTEXT }]);
+  const failure = { id: 6050, context: 'codex-current-head', state: 'failure', description: 'review: Codex review timed out after two attempts' };
+  const other = await settle([success(6300), failure], { terminalStatusId: '6050', status: { context: 'codex-recovery-request/6050' } });
+  assert.deepEqual(other.writes.map((w) => w.description), ['recovery: request superseded by newer review state']);
+});
+
+test('G3b — withRearmSettlement: consumed after the re-judge ends, re-askable when it throws, races or falls through', async () => {
+  const ok = writer();
+  const order = [];
+  assert.equal(await withRearmSettlement(ok.client, ready(), HEAD, adopted, async () => { order.push(ok.writes.length); return true; }), true);
+  assert.deepEqual(order, [0], 'nothing written before the step');
+  assert.deepEqual(ok.writes, [{ state: 'success', description: 'recovery: consumed by recovered success re-authorization', context: CONTEXT }]);
+  assert.ok(REARM_SETTLEMENTS.includes(ok.writes[0].description));
+  // throws: marked failed, the original error surfaces
+  const bad = writer();
+  await assert.rejects(withRearmSettlement(bad.client, ready(), HEAD, adopted, async () => { throw new Error('record read 502'); }), /record read 502/u);
+  assert.deepEqual(bad.writes, [{ state: 'failure', description: REARM_ATTEMPT_FAILED, context: CONTEXT }]);
+  assert.equal(REARM_SETTLEMENTS.includes(REARM_ATTEMPT_FAILED), false);
+  const down = writer(true);
+  await assert.rejects(withRearmSettlement(down.client, ready(), HEAD, adopted, async () => { throw new Error('record read 502'); }), /record read 502/u,
+    'a failed mark keeps the original error');
+  // #1289 round 2 (Codex 4440043724): a merge whose validation raced a change, or found a draft, is marked failed
+  const settle = async (completion, result = true) => {
+    const { client, writes } = writer();
+    const outcome = {};
+    const returned = await withRearmSettlement(client, ready(), HEAD, adopted, async () => { outcome.completion = completion; return result; }, outcome);
+    return { returned, writes };
+  };
+  const raced = await settle('held_changed');
+  assert.equal(raced.returned, true);
+  assert.deepEqual(raced.writes, [{ state: 'failure', description: REARM_ATTEMPT_FAILED, context: CONTEXT }]);
+  for (const completion of ['held_for_gates', 'queued', 'merged', 'review_refused', undefined]) {
+    assert.deepEqual((await settle(completion)).writes.map((w) => w.description), [REARM_SETTLEMENTS[0]], String(completion));
+  }
+  // #1289 round 3 (Codex 4440445746): the recovered success did not end the run (a drafted PR: the ordinary review
+  // runs next, outside this settlement), so the request is marked failed, never consumed
+  const fellThrough = await settle(undefined, false);
+  assert.equal(fellThrough.returned, false);
+  assert.deepEqual(fellThrough.writes, [{ state: 'failure', description: REARM_ATTEMPT_FAILED, context: CONTEXT }]);
+  // no re-arm request: the step alone, nothing written
+  const none = writer();
+  assert.equal(await withRearmSettlement(none.client, ready(), HEAD, null, async () => false), false);
+  assert.deepEqual(none.writes, []);
+});
+
+const repo = { full_name: 'JagPat/PMCvitan' };
+const full = (extra = {}) => ({
+  ...ready(), node_id: 'PR_7', head: { sha: HEAD, ref: 'claude/g3b', repo }, base: { ref: 'main', sha: 'b'.repeat(40), repo }, ...extra,
+});
+
+test('G3b (Codex 4440445746) — a recovered success on a drafted PR writes nothing and arms nothing; its request is re-askable', async () => {
+  const calls = [];
+  const client = new Proxy({}, { get: (_, name) => async () => {
+    calls.push(name);
+    if (name === 'pullRequest') return full({ draft: true });
+    if (name === 'statuses' || name === 'checkRuns' || name === 'issueComments') return [];
+    throw new Error(`unexpected ${String(name)}`);
+  } });
+  const outcome = {};
+  assert.equal(await ensureTerminalReviewState(client, full(), HEAD, green, [green], outcome), false);
+  assert.deepEqual(calls, ['pullRequest'], 'one live read, then nothing written, disabled or armed');
+  // through the settlement, as run() wraps it: marked failed, so once the PR is ready again the watchdog asks again
+  const { client: statusClient, writes } = writer();
+  const wrapped = { ...statusClient };
+  const result = await withRearmSettlement(wrapped, ready(), HEAD, adopted,
+    () => ensureTerminalReviewState(client, full(), HEAD, green, [green], outcome), outcome);
+  assert.equal(result, false);
+  assert.deepEqual(writes, [{ state: 'failure', description: REARM_ATTEMPT_FAILED, context: CONTEXT }]);
+  assert.equal(gateRearmStatus({ statuses: [requestStatus('failure', REARM_ATTEMPT_FAILED), green] }, ready())?.id, 6100);
+  // and a structural row: run() reads the step's boolean through the settlement, and only a true result returns
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const helper = gate.slice(gate.indexOf('export async function withRearmSettlement('), gate.indexOf('export function recordAdoptedRearmRequest('));
+  assert.match(helper, /if \(!result \|\| outcome\.completion === 'held_changed'\) \{\s*await client\.setStatus\(expectedHead, 'failure', REARM_ATTEMPT_FAILED/u);
+});
+
+test('G3b — the watchdog: a failed attempt is asked again; pending within the limit or consumed holds it', () => {
+  assert.equal(gateRearmStatus({ statuses: [green, requestStatus('failure', REARM_ATTEMPT_FAILED)] }, ready())?.id, 6100);
+  assert.equal(gateRearmStatus({ statuses: [green, requestStatus()] }, ready()), null);
+  assert.equal(gateRearmStatus({ statuses: [green, requestStatus('success', REARM_SETTLEMENTS[0])] }, ready()), null);
+  // no pull request number: nothing asked (the key needs it)
+  assert.equal(gateRearmStatus({ statuses: [green] }, ready({ number: undefined })), null);
+  const now = '2026-08-17T12:00:00Z';
+  const at = (ms) => new Date(Date.parse(now) - ms).toISOString();
+  const pending = (extra) => requestStatus('pending', rearmRequestDescription('6100', PR), extra);
+  assert.equal(gateRearmStatus({ statuses: [pending({ updated_at: at(REARM_REQUEST_ABANDONED_MS + 60_000) }), green] }, ready(), now)?.id, 6100, 'abandoned');
+  assert.equal(gateRearmStatus({ statuses: [pending({ created_at: at(REARM_REQUEST_ABANDONED_MS + 60_000) }), green] }, ready(), now)?.id, 6100, 'created_at');
+  assert.equal(gateRearmStatus({ statuses: [pending({ updated_at: at(REARM_REQUEST_ABANDONED_MS - 60_000) }), green] }, ready(), now), null, 'within');
+  assert.equal(gateRearmStatus({ statuses: [pending({ updated_at: at(REARM_REQUEST_ABANDONED_MS + 60_000) }), green] }, ready()), null, 'no clock');
+  assert.equal(gateRearmStatus({ statuses: [pending({ updated_at: 'not a time' }), green] }, ready(), now), null, 'unreadable time');
+  const settledOld = requestStatus('failure', REARM_REQUEST_SUPERSEDED, { updated_at: at(REARM_REQUEST_ABANDONED_MS * 2) });
+  assert.equal(gateRearmStatus({ statuses: [green, settledOld] }, ready(), now), null, 'age never lifts a settled request');
+});
+
+test('G3b — the abandoned limit stays above twice the owner job\'s limit', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/auto-merge.yml', import.meta.url), 'utf8');
+  const owner = workflow.slice(workflow.indexOf('  orchestrate:'));
+  const minutes = Number(/timeout-minutes: (\d+)/u.exec(owner)?.[1]);
+  assert.ok(minutes > 0 && REARM_REQUEST_ABANDONED_MS > 2 * minutes * 60_000);
+});
+
+// #1289 round 2 (Codex 4440043736) — a retryable failure buried under the newest success is no recovery the gate will
+// authorize, so the watchdog does not ask about it: the unarmed green goes to the re-arm instead.
+test('G3b — a buried retryable failure does not starve the re-arm', () => {
+  const buried = { id: 6050, context: 'codex-current-head', state: 'failure', description: 'review: Codex review timed out after two attempts' };
+  assert.equal(gateRecoveryStatus({ statuses: [green, buried] }), null);
+  assert.equal(gateRearmStatus({ statuses: [green, buried] }, ready())?.id, 6100);
+  assert.equal(authorizeRecoveryDispatch([green, buried], '6050'), null);
+  assert.equal(gateRecoveryStatus({ statuses: [buried, green] })?.id, 6050);
+});
+
+test('G3b — the owner job\'s cleanup marks only this PR\'s still-pending re-arm request', async () => {
+  const drive = async (statuses, id = '6100', sha = HEAD, number = PR) => {
+    const writes = [];
+    const client = {
+      async statuses(head) { assert.equal(head, sha); return statuses; },
+      async setStatus(head, state, description, url, context) { writes.push({ head, state, description, url, context }); return { id: 1 }; },
+    };
+    return { outcome: await markAbandonedRearmRequest(client, sha, id, number, 'https://github.com/JagPat/PMCvitan/pull/7'), writes };
+  };
+  const marked = await drive([requestStatus(), green]);
+  assert.equal(marked.outcome, 'marked');
+  assert.deepEqual(marked.writes, [{ head: HEAD, state: 'failure', description: REARM_ATTEMPT_FAILED, url: 'https://github.com/JagPat/PMCvitan/pull/7', context: CONTEXT }]);
+  for (const settled of [requestStatus('success', REARM_SETTLEMENTS[0]), requestStatus('failure', REARM_ATTEMPT_FAILED)]) {
+    const done = await drive([settled, green]);
+    assert.equal(done.outcome, 'settled');
+    assert.deepEqual(done.writes, []);
+  }
+  const noRead = { async statuses() { throw new Error('no read'); } };
+  assert.equal(await markAbandonedRearmRequest(noRead, HEAD, '', PR, null), 'skipped', 'nothing adopted');
+  assert.equal(await markAbandonedRearmRequest(noRead, '', '6100', PR, null), 'skipped');
+  assert.equal(await markAbandonedRearmRequest(noRead, HEAD, '6100', '', null), 'skipped', 'no pull request');
+  // the orchestrate run records the request it adopted, with its pull request, for the cleanup step
+  const { mkdtempSync, readFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const envFile = join(mkdtempSync(join(tmpdir(), 'rearm-')), 'env');
+  assert.equal(recordAdoptedRearmRequest(HEAD, PR, adopted, { GITHUB_ENV: envFile }), true);
+  assert.equal(readFileSync(envFile, 'utf8'), `REARM_HEAD_SHA=${HEAD}\nREARM_REQUEST_ID=6100\nREARM_PR_NUMBER=7\n`);
+  assert.equal(recordAdoptedRearmRequest(HEAD, PR, null, { GITHUB_ENV: envFile }), false);
+  assert.equal(recordAdoptedRearmRequest(HEAD, PR, adopted, {}), false);
+});
+
+test('G3b — structural: the owner job runs the cleanup on failure or cancel; run() adopts and settles the request', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/auto-merge.yml', import.meta.url), 'utf8');
+  const owner = workflow.slice(workflow.indexOf('  orchestrate:'));
+  const orchestrate = owner.indexOf('- name: Orchestrate CI, Codex review, and auto-merge');
+  const cleanup = owner.indexOf('- name: Mark an abandoned re-arm request (G3b)');
+  assert.ok(orchestrate > 0 && cleanup > orchestrate, 'the cleanup follows the orchestrate step in the owner job');
+  const step = owner.slice(cleanup, owner.indexOf('run: node scripts/autonomous-review-gate.mjs', cleanup));
+  assert.match(step, /if: \$\{\{ \(failure\(\) \|\| cancelled\(\)\) && env\.REARM_REQUEST_ID != '' \}\}/u);
+  assert.match(step, /AUTONOMOUS_REVIEW_MODE: rearm-cleanup/u);
+  assert.match(step, /pull\/\$\{\{ env\.REARM_PR_NUMBER \}\}/u);
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const runBody = gate.slice(gate.indexOf('export async function run()'));
+  assert.ok(runBody.indexOf("process.env.AUTONOMOUS_REVIEW_MODE === 'rearm-cleanup'") < runBody.indexOf('await eventContext()'));
+  assert.match(runBody, /pendingRecoveryRequest\(existingStatuses, pullRequest\.number\)/u);
+  const adopt = runBody.indexOf('recordAdoptedRearmRequest(expectedHead, pullRequest.number, rearmRequest);');
+  assert.ok(adopt > 0 && adopt < runBody.indexOf('await withRearmSettlement('), 'recorded before its re-judge runs');
+  assert.match(runBody, /existingStatuses,\s*rearmOutcome,\s*\)\);\s*\}, rearmOutcome\);/u);
+  const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState('), gate.indexOf('async function waitForRequiredChecks'));
+  assert.match(recovery, /const recoveredCompletion = await completeReviewedPullRequest\([\s\S]{0,400}if \(outcome\) outcome\.completion = recoveredCompletion;/u);
+  // the handoff asks with its clock and re-reads the live pull request before dispatching
+  const handoff = await readFile(new URL('./autonomous-handoff.mjs', import.meta.url), 'utf8');
+  assert.match(handoff, /gateRearmStatus\(combined, pullRequest, now\)\s*&& gateRearmStatus\(combined, await client\.pullRequest\(pullRequest\.number\), now\)/u);
+});
+
+// Stage 1's G3a round-2 ruling (Codex 4441198763) — after a push, the pull request's own CI-triggered run disarms its
+// queued merge before anything else on the new head; only its own authorization arms it again.
+test('G3b — a CI-triggered run disarms its own queued merge first; a disarm not confirmed is held, nothing green', async () => {
+  const armed = full({ auto_merge: { enabled_at: '2026-11-02T00:00:00Z' } });
+  const unarmed = { ...armed, auto_merge: null };
+  const make = ({ reads, disable = async () => {} }) => {
+    const calls = [];
+    return { calls, client: {
+      async pullRequest() { calls.push(['read']); return reads.shift(); },
+      async openPullRequestsAt() { calls.push(['list']); return [unarmed]; },
+      async disableAutoMerge() { calls.push(['disable']); return disable(); },
+      async setStatus(sha, state, description) { calls.push(['status', state, description]); return { id: 1 }; },
+      async setDraft(pull) { calls.push(['draft']); return { ...pull, draft: true }; },
+      async updateStickyComment() { calls.push(['sticky']); },
+      async statuses() { return []; },
+    } };
+  };
+  // nothing queued: no read, no write
+  const quiet = make({ reads: [] });
+  assert.equal(await disarmBeforeRun(quiet.client, unarmed, HEAD), unarmed);
+  assert.deepEqual(quiet.calls, []);
+  // queued: check the head, disable, re-read; the disarmed PR is the run's
+  const ok = make({ reads: [armed, unarmed] });
+  assert.equal((await disarmBeforeRun(ok.client, armed, HEAD)).auto_merge, null);
+  assert.deepEqual(ok.calls.map(([k]) => k), ['read', 'list', 'disable', 'read']);
+  // a disarm not confirmed: the retryable hold, rethrown
+  const stuck = make({ reads: [armed, armed] });
+  await assert.rejects(disarmBeforeRun(stuck.client, armed, HEAD), AutoMergeDisarmFailed);
+  assert.ok(stuck.calls.some(([k, state, description]) => k === 'status' && state === 'failure' && description.includes(CODEX_AUTOMERGE_DISARM_FAILED)));
+  assert.equal(stuck.calls.some(([k, state]) => k === 'status' && state === 'success'), false);
+  // structural: run() takes it on a CI trigger right after the untokened withdrawal, before any scope or recovery read
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const runBody = gate.slice(gate.indexOf('export async function run()'));
+  const withdraw = runBody.indexOf('await withdrawUntokenedSuccess(client, pullRequest, expectedHead, existingStatus);');
+  const first = runBody.indexOf("if (context.trigger === 'ci') {\n    pullRequest = await disarmBeforeRun(client, pullRequest, expectedHead);");
+  assert.ok(withdraw > 0 && first > withdraw, 'after the withdrawal');
+  assert.ok(first < runBody.indexOf('await enforceReviewScope('), 'before the scope read');
+  assert.ok(first < runBody.indexOf('pendingRecoveryRequest(existingStatuses'), 'before the recovery request');
+});
