@@ -311,6 +311,30 @@ test('G3 — withRearmSettlement: consumed after the re-judge ends, re-askable w
   assert.equal(gateRearmStatus({ statuses: [green, req('success', 'recovery: consumed by recovered success re-authorization')] }, pr), null);
 });
 
+// #1289 round-2 audit — a re-arm request still pending past any live run's limit lost its runner (even the owner
+// job's cleanup step did not run), so the watchdog asks again; within it, or with no readable time, it holds.
+test('G3 — a re-arm request pending past any live run\'s limit is asked again', async () => {
+  const { gateRearmStatus } = await import('./correction-lease.mjs');
+  const { REARM_REQUEST_ABANDONED_MS } = await import('./review-policy.mjs');
+  const pr = { state: 'open', draft: false, auto_merge: null };
+  const green = { id: 6100, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head [wi:none]' };
+  const now = '2026-08-17T12:00:00Z';
+  const at = (ms) => new Date(Date.parse(now) - ms).toISOString();
+  const pending = (extra) => ({ id: 6101, context: 'codex-recovery-request/6100', state: 'pending', description: 'recovery: requested terminal status 6100', ...extra });
+  assert.equal(gateRearmStatus({ statuses: [pending({ updated_at: at(REARM_REQUEST_ABANDONED_MS + 60_000) }), green] }, pr, now)?.id, 6100, 'abandoned: asked again');
+  assert.equal(gateRearmStatus({ statuses: [pending({ created_at: at(REARM_REQUEST_ABANDONED_MS + 60_000) }), green] }, pr, now)?.id, 6100, 'created_at when no updated_at');
+  assert.equal(gateRearmStatus({ statuses: [pending({ updated_at: at(REARM_REQUEST_ABANDONED_MS - 60_000) }), green] }, pr, now), null, 'within the limit: held');
+  assert.equal(gateRearmStatus({ statuses: [pending({ updated_at: at(REARM_REQUEST_ABANDONED_MS + 60_000) }), green] }, pr), null, 'no clock: held');
+  assert.equal(gateRearmStatus({ statuses: [pending({ updated_at: 'not a time' }), green] }, pr, now), null, 'unreadable time: held');
+  const settledOld = { id: 6099, context: 'codex-recovery-request/6100', state: 'failure', description: 'recovery: re-arm request superseded by newer review state', updated_at: at(REARM_REQUEST_ABANDONED_MS * 2) };
+  assert.equal(gateRearmStatus({ statuses: [green, settledOld] }, pr, now), null, 'age never lifts a settled request');
+  // the limit stays above twice the owner job's limit (a run queued behind another in its lane, then its own run)
+  const workflow = await readFile(new URL('../.github/workflows/auto-merge.yml', import.meta.url), 'utf8');
+  const owner = workflow.slice(workflow.indexOf('  orchestrate:'));
+  const minutes = Number(/timeout-minutes: (\d+)/u.exec(owner)?.[1]);
+  assert.ok(minutes > 0 && REARM_REQUEST_ABANDONED_MS > 2 * minutes * 60_000, 'above twice the owner job limit');
+});
+
 // #1289 round 1, Stage 1 option (c) — a run that dies before it settles its re-arm request (a failure, a timeout, a
 // cancel) is cleaned up by the owner job's `failure() || cancelled()` step: a still-pending re-arm request is marked
 // failed, so the watchdog asks again; anything already settled, or a request for a failure, is left as it is.

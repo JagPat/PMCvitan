@@ -592,10 +592,10 @@ export async function handOffCorrectionLease(
   }
 
   // G3 (gap-check F2) — a green no auto-merge is queued behind: a re-arm lost after the gate's disarm. The gate is
-  // asked once per head to re-judge it; it re-arms only through its own authorization (`gateRearmStatus`).
+  // asked once per re-judged success to re-judge it; it re-arms only through its own authorization (`gateRearmStatus`).
   // The open-PR snapshot is a filter only: the live pull request decides, so an arming since the snapshot is seen.
-  const unarmed = gateRearmStatus(combined, pullRequest)
-    && gateRearmStatus(combined, await client.pullRequest(pullRequest.number));
+  const unarmed = gateRearmStatus(combined, pullRequest, now)
+    && gateRearmStatus(combined, await client.pullRequest(pullRequest.number), now);
   if (unarmed) {
     await client.dispatchRecovery(defaultBranch, {
       pr_number: String(pullRequest.number),

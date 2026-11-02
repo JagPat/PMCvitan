@@ -83,7 +83,9 @@ push or a body edit, while a success any later run writes is asked about once
 more; a re-judge that threw, or whose merge was held by a race with a base or head
 change or by a draft, marks its request failed and is asked again, and the owner
 job's `failure() || cancelled()` step marks a request its timed-out or cancelled
-run left pending; a retryable failure under a newer success is not asked about). The owner re-reads the
+run left pending; a request still pending past twice the owner job's limit lost its
+runner and is asked again; a retryable failure under a newer success is not asked
+about). The owner re-reads the
 head and Codex's record itself and re-arms only through that authorization.
 The dispatch job only writes a durable `codex-recovery-request/<terminal-id>`
 marker; it never

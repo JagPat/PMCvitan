@@ -802,6 +802,10 @@ test('G3: a ready, tokened green with no auto-merge queued is handed to the gate
   assert.equal((await run({ statuses: [consumed(5001), tokened] })).calls.dispatched.length, 1, 'a success written after the re-judge is asked about');
   assert.equal((await run({ statuses: [{ ...consumed(6101), state: 'failure', description: 'recovery: re-arm request superseded by newer review state' }, tokened] })).calls.dispatched.length, 1,
     'a superseded re-arm request holds nothing');
+  // the round-2 audit: the handoff passes its clock, so a request pending past any live run's limit is asked again
+  const pendingSince = (at) => ({ context: 'codex-recovery-request/6100', state: 'pending', id: 6101, description: 'recovery: requested terminal status 6100', updated_at: at });
+  assert.equal((await run({ statuses: [pendingSince('2026-08-17T06:00:00Z'), tokened] })).calls.dispatched.length, 1, 'a request its runner lost is asked again');
+  assert.deepEqual((await run({ statuses: [pendingSince('2026-08-17T10:30:00Z'), tokened] })).calls.dispatched, [], 'a request a live run may hold is not');
   for (const other of [
     { context: 'codex-recovery-request/5000', state: 'success', id: 5001, description: 'recovery: consumed by review timeout' },
     { context: 'codex-recovery-request/5000', state: 'failure', id: 5001, description: 'recovery: request superseded by newer review state' },

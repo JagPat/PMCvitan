@@ -6,6 +6,7 @@ import {
   OWNERSHIP_CANDIDATE_HELD,
   REARM_SETTLEMENTS,
   REARM_ATTEMPT_FAILED,
+  REARM_REQUEST_ABANDONED_MS,
   STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT,
 } from './review-policy.mjs';
 export { CORRECTION_LEASE_GRACE_MS, STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT } from './review-policy.mjs';
@@ -152,9 +153,17 @@ export function gateRecoveryStatus(combinedStatus) {
  * republishes the success under a new id and then consumes its request, and a head the merge still holds for other
  * gates (`held_for_gates`) stays unarmed, so a per-request bound would ask on every handoff pass. The skip is keyed
  * on a consumed re-arm settlement (`REARM_SETTLEMENTS`) newer than the newest success, and on a request for this
- * success still pending. A head still unarmed after its re-judge waits for a real change (CI completing, a push, a
+ * success still pending (within `REARM_REQUEST_ABANDONED_MS`: a request pending past any live run's limit lost
+ * its runner, and is asked again). A head still unarmed after its re-judge waits for a real change (CI completing, a push, a
  * body edit), each of which wakes the gate itself; a success any later run writes is asked about once more.
  */
+function abandonedRequest(status, now) {
+  if (status?.state !== 'pending') return false;
+  const at = Date.parse(String(status.updated_at ?? status.created_at ?? ''));
+  const current = Date.parse(String(now ?? ''));
+  return Number.isFinite(at) && Number.isFinite(current) && current - at > REARM_REQUEST_ABANDONED_MS;
+}
+
 function newerStatusId(candidate, than) {
   try {
     return BigInt(String(candidate ?? '')) > BigInt(String(than ?? ''));
@@ -163,16 +172,17 @@ function newerStatusId(candidate, than) {
   }
 }
 
-export function gateRearmStatus(combinedStatus, pullRequest) {
+export function gateRearmStatus(combinedStatus, pullRequest, now = null) {
   if (pullRequest?.state !== 'open' || pullRequest?.draft !== false || pullRequest?.auto_merge) return null;
   const statuses = combinedStatus?.statuses ?? [];
   const newest = statuses.find((status) => status?.context === CORRECTION_STATUS_CONTEXT) ?? null;
   if (newest?.state !== 'success' || !parseApprovalToken(newest.description)) return null;
   const id = String(newest.id ?? '');
   if (!id) return null;
-  // a request for this success, pending or settled, holds the ask; one whose re-judge threw (#1289 round 1) does not
+  // a request for this success, pending or settled, holds the ask; one whose re-judge threw (#1289 round 1) does not,
+  // nor one still pending past any live run's limit (the round-2 audit: a lost runner skips even the cleanup step)
   const asked = statuses.find((status) => status?.context === `${RECOVERY_REQUEST_CONTEXT}${id}`);
-  if (asked && String(asked.description ?? '') !== REARM_ATTEMPT_FAILED) return null;
+  if (asked && String(asked.description ?? '') !== REARM_ATTEMPT_FAILED && !abandonedRequest(asked, now)) return null;
   // once per success the re-judge itself wrote (#1289 round 2 audit): a re-judge republishes the success under a
   // new id and then consumes its request, so a consumed settlement NEWER than the newest success means that success
   // is the re-judge's own and was already judged. A success written after it (an ordinary run, which may itself

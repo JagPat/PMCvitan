@@ -259,6 +259,11 @@ export const REARM_SETTLEMENTS = Object.freeze([`recovery: consumed by ${REARM_C
 /** G3 (#1289 round 1, Codex 4439713463) — a re-arm's re-judge that threw before it ended: not a settlement, so the
  *  watchdog asks again for that success on its next pass. */
 export const REARM_ATTEMPT_FAILED = 'recovery: re-arm attempt failed';
+/** G3 (#1289 round-2 audit) — a re-arm request still pending this long has no live run: the owner job's limit
+ *  (`timeout-minutes: 105` in auto-merge.yml) twice over, for a run queued behind another in the same lane, plus
+ *  margin. Its run died where even the owner job's `failure() || cancelled()` cleanup did not run (a lost runner),
+ *  so the watchdog asks again. A structural row keeps this above twice the owner job's limit. */
+export const REARM_REQUEST_ABANDONED_MS = 4 * 60 * 60 * 1000;
 
 const RETRYABLE_REVIEW_FAILURES = [
   FOLLOW_UP_RETRY,
