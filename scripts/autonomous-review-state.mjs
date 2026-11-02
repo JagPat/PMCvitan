@@ -189,6 +189,22 @@ export function codexStateRecordVerdict(issueComments, expectedHead, readyAtMs) 
   return clears ? 'clear' : 'none';
 }
 
+/**
+ * 2A3b — whether this one comment is Codex's review-state record showing a code or security review still running on
+ * `expectedHead` (the `running` rule of `codexStateRecordVerdict`). The author is checked here by REST login, whatever
+ * the workflow's own filter already checked; anything else (another author, no marker, unparseable JSON, another head,
+ * a completed run) is false.
+ */
+export function codexRecordRunningOn(comment, expectedHead) {
+  if (!isCodexActor(comment) || typeof expectedHead !== 'string' || expectedHead.length === 0) return false;
+  const match = /<!--\s*codex-review-state:v1\s+([\s\S]*?)\s*-->/u.exec(String(comment?.body ?? ''));
+  if (!match) return false;
+  let record;
+  try { record = JSON.parse(match[1]); } catch { return false; }
+  const running = (review) => review?.commit_sha === expectedHead && review.status != null && review.status !== 'completed';
+  return running(record?.code_review) || running(record?.security_review);
+}
+
 export function codexStateRecordClears(issueComments, expectedHead, readyAtMs) {
   return codexStateRecordVerdict(issueComments, expectedHead, readyAtMs) === 'clear';
 }
