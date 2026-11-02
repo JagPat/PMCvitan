@@ -84,7 +84,7 @@ the same commit never holds it. The re-judge republishes the success and then
 consumes the request, so a consumed request newer than the head's newest success
 holds the ask for at most four hours; a success any later run writes is asked
 about once more, and a run that disarms the head again lifts that consumption so
-the next pass asks. A re-judge that threw, whose merge was held by a base, head
+the next pass asks, for every pull request at the commit whose merge it disabled. A re-judge that threw, whose merge was held by a base, head
 or readiness race or a draft, or that fell through to the ordinary review, marks
 its request failed and is asked again; the owner job's `failure() || cancelled()`
 step marks a request its timed-out or cancelled run left pending, and a request
@@ -101,6 +101,11 @@ request, including after an interrupted owner, but cannot create a concurrent
 reviewer. Per-terminal contexts prevent an older owner from consuming a newer
 request. A request is consumed only after a terminal review outcome; CI failure
 leaves it pending for the next green owner.
+A failure's request names no pull request: the failure is the commit's, so the
+request holds the ask for every open pull request at that commit. One still
+pending past the same four-hour limit lost its run (a lost runner, or a pull
+request that moved or closed before its run read it) and is asked again. The
+watchdog reads every page of the combined status.
 Before publishing a new pending status or changing readiness, the owner checks live
 current-head Codex reviews and inline comments. A finding that arrived after a
 timeout is republished as the required failure and requires a new SHA; recovery
