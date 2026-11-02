@@ -556,3 +556,39 @@ test('#1311 Codex 4447394159 — a PR that moved off the commit during a failing
     else assert.deepEqual(log.find(([k]) => k === 'status'), ['status', 'failure', SHARED], name);
   }
 });
+
+// #1311 round 3 (Codex 4447612716) — the untokened-green withdrawal is the first write and can throw; on a shared head the
+// refusal still runs: its disarm drops every queued merge at the commit and its failure replaces the green. Alone, or when
+// the refusal's own write fails too, the withdrawal's error ends the run as before (the shared case still disarmed).
+test('#1311 Codex 4447612716 — a failed untokened-green withdrawal on a shared head still disarms and refuses', { timeout: 30_000 }, async () => {
+  const untokened = { id: 6101, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head' };
+  for (const [name, shared, always] of [
+    ['shared, only the withdrawal fails', true, false],
+    ['shared, every status write fails', true, true],
+    ['alone, the withdrawal fails', false, false],
+  ]) {
+    const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+    if (shared) pulls.set(611, pullAt(611, { auto_merge: queued }));
+    const statuses = [{ ...untokened }];
+    const written = [];
+    const result = await runGate({ number: 610, pulls, statuses, overrides: {
+      async setStatus(sha, state, description, url, context = 'codex-current-head') {
+        if (always || /withdrawn/u.test(description)) throw new Error(`statuses 502 writing ${description}`);
+        const status = { id: 7000 + written.length, context, state, description, target_url: url };
+        statuses.unshift(status);
+        written.push([state, description, context]);
+        return status;
+      },
+    } });
+    const queuedLeft = [...pulls.values()].filter((p) => p.auto_merge).map((p) => p.number);
+    if (shared) assert.deepEqual(queuedLeft, [], `${name}: every queued merge at the commit is disarmed`);
+    if (shared && !always) {
+      assert.equal(result.error, null, name);
+      assert.deepEqual(written.filter(([, , c]) => c === 'codex-current-head').map(([st, d]) => [st, d]), [['failure', SHARED]], `${name}: the refusal replaces the green`);
+    } else {
+      assert.match(String(result.error?.message), /statuses 502 writing review: withdrawn/u, `${name}: the withdrawal's own error ends the run`);
+      assert.equal(statuses.find((s) => s.context === 'codex-current-head').state, 'success', `${name}: nothing else was written`);
+    }
+    assert.equal(result.log.some(([k]) => k === 'scope-read' || k === 'arm' || k === 'merge'), false, `${name}: nothing body-derived`);
+  }
+});
