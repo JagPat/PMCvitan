@@ -86,6 +86,8 @@ export function OpenItemsBlock() {
                             onClick={() => pick(insp.inspectionId, it.itemId)}
                             disabled={!online || busy}
                             aria-busy={busy || undefined}
+                            // the button's name says which item it adds to: every row's button reads the same otherwise
+                            aria-label={`${busy ? L.sending[lang] : L.addProof[lang]}: ${it.name}`}
                             style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '9px 13px', minHeight: 44, borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: !online || busy ? 'default' : 'pointer', opacity: !online || busy ? 0.55 : 1, display: 'flex', alignItems: 'center', gap: 6 }}
                           >
                             <Camera size={14} /> {busy ? L.sending[lang] : L.addProof[lang]}

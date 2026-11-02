@@ -6763,14 +6763,17 @@ export const useStore = create<Store>()(
         })
         .catch((err: { status?: number } | undefined) => {
           const status = err?.status;
-          // no answer: the proof may be stored, so its key is kept for a resend of the same photo; an answer is final
-          if (status === undefined) proofRetryKeys.set(retryKey, { data, key: clientKey });
-          else proofRetryKeys.delete(retryKey);
+          // only a final answer (a 4xx the repo treats as permanent, `isTerminalOutboxError`) settles the proof. No
+          // answer, a 5xx, 401, 408 or 429 may follow a stored proof (a proxy's 504 after the commit), so its key is kept
+          // for a resend of the same photo, which the server then answers with the stored proof
+          const final = isTerminalOutboxError(err);
+          if (final) proofRetryKeys.delete(retryKey);
+          else proofRetryKeys.set(retryKey, { data, key: clientKey });
           settle();
           if (!scopeStillCurrent(scope)) return false;
           // 409: the item holds all its proofs, or it no longer failed; either way the list is read again
           get().flash(status === 409 ? OIL.full[get().lang] : OIL.failed[get().lang]);
-          if (status !== undefined && status >= 400 && status < 500) get().requestFreshSnapshot();
+          if (final) get().requestFreshSnapshot();
           return false;
         });
     },

@@ -30,6 +30,7 @@ export const openItemsLabels = {
 /** "3 of 10 proof photos" in the viewer's language (`cap` is `PROOF_PHOTOS_PER_ITEM`). */
 export function openItemsProofCount(n: number, cap: number, lang: Lang): string {
   if (lang === 'hi') return `${cap} में से ${n} सबूत फ़ोटो`;
-  if (lang === 'gu') return `${cap} માંથી ${n} પુરાવાના ફોટા`;
+  // Gujarati counts the noun: one is "પુરાવાનો ફોટો", more are "પુરાવાના ફોટા"
+  if (lang === 'gu') return `${cap} માંથી ${n} ${n === 1 ? 'પુરાવાનો ફોટો' : 'પુરાવાના ફોટા'}`;
   return `${n} of ${cap} proof photo${cap === 1 ? '' : 's'}`;
 }

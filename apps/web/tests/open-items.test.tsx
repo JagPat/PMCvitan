@@ -178,6 +178,69 @@ describe('"Your open items" on a contractor\'s or consultant\'s Dashboard (#482 
     await after;
   });
 
+  it('a 5xx (a proxy\'s 504 after the server stored it) keeps the key: the same photo sent again replays it', async () => {
+    const up = uploads();
+    const { useStore, snap } = await openBlock({ uploadMedia: up.fn });
+    const first = useStore.getState().addProofPhoto('INSP-32', 'it-joints', PNG);
+    await up.called(1);
+    const before = snap.mock.calls.length;
+    up.calls[0]!.answer.reject(refused(504));
+    expect(await first).toBe(false);
+    expect(useStore.getState().toast).toBe('Could not add the proof photo. Try again.');
+    // not a final answer, so nothing is read again on its account
+    expect(snap.mock.calls.length).toBe(before);
+    const again = useStore.getState().addProofPhoto('INSP-32', 'it-joints', PNG);
+    await up.called(2);
+    expect(up.calls[1]!.input.clientKey).toBe(up.calls[0]!.input.clientKey);
+    up.calls[1]!.answer.resolve({ id: 'm1', url: '/media/m1' });
+    expect(await again).toBe(true);
+  });
+
+  it('a 409 is final: the same photo sent after it is a new key', async () => {
+    const up = uploads();
+    const { useStore } = await openBlock({ uploadMedia: up.fn });
+    const first = useStore.getState().addProofPhoto('INSP-32', 'it-joints', PNG);
+    await up.called(1);
+    up.calls[0]!.answer.reject(refused(409));
+    await first;
+    const again = useStore.getState().addProofPhoto('INSP-32', 'it-joints', PNG);
+    await up.called(2);
+    up.calls[1]!.answer.resolve({ id: 'm1', url: '/media/m1' });
+    await again;
+    expect(up.calls[1]!.input.clientKey).not.toBe(up.calls[0]!.input.clientKey);
+  });
+
+  it('each "Add proof photo" button is named for its item', async () => {
+    const { view } = await openBlock();
+    expect(view.getByTestId('open-proof-it-cover-add').getAttribute('aria-label')).toBe('Add proof photo: Cover');
+    expect(view.getByTestId('open-proof-it-joints-add').getAttribute('aria-label')).toBe('Add proof photo: Joints');
+  });
+
+  it('a photo chosen through the button, then a project switch before its read ends, is not sent and says nothing', async () => {
+    // the file's read ends only when the test says so
+    const reads: Array<{ result: string | null; onload: (() => void) | null }> = [];
+    class HeldFileReader {
+      result: string | null = null;
+      onload: (() => void) | null = null;
+      readAsDataURL() { reads.push(this); }
+    }
+    vi.stubGlobal('FileReader', HeldFileReader);
+    try {
+      const up = uploads();
+      const { useStore, view } = await openBlock({ uploadMedia: up.fn });
+      choose(view, 'it-joints');
+      expect(reads).toHaveLength(1);
+      useStore.setState({ projectScopeGeneration: 2, toast: null } as never);
+      reads[0]!.result = PNG;
+      act(() => { reads[0]!.onload?.(); });
+      expect(up.fn).not.toHaveBeenCalled();
+      expect(useStore.getState().proofSending).toEqual([]);
+      expect(useStore.getState().toast).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('a photo chosen before a project switch is never sent, and an answer after the switch says nothing', async () => {
     const up = uploads();
     const { useStore } = await openBlock({ uploadMedia: up.fn });
@@ -222,6 +285,14 @@ describe('"Your open items" on a contractor\'s or consultant\'s Dashboard (#482 
       expect(view.queryByTestId('open-items') !== null, role).toBe(shown);
       cleanup();
     }
+  });
+
+  it('one proof photo reads in the singular in Gujarati, and in Hindi as Hindi counts it', async () => {
+    const { openItemsProofCount } = await import('@vitan/shared');
+    expect(openItemsProofCount(1, PROOF_PHOTOS_PER_ITEM, 'gu')).toBe(`${PROOF_PHOTOS_PER_ITEM} માંથી 1 પુરાવાનો ફોટો`);
+    expect(openItemsProofCount(2, PROOF_PHOTOS_PER_ITEM, 'gu')).toBe(`${PROOF_PHOTOS_PER_ITEM} માંથી 2 પુરાવાના ફોટા`);
+    expect(openItemsProofCount(1, PROOF_PHOTOS_PER_ITEM, 'hi')).toBe(`${PROOF_PHOTOS_PER_ITEM} में से 1 सबूत फ़ोटो`);
+    expect(openItemsProofCount(1, PROOF_PHOTOS_PER_ITEM, 'en')).toBe(`1 of ${PROOF_PHOTOS_PER_ITEM} proof photos`);
   });
 
   it('reads in Hindi and Gujarati: no English but the project\'s own names', async () => {
