@@ -738,9 +738,13 @@ export function useSiteVisits() {
     const read = removedVisitPhotos(visitPhotoScope(st.sessionToken, st.sessionUserId), st.activeProjectId);
     const queuedKeys = new Set(queued.map((o) => o.idempotencyKey));
     // #1266: records that cannot be read may name any of the phone's filed copies, so none is shown from the phone:
-    // the server's own list still shows each file it holds
+    // the server's own list still shows each file it holds. A filed row's act still queued here (one this tab kept
+    // while another tab filed the row, or a clip whose still frame is to send) is that same copy, so it is left out too
+    // (Codex 4438228523)
+    const filedKeys = read === 'unreadable' ? new Set(filed.map((r) => r.op.idempotencyKey)) : null;
+    const sending = filedKeys ? queued.filter((o) => !filedKeys.has(o.idempotencyKey)) : queued;
     const taken = read === 'unreadable' ? [] : filed.filter((r) => !queuedKeys.has(r.op.idempotencyKey)).map((r) => r.op);
-    const all = withQueued(rows, [...queued, ...taken], me, previews, new Set(taken.map((o) => o.file.id)));
+    const all = withQueued(rows, [...sending, ...taken], me, previews, new Set(taken.map((o) => o.file.id)));
     const recorded: ReadonlySet<string> = read === 'unreadable' ? new Set() : read;
     const gone = recorded.size === 0 ? removedFiles.current : new Set([...removedFiles.current, ...recorded]);
     if (gone.size === 0) return all;

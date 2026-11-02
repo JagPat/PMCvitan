@@ -2849,8 +2849,9 @@ export const useStore = create<Store>()(
      *  rebuilt photo goes after its visit's start and before that visit's later acts: it was taken while the visit was
      *  not closed. Putting back is idempotent, so it is done on every load and at the start of every flush: a row
      *  whose act the queue lost for any reason (a reload, a photo kept just after its refused start was settled, Codex
-     *  4321084743) has it again by the next send. Returns whether anything was put back. */
-    const putBackVisitPhotos = (rows: VisitPhotoRow[]): boolean => {
+     *  4321084743) has it again by the next send. Returns whether anything was put back, or `'unreadable'` when the
+     *  removal records cannot be read (#1266): then nothing is put back, and the caller treats the rows as not read. */
+    const putBackVisitPhotos = (rows: VisitPhotoRow[]): boolean | 'unreadable' => {
       let rebuilt = false;
       // when each queued photo was taken: its row's creation time, else when its act was queued
       const created = new Map(rows.map((r) => [r.op.idempotencyKey, r.createdAt]));
@@ -2869,7 +2870,7 @@ export const useStore = create<Store>()(
       // it is deleted here, its record going once it is, so its bytes do not wait for the Site Visits screen (#1265)
       const recorded = rows.length > 0 ? removedVisitPhotos(rows[0].userScope, rows[0].projectId) : new Set<string>();
       // #1266: records that cannot be read may hold any row: nothing is put back or deleted until they can be
-      if (recorded === 'unreadable') return false;
+      if (recorded === 'unreadable') return 'unreadable';
       const removed: ReadonlySet<string> = recorded;
       for (const row of rows) {
         if (!removed.has(row.clientKey)) continue;
@@ -2959,7 +2960,13 @@ export const useStore = create<Store>()(
           }
           return;
         }
-        if (putBackVisitPhotos(rows) && get().online) void get().flushOutbox();
+        const put = putBackVisitPhotos(rows);
+        // records that cannot be read: a row's act is not rebuilt, so this is a read that failed (below)
+        if (put === 'unreadable') {
+          if (keepsVisitPhotos(scope, projectId)) retryVisitPhotos();
+          return;
+        }
+        if (put && get().online) void get().flushOutbox();
       } catch {
         // not read: a photo may be waiting with no act queued, so the flush that reads again is not left to chance. A
         // phone keeping none for this project has none to wait for (Codex 4322430052)
@@ -6900,8 +6907,9 @@ export const useStore = create<Store>()(
           (rows) => {
             // a read that came too late, or for a queue no longer on show, puts nothing back: the next flush reads again
             if (late || !scopeStillCurrent(readScope) || outboxKey() !== readKey) return false;
-            putBackVisitPhotos(rows);
-            return true;
+            // #1266 (Codex 4438228520): rows whose removal records cannot be read put no act back, so this read holds
+            // the visits a photo may be kept on, as a read that failed does: a close never overtakes a photo not rebuilt
+            return putBackVisitPhotos(rows) !== 'unreadable';
           },
           () => false,
         );
