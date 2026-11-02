@@ -13,6 +13,8 @@
  *   aside as `<email>#retired-<id>`, a record kept so an operator can undo it; its work and memberships stay where they
  *   are), and a NEW account is made for this person and linked. The new account holds no project: roles stay in PMC's
  *   Membership and an operator or the company's PMC seats it. A token claim is never a role.
+ * - a retired account never signs in again by any door (phone, emailed code, Google, password, a code already sent):
+ *   `AuthService.signInAccess` refuses it (`isRetired`), so nothing it held comes back through the old row.
  * - a test account address (`qa.*@vitan.in`) is never retired or linked: test accounts sign in through the operator door.
  * - no PMC account holds the email: nothing is made (PMC sign-up stays by invitation).
  *
@@ -49,6 +51,36 @@ export async function linkOf(tx: Prisma.TransactionClient, userId: string): Prom
   return tx.platformPersonLink.findUnique({ where: { userId }, select: { issuer: true, subject: true } });
 }
 
+/**
+ * Whether this account was set aside by a first Redbracket ID sign-in: the ONE predicate. Every named-account token
+ * (`AuthService.issueNamedUser`), the sign-in access rule (`AuthService.signInAccess`, which also decides whether a phone
+ * code is sent) and password-credential eligibility (`PasswordCredentialsService`) ask it; retirement-gate.test.ts pins
+ * the callers. A retired account never signs in or holds a new credential again.
+ */
+export async function isRetired(db: Prisma.TransactionClient, userId: string): Promise<boolean> {
+  return (await db.identityRetirement.count({ where: { userId } })) > 0;
+}
+
+/**
+ * The PMC password hash a break-glass sign-in checks for `user` (the account now holding the typed email): its own,
+ * or, for an account a first Redbracket ID sign-in made, the hash of the account it replaced (that account is retired:
+ * it never signs in itself, its email is set aside and its hash is never changed again, nor sent anywhere). Null when
+ * there is none. Who may use break-glass is still decided on `user` (its own company owner or admin standing).
+ */
+export async function breakGlassHash(db: Prisma.TransactionClient, user: Pick<User, 'id' | 'email' | 'passwordHash' | 'createdAt'>): Promise<string | null> {
+  if (user.passwordHash) return user.passwordHash;
+  // only an account a first sign-in made (linked at `signup`), and only the retirement made in that same transaction
+  // (retireAndReplace writes one moment as the retirement's `retiredAt` and this account's `createdAt`)
+  const link = await db.platformPersonLink.findUnique({ where: { userId: user.id }, select: { matchedOn: true } });
+  if (!user.email || link?.matchedOn !== 'signup') return null;
+  const replaced = await db.identityRetirement.findFirst({
+    where: { email: user.email, retiredAt: { equals: user.createdAt } },
+    select: { userId: true },
+  });
+  if (!replaced) return null;
+  return (await orgs.accountById(db, replaced.userId))?.passwordHash ?? null;
+}
+
 /** An account that was never set up: no password and its mailbox never proved (an invitation not yet accepted). */
 export function neverSetUp(user: Pick<User, 'passwordHash' | 'emailVerifiedAt'>): boolean {
   return !user.passwordHash && !user.emailVerifiedAt;
@@ -58,7 +90,7 @@ export function neverSetUp(user: Pick<User, 'passwordHash' | 'emailVerifiedAt'>)
  * The account a plain sign-in lands on (see the file comment). Must run inside a transaction; takes the person's lock
  * and, when it retires an account, that account's credential lock.
  */
-export async function settleSignIn(tx: Prisma.TransactionClient, issuer: string, claims: IdClaims): Promise<Settled> {
+export async function settleSignIn(tx: Prisma.TransactionClient, issuer: string, claims: IdClaims, correlationId?: string): Promise<Settled> {
   await lockIssuerPerson(tx, issuer, claims.sub);
   const linked = await linkedAccount(tx, issuer, claims.sub);
   if (linked) return { kind: 'account', user: linked, fresh: false };
@@ -73,7 +105,7 @@ export async function settleSignIn(tx: Prisma.TransactionClient, issuer: string,
   if (!current || current.email !== claims.email) return { kind: 'no-account' };
   if (await linkOf(tx, current.id)) return { kind: 'no-account' };
   if (neverSetUp(current)) return { kind: 'invite-pending' };
-  const fresh = await retireAndReplace(tx, issuer, claims, current);
+  const fresh = await retireAndReplace(tx, issuer, claims, current, correlationId);
   return { kind: 'account', user: fresh, fresh: true };
 }
 
@@ -82,9 +114,11 @@ export async function settleSignIn(tx: Prisma.TransactionClient, issuer: string,
  * account keeps its id, work and memberships; only its email moves aside (so the address is free for the new
  * account) and its credential version moves on (so its open sessions end).
  */
-async function retireAndReplace(tx: Prisma.TransactionClient, issuer: string, claims: IdClaims, old: User): Promise<User> {
+async function retireAndReplace(tx: Prisma.TransactionClient, issuer: string, claims: IdClaims, old: User, correlationId?: string): Promise<User> {
   const email = claims.email;
-  await tx.identityRetirement.create({ data: { userId: old.id, email } });
+  // one moment, written on both rows: breakGlassHash finds this retirement from the new account by it
+  const at = new Date();
+  await tx.identityRetirement.create({ data: { userId: old.id, email, retiredAt: at } });
   await tx.user.update({
     where: { id: old.id },
     data: { email: `${email}#retired-${old.id}`, credentialVersion: { increment: 1 } },
@@ -94,8 +128,13 @@ async function retireAndReplace(tx: Prisma.TransactionClient, issuer: string, cl
   // the sign-in rule reads Membership and OrgMembership only), copied so the row is well formed
   // the issuer vouched for the mailbox (`email_verified`), so the new account is set up from its first moment: it is
   // never mistaken for an invitation nobody accepted (whose address an owner may still correct)
-  const fresh = await tx.user.create({ data: { projectId: old.projectId, role: old.role, name, email, emailVerifiedAt: new Date() } });
+  const fresh = await tx.user.create({ data: { projectId: old.projectId, role: old.role, name, email, emailVerifiedAt: at, createdAt: at } });
   await tx.platformPersonLink.create({ data: { userId: fresh.id, issuer, subject: claims.sub, matchedOn: 'signup' } });
+  // the security trail names what happened to whom: the old account set aside, replaced by the new one; on a password
+  // setup it carries that setup's code id, as the new account's own event does
+  await tx.securityAuditEvent.create({
+    data: { action: 'auth.identity_retired', targetUserId: old.id, actorUserId: fresh.id, actorKind: 'self', correlationId: correlationId ?? fresh.id, payload: { replacedBy: fresh.id } },
+  });
   return fresh;
 }
 

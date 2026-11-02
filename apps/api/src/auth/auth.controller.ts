@@ -58,7 +58,7 @@ export class AuthController {
   @UseGuards(JwtGuard)
   @AllowAnyRole('AuthService.switchProject verifies the caller is a member of the target project')
   switch(@CurrentUser() user: AuthUser, @Body(new ZodPipe(switchProjectSchema)) body: SwitchProjectInput) {
-    return this.auth.switchProject(user.sub, body.projectId);
+    return this.auth.switchProject(user.sub, body.projectId, user.credentialVersion ?? 0);
   }
 
   /**

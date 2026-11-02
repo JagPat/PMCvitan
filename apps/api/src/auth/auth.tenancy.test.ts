@@ -27,6 +27,8 @@ function fakePrisma(
           .filter((m) => m.userId === where.userId && m.status === 'active')
           .map((m) => ({ ...m, project: { name: 'P', short: 'P', orgId: 'org1', org: { name: 'Vitan' } } })),
     },
+    // Redbracket ID A3: no account here was set aside by a first Redbracket ID sign-in
+    identityRetirement: { count: async () => 0 },
     user: {
       findUnique: async ({ where }: { where: { id: string } }) => {
         const u = users.find((x) => x.id === where.id) ?? null;
@@ -62,7 +64,7 @@ function make(
 describe('AuthService.switchProject', () => {
   it('issues a token scoped to a project the user is a member of', async () => {
     const auth = make([{ projectId: 'p2', userId: 'u1', role: 'client', status: 'active' }], [{ id: 'u1', projectId: 'p1', role: 'pmc', name: 'Ar. Vitan' }]);
-    const res = await auth.switchProject('u1', 'p2');
+    const res = await auth.switchProject('u1', 'p2', 0);
     expect(res.projectId).toBe('p2');
     expect(res.role).toBe('client');
     expect(jwt.verify<AuthUser>(res.token)).toMatchObject({ sub: 'u1', role: 'client', projectId: 'p2', credentialVersion: 0 });
@@ -73,12 +75,12 @@ describe('AuthService.switchProject', () => {
     // Access now requires an explicit membership or org-admin reach; the backfill migration
     // gives genuine legacy accounts a membership so they are unaffected in practice.
     const auth = make([], [{ id: 'u1', projectId: 'p1', role: 'pmc', name: 'Ar. Vitan' }]);
-    await expect(auth.switchProject('u1', 'p1')).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(auth.switchProject('u1', 'p1', 0)).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('forbids switching to a project the user has no access to', async () => {
     const auth = make([], [{ id: 'u1', projectId: 'p1', role: 'pmc', name: 'Ar. Vitan' }]);
-    await expect(auth.switchProject('u1', 'pX')).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(auth.switchProject('u1', 'pX', 0)).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('lets an org owner operate ANY project in their org as PMC (super-admin), even without a membership', async () => {
@@ -88,7 +90,7 @@ describe('AuthService.switchProject', () => {
       [{ orgId: 'org1', userId: 'admin1', role: 'owner' }],
       [{ id: 'villa', name: 'Villa', short: 'Villa', orgId: 'org1' }],
     );
-    const res = await auth.switchProject('admin1', 'villa');
+    const res = await auth.switchProject('admin1', 'villa', 0);
     expect(res).toMatchObject({ projectId: 'villa', role: 'pmc' });
     expect(jwt.verify<AuthUser>(res.token)).toMatchObject({ sub: 'admin1', role: 'pmc', projectId: 'villa' });
   });
@@ -100,7 +102,7 @@ describe('AuthService.switchProject', () => {
       [{ orgId: 'org1', userId: 'u2', role: 'member' }],
       [{ id: 'villa', name: 'Villa', short: 'Villa', orgId: 'org1' }],
     );
-    await expect(auth.switchProject('u2', 'villa')).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(auth.switchProject('u2', 'villa', 0)).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('refuses switching into an archived project (even for a member)', async () => {
@@ -110,7 +112,7 @@ describe('AuthService.switchProject', () => {
       [],
       [{ id: 'arch', name: 'Archived', short: 'Archived', orgId: 'org1', archivedAt: new Date() }],
     );
-    await expect(auth.switchProject('u1', 'arch')).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(auth.switchProject('u1', 'arch', 0)).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('SEC-01: a removed membership denies the switch to the user’s home project', async () => {
@@ -118,7 +120,7 @@ describe('AuthService.switchProject', () => {
       [{ projectId: 'p1', userId: 'u1', role: 'contractor', status: 'removed' }],
       [{ id: 'u1', projectId: 'p1', role: 'contractor', name: 'Ex Contractor' }],
     );
-    await expect(auth.switchProject('u1', 'p1')).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(auth.switchProject('u1', 'p1', 0)).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('SEC-01: a removed membership on a non-home project denies the switch', async () => {
@@ -126,7 +128,7 @@ describe('AuthService.switchProject', () => {
       [{ projectId: 'p2', userId: 'u1', role: 'client', status: 'removed' }],
       [{ id: 'u1', projectId: 'p1', role: 'pmc', name: 'x' }],
     );
-    await expect(auth.switchProject('u1', 'p2')).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(auth.switchProject('u1', 'p2', 0)).rejects.toBeInstanceOf(ForbiddenException);
   });
 });
 

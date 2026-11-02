@@ -15,6 +15,7 @@ import { OrgsParticipant, QA_ACCOUNT_EMAIL, rethrowQaLock } from '../orgs/orgs.p
 import { countersignReloadMessage, understandsCountersign, type DecisionsContract } from '../common/decisions-contract';
 import type { Role } from '../common/auth';
 import { NO_PROJECT, type IdentityOutcome } from './identity/identity-sign-in.service';
+import { isRetired } from './identity/identity-accounts';
 import type {
   SessionInput,
   LoginInput,
@@ -28,6 +29,7 @@ import type {
 
 /** A valid credential whose account the access rule grants no live project (SEC-01). */
 const ACCESS_REMOVED = 'Your project access has been removed. Ask your PMC to re-add you.';
+const RETIRED = 'This account has moved to Redbracket ID. Sign in with your email and your Redbracket ID password.';
 
 export interface TokenResult {
   token: string;
@@ -62,7 +64,14 @@ export class AuthService {
     return this.jwt.sign({ sub, role, projectId, ...extra });
   }
 
-  private issueNamedUser(user: { id: string; credentialVersion?: number }, role: Role, projectId: string): string {
+  /**
+   * Every token for a named account is signed here, and only here (pinned by retirement-gate.test.ts). Redbracket ID
+   * A3: an account a first Redbracket ID sign-in set aside (`isRetired`, the one predicate) never gets one, by any door.
+   * `user.credentialVersion` must be the version the caller read BEFORE this check (or the caller's own token's), so a
+   * retirement committing in between leaves the token already dead (retirement moves the version on).
+   */
+  private async issueNamedUser(user: { id: string; credentialVersion?: number }, role: Role, projectId: string): Promise<string> {
+    if (await isRetired(this.prisma, user.id)) throw new UnauthorizedException(RETIRED);
     return this.issue(user.id, role, projectId, { credentialVersion: user.credentialVersion ?? 0 });
   }
 
@@ -108,6 +117,11 @@ export class AuthService {
    * though the credential was valid.
    */
   private async signInAccess(user: { id: string; projectId: string; lastProjectId?: string | null }): Promise<{ projectId: string; role: Role }> {
+    // Redbracket ID A3: an account a first Redbracket ID sign-in set aside never signs in again, by any door (its
+    // phone, an emailed or SMS code already sent, Google, its old password): what it held stays with it. Checked here
+    // as well as where every token is signed (issueNamedUser), because this rule also decides whether a phone code is
+    // sent at all
+    if (await isRetired(this.prisma, user.id)) throw new UnauthorizedException(RETIRED);
     const landing = await this.orgs.signInLanding(this.prisma, user);
     if (!landing) throw new UnauthorizedException(ACCESS_REMOVED);
     return landing;
@@ -157,11 +171,11 @@ export class AuthService {
         }).catch(rethrowQaLock); // #482: a QA address joins only a QA-only company
         return user;
       });
-      return { token: this.issueNamedUser(created, 'engineer', created.projectId), role: 'engineer', projectId: created.projectId, name: created.name };
+      return { token: await this.issueNamedUser(created, 'engineer', created.projectId), role: 'engineer', projectId: created.projectId, name: created.name };
     }
     const access = await this.signInAccess(user);
     return {
-      token: this.issueNamedUser(user, access.role, access.projectId),
+      token: await this.issueNamedUser(user, access.role, access.projectId),
       role: access.role,
       projectId: access.projectId,
       name: user.name,
@@ -182,7 +196,7 @@ export class AuthService {
     if (input.role === 'architect') await assertPhase6_4dOpen(this.prisma, 'A session in the architect role');
     const real = await this.orgs.devAccount(this.prisma, input.role, input.projectId);
     if (real) {
-      return { token: this.issueNamedUser(real, real.role as Role, real.projectId), role: real.role as Role, projectId: real.projectId, name: real.name };
+      return { token: await this.issueNamedUser(real, real.role as Role, real.projectId), role: real.role as Role, projectId: real.projectId, name: real.name };
     }
     // …and the SYNTHETIC fallback never mints it, even once the rollout is open: a synthetic actor has
     // no account, so no fact it wrote could carry a truthful frozen name. A dev architect is a seeded
@@ -239,7 +253,7 @@ export class AuthService {
       return { user, access: landing };
     });
     return {
-      token: this.issueNamedUser(user, access.role, access.projectId),
+      token: await this.issueNamedUser(user, access.role, access.projectId),
       role: access.role,
       projectId: access.projectId,
       name: user.name,
@@ -256,7 +270,7 @@ export class AuthService {
     // a valid password is not enough — the account must still hold access somewhere
     const access = await this.signInAccess(user);
     return {
-      token: this.issueNamedUser(user, access.role, access.projectId),
+      token: await this.issueNamedUser(user, access.role, access.projectId),
       role: access.role,
       projectId: access.projectId,
       name: user.name,
@@ -268,7 +282,7 @@ export class AuthService {
   async signInUser(user: { id: string; projectId: string; role: string; name: string; credentialVersion?: number; lastProjectId?: string | null }): Promise<TokenResult> {
     const access = await this.signInAccess(user);
     return {
-      token: this.issueNamedUser(user, access.role, access.projectId),
+      token: await this.issueNamedUser(user, access.role, access.projectId),
       role: access.role,
       projectId: access.projectId,
       name: user.name,
@@ -331,7 +345,7 @@ export class AuthService {
       const user = await this.orgs.accountById(this.prisma, emailed.userId);
       if (!user) throw new UnauthorizedException('Invalid or expired code');
       const access = await this.signInAccess(user);
-      return { token: this.issueNamedUser(user, access.role, access.projectId), role: access.role, projectId: access.projectId, name: user.name };
+      return { token: await this.issueNamedUser(user, access.role, access.projectId), role: access.role, projectId: access.projectId, name: user.name };
     }
     if (!(await this.sms.verifyOtp(input.phone, input.code))) {
       throw new UnauthorizedException('Invalid or expired code');
@@ -412,7 +426,7 @@ export class AuthService {
   /** Issue a fresh token scoped to another project the user belongs to (project switch).
    *  Org owners/admins can switch into ANY project in their org — they operate it as PMC
    *  even without an explicit membership (the org super-admin reach). */
-  async switchProject(userId: string, projectId: string): Promise<TokenResult> {
+  async switchProject(userId: string, projectId: string, callerVersion: number): Promise<TokenResult> {
     if ((await this.orgs.projectLive(this.prisma, projectId)) === 'archived') throw new ForbiddenException('This project has been archived');
     const user = await this.orgs.accountById(this.prisma, userId);
     if (!user) throw new UnauthorizedException('Unknown user');
@@ -427,7 +441,9 @@ export class AuthService {
     const role = await this.resolveProjectRole(user, projectId);
     if (!role) throw new ForbiddenException('You are not a member of this project');
     await this.rememberLastProject(user.id, projectId);
-    return { token: this.issueNamedUser(user, role, projectId), role, projectId, name: user.name };
+    // signed with the version the caller's own token carried (the guard checked it is current), never one re-read
+    // now: a password reset or a retirement committing during this request then leaves the new token dead too
+    return { token: await this.issueNamedUser({ id: user.id, credentialVersion: callerVersion }, role, projectId), role, projectId, name: user.name };
   }
 
   /** #811 — the next sign-in opens the project this switch entered. A landing preference, never authority, so a

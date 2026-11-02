@@ -13,6 +13,7 @@ import { lockUserCredential } from '../common/credential-lock';
 import { EmailService } from '../platform/email.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import type { IdentityOutcome, IdentitySignInService } from './identity/identity-sign-in.service';
+import { isRetired } from './identity/identity-accounts';
 
 const PURPOSE = 'password_setup_or_reset';
 const LIFETIME_MS = 10 * 60_000;
@@ -64,13 +65,20 @@ export class PasswordCredentialsService {
   }
 
   /** The account a credential is for, with whether it may hold one: the orgs module's rule, read through its
-   *  participant with the rows it owns (an active project membership, or owner/admin of a company). */
+   *  participant with the rows it owns (an active project membership, or owner/admin of a company), and never an
+   *  account a first Redbracket ID sign-in set aside (`isRetired`, the one predicate; Redbracket ID A3): no code is
+   *  sent for it, and a code sent before it was set aside is refused before anything is written, here or at the issuer. */
   private async userByEmail(db: Db, email: string) {
-    return this.orgs.credentialAccount(db, { email });
+    return this.withRetirement(db, await this.orgs.credentialAccount(db, { email }));
   }
 
   private async userById(db: Db, userId: string) {
-    return this.orgs.credentialAccount(db, { id: userId });
+    return this.withRetirement(db, await this.orgs.credentialAccount(db, { id: userId }));
+  }
+
+  private async withRetirement<T extends { id: string; eligible: boolean }>(db: Db, account: T | null): Promise<T | null> {
+    if (!account?.eligible) return account;
+    return (await isRetired(db, account.id)) ? { ...account, eligible: false } : account;
   }
 
   async request(input: PasswordCredentialRequestInput): Promise<{ accepted: true; requestId: string }> {
@@ -235,14 +243,21 @@ export class PasswordCredentialsService {
         });
         established = Boolean(eligible.passwordHash || eligible.emailVerifiedAt);
       },
-      async (tx) => {
+      // written once the account is known, about that account: when an established account joined fresh, the new
+      // account (its retirement is recorded on the old one, identity-accounts.ts); and a step that left an existing
+      // issuer password as it was is a join, not a reset or enrolment
+      async (tx, outcome, issuerPasswordSet) => {
+        const action = !issuerPasswordSet
+          ? 'auth.identity_joined'
+          : outcome.fresh || !established ? 'auth.password_enrolled' : 'auth.password_reset';
         await tx.securityAuditEvent.create({
           data: {
-            action: established ? 'auth.password_reset' : 'auth.password_enrolled',
-            targetUserId: challenge.userId,
-            actorUserId: challenge.userId,
+            action,
+            targetUserId: outcome.account.id,
+            actorUserId: outcome.account.id,
             actorKind: 'self',
             correlationId: challenge.id,
+            ...(outcome.account.id !== challenge.userId ? { payload: { codeSentTo: challenge.userId } } : {}),
           },
         });
       },

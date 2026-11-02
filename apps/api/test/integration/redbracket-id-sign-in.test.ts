@@ -16,6 +16,7 @@ import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { startFakeIssuer, type FakeIssuer } from '../unit-support/fake-issuer';
+import { AuthService } from '../../src/auth/auth.service';
 
 const ENV = ['IDENTITY_OIDC', 'IDENTITY_ISSUER', 'IDENTITY_ISSUER_ENDPOINT', 'IDENTITY_CLIENT_ID', 'IDENTITY_REDIRECT_URI', 'IDENTITY_SERVICE_TOKEN', 'THROTTLE_DISABLED'] as const;
 
@@ -238,6 +239,162 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const joined = await setPassword(user.email!, 'my existing hub passphrase', 201);
     expect(sub(joined.body.token)).toBe(user.id);
     expect(await t.prisma.platformPersonLink.findUnique({ where: { userId: user.id } })).toMatchObject({ subject: person.userId, matchedOn: 'invite' });
+    // the trail says what happened: a join with the issuer password the person already had, never a reset or enrolment
+    const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: { not: 'auth.password_requested' } }, select: { action: true } });
+    expect(trail.map((e) => e.action)).toEqual(['auth.identity_joined']);
+  });
+
+  it('a retired account never signs in again: a phone code sent before or after, any door, all refused', async () => {
+    const auth = t.app.get(AuthService, { strict: false });
+    const old = await invitee('phone');
+    const phone = `+9197${String(Date.now()).slice(-8)}`;
+    await t.prisma.user.update({ where: { id: old.id }, data: { phone, passwordHash: await bcrypt.hash('the old local passphrase', 4), emailVerifiedAt: new Date() } });
+    fake.addPerson(old.email!, 'my redbracket passphrase');
+    const early = await auth.requestOtp({ phone, projectId: f.projectA.id });
+    expect(early.devCode).toBeTruthy();
+
+    await login(old.email!, 'my redbracket passphrase').expect(401); // joins fresh: the old row is retired
+    const fresh = await t.prisma.user.findUniqueOrThrow({ where: { email: old.email! } });
+    made.push(fresh.id);
+    expect(fresh.id).not.toBe(old.id);
+    expect(await t.prisma.user.findUniqueOrThrow({ where: { id: old.id }, select: { phone: true } })).toEqual({ phone }); // the number stays on the old row
+
+    // the code sent before retirement, and one sent after, find the retired row by its number and are refused
+    await expect(auth.verifyOtp({ phone, code: early.devCode!, projectId: f.projectA.id })).rejects.toThrow(/moved to Redbracket ID/);
+    const late = await auth.requestOtp({ phone, projectId: f.projectA.id });
+    await expect(auth.verifyOtp({ phone, code: late.devCode!, projectId: f.projectA.id })).rejects.toThrow(/moved to Redbracket ID/);
+    // every door issues through the same access rule, which refuses the retired row whatever proved who it is
+    const row = await t.prisma.user.findUniqueOrThrow({ where: { id: old.id } });
+    await expect(auth.signInUser(row)).rejects.toThrow(/moved to Redbracket ID/);
+  });
+
+  it('break-glass after joining: a re-seated admin uses the PMC password of the account their first sign-in replaced', async () => {
+    const old = await invitee('admin');
+    await t.prisma.user.update({ where: { id: old.id }, data: { passwordHash: await bcrypt.hash('the admin local passphrase', 4), emailVerifiedAt: new Date() } });
+    await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: old.id, role: 'admin' } });
+    fake.addPerson(old.email!, 'the admin redbracket passphrase');
+    await login(old.email!, 'the admin redbracket passphrase').expect(401); // joins fresh, holding nothing yet
+    const fresh = await t.prisma.user.findUniqueOrThrow({ where: { email: old.email! } });
+    made.push(fresh.id);
+    expect(fresh.passwordHash).toBeNull();
+
+    fake.force = { '/v2/sessions': 503 };
+    // not yet re-seated: the new account administers nothing, so no break-glass
+    await login(old.email!, 'the admin local passphrase').expect(503);
+    // re-seated as the company's admin (A4's operator step): the old PMC password opens the NEW account
+    await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: fresh.id, role: 'admin' } });
+    const glass = await login(old.email!, 'the admin local passphrase').expect(201);
+    expect(sub(glass.body.token)).toBe(fresh.id);
+    await login(old.email!, 'not the admin passphrase').expect(503);
+    // an ordinary joined person has no break-glass, whatever their old account held
+    const plain = await invitee('plain');
+    await t.prisma.user.update({ where: { id: plain.id }, data: { passwordHash: await bcrypt.hash('the plain local passphrase', 4), emailVerifiedAt: new Date() } });
+    fake.addPerson(plain.email!, 'the plain redbracket passphrase');
+    fake.force = {};
+    await login(plain.email!, 'the plain redbracket passphrase').expect(401);
+    made.push((await t.prisma.user.findUniqueOrThrow({ where: { email: plain.email! } })).id);
+    fake.force = { '/v2/sessions': 503 };
+    await login(plain.email!, 'the plain local passphrase').expect(503);
+  });
+
+  it('a reset code sent before retirement is refused after it, switch on or off: nothing reaches the issuer, the old hash stays', async () => {
+    const old = await invitee('resetrace');
+    const hash = await bcrypt.hash('the old local passphrase', 4);
+    await t.prisma.user.update({ where: { id: old.id }, data: { passwordHash: hash, emailVerifiedAt: new Date() } });
+    fake.addPerson(old.email!, 'my redbracket passphrase');
+    const codeFor = async () => {
+      const requested = await http().post('/auth/password/request').send({ email: old.email }).expect(201);
+      const verified = await http().post('/auth/password/verify').send({ requestId: requested.body.requestId, code: codes.get(old.email!) }).expect(201);
+      return verified.body.setupToken as string;
+    };
+    const onToken = await codeFor();
+    const offToken = await codeFor();
+    await login(old.email!, 'my redbracket passphrase').expect(401); // joins fresh: the old row is retired
+    made.push((await t.prisma.user.findUniqueOrThrow({ where: { email: old.email! } })).id);
+
+    fake.requests.length = 0;
+    await http().post('/auth/password/complete').send({ setupToken: onToken, password: 'a brand new passphrase' }).expect(400);
+    expect(fake.requests).toHaveLength(0);
+    process.env.IDENTITY_OIDC = '0';
+    await http().post('/auth/password/complete').send({ setupToken: offToken, password: 'another new passphrase' }).expect(400);
+    process.env.IDENTITY_OIDC = '1';
+    const row = await t.prisma.user.findUniqueOrThrow({ where: { id: old.id }, select: { passwordHash: true } });
+    expect(row.passwordHash).toBe(hash); // break-glass reads this hash: it never changes after retirement
+  });
+
+  it('a project switch signs with the caller\'s own token version, and never for a retired account', async () => {
+    const auth = t.app.get(AuthService, { strict: false });
+    const live = await invitee('switch-live');
+    await t.prisma.user.update({ where: { id: live.id }, data: { passwordHash: await bcrypt.hash('the local passphrase', 4), emailVerifiedAt: new Date() } });
+    // the version moved on during the request (a reset or a retirement committing): the new token is dead too
+    const before = (await t.prisma.user.findUniqueOrThrow({ where: { id: live.id } })).credentialVersion;
+    await t.prisma.user.update({ where: { id: live.id }, data: { credentialVersion: { increment: 1 } } });
+    const stale = await auth.switchProject(live.id, f.projectA.id, before);
+    await http().get('/me/memberships').set('Authorization', `Bearer ${stale.token}`).expect(401);
+
+    const old = await invitee('switch-old');
+    await t.prisma.user.update({ where: { id: old.id }, data: { passwordHash: await bcrypt.hash('the old local passphrase', 4), emailVerifiedAt: new Date() } });
+    fake.addPerson(old.email!, 'my redbracket passphrase');
+    const version = (await t.prisma.user.findUniqueOrThrow({ where: { id: old.id } })).credentialVersion;
+    await login(old.email!, 'my redbracket passphrase').expect(401);
+    made.push((await t.prisma.user.findUniqueOrThrow({ where: { email: old.email! } })).id);
+    await expect(auth.switchProject(old.id, f.projectA.id, version)).rejects.toThrow(/moved to Redbracket ID/);
+    await expect(auth.switchProject(old.id, f.projectA.id, version + 1)).rejects.toThrow(/moved to Redbracket ID/);
+  });
+
+  it('break-glass reads only the retirement made with the account (same moment, linked at sign-up), never an older one', async () => {
+    const { breakGlassHash } = await import('../../src/auth/identity/identity-accounts');
+    const u1 = await invitee('chain');
+    const email = u1.email!;
+    const h1 = await bcrypt.hash('u1 local passphrase', 4);
+    await t.prisma.user.update({ where: { id: u1.id }, data: { passwordHash: h1, emailVerifiedAt: new Date() } });
+    const p1 = fake.addPerson(email, 'first redbracket passphrase');
+    await login(email, 'first redbracket passphrase').expect(401);
+    const u2 = await t.prisma.user.findUniqueOrThrow({ where: { email } });
+    made.push(u2.id);
+    expect(await breakGlassHash(t.prisma, u2)).toBe(h1);
+    // an operator frees the address (SQL only: no app path rewrites a verified account's email), and a later account
+    // takes it: an invitation linked to another issuer person, then an established account that joins fresh
+    await t.prisma.user.update({ where: { id: u2.id }, data: { email: `moved-${u2.id}@test.local` } });
+    fake.people.delete(p1.userId);
+    const u3 = await invitee('chain-later');
+    await t.prisma.user.update({ where: { id: u3.id }, data: { email } });
+    await t.prisma.platformPersonLink.create({ data: { userId: u3.id, issuer: fake.issuer, subject: `other-${Date.now()}`, matchedOn: 'invite' } });
+    expect(await breakGlassHash(t.prisma, await t.prisma.user.findUniqueOrThrow({ where: { id: u3.id } }))).toBeNull();
+    await t.prisma.user.update({ where: { id: u3.id }, data: { email: `moved-${u3.id}@test.local` } });
+    const u4 = await invitee('chain-joiner');
+    const h4 = await bcrypt.hash('u4 local passphrase', 4);
+    await t.prisma.user.update({ where: { id: u4.id }, data: { email, passwordHash: h4, emailVerifiedAt: new Date() } });
+    fake.addPerson(email, 'second redbracket passphrase');
+    await login(email, 'second redbracket passphrase').expect(401);
+    const u5 = await t.prisma.user.findUniqueOrThrow({ where: { email } });
+    made.push(u5.id);
+    expect(await breakGlassHash(t.prisma, u5)).toBe(h4); // its own predecessor, never U1
+    // and an account linked by its invitation never reads a retirement, even one stamped with its own moment
+    const u6 = await invitee('chain-invite');
+    const at = (await t.prisma.user.findUniqueOrThrow({ where: { id: u6.id } })).createdAt;
+    await t.prisma.platformPersonLink.create({ data: { userId: u6.id, issuer: fake.issuer, subject: `invite-${Date.now()}`, matchedOn: 'invite' } });
+    const u7 = await invitee('chain-stamped');
+    await t.prisma.user.update({ where: { id: u7.id }, data: { passwordHash: h1, email: `stamped-${u7.id}@test.local` } });
+    await t.prisma.identityRetirement.create({ data: { userId: u7.id, email: u6.email!, retiredAt: at } });
+    expect(await breakGlassHash(t.prisma, await t.prisma.user.findUniqueOrThrow({ where: { id: u6.id } }))).toBeNull();
+  });
+
+  it('a reset that joins an established account fresh is recorded on the new account; the old one records its retirement', async () => {
+    const old = await invitee('trail');
+    await t.prisma.user.update({ where: { id: old.id }, data: { passwordHash: await bcrypt.hash('the old local passphrase', 4), emailVerifiedAt: new Date() } });
+    const done = await setPassword(old.email!, 'a new redbracket passphrase', 401); // set at the issuer; the new account holds no project
+    expect(done.body.message).toMatch(/not on any PMC project yet/);
+    const fresh = await t.prisma.user.findUniqueOrThrow({ where: { email: old.email! } });
+    made.push(fresh.id);
+    expect(fresh.id).not.toBe(old.id);
+    const onFresh = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: fresh.id }, select: { action: true, actorUserId: true, payload: true, correlationId: true } });
+    expect(onFresh).toEqual([{ action: 'auth.password_enrolled', actorUserId: fresh.id, payload: { codeSentTo: old.id }, correlationId: expect.any(String) }]);
+    const onOld = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: old.id }, select: { action: true, actorUserId: true, correlationId: true } });
+    expect(onOld.map((e) => e.action).sort()).toEqual(['auth.identity_retired', 'auth.password_requested']);
+    const retiredEvent = onOld.find((e) => e.action === 'auth.identity_retired')!;
+    expect(retiredEvent.actorUserId).toBe(fresh.id);
+    expect(retiredEvent.correlationId).toBe(onFresh[0]!.correlationId); // both name the reset code that did it
   });
 
   it('issuer unavailable (down, 5xx, past 4 s): "unavailable" for an ordinary person; a company owner may use the PMC password', async () => {

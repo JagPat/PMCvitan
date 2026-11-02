@@ -11,8 +11,9 @@
  *
  * Failures, for an ordinary person: the issuer saying no to the password is a wrong password (401). The issuer slow
  * (4 s), unreachable or failing, or the switch on with its settings incomplete, is "unavailable" (503), never a wrong
- * password. While it is unavailable, a company owner or admin whose account still holds a PMC password may sign in
- * with it (break-glass), so an issuer outage cannot lock the office out; nobody else can.
+ * password. While it is unavailable, a company owner or admin may sign in with the PMC password their account holds,
+ * or, once they have joined Redbracket ID, the PMC password of the account their first sign-in replaced
+ * (break-glass), so an issuer outage cannot lock the office out; nobody else can.
  *
  * Each sign-in writes one log line: the route, the outcome and the try's id. Never an email, password, token or code.
  */
@@ -24,8 +25,9 @@ import { lockUserCredential } from '../../common/credential-lock';
 import { OrgsParticipant, QA_ACCOUNT_EMAIL } from '../../orgs/orgs.participant';
 import { readIdentityConfig, type IdentityConfig } from './identity-config';
 import { IdentityClient } from './identity-client';
+import type { IdClaims } from './id-token';
 import { SignInAttempts, type AttemptKind } from './sign-in-attempts';
-import { linkInvite, linkOf, lockIssuerPerson, neverSetUp, settleSignIn, type Settled } from './identity-accounts';
+import { breakGlassHash, linkInvite, linkOf, lockIssuerPerson, neverSetUp, settleSignIn, type Settled } from './identity-accounts';
 
 export const UNAVAILABLE = 'Sign-in is unavailable just now. Try again in a few minutes.';
 export const WRONG_PASSWORD = 'Invalid email or password';
@@ -123,14 +125,16 @@ export class IdentitySignInService {
 
   /**
    * While Redbracket ID is unavailable: a company owner or admin may sign in with the PMC password their account still
-   * holds. Anyone else is told sign-in is unavailable (never "wrong password"), whatever they typed.
+   * holds, or, for an account a first Redbracket ID sign-in made, the one the replaced account held (`breakGlassHash`).
+   * Anyone else is told sign-in is unavailable (never "wrong password"), whatever they typed.
    */
   private async breakGlass(email: string, password: string, attempt: string): Promise<IdentityOutcome> {
     // a test account never signs in here (the operator door is its way in), as with the issuer up
     const user = QA_ACCOUNT_EMAIL.test(email) ? null : await this.orgs.accountByAddress(this.prisma, { email });
-    const admin = user?.passwordHash ? await this.orgs.administersCompany(this.prisma, user.id) : false;
+    const hash = user ? await breakGlassHash(this.prisma, user) : null;
+    const admin = hash && user ? await this.orgs.administersCompany(this.prisma, user.id) : false;
     // one bcrypt compare on every path, so the time taken does not tell who is an admin holding a PMC password
-    const matches = await bcrypt.compare(password, admin && user?.passwordHash ? user.passwordHash : DUMMY_HASH);
+    const matches = await bcrypt.compare(password, admin && hash ? hash : DUMMY_HASH);
     if (user && admin && matches) {
       this.line('login', attempt, 'signed in, break-glass');
       return { account: user, fresh: false };
@@ -153,14 +157,16 @@ export class IdentitySignInService {
    * on the issuer person this account is (linked), or a new issuer person is made with it; an issuer person who already
    * holds the email and is not this account's is never changed: the person joins with it only by typing its
    * password. Nothing is written to `User.passwordHash`. Last, in one transaction, the PMC account is settled and
-   * `record` writes the security trail. `attempt` names the try in the one log line (the challenge id).
+   * `record` writes the security trail for the account it settled on (a new one when an established account joins
+   * fresh), saying whether this step set the issuer password. `attempt` names the try in the one log line (the
+   * challenge id).
    */
   async setPassword(
     account: { id: string; email: string | null },
     password: string,
     attempt: string,
     claim: () => Promise<void>,
-    record: (tx: Prisma.TransactionClient) => Promise<void>,
+    record: (tx: Prisma.TransactionClient, outcome: IdentityOutcome, issuerPasswordSet: boolean) => Promise<void>,
   ): Promise<IdentityOutcome> {
     const email = (account.email ?? '').trim().toLowerCase();
     if (!email) throw new BadRequestException(NEEDS_HELP);
@@ -177,6 +183,7 @@ export class IdentitySignInService {
     await claim();
     const client = this.clientFor(config);
     const link = await linkOf(this.prisma, account.id);
+    let issuerPasswordSet = false;
     const found = await client.find(email);
     if (found.found === 'down') return this.unavailable(attempt);
     if (found.found === 'unclear') return this.needsHelp(attempt, 'issuer lookup unclear');
@@ -186,6 +193,7 @@ export class IdentitySignInService {
       const made = await client.create({ email, password, verified: true });
       if (!made.ok && made.taken) return this.needsHelp(attempt, 'issuer person made meanwhile');
       if (!made.ok) return made.failure === 'down' ? this.unavailable(attempt) : this.needsHelp(attempt, 'issuer refused new person');
+      issuerPasswordSet = true;
     } else if (link) {
       if (link.issuer !== config.issuer || link.subject !== found.userId) return this.needsHelp(attempt, 'link names another person');
       const set = await client.setPassword(found.userId, password);
@@ -194,6 +202,7 @@ export class IdentitySignInService {
         this.line('password', attempt, 'issuer refused password');
         throw new BadRequestException('Redbracket ID did not accept this password. Choose another one.');
       }
+      issuerPasswordSet = true;
       if (!found.verified && (await client.markVerified(found.userId, email)) === 'down') return this.unavailable(attempt);
     }
     // an existing issuer person who is not linked is left exactly as they are: the typed password must already be theirs
@@ -209,27 +218,40 @@ export class IdentitySignInService {
       // the person's lock, then the account's credential lock: the order every Redbracket ID writer takes them in
       await lockIssuerPerson(tx, config.issuer, claims.sub);
       await lockUserCredential(tx, account.id);
-      await record(tx);
-      const current = await this.orgs.accountById(tx, account.id);
-      if (!current || (current.email ?? '').toLowerCase() !== email) throw new BadRequestException(NEEDS_HELP);
-      const linked = await linkOf(tx, current.id);
-      if (linked) {
-        if (linked.issuer !== config.issuer || linked.subject !== claims.sub) throw new BadRequestException(NEEDS_HELP);
-        const user = await tx.user.update({ where: { id: current.id }, data: { emailVerifiedAt: new Date(), credentialVersion: { increment: 1 } } });
-        return { account: user, fresh: false };
-      }
-      if (neverSetUp(current)) {
-        // the invitation's own acceptance: PMC's code proved the mailbox and the issuer took (or already had) the password
-        if (!(await linkInvite(tx, config.issuer, claims.sub, current.id))) throw new BadRequestException(NEEDS_HELP);
-        const user = await tx.user.update({ where: { id: current.id }, data: { emailVerifiedAt: new Date(), credentialVersion: { increment: 1 } } });
-        return { account: user, fresh: false };
-      }
-      // an account set up before Redbracket ID joins fresh, exactly as a sign-in would (identity-accounts.ts)
-      const settled = await settleSignIn(tx, config.issuer, { ...claims, email, emailVerified: true });
-      return this.landed('password', attempt, settled);
+      const settled = await this.settlePassword(tx, config.issuer, account.id, email, claims, attempt);
+      await record(tx, settled, issuerPasswordSet);
+      return settled;
     });
     this.line('password', attempt, outcome.fresh ? 'set, new account' : 'set');
     return outcome;
+  }
+
+  /** The PMC account a password setup lands on, under both locks (see `setPassword`). */
+  private async settlePassword(
+    tx: Prisma.TransactionClient,
+    issuer: string,
+    accountId: string,
+    email: string,
+    claims: IdClaims,
+    attempt: string,
+  ): Promise<IdentityOutcome> {
+    const current = await this.orgs.accountById(tx, accountId);
+    if (!current || (current.email ?? '').toLowerCase() !== email) throw new BadRequestException(NEEDS_HELP);
+    const linked = await linkOf(tx, current.id);
+    if (linked) {
+      if (linked.issuer !== issuer || linked.subject !== claims.sub) throw new BadRequestException(NEEDS_HELP);
+      const user = await tx.user.update({ where: { id: current.id }, data: { emailVerifiedAt: new Date(), credentialVersion: { increment: 1 } } });
+      return { account: user, fresh: false };
+    }
+    if (neverSetUp(current)) {
+      // the invitation's own acceptance: PMC's code proved the mailbox and the issuer took (or already had) the password
+      if (!(await linkInvite(tx, issuer, claims.sub, current.id))) throw new BadRequestException(NEEDS_HELP);
+      const user = await tx.user.update({ where: { id: current.id }, data: { emailVerifiedAt: new Date(), credentialVersion: { increment: 1 } } });
+      return { account: user, fresh: false };
+    }
+    // an account set up before Redbracket ID joins fresh, exactly as a sign-in would (identity-accounts.ts)
+    const settled = await settleSignIn(tx, issuer, { ...claims, email, emailVerified: true }, attempt);
+    return this.landed('password', attempt, settled);
   }
 
   private unavailable(attempt: string): never {
