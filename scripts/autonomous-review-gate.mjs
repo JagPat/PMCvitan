@@ -980,6 +980,12 @@ export class GitHubClient {
     );
   }
 
+  // Codex 4440931056 on #1295 — the open pull requests whose head is this commit (a commit status is theirs alike)
+  async openPullRequestsAt(sha) {
+    const open = await this.paginated(`/repos/${this.repository}/pulls?state=open`);
+    return open.filter((pullRequest) => pullRequest.head?.sha === sha);
+  }
+
   // G3a — not head-scoped: GitHub cancels whatever auto-merge the PR has queued. Callers check the head first and
   // re-read after (`disarmQueuedAutoMerge`).
   async disableAutoMerge(pullRequest) {
@@ -1564,6 +1570,11 @@ export class AutoMergeDisarmFailed extends Error {
  * writes nothing (it is superseded). That head's own CI run writes its success through this same step and arms through
  * its own authorization; a head whose run had already finished stays green and unarmed (G3a's residual, ended by G3b).
  *
+ * Every other open pull request whose head is this same commit is disarmed too (Codex 4440931056 on #1295): a commit
+ * status is shared by them all, so a sibling with a merge queued would merge on this success before its own
+ * authorization read its own record. It is not armed again here; its own run arms it after its authorization (until
+ * then it stays green and unarmed: G3a's residual, ended by G3b).
+ *
  * Returns the live pull request (disarmed or never armed), or null when this head is no longer current. Throws
  * `AutoMergeDisarmFailed` on ANY failure inside it (gap-check F1): a read or the disable that throws, or a re-read that
  * still shows a queued auto-merge. Its callers' settlement has already written the settling pending status, which
@@ -1571,14 +1582,24 @@ export class AutoMergeDisarmFailed extends Error {
  */
 export async function disarmQueuedAutoMerge(client, number, expectedHead) {
   try {
-    const live = await refreshCurrentHead(client, number, expectedHead);
+    let live = await refreshCurrentHead(client, number, expectedHead);
     if (!live) return null;
-    if (!live.auto_merge) return live;
-    await client.disableAutoMerge(live);
-    const after = await client.pullRequest(number);
-    if (!isCurrentReviewUnit(after, expectedHead)) return null;
-    if (after.auto_merge) throw new AutoMergeDisarmFailed();
-    return after;
+    // Codex 4440931056 on #1295 — the success is the commit's, not the PR's: every open PR whose head is this commit
+    // and has a merge queued would consume it, so each is disarmed, this PR first. A sibling is not armed again here;
+    // only its own run's authorization arms it
+    const siblings = (await client.openPullRequestsAt(expectedHead)).filter((pull) => pull.number !== number);
+    for (const pull of [live, ...siblings]) {
+      if (!pull.auto_merge) continue;
+      await client.disableAutoMerge(pull);
+      const after = await client.pullRequest(pull.number);
+      if (pull.number === number) {
+        if (!isCurrentReviewUnit(after, expectedHead)) return null;
+        live = after;
+      }
+      // a sibling that moved off this commit or closed no longer consumes it
+      if (after.auto_merge && after.state === 'open' && after.head?.sha === expectedHead) throw new AutoMergeDisarmFailed();
+    }
+    return live;
   } catch (error) {
     throw error instanceof AutoMergeDisarmFailed ? error : new AutoMergeDisarmFailed(error);
   }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   AutoMergeDisarmFailed,
+  GitHubClient,
   completeCleanReview,
   completeReviewedPullRequest,
   disarmQueuedAutoMerge,
@@ -32,11 +33,12 @@ const armed = (sha = HEAD) => pr(sha, { auto_merge: { enabled_at: '2026-11-02T00
 const success = (id, description = 'review: Codex found no blocking issue on this exact head [wi:none]') =>
   ({ id, context: 'codex-current-head', state: 'success', description });
 
-function fakeClient({ reads, statuses = {}, disable = async () => {} } = {}) {
+function fakeClient({ reads, statuses = {}, disable = async () => {}, siblings = [] } = {}) {
   const calls = [];
   return {
     calls,
     async pullRequest(number) { calls.push(['read', number]); return reads.shift(); },
+    async openPullRequestsAt(sha) { calls.push(['list', sha]); return siblings; },
     async disableAutoMerge(pull) { calls.push(['disable', pull.node_id]); return disable(); },
     async statuses(head) { calls.push(['statuses', head]); return statuses[head] ?? []; },
   };
@@ -45,14 +47,14 @@ function fakeClient({ reads, statuses = {}, disable = async () => {} } = {}) {
 test('G3a — a pull request with nothing queued is not disabled', async () => {
   const client = fakeClient({ reads: [pr()] });
   assert.equal((await disarmQueuedAutoMerge(client, 900, HEAD)).head.sha, HEAD);
-  assert.deepEqual(client.calls.map(([k]) => k), ['read']);
+  assert.deepEqual(client.calls.map(([k]) => k), ['read', 'list']);
 });
 
 test('G3a — a queued auto-merge is disabled, in the order check the head, disable, re-read; the disarmed PR is returned', async () => {
   const client = fakeClient({ reads: [armed(), pr()] });
   const live = await disarmQueuedAutoMerge(client, 900, HEAD);
   assert.equal(live.auto_merge, null);
-  assert.deepEqual(client.calls.map(([k]) => k), ['read', 'disable', 'read']);
+  assert.deepEqual(client.calls.map(([k]) => k), ['read', 'list', 'disable', 'read']);
 });
 
 test('G3a — a disable that fails, or a re-read still armed, is the retryable failure: nothing green may follow', async () => {
@@ -74,7 +76,7 @@ test('G3a — a push between the head check and the disable: this run writes not
   // whose run had already finished stays green and unarmed (G3a's residual, ended by G3b's watchdog re-arm)
   const moved = fakeClient({ reads: [armed(), armed(NEXT)], statuses: { [NEXT]: [success(77)] } });
   assert.equal(await disarmQueuedAutoMerge(moved, 900, HEAD), null);
-  assert.deepEqual(moved.calls.map(([k]) => k), ['read', 'disable', 'read']);
+  assert.deepEqual(moved.calls.map(([k]) => k), ['read', 'list', 'disable', 'read']);
 });
 
 test('G3a (gap-check F1) — every failure inside the disarm is the retryable AutoMergeDisarmFailed, never a raw error', async () => {
@@ -105,6 +107,7 @@ function gateClient({ live = () => pr(), statuses = [success(600)], enable = asy
     log,
     repository: 'JagPat/PMCvitan',
     async pullRequest() { log.push(['read']); return live(); },
+    async openPullRequestsAt() { return []; },
     async disableAutoMerge(pull) { log.push(['disable', pull.number]); return disable(); },
     async statuses() { return statuses; },
     async checkRuns() { return greenChecks; },
@@ -273,4 +276,46 @@ test('G3a (gap-check F2) — the review path\'s clean ending disarms first and a
   const moved = gateClient({ live: () => (moved?.log.some(([k, , state]) => k === 'status' && state === 'success') ? pr(NEXT) : pr()) });
   assert.equal(await completeCleanReview(moved, pr(), HEAD, 'review: clean', verdict), null);
   assert.equal(moved.log.some(([k]) => k === 'arm'), false);
+});
+
+// Codex 4440931056 on #1295 — a commit status is shared by every open PR whose head is that commit: each one with a
+// merge queued is disarmed before the success, so none merges on it before its own authorization reads its record.
+test('G3a (Codex 4440931056) — every open pull request at this commit with a merge queued is disarmed before the success', async () => {
+  const sibling = (extra = {}) => pr(HEAD, { number: 901, node_id: 'PR_901', head: { sha: HEAD, ref: 'claude/other', repo }, ...extra });
+  const queued = () => sibling({ auto_merge: { enabled_at: '2026-11-02T00:00:00Z', merge_method: 'squash' } });
+  // this PR armed, a sibling armed, a sibling not armed: both armed ones disabled, each re-read, this PR returned
+  const both = fakeClient({ reads: [armed(), pr(), sibling()], siblings: [pr(), queued(), sibling({ number: 902, node_id: 'PR_902' })] });
+  const live = await disarmQueuedAutoMerge(both, 900, HEAD);
+  assert.equal(live.number, 900);
+  assert.deepEqual(both.calls, [['read', 900], ['list', HEAD], ['disable', 'PR_900'], ['read', 900], ['disable', 'PR_901'], ['read', 901]]);
+  // a sibling still armed after its disable: the retryable failure, nothing green
+  const stuck = fakeClient({ reads: [pr(), queued()], siblings: [queued()] });
+  await assert.rejects(disarmQueuedAutoMerge(stuck, 900, HEAD), AutoMergeDisarmFailed);
+  // a sibling that left this commit, or closed, by its re-read no longer consumes it
+  for (const gone of [sibling({ head: { sha: NEXT, ref: 'claude/other', repo }, auto_merge: { enabled_at: 'x' } }), sibling({ state: 'closed', auto_merge: { enabled_at: 'x' } })]) {
+    const moved = fakeClient({ reads: [pr(), gone], siblings: [queued()] });
+    assert.equal((await disarmQueuedAutoMerge(moved, 900, HEAD)).number, 900);
+  }
+  // an unreadable list is the retryable failure too
+  const blind = fakeClient({ reads: [pr()] });
+  blind.openPullRequestsAt = async () => { throw new Error('GitHub 502'); };
+  await assert.rejects(disarmQueuedAutoMerge(blind, 900, HEAD), AutoMergeDisarmFailed);
+  // through the shared step: the sibling's disable comes before the one success
+  let siblingArmed = true;
+  const client = gateClient({ live: () => (siblingArmed ? sibling({ auto_merge: { enabled_at: 'x' } }) : sibling()) });
+  client.pullRequest = async (number) => { client.log.push(['read', number]); return number === 900 ? pr() : (siblingArmed ? queued() : sibling()); };
+  client.openPullRequestsAt = async () => [pr(), queued()];
+  client.disableAutoMerge = async (pull) => { client.log.push(['disable', pull.number]); if (pull.number === 901) siblingArmed = false; };
+  await publishDisarmedSuccess(client, pr(), HEAD, 'review: clean');
+  const kinds = client.log.map(([k, n, state]) => (k === 'status' ? `status:${state}` : k === 'disable' ? `disable:${n}` : k));
+  assert.ok(kinds.indexOf('disable:901') >= 0 && kinds.indexOf('disable:901') < kinds.indexOf('status:success'), kinds.join(','));
+});
+
+test('G3a (Codex 4440931056) — the open pull requests at a commit are those whose head is that commit', async () => {
+  const paths = [];
+  const open = [pr(), pr(NEXT, { number: 903 }), pr(HEAD, { number: 904 })];
+  const self = { repository: 'JagPat/PMCvitan', async paginated(path) { paths.push(path); return open; } };
+  const at = await GitHubClient.prototype.openPullRequestsAt.call(self, HEAD);
+  assert.deepEqual(at.map((pull) => pull.number), [900, 904]);
+  assert.deepEqual(paths, ['/repos/JagPat/PMCvitan/pulls?state=open']);
 });

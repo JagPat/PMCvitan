@@ -650,6 +650,9 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     async pullRequest() {
       return pullRequest;
     },
+    async openPullRequestsAt() {
+      return [];
+    },
     async setDraft(current, draft) {
       draftTransitions.push(draft);
       current.draft = draft;
@@ -4077,6 +4080,7 @@ test('G3a — a recovered success disarms first and arms only after the merge au
     const client = {
       ...automatedMergeEvidence(pull),
       async pullRequest() { return { ...pull }; },
+      async openPullRequestsAt() { return []; },
       async statuses() { return statuses; },
       async setStatus(sha, state, description, url, context = 'codex-current-head') {
         const status = { id: nextId += 1, context, state, description };
