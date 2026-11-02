@@ -233,7 +233,7 @@ const mediaSiteVisitSchema = z.object({
   rating: z.enum(SITE_VISIT_RATINGS).optional(),
 }).strict();
 export const createMediaSchema = z.object({
-  kind: z.enum(['progress', 'inspection', 'decision', 'attendance', 'material', 'visit']),
+  kind: z.enum(['progress', 'inspection', 'decision', 'attendance', 'material', 'visit', 'proof']),
   mime: z.enum([...RASTER_IMAGE_MIMES, ...VOICE_NOTE_MIMES, ...VIDEO_CLIP_MIMES]),
   data: z.string().min(1).max(MAX_MEDIA_BASE64, 'file too large'),
   // a voice note's or a video clip's length in whole seconds as the recorder counted it, optional: the length stored is
@@ -265,6 +265,13 @@ export const createMediaSchema = z.object({
 }).refine((m) => !m.mime.startsWith('video/') || m.durationSec === undefined || m.durationSec <= VIDEO_CLIP_MAX_SEC, {
   message: 'a video clip is at most a minute long',
   path: ['durationSec'],
+}).refine((m) => m.kind !== 'proof' || (
+  m.inspectionId !== undefined && m.inspectionItemId !== undefined && m.mime.startsWith('image/')
+  && m.decisionId === undefined && m.dailyLogId === undefined && m.nodeId === undefined && m.sourceMediaId === undefined
+), {
+  // #482 site photos unit 4: a proof photo shows a failed inspection item fixed, and is filed on that item only
+  message: 'a proof photo is a photo of one inspection item, filed on nothing else',
+  path: ['kind'],
 });
 export type CreateMediaInput = z.infer<typeof createMediaSchema>;
 
