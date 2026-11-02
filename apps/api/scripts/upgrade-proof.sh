@@ -5686,7 +5686,8 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20280129000000_voice_transcript_stamp
 20280130000000_voice_transcript_running_since
 20280131000000_voice_transcript_busy_index
-20280201000000_command_key_sighting"
+20280201000000_command_key_sighting
+20280202000000_media_content_sha256"
 # 4d-ii-a / A7d — THE RUNNER'S RULE, MIRRORED (scripts/migrate.sh, the P3005 baseline path): on a database
 # that CARRIES A7d (its two claimant seals and the re-issued actor seal standing beside 4d-i's own seal
 # functions) 4d-i's two halves and 4d-i-b U3 are resolved as applied rather than replayed, because each
@@ -5895,6 +5896,10 @@ assert "#1177 VT1e: after the replay the transcripts keep their partial busy-loo
 assert "Idempotency-Key 2a-m: after the replay the key-sighting table keeps its key and shape check" \
   "SELECT (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"CommandKeySighting\"'::regclass AND conname = 'CommandKeySighting_pkey' AND contype = 'p')::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"CommandKeySighting\"'::regclass AND conname = 'CommandKeySighting_shape_check' AND contype = 'c')::text;" \
   "1|1"
+# #904 — the file digest (on ALWAYS_EXECUTE): its nullable text column, its shape CHECK and its written-once trigger.
+assert "#904: after the replay the file rows keep their nullable digest column, its shape check and its written-once trigger" \
+  "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'Media' AND column_name = 'contentSha256' AND data_type = 'text' AND is_nullable = 'YES' AND column_default IS NULL)::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"Media\"'::regclass AND conname = 'Media_contentSha256_shape_check' AND contype = 'c')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"Media\"'::regclass AND tgname = 'Media_content_sha256_fixed' AND NOT tgisinternal)::text;" \
+  "1|1|1"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \

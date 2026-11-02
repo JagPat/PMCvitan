@@ -8,7 +8,7 @@ import {
   type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitFile, type SiteVisitOp,
   type SiteVisitRating,
 } from '@/data/apiGateway';
-import { deleteVisitPhoto, listVisitPhotos, posterWaits, putVisitPhoto, settleFiledVisitPhotos, storageAvailable, visitPhotoScope, withinWait, VisitPhotoUnconfirmed, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { deleteRemovedVisitPhoto, deleteVisitPhoto, forgetRemovedVisitPhoto, listVisitPhotos, REMOVED_VISIT_PHOTO_PREFIX, removedVisitPhotos, posterWaits, putVisitPhoto, settleFiledVisitPhotos, storageAvailable, visitPhotoScope, withinWait, VisitPhotoUnconfirmed, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import type { MarkedCopy } from '@/components/PhotoMarkup';
 import { setClampedTimeout } from './clampedTimer';
 import { captureStamp } from './captureStamp';
@@ -483,12 +483,41 @@ export function useSiteVisits() {
     const scope = projectScopeOf(s);
     const mine = (keptTurn.current += 1);
     // bounded: a read that never answers is one that failed
-    withinWait(() => listVisitPhotos(visitPhotoScope(s.sessionToken, s.sessionUserId), s.activeProjectId))
+    const owner = visitPhotoScope(s.sessionToken, s.sessionUserId);
+    withinWait(() => listVisitPhotos(owner, s.activeProjectId))
+      .then((list) => {
+        // a file the server removed whose row could not be deleted then (#1241): never shown from it, and deleted now.
+        // Its record goes once the row is gone; a delete that fails again leaves both for the next read
+        const removed = removedVisitPhotos(owner, scope.projectId);
+        // #1266: records that cannot be read: nothing is deleted, and the shown files leave out every filed copy
+        if (removed === 'unreadable' || removed.size === 0) return list;
+        for (const key of removed) {
+          if (!list.some((r) => r.clientKey === key)) { forgetRemovedVisitPhoto(owner, scope.projectId, key); continue; }
+          void withinWait(() => deleteVisitPhoto(owner, scope.projectId, key)).then(() => forgetRemovedVisitPhoto(owner, scope.projectId, key), () => {});
+        }
+        return list.filter((r) => !removed.has(r.clientKey));
+      })
       // only the latest: a read sent before a photo was marked filed here never puts it back as queued
       .then((list) => { if (live(scope) && mine === keptTurn.current) setKept(list); })
       // not read: what is shown stays, and it is read again on the visit photo retry
       .catch(() => { if (live(scope)) useStore.getState().retrySiteVisits(); });
   }, []);
+  // another tab recorded a removal its phone could not apply, or cleared one once its row went (#1241): the file is
+  // the server's removed file either way, so this screen keeps it hidden as one it saw removed, and the phone's rows are
+  // read again. A cleared record never lets a row read before it was deleted, or a server read sent before the
+  // removal, show the removed file again
+  useEffect(() => {
+    const heard = (e: StorageEvent) => {
+      if (!e.key?.startsWith(REMOVED_VISIT_PHOTO_PREFIX)) return;
+      const st = useStore.getState();
+      const mine = `${REMOVED_VISIT_PHOTO_PREFIX}${visitPhotoScope(st.sessionToken, st.sessionUserId)}.${st.activeProjectId}.`;
+      if (e.key.startsWith(mine) && e.key.length > mine.length) removedFiles.current.add(e.key.slice(mine.length));
+      setRemovedTurn((n) => n + 1);
+      readKept();
+    };
+    globalThis.addEventListener?.('storage', heard);
+    return () => globalThis.removeEventListener?.('storage', heard);
+  }, [readKept]);
 
   /** Every page shown and every open visit, together. `fresh` starts over from the first page (a new project or
    *  sign-in); otherwise it is a refresh that reads again every page already shown. Every open visit is in the open
@@ -703,10 +732,20 @@ export function useSiteVisits() {
   // a photo the server took is shown from its filed row (not as waiting to send) until the server's list shows it
   const filed = useMemo(() => kept.filter((r) => r.state === 'filed'), [kept]);
   const shown = useMemo(() => {
+    // a file removed here, or one this phone recorded as removed (#1241, read again on every server read and on another
+    // tab's record), is never shown, from the server's rows or the phone's own copy
+    const st = useStore.getState();
+    const read = removedVisitPhotos(visitPhotoScope(st.sessionToken, st.sessionUserId), st.activeProjectId);
     const queuedKeys = new Set(queued.map((o) => o.idempotencyKey));
-    const taken = filed.filter((r) => !queuedKeys.has(r.op.idempotencyKey)).map((r) => r.op);
-    const all = withQueued(rows, [...queued, ...taken], me, previews, new Set(taken.map((o) => o.file.id)));
-    const gone = removedFiles.current;
+    // #1266: records that cannot be read may name any copy of a file on this phone, filed or still queued (a send whose
+    // answer was lost may have reached the server, and another tab may have removed it), so no file is shown from the
+    // phone at all: not a filed row, and not a queued send, whatever its row says (Codex 4438228523, 4438362505). The
+    // server's own list still shows each file it holds, and the visit's hold says a photo may still be waiting
+    const sending = read === 'unreadable' ? queued.filter((o) => o.t !== 'siteVisitAddFile') : queued;
+    const taken = read === 'unreadable' ? [] : filed.filter((r) => !queuedKeys.has(r.op.idempotencyKey)).map((r) => r.op);
+    const all = withQueued(rows, [...sending, ...taken], me, previews, new Set(taken.map((o) => o.file.id)));
+    const recorded: ReadonlySet<string> = read === 'unreadable' ? new Set() : read;
+    const gone = recorded.size === 0 ? removedFiles.current : new Set([...removedFiles.current, ...recorded]);
     if (gone.size === 0) return all;
     const kept = (f: SiteVisitFile) => !gone.has(f.mediaId) && !(f.clientKey && gone.has(f.clientKey));
     return { ...all, visits: all.visits.map((v) => (v.files?.some((f) => !kept(f)) ? { ...v, files: v.files.filter(kept) } : v)) };
@@ -795,40 +834,49 @@ export function useSiteVisits() {
     const state = useStore.getState();
     const gateway = state.serverGateway();
     if (!gateway) return SV.needsServer[state.lang];
-    if (globalThis.navigator?.onLine === false) return SV.removeOffline[state.lang];
+    // the request itself says whether the server can be reached: a browser that reports offline on a network the server
+    // answers on still removes (#1239). Its own word only names a send that got no answer
     const scope = projectScopeOf(state);
+    const owner = visitPhotoScope(state.sessionToken, state.sessionUserId);
     setBusy(true);
     setError(null);
     setNotice(null);
+    // the phone's own copy of a file it sent goes with the removal, not with a later read: a read that fails, or a
+    // reload, would otherwise rebuild the removed file from it. It goes in the scope the removal was sent from, shown or
+    // not (#1253); one the phone cannot delete just then is recorded apart and goes on the next read of the rows (#1241)
+    const letGo = async () => {
+      if (!file.clientKey) return;
+      await deleteRemovedVisitPhoto(owner, scope.projectId, file.clientKey).catch(() => {});
+    };
     const gone = async () => {
       removedFiles.current.add(file.mediaId);
       if (file.clientKey) removedFiles.current.add(file.clientKey);
       setRemovedTurn((n) => n + 1);
       setNotice(SV.fileRemoved[useStore.getState().lang]);
-      // the phone's own copy of a file it sent goes with the removal, not with a later read: a read that fails, or a
-      // reload, would otherwise rebuild the removed file from it. Bounded; one the phone could not let go is hidden here
-      // and settled by the next read of its visit
-      if (file.clientKey) {
-        const key = file.clientKey;
-        await withinWait(() => deleteVisitPhoto(visitPhotoScope(state.sessionToken, state.sessionUserId), scope.projectId, key)).catch(() => {});
-        if (live(scope)) readKept();
-      }
+      await letGo();
+      if (file.clientKey && live(scope)) readKept();
       if (live(scope)) void readHead(false);
       return null;
     };
     try {
       await gateway.removeSiteVisitFile(file.mediaId, reason);
       // another project or sign-in is shown now: nothing of this one is said there, and its next read lists what is left
-      return live(scope) ? gone() : null;
+      if (!live(scope)) { await letGo(); return null; }
+      return gone();
     } catch (err) {
+      if (isVisitFileGone(err)) {
+        if (!live(scope)) { await letGo(); return null; }
+        return gone();
+      }
       if (!live(scope)) return null;
-      if (isVisitFileGone(err)) return gone();
       // what the server allows may have moved (the hour up, the visit ended): the offer is read again
       void readHead(false);
       const lang = useStore.getState().lang;
       // the server's refusal, in the viewer's words where it is one of the removal refusals. Only no answer at all is said
       // as such: a sign-in, a timeout, a busy or a failing server answered, with a status
-      if (typeof (err as { status?: unknown } | null)?.status !== 'number') return SV.removeUnreachable[lang];
+      if (typeof (err as { status?: unknown } | null)?.status !== 'number') {
+        return globalThis.navigator?.onLine === false ? SV.removeOffline[lang] : SV.removeUnreachable[lang];
+      }
       const said = refusalMessage(err);
       return said ? `${SV.notRemoved[lang]} ${removalRefusalWords(said, lang)}` : SV.notRemoved[lang];
     } finally {

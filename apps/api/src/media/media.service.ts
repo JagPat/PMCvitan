@@ -19,6 +19,7 @@ import { CommercialParticipant } from '../commercial/commercial.participant';
 import { SiteVisitFilesParticipant } from '../site-visits/site-visit-files.participant';
 import { MediaDisposability, SITE_RECORD_ROLES } from './media-disposability';
 import { isPlaceHiddenFrom, previewPublishedProjectNode, resolvePublishedProjectNode } from '../nodes/node-scope';
+import { lockProjectTreeShared } from '../common/tree-lock';
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
@@ -36,6 +37,9 @@ export interface UploadedMedia {
   url: string;
   /** #482 site photos — when the server recorded it (ISO), so a device shows the time the snapshot will */
   at: string;
+  /** #919 — the place it is filed on (null: none). A replay answers the stored photo's, so a phone whose answer to a
+   *  send without a removed place was lost learns, on its next send of the key, that the place was dropped */
+  nodeId: string | null;
 }
 
 /** The roles that keep the record-linked uploads: evidence for a decision or an inspection item, or a non-progress kind. */
@@ -137,15 +141,28 @@ export class MediaService {
    *  narrowed to plain site photos, that is their OWN plain photo — never another member's evidence.
    *  And never a photo the caller cannot see now: one filed (before #881) on another member's private
    *  draft is answered as if it did not exist, as the snapshot and re-filing already answer it (#884). */
-  private async replayed(projectId: string, user: AuthUser, row: ReplayRow): Promise<UploadedMedia> {
+  private async replayed(projectId: string, user: AuthUser, row: ReplayRow, clientKey: string): Promise<UploadedMedia> {
     if (!SITE_RECORD_ROLES.has(user.role)) {
       const plain = (row.kind === 'progress' || row.kind === 'visit') && !row.decisionId && !row.inspectionId && !row.inspectionItemId;
       if (!plain || row.uploadedBy !== user.sub) throw new ForbiddenException('This upload key belongs to another photo');
     }
-    if (row.nodeId && (await this.prisma.$transaction((tx) => isPlaceHiddenFrom(tx, projectId, row.nodeId, user.sub)))) {
-      throw new NotFoundException('Media not found');
-    }
-    return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString() };
+    // #919 — the answer is read again under two locks, both taken before the read: the send key's (its transaction's
+    // first statement, as the upload and the delete take it), so a delete of this photo in flight finishes first and the
+    // answer is "deleted", never a photo that is no longer there (Codex 4437127224); then the tree's shared side, always,
+    // whatever place the fast read saw, so a removal of any place in flight finishes first and the answer never names a
+    // removed place (Codex 4436983883, 4437307908). Lock order: the send key, then the tree, as the upload takes them.
+    const seen = await this.prisma.$transaction(async (tx) => {
+      await lockSendKey(tx, projectId, clientKey);
+      await lockProjectTreeShared(tx, projectId);
+      const still = await tx.media.findUnique({ where: { id: row.id }, select: { nodeId: true } });
+      if (!still) return 'deleted' as const;
+      // a photo on another member's private draft is answered as if it did not exist (#884)
+      return (await isPlaceHiddenFrom(tx, projectId, still.nodeId, user.sub)) ? null : { nodeId: still.nodeId };
+    });
+    if (seen === 'deleted') throw new GoneException(DELETED_PHOTO);
+    if (!seen) throw new NotFoundException('Media not found');
+    const nodeId = seen.nodeId;
+    return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString(), nodeId };
   }
 
   /** The photo a marked-up copy is drawn on: an image of this project that is a file on the same visit. The copy takes
@@ -203,7 +220,7 @@ export class MediaService {
         where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
         select: REPLAY_SELECT,
       });
-      if (existing) return this.replayed(projectId, user, existing);
+      if (existing) return this.replayed(projectId, user, existing, input.clientKey);
       // #482 — its photo was deleted: an early no, before any bytes are stored (asked again under the key's lock below)
       const deleted = await this.prisma.mediaTombstone.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } } });
       if (deleted) throw new GoneException(DELETED_PHOTO);
@@ -352,7 +369,7 @@ export class MediaService {
         });
         let replay: UploadedMedia | undefined;
         try {
-          if (winner) replay = await this.replayed(projectId, user, winner);
+          if (winner) replay = await this.replayed(projectId, user, winner, input.clientKey);
           // #482 — no winner any more: "deleted" only on the database's word, its record of the key (written in the
           // delete's own statement); without it the original error stands, unexplained
           else if (await this.prisma.mediaTombstone.findUnique({ where: { projectId_clientKey: { projectId, clientKey: input.clientKey } } })) {
@@ -393,7 +410,7 @@ export class MediaService {
     // a fresh upload signals its project once; a replay (P2002 return above) never reaches here
     if (events.length) await this.dispatcher.dispatchCommitted(events);
     // a short-lived, signed path resolved against the API base by the frontend
-    return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString() };
+    return { id: row.id, url: this.signed.mediaPath(row.id), at: row.createdAt.toISOString(), nodeId: row.nodeId };
   }
 
   /** The earned cleanup (#571 round 12): remove this request's stored object only once a fresh read
