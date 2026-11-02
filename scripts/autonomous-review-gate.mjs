@@ -1439,7 +1439,7 @@ async function refreshCurrentHead(client, number, expectedHead) {
 //     but never-merge-eligible owner.
 // This is a PURE predicate over the shared vocabulary and has NO consumer in this unit: it only classifies a
 // status. The auto-merge cancellation/reconciliation that consumes it — including the cross-head serialization
-// a non-head-scoped `disablePullRequestAutoMerge` requires — is deferred to the 2A3b activation unit, where the
+// a non-head-scoped `disablePullRequestAutoMerge` requires — is deferred to 2A3b-2, the second half of the 2A3b activation unit, where the
 // matching re-arm/requeue behaviour can be designed together. Defining the predicate here grants no behaviour.
 export function ownershipStatusWithholdsAutoMerge(status) {
   if (status?.context !== STATUS_CONTEXT || status?.state !== 'failure') return false;
@@ -3291,7 +3291,46 @@ export function contextForEvent(eventName, event, dispatchNumber) {
       trigger: 'relabel',
     };
   }
+  // 2A3b-1 — the event-driven disarm (event-disarm.yml), seen from trusted default-branch code: a push or an arm
+  if (eventName === 'pull_request_target' && (event.action === 'synchronize' || event.action === 'auto_merge_enabled')) {
+    return {
+      number: Number(event.pull_request?.number),
+      expectedHead: event.pull_request?.head?.sha ?? null,
+      ciConclusion: null,
+      trigger: event.action === 'synchronize' ? 'synchronize' : 'auto-merge-enabled',
+      enabledBy: event.pull_request?.auto_merge?.enabled_by?.login ?? event.sender?.login ?? null,
+    };
+  }
   return null;
+}
+
+const EVENT_DISARM_TRIGGERS = ['synchronize', 'auto-merge-enabled'];
+// The login of this workflow token: an arm it made never starts a workflow run, so this only guards a replayed event
+const GATE_TOKEN_LOGIN = 'github-actions[bot]';
+
+/**
+ * 2A3b-1 (notes/gate-codex-silent/2a3/2a3b-design.md; Stage 1's rulings of 2 Nov) — the event-driven disarm for W1.
+ * On the event that invalidates a queued merge, within seconds and not after CI, it disarms through the head-checked
+ * `disarmBeforeRun` and writes only through the 2A3a refusal (`publishRetryableHold`). It never arms and never writes
+ * a success: the ordinary review re-judges, and only `completeReviewedPullRequest` arms again.
+ *  - a push (`synchronize`): every queued merge at the new head is disarmed (this PR's was armed for its old head,
+ *    whichever way GitHub treats an `expectedHeadOid` arm), then the 2A3a refusal if another open PR has the head.
+ *    Ends W1's armed push onto another open PR's commit, apart from the run's start latency (End: the Board ruling).
+ *  - an arm by anyone but the gate (`auto_merge_enabled`): the 2A3a refusal only, so a commit shared by open PRs is
+ *    disarmed and refused. A person's arm on a PR alone at its commit stays (Q1 = a; the Board ruling on #1094).
+ * W2 (a Codex run starting while a merge waits) and the ownership-withhold consumer are 2A3b-2's.
+ */
+export async function eventDisarm(client, pullRequest, expectedHead, context, statuses) {
+  const recoveryRequest = pendingRecoveryRequest(statuses, pullRequest.number);
+  if (context.trigger === 'synchronize') {
+    if (!(await disarmBeforeRun(client, pullRequest, expectedHead, statuses))) return 'superseded';
+    return (await refuseSharedCommit(client, pullRequest, expectedHead, recoveryRequest)) ?? 'disarmed';
+  }
+  if (context.trigger === 'auto-merge-enabled') {
+    if (context.enabledBy === GATE_TOKEN_LOGIN) return 'gate arm';
+    return (await refuseSharedCommit(client, pullRequest, expectedHead, recoveryRequest)) ?? 'nothing';
+  }
+  throw new Error(`The event disarm has no trigger ${context.trigger}`);
 }
 
 export function assertCurrentHeadForContext(context, currentHead, mode) {
@@ -3531,6 +3570,16 @@ export async function run() {
     }
     const outcome = await guardCandidateRelabel(client, pullRequest, expectedHead, existingStatuses);
     console.log(`Relabel guard: ${outcome}.`);
+    return;
+  }
+
+  // 2A3b-1 — the event-driven disarm runs only in its own mode, and that mode only on its own events
+  if ((mode === 'event-disarm') !== EVENT_DISARM_TRIGGERS.includes(context.trigger)) {
+    throw new Error(`Mode ${mode} does not run on a ${context.trigger} event`);
+  }
+  if (mode === 'event-disarm') {
+    const outcome = await eventDisarm(client, pullRequest, expectedHead, context, existingStatuses);
+    console.log(`Event disarm (${context.trigger}): ${outcome}.`);
     return;
   }
 
