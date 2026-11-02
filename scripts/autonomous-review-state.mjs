@@ -228,7 +228,7 @@ export function classifyCodexState({
   // cannot see block at the same points as a finding (`changes_required`, non-retryable)
   const record = codexStateRecordVerdict(issueComments, expectedHead, readyAtMs);
   const recordStops = () => {
-    if (record === 'security') return { state: 'changes_required', findingCount: 1, detail: CODEX_SECURITY_FINDINGS_DETAIL };
+    if (record === 'security') return { state: 'changes_required', findingCount: 1, security: true, detail: CODEX_SECURITY_FINDINGS_DETAIL };
     if (record !== 'hold') return null;
     return nowMs > deadlineMs
       ? { state: 'timed_out', findingCount: 0, held: true, detail: CODEX_RUN_HELD_DETAIL }

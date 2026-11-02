@@ -36,8 +36,10 @@ export function mergedThroughTrivialLane(statuses = []) {
  * cap counts them), plus the clean merged head's own round when Codex found nothing there. A head merged
  * through the trivial fast lane had no Codex round of its own.
  */
-export function reviewRounds(pullRequest, { comments = [], reviews = [], trivial = false } = {}) {
-  const heads = new Set(findingRoundHeads(comments, reviews));
+export function reviewRounds(pullRequest, { comments = [], reviews = [], issueComments = [], trivial = false } = {}) {
+  // G2 (#1280 round 1, gap-check) — a head that failed only on Codex security findings is a round too: its
+  // security-verdict marker is a PR (issue) comment, so the one shared count reads those as well
+  const heads = new Set(findingRoundHeads(comments, reviews, issueComments));
   if (trivial || heads.has(pullRequest?.head?.sha)) return heads.size;
   return heads.size + 1;
 }
@@ -141,7 +143,7 @@ export async function reportPullRequest({ api, token, fetchImpl, pullRequest }) 
     readAll(fetchImpl, `${api}/commits/${pullRequest.head.sha}/statuses`, token),
   ]);
   const trivial = mergedThroughTrivialLane(statuses);
-  const body = completionReport(pullRequest, { rounds: reviewRounds(pullRequest, { comments, reviews, trivial }) });
+  const body = completionReport(pullRequest, { rounds: reviewRounds(pullRequest, { comments, reviews, issueComments, trivial }) });
   const response = await fetchImpl(`${api}/issues/${pullRequest.number}/comments`, {
     method: 'POST',
     headers: { ...headersFor(token), 'content-type': 'application/json' },

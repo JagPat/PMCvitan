@@ -330,8 +330,8 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   const securityFindings = record({ has_any_findings: false, has_unresolved_findings: false, status: 'completed' },
     { commit_sha: head, has_any_findings: true, has_unresolved_findings: true, status: 'completed' });
   const completed = record({ has_any_findings: true, has_unresolved_findings: true, status: 'completed' });
-  assert.equal((await authorizeExactHeadMerge(makeClient({ records: [running] }), pull, head)).state, 'codex_review_not_settled');
-  assert.equal((await authorizeExactHeadMerge(makeClient({ records: [securityFindings] }), pull, head)).state, 'codex_review_not_settled');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ records: [running] }), pull, head)).state, 'codex_review_held');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ records: [securityFindings] }), pull, head)).state, 'codex_review_security');
   assert.equal((await authorizeExactHeadMerge(makeClient({ records: [completed] }), pull, head)).allowed, true);
   const unreadable = { ...makeClient(), async issueComments() { throw new Error('GitHub 502'); } };
   await assert.rejects(authorizeExactHeadMerge(unreadable, pull, head), /GitHub 502/u);

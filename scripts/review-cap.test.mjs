@@ -1049,7 +1049,7 @@ test('Codex 4438607048 — publishing a security verdict writes the marker first
   const markers = [];
   client.createIssueComment = async (number, body) => { state.log.push('marker'); markers.push({ id: 1, user: { login: 'github-actions[bot]' }, body }); };
   client.issueComments = async () => markers;
-  await publishBlockingVerdict(client, { number: 9, html_url: 'u' }, HEAD, { description: `review: ${CODEX_SECURITY_FINDINGS_DETAIL}` });
+  await publishBlockingVerdict(client, { number: 9, html_url: 'u' }, HEAD, { description: `review: ${CODEX_SECURITY_FINDINGS_DETAIL}`, security: true });
   assert.deepEqual(securityVerdictHeads(markers), [HEAD]);
   const order = state.log.filter((entry) => entry === 'marker' || entry.startsWith('status:'));
   assert.deepEqual(order, ['status:pending', 'marker', 'status:failure']);
@@ -1061,7 +1061,7 @@ test('Codex 4438607048 — publishing a security verdict writes the marker first
   const failing = fakeGitHub({ comments: [] });
   failing.client.issueComments = async () => [];
   failing.client.createIssueComment = async () => { throw new Error('GitHub 502'); };
-  await assert.rejects(publishBlockingVerdict(failing.client, { number: 9, html_url: 'u' }, HEAD, { description: `review: ${CODEX_SECURITY_FINDINGS_DETAIL}` }), /GitHub 502/u);
+  await assert.rejects(publishBlockingVerdict(failing.client, { number: 9, html_url: 'u' }, HEAD, { description: `review: ${CODEX_SECURITY_FINDINGS_DETAIL}`, security: true }), /GitHub 502/u);
   const last = failing.state.statuses.at(-1);
   assert.equal(last.state, 'failure');
   assert.equal(isRetryableReviewFailureDescription(last.description), true);
@@ -1099,8 +1099,9 @@ test('Codex 4438607048 — every finding-head count counts a security-only head 
   // and no production caller can count without the markers: every call of the predicate passes the issue
   // comments (the handoff's two lease reads, the cap's round heads, the gate and the lifecycle readers)
   const { readFile } = await import('node:fs/promises');
-  const files = ['autonomous-review-gate.mjs', 'autonomous-handoff.mjs', 'review-cap.mjs', 'review-efficiency.mjs', 'review-lifecycle.mjs'];
-  // the arguments of each call, split at top-level commas (balanced brackets)
+  const files = ['autonomous-review-gate.mjs', 'autonomous-handoff.mjs', 'review-cap.mjs', 'review-efficiency.mjs', 'review-lifecycle.mjs', 'completion-report.mjs'];
+  // the arguments of each call, split at top-level commas (balanced brackets); a member call (`x.f(`) is not the
+  // predicate, a spread (`...f(`) is
   const callArgs = (source, at) => {
     const args = [];
     let depth = 0;
@@ -1117,9 +1118,10 @@ test('Codex 4438607048 — every finding-head count counts a security-only head 
     throw new Error('unbalanced call');
   };
   let calls = 0;
+  let roundCalls = 0;
   for (const file of files) {
     const source = await readFile(new URL(`./${file}`, import.meta.url), 'utf8');
-    for (const match of source.matchAll(/(?<![\w.])(codexFindingHeads|findingRoundHeads|reviewCapState|observeReviewLifecycle|assessRestructure|assessConvergence)\(/gu)) {
+    for (const match of source.matchAll(/(?<!\w|(?<!\.)\.)(codexFindingHeads|findingRoundHeads|reviewCapState|observeReviewLifecycle|assessRestructure|assessConvergence|reviewRounds)\(/gu)) {
       const line = source.slice(source.lastIndexOf('\n', match.index) + 1, match.index);
       if (/function\s*$|\/\/|\*/u.test(line)) continue;
       const args = callArgs(source, match.index + match[0].length);
@@ -1127,6 +1129,7 @@ test('Codex 4438607048 — every finding-head count counts a security-only head 
         calls += 1;
         assert.equal(args.length, 3, `${file}: codexFindingHeads(${args.join(', ')}) passes the issue comments`);
       } else if (match[1] === 'findingRoundHeads') {
+        roundCalls += 1;
         assert.equal(args.length, 3, `${file}: findingRoundHeads(${args.join(', ')}) passes the issue comments`);
       } else {
         assert.match(args.join(','), /issueComments/u, `${file}: ${match[1]}(...) passes the issue comments`);
@@ -1134,6 +1137,8 @@ test('Codex 4438607048 — every finding-head count counts a security-only head 
     }
   }
   assert.equal(calls, 7, 'the seven production calls of the predicate (gate convergence, handoff x2, cap, lifecycle x2, convergence)');
+  // G2 gap 3 — and the completion report's round count (the eighth caller, through findingRoundHeads)
+  assert.equal(roundCalls, 2, 'findingRoundHeads in production: the cap and the completion report');
 });
 
 test('Codex 4438607048 — the gate\'s cap reads count a security-only head as a round (final evidence and the guard)', async () => {
@@ -1152,4 +1157,103 @@ test('Codex 4438607048 — the gate\'s cap reads count a security-only head as a
   const under = fakeGitHub({ comments: [...rounds, finding({ p: 2, id: 54 })], pr });
   under.client.issueComments = async () => [];
   assert.notEqual(await guardAgainstCurrentHeadFinding(under.client, pr, HEAD, null), null, 'under the cap it blocks');
+});
+
+// G2 (#1280 round 1, Stage 1 gap-check) — Codex's review-state record as the merge reads it last
+const recordFor = (code, security = { commit_sha: null, has_any_findings: null, has_unresolved_findings: null, status: null }) => ({
+  id: 700, user: { login: CODEX }, created_at: '2026-10-08T00:00:40Z',
+  body: `<!-- codex-review-state:v1 ${JSON.stringify({ code_review: { commit_sha: HEAD, ...code }, security_review: security })} -->` });
+const RUNNING_RECORD = recordFor({ has_any_findings: null, has_unresolved_findings: null, status: 'running' });
+const SECURITY_RECORD = recordFor({ has_any_findings: false, has_unresolved_findings: false, status: 'completed' },
+  { commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: 'completed' });
+
+test('G2 gap 1 — a merge the review-state record refuses never leaves the head green', async () => {
+  const { completeReviewedPullRequest, REQUIRED_CHECKS } = await import('./autonomous-review-gate.mjs');
+  const pr = { number: 9, html_url: 'u', state: 'open', draft: false, head: { sha: HEAD, repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } } };
+  const run = (records) => {
+    const fake = fakeGitHub({ pr });
+    const green = { context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head [wi:none]' };
+    Object.assign(fake.client, {
+      repository: 'JagPat/PMCvitan',
+      statuses: async () => [green],
+      checkRuns: async () => REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' })),
+      issueComments: async (number) => (typeof records === 'function' ? records() : [...records, ...fake.state.notes.filter((comment) => comment.issue === number)]),
+      mergeExactHead: async () => { fake.state.log.push('merge'); return { merged: true }; },
+      enableAutoMerge: async () => { fake.state.log.push('auto-merge'); },
+      dispatchHandoff: async () => {},
+    });
+    return fake;
+  };
+  // a same-head run still going: the retryable hold replaces the green, the PR is drafted, nothing merges
+  const held = run([RUNNING_RECORD]);
+  assert.equal(await completeReviewedPullRequest(held.client, pr, HEAD), 'review_refused');
+  assert.equal(held.state.statuses.at(-1).state, 'failure');
+  assert.equal(held.state.statuses.at(-1).description, `review: ${CODEX_RUN_HELD_DETAIL}`);
+  assert.equal(isRetryableReviewFailureDescription(held.state.statuses.at(-1).description), true);
+  assert.ok(held.state.log.includes('draft:true') && !held.state.log.includes('merge'));
+  assert.deepEqual(securityVerdictHeads(held.state.notes), [], 'a hold writes no security marker');
+  // security findings: the blocking verdict, with its marker before the failure; not retryable (a correction answers it)
+  const security = run([SECURITY_RECORD]);
+  assert.equal(await completeReviewedPullRequest(security.client, pr, HEAD), 'review_refused');
+  assert.equal(security.state.statuses.at(-1).state, 'failure');
+  assert.equal(security.state.statuses.at(-1).description, `review: ${CODEX_SECURITY_FINDINGS_DETAIL}`);
+  assert.equal(isRetryableReviewFailureDescription(security.state.statuses.at(-1).description), false);
+  assert.deepEqual(securityVerdictHeads(security.state.notes), [HEAD]);
+  const order = security.state.log.filter((entry) => entry === 'record' || entry.startsWith('status:') || entry === 'merge');
+  assert.deepEqual(order, ['status:pending', 'record', 'status:failure']);
+  // an unreadable record at the merge's last read: the retryable hold replaces the green, then the run fails
+  let reads = 0;
+  const unreadable = run(() => { reads += 1; throw new Error('GitHub 502'); });
+  await assert.rejects(completeReviewedPullRequest(unreadable.client, pr, HEAD), /GitHub 502/u);
+  assert.equal(reads, 1);
+  assert.equal(unreadable.state.statuses.at(-1).state, 'failure');
+  assert.equal(unreadable.state.statuses.at(-1).description, `review: ${CODEX_RUN_HELD_DETAIL}`);
+  assert.ok(!unreadable.state.log.includes('merge'));
+  // after any of these refusals the newest status the gate wrote is never success
+  for (const fake of [held, security, unreadable]) assert.notEqual(fake.state.statuses.at(-1).state, 'success');
+  // a record with no hold and no security findings merges, writing nothing
+  const clean = run([]);
+  assert.equal(await completeReviewedPullRequest(clean.client, pr, HEAD), 'merged');
+  assert.deepEqual(clean.state.statuses, []);
+  // and the review path writes no `clear` sticky over a refusal
+  const { readFile } = await import('node:fs/promises');
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const completion = gate.indexOf('const completion = await completeReviewedPullRequest(');
+  assert.ok(completion > 0 && gate.indexOf("if (completion === 'review_refused') return;", completion) > completion
+    && gate.indexOf("if (completion === 'review_refused') return;", completion) < gate.indexOf("state: 'clear'", completion));
+});
+
+test('G2 gap 2 — the security marker is keyed on the structured flag, and the settlement publishes one prefix', async () => {
+  const { publishCurrentHeadFinding, reviewDescription } = await import('./autonomous-review-gate.mjs');
+  assert.equal(reviewDescription(CODEX_SECURITY_FINDINGS_DETAIL), `review: ${CODEX_SECURITY_FINDINGS_DETAIL}`);
+  assert.equal(reviewDescription(`review: ${CODEX_SECURITY_FINDINGS_DETAIL}`), `review: ${CODEX_SECURITY_FINDINGS_DETAIL}`);
+  assert.equal(reviewDescription('review: final Codex evidence is timed_out; not merging on it'), 'review: final Codex evidence is timed_out; not merging on it');
+  // the settlement's security answer carries the flag, and its detail is what both its publishers write
+  const pr = { number: 9, html_url: 'u', state: 'open', draft: false, changed_files: 2, body: '', head: { sha: HEAD, ref: 'b', repo: { full_name: 'o/r' } }, base: { ref: 'main', repo: { full_name: 'o/r' } } };
+  const settling = fakeGitHub({ pr });
+  settling.client.issueComments = async () => [SECURITY_RECORD];
+  const settled = await settleFinalCodexEvidence(settling.client, pr, HEAD);
+  assert.equal(settled.state, 'changes_required');
+  assert.equal(settled.security, true);
+  assert.equal(settled.retryable, false);
+  // the ordinary settlement path: publishCurrentHeadFinding with the settlement's detail writes ONE prefix and the marker
+  const publishing = fakeGitHub({ pr });
+  await publishCurrentHeadFinding(publishing.client, pr, HEAD, null, { detail: settled.detail, attempt: 1, deferred: [], security: settled.security });
+  const verdict = publishing.state.statuses.find((status) => status.state === 'failure');
+  assert.equal(verdict.description, `review: ${CODEX_SECURITY_FINDINGS_DETAIL}`);
+  assert.deepEqual(securityVerdictHeads(publishing.state.notes), [HEAD]);
+  // the reviewAttempt path's bare detail gets the same one prefix
+  const bare = fakeGitHub({ pr });
+  await publishCurrentHeadFinding(bare.client, pr, HEAD, null, { detail: CODEX_SECURITY_FINDINGS_DETAIL, attempt: 1, deferred: [], security: true });
+  assert.equal(bare.state.statuses.find((status) => status.state === 'failure').description, `review: ${CODEX_SECURITY_FINDINGS_DETAIL}`);
+  assert.deepEqual(securityVerdictHeads(bare.state.notes), [HEAD]);
+  // the text alone, without the flag, writes no marker; the flag is what the publisher reads
+  const textOnly = fakeGitHub({ pr });
+  textOnly.client.createIssueComment = async () => { throw new Error('no marker without the flag'); };
+  await publishBlockingVerdict(textOnly.client, pr, HEAD, { description: `review: ${CODEX_SECURITY_FINDINGS_DETAIL}` });
+  // every gate path that publishes a changes_required result forwards its flag
+  const { readFile } = await import('node:fs/promises');
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  assert.equal([...gate.matchAll(/security: (?:result|verifiedResult|settled)\.security === true/gu)].length, 6, 'the final evidence read, then its publishers: the guard, the review loop, final verification, the settlement, the recovery');
+  assert.doesNotMatch(gate, /description === `review: \$\{CODEX_SECURITY_FINDINGS_DETAIL\}`/u);
 });

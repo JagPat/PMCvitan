@@ -1456,8 +1456,23 @@ export async function completeReviewedPullRequest(
   expectedHead,
   verdict,
 ) {
-  const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead, verdict);
+  let authorization;
+  try {
+    authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead, verdict);
+  } catch (error) {
+    // G2 (#1280 round 1, gap-check) — an unreadable review-state record refuses the merge; the green it would have
+    // acted on is replaced first, with the retryable hold, so no head stays green on a refusal
+    if (error instanceof CodexRecordUnreadable) await refuseReviewedGreen(client, pullRequest, expectedHead, { security: false });
+    throw error;
+  }
   if (!authorization.allowed) {
+    // G2 (#1280 round 1, gap-check) — a refusal by Codex's review-state record replaces the green this merge would
+    // have acted on (branch protection, a queued auto-merge): a same-head run still going publishes the retryable
+    // hold, security findings the blocking verdict (its marker, then the failure the correction lease reads)
+    if (authorization.state === 'codex_review_held' || authorization.state === 'codex_review_security') {
+      await refuseReviewedGreen(client, pullRequest, expectedHead, { security: authorization.state === 'codex_review_security' });
+      return 'review_refused';
+    }
     return 'held_for_gates';
   }
   pullRequest = authorization.pullRequest;
@@ -1494,6 +1509,21 @@ export async function completeReviewedPullRequest(
       { cause: error },
     );
   }
+}
+
+/** G2 (#1280 round 1, gap-check) — Codex's review-state record could not be read at the merge's last check. */
+export class CodexRecordUnreadable extends Error {
+  constructor(cause) {
+    super(`Codex review-state record unreadable at merge authorization: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = 'CodexRecordUnreadable';
+  }
+}
+
+/** G2 (#1280 round 1, gap-check) — replace a reviewed head's green after the merge authorizer's record refused it. */
+async function refuseReviewedGreen(client, pullRequest, expectedHead, { security }) {
+  return publishBlockingVerdict(client, pullRequest, expectedHead, security
+    ? { description: `review: ${CODEX_SECURITY_FINDINGS_DETAIL}`, security: true }
+    : { description: `review: ${CODEX_RUN_HELD_DETAIL}` });
 }
 
 /** The common mandatory guard for both direct merge and auto-merge entrypoints. */
@@ -1543,11 +1573,15 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   // Codex 4438607053 — Codex's review-state record is read LAST, after every other remote read: a same-head run that
   // started after the settlement's read (or security findings on this head) refuses this green, as the settlement
   // would have held it. An unreadable record throws, so nothing merges (fail closed)
-  const issueComments = await client.issueComments(finalLive.number);
-  const record = codexStateRecordVerdict(issueComments, expectedHead, 0);
-  if (record === 'hold' || record === 'security') {
-    return { allowed: false, state: 'codex_review_not_settled' };
+  let issueComments;
+  try {
+    issueComments = await client.issueComments(finalLive.number);
+  } catch (error) {
+    throw new CodexRecordUnreadable(error);
   }
+  const record = codexStateRecordVerdict(issueComments, expectedHead, 0);
+  if (record === 'hold') return { allowed: false, state: 'codex_review_held' };
+  if (record === 'security') return { allowed: false, state: 'codex_review_security' };
   return { allowed: true, state: 'authorized', pullRequest: finalLive };
 }
 
@@ -1676,6 +1710,7 @@ export async function ensureTerminalReviewState(
       await publishBlockingVerdict(client, finalPolicy.pullRequest, expectedHead, {
         description: settled.detail,
         deferred: settled.deferred ?? [],
+        security: settled.security === true,
       });
       return true;
     }
@@ -2441,11 +2476,12 @@ export async function reclassifyCurrentCodexEvidence(
  *     already moved, since they were found on this one.
  * Returns the refreshed pull request, or null when the head is no longer current.
  */
-export async function publishBlockingVerdict(client, pullRequest, expectedHead, { description, deferred = [] }) {
+export async function publishBlockingVerdict(client, pullRequest, expectedHead, { description, deferred = [], security = false }) {
   const lines = renderFollowUpLines(deferred);
   // Codex 4438607048 — a security-findings verdict is made durable on the PR (its marker) before it is published:
-  // Codex's own record of it is edited away on the next head, and every finding-head count reads the marker
-  const security = description === `review: ${CODEX_SECURITY_FINDINGS_DETAIL}`;
+  // Codex's own record of it is edited away on the next head, and every finding-head count reads the marker.
+  // G2 (#1280 round 1, gap-check) — keyed on the evidence's structured `security` flag, carried by every caller,
+  // never on the description's text (a reworded or re-prefixed description would silently skip the marker)
   if (lines.length > 0 || security) {
     // Codex 4229506050 — the deferred siblings are made durable BEFORE the correction verdict exists: the head
     // first goes non-green without asking anyone for a push, then the lines are recorded, and only then is the
@@ -2473,9 +2509,10 @@ export async function publishCurrentHeadFinding(
   pullRequest,
   expectedHead,
   recoveryRequest,
-  { detail, attempt, deferred = [] },
+  { detail, attempt, deferred = [], security = false },
 ) {
-  const live = await publishBlockingVerdict(client, pullRequest, expectedHead, { description: `review: ${detail}`, deferred });
+  // G2 (#1280 round 1, gap-check) — one `review: ` prefix: a settlement's detail can already carry it
+  const live = await publishBlockingVerdict(client, pullRequest, expectedHead, { description: reviewDescription(detail), deferred, security });
   if (!live) return { state: 'superseded', superseded: true };
   const reset = await enforceReviewConvergence(
     client,
@@ -2554,7 +2591,7 @@ export async function guardAgainstCurrentHeadFinding(
     pullRequest,
     expectedHead,
     recoveryRequest,
-    { detail: result.detail, attempt: 0, deferred: result.deferred ?? [] },
+    { detail: result.detail, attempt: 0, deferred: result.deferred ?? [], security: result.security === true },
   );
   return result.detail;
 }
@@ -2584,6 +2621,8 @@ export async function finalCodexEvidence(client, pullRequest, expectedHead) {
     state: result.state,
     // G2 — a same-head Codex run still going: never "nothing arrived", never "nothing to file"
     held: result.held === true,
+    // G2 (#1280 round 1, gap-check) — carried to the publisher, which writes the security marker on it
+    security: result.security === true,
     detail: result.detail,
     // Codex 4220861349 — past the cap a blocking verdict carries its non-blocking findings too
     deferred: result.deferred ?? [],
@@ -2672,6 +2711,12 @@ async function settleAfterWithdrawal(client, pullRequest, expectedHead, earlierD
   }
 }
 
+/** A `review:` status description for `detail`, prefixed once whether or not the detail already carries it. */
+export function reviewDescription(detail) {
+  const text = String(detail ?? '');
+  return text.startsWith('review: ') ? text : `review: ${text}`;
+}
+
 /** The settlement's answer when the evidence is neither `clear` nor `pending`. */
 function blockingSettlement(evidence, deferred) {
   return {
@@ -2692,6 +2737,8 @@ function blockingSettlement(evidence, deferred) {
     // Codex 4226440219 — an unsettled read is an infrastructure retry, published on the recovery path; G2 — so is
     // a held one
     retryable: evidence.state === 'unsettled' || evidence.held === true,
+    // G2 (#1280 round 1, gap-check) — the structured flag the security marker is keyed on
+    security: evidence.state === 'changes_required' && evidence.security === true,
   };
 }
 
@@ -3010,7 +3057,7 @@ export async function run() {
         pullRequest,
         expectedHead,
         recoveryRequest,
-        { detail: result.detail, attempt, deferred: result.deferred ?? [] },
+        { detail: result.detail, attempt, deferred: result.deferred ?? [], security: result.security === true },
       );
       if (published.superseded) return;
       throw new Error(result.detail);
@@ -3043,7 +3090,7 @@ export async function run() {
             pullRequest,
             expectedHead,
             recoveryRequest,
-            { detail, attempt, deferred: verifiedResult.deferred ?? [] },
+            { detail, attempt, deferred: verifiedResult.deferred ?? [], security: verifiedResult.security === true },
           );
           if (published.superseded) return;
           throw new Error(detail);
@@ -3214,6 +3261,7 @@ export async function run() {
           detail: settled.detail,
           attempt,
           deferred: settled.deferred ?? [],
+          security: settled.security === true,
         });
         return;
       }
@@ -3247,6 +3295,8 @@ export async function run() {
         expectedHead,
         finalPolicy.verdict,
       );
+      // G2 (#1280 round 1, gap-check) — the merge's last record read refused it and replaced the green: no `clear`
+      if (completion === 'review_refused') return;
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({
