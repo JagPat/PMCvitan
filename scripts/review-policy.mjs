@@ -239,6 +239,11 @@ export const CODEX_RECORD_UNREADABLE_DETAIL = 'Codex review state could not be r
  * (a review lease opens), exactly like a current-head Codex finding.
  */
 export const CODEX_SECURITY_FINDINGS_DETAIL = 'Codex security review reports unresolved findings on this exact head';
+/**
+ * G3 (#1280 Codex 4438874584) — the detail of a head whose queued native auto-merge could not be confirmed disarmed
+ * before its success would be republished. It is retryable: no success is written, and the head is re-judged.
+ */
+export const CODEX_AUTOMERGE_DISARM_FAILED = 'queued auto-merge could not be disarmed before success';
 
 const RETRYABLE_REVIEW_FAILURES = [
   FOLLOW_UP_RETRY,
@@ -254,6 +259,7 @@ const RETRYABLE_REVIEW_FAILURES = [
   WORK_ITEM_READ_RETRY,
   CODEX_RUN_HELD_DETAIL,
   CODEX_RECORD_UNREADABLE_DETAIL,
+  CODEX_AUTOMERGE_DISARM_FAILED,
 ];
 
 export function isRetryableReviewFailureDescription(description) {

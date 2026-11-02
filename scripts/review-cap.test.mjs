@@ -522,7 +522,7 @@ test('Codex 4221120404 / 4226440227 / 4229506050 — a blocking verdict is publi
   assert.doesNotMatch(publish, /client\.setStatus\(|setDraftForCurrentHead\(|fileDeferredFindings\(/u, 'no step of its own');
   const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState'), gate.indexOf('async function waitForRequiredChecks'));
   assert.match(recovery, /if \(settled\.state === 'changes_required'\) \{\s*await publishBlockingVerdict\(/u);
-  assert.equal([...gate.matchAll(/await publishBlockingVerdict\(/gu)].length, 5, 'the finding path, recovery, changed final evidence, an unsettled settlement and a merge refused as held or unreadable');
+  assert.equal([...gate.matchAll(/await publishBlockingVerdict\(/gu)].length, 6, 'the finding path, recovery, changed final evidence, an unsettled settlement, a merge refused as held or unreadable, and a disarm not confirmed (G3)');
 });
 test('Codex 4220861370 — a blank Codex review container that opens no thread is no review round', () => {
   const blank = (id, head) => ({ id, user: { login: CODEX }, commit_id: head, body: '', state: 'COMMENTED' });
