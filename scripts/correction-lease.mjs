@@ -148,12 +148,21 @@ export function gateRecoveryStatus(combinedStatus) {
  * record and re-arms only through its own authorization (`authorizeRecoveryDispatch` accepts the newest tokened
  * success named exactly).
  *
- * Once per HEAD (Stage 1's re-check G1): the re-judge republishes the success under a new id, and a head the merge
- * still holds for other gates (`held_for_gates`) stays unarmed, so a per-success bound would ask on every handoff
- * pass. The skip is keyed on this head's own record of a success re-judge, whatever success it named
- * (`REARM_SETTLEMENTS`), and on a request for this success still pending. A head still unarmed after its one
- * re-judge waits for a real change (CI completing, a push, a review event), each of which wakes the gate itself.
+ * Once per re-judged success (Stage 1's re-check G1, narrowed by the #1289 round-2 audit): the re-judge
+ * republishes the success under a new id and then consumes its request, and a head the merge still holds for other
+ * gates (`held_for_gates`) stays unarmed, so a per-request bound would ask on every handoff pass. The skip is keyed
+ * on a consumed re-arm settlement (`REARM_SETTLEMENTS`) newer than the newest success, and on a request for this
+ * success still pending. A head still unarmed after its re-judge waits for a real change (CI completing, a push, a
+ * body edit), each of which wakes the gate itself; a success any later run writes is asked about once more.
  */
+function newerStatusId(candidate, than) {
+  try {
+    return BigInt(String(candidate ?? '')) > BigInt(String(than ?? ''));
+  } catch {
+    return false;
+  }
+}
+
 export function gateRearmStatus(combinedStatus, pullRequest) {
   if (pullRequest?.state !== 'open' || pullRequest?.draft !== false || pullRequest?.auto_merge) return null;
   const statuses = combinedStatus?.statuses ?? [];
@@ -164,9 +173,13 @@ export function gateRearmStatus(combinedStatus, pullRequest) {
   // a request for this success, pending or settled, holds the ask; one whose re-judge threw (#1289 round 1) does not
   const asked = statuses.find((status) => status?.context === `${RECOVERY_REQUEST_CONTEXT}${id}`);
   if (asked && String(asked.description ?? '') !== REARM_ATTEMPT_FAILED) return null;
-  // once per head: this head already had its success re-judged (or that request was superseded)
+  // once per success the re-judge itself wrote (#1289 round 2 audit): a re-judge republishes the success under a
+  // new id and then consumes its request, so a consumed settlement NEWER than the newest success means that success
+  // is the re-judge's own and was already judged. A success written after it (an ordinary run, which may itself
+  // have ended unarmed) is asked about once more. Status ids increase monotonically.
   if (statuses.some((status) => String(status?.context ?? '').startsWith(RECOVERY_REQUEST_CONTEXT)
-    && REARM_SETTLEMENTS.includes(String(status?.description ?? '')))) return null;
+    && REARM_SETTLEMENTS.includes(String(status?.description ?? ''))
+    && newerStatusId(status?.id, newest.id))) return null;
   return newest;
 }
 

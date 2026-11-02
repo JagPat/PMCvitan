@@ -75,13 +75,15 @@ non-current pending status IDs fail closed, and so does a success unless it is t
 head's newest status, carries an approval token and is named exactly: that one
 asks the owner to re-judge a green whose auto-merge was lost (the gate disarms a
 queued auto-merge before every success and re-arms it only after the merge's own
-authorization; the watchdog dispatches such a ready, unarmed green once per head:
-after one re-judge that ended, consumed or superseded, a head still unarmed waits
-for a real change such as CI completing, a push or a review event; a re-judge that
-threw, or whose merge validation raced a base or head change, marks its request
-failed and is asked again, and the owner job's
-`failure() || cancelled()` step marks a request its timed-out or cancelled run
-left pending). The owner re-reads the
+authorization; the watchdog dispatches such a ready, unarmed green once per
+re-judged success: a re-judge republishes the success and then consumes its
+request, so a consumed request newer than the head's newest success holds the ask,
+and a head still unarmed after it waits for a real change such as CI completing, a
+push or a body edit, while a success any later run writes is asked about once
+more; a re-judge that threw, or whose merge was held by a race with a base or head
+change or by a draft, marks its request failed and is asked again, and the owner
+job's `failure() || cancelled()` step marks a request its timed-out or cancelled
+run left pending; a retryable failure under a newer success is not asked about). The owner re-reads the
 head and Codex's record itself and re-arms only through that authorization.
 The dispatch job only writes a durable `codex-recovery-request/<terminal-id>`
 marker; it never

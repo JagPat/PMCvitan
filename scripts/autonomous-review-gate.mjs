@@ -1525,9 +1525,12 @@ export async function completeReviewedPullRequest(
       });
       return 'review_refused';
     }
-    // G3 (#1289 round 2, Codex 4440043724) — the head, base or readiness moved between the merge's reads: a race,
-    // not a gate still owed. A base push wakes no run on this head, so a re-arm that ends here is asked again
-    return authorization.state === 'changed_during_validation' ? 'held_changed' : 'held_for_gates';
+    // G3 (#1289 round 2, Codex 4440043724; audit) — the head, base or readiness moved between the merge's reads, or
+    // the PR is a draft: a race or a hold no gate event ends (a base push and a draft marked ready wake no run on
+    // this head), so a re-arm that ends here is asked again. Every other hold is a gate whose own event wakes the gate
+    return authorization.state === 'changed_during_validation' || authorization.state === 'draft'
+      ? 'held_changed'
+      : 'held_for_gates';
   }
   pullRequest = authorization.pullRequest;
   const direct = await client.mergeExactHead(
@@ -3048,8 +3051,8 @@ async function eventContext() {
  * newest tokened success (a re-arm: the watchdog's or a moved-head disarm's hint) is returned as 'rearm' with nothing
  * written: the success is re-judged by the ordinary recovery, which re-arms only after its own authorization, and
  * `withRearmSettlement` settles the request only once that re-judge has ended (#1289 round 1, Codex 4439713463). Any
- * other is superseded; a superseded one that named a success keeps that on the head (Stage 1 re-check G1), so the
- * watchdog's once-per-head re-arm bound (`gateRearmStatus`) still holds after it.
+ * other is superseded (a superseded one that named a success under the re-arm name, for the record; since the #1289
+ * round-2 audit only a consumption newer than the newest success holds the watchdog's re-arm, `gateRearmStatus`).
  */
 export async function settleUnmatchedRecoveryRequest(client, pullRequest, expectedHead, statuses, recoveryRequest) {
   if (newestTokenedSuccess(statuses, recoveryRequest.terminalStatusId)) return 'rearm';

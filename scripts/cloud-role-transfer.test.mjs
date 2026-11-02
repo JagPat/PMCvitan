@@ -375,6 +375,8 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   const { completeReviewedPullRequest } = await import('./autonomous-review-gate.mjs');
   assert.equal(await completeReviewedPullRequest(makeClient({ pulls: [pull, { ...pull, base: { ...pull.base, sha: 'd'.repeat(40) } }] }), pull, head), 'held_changed');
   assert.equal(await completeReviewedPullRequest(makeClient({ pulls: [pull, { ...pull, head: { ...pull.head, sha: 'c'.repeat(40) } }] }), pull, head), 'held_changed');
+  // the #1289 round-2 audit: a draft is a hold no gate event ends (marking it ready wakes no run), so it asks again
+  assert.equal(await completeReviewedPullRequest(makeClient({ pulls: [{ ...pull, draft: true }] }), pull, head), 'held_changed');
   assert.equal(await completeReviewedPullRequest(makeClient({ statuses: [] }), pull, head), 'held_for_gates');
   assert.equal(await completeReviewedPullRequest(makeClient({ commit: { commit: { message: 'no trailer here' } } }), pull, head), 'held_for_gates');
 });

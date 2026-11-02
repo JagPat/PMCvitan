@@ -254,8 +254,8 @@ export const CODEX_AUTOMERGE_REARM_FAILED = 'auto-merge could not be re-armed af
 export const REARM_CONSUMED_OUTCOME = 'recovered success re-authorization';
 /** G3 (Stage 1 re-check G1) — a re-arm request superseded by a newer review status on the same head. */
 export const REARM_REQUEST_SUPERSEDED = 'recovery: re-arm request superseded by newer review state';
-/** The head-scoped record that a re-arm was asked for and settled: the watchdog asks once per head. */
-export const REARM_SETTLEMENTS = Object.freeze([`recovery: consumed by ${REARM_CONSUMED_OUTCOME}`, REARM_REQUEST_SUPERSEDED]);
+/** The record that a re-arm's re-judge ended: newer than the newest success, it holds the watchdog's ask. */
+export const REARM_SETTLEMENTS = Object.freeze([`recovery: consumed by ${REARM_CONSUMED_OUTCOME}`]);
 /** G3 (#1289 round 1, Codex 4439713463) — a re-arm's re-judge that threw before it ended: not a settlement, so the
  *  watchdog asks again for that success on its next pass. */
 export const REARM_ATTEMPT_FAILED = 'recovery: re-arm attempt failed';
