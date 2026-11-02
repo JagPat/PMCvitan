@@ -14,6 +14,7 @@ import {
  * trusted default-branch code, and never arms or writes a success.
  */
 const HEAD = 'e'.repeat(40);
+const OLD = 'd'.repeat(40);
 const repo = { full_name: 'JagPat/PMCvitan' };
 const queued = { enabled_at: '2026-11-02T00:00:00Z', merge_method: 'squash', enabled_by: { login: 'a-person' } };
 const pullAt = (number, extra = {}) => ({
@@ -26,9 +27,9 @@ const pullAt = (number, extra = {}) => ({
 });
 const tokenedSuccess = () => ({ id: 6100, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head [wi:none]' });
 const events = {
-  synchronize: (number) => ['pull_request_target', { action: 'synchronize', pull_request: { number, head: { sha: HEAD } } }],
-  armed: (number, login = 'a-person') => ['pull_request_target', {
-    action: 'auto_merge_enabled', sender: { login }, pull_request: { number, head: { sha: HEAD }, auto_merge: { enabled_by: { login } } },
+  synchronize: (number, head = HEAD) => ['pull_request_target', { action: 'synchronize', pull_request: { number, head: { sha: head } } }],
+  armed: (number, login = 'a-person', head = HEAD) => ['pull_request_target', {
+    action: 'auto_merge_enabled', sender: { login }, pull_request: { number, head: { sha: head }, auto_merge: { enabled_by: { login } } },
   }],
 };
 
@@ -131,6 +132,37 @@ test('2A3b-1 (Q1 = a) — an arm acts only on a shared commit: a person\'s arm a
   const gatePulls = new Map([[610, pullAt(610, { auto_merge: queued })], [611, pullAt(611)]]);
   const gate = await runDisarm({ number: 610, pulls: gatePulls, statuses: [], event: events.armed(610, 'github-actions[bot]') });
   assert.deepEqual(gate.log.filter(([k]) => k !== 'read'), [], 'the gate\'s own arm: nothing read beyond the PR, nothing written');
+});
+
+// Gap-check gap 1 (mutant G9) — the group is keyed by the event's head, so a run can start after the PR moved on; the
+// payload head no longer live must write nothing, or a stale event could disarm or refuse a legitimately reviewed head
+test('2A3b-1 — a stale event (its head is no longer the live head) disables nothing and writes nothing', { timeout: 30_000 }, async () => {
+  for (const [name, event] of [['a push', events.synchronize(610, OLD)], ['an arm', events.armed(610, 'a-person', OLD)]]) {
+    const pulls = new Map([[610, pullAt(610, { auto_merge: queued })], [611, pullAt(611, { auto_merge: queued })]]);
+    const statuses = [tokenedSuccess()];
+    const stale = await runDisarm({ number: 610, pulls, statuses, event });
+    assert.equal(stale.error, null, name);
+    assert.deepEqual([...pulls.values()].filter((p) => p.auto_merge).map((p) => p.number), [610, 611], `${name}: every live merge stays queued`);
+    assert.deepEqual(stale.log.filter(([k]) => k === 'disable' || k === 'status' || k === 'draft' || k === 'sticky'), [], `${name}: nothing written`);
+    assert.equal(statuses.length, 1, `${name}: the live head's success is untouched`);
+  }
+});
+
+// Gap-check gap 3 (mutant G2) — the refusal settles the recovery request this run adopted, so the watchdog's next ask
+// is for the refusal and is not held until the abandoned limit
+test('2A3b-1 — the refusal settles the adopted recovery request, on a push and on an arm', { timeout: 30_000 }, async () => {
+  for (const [name, number, event] of [['a push', 610, events.synchronize(610)], ['an arm', 611, events.armed(611)]]) {
+    const request = { id: 7001, context: 'codex-recovery-request/6100', state: 'pending', description: 'recovery: requested terminal status 6100' };
+    const pulls = new Map([[610, pullAt(610, { auto_merge: queued })], [611, pullAt(611, { auto_merge: queued })]]);
+    const statuses = [request, tokenedSuccess()];
+    const result = await runDisarm({ number, pulls, statuses, event });
+    assert.equal(result.error, null, name);
+    assert.deepEqual(written(result.log), [['failure', `review: ${CODEX_SHARED_COMMIT_DETAIL}`]], `${name}: the refusal`);
+    const settled = result.log.filter(([k, , , context]) => k === 'status' && context === 'codex-recovery-request/6100');
+    assert.equal(settled.length, 1, `${name}: the adopted request is settled`);
+    assert.equal(settled[0][1], 'success');
+    assert.match(settled[0][2], /^recovery: consumed by /u);
+  }
 });
 
 test('2A3b-1 — a disarm that fails takes the retryable disarm hold; a mode on the wrong event refuses', { timeout: 30_000 }, async () => {
