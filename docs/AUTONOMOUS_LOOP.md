@@ -70,11 +70,26 @@ input name is retained for workflow-dispatch compatibility. Pending recovery
 replaces the abandoned owner through the same concurrency lane; it cannot create a
 second owner. Timeout, changed-CI, changed provider evidence, and the documented
 bootstrap marker are retryable. A current-head Codex finding or review is not:
-Claude must fix it and push a new SHA. Successful, finding-bearing, superseded, or
-non-current pending status IDs fail closed. The gate disarms a queued native
-auto-merge before every success it writes and re-arms it only after the merge's
-own authorization has read Codex's record; a disarm or re-arm it cannot confirm
-replaces the success with a retryable failure, which this recovery re-judges.
+Claude must fix it and push a new SHA. Finding-bearing, superseded, or
+non-current pending status IDs fail closed, and so does a success unless it is the
+head's newest status, carries an approval token and is named exactly. The gate
+disarms a queued native auto-merge before every success it writes, and a run
+started by CI disarms its own pull request's queued merge first; it re-arms only
+after the merge's own authorization has read Codex's record. A disarm or re-arm
+it cannot confirm replaces the success with a retryable failure, which this
+recovery re-judges. A ready green left unarmed (the watchdog re-arm) is dispatched
+by the watchdog once per re-judged success and per pull request: its request is
+`codex-recovery-request/<success-id>/pr-<number>`, so another pull request at
+the same commit never holds it. The re-judge republishes the success and then
+consumes the request, so a consumed request newer than the head's newest success
+holds the ask for at most four hours; a success any later run writes is asked
+about once more, and a run that disarms the head again lifts that consumption so
+the next pass asks. A re-judge that threw, whose merge was held by a base, head
+or readiness race or a draft, or that fell through to the ordinary review, marks
+its request failed and is asked again; the owner job's `failure() || cancelled()`
+step marks a request its timed-out or cancelled run left pending, and a request
+still pending past twice the owner job's limit lost its runner and is asked
+again. A retryable failure under a newer success is not asked about.
 The dispatch job only writes a durable `codex-recovery-request/<terminal-id>`
 marker; it never
 changes draft state, invokes Codex, publishes `codex-current-head`, or queues a

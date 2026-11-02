@@ -4,6 +4,10 @@ import {
   isRetryableReviewFailureDescription,
   isOwnershipInconsistentScopeDetail,
   OWNERSHIP_CANDIDATE_HELD,
+  REARM_ATTEMPT_FAILED,
+  REARM_REQUEST_ABANDONED_MS,
+  REARM_SETTLEMENTS,
+  rearmRequestContext,
   STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT,
 } from './review-policy.mjs';
 export { CORRECTION_LEASE_GRACE_MS, STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT } from './review-policy.mjs';
@@ -27,8 +31,12 @@ export { CORRECTION_LEASE_GRACE_MS, STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT 
 // file implements it.
 //
 // It publishes a comment and nothing else. It never touches
-// `codex-current-head`, draft state, auto-merge, or Codex.
+// `codex-current-head`, draft state, auto-merge, or Codex. (It may ask the gate
+// to recover a head, through the gate's own dispatch: `gateRecoveryStatus`,
+// `gateRearmStatus`.)
 import { createHash } from 'node:crypto';
+
+import { parseApprovalToken } from './work-item-approval.mjs';
 
 import {
   AWAKENABLE_FROM_GITHUB,
@@ -117,6 +125,11 @@ function hasPendingRecoveryRequest(statuses, terminalStatusId) {
  */
 export function gateRecoveryStatus(combinedStatus) {
   const statuses = combinedStatus?.statuses ?? [];
+  // G3b (#1289 round 2, Codex 4440043736) — a head whose newest review status is a success has no failure the gate
+  // will recover (`authorizeRecoveryDispatch` refuses every failure id beneath it), so a retryable failure buried
+  // under it is not asked about: the green is judged by the re-arm (`gateRearmStatus`) instead
+  const newest = statuses.find((status) => status?.context === CORRECTION_STATUS_CONTEXT);
+  if (newest?.state === 'success') return null;
   const failing = statuses.find(
     (status) => status?.context === CORRECTION_STATUS_CONTEXT
       && status?.state === 'failure'
@@ -126,6 +139,65 @@ export function gateRecoveryStatus(combinedStatus) {
   // Per terminal status id, because that is what the gate authorises against: a
   // request for an older failure says nothing about this one.
   return hasPendingRecoveryRequest(statuses, failing.id) ? null : failing;
+}
+
+/**
+ * G3b (gap-check F2 on #1289) — the green that nothing will arm: this exact head's newest required status is a success
+ * carrying an approval token, and the pull request is open, ready (not draft) and has no auto-merge queued. The gate
+ * disarms a queued auto-merge before each success and re-arms only after the merge's authorization, so a re-arm lost on
+ * any path (G3a′'s five residual ways: a push between the disable and the re-read, a REST read that lagged, a hold
+ * whose own write failed, a sibling PR at the same commit, a merge the authorization held) leaves exactly this. The
+ * watchdog hands it to the gate's recovery, which re-judges the head from Codex's record and re-arms only through its
+ * own authorization (`authorizeRecoveryDispatch` accepts the newest tokened success named exactly).
+ *
+ * Once per re-judged success, per pull request (#1289 round 3, Codex 4440445763: the request and its settlements are
+ * keyed by the pull request too, `rearmRequestContext`, so another PR at the same commit holds nothing here). A request
+ * for this success that is pending (within `REARM_REQUEST_ABANDONED_MS`) or settled holds the ask; one marked
+ * `REARM_ATTEMPT_FAILED` does not. A consumed settlement for this PR NEWER than the newest success means that success
+ * is the re-judge's own (it republishes, then consumes) and was already judged; a success any later run writes is asked
+ * about once more. Status ids increase monotonically. That hold lasts `REARM_REQUEST_ABANDONED_MS` (G3b gap-check G1 b):
+ * a head disarmed after its re-judge armed it (a person's disable, a body edit lifting an ownership hold, or a later
+ * run's disarm whose own lift of the consumption failed) is asked about again, at most once per that limit.
+ */
+function pastAbandonedLimit(status, now) {
+  const at = Date.parse(String(status.updated_at ?? status.created_at ?? ''));
+  const current = Date.parse(String(now ?? ''));
+  return Number.isFinite(at) && Number.isFinite(current) && current - at > REARM_REQUEST_ABANDONED_MS;
+}
+
+function abandonedRequest(status, now) {
+  return status?.state === 'pending' && pastAbandonedLimit(status, now);
+}
+
+function newerStatusId(candidate, than) {
+  try {
+    return BigInt(String(candidate ?? '')) > BigInt(String(than ?? ''));
+  } catch {
+    return false;
+  }
+}
+
+export function gateRearmStatus(combinedStatus, pullRequest, now) {
+  // The clock is required (Stage 1's re-check of bf39f441): without it no hold could ever expire, so a missing or
+  // unreadable clock is an error, never a silent hold
+  if (!Number.isFinite(Date.parse(String(now ?? '')))) throw new TypeError('gateRearmStatus needs the watchdog\'s clock');
+  if (pullRequest?.state !== 'open' || pullRequest?.draft !== false || pullRequest?.auto_merge) return null;
+  const number = pullRequest?.number;
+  if (number === undefined || number === null || number === '') return null;
+  const statuses = combinedStatus?.statuses ?? [];
+  const newest = statuses.find((status) => status?.context === CORRECTION_STATUS_CONTEXT) ?? null;
+  if (newest?.state !== 'success' || !parseApprovalToken(newest.description)) return null;
+  const id = String(newest.id ?? '');
+  if (!id) return null;
+  const asked = statuses.find((status) => status?.context === rearmRequestContext(id, number));
+  if (asked && String(asked.description ?? '') !== REARM_ATTEMPT_FAILED && !abandonedRequest(asked, now)) return null;
+  const suffix = `/pr-${number}`;
+  if (statuses.some((status) => String(status?.context ?? '').startsWith(RECOVERY_REQUEST_CONTEXT)
+    && String(status?.context ?? '').endsWith(suffix)
+    && REARM_SETTLEMENTS.includes(String(status?.description ?? ''))
+    && newerStatusId(status?.id, newest.id)
+    && !pastAbandonedLimit(status, now))) return null;
+  return newest;
 }
 
 /** The failing required status on this exact head, or null. */

@@ -15,7 +15,7 @@ on:
         required: true
         type: string
       terminal_status_id:
-        description: Exact retryable failure or active pending codex-current-head status ID
+        description: Exact retryable failure, active pending, or newest tokened success codex-current-head status ID
         required: true
         type: string
 
@@ -82,6 +82,17 @@ jobs:
           PR_NUMBER: ${{ inputs.pr_number }}
           STATUS_CONTEXT: codex-current-head
           CLAUDE_REVIEW_APP_SLUG: ${{ vars.CLAUDE_REVIEW_APP_SLUG }}
+        run: node scripts/autonomous-review-gate.mjs
+      # G3b (#1289 round 1) — a run that failed, timed out or was cancelled before it settled the re-arm request it
+      # adopted leaves that request pending, which holds the watchdog. This marks it failed so the watchdog asks again.
+      # The orchestrate step records the request it adopted (and its pull request) in the job env.
+      - name: Mark an abandoned re-arm request (G3b)
+        if: ${{ (failure() || cancelled()) && env.REARM_REQUEST_ID != '' }}
+        env:
+          AUTONOMOUS_REVIEW_MODE: rearm-cleanup
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STATUS_CONTEXT: codex-current-head
+          REARM_TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/pull/${{ env.REARM_PR_NUMBER }}
         run: node scripts/autonomous-review-gate.mjs
       # M3c C1 — the orchestrate step names a receipt artifact only after it WROTE a cited approval; uploading it
       # makes this run the provenance a later run checks before it reuses that approval without re-reading the issue.
