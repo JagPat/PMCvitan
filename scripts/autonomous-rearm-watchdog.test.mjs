@@ -38,6 +38,7 @@ const ready = (extra = {}) => ({ number: PR, state: 'open', draft: false, auto_m
 const success = (id, description = 'review: Codex found no blocking issue on this exact head [wi:none]') =>
   ({ id, context: 'codex-current-head', state: 'success', description });
 const green = success(6100);
+const CLOCK = '2026-08-17T12:00:00Z';
 const requestStatus = (state = 'pending', description = rearmRequestDescription('6100', PR), extra = {}) =>
   ({ id: 9, context: CONTEXT, state, description, ...extra });
 const adopted = { terminalStatusId: '6100', status: { context: CONTEXT } };
@@ -95,11 +96,11 @@ test('G3b (Codex 4440445763) — a re-arm request names its pull request; anothe
   assert.equal(pendingRecoveryRequest([failureRequest], PR)?.terminalStatusId, '6050');
   assert.equal(pendingRecoveryRequest([failureRequest])?.terminalStatusId, '6050');
   // the watchdog: PR 8's pending request and PR 8's newer consumption hold nothing for PR 7
-  assert.equal(gateRearmStatus({ statuses: [theirs, green] }, ready())?.id, 6100);
+  assert.equal(gateRearmStatus({ statuses: [theirs, green] }, ready(), CLOCK)?.id, 6100);
   const consumedFor = (number) => ({ id: 6101, context: rearmRequestContext('6100', number), state: 'success', description: REARM_SETTLEMENTS[0] });
-  assert.equal(gateRearmStatus({ statuses: [consumedFor(8), green] }, ready())?.id, 6100, 'another PR\'s consumption');
-  assert.equal(gateRearmStatus({ statuses: [consumedFor(PR), green] }, ready()), null, 'its own consumption holds it');
-  assert.equal(gateRearmStatus({ statuses: [consumedFor(17), green] }, ready()).id, 6100, 'PR 17 is not PR 7');
+  assert.equal(gateRearmStatus({ statuses: [consumedFor(8), green] }, ready(), CLOCK)?.id, 6100, 'another PR\'s consumption');
+  assert.equal(gateRearmStatus({ statuses: [consumedFor(PR), green] }, ready(), CLOCK), null, 'its own consumption holds it');
+  assert.equal(gateRearmStatus({ statuses: [consumedFor(17), green] }, ready(), CLOCK).id, 6100, 'PR 17 is not PR 7');
   // and the cleanup marks only this pull request's request
   const cleanup = writer();
   const reads = { async statuses() { return [theirs, green]; } };
@@ -185,7 +186,7 @@ test('G3b (Codex 4440445746) — a recovered success on a drafted PR writes noth
     () => ensureTerminalReviewState(client, full(), HEAD, green, [green], outcome), outcome);
   assert.equal(result, false);
   assert.deepEqual(writes, [{ state: 'failure', description: REARM_ATTEMPT_FAILED, context: CONTEXT }]);
-  assert.equal(gateRearmStatus({ statuses: [requestStatus('failure', REARM_ATTEMPT_FAILED), green] }, ready())?.id, 6100);
+  assert.equal(gateRearmStatus({ statuses: [requestStatus('failure', REARM_ATTEMPT_FAILED), green] }, ready(), CLOCK)?.id, 6100);
   // and a structural row: run() reads the step's boolean through the settlement, and only a true result returns
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const helper = gate.slice(gate.indexOf('export async function withRearmSettlement('), gate.indexOf('export function recordAdoptedRearmRequest('));
@@ -193,18 +194,20 @@ test('G3b (Codex 4440445746) — a recovered success on a drafted PR writes noth
 });
 
 test('G3b — the watchdog: a failed attempt is asked again; pending within the limit or consumed holds it', () => {
-  assert.equal(gateRearmStatus({ statuses: [green, requestStatus('failure', REARM_ATTEMPT_FAILED)] }, ready())?.id, 6100);
-  assert.equal(gateRearmStatus({ statuses: [green, requestStatus()] }, ready()), null);
-  assert.equal(gateRearmStatus({ statuses: [green, requestStatus('success', REARM_SETTLEMENTS[0])] }, ready()), null);
+  assert.equal(gateRearmStatus({ statuses: [green, requestStatus('failure', REARM_ATTEMPT_FAILED)] }, ready(), CLOCK)?.id, 6100);
+  assert.equal(gateRearmStatus({ statuses: [green, requestStatus()] }, ready(), CLOCK), null);
+  assert.equal(gateRearmStatus({ statuses: [green, requestStatus('success', REARM_SETTLEMENTS[0])] }, ready(), CLOCK), null);
   // no pull request number: nothing asked (the key needs it)
-  assert.equal(gateRearmStatus({ statuses: [green] }, ready({ number: undefined })), null);
+  assert.equal(gateRearmStatus({ statuses: [green] }, ready({ number: undefined }), CLOCK), null);
   const now = '2026-08-17T12:00:00Z';
   const at = (ms) => new Date(Date.parse(now) - ms).toISOString();
   const pending = (extra) => requestStatus('pending', rearmRequestDescription('6100', PR), extra);
   assert.equal(gateRearmStatus({ statuses: [pending({ updated_at: at(REARM_REQUEST_ABANDONED_MS + 60_000) }), green] }, ready(), now)?.id, 6100, 'abandoned');
   assert.equal(gateRearmStatus({ statuses: [pending({ created_at: at(REARM_REQUEST_ABANDONED_MS + 60_000) }), green] }, ready(), now)?.id, 6100, 'created_at');
   assert.equal(gateRearmStatus({ statuses: [pending({ updated_at: at(REARM_REQUEST_ABANDONED_MS - 60_000) }), green] }, ready(), now), null, 'within');
-  assert.equal(gateRearmStatus({ statuses: [pending({ updated_at: at(REARM_REQUEST_ABANDONED_MS + 60_000) }), green] }, ready()), null, 'no clock');
+  assert.throws(() => gateRearmStatus({ statuses: [pending({ updated_at: at(REARM_REQUEST_ABANDONED_MS + 60_000) }), green] }, ready()), /clock/u, 'no clock');
+  assert.throws(() => gateRearmStatus({ statuses: [green] }, ready(), null), /clock/u, 'a null clock');
+  assert.throws(() => gateRearmStatus({ statuses: [green] }, ready(), 'not a time'), /clock/u, 'an unreadable clock');
   assert.equal(gateRearmStatus({ statuses: [pending({ updated_at: 'not a time' }), green] }, ready(), now), null, 'unreadable time');
   const settledOld = requestStatus('failure', REARM_REQUEST_SUPERSEDED, { updated_at: at(REARM_REQUEST_ABANDONED_MS * 2) });
   assert.equal(gateRearmStatus({ statuses: [green, settledOld] }, ready(), now), null, 'age never lifts a settled request');
@@ -222,7 +225,7 @@ test('G3b — the abandoned limit stays above twice the owner job\'s limit', asy
 test('G3b — a buried retryable failure does not starve the re-arm', () => {
   const buried = { id: 6050, context: 'codex-current-head', state: 'failure', description: 'review: Codex review timed out after two attempts' };
   assert.equal(gateRecoveryStatus({ statuses: [green, buried] }), null);
-  assert.equal(gateRearmStatus({ statuses: [green, buried] }, ready())?.id, 6100);
+  assert.equal(gateRearmStatus({ statuses: [green, buried] }, ready(), CLOCK)?.id, 6100);
   assert.equal(authorizeRecoveryDispatch([green, buried], '6050'), null);
   assert.equal(gateRecoveryStatus({ statuses: [buried, green] })?.id, 6050);
 });
@@ -368,6 +371,13 @@ test('G3b (gap-check G1) — a consumption from an earlier re-arm stops holding 
   const quiet = make();
   assert.equal(await disarmBeforeRun(quiet.client, unarmed, HEAD, [consumed, s2]), unarmed);
   assert.deepEqual(quiet.calls, []);
+  // Stage 1's re-check of bf39f441: the snapshot showed a queued merge but the live read shows none (already gone):
+  // nothing disabled, so nothing lifted
+  const gone = make();
+  gone.client.pullRequest = async () => { gone.calls.push(['read']); return unarmed; };
+  assert.equal((await disarmBeforeRun(gone.client, armed, HEAD, [consumed, s2])).auto_merge, null);
+  assert.equal(gone.calls.some(([k]) => k === 'disable'), false);
+  assert.equal(gone.calls.some(([k]) => k === 'status'), false, 'no re-mark without an actual disable');
 });
 
 // G3b (Stage 1, X2g) — behavioural, through `run()` itself: every GitHubClient method, `request` and `graphql`

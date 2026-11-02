@@ -177,7 +177,10 @@ function newerStatusId(candidate, than) {
   }
 }
 
-export function gateRearmStatus(combinedStatus, pullRequest, now = null) {
+export function gateRearmStatus(combinedStatus, pullRequest, now) {
+  // The clock is required (Stage 1's re-check of bf39f441): without it no hold could ever expire, so a missing or
+  // unreadable clock is an error, never a silent hold
+  if (!Number.isFinite(Date.parse(String(now ?? '')))) throw new TypeError('gateRearmStatus needs the watchdog\'s clock');
   if (pullRequest?.state !== 'open' || pullRequest?.draft !== false || pullRequest?.auto_merge) return null;
   const number = pullRequest?.number;
   if (number === undefined || number === null || number === '') return null;

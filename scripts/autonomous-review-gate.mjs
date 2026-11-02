@@ -1685,7 +1685,7 @@ export class AutoMergeDisarmFailed extends Error {
  * still shows a queued auto-merge. Its callers' settlement has already written the settling pending status, which
  * nothing resumes, so every failure here must take the retryable hold.
  */
-export async function disarmQueuedAutoMerge(client, number, expectedHead) {
+export async function disarmQueuedAutoMerge(client, number, expectedHead, observed = {}) {
   try {
     let live = await refreshCurrentHead(client, number, expectedHead);
     if (!live) return null;
@@ -1700,6 +1700,8 @@ export async function disarmQueuedAutoMerge(client, number, expectedHead) {
       if (pull.number === number) {
         if (!isCurrentReviewUnit(after, expectedHead)) return null;
         live = after;
+        // this PR's own queued merge was found on the live read and disabled (read by disarmBeforeRun)
+        observed.disabledThis = true;
       }
       // a sibling that moved off this commit or closed no longer consumes it
       if (after.auto_merge && after.state === 'open' && after.head?.sha === expectedHead) throw new AutoMergeDisarmFailed();
@@ -3295,8 +3297,12 @@ export function newestConsumedRearmSettlement(statuses, pullNumber) {
 export async function disarmBeforeRun(client, pullRequest, expectedHead, statuses = []) {
   if (!pullRequest.auto_merge) return pullRequest;
   try {
-    const disarmed = await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead);
-    const consumed = disarmed ? newestConsumedRearmSettlement(statuses, pullRequest.number) : null;
+    // Stage 1's re-check of bf39f441: the consumption is lifted only when this run actually disabled this PR's queued
+    // merge on its live read, never because the snapshot showed one that was already gone
+    const observed = {};
+    const disarmed = await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead, observed);
+    const consumed = disarmed && observed.disabledThis
+      ? newestConsumedRearmSettlement(statuses, pullRequest.number) : null;
     if (consumed) {
       try {
         await client.setStatus(expectedHead, 'failure', REARM_ATTEMPT_FAILED, pullRequest.html_url, consumed.context);

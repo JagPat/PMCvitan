@@ -4169,7 +4169,7 @@ test('G3b — a watchdog re-arm runs through request-recovery and recovery, and 
     async dispatchHandoff() {},
   };
   // the watchdog: a ready, tokened green with nothing queued, never asked about
-  const hint = gateRearmStatus({ statuses }, pull);
+  const hint = gateRearmStatus({ statuses }, pull, '2026-11-02T00:00:00Z');
   assert.equal(hint?.id, 6100);
   // request-recovery: the hint authorizes only this head's newest tokened success, named exactly; the request names PR 260
   const authorized = reviewGate.authorizeRecoveryDispatch(statuses, String(hint.id));
@@ -4177,7 +4177,7 @@ test('G3b — a watchdog re-arm runs through request-recovery and recovery, and 
   assert.equal(reviewGate.authorizeRecoveryDispatch(statuses, '6099'), null, 'a stale id is refused');
   await reviewGate.persistRecoveryRequest(client, head, pull, authorized);
   assert.deepEqual(log.at(-1), ['status', 'pending', 'recovery: requested terminal status 6100 for pull request #260', 'codex-recovery-request/6100/pr-260']);
-  assert.equal(gateRearmStatus({ statuses }, pull), null, 'pending: the watchdog holds');
+  assert.equal(gateRearmStatus({ statuses }, pull, '2026-11-02T00:00:00Z'), null, 'pending: the watchdog holds');
   // orchestrate: the request is adopted as a re-arm (nothing written), and the success re-judged inside its settlement
   const request = reviewGate.pendingRecoveryRequest([...statuses], pull.number);
   assert.equal(request?.terminalStatusId, '6100');
@@ -4199,10 +4199,10 @@ test('G3b — a watchdog re-arm runs through request-recovery and recovery, and 
   assert.deepEqual(log.at(-1), ['status', 'success', 'recovery: consumed by recovered success re-authorization', 'codex-recovery-request/6100/pr-260'],
     'the request is consumed last, after the re-judge');
   // the watchdog now holds: armed, and even unarmed, the newest success is the re-judge's own
-  assert.equal(gateRearmStatus({ statuses }, pull), null);
-  assert.equal(gateRearmStatus({ statuses }, { ...pull, auto_merge: null }), null);
+  assert.equal(gateRearmStatus({ statuses }, pull, '2026-11-02T00:00:00Z'), null);
+  assert.equal(gateRearmStatus({ statuses }, { ...pull, auto_merge: null }, '2026-11-02T00:00:00Z'), null);
   // Codex 4440445763: another open PR at the same commit is not held by PR 260's request or settlement
-  assert.equal(gateRearmStatus({ statuses }, { ...pull, number: 261, auto_merge: null })?.context, 'codex-current-head');
+  assert.equal(gateRearmStatus({ statuses }, { ...pull, number: 261, auto_merge: null }, '2026-11-02T00:00:00Z')?.context, 'codex-current-head');
 });
 
 // #1288 (Codex 4439305279) — recovery that finds completed security findings publishes them through the one finding
