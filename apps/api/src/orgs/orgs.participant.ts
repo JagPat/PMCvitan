@@ -941,49 +941,59 @@ export class OrgsParticipant {
   }
 
   /**
-   * #482 proof photos, "Who fixes this?" (Stage 1's RM-a gap-check, G1) — how many times each of these users' standing in
-   * `roles` on this project has CHANGED: their count of `MembershipTransition` rows where either side is outside `roles`
-   * x `active` (an add, a removal, a re-role into or out of `roles`; a move between two of `roles` while active is not a
-   * change, and neither is a discipline edit, which writes no transition). Every user asked for is in the answer, with
-   * 0 when they have none.
+   * #482 proof photos, "Who fixes this?" (Stage 1's RM-a gap-check, G1; Codex #1297 r1) — for each of these users, in
+   * ONE statement (so one snapshot): do they stand now in `roles` (an ACTIVE membership of this project whose role is in
+   * `roles`, the rule `hasProjectRoleStanding` applies when `roles` does not admit `pmc`), and their standing MARK: how
+   * many times their standing in `roles` has CHANGED. Every user asked for is in the answer (not standing, mark 0 when
+   * they have nothing). `roles` admitting `pmc` is refused: the org owner arm is not part of this rule.
    *
-   * The inspections module stores this count when it names someone responsible, and serves the name only while the count
-   * is unchanged, so a member who leaves and comes back is not named again until someone names them. A COUNT, not a
-   * time, on purpose: a transition's `at` is its transaction's START, so a removal that began before a naming and
-   * committed after it would carry an earlier time than the naming. Exact under the project's readiness key, which every
-   * member writer takes before it inserts a transition (`MembersService` add, role and remove): a caller that holds it
-   * sees every transition committed before it, and any other commits after it.
+   * THE MARK, exactly: the user's count of `MembershipTransition` rows on this project where EITHER side is outside
+   * `roles` x `active`, i.e. every row unless `fromRole IN roles AND fromStatus = 'active' AND toRole IN roles AND
+   * toStatus = 'active'` (an add's NULL from-side counts). So an add, a removal and a re-role into or out of `roles` count;
+   * a move between two of `roles` while active does not, and neither does a discipline edit, which writes no transition.
+   *
+   * The inspections module stores the mark when it names someone responsible, and serves the name only while they stand
+   * and the mark is unchanged, so a member who leaves and comes back is not named again until someone names them. A
+   * COUNT, not a time, on purpose: a transition's `at` is its transaction's START, so a removal that began before a
+   * naming and committed after it would carry an earlier time than the naming. Exact under the project's readiness key,
+   * which every member writer takes before it inserts a transition (`MembersService` add, role and remove): a caller that
+   * holds it sees every transition committed before it, and any other commits after it.
    *
    * The count only moves up because the register is APPEND-ONLY: `MembershipTransition_t4d_append_only` refuses every
    * UPDATE and DELETE (a delete only as the cascade of the project's own deletion, which removes the inspections too),
    * and `MembershipTransition_t4d_no_truncate` refuses TRUNCATE, so no delete-then-insert can leave a count unchanged.
    * Its only writer is `MembersService.recordTransition` (add, role, remove).
    *
-   * THE RULE, exactly: a transition counts when EITHER side is outside `roles` x `active`, i.e. unless
-   * `fromRole IN roles AND fromStatus = 'active' AND toRole IN roles AND toStatus = 'active'` (an add's NULL from-side
-   * counts).
+   * One statement on purpose (Codex #1297 r1): read as separate statements under READ COMMITTED, a re-role between two
+   * of `roles` committing in between could be missed by both role reads and hide a naming that never broke.
    */
-  async standingChangeCounts(
+  async roleStandingMarks(
     tx: OrgsParticipantClient | Prisma.TransactionClient,
     projectId: string,
     userIds: readonly string[],
     roles: readonly string[],
-  ): Promise<Map<string, number>> {
-    const counts = new Map<string, number>();
+  ): Promise<Map<string, { stands: boolean; mark: number }>> {
+    if (roles.includes('pmc')) throw new Error('orgs: roleStandingMarks does not apply the org owner arm; pmc is not admitted');
+    const answer = new Map<string, { stands: boolean; mark: number }>();
     const wanted = [...new Set(userIds)];
-    if (wanted.length === 0) return counts;
-    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ userId: string; n: number }>>(
-      `SELECT u."userId", count(t."id")::int AS n
-         FROM unnest($2::text[]) AS u("userId")
-         LEFT JOIN "MembershipTransition" t
-           ON t."projectId" = $1 AND t."userId" = u."userId"
-          AND NOT COALESCE(t."fromRole" = ANY($3::text[]) AND t."fromStatus" = 'active'
-                           AND t."toRole" = ANY($3::text[]) AND t."toStatus" = 'active', false)
-        GROUP BY u."userId"`,
+    if (wanted.length === 0 || roles.length === 0) {
+      for (const u of wanted) answer.set(u, { stands: false, mark: 0 });
+      return answer;
+    }
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ userId: string; stands: boolean; mark: number }>>(
+      `SELECT u."userId",
+              EXISTS (SELECT 1 FROM "Membership" m
+                       WHERE m."projectId" = $1 AND m."userId" = u."userId" AND m."status" = 'active'
+                         AND m."role" = ANY($3::text[])) AS stands,
+              (SELECT count(*)::int FROM "MembershipTransition" t
+                WHERE t."projectId" = $1 AND t."userId" = u."userId"
+                  AND NOT COALESCE(t."fromRole" = ANY($3::text[]) AND t."fromStatus" = 'active'
+                                   AND t."toRole" = ANY($3::text[]) AND t."toStatus" = 'active', false)) AS mark
+         FROM unnest($2::text[]) AS u("userId")`,
       projectId, wanted, [...roles],
     );
-    for (const r of rows) counts.set(r.userId, r.n);
-    return counts;
+    for (const r of rows) answer.set(r.userId, { stands: r.stands, mark: r.mark });
+    return answer;
   }
 
   /**
