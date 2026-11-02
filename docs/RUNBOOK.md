@@ -1633,6 +1633,14 @@ previous build keeps emitting under `f9ebcd07…`, and it can never name the new
 contract moves: `inspections.inbox` leaves the new type out of its rule (the stored base holds no
 responsible member), so its persisted rule is the one A6c wrote.
 
+Merge is deploy, so the order is: switch the API to `OUTBOX_SENDER_MODE=legacy` (or `shadow`) BEFORE
+the merge; after the RM-e-c build is serving, `outbox:status` clean, then `outbox:seal-external`
+(the seal then names `e356309f…`); then restart the same build with `OUTBOX_SENDER_MODE=outbox`.
+**Rollback:** the RM-a build (or any earlier one) compiles `f9ebcd07…`, so in `outbox` mode it
+refuses to start against an `e356309f…` seal. Recover with the same three steps on the rolled-back
+build, with `f9ebcd07…` as the seal's version. The `e356309f…` catalog rows stay (a rollback
+retires nothing), so `inspection.responsible_set` events already written remain resolvable.
+
 The seeded `ExternalEffectCatalog` rows are a DIFFERENT mechanism and do not
 substitute for this: two coverage generations keep a still-serving previous
 release's events resolvable through the drain, while the cutover seal is what
