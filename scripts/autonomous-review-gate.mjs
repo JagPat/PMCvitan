@@ -1136,8 +1136,10 @@ export class GitHubClient {
   async updateStickyComment(number, body) {
     // #1307 audit — every page: on a pull request with more than a hundred comments the sticky one is still found and
     // edited, never posted a second time
+    // the newest copy (#1307 gap-check F3): a PR that passed a hundred comments before its first sticky one may carry
+    // several left by the old first-page search, and the newest is the one a reader sees first
     const comments = await this.issueComments(number);
-    const existing = comments.find(
+    const existing = comments.findLast(
       (comment) =>
         comment.user?.login === 'github-actions[bot]' &&
         comment.body?.includes(COMMENT_MARKER),
@@ -3317,8 +3319,19 @@ export async function disarmBeforeRun(client, pullRequest, expectedHead, statuse
     // unless its merge was actually disabled here (Stage 1's re-check of bf39f441: only an actual disable on the live
     // read lifts, never the snapshot)
     const lifts = disarmed ? (observed.disabled ?? []) : [];
+    // #1307 gap-check F4 — the statuses are read again after the disable, so a consumption a sibling's own re-judge (its
+    // own concurrency group) recorded after this run's opening snapshot is lifted too; a read that fails falls back to
+    // the snapshot, and the disarm's outcome stands either way
+    let current = statuses;
+    if (lifts.length > 0) {
+      try {
+        current = await client.statuses(expectedHead);
+      } catch (readError) {
+        console.warn(`Could not re-read the statuses before the lift: ${readError?.message ?? readError}`);
+      }
+    }
     for (const pull of lifts) {
-      const consumed = newestConsumedRearmSettlement(statuses, pull.number);
+      const consumed = newestConsumedRearmSettlement(current, pull.number);
       if (!consumed) continue;
       try {
         await client.setStatus(expectedHead, 'failure', REARM_ATTEMPT_FAILED, pull.html_url ?? pullRequest.html_url, consumed.context);
