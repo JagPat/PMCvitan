@@ -275,7 +275,7 @@ test('G3b — structural: the owner job runs the cleanup on failure or cancel; r
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const runBody = gate.slice(gate.indexOf('export async function run()'));
   assert.ok(runBody.indexOf("process.env.AUTONOMOUS_REVIEW_MODE === 'rearm-cleanup'") < runBody.indexOf('await eventContext()'));
-  assert.match(runBody, /pendingRecoveryRequest\(existingStatuses, pullRequest\.number\)/u);
+  assert.match(runBody, /let recoveryRequest = pendingRecoveryRequest\(existingStatuses, pullRequest\.number\);/u);
   const adopt = runBody.indexOf('recordAdoptedRearmRequest(expectedHead, pullRequest.number, rearmRequest);');
   assert.ok(adopt > 0 && adopt < runBody.indexOf('await withRearmSettlement('), 'recorded before its re-judge runs');
   assert.match(runBody, /existingStatuses,\s*rearmOutcome,\s*\)\);\s*\}, rearmOutcome\);/u);
