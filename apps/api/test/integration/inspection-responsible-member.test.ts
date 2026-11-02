@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
-import type { Role } from '@vitan/shared';
+import { ROLE_POLICY, type Role } from '@vitan/shared';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -19,6 +19,7 @@ describe('the PMC or engineer names who fixes an inspection\'s failed work (live
   const tokens = {} as Record<string, string>;
   const ids = {} as Record<string, string>;
   const inspectionId = () => `${f.projectA.id}-resp-insp`;
+  const assignedInspection = () => `${f.projectA.id}-resp-assigned`;
   const otherProjectInspection = () => `${f.projectB.id}-resp-insp`;
 
   const http = () => request(t.app.getHttpServer());
@@ -45,16 +46,22 @@ describe('the PMC or engineer names who fixes an inspection\'s failed work (live
     tokens.pmc = t.issueProjectToken(f.memberUser.id, f.projectA.id, 'pmc');
     ids.client = f.clientUser.id;
     tokens.client = t.issueProjectToken(f.clientUser.id, f.projectA.id, 'client');
+    // no architect can be a member yet (the database refuses the role until 4d-iii), so the architect's token is held
+    // by an existing user: the policy refuses the token's role before anything reads a membership
+    ids.architect = f.clientUser.id;
+    tokens.architect = t.issueProjectToken(f.clientUser.id, f.projectA.id, 'architect');
     for (const [key, role] of [['engineer', 'engineer'], ['contractor', 'contractor'], ['consultant', 'consultant'],
       ['racer', 'contractor'], ['leaver', 'contractor'], ['engineer2', 'engineer']] as Array<[string, Role]>) await member(key, role);
     await member('elsewhere', 'contractor', f.projectB.id);
     await t.prisma.inspection.create({ data: { id: inspectionId(), projectId: f.projectA.id, kind: 'review', title: 'Slab check', zone: 'Zone A', date: '2 Nov', submitted: true } });
+    // another engineer's assigned, open re-inspection: the "mine" filter keeps it out of engineer2's checklists
+    await t.prisma.inspection.create({ data: { id: assignedInspection(), projectId: f.projectA.id, kind: 'checklist', title: 'Re-check', zone: 'Zone A', date: '2 Nov', assigneeId: ids.engineer } });
     await t.prisma.inspection.create({ data: { id: otherProjectInspection(), projectId: f.projectB.id, kind: 'review', title: 'Wall check', zone: 'Zone B', date: '2 Nov' } });
   });
 
   afterAll(async () => {
     await t?.prisma.auditLog.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
-    await t?.prisma.inspection.deleteMany({ where: { id: { in: [inspectionId(), otherProjectInspection()] } } });
+    await t?.prisma.inspection.deleteMany({ where: { id: { in: [inspectionId(), assignedInspection(), otherProjectInspection()] } } });
     await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'MembershipTransition'], { cascade: true });
     await t?.prisma.membership.deleteMany({ where: { userId: { in: extra } } });
     await t?.prisma.user.deleteMany({ where: { id: { in: extra } } });
@@ -77,8 +84,9 @@ describe('the PMC or engineer names who fixes an inspection\'s failed work (live
     expect(audit.map((a) => (a.payload as { to: string | null }).to)).toEqual([ids.contractor, ids.consultant, null]);
   });
 
-  it('only the PMC and the engineer may name one: a contractor, a consultant and a client get 403, and nothing changes', async () => {
-    for (const who of ['contractor', 'consultant', 'client']) {
+  it('only the PMC and the engineer may name one: a contractor, a consultant, a client and an architect get 403, and nothing changes', async () => {
+    expect(ROLE_POLICY['inspection.responsible']).toEqual(['pmc', 'engineer']);
+    for (const who of ['contractor', 'consultant', 'client', 'architect']) {
       expect((await put(who, ids.contractor!)).status).toBe(403);
     }
     expect(await stored()).toBeNull();
@@ -108,7 +116,7 @@ describe('the PMC or engineer names who fixes an inspection\'s failed work (live
 
   it('nobody but the PMC and the engineer sees who is named', async () => {
     await put('pmc', ids.contractor!);
-    for (const [role, who] of [['contractor', 'contractor'], ['consultant', 'consultant'], ['client', 'client']] as Array<[Role, string]>) {
+    for (const [role, who] of [['contractor', 'contractor'], ['consultant', 'consultant'], ['client', 'client'], ['architect', 'architect']] as Array<[Role, string]>) {
       expect(await listed(role, ids[who]!)).toEqual([]);
     }
     await put('pmc', null);
@@ -138,23 +146,24 @@ describe('the PMC or engineer names who fixes an inspection\'s failed work (live
   it('a member re-roled while being named: the naming waits on their membership row and is refused, as if it came after', async () => {
     let release!: () => void;
     const held = new Promise<void>((r) => { release = r; });
-    let changed!: () => void;
-    const isChanged = new Promise<void>((r) => { changed = r; });
-    // the racer becomes a client and the change is not yet committed (a re-role takes no readiness key)
+    let changed!: (pid: number) => void;
+    const isChanged = new Promise<number>((r) => { changed = r; });
+    // the racer becomes a client and the change is not yet committed. A role change away from an active role also
+    // try-takes the project's readiness key, through the membership's holder guard trigger, so the naming may wait there
+    // or on the membership row: either way, on THIS transaction
     const rerole = t.prisma.$transaction(async (tx) => {
+      const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
       await tx.membership.update({ where: { projectId_userId: { projectId: f.projectA.id, userId: ids.racer! } }, data: { role: 'client' } });
-      changed();
+      changed(pid);
       await held;
     }, { timeout: 20_000 });
-    await isChanged;
+    const reroler = await isChanged;
     const naming = put('pmc', ids.racer!).then((r) => r);
-    // released only once PostgreSQL shows the naming waiting, never after a guessed delay: on the project's readiness key
-    // (a membership write takes it through its standing trigger) or on the membership row itself
+    // released only once PostgreSQL shows a backend blocked BY the re-role's own backend, never after a guessed delay
     const waiting = async (): Promise<boolean> =>
       (await t.prisma.$queryRaw<Array<{ n: number }>>`
         SELECT count(*)::int AS n FROM pg_stat_activity
-        WHERE datname = current_database() AND wait_event_type = 'Lock'
-          AND (query LIKE '%pg_advisory_xact_lock%' OR query LIKE '%FROM "Membership"%FOR UPDATE%')`)[0]!.n > 0;
+        WHERE datname = current_database() AND ${reroler}::int = ANY(pg_blocking_pids(pid))`)[0]!.n > 0;
     const deadline = Date.now() + 10_000;
     while (!(await waiting())) {
       if (Date.now() > deadline) { release(); await rerole; await naming; throw new Error('the naming never waited for the re-role'); }
@@ -165,5 +174,52 @@ describe('the PMC or engineer names who fixes an inspection\'s failed work (live
     const res = await naming;
     expect(res.status).toBe(400);
     expect(await stored()).toBeNull();
+  });
+
+  it('a member who leaves and comes back is not named again until someone names them (real routes)', async () => {
+    const asPmc = (req: request.Test) => req.set('Authorization', `Bearer ${tokens.pmc}`).set('Idempotency-Key', randomUUID());
+    const email = `${f.projectA.id}-resp-returner@test.local`;
+    expect((await asPmc(http().post(`/projects/${f.projectA.id}/members`)).send({ name: 'A returner', role: 'contractor', email })).status).toBe(201);
+    const uid = (await t.prisma.user.findUniqueOrThrow({ where: { email } })).id;
+    extra.push(uid);
+    const shown = async () => (await listed('pmc', ids.pmc!)).filter((r) => r.inspectionId === inspectionId());
+    const role = async (to: Role) => expect((await asPmc(http().patch(`/projects/${f.projectA.id}/members/${uid}`)).send({ role: to })).status).toBe(200);
+
+    expect((await put('pmc', uid)).status).toBe(200);
+    expect(await shown()).toEqual([{ inspectionId: inspectionId(), memberId: uid }]);
+    // a move between the two named roles, while active, is not a break
+    await role('consultant');
+    expect(await shown()).toEqual([{ inspectionId: inspectionId(), memberId: uid }]);
+
+    // removed, then added back: no one, and the stored name stays as the record
+    expect((await asPmc(http().delete(`/projects/${f.projectA.id}/members/${uid}`))).status).toBe(200);
+    expect(await shown()).toEqual([]);
+    expect((await asPmc(http().post(`/projects/${f.projectA.id}/members`)).send({ name: 'A returner', role: 'consultant', email })).status).toBe(201);
+    expect(await shown()).toEqual([]);
+    expect(await stored()).toBe(uid);
+
+    // named again, then re-roled out and back: no one again
+    expect((await put('pmc', uid)).status).toBe(200);
+    expect(await shown()).toEqual([{ inspectionId: inspectionId(), memberId: uid }]);
+    await role('engineer');
+    expect(await shown()).toEqual([]);
+    await role('contractor');
+    expect(await shown()).toEqual([]);
+
+    // naming them once more holds, and clearing clears the mark with the name
+    expect((await put('engineer', uid)).status).toBe(200);
+    expect(await shown()).toEqual([{ inspectionId: inspectionId(), memberId: uid }]);
+    expect((await put('pmc', null)).status).toBe(200);
+    expect(await t.prisma.inspection.findUniqueOrThrow({ where: { id: inspectionId() }, select: { responsibleMemberId: true, responsibleStandingMark: true } }))
+      .toEqual({ responsibleMemberId: null, responsibleStandingMark: null });
+  });
+
+  it('an engineer names and sees on another engineer\'s assigned inspection, as placedInspections already shows it to them', async () => {
+    const view = await t.app.get(SnapshotService).build(f.projectA.id, 'engineer', ids.engineer2!);
+    expect(view.openChecklists.some((c) => c.id === assignedInspection())).toBe(false);
+    expect(view.placedInspections.some((p) => p.id === assignedInspection())).toBe(true);
+    expect((await put('engineer2', ids.contractor!, assignedInspection())).status).toBe(200);
+    expect(await listed('engineer', ids.engineer2!)).toContainEqual({ inspectionId: assignedInspection(), memberId: ids.contractor });
+    expect((await put('engineer2', null, assignedInspection())).status).toBe(200);
   });
 });

@@ -14,7 +14,7 @@ import { addCivilDays, fromIsoCivilDate } from '../common/civil-date';
 import { nextSeqId } from '../domain/ids';
 import type { AuthUser } from '../common/auth';
 import type { CreateInspectionInput, DecideReviewInput, SetResponsibleMemberInput, SubmitInspectionInput } from '../contracts';
-import { RESPONSIBLE_ROLES, standsAsResponsible } from './responsible-member';
+import { RESPONSIBLE_ROLES, standingMark, standsAsResponsible } from './responsible-member';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
@@ -521,7 +521,9 @@ export class InspectionsService {
         if (memberId !== null && !(await standsAsResponsible(this.orgs, tx, projectId, memberId, { forUpdate: true }))) {
           throw new BadRequestException(`Only an active ${RESPONSIBLE_ROLES.join(' or ')} on this project can be named to fix this.`);
         }
-        await tx.inspection.update({ where: { id: inspectionId }, data: { responsibleMemberId: memberId } });
+        // the mark is read under the readiness key held above, so it counts exactly the member's changes committed before
+        const mark = memberId === null ? null : await standingMark(this.orgs, tx, projectId, memberId);
+        await tx.inspection.update({ where: { id: inspectionId }, data: { responsibleMemberId: memberId, responsibleStandingMark: mark } });
         await recordAudit(tx, { projectId, actor, action: 'inspection.responsible', entity: 'Inspection', entityId: inspectionId, payload: { from: insp.responsibleMemberId, to: memberId } });
         return { resultRef: inspectionId, events: [] };
       },

@@ -941,6 +941,43 @@ export class OrgsParticipant {
   }
 
   /**
+   * #482 proof photos, "Who fixes this?" (Stage 1's RM-a gap-check, G1) — how many times each of these users' standing in
+   * `roles` on this project has CHANGED: their count of `MembershipTransition` rows where either side is outside `roles`
+   * x `active` (an add, a removal, a re-role into or out of `roles`; a move between two of `roles` while active is not a
+   * change, and neither is a discipline edit, which writes no transition). Every user asked for is in the answer, with
+   * 0 when they have none.
+   *
+   * The inspections module stores this count when it names someone responsible, and serves the name only while the count
+   * is unchanged, so a member who leaves and comes back is not named again until someone names them. A COUNT, not a
+   * time, on purpose: a transition's `at` is its transaction's START, so a removal that began before a naming and
+   * committed after it would carry an earlier time than the naming. Exact under the project's readiness key, which every
+   * member writer takes before it inserts a transition (`MembersService` add, role and remove): a caller that holds it
+   * sees every transition committed before it, and any other commits after it. Rows are removed only with the project.
+   */
+  async standingChangeCounts(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    userIds: readonly string[],
+    roles: readonly string[],
+  ): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    const wanted = [...new Set(userIds)];
+    if (wanted.length === 0) return counts;
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ userId: string; n: number }>>(
+      `SELECT u."userId", count(t."id")::int AS n
+         FROM unnest($2::text[]) AS u("userId")
+         LEFT JOIN "MembershipTransition" t
+           ON t."projectId" = $1 AND t."userId" = u."userId"
+          AND NOT COALESCE(t."fromRole" = ANY($3::text[]) AND t."fromStatus" = 'active'
+                           AND t."toRole" = ANY($3::text[]) AND t."toStatus" = 'active', false)
+        GROUP BY u."userId"`,
+      projectId, wanted, [...roles],
+    );
+    for (const r of rows) counts.set(r.userId, r.n);
+    return counts;
+  }
+
+  /**
    * Phase 5 Task 6A (§I) — may `userId` approve on `projectId` at all, and up to what CEILING?
    *
    * Approval limits are authority/standing data and `Membership` is orgs-owned, so commercial does
