@@ -3571,17 +3571,33 @@ export async function run() {
   if (pendingRearm && /\/pr-[0-9]+$/u.test(pendingRearm.status.context)) {
     recordAdoptedRearmRequest(expectedHead, pullRequest.number, pendingRearm);
   }
-  await withdrawUntokenedSuccess(client, pullRequest, expectedHead, existingStatus);
+  try {
+    await withdrawUntokenedSuccess(client, pullRequest, expectedHead, existingStatus);
+  } catch (error) {
+    // #1311 Codex 4447612716 — the withdrawal stays the first write (M3c), but when it throws, a head another open pull
+    // request shares still gets the refusal: its disarm drops every queued merge at the commit (a different API from
+    // the failed status write) and its failure replaces the untokened green. Alone, or if the refusal throws too, the
+    // withdrawal's own error ends the run as before
+    let shared = null;
+    try {
+      shared = await sharedCommit();
+    } catch (refusalError) {
+      console.warn(`Shared-commit refusal after a failed withdrawal also failed: ${refusalError.message}`);
+    }
+    if (shared) return;
+    throw error;
+  }
   // 2A3a — before anything derived from this pull request (the scope, the ownership hold, the candidate hold, a review):
   // while another open pull request has this head, the commit gets the shared-commit refusal and the run stops.
   // #1311 Codex 4446635309 — checked before the CI-triggered disarm too: that disarm throws when it fails, so a head
   // already shared would get only its generic hold, never the refusal telling anyone to close a pull request; the
   // refusal's own disarm writes the refusal even when it fails. Checked again after it, for a sibling arriving meanwhile
-  const sharedCommit = async () => {
+  // (a declaration, hoisted, so the withdrawal above stays the first statement that awaits anything)
+  async function sharedCommit() {
     const shared = await refuseSharedCommit(client, pullRequest, expectedHead, pendingRecoveryRequest(existingStatuses, pullRequest.number));
     if (shared) console.log(`Another open pull request may have this exact head; shared-commit refusal: ${shared}.`);
     return shared;
-  };
+  }
   if (await sharedCommit()) return;
   if (context.trigger === 'ci') {
     pullRequest = await disarmBeforeRun(client, pullRequest, expectedHead, existingStatuses);
