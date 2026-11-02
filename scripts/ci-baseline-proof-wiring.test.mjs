@@ -102,7 +102,10 @@ const PINNED_PROOFS = [
     verdicts: [/ledger-lost runner proof: PASSED/u, /ledger-lost runner proof: FAILED/u],
     // A. the ledger lost after U5m (resolve, then execute U5m) · B. the rule removed from a copy (the
     // deploy must fail: the coupling) · C. the ledger lost before U5m (SV1-a replays, U5m applies).
-    states: ['say "A. THE LEDGER LOST AFTER U5m', 'say "B. THE RULE REMOVED', 'say "C. THE LEDGER LOST BEFORE U5m'],
+    // RM-e-m's fourth rule: B2. that rule removed (the deploy must fail on U5m's catalog file) · D. the
+    // ledger lost before RM-e (U5m replays, RM-e applies).
+    states: ['say "A. THE LEDGER LOST AFTER U5m', 'say "B. THE RULE REMOVED', 'say "B2. THE RM-e RULE REMOVED',
+             'say "C. THE LEDGER LOST BEFORE U5m', 'say "D. THE LEDGER LOST BEFORE RM-e'],
   },
 ];
 

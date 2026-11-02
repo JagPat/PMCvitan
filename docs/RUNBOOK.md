@@ -1425,6 +1425,11 @@ baseline it before anything replays (t3c seals exit 5; see §P4T3C3).
   same way) refuses U5m's generation (`63679450…`), so on a database that also carries U5m's
   generation the runner resolves `20280111000000_site_visits_sv1a_catalog` as applied. That file
   installs no function, so no other replay depends on it, and SV1-a's record file replays as before.
+  **From "Who fixes this?" RM-e-m** it extends once more: U5m's own catalog audit (immutable, gated the
+  same way) refuses RM-e's generation (`e356309f…`), so on a database that also carries RM-e's
+  generation the runner resolves `20280127000000_hub_catalog_generation` as applied. RM-e's file
+  requires U5m's generation as well as SV1-a's, so its presence evidences U5m ran; U5m's file installs
+  no function either. `scripts/ledger-lost-runner-proof.sh` runs the real runner over this rule.
 - **Restored from a point after A7d was applied but before any process of this release served:** the
   same rule applies — A7d's seals are on the database, a lease is not — so the deploy completes with
   4d-i and U3 resolved. The residual: 4d-i's replay audits do not judge that database's rows; the live
@@ -1607,6 +1612,15 @@ No consumer contract version moves, so nothing else in this section changes.
 `20280127000000_hub_catalog_generation` seeds it beside SV1-a's, and the U5m build compiles
 the same catalog as the build before it, so deploying U5m needs NO reseal. The later build that
 compiles the two keys (U5k) moves `f9ebcd07…` → `63679450…` and takes the three steps above.
+
+**"Who fixes this?" RM-e-m seeds a second next generation, BESIDE U5m's** — `e356309f…`: SV1-a's
+keys plus `inspection.responsible_set` (its own new event type, invalidate, never push, no pairing
+claim), without the Hub keys. `20280207000000_inspection_responsible_catalog` seeds it, and the RM-e-m
+build compiles the same catalog as the build before it, so deploying RM-e-m needs NO reseal. The
+later build that compiles the key (RM-e-c) moves `f9ebcd07…` → `e356309f…` and takes the three
+steps above. After that, U5m's `63679450…` is no longer "the compiled catalog plus the Hub keys":
+U5k must seed its own generation over the catalog it then finds (SV1-a's keys, RM-e's key and the
+two Hub keys) and compile that one instead.
 
 The seeded `ExternalEffectCatalog` rows are a DIFFERENT mechanism and do not
 substitute for this: two coverage generations keep a still-serving previous
