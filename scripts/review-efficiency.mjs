@@ -1,3 +1,4 @@
+import { securityVerdictHeads } from './security-verdict-marker.mjs';
 import {
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
   PRE_REVIEW_ENFORCE_AFTER_PR,
@@ -503,8 +504,13 @@ export function findingHeadSeverity(comments, reviews = []) {
   return severity;
 }
 
-export function codexFindingHeads(comments, reviews = []) {
-  const heads = new Set();
+/**
+ * The heads Codex found something on: its comments' and reviews' heads, and (Codex 4438607048) every head a
+ * gate-written security-verdict marker names, since those findings are visible only in Codex's edited-in-place
+ * record. The ONE predicate every finding-head count goes through; `issueComments` are the PR's issue comments.
+ */
+export function codexFindingHeads(comments, reviews = [], issueComments = []) {
+  const heads = new Set(securityVerdictHeads(issueComments));
   for (const comment of comments ?? []) {
     if (comment?.user?.login !== CODEX_LOGIN) continue;
     const head = comment.original_commit_id ?? comment.commit_id;
@@ -758,8 +764,9 @@ export function assessConvergence({
   changedFiles,
   pullRequestFiles,
   activePhases,
+  issueComments = [],
 }) {
-  const findingHeads = codexFindingHeads(comments, reviews);
+  const findingHeads = codexFindingHeads(comments, reviews, issueComments);
   const findingHeadCount = findingHeads.length;
   if (findingHeadCount < CONVERGENCE_AFTER_FINDING_HEADS) {
     return {

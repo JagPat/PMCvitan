@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { PHASE_NOT_FOUND_MESSAGE } from '@vitan/shared';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
@@ -81,7 +82,7 @@ export class PhasesService {
       return this.snapshot.build(projectId, user.role, user.sub);
     }
     const p = await this.prisma.phase.findUnique({ where: { id: phaseId } });
-    if (!p || p.projectId !== projectId) throw new NotFoundException('Phase not found');
+    if (!p || p.projectId !== projectId) throw new NotFoundException(PHASE_NOT_FOUND_MESSAGE);
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'phases.remove', idempotencyKey, requestHash,
       run: async (tx) => {
@@ -91,7 +92,7 @@ export class PhasesService {
         await tx.phase.delete({ where: { id: phaseId } }).catch((e: unknown) => {
           // another delete of this phase committed after the read above: it is gone, answered as the read answers,
           // and thrown so nothing of this delete commits (no receipt for its key either)
-          if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') throw new NotFoundException('Phase not found');
+          if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') throw new NotFoundException(PHASE_NOT_FOUND_MESSAGE);
           throw e;
         });
         await recordAudit(tx, { projectId, actor, action: 'phase.delete', entity: 'Phase', entityId: phaseId });

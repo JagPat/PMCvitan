@@ -457,12 +457,12 @@ test('#1254 — a record with unresolved findings never clears, and vetoes anoth
   assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), stateRecord({ unresolved: true })] })).state, 'pending');
   // a missing flag is not "no findings"
   assert.equal(classifyCodexState(input({ issueComments: [stateRecord({ unresolved: null })] })).state, 'pending');
-  // nor does a security review with unresolved findings, or one still running on this head
-  for (const security of [
-    { commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: 'completed' },
-    { commit_sha: HEAD, has_any_findings: null, has_unresolved_findings: null, status: 'in_progress' },
+  // nor does a security review with unresolved findings (G2: it blocks), or one still running on this head (held)
+  for (const [security, state] of [
+    [{ commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: 'completed' }, 'changes_required'],
+    [{ commit_sha: HEAD, has_any_findings: null, has_unresolved_findings: null, status: 'in_progress' }, 'pending'],
   ]) {
-    assert.equal(classifyCodexState(input({ issueComments: [stateRecord({ security })] })).state, 'pending');
+    assert.equal(classifyCodexState(input({ issueComments: [stateRecord({ security })] })).state, state);
   }
 });
 
@@ -490,9 +490,10 @@ test('#1254 — a security review counts only on the same head, and its unresolv
   const olderSecurity = { commit_sha: OLD_HEAD, has_any_findings: false, has_unresolved_findings: false, status: 'completed' };
   assert.equal(classifyCodexState(input({ issueComments: [stateRecord({ security: olderSecurity })] })).state, 'pending');
   // one Codex record clean, another with security findings unresolved on this head: the veto holds in either order
+  // (G2: as a blocking finding)
   const vetoing = stateRecord({ security: { commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: 'completed' } });
-  assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), vetoing] })).state, 'pending');
-  assert.equal(classifyCodexState(input({ issueComments: [vetoing, stateRecord()] })).state, 'pending');
+  assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), vetoing] })).state, 'changes_required');
+  assert.equal(classifyCodexState(input({ issueComments: [vetoing, stateRecord()] })).state, 'changes_required');
 });
 
 test('Codex 4437814263 — an idle security section is clean only when wholly empty', () => {
@@ -524,4 +525,51 @@ test('Codex 4437620372 — a same-head record that is not wholly clean vetoes a 
   }
   // a record for another head is no veto
   assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), stateRecord({ head: OLD_HEAD, status: 'in_progress' })] })).state, 'clear');
+});
+
+test('Codex 4437635934 — a same-head run still going holds a fresh +1 too; Codex\'s completed-with-findings record does not', () => {
+  const plusOne = [{ user: { login: CODEX_LOGIN }, content: '+1', created_at: '2026-07-27T10:01:00Z' }];
+  for (const record of [
+    stateRecord({ status: 'in_progress' }),
+    stateRecord({ status: 'running', unresolved: null }),
+    stateRecord({ security: { commit_sha: HEAD, has_any_findings: null, has_unresolved_findings: null, status: 'in_progress' } }),
+  ]) {
+    assert.equal(classifyCodexState(input({ reactions: plusOne, issueComments: [record] })).state, 'pending');
+    assert.equal(classifyCodexState(input({ reactions: plusOne, issueComments: [record] })).held, true);
+    assert.equal(classifyCodexState(input({ now: '2026-07-27T10:15:01Z', reactions: plusOne, issueComments: [record] })).state, 'timed_out');
+  }
+  // a +1 still clears beside Codex's real record for a head it commented on (completed, unresolved findings: those
+  // findings are the gate's to see), a clean record, another head's running record, or no record at all
+  for (const issueComments of [[stateRecord({ unresolved: true })], [stateRecord()], [stateRecord({ head: OLD_HEAD, status: 'in_progress' })], []]) {
+    assert.equal(classifyCodexState(input({ reactions: plusOne, issueComments })).detail, 'fresh Codex +1 for this review attempt');
+  }
+  // the completed-with-findings record still never clears on its own
+  assert.equal(classifyCodexState(input({ issueComments: [stateRecord(), stateRecord({ unresolved: true })] })).state, 'pending');
+});
+
+test('G2 gap 2 — completed security findings on this head block like a finding (not a hold), before and after the deadline', () => {
+  const plusOne = [{ user: { login: CODEX_LOGIN }, content: '+1', created_at: '2026-07-27T10:01:00Z' }];
+  const security = stateRecord({ security: { commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: 'completed' } });
+  for (const extra of [{}, { reactions: plusOne }, { now: '2026-07-27T10:15:01Z' }, { issueComments: [stateRecord(), security] }]) {
+    const result = classifyCodexState(input({ issueComments: [security], ...extra }));
+    assert.equal(result.state, 'changes_required');
+    assert.equal(result.held, undefined);
+    assert.equal(result.detail, 'Codex security review reports unresolved findings on this exact head');
+  }
+  // Codex 4439117340 — it outranks a run still going on this head, in one record or across two, before and after the
+  // deadline: a stuck run must not keep a known security finding from being routed for correction
+  const running = stateRecord({ status: 'running', unresolved: null });
+  const both = stateRecord({ status: 'running', unresolved: null,
+    security: { commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: 'completed' } });
+  for (const issueComments of [[running, security], [security, running], [both]]) {
+    for (const now of [undefined, '2026-07-27T10:15:01Z']) {
+      const result = classifyCodexState(input({ issueComments, ...(now ? { now } : {}) }));
+      assert.equal(result.state, 'changes_required');
+      assert.equal(result.security, true);
+      assert.equal(result.held, undefined);
+    }
+  }
+  // a security review still running beside a clean code review is a hold, as before
+  const securityRunning = stateRecord({ security: { commit_sha: HEAD, has_any_findings: null, has_unresolved_findings: null, status: 'in_progress' } });
+  assert.equal(classifyCodexState(input({ issueComments: [securityRunning] })).held, true);
 });

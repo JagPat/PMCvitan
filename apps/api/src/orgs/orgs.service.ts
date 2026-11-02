@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { NOT_AN_ORG_MEMBER_MESSAGE } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { CLOCK, type Clock } from '../common/clock';
 import { addCivilDays, fromIsoCivilDate } from '../common/civil-date';
@@ -371,7 +372,7 @@ export class OrgsService {
   async updateOrgMemberRole(orgId: string, callerId: string, userId: string, input: UpdateOrgMemberInput): Promise<OrgMemberDto> {
     if ((await this.orgRole(orgId, callerId)) !== 'owner') throw new ForbiddenException('Only an org owner can change roles');
     const existing = await this.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId } }, include: { user: true } });
-    if (!existing) throw new NotFoundException('Not a member of this org');
+    if (!existing) throw new NotFoundException(NOT_AN_ORG_MEMBER_MESSAGE);
     if (existing.role === 'owner' && input.role !== 'owner' && (await this.ownerCount(orgId)) <= 1) {
       throw new BadRequestException('The org must keep at least one owner');
     }
@@ -408,7 +409,7 @@ export class OrgsService {
           where: { orgId_userId: { orgId, userId } },
           include: { user: true },
         });
-        if (!target) throw new NotFoundException('Not a member of this org');
+        if (!target) throw new NotFoundException(NOT_AN_ORG_MEMBER_MESSAGE);
         if (target.user.passwordHash || target.user.emailVerifiedAt) {
           throw new BadRequestException('This account has already established its sign-in credential');
         }
@@ -453,7 +454,7 @@ export class OrgsService {
     if ((await this.orgRole(orgId, callerId)) !== 'owner') throw new ForbiddenException('Only an org owner can remove members');
     if (userId === callerId) throw new BadRequestException('You cannot remove yourself from the org');
     const existing = await this.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId } } });
-    if (!existing) throw new NotFoundException('Not a member of this org');
+    if (!existing) throw new NotFoundException(NOT_AN_ORG_MEMBER_MESSAGE);
     if (existing.role === 'owner' && (await this.ownerCount(orgId)) <= 1) {
       throw new BadRequestException('The org must keep at least one owner');
     }
@@ -462,7 +463,7 @@ export class OrgsService {
     await this.guardedOrgStandingWrite(orgId, userId, null, (tx) =>
       tx.orgMembership.delete({ where: { orgId_userId: { orgId, userId } } }).catch((e: unknown) => {
         // another removal of this member committed after the read above: they are gone, answered as the read answers
-        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') throw new NotFoundException('Not a member of this org');
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') throw new NotFoundException(NOT_AN_ORG_MEMBER_MESSAGE);
         throw e;
       }),
     );

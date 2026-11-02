@@ -614,7 +614,8 @@ export async function handOffCorrectionLease(
   const assessment = assessCorrectionLease({
     pullRequest: assessed,
     head,
-    findingHeads: codexFindingHeads(reviewComments, reviews),
+    // Codex 4438607048 — `comments` are the PR's issue comments: a security-only head counts by its marker
+    findingHeads: codexFindingHeads(reviewComments, reviews, comments),
     reason: correctionReasonFor(owed),
     detail: String(owed.description ?? '').replace(/^\s*[a-z]+:\s*/u, ''),
     findingObservedAt: owed.updated_at ?? owed.created_at,
@@ -633,7 +634,7 @@ export async function handOffCorrectionLease(
     // whole assessment is RE-DERIVED here and published only if it comes out
     // identical. A lease key is claimed forever, so a wrong notice is worse than
     // a late one, and anything that moved defers to the next hourly tick.
-    const [freshStatuses, live, freshReviewComments, freshReviews] = await Promise.all([
+    const [freshStatuses, live, freshReviewComments, freshReviews, freshComments] = await Promise.all([
       client.combinedStatus(head),
       client.pullRequest(pullRequest.number),
       // The FINDING HISTORY too: it decides whether a correction is owed at all
@@ -642,6 +643,8 @@ export async function handOffCorrectionLease(
       // every other guard passing.
       client.reviewComments(pullRequest.number),
       client.reviews(pullRequest.number),
+      // and the security-verdict markers that history counts (Codex 4438607048)
+      client.comments(pullRequest.number),
     ]);
     // Eligibility again, on the REFRESHED object. A pull request closed between
     // the open-PR snapshot and this read keeps the same head and body, so
@@ -660,7 +663,7 @@ export async function handOffCorrectionLease(
       ? assessCorrectionLease({
         pullRequest: live,
         head,
-        findingHeads: codexFindingHeads(freshReviewComments, freshReviews),
+        findingHeads: codexFindingHeads(freshReviewComments, freshReviews, freshComments),
         reason: correctionReasonFor(freshOwed),
         detail: String(freshOwed.description ?? '').replace(/^\s*[a-z]+:\s*/u, ''),
         findingObservedAt: freshOwed.updated_at ?? freshOwed.created_at,

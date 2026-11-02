@@ -279,6 +279,60 @@ describe('#1179 R3: taking a file off a visit', () => {
     expect(within(card).queryByTestId('sv-remove-m-v')).toBeNull();
   });
 
+  it('the offer ends when the server\'s count says, whatever the phone\'s clock says (#1239)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let steady = 1_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => steady);
+    // the phone's clock two hours behind: by it, `until` is far off; the server said a minute is left
+    now = NOW - 2 * 60 * 60 * 1000;
+    const slow = voice({ removable: { reasonRequired: false, until: new Date(NOW + 60_000).toISOString(), remainingMs: 60_000, endsAt: steady + 60_000 } });
+    const card = await mount('consultant', CONSULTANT, server(visit({ files: [slow] })).gw);
+    expect(within(card).getByTestId('sv-remove-m-v')).toBeTruthy();
+    steady += 60_001;
+    await act(async () => { vi.advanceTimersByTime(60_100); });
+    expect(within(card).queryByTestId('sv-remove-m-v')).toBeNull();
+  });
+
+  it('a timer that fires before the offer\'s end looks again, and the offer leaves at its end (#1239)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let steady = 1_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => steady);
+    const soon = voice({ removable: { reasonRequired: false, until: new Date(NOW + 60_000).toISOString(), remainingMs: 60_000, endsAt: steady + 60_000 } });
+    const card = await mount('consultant', CONSULTANT, server(visit({ files: [soon] })).gw);
+    // the page slept: its timer fires with half the time still left on the steady clock
+    steady += 30_000;
+    await act(async () => { vi.advanceTimersByTime(60_100); });
+    expect(within(card).getByTestId('sv-remove-m-v')).toBeTruthy();
+    steady += 30_001;
+    await act(async () => { vi.advanceTimersByTime(30_100); });
+    expect(within(card).queryByTestId('sv-remove-m-v')).toBeNull();
+  });
+
+  it('a phone whose steady clock stops while it sleeps still ends the offer by its own clock (gap-check)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.spyOn(performance, 'now').mockReturnValue(1_000);
+    const asleep = voice({ removable: { reasonRequired: false, until: new Date(NOW + 60_000).toISOString(), remainingMs: 60_000, endsAt: 61_000, endsAtWall: NOW + 60_000 } });
+    const card = await mount('consultant', CONSULTANT, server(visit({ files: [asleep] })).gw);
+    expect(within(card).getByTestId('sv-remove-m-v')).toBeTruthy();
+    // the steady clock did not move while the phone slept; the phone's clock did
+    now = NOW + 60_001;
+    await act(async () => { vi.advanceTimersByTime(60_100); });
+    expect(within(card).queryByTestId('sv-remove-m-v')).toBeNull();
+  });
+
+  it('a phone whose clock is ahead keeps the offer for the time the server said is left (#1239)', async () => {
+    let steady = 1_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => steady);
+    // the phone's clock two hours ahead: by it, `until` has passed; the server said ten minutes are left
+    now = NOW + 2 * 60 * 60 * 1000;
+    const fast = voice({ removable: { reasonRequired: false, until: new Date(NOW + 600_000).toISOString(), remainingMs: 600_000, endsAt: steady + 600_000 } });
+    const card = await mount('consultant', CONSULTANT, server(visit({ files: [fast] })).gw);
+    expect(within(card).getByTestId('sv-remove-m-v')).toBeTruthy();
+    steady += 599_000;
+    await click(within(card).getByTestId('sv-remove-m-v'));
+    expect(within(card).getByTestId('sv-remove-yes-m-v')).not.toBeDisabled();
+  });
+
   it('lists each removal line with what it was, in the viewer\'s language', async () => {
     const lines = [
       line({ mediaId: 'm-p', kind: 'photo', removedById: PMC, removedByName: 'Priya Shah', removedByRole: 'pmc', reason: 'Wrong site' }),

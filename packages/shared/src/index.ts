@@ -39,6 +39,8 @@ export * from './contracts/commercial';
 export * from './contracts/brief';
 // #1179 — taking a file off a site visit
 export * from './contracts/site-visits';
+// delete races (S1) — the 404 texts the web reads as "already removed"
+export * from './contracts/orgs';
 // i18n dictionaries
 export * from './i18n/dictionary';
 export * from './i18n/schedule';
