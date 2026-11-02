@@ -15,6 +15,7 @@ import {
 import { classifyCodexState } from './autonomous-review-state.mjs';
 import { capDefersStoredFailure, capFiles, cappedSuccessDetail, ensureTerminalReviewState, EVIDENCE_SNAPSHOT_ATTEMPTS, fileDeferredFindings, finalCodexEvidence, isTerminalReviewStatus, publishBlockingVerdict, publishSettledSuccess, readCodexEvidence, reclassifyCurrentCodexEvidence, reviewAttempt, settleFinalCodexEvidence, SETTLING_DESCRIPTION, unionDeferred } from './autonomous-review-gate.mjs';
 import { pendingFollowUpHeads } from './review-follow-up.mjs';
+import { recordSecurityVerdict, securityVerdictHeads, securityVerdictMarker, SECURITY_VERDICT_MARKER_AUTHOR } from './security-verdict-marker.mjs';
 import { CODEX_RUN_HELD_DETAIL, CODEX_SECURITY_FINDINGS_DETAIL, FOLLOW_UP_RETRY, isRetryableReviewFailureDescription, REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
 // M3c C1 — the gate stamps the run id and records a receipt from the Actions env; in CI that env is the test
@@ -565,8 +566,9 @@ test('Codex 4225790715 — a stored findings failure that the cap now defers no 
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState'), gate.indexOf('async function waitForRequiredChecks'));
   // (G2 — each also turns a 'held' answer into the retryable hold before preserving anything)
-  // (G2 — a 'held' answer hands the head to the ordinary review in both branches, before anything is preserved)
-  assert.match(recovery, /const latchedDeferral = latched \? await capDefersStoredFailure\([\s\S]{0,200}if \(latchedDeferral === 'held'\) return false;\s*if \(latched && !latchedDeferral\)/u);
+  // (G2 — in the stored-failure branch a 'held' answer hands the head to the ordinary review; under a success it
+  // publishes the latched failure, so the success never stays green through the hold: Codex 4438607038)
+  assert.match(recovery, /const latchedDeferral = latched \? await capDefersStoredFailure\([\s\S]{0,500}if \(latched && latchedDeferral !== true\)/u);
   assert.match(recovery, /\} else \{[\s\S]{0,400}const deferral = await capDefersStoredFailure\(client, pullRequest, expectedHead, status\);[\s\S]{0,200}if \(deferral\) return false;/u);
 });
 
@@ -915,7 +917,7 @@ test('G2 — the final read takes Codex\'s record without reactions, and reports
   assert.equal(evidence.state, 'pending');
   assert.ok(!reads.includes('reactions'));
   assert.equal(reads.filter((r) => r !== 'pullRequestFiles').at(-1), 'issueComments');
-  // the snapshot read alone (the convergence and lifecycle paths) still reads no record
+  // the snapshot read alone still reads no record (the convergence and lifecycle readers ask for it: Codex 4438607048)
   reads.length = 0;
   const snapshot = await readCodexEvidence(client, 9);
   assert.equal(snapshot.issueComments, undefined);
@@ -933,6 +935,33 @@ test('G2 gap 1 — recovery of a stored findings failure on a held head hands it
   assert.equal(await ensureTerminalReviewState(client, pr, HEAD, failure, [failure]), false);
   assert.deepEqual(state.statuses, []);
   assert.ok(!state.log.includes('draft:true'));
+});
+
+test('Codex 4438607038 — a tokened success over a latched failure is withdrawn while the same-head run is held', async () => {
+  const rounds = [finding({ head: 'a'.repeat(40), id: 50 }), finding({ head: 'b'.repeat(40), id: 51 })];
+  const pr = { number: 9, html_url: 'u', state: 'open', draft: false, changed_files: 2, body: '<!-- correction-owner: claude -->', head: { sha: HEAD, ref: 'b', repo: { full_name: 'o/r' } }, base: { ref: 'main', repo: { full_name: 'o/r' } } };
+  const { client, state } = fakeGitHub({ comments: [...rounds, finding({ p: 2, id: 52 })], pr });
+  client.issueComments = async () => [stillRunning];
+  const latched = { id: 1, context: 'codex-current-head', state: 'failure', description: 'review: 1 current-head Codex finding' };
+  const success = { id: 2, context: 'codex-current-head', state: 'success', description: 'Codex approved this exact head [wi:none]' };
+  assert.equal(await ensureTerminalReviewState(client, pr, HEAD, success, [success, latched]), true);
+  assert.deepEqual(state.statuses.map((s) => [s.state, s.description]), [['failure', 'review: current-head Codex finding latched during recovery']]);
+  assert.ok(state.log.includes('draft:true'));
+  // the failure it leaves is one the cap's re-judging reads, so once the run ends a later recovery still defers
+  client.issueComments = async () => [doneWithFindings];
+  assert.equal(await capDefersStoredFailure(client, pr, HEAD, state.statuses[0]), true);
+});
+
+test('Codex 4438607043 — past the cap, a security stop carries the deferrable findings; a hold files none', () => {
+  const securityRecord = { ...doneWithFindings, body: doneWithFindings.body.replace('"security_review":{"commit_sha":null,"has_any_findings":null,"has_unresolved_findings":null,"status":null}', `"security_review":{"commit_sha":"${HEAD}","has_any_findings":true,"has_unresolved_findings":true,"status":"completed"}`) };
+  assert.notEqual(securityRecord.body, doneWithFindings.body);
+  const base = { expectedHead: HEAD, readyAt: '2026-10-08T00:00:00Z', deadline: '2026-10-08T01:00:00Z', now: '2026-10-08T00:01:00Z',
+    comments: [finding({ p: 2, id: 70 })], reviews: [], cap: { reached: true, changedLines: changedLinesFromFiles(FILES) } };
+  const security = classifyCodexState({ ...base, issueComments: [securityRecord] });
+  assert.equal(security.state, 'changes_required');
+  assert.equal(security.detail, CODEX_SECURITY_FINDINGS_DETAIL);
+  assert.deepEqual(security.deferred.map((f) => f.id), [70]);
+  assert.equal(classifyCodexState({ ...base, issueComments: [stillRunning] }).deferred, undefined);
 });
 
 test('G2 gap 3 (PROBE-H) — a run that starts while the deferred findings are filed holds the settlement (no success)', async () => {
@@ -972,4 +1001,155 @@ test('G2 gap 2 — security findings settle as a non-retryable finding a correct
   assert.equal(isRetryableReviewFailureDescription(`review: ${CODEX_SECURITY_FINDINGS_DETAIL}`), false);
   assert.equal(correctionReasonFor(status(`review: ${CODEX_SECURITY_FINDINGS_DETAIL}`)), 'review');
   assert.equal(correctionReasonFor(status(`review: ${CODEX_RUN_HELD_DETAIL}`)), null);
+});
+
+// Codex 4438607048 — a security-only head is a finding-bearing head everywhere a head is counted. Codex's record is
+// edited in place, so the gate makes the verdict durable (a workflow-authored marker) and the ONE shared predicate,
+// `codexFindingHeads`, counts the heads its markers name.
+const SEC_HEAD = '5'.repeat(40);
+const COMMENT_HEAD = '6'.repeat(40);
+const markerOf = (head, extra = {}) => ({ id: 900, user: { login: 'github-actions[bot]' }, body: securityVerdictMarker(head), ...extra });
+
+test('Codex 4438607048 — the marker: exact body, the workflow token only, one head however many copies', async () => {
+  const { FOLLOW_UP_RECORD_AUTHOR } = await import('./review-follow-up.mjs');
+  assert.equal(SECURITY_VERDICT_MARKER_AUTHOR, FOLLOW_UP_RECORD_AUTHOR);
+  assert.equal(securityVerdictMarker(SEC_HEAD), `<!-- codex-security-verdict: head-${SEC_HEAD} -->\n${CODEX_SECURITY_FINDINGS_DETAIL}`);
+  assert.throws(() => securityVerdictMarker('abc'), /full head SHA/u);
+  assert.deepEqual(securityVerdictHeads([markerOf(SEC_HEAD), markerOf(SEC_HEAD, { id: 901 })]), [SEC_HEAD], 'a duplicate counts once');
+  // forged: another author (Codex itself, a person, another bot) counts nothing
+  for (const login of [CODEX, 'JagPat', 'cursor[bot]', 'github-actions']) {
+    assert.deepEqual(securityVerdictHeads([markerOf(SEC_HEAD, { user: { login } })]), [], login);
+  }
+  // and only the exact body: no free text around it, no other detail, no short SHA
+  for (const body of [`${securityVerdictMarker(SEC_HEAD)}\n`, `x${securityVerdictMarker(SEC_HEAD)}`, `<!-- codex-security-verdict: head-${SEC_HEAD} -->\nsomething else`,
+    `<!-- codex-security-verdict: head-${SEC_HEAD.slice(0, 7)} -->\n${CODEX_SECURITY_FINDINGS_DETAIL}`]) {
+    assert.deepEqual(securityVerdictHeads([markerOf(SEC_HEAD, { body })]), [], body);
+  }
+});
+
+test('Codex 4438607048 — the writer: read, then create only when absent; a failed read writes nothing', async () => {
+  const created = [];
+  let existing = [];
+  const client = { issueComments: async () => existing, createIssueComment: async (number, body) => { created.push([number, body]); } };
+  assert.equal(await recordSecurityVerdict(client, { number: 9 }, SEC_HEAD), true);
+  assert.deepEqual(created, [[9, securityVerdictMarker(SEC_HEAD)]]);
+  existing = [markerOf(SEC_HEAD)];
+  assert.equal(await recordSecurityVerdict(client, { number: 9 }, SEC_HEAD), false);
+  assert.equal(created.length, 1, 'never a second marker for the same head');
+  // a forged copy is not ours: the gate still writes its own
+  existing = [markerOf(SEC_HEAD, { user: { login: 'JagPat' } })];
+  assert.equal(await recordSecurityVerdict(client, { number: 9 }, SEC_HEAD), true);
+  const broken = { issueComments: async () => { throw new Error('GitHub 502'); }, createIssueComment: async () => { created.push('x'); } };
+  await assert.rejects(recordSecurityVerdict(broken, { number: 9 }, SEC_HEAD), /GitHub 502/u);
+  assert.equal(created.length, 2);
+});
+
+test('Codex 4438607048 — publishing a security verdict writes the marker first; a failed write leaves the retryable failure', async () => {
+  const { client, state } = fakeGitHub({ comments: [] });
+  const markers = [];
+  client.createIssueComment = async (number, body) => { state.log.push('marker'); markers.push({ id: 1, user: { login: 'github-actions[bot]' }, body }); };
+  client.issueComments = async () => markers;
+  await publishBlockingVerdict(client, { number: 9, html_url: 'u' }, HEAD, { description: `review: ${CODEX_SECURITY_FINDINGS_DETAIL}` });
+  assert.deepEqual(securityVerdictHeads(markers), [HEAD]);
+  const order = state.log.filter((entry) => entry === 'marker' || entry.startsWith('status:'));
+  assert.deepEqual(order, ['status:pending', 'marker', 'status:failure']);
+  // another finding's verdict writes none
+  const plain = fakeGitHub({ comments: [] });
+  plain.client.createIssueComment = async () => { throw new Error('no marker for an ordinary finding'); };
+  await publishBlockingVerdict(plain.client, { number: 9, html_url: 'u' }, HEAD, { description: 'review: 1 current-head Codex finding' });
+  // a failed marker write: the head is left on the retryable follow-up failure, never on a pending status
+  const failing = fakeGitHub({ comments: [] });
+  failing.client.issueComments = async () => [];
+  failing.client.createIssueComment = async () => { throw new Error('GitHub 502'); };
+  await assert.rejects(publishBlockingVerdict(failing.client, { number: 9, html_url: 'u' }, HEAD, { description: `review: ${CODEX_SECURITY_FINDINGS_DETAIL}` }), /GitHub 502/u);
+  const last = failing.state.statuses.at(-1);
+  assert.equal(last.state, 'failure');
+  assert.equal(isRetryableReviewFailureDescription(last.description), true);
+});
+
+test('Codex 4438607048 — every finding-head count counts a security-only head (table across the callers)', async () => {
+  const { assessConvergence } = await import('./review-efficiency.mjs');
+  const { assessRestructure, observeReviewLifecycle } = await import('./review-lifecycle.mjs');
+  const { reviewCapState } = await import('./review-cap.mjs');
+  const { enforceReviewConvergence, reportReviewLifecycle } = await import('./autonomous-review-gate.mjs');
+  const comments = [finding({ head: COMMENT_HEAD, id: 801 })];
+  const counts = {
+    'review cap (findingRoundHeads)': (issueComments) => reviewCapState({ expectedHead: HEAD, comments, reviews: [], files: FILES, issueComments }).priorRounds,
+    'convergence (assessConvergence)': (issueComments) => assessConvergence({ comments, reviews: [], headMessage: 'fix: x', changedFiles: [], issueComments }).findingHeadCount,
+    'lifecycle (assessRestructure)': (issueComments) => assessRestructure({ comments, reviews: [], pullRequestFiles: [], body: '', issueComments }).findingHeadCount,
+    'lifecycle (observeReviewLifecycle)': (issueComments) => observeReviewLifecycle({ comments, reviews: [], issueComments }).findingHeadCount,
+    'gate convergence (enforceReviewConvergence)': async (issueComments) => {
+      const pr = { number: 9, html_url: 'u', state: 'open', draft: false, changed_files: 2, body: '', head: { sha: HEAD, ref: 'b', repo: { full_name: 'o/r' } }, base: { ref: 'main', repo: { full_name: 'o/r' } } };
+      const { client } = fakeGitHub({ comments, pr });
+      client.issueComments = async () => issueComments;
+      return (await enforceReviewConvergence(client, pr, HEAD)).findingHeadCount;
+    },
+    'gate lifecycle (reportReviewLifecycle)': async (issueComments) => {
+      const { client } = fakeGitHub({ comments });
+      client.issueComments = async () => issueComments;
+      return (await reportReviewLifecycle(client, { number: 9 }, () => {})).findingHeadCount;
+    },
+  };
+  for (const [caller, count] of Object.entries(counts)) {
+    assert.equal(await count([]), 1, `${caller}: the comment head alone`);
+    assert.equal(await count([markerOf(SEC_HEAD)]), 2, `${caller}: the security-only head counts`);
+    assert.equal(await count([markerOf(SEC_HEAD, { user: { login: 'JagPat' } })]), 1, `${caller}: a forged marker counts nothing`);
+    assert.equal(await count([markerOf(SEC_HEAD), markerOf(SEC_HEAD, { id: 901 })]), 2, `${caller}: a duplicate counts once`);
+  }
+  // and no production caller can count without the markers: every call of the predicate passes the issue
+  // comments (the handoff's two lease reads, the cap's round heads, the gate and the lifecycle readers)
+  const { readFile } = await import('node:fs/promises');
+  const files = ['autonomous-review-gate.mjs', 'autonomous-handoff.mjs', 'review-cap.mjs', 'review-efficiency.mjs', 'review-lifecycle.mjs'];
+  // the arguments of each call, split at top-level commas (balanced brackets)
+  const callArgs = (source, at) => {
+    const args = [];
+    let depth = 0;
+    let current = '';
+    for (let i = at; i < source.length; i += 1) {
+      const ch = source[i];
+      if ('([{'.includes(ch)) depth += 1;
+      if (')]}'.includes(ch)) {
+        if (depth === 0) { if (current.trim()) args.push(current.trim()); return args; }
+        depth -= 1;
+      }
+      if (ch === ',' && depth === 0) { args.push(current.trim()); current = ''; } else current += ch;
+    }
+    throw new Error('unbalanced call');
+  };
+  let calls = 0;
+  for (const file of files) {
+    const source = await readFile(new URL(`./${file}`, import.meta.url), 'utf8');
+    for (const match of source.matchAll(/(?<![\w.])(codexFindingHeads|findingRoundHeads|reviewCapState|observeReviewLifecycle|assessRestructure|assessConvergence)\(/gu)) {
+      const line = source.slice(source.lastIndexOf('\n', match.index) + 1, match.index);
+      if (/function\s*$|\/\/|\*/u.test(line)) continue;
+      const args = callArgs(source, match.index + match[0].length);
+      if (match[1] === 'codexFindingHeads') {
+        calls += 1;
+        assert.equal(args.length, 3, `${file}: codexFindingHeads(${args.join(', ')}) passes the issue comments`);
+      } else if (match[1] === 'findingRoundHeads') {
+        assert.equal(args.length, 3, `${file}: findingRoundHeads(${args.join(', ')}) passes the issue comments`);
+      } else {
+        assert.match(args.join(','), /issueComments/u, `${file}: ${match[1]}(...) passes the issue comments`);
+      }
+    }
+  }
+  assert.equal(calls, 7, 'the seven production calls of the predicate (gate convergence, handoff x2, cap, lifecycle x2, convergence)');
+});
+
+test('Codex 4438607048 — the gate\'s cap reads count a security-only head as a round (final evidence and the guard)', async () => {
+  const { guardAgainstCurrentHeadFinding } = await import('./autonomous-review-gate.mjs');
+  // one earlier comment round plus one security-only head is the cap (REVIEW_ROUND_CAP rounds before this head)
+  const rounds = [finding({ head: COMMENT_HEAD, id: 50 })];
+  const failure = { context: 'codex-current-head', state: 'failure', description: 'review: 1 current-head Codex finding' };
+  const client = (issueComments) => ({ reviews: async () => [], reviewComments: async () => [...rounds, finding({ p: 2, id: 52 })], pullRequestFiles: async () => FILES, issueComments: async () => issueComments });
+  assert.equal(await capDefersStoredFailure(client([markerOf(SEC_HEAD)]), { number: 9, changed_files: 2 }, HEAD, failure), true, 'past the cap: deferred');
+  assert.equal(await capDefersStoredFailure(client([]), { number: 9, changed_files: 2 }, HEAD, failure), false, 'under the cap without the marker');
+  // the guard reads the markers itself (its snapshot reads no record)
+  const pr = { number: 9, html_url: 'u', state: 'open', draft: false, changed_files: 2, body: '<!-- correction-owner: claude -->', head: { sha: HEAD, ref: 'b', repo: { full_name: 'o/r' } }, base: { ref: 'main', repo: { full_name: 'o/r' } } };
+  const capped = fakeGitHub({ comments: [...rounds, finding({ p: 2, id: 53 })], pr });
+  capped.client.issueComments = async () => [markerOf(SEC_HEAD)];
+  assert.equal(await guardAgainstCurrentHeadFinding(capped.client, pr, HEAD, null), null, 'past the cap a P2 is no blocker');
+  const under = fakeGitHub({ comments: [...rounds, finding({ p: 2, id: 54 })], pr });
+  under.client.issueComments = async () => [];
+  assert.notEqual(await guardAgainstCurrentHeadFinding(under.client, pr, HEAD, null), null, 'under the cap it blocks');
 });

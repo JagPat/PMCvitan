@@ -278,6 +278,9 @@ export function classifyCodexState({
     // incomplete evidence stays pending or blocks) exactly as before the cap
     if (deferred.length > 0) {
       const stopped = recordStops();
+      // Codex 4438607043 — a security stop carries the deferrable findings beside it, as a blocker does (Codex
+      // 4220861349): once its correction moves the head they are no longer current-head evidence. A hold files nothing
+      if (stopped?.state === 'changes_required') return { ...stopped, deferred };
       if (stopped) return stopped;
       const count = deferred.length;
       return {

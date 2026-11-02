@@ -311,15 +311,30 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   // 2B2: the exact head commit carries a valid terminal Correction-Owner trailer by default, so the
   // SHA merge-authority verdict is `eligible`. `merge` overrides it to exercise the ownership gate.
   const eligibleCommit = { commit: { message: 'fix: something\n\nCorrection-Owner: claude\n' } };
-  const makeClient = ({ pulls = [pull, pull], statuses = [{ context: 'codex-current-head', state: 'success', description: 'review: clean [wi:none]' }], runs = checks, commit = eligibleCommit } = {}) => ({
+  const makeClient = ({ pulls = [pull, pull], statuses = [{ context: 'codex-current-head', state: 'success', description: 'review: clean [wi:none]' }], runs = checks, commit = eligibleCommit, records = [] } = {}) => ({
     repository: 'JagPat/PMCvitan',
     async pullRequest() { return pulls.shift() ?? pull; },
     async statuses() { return statuses; },
     async checkRuns() { return runs; },
     async commit() { return commit; },
     async paginated() { throw new Error('Merge must not fetch human authorization comments'); },
+    async issueComments() { return records; },
   });
   assert.equal((await authorizeExactHeadMerge(makeClient(), pull, head)).allowed, true);
+  // Codex 4438607053 — Codex's review-state record is read last: a same-head run that started after the settlement, or
+  // security findings on this head, refuse the green; a completed record (findings the gate already judged) does not
+  const record = (code, security = { commit_sha: null, has_any_findings: null, has_unresolved_findings: null, status: null }) => ({
+    user: { login: 'chatgpt-codex-connector[bot]' }, created_at: '2026-10-08T00:00:40Z',
+    body: `<!-- codex-review-state:v1 ${JSON.stringify({ code_review: { commit_sha: head, ...code }, security_review: security })} -->` });
+  const running = record({ has_any_findings: null, has_unresolved_findings: null, status: 'running' });
+  const securityFindings = record({ has_any_findings: false, has_unresolved_findings: false, status: 'completed' },
+    { commit_sha: head, has_any_findings: true, has_unresolved_findings: true, status: 'completed' });
+  const completed = record({ has_any_findings: true, has_unresolved_findings: true, status: 'completed' });
+  assert.equal((await authorizeExactHeadMerge(makeClient({ records: [running] }), pull, head)).state, 'codex_review_not_settled');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ records: [securityFindings] }), pull, head)).state, 'codex_review_not_settled');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ records: [completed] }), pull, head)).allowed, true);
+  const unreadable = { ...makeClient(), async issueComments() { throw new Error('GitHub 502'); } };
+  await assert.rejects(authorizeExactHeadMerge(unreadable, pull, head), /GitHub 502/u);
   // 2B2: the merge reads ONE SHA merge-authority verdict and refuses a head whose trailer is not a
   // merge-eligible owner — even with the required status green and all checks passing. A candidate
   // owner, a readable-but-invalid trailer, and an unreadable/absent commit each fail closed.
