@@ -1175,6 +1175,9 @@ model Media {
   sizeBytes                  Int                  @default(0)
   // #904: SHA-256 of the decoded bytes, 64 lowercase hex (20280202000000's CHECK); NULL on a row stored before it
   contentSha256              String?
+  // #1283: the file this row was uploaded as a copy of, as the request named it; no FK, so it outlives the original's
+  // removal; fixed at the insert (20280204000000's trigger); NULL for a plain upload or a row stored before it
+  uploadSourceMediaId        String?
   geoLat                     Float?
   geoLng                     Float?
   takenAt                    String? // display timestamp, e.g. "03 Jul 2026 · 9:12 AM"
