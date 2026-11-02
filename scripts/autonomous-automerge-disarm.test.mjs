@@ -316,7 +316,7 @@ test('G3a (Codex 4440931056) — every open pull request at this commit with a m
   let siblingArmed = true;
   const client = gateClient({ live: () => (siblingArmed ? sibling({ auto_merge: { enabled_at: 'x' } }) : sibling()) });
   client.pullRequest = async (number) => { client.log.push(['read', number]); return number === 900 ? pr() : (siblingArmed ? queued() : sibling()); };
-  client.openPullRequestsAt = async () => [pr(), queued()];
+  client.openPullRequestsAt = async () => [pr(), siblingArmed ? queued() : sibling()];
   client.disableAutoMerge = async (pull) => { client.log.push(['disable', pull.number]); if (pull.number === 901) siblingArmed = false; };
   await publishDisarmedSuccess(client, pr(), HEAD, 'review: clean');
   const kinds = client.log.map(([k, n, state]) => (k === 'status' ? `status:${state}` : k === 'disable' ? `disable:${n}` : k));
@@ -353,4 +353,40 @@ test('G3a (Codex 4441198800) — a failure after the clean success replaces the 
     assert.match(client.log.find(([k]) => k === 'sticky')?.[1] ?? '', /review_retry/u, fail);
     assert.equal(client.log.some(([k]) => k === 'arm'), false, fail);
   }
+});
+
+// Codex 4441198763 on #1295 — a sibling queued after the disarm's own list would merge on this success before its own
+// authorization: the commit's open pull requests are listed again right before the success, and any merge queued there
+// withholds it (the retryable hold, as a disarm that fails)
+test('G3a (Codex 4441198763) — a merge queued at this commit after the disarm withholds the success: the retryable hold', async () => {
+  const sibling = (extra = {}) => pr(HEAD, { number: 901, node_id: 'PR_901', head: { sha: HEAD, ref: 'claude/other', repo }, ...extra });
+  const queued = () => sibling({ auto_merge: { enabled_at: '2026-11-02T00:00:00Z', merge_method: 'squash' } });
+  const run = async (lists) => {
+    const client = gateClient();
+    let n = 0;
+    client.openPullRequestsAt = async (sha) => { client.log.push(['list', sha]); const next = lists[Math.min(n, lists.length - 1)]; n += 1; return next(); };
+    return client;
+  };
+  // the disarm's list is clean; a sibling (or this PR) is queued by the re-list; or the re-list cannot be read
+  for (const [name, second] of [
+    ['sibling queued', () => [pr(), queued()]],
+    ['this PR queued', () => [armed(), sibling()]],
+    ['re-list unreadable', () => { throw new Error('GitHub 502'); }],
+  ]) {
+    const client = await run([() => [pr(), sibling()], second]);
+    await assert.rejects(publishDisarmedSuccess(client, pr(), HEAD, 'review: clean'), AutoMergeDisarmFailed, name);
+    const statuses = client.log.filter(([k]) => k === 'status');
+    assert.equal(statuses.some(([, , state]) => state === 'success'), false, `${name}: nothing green`);
+    assert.deepEqual(statuses.at(-1).slice(2), ['failure', `review: ${CODEX_AUTOMERGE_DISARM_FAILED}`], name);
+    assert.match(client.log.find(([k]) => k === 'sticky')?.[1] ?? '', /review_retry/u, name);
+    assert.equal(client.log.filter(([k]) => k === 'list').length, 2, `${name}: listed twice`);
+  }
+  // a clean re-list: the one success follows it, and nothing is written between them
+  const clean = await run([() => [pr(), sibling()], () => [pr(), sibling()]]);
+  await publishDisarmedSuccess(clean, pr(), HEAD, 'review: clean');
+  const kinds = clean.log.map(([k, , state]) => (k === 'status' ? `status:${state}` : k));
+  const lastList = kinds.lastIndexOf('list');
+  const green = kinds.indexOf('status:success');
+  assert.ok(lastList >= 0 && green > lastList, kinds.join(','));
+  assert.equal(kinds.slice(lastList + 1, green).some((k) => k.startsWith('status') || k === 'disable'), false, kinds.join(','));
 });

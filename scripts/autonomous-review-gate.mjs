@@ -1620,6 +1620,23 @@ export async function disarmQueuedAutoMerge(client, number, expectedHead) {
 }
 
 /**
+ * Codex 4441198763 on #1295 — the last read before the success: every open pull request at this commit is listed again
+ * and none may have a merge queued. One armed after the disarm's own list (a person queuing it, or its branch moving
+ * onto this commit with a merge queued) would merge on this success before its own authorization read its record, so
+ * the success is withheld and the retryable hold is written instead. No GitHub API makes this check and the status
+ * write one step; the gap left between them is G3a's residual, ended by 2A3 (the merge-time re-check).
+ */
+async function confirmNoQueuedMergeAt(client, expectedHead) {
+  let open;
+  try {
+    open = await client.openPullRequestsAt(expectedHead);
+  } catch (error) {
+    throw new AutoMergeDisarmFailed(error);
+  }
+  if (open.some((pull) => pull.auto_merge)) throw new AutoMergeDisarmFailed();
+}
+
+/**
  * G3a (gap-check F4) — the ONE step both success writers take: disarm, then the success. A disarm that is not confirmed
  * takes the retryable hold and rethrows; a head no longer current returns null and writes nothing. Returns the live
  * pull request the success was written against.
@@ -1628,6 +1645,7 @@ export async function publishDisarmedSuccess(client, pullRequest, expectedHead, 
   let live;
   try {
     live = await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead);
+    if (live) await confirmNoQueuedMergeAt(client, expectedHead);
   } catch (error) {
     if (!(error instanceof AutoMergeDisarmFailed)) throw error;
     await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
