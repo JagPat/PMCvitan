@@ -17,7 +17,13 @@ import { CODEX_SHARED_COMMIT_DETAIL, isRetryableReviewFailureDescription } from 
 const HEAD = 'e'.repeat(40);
 const SHARED = `review: ${CODEX_SHARED_COMMIT_DETAIL}`;
 const repo = { full_name: 'JagPat/PMCvitan' };
-const VALID_BODY = '<!-- review-size: standard -->\n<!-- correction-owner: claude -->';
+const VALID_BODY = [
+  '<!-- review-size: standard -->', '<!-- correction-owner: claude -->', '',
+  '- [x] `concurrency-serialization` — n/a', '- [x] `old-release-migration-compatibility` — n/a',
+  '- [x] `trigger-alternate-writers` — n/a', '- [x] `authorization-tenancy` — n/a', '- [x] `ci-reproduce-first` — n/a', '',
+  'Replaces: none',
+].join('\n');
+const tokenedSuccess = () => ({ id: 6100, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head [wi:none]' });
 const pullAt = (number, extra = {}) => ({
   number, node_id: `PR_${number}`, state: 'open', draft: false, additions: 1, deletions: 0, changed_files: 1,
   auto_merge: null, body: VALID_BODY,
@@ -109,7 +115,8 @@ test('2A3a — two open PRs at one commit with different body verdicts: each get
     // a body the scope would refuse (no size marker, no owner marker)
     [611, pullAt(611, { body: 'no markers here', auto_merge: queued })],
   ]);
-  const statuses = [];
+  // the commit already carries a tokened green (main armed or merged PR 610 on it, whatever 611's body says)
+  const statuses = [tokenedSuccess()];
   const a = await runGate({ number: 610, pulls, statuses });
   const b = await runGate({ number: 611, pulls, statuses });
   for (const [name, result, other] of [['valid body', a, 611], ['defective body', b, 610]]) {
@@ -124,11 +131,13 @@ test('2A3a — two open PRs at one commit with different body verdicts: each get
     const sticky = result.log.filter(([k]) => k === 'sticky').at(-1);
     assert.match(sticky[2], /review_retry/u, name);
     assert.match(sticky[2], new RegExp(`#${other}\\b`, 'u'), `${name}: the sticky names the other PR`);
+    assert.doesNotMatch(sticky[2], new RegExp(`head of[^.]*#${other === 611 ? 610 : 611}\\b`, 'u'), `${name}: and not itself`);
     assert.doesNotMatch(sticky[2], /Correction owner|changes_required/u, `${name}: no correction is asked of anyone`);
   }
   // every queued merge at the commit was disarmed by the first run, this PR first
   assert.deepEqual(a.log.filter(([k]) => k === 'disable').map(([, n]) => n), [610, 611]);
-  assert.equal(statuses.some((s) => s.context === 'codex-current-head' && s.state === 'success'), false, 'never green');
+  assert.equal(statuses.filter((s) => s.context === 'codex-current-head').at(0).state, 'failure', 'the green is replaced');
+  assert.equal(statuses.filter((s) => s.context === 'codex-current-head' && s.state === 'success').length, 1, 'no new green');
   assert.equal(isRetryableReviewFailureDescription(SHARED), true, 'the refusal is retryable: the watchdog asks again');
   assert.deepEqual([...a.log, ...b.log].filter(([k]) => String(k).startsWith('unstubbed')), []);
 });
@@ -148,10 +157,13 @@ test('2A3a — once the other PR closes, the re-judge goes on to this PR\'s own 
 // The relabel guard (a body edit) writes a body-derived verdict only while this PR is alone at its head.
 test('2A3a — the relabel guard writes no body verdict at a shared commit: the shared-commit refusal instead', async () => {
   const candidate = '<!-- review-size: standard -->\n<!-- correction-owner: codex -->';
-  const pulls = new Map([[610, pullAt(610, { body: candidate })], [611, pullAt(611)]]);
+  const pulls = new Map([[610, pullAt(610, { body: candidate })], [611, pullAt(611, { auto_merge: queued })]]);
   const statuses = [];
   const guarded = await runGate({ number: 610, pulls, statuses, mode: 'relabel-guard', trigger: 'relabel' });
   assert.equal(guarded.error, null);
+  // no CI-triggered disarm ran on this path: the refusal itself disarms the sibling's queued merge
+  assert.deepEqual(guarded.log.filter(([k]) => k === 'disable').map(([, n]) => n), [611]);
+  assert.equal(pulls.get(611).auto_merge, null);
   assert.deepEqual(reviewStatuses(guarded.log).filter(([, state]) => state !== 'pending').map(([, s, d]) => [s, d]), [['failure', SHARED]]);
   assert.equal(guarded.log.some(([k]) => k === 'scope-read'), false);
 });

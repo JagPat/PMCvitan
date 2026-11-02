@@ -106,6 +106,14 @@ request holds the ask for every open pull request at that commit. One still
 pending past the same four-hour limit lost its run (a lost runner, or a pull
 request that moved or closed before its run read it) and is asked again. The
 watchdog reads every page of the combined status.
+One open pull request per commit: while more than one open pull request has the
+same head, none of them is green. The gate disarms every queued merge at that
+commit and writes the retryable `review: commit shared by more than one open pull
+request`, which is true of the commit itself. Each pull request's sticky names the
+others. Nobody owes a correction, and the watchdog routes none on a shared head.
+The watchdog asks the gate again (at most once per tick and pull request), and
+once only one open pull request has the head, its re-judge goes on to its own
+verdict. To clear it, close all but one, or push a distinct commit.
 Before publishing a new pending status or changing readiness, the owner checks live
 current-head Codex reviews and inline comments. A finding that arrived after a
 timeout is republished as the required failure and requires a new SHA; recovery
