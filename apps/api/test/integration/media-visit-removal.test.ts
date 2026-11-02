@@ -116,7 +116,7 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
     const id = await voice(consultantToken);
     const key = (await t.prisma.media.findUniqueOrThrow({ where: { id }, select: { storageKey: true } })).storageKey;
     const offered = (await visit(visitId, consultantToken)).files.find((x: { mediaId: string }) => x.mediaId === id);
-    expect(offered.removable).toEqual({ reasonRequired: false, until: expect.any(String) });
+    expect(offered.removable).toEqual({ reasonRequired: false, until: expect.any(String), remainingMs: expect.any(Number) });
     const res = await removeIt(id, consultantToken);
     expect(res.status, res.text).toBe(200);
     expect(res.body).toEqual({ ok: true });
@@ -180,7 +180,7 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
   it('the PMC removes anyone\'s file with a reason, after the hour too; without one, or with a blank one, it is refused', async () => {
     const id = await voice(consultantToken);
     await backdate(id);
-    expect((await visit()).files.find((x: { mediaId: string }) => x.mediaId === id).removable).toEqual({ reasonRequired: true, until: null });
+    expect((await visit()).files.find((x: { mediaId: string }) => x.mediaId === id).removable).toEqual({ reasonRequired: true, until: null, remainingMs: null });
     const none = await removeIt(id);
     expect(none.status).toBe(400);
     expect(none.body.message).toMatch(/Say why/);
@@ -407,7 +407,7 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
       await t.prisma.activity.deleteMany({ where: { id: activityId } });
     }
     // once nothing cites it, it is offered again
-    expect((await visit()).files.find((x: { mediaId: string }) => x.mediaId === id).removable).toEqual({ reasonRequired: false, until: expect.any(String) });
+    expect((await visit()).files.find((x: { mediaId: string }) => x.mediaId === id).removable).toEqual({ reasonRequired: false, until: expect.any(String), remainingMs: expect.any(Number) });
   });
 
   it('the offer judges the hour on the database\'s clock, as the removal does, not the API\'s (Codex 4397416735)', async () => {
@@ -424,5 +424,23 @@ describe('#1179 R2 — removing a file from a site visit (live PG)', () => {
     }
     expect(offer).toBeNull();
     expect((await removeIt(id, consultantToken)).status).toBe(403);
+  });
+
+  it('the offer says how long it has left on the database\'s clock, so a phone whose clock is off ends it in time (#1239)', async () => {
+    const id = await voice(consultantToken);
+    // the API's clock half an hour behind: the time left is still measured from the database's now, not the API's
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 30 * 60 * 1000);
+    let offer: { until: string; remainingMs: number };
+    try {
+      offer = (await visit(visitId, consultantToken)).files.find((x: { mediaId: string }) => x.mediaId === id).removable;
+    } finally {
+      clock.mockRestore();
+    }
+    const [{ now }] = await t.prisma.$queryRaw<Array<{ now: Date }>>`SELECT site_visits_now() AS "now"`;
+    // the time left ends at `until` on the database's clock (the read came a moment before this one)
+    expect(offer.remainingMs).toBeGreaterThan(0);
+    expect(offer.remainingMs).toBeLessThanOrEqual(60 * 60 * 1000);
+    expect(Date.parse(offer.until) - now.getTime()).toBeLessThanOrEqual(offer.remainingMs);
+    expect(Date.parse(offer.until) - now.getTime()).toBeGreaterThan(offer.remainingMs - 60_000);
   });
 });

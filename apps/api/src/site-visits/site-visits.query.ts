@@ -88,8 +88,10 @@ export interface SiteVisitFileDto {
   addedAt: string;
   /** #1179 — whether the viewer may remove this file now, as the server's rule reads at this read: the PMC always (a
    *  reason needed unless it is their own within the hour), the person who added it until `until` while the visit is
-   *  open (not ended or closed). Null when the viewer may not. The removal asks again and is the authority. */
-  removable: { reasonRequired: boolean; until: string | null } | null;
+   *  open (not ended or closed). Null when the viewer may not. The removal asks again and is the authority.
+   *  `remainingMs` (#1239) is how long from this read until `until`, on the same clock, so a phone whose own clock is
+   *  off still ends the offer when the server would; null when `until` is. */
+  removable: { reasonRequired: boolean; until: string | null; remainingMs: number | null } | null;
 }
 
 export interface SiteVisitPlaceDto {
@@ -148,8 +150,9 @@ function removableBy(
   // inclusive at the hour, as the server judges it (`addedAt + 1 hour >= now` on the database's clock)
   const ownInHour = addedById === viewer.id && now <= until;
   // the PMC's own file within the hour: no reason until `until`, then a reason
-  if (viewer.role === 'pmc') return { reasonRequired: !ownInHour, until: ownInHour ? new Date(until).toISOString() : null };
-  if (ownInHour && status === 'open') return { reasonRequired: false, until: new Date(until).toISOString() };
+  const ends = { until: new Date(until).toISOString(), remainingMs: until - now };
+  if (viewer.role === 'pmc') return { reasonRequired: !ownInHour, ...(ownInHour ? ends : { until: null, remainingMs: null }) };
+  if (ownInHour && status === 'open') return { reasonRequired: false, ...ends };
   return null;
 }
 
