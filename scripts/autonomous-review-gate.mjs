@@ -26,6 +26,12 @@ import {
   CODEX_AUTOMERGE_DISARM_FAILED,
   CODEX_AUTOMERGE_REARM_FAILED,
   CODEX_SECURITY_FINDINGS_DETAIL,
+  REARM_ATTEMPT_FAILED,
+  REARM_CONSUMED_OUTCOME,
+  REARM_REQUEST_SUPERSEDED,
+  REARM_SETTLEMENTS,
+  rearmRequestContext,
+  rearmRequestDescription,
 } from './review-policy.mjs';
 export {
   requiredChecksForPullRequest,
@@ -397,7 +403,13 @@ function latestTerminalReviewStatus(statuses) {
     status.context === STATUS_CONTEXT && isTerminalReviewStatus(status)) ?? null;
 }
 
-export function pendingRecoveryRequest(statuses) {
+/**
+ * The newest pending recovery request on this head. G3b (#1289 round 3, Codex 4440445763) — a re-arm request names its
+ * pull request (`rearmRequestContext`); it is this run's only when `pullNumber` is that pull request, so a request for
+ * another open PR at the same commit is never adopted, settled or superseded here. Without `pullNumber` only a failure's
+ * request (which names no pull request) is read.
+ */
+export function pendingRecoveryRequest(statuses, pullNumber = null) {
   const latestByContext = new Map();
   for (const status of statuses) {
     if (
@@ -410,6 +422,15 @@ export function pendingRecoveryRequest(statuses) {
 
   let newestRequest = null;
   for (const status of latestByContext.values()) {
+    const scoped = /^([0-9]+)\/pr-([0-9]+)$/u.exec(status.context.slice(RECOVERY_CONTEXT_PREFIX.length));
+    if (scoped) {
+      if (pullNumber === null || String(pullNumber) !== scoped[2]) continue;
+      if (status.description !== rearmRequestDescription(scoped[1], scoped[2])) continue;
+      if (!newestRequest || BigInt(scoped[1]) > BigInt(newestRequest.terminalStatusId)) {
+        newestRequest = { status, terminalStatusId: scoped[1] };
+      }
+      continue;
+    }
     const contextToken = status.context.slice(RECOVERY_CONTEXT_PREFIX.length);
     const descriptionMatch = /^recovery: requested terminal status ([0-9]+)$/u
       .exec(status.description ?? '');
@@ -439,6 +460,16 @@ export async function persistRecoveryRequest(
   pullRequest,
   authorizedStatus,
 ) {
+  // G3b (Codex 4440445763) — a re-arm (the request names a success) is this pull request's alone
+  if (authorizedStatus.state === 'success') {
+    return client.setStatus(
+      expectedHead,
+      'pending',
+      rearmRequestDescription(authorizedStatus.id, pullRequest.number),
+      pullRequest.html_url,
+      rearmRequestContext(authorizedStatus.id, pullRequest.number),
+    );
+  }
   return client.setStatus(
     expectedHead,
     'pending',
@@ -481,15 +512,34 @@ export function isRetryableTerminalReviewFailure(status) {
   return isRetryableReviewFailureDescription(status.description);
 }
 
+/**
+ * G3b — is `requestedStatusId` this head's NEWEST `codex-current-head` status, and a success carrying an approval token?
+ * A dispatch naming such a success is the watchdog's re-arm hint (`gateRearmStatus`): the dispatched run re-reads the
+ * head and its statuses itself, re-judges from the record, and re-arms only through `completeReviewedPullRequest`. A
+ * stale id, another head's id, an untokened success or a success beneath a newer status is not this.
+ */
+export function newestTokenedSuccess(statuses, requestedStatusId) {
+  if (requestedStatusId === null || requestedStatusId === undefined || requestedStatusId === '') return null;
+  const newest = statuses.find((status) => status.context === STATUS_CONTEXT);
+  if (newest?.state !== 'success' || !parseApprovalToken(newest.description)) return null;
+  return String(newest.id) === String(requestedStatusId) ? newest : null;
+}
+
 export function authorizeRecoveryDispatch(statuses, requestedStatusId) {
   // A newer SHA-immutable ownership hold (candidate OR a head-remedy inconsistency) supersedes any
   // older retryable status: hold the head, authorize no recovery. Restricting this to candidate holds
   // let an older retryable status beneath a newer invalid-trailer hold be re-selected for dispatch.
   if (immutableOwnershipHoldIsNewestReview(statuses)) return null;
-  if (persistentReviewFailure(statuses)) return null;
   const latestReviewStatus = statuses.find(
     (status) => status.context === STATUS_CONTEXT,
   );
+  // G3b — the head's newest status is a tokened success named exactly: the re-arm hint (`newestTokenedSuccess`). Any
+  // other success authorizes nothing, as before. It is judged before the persistent-failure guard (gap-check F2c on
+  // #1289): an older non-retryable failure beneath a newer success (a finding the cap later deferred) would otherwise
+  // refuse the hint, and the dispatched run re-judges that latch itself (`ensureTerminalReviewState` reads it through
+  // `capDefersStoredFailure`), as every run on that head does.
+  if (latestReviewStatus?.state === 'success') return newestTokenedSuccess(statuses, requestedStatusId);
+  if (persistentReviewFailure(statuses)) return null;
   if (isReviewPendingStatus(latestReviewStatus)) {
     if (String(latestReviewStatus.id) === String(requestedStatusId)) {
       return latestReviewStatus;
@@ -889,9 +939,10 @@ export class GitHubClient {
     return { requiredReplacements, replacementPullRequests: pullRequests };
   }
 
+  // #1307 audit — every page, like every other list this client reads
   reactions(number) {
-    return this.request(
-      `/repos/${this.repository}/issues/${number}/reactions?per_page=100`,
+    return this.paginated(
+      `/repos/${this.repository}/issues/${number}/reactions`,
     );
   }
 
@@ -1083,10 +1134,12 @@ export class GitHubClient {
   }
 
   async updateStickyComment(number, body) {
-    const comments = await this.request(
-      `/repos/${this.repository}/issues/${number}/comments?per_page=100`,
-    );
-    const existing = comments.find(
+    // #1307 audit — every page: on a pull request with more than a hundred comments the sticky one is still found and
+    // edited, never posted a second time
+    // the newest copy (#1307 gap-check F3): a PR that passed a hundred comments before its first sticky one may carry
+    // several left by the old first-page search, and the newest is the one a reader sees first
+    const comments = await this.issueComments(number);
+    const existing = comments.findLast(
       (comment) =>
         comment.user?.login === 'github-actions[bot]' &&
         comment.body?.includes(COMMENT_MARKER),
@@ -1565,7 +1618,18 @@ async function mergeOrArmAuthorizedHead(client, pullRequest, expectedHead, verdi
       });
       return { outcome: 'review_refused', pullRequest };
     }
-    return { outcome: 'held_for_gates', pullRequest };
+    // G3b (#1289 round 2, Codex 4440043724; audit) — the head, base or readiness moved between the merge's reads, or
+    // the PR is a draft: a race or a hold no gate event ends (a base push and a draft marked ready wake no run on this
+    // head), so a re-arm that ends here is asked again. Every other hold is a gate whose own event wakes the gate
+    // Codex 4444444810: a candidate marker in the mutable body is the same kind of hold (a body edit restoring it
+    // wakes no run on this head), so it is asked again too; an ineligible trailer waits on a push
+    return {
+      outcome: authorization.state === 'changed_during_validation' || authorization.state === 'draft'
+        || (authorization.state === 'ownership_not_eligible' && authorization.bodyHold)
+        ? 'held_changed'
+        : 'held_for_gates',
+      pullRequest,
+    };
   }
   pullRequest = authorization.pullRequest;
   const direct = await client.mergeExactHead(
@@ -1627,7 +1691,7 @@ export class AutoMergeDisarmFailed extends Error {
  * still shows a queued auto-merge. Its callers' settlement has already written the settling pending status, which
  * nothing resumes, so every failure here must take the retryable hold.
  */
-export async function disarmQueuedAutoMerge(client, number, expectedHead) {
+export async function disarmQueuedAutoMerge(client, number, expectedHead, observed = {}) {
   try {
     let live = await refreshCurrentHead(client, number, expectedHead);
     if (!live) return null;
@@ -1639,9 +1703,14 @@ export async function disarmQueuedAutoMerge(client, number, expectedHead) {
       if (!pull.auto_merge) continue;
       await client.disableAutoMerge(pull);
       const after = await client.pullRequest(pull.number);
+      // Codex 4445107594 — every PR whose queued merge this disarm disabled, siblings too, so each one's consumed
+      // re-arm settlement can be lifted (read by disarmBeforeRun)
+      (observed.disabled ??= []).push(pull);
       if (pull.number === number) {
         if (!isCurrentReviewUnit(after, expectedHead)) return null;
         live = after;
+        // this PR's own queued merge was found on the live read and disabled (read by disarmBeforeRun)
+        observed.disabledThis = true;
       }
       // a sibling that moved off this commit or closed no longer consumes it
       if (after.auto_merge && after.state === 'open' && after.head?.sha === expectedHead) throw new AutoMergeDisarmFailed();
@@ -1780,7 +1849,9 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   // green status left on a head whose trailer is candidate/invalid/unreadable never merges.
   const mergeVerdict = verdict ?? await readShaMergeVerdict(client, expectedHead);
   if (!mergeVerdict?.mergeEligible || candidateBodyHold(live, mergeVerdict)) {
-    return { allowed: false, state: 'ownership_not_eligible' };
+    // G3b (Codex 4444444810) — `bodyHold`: the trailer is eligible and only the mutable body holds it, a hold a body
+    // edit can lift without waking this head's gate, so a re-arm that ends here is asked again
+    return { allowed: false, state: 'ownership_not_eligible', bodyHold: Boolean(mergeVerdict?.mergeEligible) };
   }
   // M3c (v3 §A6) — second line only (native auto-merge never consults this guard): the green this merge acts on
   // must carry an approval token that agrees with the exact head's immutable `Work-Item` trailer, taken from the
@@ -1801,7 +1872,7 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   // The body is mutable: a candidate marker that appears between the first read and this one still holds
   // (Codex finding 4098699869 on #628). The PR this returns, and the merge acts on, is the one checked.
   if (candidateBodyHold(finalLive, mergeVerdict)) {
-    return { allowed: false, state: 'ownership_not_eligible' };
+    return { allowed: false, state: 'ownership_not_eligible', bodyHold: true };
   }
   // Codex 4438607053 — Codex's review-state record is read LAST, after every other remote read: a same-head run that
   // started after the settlement's read (or security findings on this head) refuses this green, as the settlement
@@ -1858,6 +1929,7 @@ export async function ensureTerminalReviewState(
   expectedHead,
   status,
   statuses,
+  outcome = null,
 ) {
   if (!isTerminalReviewStatus(status)) return false;
   if (status.state === 'success') {
@@ -1971,12 +2043,14 @@ export async function ensureTerminalReviewState(
     // Codex 4441198783 on #1295 — the re-arm never acts on this object: `completeReviewedPullRequest` arms the
     // pull request `authorizeExactHeadMerge` reads fresh after the disarm (its `pullRequest`), so a stale `auto_merge`
     // here cannot skip it (the end-to-end row below runs GitHubClient's own skip-if-queued guard)
-    await completeReviewedPullRequest(
+    const recoveredCompletion = await completeReviewedPullRequest(
       client,
       finalPolicy.pullRequest,
       expectedHead,
       finalPolicy.verdict,
     );
+    // G3b (#1289 round 2) — a re-arm's settlement reads how the merge ended (`withRearmSettlement`)
+    if (outcome) outcome.completion = recoveredCompletion;
   } else {
     // Codex 4225790715 — a stored findings failure the cap now defers is not preserved: the ordinary review
     // path runs instead, which files the deferred findings and completes the head without a new push
@@ -2354,7 +2428,7 @@ export async function holdUnreadableCandidateHead(client, pullRequest, expectedH
   const readRetry = scope?.readRetry ?? OWNERSHIP_READ_RETRY;
   await client.setStatus(expectedHead, 'failure', readRetry, pullRequest.html_url);
   await settleRecoveryRequest(
-    client, expectedHead, pullRequest, pendingRecoveryRequest(existingStatuses), 'unreadable candidate head',
+    client, expectedHead, pullRequest, pendingRecoveryRequest(existingStatuses, pullRequest.number), 'unreadable candidate head',
   );
   const stillCurrent = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (stillCurrent) {
@@ -3113,7 +3187,186 @@ async function eventContext() {
   return contextForEvent(eventName, event, process.env.PR_NUMBER);
 }
 
+/**
+ * A pending recovery request that names no terminal status recovery can resume. G3b — one that names this head's
+ * newest tokened success (the watchdog's re-arm hint) is returned as 'rearm' with nothing written: the success is
+ * re-judged by the ordinary recovery, which re-arms only after its own authorization, and `withRearmSettlement` settles
+ * the request only once that re-judge has ended (#1289 round 1, Codex 4439713463). Any other is superseded (one that
+ * named a success under the re-arm name, for the record).
+ */
+export async function settleUnmatchedRecoveryRequest(client, pullRequest, expectedHead, statuses, recoveryRequest) {
+  if (newestTokenedSuccess(statuses, recoveryRequest.terminalStatusId)) return 'rearm';
+  const namedSuccess = statuses.some((status) => status.context === STATUS_CONTEXT
+    && String(status.id) === String(recoveryRequest.terminalStatusId) && status.state === 'success');
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    namedSuccess ? REARM_REQUEST_SUPERSEDED : 'recovery: request superseded by newer review state',
+    pullRequest.html_url,
+    recoveryRequest.status.context,
+  );
+  return 'superseded';
+}
+
+/**
+ * G3b — the re-arm request stays pending while its re-judge runs, so the watchdog holds its ask. It is consumed only
+ * when the re-judge ended it (`REARM_SETTLEMENTS`: re-armed, merged, held for a gate whose own event wakes the gate, or
+ * a hold or finding written over the green). It is marked `REARM_ATTEMPT_FAILED` instead, which the watchdog asks again
+ * once the head is ready, when:
+ * - the re-judge threw (#1289 round 1, Codex 4439713463); a failed mark never replaces the original error;
+ * - the merge's validation raced a change or found a draft (`held_changed`, round 2, Codex 4440043724);
+ * - the recovered success did not end the run (`step` returned false: the PR was drafted, so the ordinary review runs
+ *   next, outside this settlement; #1289 round 3, Codex 4440445746). That review's own success supersedes the request,
+ *   and if it never writes one the watchdog asks again rather than being held by a consumption.
+ * With no re-arm request this is the step alone.
+ */
+export async function withRearmSettlement(client, pullRequest, expectedHead, rearmRequest, step, outcome = {}) {
+  if (!rearmRequest) return step();
+  let result;
+  try {
+    result = await step();
+  } catch (error) {
+    try {
+      await client.setStatus(expectedHead, 'failure', REARM_ATTEMPT_FAILED, pullRequest.html_url, rearmRequest.status.context);
+    } catch {
+      // the original error is the one that matters; a run that dies here is marked by the owner job's cleanup step
+    }
+    throw error;
+  }
+  if (!result || outcome.completion === 'held_changed') {
+    await client.setStatus(expectedHead, 'failure', REARM_ATTEMPT_FAILED, pullRequest.html_url, rearmRequest.status.context);
+    return result;
+  }
+  await settleRecoveryRequest(client, expectedHead, pullRequest, rearmRequest, REARM_CONSUMED_OUTCOME);
+  return result;
+}
+
+/**
+ * G3b (#1289 round 1, Stage 1 option c) — record which re-arm request this run adopted, in the job environment, so the
+ * owner job's cleanup step (`if: failure() || cancelled()`, which Actions also runs on a timeout or a cancel) can mark
+ * it if the run dies before `withRearmSettlement` settles it. Outside Actions (no GITHUB_ENV) it does nothing.
+ */
+export function recordAdoptedRearmRequest(expectedHead, pullNumber, rearmRequest, env = process.env) {
+  if (!rearmRequest || !env.GITHUB_ENV) return false;
+  appendFileSync(
+    env.GITHUB_ENV,
+    `REARM_HEAD_SHA=${expectedHead}\nREARM_REQUEST_ID=${rearmRequest.terminalStatusId}\nREARM_PR_NUMBER=${pullNumber}\n`,
+  );
+  return true;
+}
+
+/**
+ * G3b (#1289 round 1, Stage 1 option c) — the owner job's cleanup after a failed, timed-out or cancelled run. When this
+ * pull request's re-arm request for `terminalStatusId` is still pending, it is marked `REARM_ATTEMPT_FAILED`, which the
+ * watchdog asks again. A request already settled, or another pull request's, is left as it is. Returns what it did.
+ */
+export async function markAbandonedRearmRequest(client, head, terminalStatusId, pullNumber, targetUrl) {
+  const id = String(terminalStatusId ?? '');
+  const number = String(pullNumber ?? '');
+  if (!/^[0-9a-f]{40}$/u.test(String(head ?? '')) || !/^[0-9]+$/u.test(id) || !/^[0-9]+$/u.test(number)) return 'skipped';
+  const statuses = await client.statuses(head);
+  const context = rearmRequestContext(id, number);
+  const request = statuses.find((status) => status.context === context);
+  if (request?.state !== 'pending' || request.description !== rearmRequestDescription(id, number)) return 'settled';
+  await client.setStatus(head, 'failure', REARM_ATTEMPT_FAILED, targetUrl, context);
+  return 'marked';
+}
+
+/**
+ * G3b (Stage 1's G3a round-2 ruling, Codex 4441198763) — the first act of a CI-triggered run on its head: a native
+ * auto-merge already queued on this pull request (armed for an earlier head, or by a person) is disarmed before
+ * anything else, so a branch that moved onto a commit another PR's run turns green does not merge on that success
+ * before its own authorization reads its own record. Only this run's authorization arms it again; a run that ends
+ * without a success leaves the head unarmed, and a green left unarmed is the watchdog's (`gateRearmStatus`). A disarm
+ * not confirmed takes the retryable hold (fail closed) and rethrows.
+ *
+ * G3b gap-check G1 (a): a confirmed disarm also lifts the newest consumed re-arm settlement of each pull request whose
+ * queued merge it disabled, this one and any sibling at the commit (Codex 4445107594) (marks it
+ * `REARM_ATTEMPT_FAILED`). That consumption records a re-judge that armed the head; once this run has disarmed it, it
+ * no longer holds the watchdog, which asks again if this run ends without a new success. A mark that fails is logged
+ * and the disarm's outcome stands: the consumption then expires after `REARM_REQUEST_ABANDONED_MS` (gap-check G1 b).
+ */
+export function newestConsumedRearmSettlement(statuses, pullNumber) {
+  const suffix = `/pr-${pullNumber}`;
+  const seen = new Set();
+  let newest = null;
+  for (const status of statuses ?? []) {
+    const context = String(status?.context ?? '');
+    if (!context.startsWith('codex-recovery-request/') || !context.endsWith(suffix) || seen.has(context)) continue;
+    seen.add(context);
+    if (!REARM_SETTLEMENTS.includes(String(status?.description ?? ''))) continue;
+    let newer = !newest;
+    try {
+      newer ||= BigInt(String(status.id)) > BigInt(String(newest.id));
+    } catch {
+      // an unreadable id is not newer
+    }
+    if (newer) newest = status;
+  }
+  return newest;
+}
+
+export async function disarmBeforeRun(client, pullRequest, expectedHead, statuses = []) {
+  // Codex 4444444798 — the snapshot never decides: a merge queued since it was read is found by the disarm's own live
+  // read, so the disarm runs on every CI-triggered run
+  try {
+    // Stage 1's re-check of bf39f441: the consumption is lifted only when this run actually disabled this PR's queued
+    // merge on its live read, never because the snapshot showed one that was already gone
+    const observed = {};
+    const disarmed = await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead, observed);
+    // Codex 4445107594 — a sibling at this commit whose queued merge this disarm disabled is left green and unarmed
+    // too, so its own newest consumed settlement is lifted the same way; a sibling's settlement is never lifted
+    // unless its merge was actually disabled here (Stage 1's re-check of bf39f441: only an actual disable on the live
+    // read lifts, never the snapshot)
+    const lifts = disarmed ? (observed.disabled ?? []) : [];
+    // #1307 gap-check F4 — the statuses are read again after the disable, so a consumption a sibling's own re-judge (its
+    // own concurrency group) recorded after this run's opening snapshot is lifted too; a read that fails falls back to
+    // the snapshot, and the disarm's outcome stands either way
+    let current = statuses;
+    if (lifts.length > 0) {
+      try {
+        current = await client.statuses(expectedHead);
+      } catch (readError) {
+        console.warn(`Could not re-read the statuses before the lift: ${readError?.message ?? readError}`);
+      }
+    }
+    for (const pull of lifts) {
+      const consumed = newestConsumedRearmSettlement(current, pull.number);
+      if (!consumed) continue;
+      try {
+        await client.setStatus(expectedHead, 'failure', REARM_ATTEMPT_FAILED, pull.html_url ?? pullRequest.html_url, consumed.context);
+      } catch (markError) {
+        console.warn(`Could not lift the consumed re-arm settlement ${consumed.context}: ${markError?.message ?? markError}`);
+      }
+    }
+    return disarmed;
+  } catch (error) {
+    if (!(error instanceof AutoMergeDisarmFailed)) throw error;
+    await publishRetryableHold(client, pullRequest, expectedHead, null, {
+      detail: CODEX_AUTOMERGE_DISARM_FAILED,
+      attempt: 0,
+      next: AUTOMERGE_RETRY_NEXT[CODEX_AUTOMERGE_DISARM_FAILED],
+    });
+    throw error;
+  }
+}
+
 export async function run() {
+  if (process.env.AUTONOMOUS_REVIEW_MODE === 'rearm-cleanup') {
+    const cleanupClient = new GitHubClient({
+      repository: requiredEnvironment('GITHUB_REPOSITORY'),
+      token: requiredEnvironment('GITHUB_TOKEN'),
+    });
+    const cleaned = await markAbandonedRearmRequest(
+      cleanupClient,
+      process.env.REARM_HEAD_SHA,
+      process.env.REARM_REQUEST_ID,
+      process.env.REARM_PR_NUMBER,
+      process.env.REARM_TARGET_URL || null,
+    );
+    console.log(`Re-arm request cleanup: ${cleaned}.`);
+    return;
+  }
   const context = await eventContext();
   if (!context?.number) {
     console.log('No pull request is associated with this workflow event.');
@@ -3180,7 +3433,21 @@ export async function run() {
   // job is cancelled can never leave it standing beneath an already-queued native auto-merge. The relabel-guard
   // and request-recovery modes above return without re-earning anything, so they never withdraw: a withdrawal
   // there would strand the head pending with no path back to green.
+  // G3b (Codex 4444444820) — this PR's pending re-arm request is recorded for the owner job's cleanup step before any
+  // further read that can throw (the withdrawal, the disarm, the scope, check and recovery reads), so a run that fails
+  // anywhere after this point marks it failed and the watchdog asks again at once, not after the abandoned limit
+  const pendingRearm = pendingRecoveryRequest(existingStatuses, pullRequest.number);
+  if (pendingRearm && /\/pr-[0-9]+$/u.test(pendingRearm.status.context)) {
+    recordAdoptedRearmRequest(expectedHead, pullRequest.number, pendingRearm);
+  }
   await withdrawUntokenedSuccess(client, pullRequest, expectedHead, existingStatus);
+  if (context.trigger === 'ci') {
+    pullRequest = await disarmBeforeRun(client, pullRequest, expectedHead, existingStatuses);
+    if (!pullRequest) {
+      console.log('Workflow event was superseded by a newer pull-request head.');
+      return;
+    }
+  }
 
   // 2B2: when the newest current-head review is a candidate ownership hold, the exact head is
   // consistently owned by an in-flight candidate whose IMMUTABLE trailer cannot become merge-eligible
@@ -3226,50 +3493,51 @@ export async function run() {
   }
 
   const terminalStatus = recoverableTerminalReviewStatus(existingStatuses);
-  let recoveryRequest = pendingRecoveryRequest(existingStatuses);
+  let recoveryRequest = pendingRecoveryRequest(existingStatuses, pullRequest.number);
   const requestedTerminalStatus = recoveryRequestTerminal(
     existingStatuses,
     recoveryRequest,
   );
+  let rearmRequest = null;
   if (recoveryRequest && !requestedTerminalStatus) {
-    await client.setStatus(
-      expectedHead,
-      'failure',
-      'recovery: request superseded by newer review state',
-      pullRequest.html_url,
-      recoveryRequest.status.context,
-    );
+    const settledRequest = await settleUnmatchedRecoveryRequest(client, pullRequest, expectedHead, existingStatuses, recoveryRequest);
+    if (settledRequest === 'rearm') {
+      rearmRequest = recoveryRequest;
+      recordAdoptedRearmRequest(expectedHead, pullRequest.number, rearmRequest);
+    }
     recoveryRequest = null;
-    if (!terminalStatus) {
+    if (settledRequest === 'superseded' && !terminalStatus) {
       throw new Error(
         'Recovery request no longer matches the latest terminal review state',
       );
     }
   }
 
-  const existingFinding = await guardAgainstCurrentHeadFinding(
-    client,
-    pullRequest,
-    expectedHead,
-    recoveryRequest,
-  );
-  if (existingFinding) throw new Error(existingFinding);
-
-  if (!requestedTerminalStatus && terminalStatus) {
-    if (
-      await ensureTerminalReviewState(
+  // G3b — a re-arm's re-judge runs inside its settlement (`withRearmSettlement`); without one this is the step alone
+  const rearmOutcome = {};
+  const recovered = await withRearmSettlement(client, pullRequest, expectedHead, rearmRequest, async () => {
+    const existingFinding = await guardAgainstCurrentHeadFinding(
+      client,
+      pullRequest,
+      expectedHead,
+      recoveryRequest,
+    );
+    if (existingFinding) throw new Error(existingFinding);
+    return Boolean(!requestedTerminalStatus && terminalStatus
+      && await ensureTerminalReviewState(
         client,
         pullRequest,
         expectedHead,
         terminalStatus,
         existingStatuses,
-      )
-    ) {
-      console.log(
-        'Exact head already has a recoverable terminal Codex state; no review will be requested.',
-      );
-      return;
-    }
+        rearmOutcome,
+      ));
+  }, rearmOutcome);
+  if (recovered) {
+    console.log(
+      'Exact head already has a recoverable terminal Codex state; no review will be requested.',
+    );
+    return;
   }
 
   await client.setStatus(

@@ -370,4 +370,20 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   for (const name of REQUIRED_CHECKS) {
     assert.equal((await authorizeExactHeadMerge(makeClient({ runs: checks.map(run => run.name === name ? { ...run, conclusion: 'failure' } : run) }), pull, head)).state, 'gates_not_green');
   }
+  // G3b (#1289 round 2, Codex 4440043724) — a merge whose validation raced a base or head change says so: the re-arm
+  // asks again; every other hold is a gate still owed, whose own event wakes the gate
+  const { completeReviewedPullRequest } = await import('./autonomous-review-gate.mjs');
+  assert.equal(await completeReviewedPullRequest(makeClient({ pulls: [pull, { ...pull, base: { ...pull.base, sha: 'd'.repeat(40) } }] }), pull, head), 'held_changed');
+  assert.equal(await completeReviewedPullRequest(makeClient({ pulls: [pull, { ...pull, head: { ...pull.head, sha: 'c'.repeat(40) } }] }), pull, head), 'held_changed');
+  // the #1289 round-2 audit: a draft is a hold no gate event ends (marking it ready wakes no run), so it asks again
+  assert.equal(await completeReviewedPullRequest(makeClient({ pulls: [{ ...pull, draft: true }] }), pull, head), 'held_changed');
+  assert.equal(await completeReviewedPullRequest(makeClient({ statuses: [] }), pull, head), 'held_for_gates');
+  assert.equal(await completeReviewedPullRequest(makeClient({ commit: { commit: { message: 'no trailer here' } } }), pull, head), 'held_for_gates');
+  // Codex 4444444810 — a candidate marker in the mutable body, over an eligible trailer, is a hold a body edit can
+  // lift without waking this head's gate: asked again, whether it was there at the first read or appeared by the last
+  assert.equal(await completeReviewedPullRequest(makeClient({ pulls: [candidatePull, candidatePull] }), candidatePull, head), 'held_changed');
+  assert.equal(await completeReviewedPullRequest(makeClient({ pulls: [pull, candidatePull] }), pull, head), 'held_changed');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [pull, candidatePull] }), pull, head)).bodyHold, true);
+  // an ineligible trailer is not a body hold: it waits on a push
+  assert.equal((await authorizeExactHeadMerge(makeClient({ commit: { commit: { message: 'no trailer here' } } }), pull, head)).bodyHold, false);
 });

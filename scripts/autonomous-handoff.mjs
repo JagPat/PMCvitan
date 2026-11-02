@@ -20,6 +20,7 @@ import {
 import {
   assessCorrectionLease,
   correctionReasonFor,
+  gateRearmStatus,
   gateRecoveryStatus,
   owedCorrectionStatus,
 } from './correction-lease.mjs';
@@ -54,6 +55,23 @@ function requiredEnvironment(name) {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+
+// #1307 (Codex 4445107604 on #1304) — the combined status is paged (thirty contexts a page unless asked for more), and
+// one commit can carry many contexts (the PR-scoped re-arm requests of every open PR at it). Every page is read, so this
+// head's `codex-current-head` status, a recovery request or a re-arm settlement on a later page is never missed by the
+// watchdog's decisions (`owedCorrectionStatus`, `gateRecoveryStatus`, `gateRearmStatus`). The other fields come from
+// the first page.
+export async function readCombinedStatus(request, repository, head) {
+  let combined = null;
+  const statuses = [];
+  for (let page = 1; ; page += 1) {
+    const batch = await request(`/repos/${repository}/commits/${head}/status?per_page=100&page=${page}`);
+    combined ??= batch;
+    const pageStatuses = batch?.statuses ?? [];
+    statuses.push(...pageStatuses);
+    if (pageStatuses.length < 100) return { ...combined, statuses };
+  }
 }
 
 class GitHubClient {
@@ -183,7 +201,7 @@ class GitHubClient {
   }
 
   combinedStatus(head) {
-    return this.request(`/repos/${this.repository}/commits/${head}/status`);
+    return readCombinedStatus((path) => this.request(path), this.repository, head);
   }
 
   async comments(number) {
@@ -576,7 +594,7 @@ export async function handOffCorrectionLease(
   // itself, so the watchdog asks for the recovery rather than describing it.
   // `gateRecoveryStatus` holds the ask while the gate's own accepted request is
   // still pending.
-  const recoverable = gateRecoveryStatus(combined);
+  const recoverable = gateRecoveryStatus(combined, now);
   if (recoverable) {
     await client.dispatchRecovery(defaultBranch, {
       pr_number: String(pullRequest.number),
@@ -588,6 +606,32 @@ export async function handOffCorrectionLease(
         + `terminal status ${recoverable.id}.`,
     );
     return { state: 'dispatched', head, terminalStatusId: recoverable.id ?? null };
+  }
+
+  // G3b — a green no auto-merge is queued behind: a re-arm lost after the gate's disarm (G3a′'s residual). The gate is
+  // asked once per re-judged success to re-judge it; it re-arms only through its own authorization (`gateRearmStatus`).
+  // The open-PR snapshot names the pull request and the head whose statuses were read, nothing more: whenever this
+  // head's newest status is a tokened success not yet asked about, the live pull request alone decides, so an arming,
+  // a draft turned ready or a queued merge disabled since the snapshot is seen (Codex 4443441242). A live head that is
+  // no longer this head is not asked about on this head's statuses; that head's own run or the next pass judges it
+  // (Codex 4443441231).
+  const candidate = gateRearmStatus(combined, { number: pullRequest.number, state: 'open', draft: false, auto_merge: null }, now);
+  let unarmed = null;
+  if (candidate) {
+    const live = await client.pullRequest(pullRequest.number);
+    if (live?.head?.sha === head) unarmed = gateRearmStatus(combined, live, now);
+  }
+  if (unarmed) {
+    await client.dispatchRecovery(defaultBranch, {
+      pr_number: String(pullRequest.number),
+      head_sha: head,
+      terminal_status_id: String(unarmed.id),
+    });
+    console.log(
+      `Dispatched gate re-arm for PR #${pullRequest.number} head ${head} `
+        + `success status ${unarmed.id}.`,
+    );
+    return { state: 'rearm_dispatched', head, terminalStatusId: unarmed.id ?? null };
   }
 
   const owed = owedCorrectionStatus(combined);
