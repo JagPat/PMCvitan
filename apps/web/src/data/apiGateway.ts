@@ -11,7 +11,7 @@
  * end-to-end in CI (the sandbox has no Postgres). Validate it once the API is
  * deployed and `VITE_API_URL` points at it.
  */
-import { clearVisitPoster, deleteVisitPhoto, failVisitPhoto, fileVisitPhoto, forgetRemovedVisitPhoto, getVisitPhoto, posterWaits, removedVisitPhotos, withinWait, type CommittedPhoto } from './visitPhotoStore';
+import { clearVisitPoster, deleteVisitPhoto, failVisitPhoto, fileVisitPhoto, forgetRemovedVisitPhoto, getVisitPhoto, posterWaits, removedVisitPhotos, VisitPhotoUnreadable, withinWait, type CommittedPhoto } from './visitPhotoStore';
 import { deleteEvidence, getEvidence, markEvidenceFailed } from './evidenceStore';
 import { MEDIA_NOT_FOUND_MESSAGE, NOT_A_VISIT_FILE_MESSAGE, SITE_PHOTO_DELETED_MESSAGE, VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
 import { deleteSitePhotoRow, getSitePhotoRow, ifSitePhotoUnlocked, isSitePhotoSent, markSitePhotoRefused, markSitePhotoSent, SitePhotoBusy, SitePhotoUnreadable } from './sitePhotoStore';
@@ -2274,7 +2274,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
       };
       // #1241: a file the server removed whose row this phone could not delete then is settled here, unsent, whatever
       // the row still says: its act goes, and its row is deleted when the phone can (the record stays until then)
-      if (removedVisitPhotos(op.scope, gw.project).has(id)) {
+      // #1266: records that cannot be read may hold this one: the act is held for this visit alone, never uploaded
+      const removed = removedVisitPhotos(op.scope, gw.project);
+      if (removed === 'unreadable') return Promise.reject(new VisitPhotoUnreadable());
+      if (removed.has(id)) {
         return withinWait(() => deleteVisitPhoto(op.scope, gw.project, id)).then(() => forgetRemovedVisitPhoto(op.scope, gw.project, id), () => {}).then(() => null);
       }
       // every read and write of the phone's record is bounded: one that fails or never answers rejects with
