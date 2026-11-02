@@ -99,9 +99,10 @@ export function assessRestructure({
   body,
   recordedMetrics,
   floorUnreadable = false,
+  issueComments = [],
 }) {
   const replaces = replacementSource(body);
-  const liveHeads = codexFindingHeads(comments, reviews);
+  const liveHeads = codexFindingHeads(comments, reviews, issueComments);
   const merged = mergeFindingHeads(recordedMetrics, liveHeads);
   const findingHeadCount = merged.count;
 
@@ -228,8 +229,9 @@ export function observeReviewLifecycle({
   comments,
   reviews,
   threshold = RESTRUCTURE_AFTER_FINDING_HEADS,
+  issueComments = [],
 }) {
-  const findingHeads = codexFindingHeads(comments, reviews);
+  const findingHeads = codexFindingHeads(comments, reviews, issueComments);
   const severity = findingHeadSeverity(comments, reviews);
 
   // Worst-wins, and an unreadable head is never treated as merely minor.

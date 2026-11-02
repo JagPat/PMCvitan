@@ -40,6 +40,17 @@ test('review rounds: every finding head plus the clean merged head; a trivial-la
   assert.equal(reviewRounds({ head: { sha: HEAD } }, { trivial: true }), 0);
 });
 
+test('G2 (#1280 round 1) — a head that failed only on Codex security findings is a review round (its marker)', async () => {
+  const { securityVerdictMarker } = await import('./security-verdict-marker.mjs');
+  const comments = [finding({ head: 'a'.repeat(40) })];
+  const marker = (head, login = 'github-actions[bot]') => ({ id: 5, user: { login }, body: securityVerdictMarker(head) });
+  assert.equal(reviewRounds({ head: { sha: HEAD } }, { comments }), 2);
+  assert.equal(reviewRounds({ head: { sha: HEAD } }, { comments, issueComments: [marker('b'.repeat(40))] }), 3);
+  // the security-only head merged: it is the merged head's own round, counted once
+  assert.equal(reviewRounds({ head: { sha: 'b'.repeat(40) } }, { comments, issueComments: [marker('b'.repeat(40))] }), 2);
+  assert.equal(reviewRounds({ head: { sha: HEAD } }, { comments, issueComments: [marker('b'.repeat(40), 'JagPat')] }), 2, 'a forged marker counts nothing');
+});
+
 test('Codex 4214270298 — a Codex REPLY in an older thread is not a review round', () => {
   const reply = { ...finding({ head: 'a'.repeat(40), id: 9 }), in_reply_to_id: 1 };
   const opener = finding({ head: 'b'.repeat(40), id: 10 });
