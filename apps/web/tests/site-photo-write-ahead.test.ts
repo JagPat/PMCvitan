@@ -7,7 +7,7 @@ import { forgetStaleWork, settled, staleWork, startWork } from './site-visit-wor
 import { makeLockManager } from '@/test/lockManager';
 import { queueWritten, storedQueue } from './queueWrites';
 
-await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/data/sitePhotoStore'), () => import('@/store/queueLedger'));
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/data/sitePhotoStore'), () => import('@/store/queueLedger'), () => import('@/lib/clampedTimer'));
 
 /**
  * #917 — a site photo sent online is kept on this phone before its upload, so an upload whose answer is lost is sent
@@ -59,6 +59,37 @@ function uploads() {
   return { fn, calls, called };
 }
 
+/** The real timers set while this test runs (the app's retries among them, `setClampedTimeout` reads the global at each
+ *  call): cleared when it ends (`closeTimers`), as a browser ends a closed tab's timers. A tab's retry runs work kept
+ *  for later (`sitePhotoRowChanges`) before it checks it is still current, so a closed tab's timer must not fire at all.
+ *  Each callback is tagged with its test: one that fires in another test is recorded (`staleTimers`). */
+const realSetTimeout = globalThis.setTimeout;
+const realClearTimeout = globalThis.clearTimeout;
+const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
+const staleTimers: string[] = [];
+const trackTimers = (): void => {
+  const owner = expect.getState().currentTestName;
+  globalThis.setTimeout = ((fn: unknown, ms?: number, ...args: unknown[]) => {
+    if (typeof fn !== 'function') return realSetTimeout(fn as never, ms);
+    const h: ReturnType<typeof setTimeout> = realSetTimeout(() => {
+      pendingTimers.delete(h);
+      const now = expect.getState().currentTestName;
+      if (now !== owner) staleTimers.push(`a timer set in "${owner}" fired in "${now}"`);
+      (fn as (...a: unknown[]) => void)(...args);
+    }, ms);
+    pendingTimers.add(h);
+    return h;
+  }) as typeof setTimeout;
+};
+/** Ends this test's timers: none set while it ran fires later. Returns how many were still to fire. */
+const closeTimers = (): number => {
+  globalThis.setTimeout = realSetTimeout;
+  const left = pendingTimers.size;
+  for (const h of pendingTimers) realClearTimeout(h);
+  pendingTimers.clear();
+  return left;
+};
+
 /** Every tab this test opened: closed when it ends (`closeTabs`), as a browser ends a closed tab's timers. */
 const opened: Array<{ getState(): { _setGateway: (g: null) => void }; setState(p: object): void }> = [];
 /** Closes this test's tabs: no server and no signal, so a retry a tab scheduled on the real clock (`retrySitePhotos`,
@@ -105,17 +136,25 @@ beforeEach(() => {
   localStorage.clear();
   testLocks = makeLockManager();
   Object.defineProperty(globalThis.navigator, 'locks', { value: testLocks, configurable: true });
+  trackTimers();
 });
 
 afterEach(async () => {
   closeTabs();
-  // GUARD: nothing an earlier test opened acted in this one, and this test put back the Web Locks it was given
-  expect(staleWork(), 'a tab an earlier test left open acted in this one').toEqual([]);
-  expect((globalThis.navigator as { locks?: unknown }).locks, 'this test did not put back navigator.locks').toBe(testLocks);
-  (await rowsOf()).setSitePhotoDeadline(null);
-  vi.restoreAllMocks();
-  vi.unstubAllEnvs();
-  vi.resetModules();
+  closeTimers();
+  // GUARD: nothing an earlier test opened acted in this one, and this test put back the Web Locks it was given. Read
+  // first, judged after the cleanup, so a failing guard never leaves mocks, a deadline or modules to the next test
+  const stale = [...staleWork(), ...staleTimers.splice(0)];
+  const locksPutBack = (globalThis.navigator as { locks?: unknown }).locks === testLocks;
+  try {
+    (await rowsOf()).setSitePhotoDeadline(null);
+  } finally {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  }
+  expect(stale, 'a tab an earlier test left open acted in this one').toEqual([]);
+  expect(locksPutBack, 'this test did not put back navigator.locks').toBe(true);
 });
 
 describe('an online site photo whose answer is lost (#917)', () => {
@@ -1865,6 +1904,36 @@ describe('every test closes the tabs it opened (guard)', () => {
     leftOpen!.setState({ online: false } as never);
     leftOpen!.getState()._setGateway(null as never);
     leftOpen = null;
+  });
+
+  // a timer the third row leaves to fire in the fourth (taken off this test's list, so it is not cleared)
+  let timerFired: ReturnType<typeof deferred<void>> | null = null;
+  it('(a timer left to fire in the next row)', async () => {
+    timerFired = deferred<void>();
+    const fired = timerFired;
+    const h = setTimeout(() => fired.resolve(), 0);
+    pendingTimers.delete(h);
+  });
+
+  it('a timer set in an earlier test that fires in this one is recorded, and fails it', async () => {
+    expect(timerFired).not.toBeNull();
+    await timerFired!.promise;
+    expect(staleTimers).toEqual([expect.stringMatching(/a timer set in ".*a timer left to fire in the next row.*" fired in/)]);
+    // (recorded on purpose here: forgotten, so the file's guard judges only what follows)
+    staleTimers.length = 0;
+    timerFired = null;
+  });
+
+  it('the app\'s own timers set in a test are ended with it: none is left to fire later', async () => {
+    const { setClampedTimeout } = await import('@/lib/clampedTimer');
+    let ran = false;
+    setClampedTimeout(() => { ran = true; }, 5000);
+    expect(pendingTimers.size).toBeGreaterThanOrEqual(1);
+    expect(closeTimers()).toBeGreaterThanOrEqual(1);
+    expect(pendingTimers.size).toBe(0);
+    expect(ran).toBe(false);
+    // tracked again for the rest of this test, as every test is
+    trackTimers();
   });
 
   it('a closed tab sends nothing when its retry fires: no server, no signal', async () => {
