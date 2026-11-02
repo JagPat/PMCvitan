@@ -184,6 +184,13 @@ export const decideReviewSchema = z.object({
 });
 export type DecideReviewInput = z.infer<typeof decideReviewSchema>;
 
+// #482 proof photos, "Who fixes this?": the contractor or consultant member who fixes an inspection's failed work, or
+// null for nobody. Its own route, so no queued command's body changes shape.
+export const setResponsibleMemberSchema = z.object({
+  memberId: z.string().trim().min(1).nullable(),
+}).strict();
+export type SetResponsibleMemberInput = z.infer<typeof setResponsibleMemberSchema>;
+
 export const submitDailyLogSchema = z.object({
   checkedIn: z.boolean(),
   checkinTime: z.string().nullable(),

@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma.service';
 import { SignedUrlService } from '../media/signed-url.service';
 import { bakeInspections, computeInspectionsBase, type InspectionsBase, type InspectionsSlices } from './inspections-serialize';
 import { bindingAssigneeIds } from './assignment-eligibility';
+import { standingResponsibleIds } from './responsible-member';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { INSPECTIONS_PROJECTION } from './inspections.projection';
 import { readServableGeneration } from '../platform/projections/generation';
@@ -74,6 +75,23 @@ export class InspectionsQueryService {
   async snapshotSlice(projectId: string, role: string, viewerId?: string, hiddenEvidence: ReadonlySet<string> = NONE_HIDDEN): Promise<InspectionsSlices> {
     const base = await computeInspectionsBase(this.prisma, projectId);
     return bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base), hiddenEvidence });
+  }
+
+  /**
+   * #482 proof photos, "Who fixes this?" — who is named to fix each inspection's failed work, for the PMC and the engineer
+   * (the roles that name them); empty for every other role. Read live from "Inspection" (this module's own table), never
+   * from the projection's stored base, so it is current on every read. A name whose member no longer stands (removed, or
+   * re-roled out of contractor and consultant) is left out: no one is responsible until someone is named again.
+   */
+  async responsibleMembers(projectId: string, role: string): Promise<Array<{ inspectionId: string; memberId: string }>> {
+    if (role !== 'pmc' && role !== 'engineer') return [];
+    const named = await this.prisma.inspection.findMany({
+      where: { projectId, responsibleMemberId: { not: null } },
+      orderBy: { id: 'asc' },
+      select: { id: true, responsibleMemberId: true },
+    });
+    const standing = await standingResponsibleIds(this.orgs, this.prisma, projectId, named.map((i) => i.responsibleMemberId!));
+    return named.filter((i) => standing.has(i.responsibleMemberId!)).map((i) => ({ inspectionId: i.id, memberId: i.responsibleMemberId! }));
   }
 
   /**

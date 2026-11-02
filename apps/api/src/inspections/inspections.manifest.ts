@@ -55,6 +55,7 @@ export const inspectionsManifest: ModuleManifest = {
     'POST /projects/:projectId/inspections',
     'POST /projects/:projectId/inspections/:inspectionId/submit',
     'POST /projects/:projectId/inspections/:inspectionId/decide',
+    'PUT /projects/:projectId/inspections/:inspectionId/responsible',
   ],
   permissions: ['pmc', 'engineer', 'contractor'],
 };

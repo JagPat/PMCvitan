@@ -21,6 +21,8 @@ export const INSPECTIONS_COMMANDS = [
   'inspections.create',
   'inspections.submit',
   'inspections.decide',
+  // #482 proof photos — who fixes this inspection's failed work (PMC or engineer; an active contractor or consultant)
+  'inspections.setResponsible',
 ] as const;
 export type InspectionsCommand = (typeof INSPECTIONS_COMMANDS)[number];
 
@@ -33,6 +35,8 @@ export const INSPECTIONS_QUERIES = [
   'inspections.resolveRef',
   // #482 site photos unit 4 — a proof photo's item: this project's, and failed now (held FOR SHARE in the upload)
   'inspections.proofTarget',
+  // #482 proof photos — who is named to fix each inspection's failed work, kept only while they still stand
+  'inspections.responsibleMembers',
 ] as const;
 export type InspectionsQuery = (typeof INSPECTIONS_QUERIES)[number];
 
