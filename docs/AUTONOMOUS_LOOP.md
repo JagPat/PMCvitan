@@ -101,6 +101,11 @@ request, including after an interrupted owner, but cannot create a concurrent
 reviewer. Per-terminal contexts prevent an older owner from consuming a newer
 request. A request is consumed only after a terminal review outcome; CI failure
 leaves it pending for the next green owner.
+A failure's request names no pull request: the failure is the commit's, so the
+request holds the ask for every open pull request at that commit. One still
+pending past the same four-hour limit lost its run (a lost runner, or a pull
+request that moved or closed before its run read it) and is asked again. The
+watchdog reads every page of the combined status.
 Before publishing a new pending status or changing readiness, the owner checks live
 current-head Codex reviews and inline comments. A finding that arrived after a
 timeout is republished as the required failure and requires a new SHA; recovery
