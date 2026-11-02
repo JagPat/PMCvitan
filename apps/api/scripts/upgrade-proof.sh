@@ -4893,11 +4893,11 @@ SQL
 # with its activation head from A6a's catalog-INSERT trigger; the three claimants and the re-issued
 # kernel actor seal standing. Then the replay a restored database takes: a 4c-ii-era `webpush.notify`
 # row (version 2) is moved to 3, a second replay is a no-op, and the effects row is not re-registered.
-# Site Visits SV1-a (20280111) seeds a FIFTH generation beside these four and Hub U5m (20280127) a SIXTH,
-# so the distinct count is 6; A7d's generation itself is unchanged.
-assert "4d-ii-a / A7d: six coverage generations (SV1-a's the fifth, Hub U5m's the sixth), the widened one over U3's keys plus exactly the three A7d adds" \
+# Site Visits SV1-a (20280111) seeds a FIFTH generation beside these four, Hub U5m (20280127) a SIXTH and
+# RM-e-m (20280207) a SEVENTH, so the distinct count is 7; A7d's generation itself is unchanged.
+assert "4d-ii-a / A7d: seven coverage generations (SV1-a's the fifth, Hub U5m's the sixth, RM-e's the seventh), the widened one over U3's keys plus exactly the three A7d adds" \
   "SELECT (SELECT count(DISTINCT \"coverageVersion\") FROM \"ExternalEffectCatalog\")::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c')::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '7dac2bd5646fa8b1a4062d0b844f2514179cf13ce7f59d345d837fd634aa3a61')::text || '|' || (SELECT string_agg(\"effectKey\", ',' ORDER BY \"effectKey\" COLLATE \"C\") FROM \"ExternalEffectCatalog\" a WHERE a.\"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c' AND NOT EXISTS (SELECT 1 FROM \"ExternalEffectCatalog\" b WHERE b.\"coverageVersion\" = '7dac2bd5646fa8b1a4062d0b844f2514179cf13ce7f59d345d837fd634aa3a61' AND b.\"effectKey\" = a.\"effectKey\"));" \
-  "6|114|111|decision.awaiting_countersign,decision.forwarded,membership.standing_changed"
+  "7|114|111|decision.awaiting_countersign,decision.forwarded,membership.standing_changed"
 assert "4d-ii-a / A7d: every shared key equal in every column but pushRoles; the ceiling moved on exactly the three targeted keys, by the architect joining" \
   "SELECT (SELECT count(*) FROM \"ExternalEffectCatalog\" a JOIN \"ExternalEffectCatalog\" b ON b.\"effectKey\" = a.\"effectKey\" AND b.\"coverageVersion\" = '7dac2bd5646fa8b1a4062d0b844f2514179cf13ce7f59d345d837fd634aa3a61' WHERE a.\"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c' AND (a.\"eventType\", a.\"invalidate\", a.\"pushFamily\", a.\"frozenAudience\", a.\"requiresPush\", a.\"audience\", a.\"pushBody\", a.\"pairingRequired\") IS DISTINCT FROM (b.\"eventType\", b.\"invalidate\", b.\"pushFamily\", b.\"frozenAudience\", b.\"requiresPush\", b.\"audience\", b.\"pushBody\", b.\"pairingRequired\"))::text || '|' || (SELECT string_agg(a.\"effectKey\", ',' ORDER BY a.\"effectKey\" COLLATE \"C\") FROM \"ExternalEffectCatalog\" a JOIN \"ExternalEffectCatalog\" b ON b.\"effectKey\" = a.\"effectKey\" AND b.\"coverageVersion\" = '7dac2bd5646fa8b1a4062d0b844f2514179cf13ce7f59d345d837fd634aa3a61' WHERE a.\"coverageVersion\" = '23f47cd9d64db48a60afff7456337197c8711cb0d8a07954a66e7a28972c5b0c' AND a.\"pushRoles\" IS DISTINCT FROM b.\"pushRoles\" AND b.\"pushRoles\" <@ a.\"pushRoles\" AND a.\"pushRoles\" ? 'architect' AND NOT (b.\"pushRoles\" ? 'architect'));" \
   "0|decision.consultation_requested,decision.consultation_responded,decision.published"
@@ -4931,26 +4931,51 @@ assert "Hub U5m: the new generation is SV1-a's 122 keys plus exactly the two Hub
 assert "Hub U5m: every shared key equal to SV1-a's in every column; the two added invalidate, never push and owe no claim" \
   "SELECT (SELECT count(*) FROM \"ExternalEffectCatalog\" a JOIN \"ExternalEffectCatalog\" b ON b.\"effectKey\" = a.\"effectKey\" AND b.\"coverageVersion\" = 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36' WHERE a.\"coverageVersion\" = '63679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848' AND (a.\"eventType\", a.\"invalidate\", a.\"pushRoles\", a.\"pushFamily\", a.\"frozenAudience\", a.\"requiresPush\", a.\"audience\", a.\"pushBody\", a.\"pairingRequired\") IS DISTINCT FROM (b.\"eventType\", b.\"invalidate\", b.\"pushRoles\", b.\"pushFamily\", b.\"frozenAudience\", b.\"requiresPush\", b.\"audience\", b.\"pushBody\", b.\"pairingRequired\"))::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '63679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848' AND \"effectKey\" IN ('drawing.relinked','drawing.superseded_hub') AND \"invalidate\" AND \"pushRoles\" IS NULL AND \"pushFamily\" IS NULL AND NOT \"frozenAudience\" AND NOT \"requiresPush\" AND \"audience\" IS NULL AND \"pushBody\" IS NULL AND NOT \"pairingRequired\" AND \"retiredAt\" IS NULL)::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '63679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848' AND \"pairingRequired\")::text || '|' || (SELECT string_agg(\"effectKey\", ',' ORDER BY \"effectKey\" COLLATE \"C\") FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '63679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848' AND \"frozenAudience\");" \
   "0|2|17|decision.awaiting_countersign,decision.forwarded"
-# U5m is on ALWAYS_EXECUTE: it replays over a database that already carries it (no lease here, so its
-# own foreign-generation audit RUNS and admits the six generations it knows), twice, moving nothing.
-if $PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280127000000_hub_catalog_generation/migration.sql" >/dev/null 2>&1 \
-   && $PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280127000000_hub_catalog_generation/migration.sql" >/dev/null 2>&1; then
-  echo "ok      Hub U5m: the catalog-generation migration replays twice over a database that already carries it"
+# ── "Who fixes this?" RM-e-m: `inspection.responsible_set`, as a seventh generation beside SV1-a's ──────
+# Over the ledger this database ran: RM-e's generation (`e356309f…`) is SV1-a's keys plus exactly
+# `inspection.responsible_set` (its own new event type), every shared key equal in EVERY column, the added
+# key invalidating, never pushing and owing no pairing claim; still seventeen pairing-required keys and A7d's
+# two frozen families; and neither Hub key (it sits BESIDE U5m's generation, not on top of it). No compiled
+# release emits under it yet (RM-e-c compiles the key).
+assert "RM-e: the new generation is SV1-a's 122 keys plus exactly inspection.responsible_set, and no Hub key" \
+  "SELECT (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = 'e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093')::text || '|' || (SELECT string_agg(\"effectKey\" || ':' || \"eventType\", ',' ORDER BY \"effectKey\" COLLATE \"C\") FROM \"ExternalEffectCatalog\" a WHERE a.\"coverageVersion\" = 'e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093' AND NOT EXISTS (SELECT 1 FROM \"ExternalEffectCatalog\" b WHERE b.\"coverageVersion\" = 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36' AND b.\"effectKey\" = a.\"effectKey\")) || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" b WHERE b.\"coverageVersion\" = 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36' AND NOT EXISTS (SELECT 1 FROM \"ExternalEffectCatalog\" a WHERE a.\"coverageVersion\" = 'e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093' AND a.\"effectKey\" = b.\"effectKey\"))::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = 'e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093' AND \"effectKey\" IN ('drawing.relinked','drawing.superseded_hub'))::text;" \
+  "123|inspection.responsible_set:inspection.responsible_set|0|0"
+assert "RM-e: every shared key equal to SV1-a's in every column; the added one invalidates, never pushes and owes no claim" \
+  "SELECT (SELECT count(*) FROM \"ExternalEffectCatalog\" a JOIN \"ExternalEffectCatalog\" b ON b.\"effectKey\" = a.\"effectKey\" AND b.\"coverageVersion\" = 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36' WHERE a.\"coverageVersion\" = 'e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093' AND (a.\"eventType\", a.\"invalidate\", a.\"pushRoles\", a.\"pushFamily\", a.\"frozenAudience\", a.\"requiresPush\", a.\"audience\", a.\"pushBody\", a.\"pairingRequired\") IS DISTINCT FROM (b.\"eventType\", b.\"invalidate\", b.\"pushRoles\", b.\"pushFamily\", b.\"frozenAudience\", b.\"requiresPush\", b.\"audience\", b.\"pushBody\", b.\"pairingRequired\"))::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = 'e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093' AND \"effectKey\" = 'inspection.responsible_set' AND \"invalidate\" AND \"pushRoles\" IS NULL AND \"pushFamily\" IS NULL AND NOT \"frozenAudience\" AND NOT \"requiresPush\" AND \"audience\" IS NULL AND \"pushBody\" IS NULL AND NOT \"pairingRequired\" AND \"retiredAt\" IS NULL)::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = 'e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093' AND \"pairingRequired\")::text || '|' || (SELECT string_agg(\"effectKey\", ',' ORDER BY \"effectKey\" COLLATE \"C\") FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = 'e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093' AND \"frozenAudience\");" \
+  "0|1|17|decision.awaiting_countersign,decision.forwarded"
+# RM-e is on ALWAYS_EXECUTE: it replays over a database that already carries it (no lease here, so its
+# own foreign-generation audit RUNS and admits the seven generations it knows), twice, moving nothing.
+if $PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280207000000_inspection_responsible_catalog/migration.sql" >/dev/null 2>&1 \
+   && $PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280207000000_inspection_responsible_catalog/migration.sql" >/dev/null 2>&1; then
+  echo "ok      RM-e: the catalog-generation migration replays twice over a database that already carries it"
 else
-  echo "FAILED  Hub U5m: the catalog-generation migration did not replay (it is on ALWAYS_EXECUTE, so a baseline would abort here)"; FAIL=1
+  echo "FAILED  RM-e: the catalog-generation migration did not replay (it is on ALWAYS_EXECUTE, so a baseline would abort here)"; FAIL=1
 fi
-assert "Hub U5m: the replays left six generations, SV1-a's at 122 rows and U5m's at 124" \
-  "SELECT (SELECT count(DISTINCT \"coverageVersion\") FROM \"ExternalEffectCatalog\")::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36')::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '63679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848')::text;" \
-  "6|122|124"
+assert "RM-e: the replays left seven generations, SV1-a's at 122 rows, U5m's at 124 and RM-e's at 123" \
+  "SELECT (SELECT count(DISTINCT \"coverageVersion\") FROM \"ExternalEffectCatalog\")::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = 'f9ebcd074cd453c00ba9b806ae1e6488f17a8c34ab79ed4b4836055bd534dd36')::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '63679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848')::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = 'e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093')::text;" \
+  "7|122|124|123"
+# U5m's replay over THIS database is refused, correctly: its immutable foreign-generation audit admits the
+# six generations it knew and stands down only on the retirement marker or the serving witness, and this
+# database holds RM-e's seventh and no lease yet. That is the outcome the runner avoids by resolving U5m's
+# catalog file as applied on a database carrying RM-e's generation (scripts/migrate.sh), which the ledger-lost
+# replays below mirror. U5m's own replay contract is proven on the scratch database further down, before
+# RM-e's generation exists there.
+if u5m_out="$($PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280127000000_hub_catalog_generation/migration.sql" 2>&1)"; then
+  echo "FAILED  Hub U5m: replayed over RM-e's generation with no lease — its foreign-generation audit no longer guards the catalog"; FAIL=1
+elif printf '%s' "$u5m_out" | grep -q "hub U5m ABORT: 123 \"ExternalEffectCatalog\" row(s) sit in a coverage generation this rollout does not admit — e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093"; then
+  echo "ok      Hub U5m: with no lease, U5m's replay over RM-e's generation is refused by its own foreign-generation audit (the runner resolves U5m's catalog file instead)"
+else
+  echo "FAILED  Hub U5m: the replay over RM-e's generation aborted, but not by U5m's foreign-generation diagnostic; got: $(printf '%s' "$u5m_out" | tail -2 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
+fi
 # SV1-a's replay over THIS database is refused, correctly: its immutable foreign-generation audit admits the
 # five generations it knew and stands down only on the retirement marker or the serving witness, and this
-# database holds U5m's sixth and no lease yet. That is the outcome the runner avoids by resolving SV1-a's
+# database holds U5m's sixth (and RM-e's seventh) and no lease yet. That is the outcome the runner avoids by resolving SV1-a's
 # catalog file as applied on a database carrying U5m's generation (scripts/migrate.sh), which the ledger-lost
 # replays below mirror. SV1-a's own replay contract is proven on the scratch database further down, before
 # U5m's generation exists there.
 if sv1a_out="$($PSQL -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280111000000_site_visits_sv1a_catalog/migration.sql" 2>&1)"; then
   echo "FAILED  SV1-a: replayed over U5m's generation with no lease — its foreign-generation audit no longer guards the catalog"; FAIL=1
-elif printf '%s' "$sv1a_out" | grep -q "site-visits SV1-a ABORT: 124 \"ExternalEffectCatalog\" row(s) sit in a coverage generation this rollout does not admit — 63679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848"; then
+elif printf '%s' "$sv1a_out" | grep -q "site-visits SV1-a ABORT: 247 \"ExternalEffectCatalog\" row(s) sit in a coverage generation this rollout does not admit — 63679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848 (124 row(s)), e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093 (123 row(s))"; then
   echo "ok      SV1-a: with no lease, SV1-a's replay over U5m's generation is refused by its own foreign-generation audit (the runner resolves SV1-a's catalog file instead)"
 else
   echo "FAILED  SV1-a: the replay over U5m's generation aborted, but not by SV1-a's foreign-generation diagnostic; got: $(printf '%s' "$sv1a_out" | tail -2 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
@@ -5027,6 +5052,20 @@ SQL
   else
     echo "FAILED  A7d: the replay over SV1-a's generation aborted, but not by A7d's foreign-generation diagnostic; got: $(printf '%s' "$a7d_out" | tail -2 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
   fi
+  # RM-e-m — Hub U5m's replay contract, moved here from the main database (which now holds RM-e's seventh
+  # generation): U5m is on ALWAYS_EXECUTE, and over a database that carries it and no later generation (no
+  # lease here, so its own foreign-generation audit RUNS and admits the six it knows) it replays twice,
+  # moving nothing.
+  if $PSQL_A7D -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280127000000_hub_catalog_generation/migration.sql" >/dev/null 2>&1 \
+     && $PSQL_A7D -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280127000000_hub_catalog_generation/migration.sql" >/dev/null 2>&1 \
+     && $PSQL_A7D -q -v ON_ERROR_STOP=1 -f "$MIG_DIR/20280127000000_hub_catalog_generation/migration.sql" >/dev/null 2>&1; then
+    echo "ok      Hub U5m: the catalog-generation migration applies, then replays twice over a database that already carries it"
+  else
+    echo "FAILED  Hub U5m: the catalog-generation migration did not apply and replay over the scratch ledger (it is on ALWAYS_EXECUTE, so a baseline would abort here)"; FAIL=1
+  fi
+  a7d_got="$($PSQL_A7D -tAc "SELECT (SELECT count(DISTINCT \"coverageVersion\") FROM \"ExternalEffectCatalog\")::text || '|' || (SELECT count(*) FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '63679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848')::text;" 2>&1)"
+  if [ "$a7d_got" = "6|124" ]; then echo "ok      Hub U5m: the replays left six generations and U5m's at 124 rows"
+  else echo "FAILED  Hub U5m: the replays left six generations and U5m's at 124 rows — got: $a7d_got (want 6|124)"; FAIL=1; fi
 fi
 $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB_A7D;" >/dev/null 2>&1 || true
 
@@ -5201,7 +5240,8 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # Site Visits SV2's visit-media table (20280114) references SV1-a's visit table, so it is excluded with it.
   # #1179 R1's visit file removal line (20280125) references SV1-a's visit table and SV2's files, so it is excluded with them.
   # Hub U5m's catalog generation (20280127) extends SV1-a's and refuses to apply without it, so it is excluded with it.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*|20280106000000_*|20280107000000_*|20280111000000_*|20280112000000_*|20280114000000_*|20280125000000_*|20280127000000_*) continue ;; esac
+  # RM-e-m's catalog generation (20280207) extends SV1-a's beside U5m's and refuses to apply without both, so it is excluded with them.
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*|20280106000000_*|20280107000000_*|20280111000000_*|20280112000000_*|20280114000000_*|20280125000000_*|20280127000000_*|20280207000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5690,7 +5730,8 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20280202000000_media_content_sha256
 20280203000000_redbracket_id_tables
 20280204000000_media_upload_source
-20280206000000_inspection_responsible_member"
+20280206000000_inspection_responsible_member
+20280207000000_inspection_responsible_catalog"
 # 4d-ii-a / A7d — THE RUNNER'S RULE, MIRRORED (scripts/migrate.sh, the P3005 baseline path): on a database
 # that CARRIES A7d (its two claimant seals and the re-issued actor seal standing beside 4d-i's own seal
 # functions) 4d-i's two halves and 4d-i-b U3 are resolved as applied rather than replayed, because each
@@ -5716,14 +5757,22 @@ carries_sv1a() {
 carries_hub_u5m() {
   [ "$($PSQL -tAc "SELECT EXISTS (SELECT 1 FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = '63679450ab65f2bff678bdce792ab0afd591606fe895963923d1a0aa52e20848')::text" 2>/dev/null)" = "true" ]
 }
+# "Who fixes this?" RM-e-m — THE RUNNER'S FOURTH RULE, MIRRORED: on a database that also carries RM-e's
+# generation (`e356309f…`), U5m's catalog file would refuse RM-e's rows by its immutable foreign-generation audit
+# (gated on the witness, so a database that never served cannot stand it down), so it is resolved as applied. It
+# installs no function, so nothing else's replay depends on it.
+carries_rme() {
+  [ "$($PSQL -tAc "SELECT EXISTS (SELECT 1 FROM \"ExternalEffectCatalog\" WHERE \"coverageVersion\" = 'e356309f11ec2e865a5a68f0f89c9baa52f88ab69898f3578ac7356c34147093')::text" 2>/dev/null)" = "true" ]
+}
 t4d_replay() {
   # the runner reads the evidence ONCE, before anything replays: U1's replay re-creates the actor seal
   # with U1's body (A7d re-issues it with the exemption when its own file replays last), so a per-file
   # read would stop seeing A7d halfway through the ledger and replay U3 into its refusal.
-  local m skip=0 skip_sv1a=0 skip_hub=0
-  if carries_a7d; then skip=1; if carries_sv1a; then skip_sv1a=1; if carries_hub_u5m; then skip_hub=1; fi; fi; fi
+  local m skip=0 skip_sv1a=0 skip_hub=0 skip_rme=0
+  if carries_a7d; then skip=1; if carries_sv1a; then skip_sv1a=1; if carries_hub_u5m; then skip_hub=1; if carries_rme; then skip_rme=1; fi; fi; fi; fi
   for m in $T4D_REPLAY; do
     case "$m" in
+      20280127000000_*) if [ "$skip_rme" -eq 1 ]; then continue; fi ;;
       20280111000000_*) if [ "$skip_hub" -eq 1 ]; then continue; fi ;;
       20271220000000_*|20271221000000_*|20271224000000_*) if [ "$skip" -eq 1 ]; then continue; fi ;;
       20271222000000_*|20280102000000_*|20280104000000_*) if [ "$skip_sv1a" -eq 1 ]; then continue; fi ;;
@@ -5774,7 +5823,7 @@ else
   echo "FAILED  4d-ii-a / A7d: the database does not read as carrying A7d although 20280104 ran on it — the runner would replay 4d-i and its catalog audit would refuse A7d's generation"; FAIL=1
 fi
 if t4d_out="$(t4d_replay)"; then
-  echo "ok      4d-ii-a / A7d: a ledger-lost replay with NO lease runs 20271222–20280127 through on a database carrying A7d, SV1-a and Hub U5m (4d-i, U3, and — for SV1-a — U1, A7a and A7d, and — for U5m — SV1-a's catalog file resolved as applied, as the runner does)"
+  echo "ok      4d-ii-a / A7d: a ledger-lost replay with NO lease runs 20271222–20280207 through on a database carrying A7d, SV1-a, Hub U5m and RM-e (4d-i, U3, and — for SV1-a — U1, A7a and A7d, for U5m SV1-a's catalog file, and for RM-e U5m's catalog file resolved as applied, as the runner does)"
 else
   echo "FAILED  4d-ii-a / A7d: the lease-less replay on a database carrying A7d failed; got: $(printf '%s' "$t4d_out" | tail -3 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
 fi
@@ -5817,7 +5866,7 @@ else
   echo "FAILED  4d-ii-a / A7d: the served database does not read as carrying A7d — the runner would replay 4d-i and its catalog audit would refuse A7d's generation"; FAIL=1
 fi
 if t4d_out="$(t4d_replay)"; then
-  echo "ok      4d-ii-a: once this release has served, the ledger-lost replay runs 20271222–20280127 through (4d-i, U3, U1, A7a, A7d and SV1-a's catalog file resolved as applied, as the runner does)"
+  echo "ok      4d-ii-a: once this release has served, the ledger-lost replay runs 20271222–20280207 through (4d-i, U3, U1, A7a, A7d, SV1-a's and U5m's catalog files resolved as applied, as the runner does)"
 else
   echo "FAILED  4d-ii-a: the replay refused a database this release served; got: $(printf '%s' "$t4d_out" | tail -3 | tr '\n' ' ' | cut -c1-240)"; FAIL=1
 fi
