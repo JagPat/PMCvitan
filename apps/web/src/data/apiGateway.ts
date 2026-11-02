@@ -555,6 +555,11 @@ export const AWAITING_CLIENT_TIMEOUT_MS = 15_000;
 /** #995 V2b-2 — how long a clip's still frame (at most ~225 KB) may take to send before the flush goes on without it. */
 export const POSTER_SEND_WAIT_MS = 30_000;
 
+/** #1273 — how long a visit file removal may wait for the server's answer. A request that gets none by then is given
+ *  up, and the person is told no answer came (or that there is no signal), with the visit read again: a stalled
+ *  connection never leaves Remove busy for as long as it stays open. */
+export const REMOVE_VISIT_FILE_WAIT_MS = 20_000;
+
 /** A signal that aborts with a TimeoutError after `ms`. Browsers without AbortSignal.timeout (Mobile Safari
  *  before 16.4) get the same behaviour from a controller and a timer, so the read still fails instead of throwing. */
 export function timeoutSignal(ms: number): AbortSignal {
@@ -1545,6 +1550,7 @@ export class ApiGateway {
     return this.req<{ ok: true }>(`/projects/${this.projectId}/media/${mediaId}/visit-removal`, {
       method: 'POST',
       body: JSON.stringify(reason === undefined ? {} : { reason }),
+      signal: timeoutSignal(REMOVE_VISIT_FILE_WAIT_MS),
     });
   }
   private visitAct(path: string, body: unknown, idempotencyKey: string): Promise<SiteVisit> {

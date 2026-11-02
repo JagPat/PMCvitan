@@ -5,7 +5,7 @@ import type { Lang, ProjectMember, Role } from '@vitan/shared';
 import { VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { SiteVisitsScreen } from '@/screens/SiteVisitsScreen';
-import { replayOutboxOp, type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitFile, type SiteVisitRemoval } from '@/data/apiGateway';
+import { replayOutboxOp, tellSiteVisits, type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitFile, type SiteVisitRemoval } from '@/data/apiGateway';
 import { deleteRemovedVisitPhoto, deleteVisitPhoto, fileVisitPhoto, listVisitPhotos, putVisitPhoto, REMOVED_VISIT_PHOTO_PREFIX, removedVisitPhotos, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
 import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
 
@@ -650,6 +650,30 @@ describe('#1179 R3: taking a file off a visit', () => {
     expect(within(card).queryByTestId('sv-file-ck-l')).toBeNull();
     unreadable.mockRestore();
     localStorage.removeItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-l`);
+  });
+
+  it('removal records that cannot be read keep the visit photo retry armed, and its next read shows the phone\'s copies once they can be read (#1279)', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    await filedCopy(scope, project, 'ck-r');
+    localStorage.setItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-z`, '1');
+    const unreadable = vi.spyOn(Storage.prototype, 'key').mockImplementation(() => { throw new Error('storage blocked'); });
+    const retry = vi.spyOn(useStore.getState(), 'retrySiteVisits').mockImplementation(() => {});
+    const card = await mount('consultant', CONSULTANT, server(visit()).gw);
+    // hidden while the records cannot be read, with the retry armed: a filed copy the server has not listed yet always
+    // keeps it armed, so no event from storage itself is needed
+    expect(within(card).queryByTestId('sv-file-ck-r')).toBeNull();
+    expect(retry).toHaveBeenCalled();
+    unreadable.mockRestore();
+    retry.mockRestore();
+    // the retry's read, once the records can be read again, shows the copy
+    const now2 = useStore.getState();
+    await act(async () => { tellSiteVisits({ kind: 'retry', project: now2.activeProjectId, generation: now2.projectScopeGeneration }); });
+    await settled();
+    expect(within(card).getByTestId('sv-file-ck-r')).toBeTruthy();
+    localStorage.removeItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-z`);
   });
 
   it('a removal another tab recorded hides the phone\'s copy on an open screen at once', async () => {
