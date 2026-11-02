@@ -19,6 +19,8 @@ import { startFakeIssuer, type FakeIssuer } from '../unit-support/fake-issuer';
 import { AuthService } from '../../src/auth/auth.service';
 import { IdentitySignInService } from '../../src/auth/identity/identity-sign-in.service';
 import { PHONE_SIGN_IN_PURPOSE } from '../../src/auth/phone-sign-in.service';
+import { PasswordCredentialsService } from '../../src/auth/password-credentials.service';
+import { SignInAttempts } from '../../src/auth/identity/sign-in-attempts';
 import { OrgsParticipant } from '../../src/orgs/orgs.participant';
 import { lockOrgStanding, orgStandingLockKey } from '../../src/common/readiness-lock';
 import { Prisma } from '@prisma/client';
@@ -170,6 +172,9 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     await setPassword(user.email!, 'a passphrase never taken', 503);
     await me(second).expect(401);
     fake.force = {};
+
+    // the per-person quota (shared by sign-in and reset requests) is spent by now; the steps below come a quarter hour on
+    await t.prisma.signInAttempt.deleteMany({});
 
     // the PMC transaction after the issuer write failing, with a session the new password opened in between: both end
     const again = (await login(user.email!, 'the second issuer passphrase').expect(201)).body.token as string;
@@ -700,6 +705,42 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     expect(fake.requests).toHaveLength(0);
     const rows = await t.prisma.signInAttempt.findMany({ take: 1 });
     expect(JSON.stringify(rows, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))).not.toContain(user.email!);
+  });
+
+  it('sign-in and reset requests share one quota, and a refusal names the real wait of the window that refused it', async () => {
+    const attempts = new SignInAttempts(t.prisma);
+    const t0 = new Date('2026-11-02T10:00:00.000Z');
+    const at = (ms: number) => new Date(t0.getTime() + ms);
+    // one address: three reset requests and two sign-ins are the five a pair may make; the sixth try is refused
+    const pairEmail = `rbid-quota-pair-${Date.now()}@test.local`;
+    for (const [i, kind] of (['reset', 'sign-in', 'reset', 'sign-in', 'reset'] as const).entries()) {
+      expect((await attempts.count(kind, pairEmail, '10.0.0.1', at(i * 1000))).allowed).toBe(true);
+    }
+    const pair = await attempts.count('sign-in', pairEmail, '10.0.0.1', at(5000));
+    expect(pair.allowed).toBe(false);
+    // the fifth newest counted try (at +1 s) leaves the 15-minute window at +901 s
+    expect(pair.retryAfterSeconds).toBe(900 - 4);
+    // ten tries from ten addresses fill the email's hour; the eleventh, from a fresh address, waits most of an hour
+    const emailOnly = `rbid-quota-email-${Date.now()}@test.local`;
+    for (let i = 0; i < 10; i += 1) {
+      expect((await attempts.count(i % 2 ? 'reset' : 'sign-in', emailOnly, `10.0.1.${i}`, at(i * 1000))).allowed).toBe(true);
+    }
+    const hour = await attempts.count('reset', emailOnly, '10.0.2.1', at(20_000));
+    expect(hour.allowed).toBe(false);
+    // the tenth newest counted try (at +1 s) leaves the hour at +3601 s
+    expect(hour.retryAfterSeconds).toBe(3600 - 19);
+    await t.prisma.signInAttempt.deleteMany({ where: { at: { gte: t0, lt: at(60_000) } } });
+  });
+
+  it('a reset request turned away by the limit answers as a sent one and logs one line', async () => {
+    const user = await invitee('reset-limit');
+    for (let i = 0; i < 5; i += 1) await http().post('/auth/password/request').send({ email: user.email }).expect(201);
+    const lines = vi.spyOn(IdentitySignInService.prototype as unknown as { line: (r: string, a: string, o: string) => void }, 'line');
+    const notSent = vi.spyOn(PasswordCredentialsService.prototype as unknown as { notSent: (id: string) => unknown }, 'notSent');
+    const limited = await http().post('/auth/password/request').send({ email: user.email }).expect(201);
+    expect(limited.body).toEqual({ accepted: true, requestId: expect.any(String) });
+    expect(lines.mock.calls.map((c) => [c[0], c[2]])).toEqual([['password request', 'limited']]);
+    expect(notSent).not.toHaveBeenCalled();
   });
 
   it('a test account address is never linked or retired', async () => {

@@ -144,9 +144,12 @@ export class PasswordCredentialsService {
    * it impossible to tell from outside why a code "did not arrive" (#482, 12 Oct 2026). The server log says so,
    * keyed by the public requestId the caller holds and never by the email address.
    */
-  /** The answer for a request turned away by the Redbracket ID per-person limit: the same as any unsent request. */
+  /**
+   * The answer for a request turned away by the Redbracket ID per-person limit: the same as any unsent request. Its one
+   * log line is the limit's own ('identity password request try N: limited'), so nothing is logged here.
+   */
   unsent(): { accepted: true; requestId: string } {
-    return this.notSent(randomUUID());
+    return { accepted: true, requestId: randomUUID() };
   }
 
   private notSent(publicRequestId: string): { accepted: true; requestId: string } {

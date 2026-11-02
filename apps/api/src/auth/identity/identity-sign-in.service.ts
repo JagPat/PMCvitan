@@ -38,7 +38,6 @@ export const EMAIL_UNVERIFIED = 'Your email is not confirmed yet. Use "Set or re
 export const ISSUER_ACCOUNT_EXISTS = 'This email already has a Redbracket ID. Enter that password here to join with it.';
 export const NEEDS_HELP = 'This email cannot be set up here. Ask your PMC for help.';
 const TOO_MANY = 'Too many attempts. Try again in a few minutes.';
-const RETRY_AFTER_SECONDS = 15 * 60;
 /** The bcrypt cost new PMC passwords use (password-credentials.service.ts); every break-glass try does this much work. */
 const EVEN_COST = 12;
 /** bcrypt hashes of random values nobody holds, one per cost: compared to make every break-glass try cost the same. */
@@ -120,7 +119,7 @@ export class IdentitySignInService {
     const attempt = await this.attempts.count(kind, email, address);
     if (!attempt.allowed) {
       this.line(route, attempt.id, 'limited');
-      throw new HttpException({ statusCode: 429, message: TOO_MANY, retryAfter: RETRY_AFTER_SECONDS }, HttpStatus.TOO_MANY_REQUESTS);
+      throw new HttpException({ statusCode: 429, message: TOO_MANY, retryAfter: attempt.retryAfterSeconds }, HttpStatus.TOO_MANY_REQUESTS);
     }
     return attempt.id;
   }
