@@ -317,10 +317,57 @@ test('G3b — a CI-triggered run disarms its own queued merge first; a disarm no
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const runBody = gate.slice(gate.indexOf('export async function run()'));
   const withdraw = runBody.indexOf('await withdrawUntokenedSuccess(client, pullRequest, expectedHead, existingStatus);');
-  const first = runBody.indexOf("if (context.trigger === 'ci') {\n    pullRequest = await disarmBeforeRun(client, pullRequest, expectedHead);");
+  const first = runBody.indexOf("if (context.trigger === 'ci') {\n    pullRequest = await disarmBeforeRun(client, pullRequest, expectedHead, existingStatuses);");
   assert.ok(withdraw > 0 && first > withdraw, 'after the withdrawal');
   assert.ok(first < runBody.indexOf('await enforceReviewScope('), 'before the scope read');
   assert.ok(first < runBody.indexOf('pendingRecoveryRequest(existingStatuses'), 'before the recovery request');
+});
+
+// G3b gap-check G1 (Stage 1 probe p1-consumed-then-disarmed) — a watchdog re-arm republished S2, armed the PR and
+// consumed its request at C > S2. A later run disarms the PR and ends without a new success (or a person disables the
+// merge, or a body edit lifts an ownership hold): the head is green, tokened, unarmed. (a) The run's own confirmed
+// disarm lifts this PR's newest consumed settlement, so the watchdog asks again; a lift that fails keeps the disarm's
+// outcome. (b) Whatever disarmed it, the consumption holds the watchdog only for `REARM_REQUEST_ABANDONED_MS`.
+test('G3b (gap-check G1) — a consumption from an earlier re-arm stops holding once the head is disarmed or the limit passes', async () => {
+  const consumedAt = '2026-11-02T10:00:00Z';
+  const consumed = { id: 9200, context: rearmRequestContext('9000', PR), state: 'success', description: REARM_SETTLEMENTS[0], updated_at: consumedAt };
+  const s2 = { ...success(9100, 'review: recovered prior clean Codex result on this exact head [wi:none]'), updated_at: '2026-11-02T09:59:00Z' };
+  const other = { id: 9300, context: rearmRequestContext('9000', PR + 1), state: 'success', description: REARM_SETTLEMENTS[0], updated_at: consumedAt };
+  const at = (ms) => new Date(Date.parse(consumedAt) + ms).toISOString();
+  // the probe: within the limit, the consumption holds the watchdog (the re-judge's own success was already judged)
+  assert.equal(gateRearmStatus({ statuses: [consumed, s2] }, ready(), at(60_000)), null);
+  // (b) past the limit it no longer holds: asked about again, once per limit
+  assert.equal(gateRearmStatus({ statuses: [consumed, s2] }, ready(), at(REARM_REQUEST_ABANDONED_MS + 60_000))?.id, 9100);
+  // (a) a CI-triggered run's confirmed disarm lifts this PR's newest consumed settlement, and only this PR's
+  const armed = full({ auto_merge: { enabled_at: '2026-11-02T10:00:00Z' } });
+  const unarmed = { ...armed, auto_merge: null };
+  const make = (failMark = false) => {
+    const calls = [];
+    const reads = [armed, unarmed];
+    return { calls, client: {
+      async pullRequest() { calls.push(['read']); return reads.shift(); },
+      async openPullRequestsAt() { return [unarmed]; },
+      async disableAutoMerge() { calls.push(['disable']); },
+      async setStatus(sha, state, description, url, context) {
+        if (failMark && description === REARM_ATTEMPT_FAILED) throw new Error('status write 502');
+        calls.push(['status', state, description, context]); return { id: 1 };
+      },
+    } };
+  };
+  const lifted = make();
+  assert.equal((await disarmBeforeRun(lifted.client, armed, HEAD, [other, consumed, s2])).auto_merge, null);
+  const marks = lifted.calls.filter(([k]) => k === 'status');
+  assert.deepEqual(marks, [['status', 'failure', REARM_ATTEMPT_FAILED, consumed.context]]);
+  // with the lift written, the watchdog asks at once, well inside the limit
+  const after = { ...consumed, id: 9400, state: 'failure', description: REARM_ATTEMPT_FAILED };
+  assert.equal(gateRearmStatus({ statuses: [after, other, s2] }, ready(), at(60_000))?.id, 9100);
+  // a lift that fails keeps the disarm's outcome; (b) then ends the strand
+  const failed = make(true);
+  assert.equal((await disarmBeforeRun(failed.client, armed, HEAD, [consumed, s2])).auto_merge, null);
+  // nothing queued: no read, nothing lifted
+  const quiet = make();
+  assert.equal(await disarmBeforeRun(quiet.client, unarmed, HEAD, [consumed, s2]), unarmed);
+  assert.deepEqual(quiet.calls, []);
 });
 
 // G3b (Stage 1, X2g) — behavioural, through `run()` itself: every GitHubClient method, `request` and `graphql`

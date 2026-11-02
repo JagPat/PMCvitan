@@ -155,13 +155,18 @@ export function gateRecoveryStatus(combinedStatus) {
  * for this success that is pending (within `REARM_REQUEST_ABANDONED_MS`) or settled holds the ask; one marked
  * `REARM_ATTEMPT_FAILED` does not. A consumed settlement for this PR NEWER than the newest success means that success
  * is the re-judge's own (it republishes, then consumes) and was already judged; a success any later run writes is asked
- * about once more. Status ids increase monotonically.
+ * about once more. Status ids increase monotonically. That hold lasts `REARM_REQUEST_ABANDONED_MS` (G3b gap-check G1 b):
+ * a head disarmed after its re-judge armed it (a person's disable, a body edit lifting an ownership hold, or a later
+ * run's disarm whose own lift of the consumption failed) is asked about again, at most once per that limit.
  */
-function abandonedRequest(status, now) {
-  if (status?.state !== 'pending') return false;
+function pastAbandonedLimit(status, now) {
   const at = Date.parse(String(status.updated_at ?? status.created_at ?? ''));
   const current = Date.parse(String(now ?? ''));
   return Number.isFinite(at) && Number.isFinite(current) && current - at > REARM_REQUEST_ABANDONED_MS;
+}
+
+function abandonedRequest(status, now) {
+  return status?.state === 'pending' && pastAbandonedLimit(status, now);
 }
 
 function newerStatusId(candidate, than) {
@@ -187,7 +192,8 @@ export function gateRearmStatus(combinedStatus, pullRequest, now = null) {
   if (statuses.some((status) => String(status?.context ?? '').startsWith(RECOVERY_REQUEST_CONTEXT)
     && String(status?.context ?? '').endsWith(suffix)
     && REARM_SETTLEMENTS.includes(String(status?.description ?? ''))
-    && newerStatusId(status?.id, newest.id))) return null;
+    && newerStatusId(status?.id, newest.id)
+    && !pastAbandonedLimit(status, now))) return null;
   return newest;
 }
 

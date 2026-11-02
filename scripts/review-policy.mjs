@@ -252,7 +252,7 @@ export const CODEX_AUTOMERGE_REARM_FAILED = 'auto-merge could not be re-armed af
 
 /**
  * G3b — a re-arm request: the gate's recovery asked to re-judge a head's NEWEST tokened success (the watchdog's
- * `gateRearmStatus`, or a disarm that saw its head move). Unlike a failure's request it names its pull request (#1289
+ * `gateRearmStatus`). Unlike a failure's request it names its pull request (#1289
  * round 3, Codex 4440445763): a status belongs to the commit and `auto_merge` to the pull request, so two open pull
  * requests at one commit each have their own request, and one never holds the other's watchdog.
  */

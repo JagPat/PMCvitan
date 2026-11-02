@@ -29,6 +29,7 @@ import {
   REARM_ATTEMPT_FAILED,
   REARM_CONSUMED_OUTCOME,
   REARM_REQUEST_SUPERSEDED,
+  REARM_SETTLEMENTS,
   rearmRequestContext,
   rearmRequestDescription,
 } from './review-policy.mjs';
@@ -3265,11 +3266,45 @@ export async function markAbandonedRearmRequest(client, head, terminalStatusId, 
  * before its own authorization reads its own record. Only this run's authorization arms it again; a run that ends
  * without a success leaves the head unarmed, and a green left unarmed is the watchdog's (`gateRearmStatus`). A disarm
  * not confirmed takes the retryable hold (fail closed) and rethrows.
+ *
+ * G3b gap-check G1 (a): a confirmed disarm also lifts this pull request's newest consumed re-arm settlement (marks it
+ * `REARM_ATTEMPT_FAILED`). That consumption records a re-judge that armed the head; once this run has disarmed it, it
+ * no longer holds the watchdog, which asks again if this run ends without a new success. A mark that fails is logged
+ * and the disarm's outcome stands: the consumption then expires after `REARM_REQUEST_ABANDONED_MS` (gap-check G1 b).
  */
-export async function disarmBeforeRun(client, pullRequest, expectedHead) {
+export function newestConsumedRearmSettlement(statuses, pullNumber) {
+  const suffix = `/pr-${pullNumber}`;
+  const seen = new Set();
+  let newest = null;
+  for (const status of statuses ?? []) {
+    const context = String(status?.context ?? '');
+    if (!context.startsWith('codex-recovery-request/') || !context.endsWith(suffix) || seen.has(context)) continue;
+    seen.add(context);
+    if (!REARM_SETTLEMENTS.includes(String(status?.description ?? ''))) continue;
+    let newer = !newest;
+    try {
+      newer ||= BigInt(String(status.id)) > BigInt(String(newest.id));
+    } catch {
+      // an unreadable id is not newer
+    }
+    if (newer) newest = status;
+  }
+  return newest;
+}
+
+export async function disarmBeforeRun(client, pullRequest, expectedHead, statuses = []) {
   if (!pullRequest.auto_merge) return pullRequest;
   try {
-    return await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead);
+    const disarmed = await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead);
+    const consumed = disarmed ? newestConsumedRearmSettlement(statuses, pullRequest.number) : null;
+    if (consumed) {
+      try {
+        await client.setStatus(expectedHead, 'failure', REARM_ATTEMPT_FAILED, pullRequest.html_url, consumed.context);
+      } catch (markError) {
+        console.warn(`Could not lift the consumed re-arm settlement ${consumed.context}: ${markError?.message ?? markError}`);
+      }
+    }
+    return disarmed;
   } catch (error) {
     if (!(error instanceof AutoMergeDisarmFailed)) throw error;
     await publishRetryableHold(client, pullRequest, expectedHead, null, {
@@ -3365,7 +3400,7 @@ export async function run() {
   // there would strand the head pending with no path back to green.
   await withdrawUntokenedSuccess(client, pullRequest, expectedHead, existingStatus);
   if (context.trigger === 'ci') {
-    pullRequest = await disarmBeforeRun(client, pullRequest, expectedHead);
+    pullRequest = await disarmBeforeRun(client, pullRequest, expectedHead, existingStatuses);
     if (!pullRequest) {
       console.log('Workflow event was superseded by a newer pull-request head.');
       return;
