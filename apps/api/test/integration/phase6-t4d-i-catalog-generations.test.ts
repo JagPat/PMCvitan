@@ -42,8 +42,11 @@ import { EXTERNAL_EFFECTS, effectCoverageVersion } from '../../src/platform/exte
  *     this catalog plus the two Hub keys, each on an existing drawing event type (invalidate, never push,
  *     no pairing claim). Nothing in this release emits under it; it sits beside CURRENT so the release
  *     that compiles it finds it present, while this one keeps emitting under CURRENT.
+ *   · RME — "Who fixes this?" RM-e-m, a SECOND generation seeded ahead, BESIDE NEXT rather than on top of
+ *     it: the same preimage over this catalog plus `inspection.responsible_set` (its own new event type,
+ *     invalidate, never push, no pairing claim) and without the Hub keys. RM-e-c compiles it.
  *
- * WHAT THIS SUITE HOLDS. `licences the seeds` RE-DERIVES all six from source on every run, so
+ * WHAT THIS SUITE HOLDS. `licences the seeds` RE-DERIVES all seven from source on every run, so
  * neither migration's literal can outlive its proof: a key added without its row, a policy that
  * moved without being declared, or a seventh flip changes a hash and fails here. The rest reads
  * the live table and drives the envelope seal end to end under each generation.
@@ -59,6 +62,16 @@ const NEXT = (() => {
     '20280127000000_hub_catalog_generation', 'migration.sql'), 'utf8');
   const m = sql.match(/INSERT INTO "_hub_catalog_seed"[^\n]*\n\s+\('([0-9a-f]{64})'/);
   if (!m?.[1]) throw new Error('the Hub U5m coverage generation could not be read from its migration');
+  return m[1]!;
+})();
+
+/** RM-e-m's generation, as its migration names it (`_rme_catalog_seed`'s one version). Read out of the
+ *  migration text; `licences the seeds` asserts it is this catalog plus `inspection.responsible_set`. */
+const RME = (() => {
+  const sql = readFileSync(join(__dirname, '..', '..', 'prisma', 'migrations',
+    '20280207000000_inspection_responsible_catalog', 'migration.sql'), 'utf8');
+  const m = sql.match(/INSERT INTO "_rme_catalog_seed"[^\n]*\n\s+\('([0-9a-f]{64})'/);
+  if (!m?.[1]) throw new Error('the RM-e coverage generation could not be read from its migration');
   return m[1]!;
 })();
 
@@ -164,6 +177,11 @@ const HUB_KEYS: Record<string, Def> = {
   'drawing.relinked': { eventType: 'drawing.refiled', invalidate: true, push: null },
 };
 
+/** RM-e-m — the one key the RME generation ADDS over CURRENT, as RM-e-c will compile it. */
+const RME_KEYS: Record<string, Def> = {
+  'inspection.responsible_set': { eventType: 'inspection.responsible_set', invalidate: true, push: null },
+};
+
 /**
  * `canonicalCatalog()`, replicated with three knobs: keys to skip, whether the sixth
  * (`pairingRequired`) element is present, and whether the A7d elements (the seventh and eighth) and
@@ -215,7 +233,11 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
     pairingRequired: r.pairingRequired,
   });
 
-  it('licences the seeds — all six generations fall out of THIS catalog, and only the declared bends separate them', () => {
+  it('licences the seeds — all seven generations fall out of THIS catalog, and only the declared bends separate them', () => {
+    // RM-e-m's generation: the same eight elements over this catalog plus `inspection.responsible_set`, which
+    // this release does not compile yet, and WITHOUT the Hub keys (it sits beside NEXT, not on top of it).
+    expect(sha(canonical([], true, true, RME_KEYS))).toBe(RME);
+    for (const k of Object.keys(RME_KEYS)) expect(k in EXTERNAL_EFFECTS, `${k} is compiled already: RM-e's generation is now CURRENT`).toBe(false);
     // Hub U5m's NEXT generation: the same eight elements over this catalog plus the two Hub keys, which
     // this release does not compile yet.
     expect(sha(canonical([], true, true, HUB_KEYS))).toBe(NEXT);
@@ -233,7 +255,7 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
     expect(sha(canonical([...ADDED_BY_SV1A, ...ADDED_BY_A7D], false))).toBe(PRIOR);
     // the pre-4d-i generation: five elements, minus the keys 4d-i added.
     expect(sha(canonical([...ADDED_BY_SV1A, ...ADDED_BY_A7D, ...ADDED_BY_4D_I], false))).toBe(OUTGOING);
-    expect(new Set([NEXT, CURRENT, A7D, PAIRING, PRIOR, OUTGOING]).size, 'six DISTINCT generations').toBe(6);
+    expect(new Set([RME, NEXT, CURRENT, A7D, PAIRING, PRIOR, OUTGOING]).size, 'seven DISTINCT generations').toBe(7);
     // and the flags are EXACTLY the plan's six plus A7d's three plus SV1-a's eight — a further flag,
     // or a missing one, moves CURRENT and fails the first assertion; this arm says WHICH key did it.
     const flagged = Object.entries(EXTERNAL_EFFECTS as Record<string, Def>)
@@ -241,7 +263,8 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
     expect(flagged).toEqual([...PAIRING_REQUIRED, ...ADDED_BY_A7D, ...ADDED_BY_SV1A].sort());
   });
 
-  it('seeds ALL SIX generations, over the right key sets', async () => {
+  it('seeds ALL SEVEN generations, over the right key sets', async () => {
+    const rme = await rowsAt(RME);
     const next = await rowsAt(NEXT);
     const current = await rowsAt(CURRENT);
     const a7d = await rowsAt(A7D);
@@ -251,6 +274,9 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
 
     expect(current.length, `no rows at the current generation ${CURRENT}`).toBeGreaterThan(0);
     expect(current.length).toBe(Object.keys(EXTERNAL_EFFECTS).length);
+    // RM-e extends SV1-a's generation by exactly its one key
+    expect(current.map((r) => r.effectKey)).toEqual(rme.map((r) => r.effectKey).filter((k) => !(k in RME_KEYS)));
+    expect(rme.length).toBe(current.length + Object.keys(RME_KEYS).length);
     // U5m extends SV1-a's generation by exactly the two Hub keys
     expect(current.map((r) => r.effectKey)).toEqual(next.map((r) => r.effectKey).filter((k) => !(k in HUB_KEYS)));
     expect(next.length).toBe(current.length + Object.keys(HUB_KEYS).length);
@@ -380,7 +406,7 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
   });
 
   it('no generation is born retired — a retired row may not back a new event', async () => {
-    for (const v of [NEXT, CURRENT, A7D, PAIRING, PRIOR, OUTGOING]) {
+    for (const v of [RME, NEXT, CURRENT, A7D, PAIRING, PRIOR, OUTGOING]) {
       const rows = await rowsAt(v);
       // presence first, or an absent generation would make this arm vacuously green — which is
       // exactly what it did on the RED measurement of the unfixed head.
@@ -432,10 +458,12 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
     await emitAt(CURRENT, 'cg-ev-current');
     // and the NEXT release's (Hub U5k), whose generation U5m seeded ahead of it
     await emitAt(NEXT, 'cg-ev-next');
+    // and RM-e-c's, whose generation RM-e-m seeded ahead of it, beside U5m's
+    await emitAt(RME, 'cg-ev-rme');
     // all COMMITTED, and each carries the version its own emitter computed
     const landed = await t.prisma.$queryRawUnsafe<{ eventId: string; v: string }[]>(
       `SELECT "eventId", "dispatchIntent" ->> 'coverageVersion' AS v FROM "DomainEvent"
-        WHERE "eventId" IN ('cg-ev-outgoing','cg-ev-prior','cg-ev-pairing','cg-ev-a7d','cg-ev-current','cg-ev-next') ORDER BY "eventId"`,
+        WHERE "eventId" IN ('cg-ev-outgoing','cg-ev-prior','cg-ev-pairing','cg-ev-a7d','cg-ev-current','cg-ev-next','cg-ev-rme') ORDER BY "eventId"`,
     );
     expect(landed).toEqual([
       { eventId: 'cg-ev-a7d', v: A7D },
@@ -444,6 +472,7 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
       { eventId: 'cg-ev-outgoing', v: OUTGOING },
       { eventId: 'cg-ev-pairing', v: PAIRING },
       { eventId: 'cg-ev-prior', v: PRIOR },
+      { eventId: 'cg-ev-rme', v: RME },
     ]);
     // while a generation this database never registered stays refused: seeding the drain's
     // predecessors widens the catalog by KNOWN versions, it does not stop the seal asking.
@@ -511,5 +540,64 @@ describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still b
     // the existing key on the same event type is unchanged at both generations
     await emitKey(CURRENT, 'drawing.refiled', 'drawing.refiled', 'cg-ev-current-refiled');
     await emitKey(NEXT, 'drawing.refiled', 'drawing.refiled', 'cg-ev-next-refiled');
+  });
+
+  it('RM-e-m: the RM-e generation is the current one plus exactly `inspection.responsible_set`, nothing else moved', async () => {
+    const rme = await rowsAt(RME);
+    const current = new Map((await rowsAt(CURRENT)).map((r) => [r.effectKey, r]));
+    expect(rme.length).toBe(current.size + 1);
+    for (const row of rme) {
+      const before = current.get(row.effectKey);
+      const added = RME_KEYS[row.effectKey];
+      if (added) {
+        expect(before, `${row.effectKey} is RM-e's`).toBeUndefined();
+        expect(policy(row)).toEqual({
+          effectKey: row.effectKey, eventType: added.eventType, invalidate: true, pushRoles: null,
+          pushFamily: null, frozenAudience: false, requiresPush: false, audience: null, pushBody: null,
+          pairingRequired: false,
+        });
+        continue;
+      }
+      expect(before, `the current generation carries ${row.effectKey}`).toBeDefined();
+      expect(policy(row), `${row.effectKey}: a shared key moved`).toEqual(policy(before!));
+    }
+    for (const k of Object.keys(HUB_KEYS)) expect(rme.some((r) => r.effectKey === k), `${k} is at RM-e's generation`).toBe(false);
+    expect(rme.filter((r) => r.frozenAudience).map((r) => r.effectKey).sort()).toEqual([...FROZEN_BY_A7D].sort());
+    expect(rme.filter((r) => r.pairingRequired).map((r) => r.effectKey).sort())
+      .toEqual([...PAIRING_REQUIRED, ...ADDED_BY_A7D, ...ADDED_BY_SV1A].sort());
+  });
+
+  it('RM-e-m: `inspection.responsible_set` exists ONLY at the RM-e generation — this release cannot emit it, RM-e-c can, under no other generation', async () => {
+    // What makes seeding ahead safe for the release still serving: its events name CURRENT, which RM-e-m left
+    // untouched. And what makes it useful for the release after: the event under RME commits through the
+    // envelope seal, while the same key under CURRENT, or under U5m's NEXT, is a pair this database does not hold.
+    const org = f.orgA.id;
+    const proj = f.projectA.id;
+    const emitKey = (version: string, key: string, type: string, eventId: string) => t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = $1`, proj,
+      );
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+         SELECT $1,$5,1,$2,$3,s."nextPosition" - 1,'system','system:cg','Inspection','cg-insp',
+                jsonb_build_object('effectKey',$6::text,'coverageVersion',$4::text,'invalidate',true)
+           FROM "ProjectEventStream" s WHERE s."projectId" = $3`,
+        eventId, org, proj, version, type, key,
+      );
+      await tx.$executeRawUnsafe(rawDeliveryRowsSql(eventId));
+    });
+    for (const [key, d] of Object.entries(RME_KEYS)) {
+      await emitKey(RME, key, d.eventType, `cg-ev-rme-${key}`);
+      await expect(emitKey(CURRENT, key, d.eventType, `cg-ev-current-${key}`))
+        .rejects.toThrow(/which this database does not hold/);
+      await expect(emitKey(NEXT, key, d.eventType, `cg-ev-next-${key}`))
+        .rejects.toThrow(/which this database does not hold/);
+    }
+    // and a Hub key is not at RM-e's generation either: the two are siblings
+    await expect(emitKey(RME, 'drawing.relinked', 'drawing.refiled', 'cg-ev-rme-relinked'))
+      .rejects.toThrow(/which this database does not hold/);
+    // an existing inspection key is unchanged at both generations
+    await emitKey(CURRENT, 'inspection.relabeled', 'inspection.relabeled', 'cg-ev-current-relabeled');
+    await emitKey(RME, 'inspection.relabeled', 'inspection.relabeled', 'cg-ev-rme-relabeled');
   });
 });

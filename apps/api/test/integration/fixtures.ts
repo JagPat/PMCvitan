@@ -701,7 +701,9 @@ export async function plantLegacyDecisionAudit<T>(
  * Site Visits SV1-a's catalog generation, which A7d's immutable catalog audit refuses, so a deploy never replays
  * A7d there, nor U1 and A7a, whose replays only A7d's replay repaired. Every migrated test database carries Hub
  * U5m's generation too, which SV1-a's immutable catalog audit refuses, so SV1-a's catalog file is resolved as well
- * (`T4D_HUB_SUPERSEDED`). A suite proving "re-applied as a replay is, it moves nothing" replays exactly this list.
+ * (`T4D_HUB_SUPERSEDED`). And every migrated test database carries the responsible-member RM-e generation, which
+ * U5m's immutable catalog audit refuses, so U5m's catalog file is resolved too (`T4D_RME_SUPERSEDED`). A suite
+ * proving "re-applied as a replay is, it moves nothing" replays exactly this list.
  */
 export function alwaysExecuteReplay(from: string): string[] {
   const sh = readFileSync(join(__dirname, '..', '..', 'scripts', 'migrate.sh'), 'utf8');
@@ -714,5 +716,9 @@ export function alwaysExecuteReplay(from: string): string[] {
   if (!hub.includes('20280111000000_site_visits_sv1a_catalog')) {
     throw new Error('alwaysExecuteReplay: migrate.sh no longer resolves SV1-a\'s catalog file on a U5m database; revisit this helper');
   }
-  return lines('ALWAYS_EXECUTE').filter((m) => m >= from && !superseded.includes(m) && !hub.includes(m)).sort();
+  const rme = lines('T4D_RME_SUPERSEDED');
+  if (!rme.includes('20280127000000_hub_catalog_generation')) {
+    throw new Error('alwaysExecuteReplay: migrate.sh no longer resolves U5m\'s catalog file on an RM-e database; revisit this helper');
+  }
+  return lines('ALWAYS_EXECUTE').filter((m) => m >= from && !superseded.includes(m) && !hub.includes(m) && !rme.includes(m)).sort();
 }
