@@ -1536,15 +1536,29 @@ export async function completeReviewedPullRequest(
     ) {
       throw error;
     }
-    const raced = await client.mergeExactHead(
-      pullRequest.number,
-      expectedHead,
-    );
+    let raced;
+    let refusal;
+    try {
+      raced = await client.mergeExactHead(
+        pullRequest.number,
+        expectedHead,
+      );
+    } catch (mergeError) {
+      refusal = mergeError;
+    }
     if (raced?.merged) {
       await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
       return 'merged';
     }
-    throw new Error(
+    // Codex 4440931048 on #1295 — the clean-status retry did not merge either: with the queue disarmed before the
+    // success, nothing is queued and nothing scheduled, so the green is replaced by the same retryable hold as a failed
+    // re-arm, and recovery re-judges the head
+    await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
+      detail: CODEX_AUTOMERGE_REARM_FAILED,
+      attempt,
+      next: AUTOMERGE_RETRY_NEXT[CODEX_AUTOMERGE_REARM_FAILED],
+    });
+    throw refusal ?? new Error(
       `GitHub reported a clean pull request but refused the exact-head merge: ${raced?.message ?? 'unknown reason'}`,
       { cause: error },
     );

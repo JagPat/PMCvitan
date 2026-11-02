@@ -171,6 +171,18 @@ test('G3a (gap-check F2d) — a re-arm that fails replaces the green with the re
   clean.mergeExactHead = async () => ({ merged: true });
   assert.equal(await completeReviewedPullRequest(clean, pr(), HEAD, verdict), 'merged');
   assert.equal(clean.log.some(([k]) => k === 'status'), false);
+  // Codex 4440931048 on #1295 — a clean-status retry that does not merge, or throws, takes the same retryable hold:
+  // with the queue disarmed before the success, nothing else would re-judge the green head
+  for (const retry of [async () => ({ merged: false, message: 'Base branch was modified' }), async () => { throw new Error('GitHub 502'); }]) {
+    const refused = gateClient({ enable: async () => { throw new Error('Pull request is in clean status'); } });
+    let merges = 0;
+    // the direct merge is not ready; the retry after the clean-status answer refuses or throws
+    refused.mergeExactHead = async () => ((merges += 1) === 1 ? { merged: false, message: 'Not ready' } : retry());
+    await assert.rejects(completeReviewedPullRequest(refused, pr(), HEAD, verdict));
+    const statuses = refused.log.filter(([k]) => k === 'status');
+    assert.deepEqual(statuses.at(-1).slice(2), ['failure', `review: ${CODEX_AUTOMERGE_REARM_FAILED}`]);
+    assert.match(refused.log.find(([k]) => k === 'sticky')?.[1] ?? '', /review_retry/u);
+  }
 });
 
 test('G3a — structural: both writers take the one disarm-then-success step; only the merge authorization re-arms', async () => {
