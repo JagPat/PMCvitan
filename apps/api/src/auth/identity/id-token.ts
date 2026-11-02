@@ -93,21 +93,26 @@ export async function checkIdToken(token: string, check: IdTokenCheck): Promise<
   }
 }
 
-/** The RS256 signing key with this `kid` in a JWKS document, or null. Never throws. */
+/** The one RS256 signing key with this `kid` in a JWKS document, or null (none, or more than one). Never throws. */
 export function keyFromJwks(body: string, kid: string): KeyObject | null {
   try {
     const doc: unknown = JSON.parse(body);
     const keys = doc && typeof doc === 'object' && Array.isArray((doc as { keys?: unknown }).keys) ? (doc as { keys: unknown[] }).keys : [];
+    let found: KeyObject | null = null;
     for (const k of keys) {
       if (!k || typeof k !== 'object') continue;
       const jwk = k as Record<string, unknown>;
       if (jwk.kid !== kid || jwk.kty !== 'RSA') continue;
       if (jwk.use !== undefined && jwk.use !== 'sig') continue;
+      // key_ops, when present, must allow verifying (RFC 7517 4.3); a key marked for other operations is not used
+      if (jwk.key_ops !== undefined && !(Array.isArray(jwk.key_ops) && jwk.key_ops.every((op) => typeof op === 'string') && jwk.key_ops.includes('verify'))) continue;
       if (jwk.alg !== undefined && jwk.alg !== 'RS256') continue;
       if (typeof jwk.n !== 'string' || typeof jwk.e !== 'string') continue;
-      return createPublicKey({ key: { kty: 'RSA', n: jwk.n, e: jwk.e }, format: 'jwk' });
+      // a kid names one key (RFC 7517 4.5): two usable keys under one kid is no key at all, not the first one listed
+      if (found) return null;
+      found = createPublicKey({ key: { kty: 'RSA', n: jwk.n, e: jwk.e }, format: 'jwk' });
     }
-    return null;
+    return found;
   } catch {
     return null;
   }

@@ -311,6 +311,10 @@ export function readLookup(status: number, body: string, email: string): Lookup 
     return none ? { found: 'none' } : { found: 'unclear' };
   }
   if (result.length !== 1) return { found: 'unclear' };
+  // the issuer's own count, when it gives one, must also be exactly one: a page showing one row of several is unclear
+  const details = o.details && typeof o.details === 'object' ? (o.details as Record<string, unknown>) : undefined;
+  const total = details?.totalResult;
+  if (total !== undefined && total !== 1 && total !== '1') return { found: 'unclear' };
   const row = result[0] as Record<string, unknown> | null;
   const userId = row && typeof row === 'object' ? str(row.userId) : '';
   const human = row && typeof row === 'object' ? (row.human as Record<string, unknown> | undefined) : undefined;

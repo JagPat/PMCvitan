@@ -118,9 +118,10 @@ export function readIdentityConfig(env: NodeJS.ProcessEnv = process.env): Identi
   if (!clientId) faults.push({ name: 'IDENTITY_CLIENT_ID', problem: 'unset' });
   else if (!CLIENT_ID.test(clientId)) faults.push({ name: 'IDENTITY_CLIENT_ID', problem: 'malformed' });
   const rawRedirect = env.IDENTITY_REDIRECT_URI ?? '';
-  const redirectUri = rawRedirect && issuer ? redirectOf(rawRedirect, Boolean(rawEndpoint && endpoint)) : null;
+  // each variable is judged on its own, so one bad value never hides another: every fault is named at once
+  const redirectUri = rawRedirect ? redirectOf(rawRedirect, Boolean(rawEndpoint && endpoint)) : null;
   if (!rawRedirect) faults.push({ name: 'IDENTITY_REDIRECT_URI', problem: 'unset' });
-  else if (issuer && !redirectUri) faults.push({ name: 'IDENTITY_REDIRECT_URI', problem: 'malformed' });
+  else if (!redirectUri) faults.push({ name: 'IDENTITY_REDIRECT_URI', problem: 'malformed' });
   const serviceToken = env.IDENTITY_SERVICE_TOKEN ?? '';
   if (!serviceToken) faults.push({ name: 'IDENTITY_SERVICE_TOKEN', problem: 'unset' });
   else if (!TOKEN.test(serviceToken)) faults.push({ name: 'IDENTITY_SERVICE_TOKEN', problem: 'malformed' });

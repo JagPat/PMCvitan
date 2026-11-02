@@ -33,6 +33,9 @@ describe('Redbracket ID A2: the switch', () => {
     const broken = readIdentityConfig({ ...full, IDENTITY_SERVICE_TOKEN: 'has space', IDENTITY_CLIENT_ID: '' });
     expect(broken).toEqual({ state: 'broken', faults: [{ name: 'IDENTITY_CLIENT_ID', problem: 'unset' }, { name: 'IDENTITY_SERVICE_TOKEN', problem: 'malformed' }] });
     expect(JSON.stringify(broken)).not.toContain('has space');
+    // every bad variable is named at once: a bad issuer does not hide a bad redirect
+    const both = readIdentityConfig({ ...full, IDENTITY_ISSUER: 'http://id.vitan.in', IDENTITY_REDIRECT_URI: 'ftp://x.in/cb' });
+    expect(both).toEqual({ state: 'broken', faults: [{ name: 'IDENTITY_ISSUER', problem: 'malformed' }, { name: 'IDENTITY_REDIRECT_URI', problem: 'malformed' }] });
   });
 
   it('refuses an issuer that is not a plain https host (loopback http included), and takes a loopback endpoint for a test fake', () => {
@@ -219,6 +222,9 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(readLookup(200, JSON.stringify({ result: [{ userId: 'u1', human: { email: { email: 'a@b.in' } } }] }), 'a@b.in')).toEqual({ found: 'one', userId: 'u1', verified: false });
     expect(readLookup(200, JSON.stringify({ result: [{ userId: 'u1', human: { email: { email: 'a@b.in', isVerified: true } } }] }), 'a@b.in')).toEqual({ found: 'one', userId: 'u1', verified: true });
     expect(readLookup(200, JSON.stringify({ result: [{ userId: 'u1', human: { email: {} } }, { userId: 'u2', human: { email: {} } }] }), 'a@b.in')).toEqual({ found: 'unclear' });
+    // the issuer's own count, when given, must be exactly one: one row of several is unclear
+    expect(readLookup(200, JSON.stringify({ details: { totalResult: '2' }, result: [{ userId: 'u1', human: { email: { email: 'a@b.in' } } }] }), 'a@b.in')).toEqual({ found: 'unclear' });
+    expect(readLookup(200, JSON.stringify({ details: { totalResult: '1' }, result: [{ userId: 'u1', human: { email: { email: 'a@b.in' } } }] }), 'a@b.in')).toEqual({ found: 'one', userId: 'u1', verified: false });
     // a login name can keep an old address after the email changed: only the CURRENT email names the person
     expect(readLookup(200, JSON.stringify({ result: [{ userId: 'u1', human: { email: { email: 'new@b.in', isVerified: true } } }] }), 'a@b.in')).toEqual({ found: 'unclear' });
     expect(readLookup(200, JSON.stringify({ result: [{ userId: 'u1', human: { email: { email: 'A@B.in', isVerified: true } } }] }), 'a@b.in')).toEqual({ found: 'one', userId: 'u1', verified: true });
@@ -254,6 +260,16 @@ describe('Redbracket ID A2: the id token check alone', () => {
     const jwks = JSON.stringify({ keys: [{ ...(rsa.publicKey.export({ format: 'jwk' }) as object), kid: 'a', use: 'sig', alg: 'RS256' }] });
     expect(keyFromJwks(jwks, 'a')?.asymmetricKeyType).toBe('rsa');
     expect(keyFromJwks(jwks, 'b')).toBeNull();
+    // key_ops, when present, must allow verify (RFC 7517 4.3)
+    const withOps = (ops: unknown) => JSON.stringify({ keys: [{ ...(rsa.publicKey.export({ format: 'jwk' }) as object), kid: 'a', use: 'sig', key_ops: ops }] });
+    expect(keyFromJwks(withOps(['verify']), 'a')?.asymmetricKeyType).toBe('rsa');
+    expect(keyFromJwks(withOps(['encrypt']), 'a')).toBeNull();
+    expect(keyFromJwks(withOps('verify'), 'a')).toBeNull();
+    expect(keyFromJwks(withOps([]), 'a')).toBeNull();
+    // two usable keys under one kid: neither is trusted
+    const rsa2 = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const twice = JSON.stringify({ keys: [rsa.publicKey, rsa2.publicKey].map((pk) => ({ ...(pk.export({ format: 'jwk' }) as object), kid: 'a', use: 'sig' })) });
+    expect(keyFromJwks(twice, 'a')).toBeNull();
     expect(keyFromJwks('not json', 'a')).toBeNull();
     const token = 'eyJhbGciOiJSUzI1NiIsImtpZCI6ImEifQ.e30.AAAA';
     expect(await checkIdToken(token, { issuer: 'x', clientId: 'c', nonce: 'n', now: 0, key: async () => ec.publicKey })).toBeNull();
