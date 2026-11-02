@@ -322,3 +322,124 @@ test('G3b — a CI-triggered run disarms its own queued merge first; a disarm no
   assert.ok(first < runBody.indexOf('await enforceReviewScope('), 'before the scope read');
   assert.ok(first < runBody.indexOf('pendingRecoveryRequest(existingStatuses'), 'before the recovery request');
 });
+
+// G3b (Stage 1, X2g) — behavioural, through `run()` itself: every GitHubClient method, `request` and `graphql`
+// included, is replaced by a recorder, so an arm or merge reached from anywhere in `run()`, by any name (a computed
+// property name too), is seen by its effect. Each arm or merge asserts, when it is called, that Codex's record was
+// read after the newest success write; an arm before the merge authorization is a violation whatever called it.
+test('G3b (X2g) — run() end to end: an arm or merge, by any name, comes only after the record read that follows the success', async () => {
+  const { GitHubClient, REQUIRED_CHECKS, run } = await import('./autonomous-review-gate.mjs');
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const head = 'e'.repeat(40);
+  const ARMING = /merge|automerge/iu;
+  const scenario = async ({ securityAfterSuccess }) => {
+    const statuses = [success(6100)];
+    const pull = {
+      number: 260, state: 'open', draft: false, additions: 1, deletions: 0, changed_files: 1,
+      auto_merge: { enabled_at: '2026-11-02T00:00:00Z', merge_method: 'squash' },
+      body: '<!-- review-size: standard -->\n<!-- correction-owner: claude -->',
+      head: { sha: head, ref: 'claude/unit', repo: { full_name: 'JagPat/PMCvitan' } },
+      base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
+      html_url: 'https://github.com/JagPat/PMCvitan/pull/260',
+    };
+    const log = [];
+    const violations = [];
+    let nextId = 6200;
+    let lastSuccess = -1;
+    let lastRecord = -1;
+    const securityRecord = {
+      user: { login: 'chatgpt-codex-connector[bot]' }, created_at: '2026-11-02T00:00:00Z',
+      body: `<!-- codex-review-state:v1 ${JSON.stringify({
+        code_review: { commit_sha: head, has_any_findings: false, has_unresolved_findings: false, status: 'completed' },
+        security_review: { commit_sha: head, has_any_findings: true, has_unresolved_findings: true, status: 'completed' },
+      })} -->`,
+    };
+    const arming = (name) => {
+      log.push([name]);
+      if (!(lastSuccess >= 0 && lastRecord > lastSuccess)) violations.push(`${name} before the record read that follows the success`);
+    };
+    const stubs = {
+      async pullRequest() { return { ...pull }; },
+      async statuses() { return [...statuses]; },
+      async checkRuns() { return REQUIRED_CHECKS.map((name) => ({ name, conclusion: 'success', status: 'completed' })); },
+      async commit(sha) { return { sha, commit: { message: 'fix: x\n\nCorrection-Owner: claude\n' }, files: [] }; },
+      async pullRequestFiles() { return [{ filename: 'scripts/x.mjs', status: 'modified', additions: 1, deletions: 0 }]; },
+      async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
+      async fileContents() { return null; },
+      async openPullRequestsAt() { return []; },
+      async setStatus(sha, state, description, url, context = 'codex-current-head') {
+        const status = { id: nextId += 1, context, state, description };
+        statuses.unshift(status);
+        log.push(['status', state]);
+        if (state === 'success' && context === 'codex-current-head') lastSuccess = log.length - 1;
+        return status;
+      },
+      async issueComments() {
+        log.push(['record']);
+        lastRecord = log.length - 1;
+        return securityAfterSuccess && lastSuccess >= 0 ? [securityRecord] : [];
+      },
+      async reviewComments() { return []; },
+      async reviews() { return []; },
+      async reviewThreads() { return []; },
+      async reactions() { return []; },
+      async setDraft(current, draft) { log.push(['draft', draft]); pull.draft = draft; return { ...current, draft }; },
+      async updateStickyComment() { log.push(['sticky']); },
+      async createIssueComment() { log.push(['marker']); return { id: 1 }; },
+      async disableAutoMerge() { log.push(['disable']); pull.auto_merge = null; },
+      async enableAutoMerge(current) { arming('enableAutoMerge'); if (!current.auto_merge) pull.auto_merge = { merge_method: 'squash' }; },
+      async mergeExactHead() { arming('mergeExactHead'); return { merged: false, message: 'Pull request is not mergeable yet' }; },
+      async dispatchHandoff() { log.push(['handoff']); },
+      async request(method, path) {
+        if (ARMING.test(String(path))) arming(`request ${method} ${path}`); else log.push(['unstubbed request', method, path]);
+        return null;
+      },
+      async graphql(query) {
+        if (ARMING.test(String(query))) arming('graphql'); else log.push(['unstubbed graphql']);
+        return {};
+      },
+    };
+    const names = Object.getOwnPropertyNames(GitHubClient.prototype).filter((name) => name !== 'constructor');
+    const saved = new Map(names.map((name) => [name, Object.getOwnPropertyDescriptor(GitHubClient.prototype, name)]));
+    const env = Object.fromEntries(['GITHUB_REPOSITORY', 'GITHUB_TOKEN', 'GITHUB_EVENT_NAME', 'GITHUB_EVENT_PATH',
+      'AUTONOMOUS_REVIEW_MODE', 'GITHUB_ENV', 'PR_NUMBER', 'GITHUB_RUN_ID', 'RUNNER_TEMP'].map((key) => [key, process.env[key]]));
+    const dir = await mkdtemp(join(tmpdir(), 'g3b-run-'));
+    try {
+      for (const name of names) {
+        Object.defineProperty(GitHubClient.prototype, name, {
+          configurable: true, writable: true,
+          value: stubs[name] ?? (async function unstubbed() { log.push(['unstubbed', name]); return undefined; }),
+        });
+      }
+      const eventPath = join(dir, 'event.json');
+      await writeFile(eventPath, JSON.stringify({ workflow_run: {
+        event: 'pull_request', pull_requests: [{ number: 260 }], head_sha: head, conclusion: 'success', id: 99, run_attempt: 1,
+      } }));
+      Object.assign(process.env, { GITHUB_REPOSITORY: 'JagPat/PMCvitan', GITHUB_TOKEN: 'test-token',
+        GITHUB_EVENT_NAME: 'workflow_run', GITHUB_EVENT_PATH: eventPath });
+      for (const key of ['AUTONOMOUS_REVIEW_MODE', 'GITHUB_ENV', 'PR_NUMBER', 'GITHUB_RUN_ID', 'RUNNER_TEMP']) delete process.env[key];
+      let error = null;
+      try { await run(); } catch (thrown) { error = thrown; }
+      return { log, violations, error };
+    } finally {
+      for (const [name, descriptor] of saved) Object.defineProperty(GitHubClient.prototype, name, descriptor);
+      for (const [key, value] of Object.entries(env)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+      await rm(dir, { recursive: true, force: true });
+    }
+  };
+
+  const clean = await scenario({ securityAfterSuccess: false });
+  assert.equal(clean.error, null);
+  assert.deepEqual(clean.violations, []);
+  assert.ok(clean.log.some(([k]) => k === 'enableAutoMerge'), 'the row is live: run() reaches the arm');
+  assert.ok(clean.log.findIndex(([k]) => k === 'disable') < clean.log.findIndex(([k, state]) => k === 'status' && state === 'success'),
+    'the CI-triggered run disarms the queued merge before any success');
+  assert.deepEqual(clean.log.filter(([k]) => k === 'unstubbed'), [], 'every client call run() made on this path is a recorded stub');
+  const refused = await scenario({ securityAfterSuccess: true });
+  assert.equal(refused.error, null);
+  assert.deepEqual(refused.violations, []);
+  assert.equal(refused.log.some(([k]) => k === 'enableAutoMerge' || k === 'mergeExactHead'), false, 'a security finding by the authorization arms nothing');
+  assert.equal(refused.log.filter(([k]) => k === 'status').at(-1)[1], 'failure', 'and the green is replaced');
+});
