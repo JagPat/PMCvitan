@@ -1796,11 +1796,22 @@ async function publishSharedCommitRefusal(client, pullRequest, expectedHead, oth
   // #1311 Codex 4446635304 — the commit is listed again after the disarm: a sibling that closed or moved off this commit
   // meanwhile is no longer named, and when none is left this pull request is alone ('alone': nothing is written, and the
   // caller goes on to its own verdict). A list that cannot be read keeps the earlier one: the refusal fails closed
+  // #1311 Codex 4447394159 — and this pull request must itself still be at the commit: one that moved or closed while the
+  // disarm ran (a disarm that failed never re-read it) writes nothing, so a commit now another pull request's alone is
+  // not refused. When the list cannot be read, this pull request is re-read instead; when that fails too, the refusal
+  // is written (it fails closed, and the watchdog asks the gate again)
   let current = others;
   try {
-    current = otherOpenPullRequests(await client.openPullRequestsAt(expectedHead), pullRequest.number);
+    const open = await client.openPullRequestsAt(expectedHead);
+    if (!(open ?? []).some((pull) => pull.number === pullRequest.number)) return 'superseded';
+    current = otherOpenPullRequests(open, pullRequest.number);
   } catch (error) {
     console.warn(`Could not list the open pull requests again; the earlier list stands: ${error?.message ?? error}`);
+    try {
+      if (!isCurrentReviewUnit(await client.pullRequest(pullRequest.number), expectedHead)) return 'superseded';
+    } catch (readError) {
+      console.warn(`Could not re-read this pull request either; the refusal is written: ${readError?.message ?? readError}`);
+    }
   }
   // Stage 1's re-check of cc1f0412 — inside the success step (`withheld`) a success already withheld is not written on
   // this run even when the sibling has gone since: the same retryable refusal, saying the commit was shared during this

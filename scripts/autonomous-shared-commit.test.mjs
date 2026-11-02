@@ -527,3 +527,32 @@ test('#1311 Codex 4446635322 — an unreadable shared-head list fails closed: th
     assert.equal(result.log.some(([k]) => k === 'scope-read' || k === 'arm' || k === 'merge'), false, `${name}: nothing body-derived`);
   }
 });
+
+// #1311 round 2 (Codex 4447394159) — the publishing pull request must itself still be at the commit: one that moved while
+// a failing disarm ran writes nothing, so the commit, now its sibling's alone, is not refused.
+test('#1311 Codex 4447394159 — a PR that moved off the commit during a failing disarm writes no refusal on it', async () => {
+  const moved = pullAt(610, { head: { sha: 'f'.repeat(40), ref: 'claude/unit-610', repo } });
+  for (const [name, relist, reread, expected] of [
+    ['the re-list no longer has it', async () => [pullAt(611, { auto_merge: queued })], async () => moved, 'superseded'],
+    ['the re-list fails; the re-read shows it moved', async () => { throw new Error('502'); }, async () => moved, 'superseded'],
+    ['both fail: the refusal is written (fails closed)', async () => { throw new Error('502'); }, async () => { throw new Error('502'); }, 'refused'],
+  ]) {
+    const log = [];
+    let lists = 0;
+    let reads = 0;
+    const client = {
+      // the first list (the check) and the disarm's own list both see the two PRs; then the re-list
+      async openPullRequestsAt() { lists += 1; return lists <= 2 ? [pullAt(610), pullAt(611, { auto_merge: queued })] : relist(); },
+      // the disarm's own first read sees 610 current; the re-read after a failed re-list is the scenario's (later reads,
+      // the hold's own, see it current)
+      async pullRequest(n) { if (n === 611) return pullAt(611, { auto_merge: queued }); reads += 1; return reads === 2 ? reread() : pullAt(610); },
+      async disableAutoMerge() { throw new Error('GraphQL down'); },
+      async setStatus(sha, state, description) { log.push(['status', state, description]); return { id: 1 }; },
+      async setDraft(current, draft) { return { ...current, draft }; },
+      async updateStickyComment(n, body) { log.push(['sticky', body]); },
+    };
+    assert.equal(await refuseSharedCommit(client, pullAt(610), HEAD), expected, name);
+    if (expected === 'superseded') assert.deepEqual(log, [], `${name}: nothing written on the commit`);
+    else assert.deepEqual(log.find(([k]) => k === 'status'), ['status', 'failure', SHARED], name);
+  }
+});
