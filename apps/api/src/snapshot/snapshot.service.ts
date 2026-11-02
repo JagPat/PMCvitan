@@ -12,7 +12,7 @@ import { SITE_PHOTO_DELETE_WINDOW_MS, SNAPSHOT_SITE_PHOTO_LIMIT, can } from '@vi
 import { ddMmmYyyy } from '../domain/dates';
 import type { Role } from '../common/auth';
 import type { DecisionsContract } from '../common/decisions-contract';
-import type { ProjectShellCounts, ProofPhotoDto, SnapshotDto } from './types';
+import type { OpenItemDto, ProjectShellCounts, ProofPhotoDto, SnapshotDto } from './types';
 import { readViewerFeed, servedNotifications } from './served-notifications';
 import { hiddenDraftNodeIds } from '../nodes/node-scope';
 import { hiddenMediaIds, mediaOnNodes } from './hidden-media';
@@ -252,6 +252,23 @@ export class SnapshotService {
       byRole: prover.get(m.uploadedBy)?.role,
       at: m.createdAt.toISOString(),
     }));
+    // #482 proof photos, "Your open items" — the inspections module answers which open inspections and failed items the
+    // viewer is named to fix; each item's proof count is composed here from media (every member's proofs, the count the
+    // upload's per-item cap counts), so the web can stop offering "Add proof" where the server would refuse it
+    const openInspections = await this.inspectionsQuery.openItems(projectId, role, userId);
+    const openItemIds = openInspections.flatMap((i) => i.failedItems.map((it) => it.itemId));
+    const proofCounts = openItemIds.length
+      ? await this.prisma.media.groupBy({
+          by: ['inspectionItemId'],
+          where: { projectId, kind: 'proof', inspectionItemId: { in: openItemIds } },
+          _count: { _all: true },
+        })
+      : [];
+    const proofCountOf = new Map(proofCounts.map((c) => [c.inspectionItemId, c._count._all] as const));
+    const openItems: OpenItemDto[] = openInspections.map((i) => ({
+      ...i,
+      failedItems: i.failedItems.map((it) => ({ ...it, proofCount: proofCountOf.get(it.itemId) ?? 0 })),
+    }));
     // only what the viewer may still delete: the list exists for that Delete alone
     const myDeletablePhotos = ownOverflow.filter((m) => disposable.has(m.id)).map(photoDto);
 
@@ -331,6 +348,7 @@ export class SnapshotService {
       photos: photoDtos,
       proofs: proofDtos,
       responsibleMembers: await this.inspectionsQuery.responsibleMembers(projectId, role),
+      openItems,
       // #482 site photos — the viewer's own site photos still in their delete hour that the window above left out
       myDeletablePhotos,
       // All materials delivered across the project, with their place — the Site Map's "materials

@@ -55,6 +55,16 @@ function isCurrentInspectionsBase(base: InspectionsBase): boolean {
  *  media-owned table. Both served reads pass it; the empty default is for the projection/parity tests. */
 const NONE_HIDDEN: ReadonlySet<string> = new Set();
 
+/** #482 proof photos, "Your open items" — one open inspection the viewer is named to fix (`openItems`). */
+export interface OpenItemsInspection {
+  inspectionId: string;
+  title: string;
+  zone: string;
+  nodeId: string | null;
+  status: 'issued' | 'in-review' | 'reinspection';
+  failedItems: Array<{ itemId: string; name: string }>;
+}
+
 @Injectable()
 export class InspectionsQueryService {
   constructor(
@@ -101,6 +111,69 @@ export class InspectionsQueryService {
     const held = await heldNamings(this.orgs, this.prisma, projectId,
       named.map((i) => ({ inspectionId: i.id, memberId: i.responsibleMemberId!, mark: i.responsibleStandingMark! })));
     return held.map(({ inspectionId, memberId }) => ({ inspectionId, memberId }));
+  }
+
+  /**
+   * #482 proof photos, "Your open items" — the inspections a contractor or consultant is named to fix, still open, each
+   * with its failed items (the items a proof photo goes on). Empty for every other role and for a viewer named nowhere.
+   * Read live from "Inspection" and "InspectionItem" (this module's own tables), never from the projection's stored base,
+   * which holds no responsible member (as `responsibleMembers`), so it is current on every read and the base is unchanged.
+   *
+   * A naming counts only while it HOLDS (`heldNamings`, the rule `responsibleMembers` serves to the PMC and engineer): a
+   * member who was removed, or re-roled out of contractor and consultant, is named nowhere until someone names them again
+   * (a move between those two roles keeps the naming, as RM-a's standing mark rules).
+   *
+   * OPEN: the inspection's lineage is not yet approved. Its latest inspection (following the one re-inspection a reject
+   * creates, `reinspectionOfId`) is decided with no re-inspection of its own only when it was approved; anything else is
+   * still being worked. `status` says where it stands: `issued` (with the engineer, not submitted), `in-review`
+   * (submitted, waiting on the PMC) or `reinspection` (rejected; its re-inspection is under way).
+   *
+   * Failed items are listed only once the inspection is submitted (`isFailedItem`, the proof target's own rule): an
+   * unsubmitted checklist's marks are the engineer's work in progress.
+   */
+  async openItems(projectId: string, role: string, viewerId?: string): Promise<OpenItemsInspection[]> {
+    if ((role !== 'contractor' && role !== 'consultant') || !viewerId) return [];
+    const named = await this.prisma.inspection.findMany({
+      where: { projectId, responsibleMemberId: viewerId },
+      orderBy: { id: 'asc' },
+      select: { id: true, responsibleMemberId: true, responsibleStandingMark: true },
+    });
+    const held = await heldNamings(this.orgs, this.prisma, projectId,
+      named.map((i) => ({ inspectionId: i.id, memberId: i.responsibleMemberId!, mark: i.responsibleStandingMark! })));
+    if (held.length === 0) return [];
+    // the project's lineage edges, to find each named inspection's latest re-inspection
+    const lineage = await this.prisma.inspection.findMany({
+      where: { projectId },
+      select: { id: true, reinspectionOfId: true, decided: true },
+    });
+    const childOf = new Map<string, string>();
+    for (const i of lineage) if (i.reinspectionOfId) childOf.set(i.reinspectionOfId, i.id);
+    const decided = new Map(lineage.map((i) => [i.id, i.decided] as const));
+    const approved = (id: string): boolean => {
+      const seen = new Set<string>();
+      let tip = id;
+      // at most one child per inspection (a partial unique index); `seen` only guards a malformed cycle
+      while (childOf.has(tip) && !seen.has(tip)) { seen.add(tip); tip = childOf.get(tip)!; }
+      return decided.get(tip) === true && !childOf.has(tip);
+    };
+    const open = held.map((h) => h.inspectionId).filter((id) => !approved(id));
+    if (open.length === 0) return [];
+    const rows = await this.prisma.inspection.findMany({
+      where: { projectId, id: { in: open } },
+      orderBy: { id: 'asc' },
+      select: {
+        id: true, title: true, zone: true, nodeId: true, submitted: true, decided: true,
+        items: { orderBy: [{ order: 'asc' }, { id: 'asc' }], select: { id: true, name: true, rejected: true, result: true, state: true } },
+      },
+    });
+    return rows.map((i) => ({
+      inspectionId: i.id,
+      title: i.title,
+      zone: i.zone,
+      nodeId: i.nodeId ?? null,
+      status: childOf.has(i.id) ? 'reinspection' : i.submitted ? 'in-review' : 'issued',
+      failedItems: i.submitted ? i.items.filter((it) => isFailedItem(it)).map((it) => ({ itemId: it.id, name: it.name })) : [],
+    }));
   }
 
   /**
