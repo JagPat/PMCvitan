@@ -3,7 +3,7 @@
  * consultant member who fixes an inspection's failed work. Member names are project data, shown as recorded.
  *
  * The role words follow the ones already in use: hi ठेकेदार / सलाहकार, gu કોન્ટ્રાક્ટર / સલાહકાર. Jagrut may reword any
- * line later; the PR body lists all five in the three languages.
+ * line later; the PR body lists all six in the three languages.
  */
 import type { Lang } from '../domain/types';
 
@@ -12,6 +12,8 @@ type Words = Record<Lang, string>;
 export const responsibleMemberLabels = {
   label: { en: 'Who fixes this?', hi: 'इसे कौन ठीक करेगा?', gu: 'આ કોણ સુધારશે?' },
   nobody: { en: 'Nobody yet', hi: 'अभी कोई नहीं', gu: 'હજી કોઈ નહીં' },
+  // the accessible text of the "…" option: a member is named but the team list holding their name is not read yet
+  nameNotLoaded: { en: 'Name not loaded yet', hi: 'नाम अभी लोड नहीं हुआ', gu: 'નામ હજી લોડ થયું નથી' },
   hint: {
     en: 'Only contractors and consultants on this project can be chosen.',
     hi: 'इस प्रोजेक्ट के ठेकेदार और सलाहकार ही चुने जा सकते हैं।',

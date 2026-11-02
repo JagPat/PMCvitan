@@ -815,6 +815,9 @@ export interface AppActions {
   addSiteMaterial: (input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string; nodeId?: string }) => void;
   /** Read the project's team; resolves false when the read failed (Site Visits' picker then offers a retry). */
   loadTeam: () => Promise<boolean | void>;
+  /** RM-w1: the "Who fixes this?" pickers' team read. One read per project scope in flight, shared by every picker
+   *  on the screen; true only when the list was read. */
+  readTeamShared: () => Promise<boolean>;
   addMember: (input: AddMemberInput) => void;
   updateMemberRole: (userId: string, role: Role, discipline?: string) => void;
   removeMember: (userId: string) => void;
@@ -1631,6 +1634,8 @@ export const useStore = create<Store>()(
     /** The scope a network request is issued FOR — pass to applySnapshot so a reply
      *  that lands after the scope changed (switch, sign-in) is dropped, not applied. */
     const currentScope = (): ProjectScope => projectScopeOf(get());
+    // RM-w1: the pickers' shared team read in flight, by scope key (readTeamShared)
+    let sharedTeamRead: { key: string; read: Promise<boolean> } | null = null;
 
     /** Is a scope captured at request time still the live one? Guards EVERY
      *  post-await project mutation — including raw-DTO paths that don't go
@@ -6165,9 +6170,16 @@ export const useStore = create<Store>()(
           consumeSnapshotResult(acceptSnapshot(snap, lease), undefined, lease.scope);
           return true;
         })
-        .catch(() => {
+        .catch((err: { status?: number } | undefined) => {
           // a 4xx is final (the member no longer stands, or the caller's role changed): say so, never retry
-          if (scopeStillCurrent(lease.scope)) get().flash(RML.saveFailed[get().lang]);
+          if (!scopeStillCurrent(lease.scope)) return false;
+          get().flash(RML.saveFailed[get().lang]);
+          // 400: the member no longer stands; 403: the caller's standing or the project changed. Read the team and
+          // the project once more, so a member who left stops being offered and the shown name is the server's.
+          if (err?.status === 400 || err?.status === 403) {
+            void get().readTeamShared();
+            get().requestFreshSnapshot();
+          }
           return false;
         });
     },
@@ -6196,6 +6208,15 @@ export const useStore = create<Store>()(
       const key = newIdempotencyKey();
       const lang = get().lang;
       runWriteAhead({ t: 'addSiteMaterial', input, idempotencyKey: key }, DLC.material.en, () => DLX.materialRecorded(input.name, get().lang), DLX.savedOffline(DLC.material[lang], lang));
+    },
+    readTeamShared: () => {
+      const key = scopeKey(currentScope());
+      if (sharedTeamRead && sharedTeamRead.key === key) return sharedTeamRead.read;
+      const read = Promise.resolve(get().loadTeam()).then((ok) => ok === true);
+      const entry = { key, read };
+      sharedTeamRead = entry;
+      void read.finally(() => { if (sharedTeamRead === entry) sharedTeamRead = null; });
+      return read;
     },
     loadTeam: () => {
       if (!gateway) return Promise.resolve(false);

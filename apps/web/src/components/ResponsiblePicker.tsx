@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type CSSProperties } from 'react';
+import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { can, responsibleMemberLabels as L } from '@vitan/shared';
@@ -22,13 +22,18 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   const members = useStore(useShallow((s) => s.members));
   const named = useStore((s) => s.responsibleMembers.find((r) => r.inspectionId === inspectionId)?.memberId ?? null);
   const setResponsibleMember = useStore((s) => s.setResponsibleMember);
-  const loadTeam = useStore((s) => s.loadTeam);
+  const readTeamShared = useStore((s) => s.readTeamShared);
   const [saving, setSaving] = useState(false);
-  // The team list (the Team screen's read) is asked for only when it is needed: the picker being opened, or a name to show
-  // that the list does not hold. `readFor` is the name the last read was made for, so a member named later (by another
-  // tab, after the list was read) is asked for again rather than shown as nobody.
+  // The team list (the Team screen's read, one read shared by every picker on the screen) is asked for only when it is
+  // needed: the picker being opened, or a name to show that the list does not hold. `readFor` is the name the last
+  // SUCCESSFUL read was made for, so a member named later (by another tab, after the list was read) is asked for again
+  // rather than shown as nobody. A read that fails (no network, a refused read, no server) records nothing: the named
+  // member stays held as "…", never shown as nobody, and opening the picker asks again.
   const [readFor, setReadFor] = useState<string | null | undefined>(undefined);
-  const [wantTeam, setWantTeam] = useState(false);
+  const [failedFor, setFailedFor] = useState<string | null | undefined>(undefined);
+  const [reading, setReading] = useState(false);
+  const live = useRef(true);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const id = useId();
   const allowed = can('inspection.responsible', role);
 
@@ -36,29 +41,41 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
     .filter((m) => m.status === 'active' && NAMEABLE.has(m.role))
     .sort((a, b) => a.name.localeCompare(b.name) || a.userId.localeCompare(b.userId));
   const known = named !== null && choices.some((m) => m.userId === named);
-  // a named member the list does not hold, before a read made for that name has come back: held, not shown as nobody
+  // a named member the list does not hold, before a successful read made for that name: held, not shown as nobody
   const pending = named !== null && !known && readFor !== named;
-  const needTeam = allowed && (pending || (wantTeam && readFor === undefined));
-  useEffect(() => {
-    if (!needTeam) return;
-    let live = true;
+
+  // never read while offline (it can only fail); the shown name is the server's either way
+  const readTeam = () => {
+    if (!allowed || !online || reading) return;
     const asked = named;
-    void Promise.resolve(loadTeam()).finally(() => { if (live) setReadFor(asked); });
-    return () => { live = false; };
-  }, [needTeam, named, loadTeam]);
+    setReading(true);
+    void readTeamShared().then((ok) => {
+      if (!live.current) return;
+      setReading(false);
+      if (ok) { setReadFor(asked); setFailedFor(undefined); } else setFailedFor(asked);
+    });
+  };
+  // a pending name is read for once on its own; after a failure only the user opening the picker, or the phone coming
+  // back online, asks again (no automatic retry)
+  useEffect(() => { if (!online) setFailedFor(undefined); }, [online]);
+  useEffect(() => {
+    if (pending && failedFor !== named) readTeam();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending, named, failedFor, online, reading]);
+  const onOpen = () => { if (readFor === undefined || failedFor !== undefined) readTeam(); };
 
   if (!allowed) return null;
 
   // The server serves only a member who still stands. Once the list is read, one it does not offer reads as nobody, as
   // it does there.
   const value = known || pending ? (named as string) : '';
-  const disabled = saving || !online || pending;
+  const disabled = saving || !online || reading;
 
   const choose = (next: string) => {
     const memberId = next === '' ? null : next;
     if (memberId === (value === '' ? null : value)) return;
     setSaving(true);
-    void setResponsibleMember(inspectionId, memberId).finally(() => setSaving(false));
+    void setResponsibleMember(inspectionId, memberId).finally(() => { if (live.current) setSaving(false); });
   };
 
   return (
@@ -68,15 +85,16 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
         id={id}
         value={value}
         disabled={disabled}
+        aria-busy={reading}
         aria-describedby={`${id}-hint`}
         onChange={(e) => choose(e.target.value)}
-        onFocus={() => setWantTeam(true)}
-        onPointerDown={() => setWantTeam(true)}
+        onFocus={onOpen}
+        onPointerDown={onOpen}
         data-testid={`${testId}-select`}
         style={{ ...field, opacity: disabled ? 0.6 : 1 }}
       >
         <option value="">{L.nobody[lang]}</option>
-        {pending && <option value={named as string}>…</option>}
+        {pending && <option value={named as string} aria-label={L.nameNotLoaded[lang]}>…</option>}
         {choices.map((m) => (
           <option key={m.userId} value={m.userId}>{m.name}</option>
         ))}

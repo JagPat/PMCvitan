@@ -119,10 +119,48 @@ describe('"Who fixes this?" on the PMC review card (#482 RM-w1)', () => {
     expect(select().value).toBe('u-zed');
     expect(select().disabled).toBe(true);
     expect(select().selectedOptions[0]!.textContent).toBe('…');
+    // the "…" option says what it is to a screen reader, and the select is marked busy while the list is read
+    expect(select().selectedOptions[0]!.getAttribute('aria-label')).toBe('Name not loaded yet');
+    expect(select().getAttribute('aria-busy')).toBe('true');
     await act(async () => { answer(TEAM); });
     await waitFor(() => expect(select().selectedOptions[0]!.textContent).toBe('Zed Contractor'));
     expect(select().disabled).toBe(false);
     expect(view.queryByText('…')).toBeNull();
+  });
+
+  it('a team read that fails keeps a named member held as "…", never "Nobody yet"; opening the picker asks again', async () => {
+    let calls = 0;
+    const listMembers = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw Object.assign(new Error('Failed to fetch'), { status: 0 });
+      return TEAM;
+    });
+    const { id, select } = await openReview({ listMembers });
+    const { useStore } = await import('@/store/store');
+    act(() => { useStore.setState({ responsibleMembers: [{ inspectionId: id, memberId: 'u-zed' }] }); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(select().getAttribute('aria-busy')).toBe('false'));
+    expect(select().value).toBe('u-zed');
+    expect(select().selectedOptions[0]!.textContent).toBe('…');
+    expect(listMembers).toHaveBeenCalledTimes(1); // no automatic retry
+    act(() => { fireEvent.focus(select()); });
+    await waitFor(() => expect(select().selectedOptions[0]!.textContent).toBe('Zed Contractor'));
+    expect(listMembers).toHaveBeenCalledTimes(2);
+  });
+
+  it('offline, a named member the list does not hold stays held as "…" and no team read is made', async () => {
+    const listMembers = vi.fn(async () => TEAM);
+    const { id, select } = await openReview({ listMembers }, { online: false });
+    const { useStore } = await import('@/store/store');
+    act(() => { useStore.setState({ responsibleMembers: [{ inspectionId: id, memberId: 'u-zed' }] }); });
+    await act(async () => {});
+    expect(select().value).toBe('u-zed');
+    expect(select().selectedOptions[0]!.textContent).toBe('…');
+    expect(listMembers).not.toHaveBeenCalled();
+    // back online: the read is made once and the name shows
+    act(() => { useStore.setState({ online: true }); });
+    await waitFor(() => expect(select().selectedOptions[0]!.textContent).toBe('Zed Contractor'));
+    expect(listMembers).toHaveBeenCalledTimes(1);
   });
 
   it('a name the read team list does not offer (removed, or re-roled) reads as "Nobody yet", as the server serves it', async () => {
@@ -147,12 +185,17 @@ describe('"Who fixes this?" on the PMC review card (#482 RM-w1)', () => {
 
   it('a refusal says it could not save, keeps the old choice, and is not retried', async () => {
     const setResponsibleMember = vi.fn(async () => { throw Object.assign(new Error('Only an active contractor or consultant'), { status: 400 }); });
-    const { useStore, id, select } = await openReview({ listMembers: vi.fn(async () => TEAM), setResponsibleMember }, { members: TEAM });
+    const listMembers = vi.fn(async () => TEAM);
+    const snapshotRead = vi.fn(() => new Promise(() => {}));
+    const { useStore, id, select } = await openReview({ listMembers, setResponsibleMember, snapshot: snapshotRead }, { members: TEAM });
     act(() => { fireEvent.change(select(), { target: { value: 'u-zed' } }); });
     await waitFor(() => expect(useStore.getState().toast).toBe('Could not save who fixes this. Try again.'));
     expect(select().value).toBe('');
     expect(setResponsibleMember).toHaveBeenCalledTimes(1);
     expect(useStore.getState().responsibleMembers.find((r) => r.inspectionId === id)).toBeUndefined();
+    // the refusal reads the team and the project again, so a member who left stops being offered
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    expect(snapshotRead).toHaveBeenCalled();
   });
 
   it('an answer that lands after the project changed is not adopted there', async () => {
@@ -170,6 +213,22 @@ describe('"Who fixes this?" on the PMC review card (#482 RM-w1)', () => {
     const out: Checklist = { id: 'INSP-90', title: 'Slab', zone: 'Z', date: 'today', submitted: false, items: [] };
     const { view } = await openReview({ listMembers: vi.fn(async () => TEAM) }, { reviews: [], activeReviewId: null, openChecklists: [out] });
     expect(view.getByTestId('outstanding-responsible-INSP-90-select')).toBeTruthy();
+  });
+
+  it('several rows naming a member the list does not hold share one team read', async () => {
+    let answer!: (m: ProjectMember[]) => void;
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answer = r; }));
+    const rows: Checklist[] = ['INSP-91', 'INSP-92', 'INSP-93'].map((rowId) => ({ id: rowId, title: 'Slab', zone: 'Z', date: 'today', submitted: false, items: [] }));
+    const { view } = await openReview({ listMembers }, { reviews: [], activeReviewId: null, openChecklists: rows });
+    const { useStore } = await import('@/store/store');
+    act(() => { useStore.setState({ responsibleMembers: rows.map((r) => ({ inspectionId: r.id, memberId: 'u-amy' })) }); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalled());
+    await act(async () => { answer(TEAM); });
+    for (const r of rows) {
+      const el = view.getByTestId(`outstanding-responsible-${r.id}-select`) as HTMLSelectElement;
+      await waitFor(() => expect(el.selectedOptions[0]!.textContent).toBe('Amy Consultant'));
+    }
+    expect(listMembers).toHaveBeenCalledTimes(1);
   });
 });
 
