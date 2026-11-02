@@ -74,8 +74,13 @@ describe('IdentitySignInService break-glass (switch on, settings incomplete = un
       compare.mockClear();
       lines.mockClear();
       const outcome = service.login({ email, password }, '127.0.0.1');
-      if (ok) await expect(outcome).resolves.toMatchObject({ fresh: false, breakGlass: true });
-      else await expect(outcome).rejects.toBeInstanceOf(ServiceUnavailableException);
+      if (ok) {
+        const glass = (await outcome).breakGlass;
+        expect(glass).toEqual({ settle: expect.any(Function) });
+        // nothing is logged as accepted until the session is issued or refused, which settles the try's one line
+        expect(lines).not.toHaveBeenCalled();
+        glass!.settle('break-glass password accepted');
+      } else await expect(outcome).rejects.toBeInstanceOf(ServiceUnavailableException);
       expect(work(compare.mock.calls)).toBe(2 ** 12);
       // one line per try, naming why the issuer was not used and what break-glass decided
       expect(lines).toHaveBeenCalledTimes(1);
@@ -100,7 +105,7 @@ describe('IdentitySignInService break-glass (switch on, settings incomplete = un
     // the same hash whole and in range is compared, and opens break-glass
     lookup.mockResolvedValueOnce({ id: 'u9', email: 'd@x.in', passwordHash: whole } as never);
     compare.mockClear();
-    await expect(service.login({ email: 'd@x.in', password: 'local' }, '127.0.0.1')).resolves.toMatchObject({ breakGlass: true });
+    await expect(service.login({ email: 'd@x.in', password: 'local' }, '127.0.0.1')).resolves.toMatchObject({ breakGlass: { settle: expect.any(Function) } });
     expect(work(compare.mock.calls)).toBe(2 ** 12);
   });
 });

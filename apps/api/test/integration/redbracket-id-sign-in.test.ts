@@ -18,7 +18,9 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { startFakeIssuer, type FakeIssuer } from '../unit-support/fake-issuer';
 import { AuthService } from '../../src/auth/auth.service';
 import { IdentitySignInService } from '../../src/auth/identity/identity-sign-in.service';
-import { lockOrgStanding } from '../../src/common/readiness-lock';
+import { OrgsParticipant } from '../../src/orgs/orgs.participant';
+import { lockOrgStanding, orgStandingLockKey } from '../../src/common/readiness-lock';
+import { Prisma } from '@prisma/client';
 
 const ENV = ['IDENTITY_OIDC', 'IDENTITY_ISSUER', 'IDENTITY_ISSUER_ENDPOINT', 'IDENTITY_CLIENT_ID', 'IDENTITY_REDIRECT_URI', 'IDENTITY_SERVICE_TOKEN', 'THROTTLE_DISABLED'] as const;
 
@@ -319,14 +321,17 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     // demoted after the password check, before the session: refused, no token
     const before = await reseated('demoted');
     const outcome = await identity.login({ email: before.email!, password: 'the demoted local passphrase' }, '127.0.0.1');
-    expect(outcome).toMatchObject({ breakGlass: true, account: { id: before.id } });
+    expect(outcome).toMatchObject({ breakGlass: { settle: expect.any(Function) }, account: { id: before.id } });
     await t.prisma.orgMembership.deleteMany({ where: { orgId: f.orgA.id, userId: before.id } });
+    const lines = vi.spyOn(IdentitySignInService.prototype as unknown as { line: (r: string, a: string, o: string) => void }, 'line');
     await expect(auth.signInIdentity(outcome)).rejects.toMatchObject({ status: 503 });
+    // the try's one line says it was refused, never "accepted"
+    expect(lines.mock.calls.map((c) => c[2])).toEqual(['issuer unavailable; break-glass refused: no longer a company owner or admin']);
 
     // demoted by a writer holding the company key while the session waits on it: the session sees the demotion
     const during = await reseated('during');
     const held = await identity.login({ email: during.email!, password: 'the during local passphrase' }, '127.0.0.1');
-    expect(held.breakGlass).toBe(true);
+    expect(held.breakGlass).toBeDefined();
     let release!: () => void;
     const go = new Promise<void>((r) => { release = r; });
     let holding!: () => void;
@@ -352,8 +357,72 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
 
     // still an admin: the same path signs in
     const kept = await reseated('kept');
-    const ok = await auth.signInIdentity(await identity.login({ email: kept.email!, password: 'the kept local passphrase' }, '127.0.0.1'));
+    const keptOutcome = await identity.login({ email: kept.email!, password: 'the kept local passphrase' }, '127.0.0.1');
+    lines.mockClear();
+    const ok = await auth.signInIdentity(keptOutcome);
     expect(sub(ok.token)).toBe(kept.id);
+    expect(lines.mock.calls.map((c) => c[2])).toEqual(['issuer unavailable; break-glass password accepted']);
+
+    // the transaction closed by the server (its time ran out while the process was busy): unavailable, never a 500
+    const late = await identity.login({ email: kept.email!, password: 'the kept local passphrase' }, '127.0.0.1');
+    lines.mockClear();
+    vi.spyOn(t.prisma, '$transaction').mockRejectedValueOnce(new Prisma.PrismaClientKnownRequestError('Transaction already closed: timeout', { code: 'P2028', clientVersion: 'test' }));
+    await expect(auth.signInIdentity(late)).rejects.toMatchObject({ status: 503 });
+    expect(lines.mock.calls.map((c) => c[2])).toEqual(['issuer unavailable; break-glass refused: transaction timed out']);
+  }, 30_000);
+
+  it('break-glass takes the company keys in ascending order: holding the lower one while it waits for the higher', async () => {
+    const identity = t.app.get(IdentitySignInService);
+    const auth = t.app.get(AuthService);
+    const stamp = Date.now();
+    // made in descending id order, so neither insertion order nor chance gives ascending
+    const high = await t.prisma.org.create({ data: { id: `zz-rbid-${stamp}`, name: 'High', slug: `zz-rbid-${stamp}` } });
+    const low = await t.prisma.org.create({ data: { id: `aa-rbid-${stamp}`, name: 'Low', slug: `aa-rbid-${stamp}` } });
+    try {
+      const old = await invitee('twokeys');
+      await t.prisma.user.update({ where: { id: old.id }, data: { passwordHash: await bcrypt.hash('the twokeys local passphrase', 4), emailVerifiedAt: new Date() } });
+      fake.addPerson(old.email!, 'the twokeys redbracket passphrase');
+      await login(old.email!, 'the twokeys redbracket passphrase').expect(401);
+      const fresh = await t.prisma.user.findUniqueOrThrow({ where: { email: old.email! } });
+      made.push(fresh.id);
+      await t.prisma.orgMembership.create({ data: { orgId: high.id, userId: fresh.id, role: 'admin' } });
+      await t.prisma.orgMembership.create({ data: { orgId: low.id, userId: fresh.id, role: 'owner' } });
+      await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: fresh.id, role: 'admin' } }); // where its projects are
+      expect(await new OrgsParticipant().administeredCompanyIds(t.prisma, fresh.id)).toEqual([low.id, f.orgA.id, high.id].sort());
+      expect([low.id, f.orgA.id, high.id].sort()).toEqual([low.id, f.orgA.id, high.id]);
+      fake.force = { '/v2/sessions': 503 };
+      const outcome = await identity.login({ email: fresh.email!, password: 'the twokeys local passphrase' }, '127.0.0.1');
+
+      let release!: () => void;
+      const go = new Promise<void>((r) => { release = r; });
+      let holding!: () => void;
+      const isHolding = new Promise<void>((r) => { holding = r; });
+      const writer = t.prisma.$transaction(async (tx) => {
+        await lockOrgStanding(tx, high.id);
+        holding();
+        await go;
+      }, { timeout: 20_000 });
+      await isHolding;
+      const signing = auth.signInIdentity(outcome).then((r) => r, (err: unknown) => err);
+      const waiting = async () => (await t.prisma.$queryRaw<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`)[0]!.n;
+      const deadline = Date.now() + 10_000;
+      while ((await waiting()) < 1) {
+        if (Date.now() > deadline) { release(); await writer; await signing; throw new Error('the session never waited on the higher key'); }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      // waiting for the higher key, the session already holds the lower one
+      const lowFree = await t.prisma.$transaction(async (tx) =>
+        (await tx.$queryRaw<Array<{ got: boolean }>>`SELECT pg_try_advisory_xact_lock(hashtextextended(${orgStandingLockKey(low.id)}, 0)) AS got`)[0]!.got);
+      release();
+      await writer;
+      const result = await signing;
+      expect(lowFree).toBe(false);
+      expect(sub((result as { token: string }).token)).toBe(fresh.id);
+    } finally {
+      await t.prisma.orgMembership.deleteMany({ where: { orgId: { in: [high.id, low.id] } } });
+      await t.prisma.org.deleteMany({ where: { id: { in: [high.id, low.id] } } });
+    }
   }, 30_000);
 
   it('a linked person whose email the issuer will not mark verified is not told the setup worked', async () => {
@@ -368,10 +437,12 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const refused = await setPassword(user.email!, 'the second issuer passphrase', 409);
     expect(refused.body.token).toBeUndefined();
     expect(person.verified).toBe(false);
+    expect(person.password).toBe('the first issuer passphrase'); // refused before the password was written
     expect(await successes()).toBe(before); // no success recorded
     // the issuer down for the same step is "unavailable", never success
     fake.force = { '/zitadel.user.v2.UserService/UpdateUser': 503 };
     await setPassword(user.email!, 'the third issuer passphrase', 503);
+    expect(person.password).toBe('the first issuer passphrase');
     fake.force = {};
     await setPassword(user.email!, 'the fourth issuer passphrase', 201);
     expect(person.verified).toBe(true);

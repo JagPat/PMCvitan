@@ -87,7 +87,9 @@ async function compareEvenly(password: string, hash: string | null): Promise<boo
 /** The account a session is issued for (the fields `AuthService.signInUser` reads). */
 export type SignInAccount = Pick<User, 'id' | 'projectId' | 'role' | 'name' | 'credentialVersion' | 'lastProjectId'>;
 /** What a route does next: issue PMC's session for `account`; `fresh` when it was made by this sign-in. */
-export type IdentityOutcome = { account: SignInAccount; fresh: boolean; breakGlass?: true };
+export type IdentityOutcome = { account: SignInAccount; fresh: boolean; breakGlass?: BreakGlass };
+/** A break-glass password matched; `settle` writes the try's one log line once the session is issued or refused. */
+export type BreakGlass = { settle: (decision: string) => void };
 
 @Injectable()
 export class IdentitySignInService {
@@ -165,7 +167,8 @@ export class IdentitySignInService {
    * Anyone else is told sign-in is unavailable (never "wrong password"), whatever they typed. Every try does the same
    * bcrypt work (`compareEvenly`), so the time taken does not tell who is an admin or how old their password is. The
    * standing is read again, authoritatively, under the companies' standing keys when the session is issued
-   * (`AuthService.signInIdentity`). Its one log line names why the issuer was not used and what break-glass decided.
+   * (`AuthService.signInIdentity`). Its one log line names why the issuer was not used and what break-glass decided;
+   * for a matched password that line is written by `settle`, once the session is issued or refused.
    */
   private async breakGlass(email: string, password: string, attempt: string, why: string): Promise<IdentityOutcome> {
     // a test account never signs in here (the operator door is its way in), as with the issuer up
@@ -174,8 +177,8 @@ export class IdentitySignInService {
     const admin = hash && user ? await this.orgs.administersCompany(this.prisma, user.id) : false;
     const matches = await compareEvenly(password, admin && hash ? hash : null);
     if (user && admin && matches) {
-      this.line('login', attempt, `${why}; break-glass password accepted`);
-      return { account: user, fresh: false, breakGlass: true };
+      // the try's one line is written when the session is issued or refused (`AuthService.signInIdentity`)
+      return { account: user, fresh: false, breakGlass: { settle: (decision) => this.line('login', attempt, `${why}; ${decision}`) } };
     }
     this.line('login', attempt, why);
     throw new ServiceUnavailableException(UNAVAILABLE);
@@ -235,6 +238,13 @@ export class IdentitySignInService {
       issuerPasswordSet = true;
     } else if (link) {
       if (link.issuer !== config.issuer || link.subject !== found.userId) return this.needsHelp(attempt, 'link names another person');
+      if (!found.verified) {
+        // the issuer must hold the email as verified before PMC reports the setup done (PMC's code proved the mailbox);
+        // asked before the password is written, so a refusal leaves the person's issuer password as it was
+        const marked = await client.markVerified(found.userId, email);
+        if (marked === 'down') return this.unavailable(attempt);
+        if (marked !== null) return this.needsHelp(attempt, 'issuer refused to mark the email verified');
+      }
       const set = await client.setPassword(found.userId, password);
       if (set === 'down') return this.unavailable(attempt);
       if (set === 'rejected') {
@@ -242,12 +252,6 @@ export class IdentitySignInService {
         throw new BadRequestException('Redbracket ID did not accept this password. Choose another one.');
       }
       issuerPasswordSet = true;
-      if (!found.verified) {
-        // the issuer must hold the email as verified before PMC reports the setup done (PMC's code proved the mailbox)
-        const marked = await client.markVerified(found.userId, email);
-        if (marked === 'down') return this.unavailable(attempt);
-        if (marked !== null) return this.needsHelp(attempt, 'issuer refused to mark the email verified');
-      }
     }
     // an existing issuer person who is not linked is left exactly as they are: the typed password must already be theirs
 

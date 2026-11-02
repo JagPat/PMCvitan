@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma.service';
+import { Prisma } from '@prisma/client';
 import { lockOrgStanding, lockProjectReadiness } from '../common/readiness-lock';
 import { SmsService } from './sms.service';
 import { EmailService } from '../platform/email.service';
@@ -14,7 +15,7 @@ import { systemActor } from '../common/actor';
 import { OrgsParticipant, QA_ACCOUNT_EMAIL, rethrowQaLock } from '../orgs/orgs.participant';
 import { countersignReloadMessage, understandsCountersign, type DecisionsContract } from '../common/decisions-contract';
 import type { Role } from '../common/auth';
-import { NO_PROJECT, UNAVAILABLE, type IdentityOutcome } from './identity/identity-sign-in.service';
+import { NO_PROJECT, UNAVAILABLE, type BreakGlass, type IdentityOutcome } from './identity/identity-sign-in.service';
 import { isRetired } from './identity/identity-accounts';
 import type {
   SessionInput,
@@ -294,7 +295,7 @@ export class AuthService {
    * same access rule as every sign-in. An account this sign-in just made holds no project yet, and is told so.
    */
   async signInIdentity(outcome: IdentityOutcome): Promise<TokenResult> {
-    if (outcome.breakGlass) return this.breakGlassSession(outcome.account);
+    if (outcome.breakGlass) return this.breakGlassSession(outcome.account, outcome.breakGlass);
     try {
       return await this.signInUser(outcome.account);
     } catch (err) {
@@ -310,20 +311,40 @@ export class AuthService {
    * committed before (refused here: unavailable, as for anyone else) or waits for this sign-in, as it would for any
    * sign-in that came before it.
    */
-  private async breakGlassSession(user: IdentityOutcome['account']): Promise<TokenResult> {
-    return this.prisma.$transaction(async (tx) => {
-      const orgIds = await this.orgs.administeredCompanyIds(tx, user.id);
-      for (const orgId of orgIds) await lockOrgStanding(tx, orgId);
-      if (!(await this.orgs.administersAnyOf(tx, user.id, orgIds))) throw new ServiceUnavailableException(UNAVAILABLE);
-      const landing = await this.orgs.signInLanding(tx, user);
-      if (!landing) throw new UnauthorizedException(ACCESS_REMOVED);
-      return {
-        token: await this.issueNamedUser(user, landing.role, landing.projectId),
-        role: landing.role,
-        projectId: landing.projectId,
-        name: user.name,
-      };
-    });
+  private async breakGlassSession(user: IdentityOutcome['account'], glass: BreakGlass): Promise<TokenResult> {
+    let refused = 'break-glass refused: session not issued';
+    try {
+      const result = await this.prisma.$transaction(async (tx) => {
+        const orgIds = await this.orgs.administeredCompanyIds(tx, user.id);
+        for (const orgId of orgIds) await lockOrgStanding(tx, orgId);
+        if (!(await this.orgs.administersAnyOf(tx, user.id, orgIds))) {
+          refused = 'break-glass refused: no longer a company owner or admin';
+          throw new ServiceUnavailableException(UNAVAILABLE);
+        }
+        const landing = await this.orgs.signInLanding(tx, user);
+        if (!landing) {
+          refused = 'break-glass refused: no project access';
+          throw new UnauthorizedException(ACCESS_REMOVED);
+        }
+        return {
+          token: await this.issueNamedUser(user, landing.role, landing.projectId),
+          role: landing.role,
+          projectId: landing.projectId,
+          name: user.name,
+        };
+      });
+      glass.settle('break-glass password accepted');
+      return result;
+    } catch (err) {
+      // a transaction the server closed (its time ran out while this process was busy, e.g. under many bcrypt tries)
+      // is "unavailable", as the issuer being down is, never a server error
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2028') {
+        glass.settle('break-glass refused: transaction timed out');
+        throw new ServiceUnavailableException(UNAVAILABLE);
+      }
+      glass.settle(refused);
+      throw err;
+    }
   }
 
   /** #827 one-screen sign-in: with no SMS channel but working mail, a phone sign-in's code is emailed to the
