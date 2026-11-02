@@ -137,12 +137,13 @@ export function isCodexReviewSummaryOnly(body) {
  * A Codex record that names this head and is not wholly clean (findings, a run still going, a missing flag) vetoes
  * any record's own clear, whenever it was written (Codex 4437620372).
  *
- * Returns 'hold', 'security', 'dirty', 'clear' or 'none' (G2, #1094 6565074822).
+ * Returns 'security', 'hold', 'dirty', 'clear' or 'none' (G2, #1094 6565074822), in that order of precedence.
+ *  - 'security': a security review completed on this head with unresolved findings, which the gate cannot see as
+ *    comments. No run ending lifts it, so it blocks every clearance as a finding (non-retryable: a correction is owed),
+ *    even while another same-head run is still going (Codex 4439117340).
  *  - 'hold': a same-head run still going (a code or security review on this head whose status is present and not
  *    `completed`). It holds every clearance (the cap's deferral, a fresh +1, the record's own) as a retryable
  *    non-success: the run ends and the head is re-judged.
- *  - 'security': a security review completed on this head with unresolved findings, which the gate cannot see as
- *    comments. No run ending lifts it, so it blocks every clearance as a finding (non-retryable: a correction is owed).
  *  - 'dirty': any other same-head record that is not wholly clean. A code review completed with
  *    `has_unresolved_findings: true` is Codex's normal record for any head it commented on; those findings are
  *    visible to the gate, which blocks them (under the cap) or defers and files them (past it) exactly as before.
@@ -179,8 +180,11 @@ export function codexStateRecordVerdict(issueComments, expectedHead, readyAtMs) 
     const writtenMs = Date.parse(comment?.updated_at ?? comment?.created_at);
     if (Number.isFinite(writtenMs) && writtenMs >= readyAtMs && codeClean && securityClean) clears = true;
   }
-  if (hold) return 'hold';
+  // Codex 4439117340 — a completed security review with unresolved findings outranks a run still going on this head:
+  // no run ending lifts those findings, and a hold would only ever publish the retryable state, so a stuck run would
+  // keep them from being routed for correction
   if (securityFindings) return 'security';
+  if (hold) return 'hold';
   if (dirty) return 'dirty';
   return clears ? 'clear' : 'none';
 }
