@@ -16,7 +16,7 @@ import { classifyCodexState } from './autonomous-review-state.mjs';
 import { capDefersStoredFailure, capFiles, cappedSuccessDetail, ensureTerminalReviewState, EVIDENCE_SNAPSHOT_ATTEMPTS, fileDeferredFindings, finalCodexEvidence, isTerminalReviewStatus, publishBlockingVerdict, publishSettledSuccess, readCodexEvidence, reclassifyCurrentCodexEvidence, reviewAttempt, settleFinalCodexEvidence, SETTLING_DESCRIPTION, unionDeferred } from './autonomous-review-gate.mjs';
 import { pendingFollowUpHeads } from './review-follow-up.mjs';
 import { recordSecurityVerdict, securityVerdictHeads, securityVerdictMarker, SECURITY_VERDICT_MARKER_AUTHOR } from './security-verdict-marker.mjs';
-import { CODEX_RUN_HELD_DETAIL, CODEX_SECURITY_FINDINGS_DETAIL, FOLLOW_UP_RETRY, isRetryableReviewFailureDescription, REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
+import { CODEX_RECORD_UNREADABLE_DETAIL, CODEX_RUN_HELD_DETAIL, CODEX_SECURITY_FINDINGS_DETAIL, FOLLOW_UP_RETRY, isRetryableReviewFailureDescription, REVIEW_FOLLOW_UP_LABEL, REVIEW_ROUND_CAP } from './review-policy.mjs';
 
 // M3c C1 — the gate stamps the run id and records a receipt from the Actions env; in CI that env is the test
 // runner's own, so clear it to keep the suite hermetic and the runner's GITHUB_ENV untouched.
@@ -471,9 +471,14 @@ test('Codex 4220861349 — the non-blocking findings beside a blocker are kept a
   // every blocking publication hands them over to the one ordered publisher
   const { readFile } = await import('node:fs/promises');
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
-  const calls = gate.split('publishCurrentHeadFinding(').slice(2);
-  assert.equal(calls.length, 4);
-  for (const call of calls) assert.match(call.slice(0, 400), /deferred: \w+\.deferred \?\? \[\]/u);
+  // every call (not the definition), wherever it sits in the file
+  const calls = [...gate.matchAll(/(?<!function )publishCurrentHeadFinding\(/gu)].map((match) => gate.slice(match.index + match[0].length));
+  assert.equal(calls.length, 5);
+  // G2 — except the merge refusal's security verdict: it reads only Codex's record (no findings to hand over), after
+  // the settlement already filed this head's deferrable findings
+  const refusal = calls.filter((call) => call.slice(0, 400).includes('detail: CODEX_SECURITY_FINDINGS_DETAIL'));
+  assert.equal(refusal.length, 1);
+  for (const call of calls.filter((c) => !refusal.includes(c))) assert.match(call.slice(0, 400), /deferred: \w+\.deferred \?\? \[\]/u);
 });
 
 test('Codex 4221120404 / 4226440227 / 4229506050 — a blocking verdict is published in one fixed order: non-green, record, verdict, draft, filing', async () => {
@@ -517,7 +522,7 @@ test('Codex 4221120404 / 4226440227 / 4229506050 — a blocking verdict is publi
   assert.doesNotMatch(publish, /client\.setStatus\(|setDraftForCurrentHead\(|fileDeferredFindings\(/u, 'no step of its own');
   const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState'), gate.indexOf('async function waitForRequiredChecks'));
   assert.match(recovery, /if \(settled\.state === 'changes_required'\) \{\s*await publishBlockingVerdict\(/u);
-  assert.equal([...gate.matchAll(/await publishBlockingVerdict\(/gu)].length, 4, 'the finding path, recovery, changed final evidence and an unsettled settlement');
+  assert.equal([...gate.matchAll(/await publishBlockingVerdict\(/gu)].length, 5, 'the finding path, recovery, changed final evidence, an unsettled settlement and a merge refused as held or unreadable');
 });
 test('Codex 4220861370 — a blank Codex review container that opens no thread is no review round', () => {
   const blank = (id, head) => ({ id, user: { login: CODEX }, commit_id: head, body: '', state: 'COMMENTED' });
@@ -1181,9 +1186,11 @@ test('G2 gap 1 — a merge the review-state record refuses never leaves the head
       mergeExactHead: async () => { fake.state.log.push('merge'); return { merged: true }; },
       enableAutoMerge: async () => { fake.state.log.push('auto-merge'); },
       dispatchHandoff: async () => {},
+      updateStickyComment: async (number, body) => { fake.state.log.push('sticky'); fake.state.stickies = [...(fake.state.stickies ?? []), body]; },
     });
     return fake;
   };
+  const stickyState = (fake) => /- \*\*State:\*\* `([a-z_]+)`/u.exec(fake.state.stickies?.at(-1) ?? '')?.[1];
   // a same-head run still going: the retryable hold replaces the green, the PR is drafted, nothing merges
   const held = run([RUNNING_RECORD]);
   assert.equal(await completeReviewedPullRequest(held.client, pr, HEAD), 'review_refused');
@@ -1192,6 +1199,7 @@ test('G2 gap 1 — a merge the review-state record refuses never leaves the head
   assert.equal(isRetryableReviewFailureDescription(held.state.statuses.at(-1).description), true);
   assert.ok(held.state.log.includes('draft:true') && !held.state.log.includes('merge'));
   assert.deepEqual(securityVerdictHeads(held.state.notes), [], 'a hold writes no security marker');
+  assert.equal(stickyState(held), 'review_retry', 'the review_clean sticky is replaced, never left clean');
   // security findings: the blocking verdict, with its marker before the failure; not retryable (a correction answers it)
   const security = run([SECURITY_RECORD]);
   assert.equal(await completeReviewedPullRequest(security.client, pr, HEAD), 'review_refused');
@@ -1201,24 +1209,42 @@ test('G2 gap 1 — a merge the review-state record refuses never leaves the head
   assert.deepEqual(securityVerdictHeads(security.state.notes), [HEAD]);
   const order = security.state.log.filter((entry) => entry === 'record' || entry.startsWith('status:') || entry === 'merge');
   assert.deepEqual(order, ['status:pending', 'record', 'status:failure']);
+  // published as a finding is (Stage 1's re-check of b30bea7b): the changes_required sticky with the correction notice
+  assert.equal(stickyState(security), 'changes_required');
+  assert.match(security.state.stickies.at(-1), new RegExp(CODEX_SECURITY_FINDINGS_DETAIL, 'u'));
   // an unreadable record at the merge's last read: the retryable hold replaces the green, then the run fails
   let reads = 0;
   const unreadable = run(() => { reads += 1; throw new Error('GitHub 502'); });
   await assert.rejects(completeReviewedPullRequest(unreadable.client, pr, HEAD), /GitHub 502/u);
   assert.equal(reads, 1);
   assert.equal(unreadable.state.statuses.at(-1).state, 'failure');
-  assert.equal(unreadable.state.statuses.at(-1).description, `review: ${CODEX_RUN_HELD_DETAIL}`);
+  // its own retryable detail, not the "still running" text (Stage 1's re-check of b30bea7b)
+  assert.equal(unreadable.state.statuses.at(-1).description, `review: ${CODEX_RECORD_UNREADABLE_DETAIL}`);
+  assert.equal(isRetryableReviewFailureDescription(unreadable.state.statuses.at(-1).description), true);
   assert.ok(!unreadable.state.log.includes('merge'));
+  assert.equal(stickyState(unreadable), 'review_retry');
   // after any of these refusals the newest status the gate wrote is never success
   for (const fake of [held, security, unreadable]) assert.notEqual(fake.state.statuses.at(-1).state, 'success');
   // a record with no hold and no security findings merges, writing nothing
   const clean = run([]);
   assert.equal(await completeReviewedPullRequest(clean.client, pr, HEAD), 'merged');
   assert.deepEqual(clean.state.statuses, []);
+  assert.equal(clean.state.stickies, undefined, 'a merge writes no sticky here');
+  // a recovery request handed in is settled on a refusal, as on any finding or retry
+  const settledRuns = [];
+  for (const records of [[RUNNING_RECORD], [SECURITY_RECORD]]) {
+    const fake = run(records);
+    const before = fake.state.statuses.length;
+    await completeReviewedPullRequest(fake.client, pr, HEAD, undefined, { recoveryRequest: { status: { context: 'codex-recovery-request' } }, attempt: 1 });
+    settledRuns.push(fake.state.statuses.slice(before).some((status) => status.state === 'success' && /^recovery: consumed by /u.test(status.description)));
+  }
+  assert.deepEqual(settledRuns, [true, true]);
   // and the review path writes no `clear` sticky over a refusal
   const { readFile } = await import('node:fs/promises');
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const completion = gate.indexOf('const completion = await completeReviewedPullRequest(');
+  // the review path hands its recovery request and attempt to the refusal (the finding's settle and sticky)
+  assert.match(gate.slice(completion, completion + 300), /finalPolicy\.verdict,\s*\{ recoveryRequest, attempt \},\s*\);/u);
   assert.ok(completion > 0 && gate.indexOf("if (completion === 'review_refused') return;", completion) > completion
     && gate.indexOf("if (completion === 'review_refused') return;", completion) < gate.indexOf("state: 'clear'", completion));
 });

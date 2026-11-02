@@ -22,6 +22,7 @@ import {
   isBodyOnlyOwnershipRecoveryDetail,
   REVIEW_ROUND_CAP,
   CODEX_RUN_HELD_DETAIL,
+  CODEX_RECORD_UNREADABLE_DETAIL,
   CODEX_SECURITY_FINDINGS_DETAIL,
 } from './review-policy.mjs';
 export {
@@ -1455,6 +1456,7 @@ export async function completeReviewedPullRequest(
   pullRequest,
   expectedHead,
   verdict,
+  { recoveryRequest = null, attempt = 0 } = {},
 ) {
   let authorization;
   try {
@@ -1462,7 +1464,7 @@ export async function completeReviewedPullRequest(
   } catch (error) {
     // G2 (#1280 round 1, gap-check) — an unreadable review-state record refuses the merge; the green it would have
     // acted on is replaced first, with the retryable hold, so no head stays green on a refusal
-    if (error instanceof CodexRecordUnreadable) await refuseReviewedGreen(client, pullRequest, expectedHead, { security: false });
+    if (error instanceof CodexRecordUnreadable) await refuseReviewedGreen(client, pullRequest, expectedHead, { refusal: 'unreadable', recoveryRequest, attempt });
     throw error;
   }
   if (!authorization.allowed) {
@@ -1470,7 +1472,11 @@ export async function completeReviewedPullRequest(
     // have acted on (branch protection, a queued auto-merge): a same-head run still going publishes the retryable
     // hold, security findings the blocking verdict (its marker, then the failure the correction lease reads)
     if (authorization.state === 'codex_review_held' || authorization.state === 'codex_review_security') {
-      await refuseReviewedGreen(client, pullRequest, expectedHead, { security: authorization.state === 'codex_review_security' });
+      await refuseReviewedGreen(client, pullRequest, expectedHead, {
+        refusal: authorization.state === 'codex_review_security' ? 'security' : 'held',
+        recoveryRequest,
+        attempt,
+      });
       return 'review_refused';
     }
     return 'held_for_gates';
@@ -1519,11 +1525,36 @@ export class CodexRecordUnreadable extends Error {
   }
 }
 
-/** G2 (#1280 round 1, gap-check) — replace a reviewed head's green after the merge authorizer's record refused it. */
-async function refuseReviewedGreen(client, pullRequest, expectedHead, { security }) {
-  return publishBlockingVerdict(client, pullRequest, expectedHead, security
-    ? { description: `review: ${CODEX_SECURITY_FINDINGS_DETAIL}`, security: true }
-    : { description: `review: ${CODEX_RUN_HELD_DETAIL}` });
+/**
+ * G2 (#1280 round 1, gap-check) — replace a reviewed head's green, and its `review_clean` sticky, after the merge
+ * authorizer's record refused it. Security findings are published exactly as a finding is (Stage 1's re-check of
+ * b30bea7b): the verdict with its marker, convergence, the recovery settle and the `changes_required` sticky with
+ * the correction notice. A run still going, or a record that could not be read, is a retryable failure whose
+ * sticky says so: never `clean`.
+ */
+async function refuseReviewedGreen(client, pullRequest, expectedHead, { refusal, recoveryRequest = null, attempt = 0 }) {
+  if (refusal === 'security') {
+    return publishCurrentHeadFinding(client, pullRequest, expectedHead, recoveryRequest, {
+      detail: CODEX_SECURITY_FINDINGS_DETAIL,
+      attempt,
+      security: true,
+    });
+  }
+  const detail = refusal === 'unreadable' ? CODEX_RECORD_UNREADABLE_DETAIL : CODEX_RUN_HELD_DETAIL;
+  const live = await publishBlockingVerdict(client, pullRequest, expectedHead, { description: `review: ${detail}` });
+  if (!live) return null;
+  await settleRecoveryRequest(client, expectedHead, live, recoveryRequest, 'changed review evidence');
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'review_retry',
+      head: expectedHead,
+      detail,
+      attempt,
+      next: 'The merge was refused at its last check; the gate re-judges this exact head once Codex\'s review state settles.',
+    }),
+  );
+  return live;
 }
 
 /** The common mandatory guard for both direct merge and auto-merge entrypoints. */
@@ -3294,6 +3325,7 @@ export async function run() {
         pullRequest,
         expectedHead,
         finalPolicy.verdict,
+        { recoveryRequest, attempt },
       );
       // G2 (#1280 round 1, gap-check) — the merge's last record read refused it and replaced the green: no `clear`
       if (completion === 'review_refused') return;

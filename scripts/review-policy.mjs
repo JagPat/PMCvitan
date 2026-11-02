@@ -229,6 +229,11 @@ export const FOLLOW_UP_RETRY = 'review: Codex follow-up filing did not complete;
  */
 export const CODEX_RUN_HELD_DETAIL = 'a Codex review of this exact head is still running';
 /**
+ * G2 (#1280 round 1, Stage 1's re-check) — the detail of a head whose merge authorization could not read Codex's
+ * review-state record. It is retryable: the read is repeated, and the head re-judged.
+ */
+export const CODEX_RECORD_UNREADABLE_DETAIL = 'Codex review state could not be read';
+/**
  * G2 — the detail of a head whose same-head Codex security review completed with unresolved findings, which the gate
  * cannot see as comments. It is NOT retryable: no run ending lifts it, so it is a finding a correction must answer
  * (a review lease opens), exactly like a current-head Codex finding.
@@ -248,6 +253,7 @@ const RETRYABLE_REVIEW_FAILURES = [
   OWNERSHIP_READ_RETRY,
   WORK_ITEM_READ_RETRY,
   CODEX_RUN_HELD_DETAIL,
+  CODEX_RECORD_UNREADABLE_DETAIL,
 ];
 
 export function isRetryableReviewFailureDescription(description) {
