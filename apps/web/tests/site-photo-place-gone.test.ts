@@ -489,6 +489,98 @@ describe('a queued site photo whose place was removed (#919)', () => {
     expect(A.getState().toast ?? '').not.toBe(DROPPED);
   });
 
+  // Codex 4438007023: the upload answered, the tree read after it failed. Not an upload that failed: never "Could not
+  // upload", never a terminal refusal, whatever the read's status
+  const forbidden = () => Object.assign(new Error('/snapshot 403'), { status: 403 });
+
+  it('PG27: a direct send with no row kept, whose tree read fails: the answer is the photo, listed once with no place, sent once', async () => {
+    vi.doMock('@/data/sitePhotoStore', async (importOriginal) => {
+      const real = await importOriginal<typeof import('@/data/sitePhotoStore')>();
+      return { ...real, putSitePhotoRow: () => Promise.reject(new Error('QuotaExceededError')) };
+    });
+    try {
+      const A = await tab();
+      startWork(A as never);
+      const up = uploads({ id: 'm1', url: '/media/m1', nodeId: null });
+      let reads = 0;
+      withTree(A, up.fn, async () => { reads += 1; if (reads === 1) throw lost(); return { ...snap, nodes: [] }; });
+      A.getState().addProgressPhoto(PNG, 'room-1');
+      await until(A, (s) => s.photos.some((p) => p.id === 'm1'));
+      expect(A.getState().photos.filter((p) => p.id === 'm1')).toHaveLength(1);
+      expect(A.getState().photos.find((p) => p.id === 'm1')).not.toHaveProperty('nodeId');
+      await settled();
+      expect(up.inputs).toHaveLength(1);
+      expect(A.getState().toast).toBe(ADDED);
+      expect(A.getState().outbox).toEqual([]);
+      expect(A.getState().photoUploadsSending).toEqual([]);
+    } finally {
+      vi.doUnmock('@/data/sitePhotoStore');
+    }
+  });
+
+  it('PG28: a replay whose tree read is refused for good (403, every time): settled by its one send, never refused, nothing said', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const key = await queued(A);
+    const up = uploads({ id: 'm1', url: '/media/m1', nodeId: null }, { id: 'm1', url: '/media/m1', nodeId: null });
+    withTree(A, up.fn, async () => { throw forbidden(); });
+    await A.getState().flushOutbox();
+    await settled();
+    expect(A.getState().outbox).toEqual([]);
+    // a later flush has nothing left to send: the op has ended
+    await A.getState().flushOutbox();
+    await settled();
+    expect(up.inputs.map((i) => i.clientKey)).toEqual([key]);
+    expect(A.getState().toast ?? '').not.toContain('without a place');
+    expect(A.getState().toast ?? '').not.toContain('discarded');
+    const rows = await import('@/data/sitePhotoStore');
+    const row = await rows.getSitePhotoRow(ROWS, 'villa-b', key);
+    expect(row && rows.isSitePhotoSent(row) && !row.refused).toBe(true);
+    expect(row).not.toHaveProperty('placeDropped');
+  });
+
+  it('PG29: a direct send with its row kept, whose tree read is refused for good (403): the photo, listed with no place, sent once', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const up = uploads({ id: 'm1', url: '/media/m1', nodeId: null }, { id: 'm1', url: '/media/m1', nodeId: null });
+    withTree(A, up.fn, async () => { throw forbidden(); });
+    A.getState().addProgressPhoto(PNG, 'room-1');
+    await until(A, (s) => s.photos.some((p) => p.id === 'm1'));
+    expect(A.getState().photos.filter((p) => p.id === 'm1')).toHaveLength(1);
+    expect(A.getState().photos.find((p) => p.id === 'm1')).not.toHaveProperty('nodeId');
+    await settled();
+    await A.getState().flushOutbox();
+    await settled();
+    expect(up.inputs).toHaveLength(1);
+    expect(A.getState().toast).not.toBe(TRY_AGAIN);
+    expect(A.getState().outbox).toEqual([]);
+    const rows = await import('@/data/sitePhotoStore');
+    const row = await rows.getSitePhotoRow(ROWS, 'villa-b', up.inputs[0]!.clientKey as string);
+    expect(row && rows.isSitePhotoSent(row) && !row.refused).toBe(true);
+  });
+
+  it('PG30: a replay whose tree read stays lost: unsettled each time, never refused; the upload refused for good ends it', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const key = await queued(A);
+    const noAccess = () => Object.assign(new Error('/media 403'), { status: 403, serverMessage: 'Forbidden' });
+    const up = uploads({ id: 'm1', url: '/media/m1', nodeId: null }, { id: 'm1', url: '/media/m1', nodeId: null }, noAccess());
+    withTree(A, up.fn, async () => { throw lost(); });
+    const rows = await import('@/data/sitePhotoStore');
+    for (let send = 1; send <= 2; send += 1) {
+      await A.getState().flushOutbox();
+      await settled();
+      expect(A.getState().outbox).toEqual([{ t: 'uploadSitePhoto', scope: ROWS, clientKey: key }]);
+      const kept = await rows.getSitePhotoRow(ROWS, 'villa-b', key);
+      expect(kept && !rows.isSitePhotoSent(kept)).toBe(true);
+    }
+    // the person lost access: the upload itself is refused for good, and the op ends as any refused photo does
+    await A.getState().flushOutbox();
+    await settled();
+    expect(up.inputs.map((i) => i.clientKey)).toEqual([key, key, key]);
+    expect(A.getState().outbox).toEqual([]);
+  });
+
   it.each([
     ['names the place it asked for', { id: 'm1', url: '/media/m1', nodeId: 'room-1' }],
     ['comes from an API that names no place', { id: 'm1', url: '/media/m1' }],

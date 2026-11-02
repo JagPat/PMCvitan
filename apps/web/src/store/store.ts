@@ -97,7 +97,7 @@ import { isDone } from '@/store/queueLedger';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
-import { resolveMediaUrl, replayOutboxOp, uploadSitePhotoInput, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, uploadSitePhotoInput, PlaceCheckFailed, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { clearVisitPhotoStart, clearVisitPoster, failVisitPhotosOn, listVisitPhotos, moveVisitPhotos, posterLapsed, posterWaits, removedVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
@@ -6567,7 +6567,11 @@ export const useStore = create<Store>()(
           const rowSent = (placeDropped: boolean): void => changeRow(() => (sitePhotoStorageAvailable() ? markSitePhotoSent(rowScope, rowProject, clientKey, placeDropped) : Promise.resolve()));
           // a place removed since the pick: saved without it, and the person told so (#919)
           void uploadSitePhotoInput(sendGateway, input)
-            .then((res) => {
+            // the photo was taken but the tree read that says whether its place was removed failed: with no row kept,
+            // nothing can send it again, so its answer is the photo, listed as the server filed it and nothing said about
+            // a place. A kept row is queued as for a lost answer, and its replay asks again (Codex 4438007023)
+            .catch((err: unknown) => { if (err instanceof PlaceCheckFailed && !saved) return err.answer; throw err; })
+            .then((res: Awaited<ReturnType<typeof uploadSitePhotoInput>>) => {
               // the place the server filed it on, when its answer says (a keyed replay answers the stored photo, which may
               // have been re-filed since: Codex 4436983880); an older API's answer names none, and the asked place stands
               const placed = res.placeDropped ? undefined : res.nodeId !== undefined ? (res.nodeId ?? undefined) : nodeId;

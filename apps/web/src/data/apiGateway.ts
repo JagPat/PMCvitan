@@ -2102,7 +2102,7 @@ export async function uploadSitePhotoInput(gw: Pick<ApiGateway, 'uploadMedia' | 
     // an API older than the answer's place names none: the photo the key holds may be another tab's, stored on the place
     // once it was published. Decided as below, from the tree as it is now (Codex 4437554261). Either way it is listed with
     // no place, the one this send asked for, until a refresh names where it is (Codex 4437841460)
-    return (await placeStandsNow(gw, input.nodeId)) ? { ...second, nodeId: null } : { ...second, placeDropped: true };
+    return (await placeStandsNow(gw, input.nodeId, { ...second, nodeId: null })) ? { ...second, nodeId: null } : { ...second, placeDropped: true };
   }
   if (!input.nodeId || res.nodeId !== null) return res;
   // stored with no place, though this send named one: saved without it after its place was removed (an earlier send's
@@ -2110,13 +2110,31 @@ export async function uploadSitePhotoInput(gw: Pick<ApiGateway, 'uploadMedia' | 
   // read from the tree as it is now, never from one the tab already holds, so a stale tab cannot decide "removed" from
   // an old tree (Codex 4437127228, Stage 1). That read failing answers nothing: the send is not settled, and its next
   // send asks again.
-  return (await placeStandsNow(gw, input.nodeId)) ? res : { ...res, placeDropped: true };
+  return (await placeStandsNow(gw, input.nodeId, res)) ? res : { ...res, placeDropped: true };
 }
 
-/** #919: is the place a photo named published in the project's tree as it is now (a fresh read, never the tab's own)? */
-async function placeStandsNow(gw: Pick<ApiGateway, 'snapshot'>, nodeId: string): Promise<boolean> {
-  const now = await gw.snapshot();
-  return now.nodes.some((n) => n.id === nodeId && !n.draft);
+/** #919: the upload was answered, but the tree read that says whether its place was removed failed for now (no answer,
+ *  or one to try again). It carries the answer, and no status: never a terminal refusal, so a queued send is not settled
+ *  (nor its row marked refused) and its next send asks again, and a direct send with no row kept takes the answer as the
+ *  photo it is (Codex 4438007023). */
+export class PlaceCheckFailed extends Error {
+  readonly answer: { id: string; url: string; at?: string; nodeId?: string | null };
+  constructor(answer: PlaceCheckFailed['answer']) {
+    super('the place this site photo named could not be read');
+    this.answer = answer;
+  }
+}
+
+/** #919: is the place a photo named published in the project's tree as it is now (a fresh read, never the tab's own)?
+ *  A read that fails for now is a PlaceCheckFailed carrying the upload's answer. A read refused for good (a 4xx that is
+ *  final) will never answer: the photo is taken as answered, with no place, and nothing is said about one, so its send
+ *  ends rather than asking again forever (Stage 1, Codex 4438007023). */
+async function placeStandsNow(gw: Pick<ApiGateway, 'snapshot'>, nodeId: string, answer: PlaceCheckFailed['answer']): Promise<boolean> {
+  const now = await gw.snapshot().catch((err: unknown) => {
+    if (isTerminalOutboxError(err)) return null;
+    throw new PlaceCheckFailed(answer);
+  });
+  return !now || now.nodes.some((n) => n.id === nodeId && !n.draft);
 }
 
 /** #919: a queued `uploadMedia` that is a plain site photo (an earlier release's offline pick): not evidence, not a visit
