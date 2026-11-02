@@ -560,6 +560,20 @@ export function otherOpenPullRequestAt(open, head, number) {
   return (open ?? []).some((pull) => pull?.number !== number && pull?.head?.sha === head);
 }
 
+/**
+ * 2A3a — the watchdog loop's shared-head check: from the open-PR snapshot, or with `fresh`, from a new list read now
+ * (gap-check F3). Only the pull requests the gate judges count (same repository, the default-branch base), as in the
+ * gate's own refusal (Stage 1's ruling on gap-check F2).
+ */
+export function sharedHeadCheck(client, openSnapshot, repository, defaultBranch) {
+  return async (head, number, { fresh = false } = {}) => {
+    const open = fresh ? await client.openPullRequests() : openSnapshot;
+    return otherOpenPullRequestAt(
+      (open ?? []).filter((pull) => isCorrectionEligiblePullRequest(pull, repository, defaultBranch)), head, number,
+    );
+  };
+}
+
 // The correction WATCHDOG.
 //
 // Until now this job drained conflicts, merge continuation and status drift, and
@@ -600,6 +614,13 @@ export async function handOffCorrectionLease(
   // `gateRecoveryStatus` holds the ask while the gate's own accepted request is
   // still pending.
   const recoverable = gateRecoveryStatus(combined, now);
+  // 2A3a (gap-check F1) — while another open pull request still has this head on a fresh list, a re-judge could only
+  // write the shared-commit refusal again (a new status on the commit, and this pull request drafted again even after
+  // a person marked it ready), so nothing is dispatched. The sibling's close runs this watchdog (`pull_request_target:
+  // closed`), and that pass, or the next one, dispatches once the head is this pull request's alone
+  if (recoverable && sharesHead && await sharesHead(head, pullRequest.number, { fresh: true })) {
+    return { state: 'shared_commit', head, body: null, reason: 'another open pull request still has this exact head' };
+  }
   if (recoverable) {
     await client.dispatchRecovery(defaultBranch, {
       pr_number: String(pullRequest.number),
@@ -823,8 +844,7 @@ export async function run() {
   const lastBaseMergeAt = await client.lastCommitAt(defaultBranch);
   const openSnapshot = await client.openPullRequests();
   // 2A3a — another open pull request at a head: from the snapshot, then on a fresh list just before a notice is posted
-  const sharesHead = async (head, number, { fresh = false } = {}) =>
-    otherOpenPullRequestAt(fresh ? await client.openPullRequests() : openSnapshot, head, number);
+  const sharesHead = sharedHeadCheck(client, openSnapshot, repository, defaultBranch);
   for (const pullRequest of openSnapshot) {
     try {
       await handOffConflict(client, pullRequest, repository, defaultBranch, { lastBaseMergeAt });

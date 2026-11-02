@@ -4,7 +4,7 @@ import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GitHubClient, REQUIRED_CHECKS, refuseSharedCommit, run } from './autonomous-review-gate.mjs';
-import { handOffCorrectionLease, otherOpenPullRequestAt } from './autonomous-handoff.mjs';
+import { handOffCorrectionLease, otherOpenPullRequestAt, sharedHeadCheck } from './autonomous-handoff.mjs';
 import { gateRecoveryStatus } from './correction-lease.mjs';
 import { CODEX_SHARED_COMMIT_DETAIL, isRetryableReviewFailureDescription } from './review-policy.mjs';
 
@@ -158,8 +158,13 @@ test('2A3a — once the other PR closes, the re-judge goes on to this PR\'s own 
 
 // The relabel guard (a body edit) writes a body-derived verdict only while this PR is alone at its head.
 test('2A3a — the relabel guard writes no body verdict at a shared commit: the shared-commit refusal instead', { timeout: 30_000 }, async () => {
+  // a real candidate (gap-check F3, B1): a codex marker on a `codex/**` branch, whose head commit declares no such owner,
+  // so the guard, left to run, would write its own `scope:` verdict to the commit
   const candidate = '<!-- review-size: standard -->\n<!-- correction-owner: codex -->';
-  const pulls = new Map([[610, pullAt(610, { body: candidate })], [611, pullAt(611, { auto_merge: queued })]]);
+  const pulls = new Map([
+    [610, pullAt(610, { body: candidate, head: { sha: HEAD, ref: 'codex/unit-610', repo } })],
+    [611, pullAt(611, { auto_merge: queued })],
+  ]);
   const statuses = [];
   const guarded = await runGate({ number: 610, pulls, statuses, mode: 'relabel-guard', trigger: 'relabel' });
   assert.equal(guarded.error, null);
@@ -168,6 +173,11 @@ test('2A3a — the relabel guard writes no body verdict at a shared commit: the 
   assert.equal(pulls.get(611).auto_merge, null);
   assert.deepEqual(reviewStatuses(guarded.log).filter(([, state]) => state !== 'pending').map(([, s, d]) => [s, d]), [['failure', SHARED]]);
   assert.equal(guarded.log.some(([k]) => k === 'scope-read'), false);
+  assert.equal(reviewStatuses(guarded.log).some(([, , description]) => /^scope:/u.test(description)), false, 'no body verdict');
+  // alone at its head, the same candidate does get the guard's own verdict: the row is live
+  pulls.get(611).state = 'closed';
+  const alone = await runGate({ number: 610, pulls, statuses: [], mode: 'relabel-guard', trigger: 'relabel' });
+  assert.ok(alone.log.some(([k]) => k === 'scope-read'), 'the guard reads its scope when alone');
 });
 
 test('2A3a — refuseSharedCommit: alone is null with nothing written; a PR no longer current writes nothing', async () => {
@@ -260,4 +270,78 @@ test('2A3a — structural: the shared-commit check precedes every body-derived w
   assert.ok(confirm.indexOf('throw new SharedCommitRefused(') < confirm.indexOf('pull.auto_merge'), 'any other open PR refuses, armed or not');
   const handoff = await readFile(new URL('./autonomous-handoff.mjs', import.meta.url), 'utf8');
   assert.match(handoff, /handOffCorrectionLease\(client, pullRequest, repository, defaultBranch, \{ sharesHead \}\)/u);
+});
+
+// Gap-check F1 — while the sibling is still open, the watchdog does not dispatch the refusal's recovery: a re-judge could
+// only write it again (a new status on the commit) and draft the PR again. The close wakes the watchdog, and that pass
+// dispatches exactly once; a pending request then holds the ask.
+test('2A3a (gap-check F1) — N watchdog passes with a sibling present dispatch nothing; the close dispatches exactly once', async () => {
+  const refusal = { id: 6300, context: 'codex-current-head', state: 'failure', description: SHARED, updated_at: '2026-11-02T11:00:00Z' };
+  const statuses = [refusal];
+  const open = [pullAt(610), pullAt(611)];
+  const dispatched = [];
+  const client = {
+    combinedStatus: async () => ({ statuses: [...statuses] }),
+    openPullRequests: async () => open.filter((pull) => pull.state === 'open').map((pull) => ({ ...pull })),
+    pullRequest: async (n) => open.find((pull) => pull.number === n),
+    comments: async () => [], reviews: async () => [], reviewComments: async () => [],
+    comment: async () => { throw new Error('no notice expected'); },
+    dispatchRecovery: async (ref, inputs) => {
+      dispatched.push(inputs);
+      // the request-recovery job's durable marker, as the gate writes it
+      statuses.unshift({ id: 6400 + dispatched.length, context: `codex-recovery-request/${inputs.terminal_status_id}`, state: 'pending',
+        description: `recovery: requested terminal status ${inputs.terminal_status_id}`, updated_at: '2026-11-02T12:00:00Z' });
+    },
+  };
+  const pass = async () => {
+    const snapshot = await client.openPullRequests();
+    const sharesHead = sharedHeadCheck(client, snapshot, 'JagPat/PMCvitan', 'main');
+    for (const pull of snapshot) await handOffCorrectionLease(client, pull, 'JagPat/PMCvitan', 'main', { now: '2026-11-02T12:00:00Z', sharesHead });
+  };
+  for (let n = 0; n < 5; n += 1) await pass();
+  assert.deepEqual(dispatched, [], 'five passes with the sibling open: no dispatch');
+  open[1].state = 'closed';
+  await pass();
+  assert.deepEqual(dispatched.map((inputs) => [inputs.pr_number, inputs.terminal_status_id]), [['610', '6300']], 'the close: exactly one');
+  await pass();
+  assert.equal(dispatched.length, 1, 'and the pending request holds the next pass');
+});
+
+// Gap-check F3 (B3) — the fresh check reads a new list, never the snapshot.
+test('2A3a (gap-check F3) — the watchdog\'s fresh check re-lists the open pull requests; only gate-judged ones count', async () => {
+  let reads = 0;
+  const client = { async openPullRequests() { reads += 1; return [pullAt(610), pullAt(611)]; } };
+  const check = sharedHeadCheck(client, [pullAt(610)], 'JagPat/PMCvitan', 'main');
+  assert.equal(await check(HEAD, 610), false, 'the snapshot shows it alone');
+  assert.equal(reads, 0);
+  assert.equal(await check(HEAD, 610, { fresh: true }), true, 'the fresh list shows the sibling');
+  assert.equal(reads, 1);
+  // gap-check F2 — a fork, or a pull request into another base, is not counted
+  const fork = pullAt(612, { head: { sha: HEAD, ref: 'patch', repo: { full_name: 'someone/PMCvitan' } } });
+  const otherBase = pullAt(613, { base: { ref: 'release', sha: 'b'.repeat(40), repo } });
+  const foreign = sharedHeadCheck({ async openPullRequests() { return [pullAt(610), fork, otherBase]; } }, [pullAt(610), fork, otherBase], 'JagPat/PMCvitan', 'main');
+  assert.equal(await foreign(HEAD, 610), false);
+  assert.equal(await foreign(HEAD, 610, { fresh: true }), false);
+  const handoff = await readFile(new URL('./autonomous-handoff.mjs', import.meta.url), 'utf8');
+  assert.match(handoff, /const sharesHead = sharedHeadCheck\(client, openSnapshot, repository, defaultBranch\);/u);
+});
+
+// Gap-check F2 (Stage 1's ruling) — a fork's pull request, or one into another base, at this commit is never judged by
+// the gate, so it does not hold this one: no refusal. Its queued merge is still disarmed before the success.
+test('2A3a (gap-check F2) — a fork or other-base sibling holds nothing, but its queued merge is disarmed', { timeout: 30_000 }, async () => {
+  for (const [name, sibling] of [
+    ['fork', pullAt(612, { head: { sha: HEAD, ref: 'patch', repo: { full_name: 'someone/PMCvitan' } }, auto_merge: queued })],
+    ['other base', pullAt(613, { base: { ref: 'release', sha: 'b'.repeat(40), repo }, auto_merge: queued })],
+  ]) {
+    const quiet = { async openPullRequestsAt() { return [pullAt(610), { ...sibling }]; }, async setStatus() { throw new Error('nothing written'); } };
+    assert.equal(await refuseSharedCommit(quiet, pullAt(610), HEAD), null, `${name}: no refusal`);
+    const pulls = new Map([[610, pullAt(610)], [sibling.number, { ...sibling }]]);
+    const statuses = [tokenedSuccess()];
+    const result = await runGate({ number: 610, pulls, statuses });
+    assert.equal(result.error, null, name);
+    assert.equal(reviewStatuses(result.log).some(([, , description]) => description === SHARED), false, `${name}: not refused`);
+    assert.ok(result.log.some(([k, n]) => k === 'disable' && n === sibling.number), `${name}: its queued merge is disarmed`);
+    assert.equal(pulls.get(sibling.number).auto_merge, null, name);
+    assert.ok(reviewStatuses(result.log).some(([, state]) => state === 'success'), `${name}: this PR goes on to its own green`);
+  }
 });

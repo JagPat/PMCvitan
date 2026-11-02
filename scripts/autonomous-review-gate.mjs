@@ -1748,9 +1748,17 @@ async function confirmNoQueuedMergeAt(client, expectedHead, number) {
   if (open.some((pull) => pull.auto_merge)) throw new AutoMergeDisarmFailed();
 }
 
-/** 2A3a — the open pull requests at a commit other than this one. */
+/**
+ * 2A3a — the open pull requests at a commit, other than this one, that the shared-commit refusal counts: only those the
+ * gate itself judges (same repository, the default-branch base: `isEligiblePullRequest`). Stage 1's ruling on gap-check F2:
+ * a fork's pull request, or one into another base, at the same commit is never judged by the gate, so counting it would
+ * let anyone who can fork hold any main pull request indefinitely. Its author cannot arm it without write access, and the
+ * gate never reads its body, so no verdict of its own reaches the commit. Every queued merge at the commit, whatever its
+ * base or repository, is still disarmed (`disarmQueuedAutoMerge`), and a queued one still withholds the success
+ * (`confirmNoQueuedMergeAt`).
+ */
 function otherOpenPullRequests(open, number) {
-  return (open ?? []).filter((pull) => pull.number !== number);
+  return (open ?? []).filter((pull) => pull.number !== number && isEligiblePullRequest(eligibleShape(pull)));
 }
 
 /** 2A3a — another open pull request has this commit as its head: no success may be written at it. */
@@ -1768,8 +1776,9 @@ export class SharedCommitRefused extends AutoMergeDisarmFailed {
  * commit. A commit status belongs to the commit, so while more than one open pull request has this head none of them is
  * green: every queued merge at it is disarmed (`disarmQueuedAutoMerge`, this pull request first), and the retryable
  * shared-commit refusal is written, a verdict true of the commit itself and never of one pull request's body. Each pull
- * request's run writes its own sticky, naming the others. The refusal is retryable, so the watchdog asks the gate again;
- * once only one open pull request has this head, its re-judge proceeds to its own verdict. With one open pull request per
+ * request's run writes its own sticky, naming the others. The refusal is retryable: the watchdog asks the gate again once
+ * a fresh list shows only one such pull request at this head (a close runs the watchdog), never while the sibling is
+ * still open (gap-check F1), and that re-judge proceeds to its own verdict. With one open pull request per
  * commit, every verdict the gate derives from a pull request's body and writes to the commit is that pull request's alone.
  *
  * A disarm that fails still writes the refusal (a red required status keeps every queued merge at this commit waiting);
