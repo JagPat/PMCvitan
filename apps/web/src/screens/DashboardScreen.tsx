@@ -12,6 +12,7 @@ import { ROUTE_ONLY_SCREENS, SCREEN_MODULE } from '@/lib/screens';
 import type { ScreenKey } from '@vitan/shared';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { AddSitePhoto } from '@/components/AddSitePhoto';
+import { OpenItemsBlock } from '@/components/OpenItemsBlock';
 import { EmptyHint } from '@/guide/EmptyHint';
 import { SitePhotoDelete } from '@/components/SitePhotoDelete';
 import { queuedSitePhotos } from '@/lib/queuedSitePhotos';
@@ -234,6 +235,9 @@ export function DashboardScreen() {
       </div>
 
       {homeNav && forYou && <DashboardActionsLine badge={forYou.badge} onOpen={() => setScreen('inbox')} />}
+
+      {/* #482 proof photos — a contractor's or consultant's open items (renders nothing for any other role) */}
+      <OpenItemsBlock />
 
       {/* milestone progress */}
       <div style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 12, padding: '20px 24px', marginBottom: 22 }}>

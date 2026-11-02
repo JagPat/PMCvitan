@@ -431,6 +431,7 @@ describe('F-1a ink-surface inventory', () => {
   const TSX_INVENTORY: Record<string, { total: number; marked: number }> = {
     'components/Toast.tsx': { total: 1, marked: 0 }, // non-interactive toast
     'components/AddSitePhoto.tsx': { total: 1, marked: 0 }, // Add site photo button fill
+    'components/OpenItemsBlock.tsx': { total: 1, marked: 0 }, // #482 "Add proof photo" button fill
     'layout/ProjectSwitcher.tsx': { total: 1, marked: 0 }, // Create button fill
     'screens/ClientHealthScreen.tsx': { total: 1, marked: 0 }, // card-button fill
     'screens/DailyLogScreen.tsx': { total: 2, marked: 1 }, // checked-in card (Check out) IS a surface; photo button is a fill
