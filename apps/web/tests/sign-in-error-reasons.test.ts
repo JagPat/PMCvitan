@@ -87,8 +87,56 @@ describe('password setup says why a code request failed', () => {
   });
 });
 
+describe('password setup says why saving the password failed (Redbracket ID A4a)', () => {
+  const failingCompletion = async (err: unknown) => {
+    const complete = vi.fn().mockRejectedValue(err);
+    s()._setGateway({ passwordCredentialComplete: complete } as unknown as ApiGateway);
+    useStore.setState({ access: { ...s().access, step: 'password-create', passwordSetupToken: 'setup-token' } });
+    s().completePasswordSetup('a long new passphrase', 'a long new passphrase');
+    await flush();
+    expect(s().access.sending).toBe(false);
+    return complete;
+  };
+
+  it('another setup still finishing (409 with its code) says to try again in a minute, keeps the code, and a retry sends it again', async () => {
+    const complete = await failingCompletion(Object.assign(new Error('409'), { status: 409, serverCode: 'setup-running', serverMessage: 'Another password setup for this account is still finishing. Try again in a minute.' }));
+    expect(s().access.error).toBe('Another password setup for this account is still finishing. Try again in a minute.');
+    expect(s().access.error).not.toMatch(/new code/);
+    expect(s().access.passwordSetupToken).toBe('setup-token');
+    s().completePasswordSetup('a long new passphrase', 'a long new passphrase');
+    await flush();
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(complete).toHaveBeenLastCalledWith('setup-token', 'a long new passphrase');
+  });
+
+  it('the other 409 (an email that cannot be set up; its code is spent) is not told to try again in a minute', async () => {
+    await failingCompletion(Object.assign(new Error('409'), { status: 409, serverMessage: 'This email cannot be set up here. Ask your PMC for help.' }));
+    expect(s().access.error).toBe('Could not save the password. Request a new code and try again.');
+    expect(s().access.error).not.toMatch(/still finishing|in a minute/);
+  });
+
+  it('a 409 is matched by its code, never its words: the setup-running words without the code are the other 409', async () => {
+    await failingCompletion(Object.assign(new Error('409'), { status: 409, serverMessage: 'Another password setup for this account is still finishing. Try again in a minute.' }));
+    expect(s().access.error).toBe('Could not save the password. Request a new code and try again.');
+  });
+
+  it('any other failure keeps the request-a-new-code message', async () => {
+    await failingCompletion(Object.assign(new Error('400'), { status: 400 }));
+    expect(s().access.error).toBe('Could not save the password. Request a new code and try again.');
+  });
+});
+
 describe('the gateway carries the throttle window the server reports', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('a refusal body\'s code (Redbracket ID A4a) reaches the caller as serverCode', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ statusCode: 409, message: 'Another password setup for this account is still finishing. Try again in a minute.', code: 'setup-running' }),
+      { status: 409, headers: { 'Content-Type': 'application/json' } },
+    )));
+    const err = await new ApiGateway('http://api.test', 'ambli').passwordCredentialComplete('setup-token', 'a long new passphrase').catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 409, serverCode: 'setup-running' });
+  });
 
   it('a 429 body\'s retryAfter (seconds) reaches the caller with the status and message', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(

@@ -34,10 +34,14 @@ function fakePrisma(seed: UserRow[]) {
   const events: Array<Record<string, unknown>> = [];
 
   const matches = (row: ChallengeRow, where: Record<string, unknown>): boolean => {
-    if (where.id !== undefined && row.id !== where.id) return false;
+    if (typeof where.id === 'string' && row.id !== where.id) return false;
+    if (typeof where.id === 'object' && where.id !== null && 'not' in where.id && row.id === (where.id as { not: string }).not) return false;
+    if (typeof where.consumedAt === 'object' && where.consumedAt !== null && 'gt' in where.consumedAt && (!row.consumedAt || row.consumedAt <= (where.consumedAt as { gt: Date }).gt)) return false;
+    if (where.setupTokenExpiresAt === null && row.setupTokenExpiresAt !== null) return false;
+    if (typeof where.setupTokenHash === 'object' && where.setupTokenHash !== null && 'not' in where.setupTokenHash && row.setupTokenHash === null) return false;
     if (where.userId !== undefined && row.userId !== where.userId) return false;
     if (where.purpose !== undefined && row.purpose !== where.purpose) return false;
-    if (where.setupTokenHash !== undefined && row.setupTokenHash !== where.setupTokenHash) return false;
+    if (typeof where.setupTokenHash === 'string' && row.setupTokenHash !== where.setupTokenHash) return false;
     if (where.attempts !== undefined && typeof where.attempts === 'number' && row.attempts !== where.attempts) return false;
     if (where.consumedAt === null && row.consumedAt !== null) return false;
     if (where.verifiedAt === null && row.verifiedAt !== null) return false;
@@ -78,12 +82,22 @@ function fakePrisma(seed: UserRow[]) {
         if (!row) return null;
         return { ...row, user: { ...users.find((user) => user.id === row.userId)! } };
       }),
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const row = challenges.find((candidate) => matches(candidate, where));
+        return row ? { id: row.id } : null;
+      }),
+      update: vi.fn(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+        const row = challenges.find((candidate) => candidate.id === where.id);
+        if (!row) throw new Error('missing challenge');
+        if (data.setupTokenHash === null) row.setupTokenHash = null;
+        return { ...row };
+      }),
       updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
         const selected = challenges.filter((row) => matches(row, where));
         for (const row of selected) {
           if (data.consumedAt instanceof Date) row.consumedAt = data.consumedAt;
           if (data.verifiedAt instanceof Date) row.verifiedAt = data.verifiedAt;
-          if (typeof data.setupTokenHash === 'string') row.setupTokenHash = data.setupTokenHash;
+          if (typeof data.setupTokenHash === 'string' || data.setupTokenHash === null) row.setupTokenHash = data.setupTokenHash;
           if (data.setupTokenExpiresAt instanceof Date || data.setupTokenExpiresAt === null) row.setupTokenExpiresAt = data.setupTokenExpiresAt;
           if (typeof data.attempts === 'object' && data.attempts && 'increment' in data.attempts) {
             row.attempts += Number((data.attempts as { increment: number }).increment);
@@ -253,7 +267,7 @@ describe('PasswordCredentialsService', () => {
     expect(updated.emailVerifiedAt).toEqual(new Date('2026-07-15T10:00:00.000Z'));
     expect(updated.credentialVersion).toBe(1);
     // the claim spends the code and clears its expiry: the durable mark an invitation-email correction refuses on
-    expect(prisma.challenges[0]).toMatchObject({ consumedAt: expect.any(Date), verifiedAt: expect.any(Date), setupTokenExpiresAt: null });
+    expect(prisma.challenges[0]).toMatchObject({ consumedAt: expect.any(Date), verifiedAt: expect.any(Date), setupTokenExpiresAt: null, setupTokenHash: null });
     expect(prisma.events).toEqual([
       expect.objectContaining({ action: 'auth.password_requested', targetUserId: 'u-active' }),
       expect.objectContaining({
