@@ -52,7 +52,7 @@ import {
   codexThreadIdsToResolve,
   classifyCodexState,
   codexStateRecordVerdict,
-  codexRecordRunningOn,
+  codexRecordFingerprint,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
 import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mjs';
@@ -1541,9 +1541,9 @@ export function candidateBodyHold(pullRequest, verdict) {
  * clean-status retry, or (2A3b-2) the re-read of Codex's record after the arm, its disarm and its refusal. An unreadable
  * Codex record has already replaced the green with its own refusal, so it only rethrows. A refusal by the authorization
  * writes its own state and returns (G2), and a hold for gates returns as before. 2A3b-2 — after the arm the record is
- * read again: a run that started on the head, or security findings completed on it, since the authorization's read
- * disarms the queued merge and takes the refusal (`review_refused`), so a run the comment-event disarm read before the
- * arm landed is still caught.
+ * read again: a run that started on the head, security findings completed on it, or (#1318 Codex 4448897188) a record
+ * that turned `dirty` since the authorization's read disarms the queued merge and takes the refusal (`review_refused`),
+ * so a run the comment-event disarm read before the arm landed is still caught.
  */
 export async function completeReviewedPullRequest(
   client,
@@ -1658,11 +1658,18 @@ async function mergeOrArmAuthorizedHead(client, pullRequest, expectedHead, verdi
     // findings) on this head disarms and takes the authorization's own refusal. A Codex start after this read wakes the
     // comment run, which then finds the merge queued. A read that fails throws into the tail (`holdUnarmedGreen`), whose
     // retryable hold drafts the pull request, dropping the queued merge (fail closed)
-    const after = codexStateRecordVerdict(await client.issueComments(pullRequest.number), expectedHead, 0);
-    if (after === 'hold' || after === 'security') {
+    //
+    // #1318 Codex 4448897188 — a review that started after the authorization's read and COMPLETED with findings before
+    // this one leaves the record `dirty`, which no event disarms (its completion edit shows no run). A `dirty` record
+    // the authorization already saw is the one the review evidence judged (a cap-deferred head merges on it), so only
+    // a record that changed since that read is refused: retryable, so the recovery re-judges the head with its evidence
+    const comments = await client.issueComments(pullRequest.number);
+    const after = codexStateRecordVerdict(comments, expectedHead, 0);
+    const changed = after === 'dirty' && codexRecordFingerprint(comments) !== authorization.recordFingerprint;
+    if (after === 'hold' || after === 'security' || changed) {
       await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead);
       await refuseReviewedGreen(client, pullRequest, expectedHead, {
-        refusal: after === 'security' ? 'security' : 'held',
+        refusal: after === 'security' ? 'security' : changed ? 'changed' : 'held',
         recoveryRequest,
         attempt,
       });
@@ -1728,7 +1735,15 @@ export async function disarmQueuedAutoMerge(client, number, expectedHead, observ
     const siblings = (await client.openPullRequestsAt(expectedHead)).filter((pull) => pull.number !== number);
     for (const pull of [live, ...siblings]) {
       if (!pull.auto_merge) continue;
-      await client.disableAutoMerge(pull);
+      // #1318 Codex 4448897209 — another run (the exact-head orchestrator beside a comment run) may disable it first,
+      // and GitHub refuses the second disable. The re-read below decides: a merge no longer queued is disarmed,
+      // whoever disabled it; one still queued throws with this error as its cause
+      let refused = null;
+      try {
+        await client.disableAutoMerge(pull);
+      } catch (error) {
+        refused = error;
+      }
       const after = await client.pullRequest(pull.number);
       // Codex 4445107594 — every PR whose queued merge this disarm disabled, siblings too, so each one's consumed
       // re-arm settlement can be lifted (read by disarmBeforeRun)
@@ -1740,7 +1755,7 @@ export async function disarmQueuedAutoMerge(client, number, expectedHead, observ
         observed.disabledThis = true;
       }
       // a sibling that moved off this commit or closed no longer consumes it
-      if (after.auto_merge && after.state === 'open' && after.head?.sha === expectedHead) throw new AutoMergeDisarmFailed();
+      if (after.auto_merge && after.state === 'open' && after.head?.sha === expectedHead) throw new AutoMergeDisarmFailed(refused ?? undefined);
     }
     return live;
   } catch (error) {
@@ -1963,6 +1978,9 @@ export class CodexRecordUnreadable extends Error {
  * the correction notice. A run still going, or a record that could not be read, is a retryable failure whose
  * sticky says so: never `clean`.
  */
+/** #1318 Codex 4448897188 — the retryable detail of a record that changed between the authorization and the arm. */
+const CODEX_EVIDENCE_CHANGED_DETAIL = 'Codex evidence changed during final verification';
+
 async function refuseReviewedGreen(client, pullRequest, expectedHead, { refusal, recoveryRequest = null, attempt = 0 }) {
   if (refusal === 'security') {
     return publishCurrentHeadFinding(client, pullRequest, expectedHead, recoveryRequest, {
@@ -1972,7 +1990,9 @@ async function refuseReviewedGreen(client, pullRequest, expectedHead, { refusal,
     });
   }
   return publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
-    detail: refusal === 'unreadable' ? CODEX_RECORD_UNREADABLE_DETAIL : CODEX_RUN_HELD_DETAIL,
+    detail: refusal === 'unreadable' ? CODEX_RECORD_UNREADABLE_DETAIL
+      : refusal === 'changed' ? CODEX_EVIDENCE_CHANGED_DETAIL
+      : CODEX_RUN_HELD_DETAIL,
     attempt,
     next: 'The merge was refused at its last check; the gate re-judges this exact head once Codex\'s review state settles.',
   });
@@ -2036,7 +2056,8 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   const record = codexStateRecordVerdict(issueComments, expectedHead, 0);
   if (record === 'security') return { allowed: false, state: 'codex_review_security' };
   if (record === 'hold') return { allowed: false, state: 'codex_review_held' };
-  return { allowed: true, state: 'authorized', pullRequest: finalLive };
+  // 2A3b-2 (#1318 Codex 4448897188) — what the record said when it authorized, for the re-read after the arm
+  return { allowed: true, state: 'authorized', pullRequest: finalLive, recordFingerprint: codexRecordFingerprint(issueComments) };
 }
 
 /**
@@ -3365,54 +3386,60 @@ async function liveCodexRecord(client, number, comment) {
 /**
  * 2A3b (notes/gate-codex-silent/2a3/2a3b-design.md; Stage 1's ruling of 2 Nov) — the event-driven disarm. On the
  * event that invalidates a queued merge, within seconds and not after CI, it disarms through the head-checked
- * `disarmBeforeRun` and writes only through the 2A3a refusal and `publishRetryableHold`. It never arms and never
- * writes a success: the ordinary review re-judges, and only `completeReviewedPullRequest` arms again.
+ * `disarmBeforeRun` and writes only through the 2A3a refusal and `refuseReviewedGreen` (the authorization's own
+ * refusal). It never arms and never writes a success: the ordinary review re-judges, and only
+ * `completeReviewedPullRequest` arms again.
+ *  - every event, first (#1318 Codex 4448897194): a merge queued under a status `ownershipStatusWithholdsAutoMerge`
+ *    withholds is disarmed, and nothing is written, so the SHA-immutable ownership verdict stays the newest.
  *  - a push (`synchronize`): every queued merge at the new head is disarmed (this PR's was armed for its old head,
  *    whichever way GitHub treats an `expectedHeadOid` arm), then the 2A3a refusal if another open PR has the head.
  *    Ends W1's armed push onto another open PR's commit, apart from the run's start latency (End: the Board ruling).
  *  - an arm by anyone but the gate (`auto_merge_enabled`): the 2A3a refusal only, so a commit shared by open PRs is
  *    disarmed and refused. A person's arm on a PR alone at its commit stays (Q1 = a; the Board ruling on #1094).
- *  - Codex's review-state record showing a run on the live head (W2): with a merge queued at the head, the disarm and
- *    the retryable `CODEX_RUN_HELD_DETAIL` hold; with none queued, the orchestrate run that waits sees the same record.
- *  - every event: a merge queued under a status `ownershipStatusWithholdsAutoMerge` withholds is disarmed; the
- *    withholding failure stays, so no status is written.
+ *  - Codex's review-state record (W2), read live and judged by `codexStateRecordVerdict`: with a merge queued at the
+ *    head, a run on the live head is disarmed and takes the retryable `CODEX_RUN_HELD_DETAIL` hold, and security
+ *    findings on it (which outrank a run) take the security verdict; with none queued, the orchestrate run that waits
+ *    sees the same record.
  */
 export async function eventDisarm(client, pullRequest, expectedHead, context, statuses) {
-  const recoveryRequest = pendingRecoveryRequest(statuses, pullRequest.number);
-  let outcome = 'nothing';
-  if (context.trigger === 'synchronize') {
-    if (!(await disarmBeforeRun(client, pullRequest, expectedHead, statuses))) return 'superseded';
-    outcome = (await refuseSharedCommit(client, pullRequest, expectedHead, recoveryRequest)) ?? 'disarmed';
-    if (outcome !== 'disarmed') return outcome;
-  } else if (context.trigger === 'auto-merge-enabled') {
-    if (context.enabledBy === GATE_TOKEN_LOGIN) return 'gate arm';
-    const shared = await refuseSharedCommit(client, pullRequest, expectedHead, recoveryRequest);
-    if (shared) return shared;
-  } else if (context.trigger === 'codex-record') {
-    // Gap-check of 500fbea6 — the payload's body is what Codex wrote when the event fired, and this run may start after
-    // the record moved on (the review completed, the gate armed). The record is read live, by its id, and judged on that
-    if (codexRecordRunningOn(await liveCodexRecord(client, pullRequest.number, context.comment), expectedHead)) {
-      // the hold only when a merge was actually queued here: with none, the orchestrate run that waits sees the record
-      const observed = {};
-      if (!(await disarmBeforeRun(client, pullRequest, expectedHead, statuses, observed))) return 'superseded';
-      if (!observed.disabled?.length) return 'nothing queued';
-      const held = await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
-        detail: CODEX_RUN_HELD_DETAIL,
-        attempt: 0,
-        next: 'A Codex review of this exact head started while its merge was queued; the gate re-judges this exact head once it settles.',
-      });
-      return held ? 'held' : 'superseded';
-    }
-  } else {
+  if (!['synchronize', 'auto-merge-enabled', 'codex-record'].includes(context.trigger)) {
     throw new Error(`The event disarm has no trigger ${context.trigger}`);
   }
+  if (context.trigger === 'auto-merge-enabled' && context.enabledBy === GATE_TOKEN_LOGIN) return 'gate arm';
+  // #1318 Codex 4448897194 — a withholding ownership verdict is judged FIRST, on every event: it is the commit's
+  // SHA-immutable newest verdict, and no event write may replace it (a retryable hold over it would draft the pull
+  // request and stop recovery recognizing it). Its queued merge is disarmed and nothing is written
   const newest = statuses.find((status) => status.context === STATUS_CONTEXT) ?? null;
   if (ownershipStatusWithholdsAutoMerge(newest)) {
     const observed = {};
     if (!(await disarmBeforeRun(client, pullRequest, expectedHead, statuses, observed))) return 'superseded';
-    if (observed.disabled?.length) return 'ownership disarmed';
+    return observed.disabled?.length ? 'ownership disarmed' : 'nothing';
   }
-  return outcome;
+  const recoveryRequest = pendingRecoveryRequest(statuses, pullRequest.number);
+  if (context.trigger === 'synchronize') {
+    if (!(await disarmBeforeRun(client, pullRequest, expectedHead, statuses))) return 'superseded';
+    return (await refuseSharedCommit(client, pullRequest, expectedHead, recoveryRequest)) ?? 'disarmed';
+  }
+  if (context.trigger === 'auto-merge-enabled') {
+    return (await refuseSharedCommit(client, pullRequest, expectedHead, recoveryRequest)) ?? 'nothing';
+  }
+  // Gap-check of 500fbea6 — the payload's body is what Codex wrote when the event fired, and this run may start after
+  // the record moved on (the review completed, the gate armed). The record is read live, by its id, and judged on that.
+  // #1318 Codex 4448897199 — judged whole, by the one classifier: security findings completed on the head outrank a
+  // run still going, so they take the security verdict (its marker, then the correction failure), never the run hold
+  const live = await liveCodexRecord(client, pullRequest.number, context.comment);
+  const verdict = live ? codexStateRecordVerdict([live], expectedHead, 0) : 'none';
+  if (verdict !== 'hold' && verdict !== 'security') return 'nothing';
+  // the refusal only when a merge was actually queued here: with none, the orchestrate run that waits sees the record
+  const observed = {};
+  if (!(await disarmBeforeRun(client, pullRequest, expectedHead, statuses, observed))) return 'superseded';
+  if (!observed.disabled?.length) return 'nothing queued';
+  const refused = await refuseReviewedGreen(client, pullRequest, expectedHead, {
+    refusal: verdict === 'security' ? 'security' : 'held',
+    recoveryRequest,
+  });
+  if (refused?.superseded || refused === null) return 'superseded';
+  return verdict === 'security' ? 'security refused' : 'held';
 }
 
 export function assertCurrentHeadForContext(context, currentHead, mode) {

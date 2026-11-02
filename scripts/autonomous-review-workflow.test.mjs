@@ -4373,7 +4373,7 @@ test('#1287/#1288 audit — the retryable-hold writer: failure, draft, settle, t
   // and its call sites are exactly the audited ones, each passing one of those details or a retryable settlement
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const calls = [...gate.matchAll(/(?<!function )publishRetryableHold\(/gu)].map((m) => gate.slice(m.index, m.index + 400));
-  assert.equal(calls.length, 13, 'merge refusal, recovery, verification re-read, changed CI, unsettled settlement, timeout, and G3a\'s post-success settlement, unarmed-green tail (G3a′: every throw from the authorization to the arm) and disarm, G3b\'s disarm before a CI-triggered run, 2A3a\'s shared-commit refusal and its unreadable list (#1311 Codex 4446635322), and 2A3b\'s Codex-run hold on a queued merge');
+  assert.equal(calls.length, 12, 'merge refusal, recovery, verification re-read, changed CI, unsettled settlement, timeout, and G3a\'s post-success settlement, unarmed-green tail (G3a′: every throw from the authorization to the arm) and disarm, G3b\'s disarm before a CI-triggered run, and 2A3a\'s shared-commit refusal and its unreadable list (#1311 Codex 4446635322); 2A3b\'s Codex-run hold goes through the merge refusal (#1318 Codex 4448897199)');
   // Stage 1 gap-check F1 (mutant M5) — the literal details the call sites actually pass (inline, or the `const detail`
   // just above the call) are each retryable, so a renamed one fails here and not only at runtime
   const sites = [...gate.matchAll(/(?<!function )publishRetryableHold\(/gu)].map((m) => gate.slice(Math.max(0, m.index - 300), m.index + 300));

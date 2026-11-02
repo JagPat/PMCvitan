@@ -4,7 +4,7 @@ import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GitHubClient, REQUIRED_CHECKS, completeReviewedPullRequest, contextForEvent, run } from './autonomous-review-gate.mjs';
-import { codexRecordRunningOn } from './autonomous-review-state.mjs';
+import { codexRecordFingerprint, codexStateRecordVerdict } from './autonomous-review-state.mjs';
 import { securityVerdictMarker } from './security-verdict-marker.mjs';
 import {
   CODEX_RUN_HELD_DETAIL, CODEX_SECURITY_FINDINGS_DETAIL, CODEX_SHARED_COMMIT_DETAIL, CODEX_AUTOMERGE_DISARM_FAILED, CODEX_AUTOMERGE_REARM_FAILED, OWNERSHIP_CANDIDATE_HELD,
@@ -38,12 +38,36 @@ const codexRecord = (head, status, login = 'chatgpt-codex-connector[bot]') => ({
     security_review: { commit_sha: null, has_any_findings: null, has_unresolved_findings: null, status: null },
   })} -->`,
 });
+// Codex's record of a code review completed clean on `head`, the security review idle
+const cleanRecord = (head) => ({
+  id: 77, user: { login: 'chatgpt-codex-connector[bot]' }, updated_at: '2026-11-02T21:00:00Z',
+  body: `<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 ${JSON.stringify({
+    code_review: { commit_sha: head, has_any_findings: false, has_unresolved_findings: false, status: 'completed' },
+    security_review: { commit_sha: null, has_any_findings: null, has_unresolved_findings: null, status: null },
+  })} -->`,
+});
+// Codex's record of a code review completed on `head` with unresolved findings (`dirty`)
+const dirtyRecord = (head) => ({
+  id: 77, user: { login: 'chatgpt-codex-connector[bot]' }, updated_at: '2026-11-02T21:00:00Z',
+  body: `<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 ${JSON.stringify({
+    code_review: { commit_sha: head, has_any_findings: true, has_unresolved_findings: true, status: 'completed' },
+    security_review: { commit_sha: null, has_any_findings: null, has_unresolved_findings: null, status: null },
+  })} -->`,
+});
 // Codex's record with code_review idle and security_review running on `head` (gap-check P10)
 const securityRecord = (head, status) => ({
   id: 78, user: { login: 'chatgpt-codex-connector[bot]' }, updated_at: '2026-11-02T21:00:00Z',
   body: `<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 ${JSON.stringify({
     code_review: { commit_sha: null, has_any_findings: null, has_unresolved_findings: null, status: null },
     security_review: { commit_sha: head, has_any_findings: null, has_unresolved_findings: null, status },
+  })} -->`,
+});
+// #1318 Codex 4448897199 — a code review still running while the security review has completed with findings
+const securityFindingsWhileRunning = (head) => ({
+  id: 79, user: { login: 'chatgpt-codex-connector[bot]' }, updated_at: '2026-11-02T21:00:00Z',
+  body: `<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 ${JSON.stringify({
+    code_review: { commit_sha: head, has_any_findings: null, has_unresolved_findings: null, status: 'in_progress' },
+    security_review: { commit_sha: head, has_any_findings: true, has_unresolved_findings: true, status: 'completed' },
   })} -->`,
 });
 const events = {
@@ -283,6 +307,48 @@ test('2A3b-2 (W2) — a security review running on the head, the code review idl
   assert.deepEqual(written(result.log), [['failure', `review: ${CODEX_RUN_HELD_DETAIL}`]]);
 });
 
+// #1318 Codex 4448897199 — security findings completed on the head outrank a run still going: the event takes the
+// security verdict (its durable marker, then the correction failure), never the retryable run hold
+test('2A3b-2 (#1318 Codex 4448897199) — security findings on the head with a run still going take the security verdict, not the hold', { timeout: 30_000 }, async () => {
+  const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const record = securityFindingsWhileRunning(HEAD);
+  const markers = [];
+  const result = await runDisarm({
+    number: 610, pulls, statuses: [tokenedSuccess()], event: events.record(610, record),
+    overrides: {
+      async createIssueComment(n, body) { markers.push(['marker', n, body]); return { id: 902 }; },
+      async reviews() { return []; },
+      async reviewComments() { return []; },
+    },
+  });
+  assert.equal(result.error, null);
+  assert.equal(pulls.get(610).auto_merge, null, 'disarmed');
+  const failures = written(result.log).filter(([state]) => state === 'failure');
+  assert.deepEqual(failures, [['failure', `review: ${CODEX_SECURITY_FINDINGS_DETAIL}`]], 'the security verdict');
+  assert.equal(written(result.log).some(([, description]) => String(description).includes(CODEX_RUN_HELD_DETAIL)), false, 'never the run hold');
+  assert.deepEqual(markers, [['marker', 610, securityVerdictMarker(HEAD)]], 'the durable marker');
+  neverArmsOrMerges(result.log, 'security');
+});
+
+// #1318 Codex 4448897209 — the comment run and the exact-head orchestrator can both disable one queued merge; GitHub
+// refuses the second. The re-read decides: no longer queued is disarmed (the hold follows); still queued fails closed
+test('2A3b-2 (#1318 Codex 4448897209) — a disable another run already did is disarmed; a refused disable still queued takes the disarm hold', { timeout: 30_000 }, async () => {
+  const raced = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const done = await runDisarm({
+    number: 610, pulls: raced, statuses: [tokenedSuccess()], event: events.record(610, codexRecord(HEAD, 'in_progress')),
+    overrides: { async disableAutoMerge(pull) { raced.get(pull.number).auto_merge = null; throw new Error('GraphQL: Auto merge is not enabled for this pull request.'); } },
+  });
+  assert.equal(done.error, null);
+  assert.deepEqual(written(done.log), [['failure', `review: ${CODEX_RUN_HELD_DETAIL}`]], 'the hold, not a disarm failure');
+
+  const stuck = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const failed = await runDisarm({
+    number: 610, pulls: stuck, statuses: [tokenedSuccess()], event: events.record(610, codexRecord(HEAD, 'in_progress')),
+    overrides: { async disableAutoMerge() { throw new Error('GitHub GraphQL failed (502)'); } },
+  });
+  assert.deepEqual(written(failed.log), [['failure', `review: ${CODEX_AUTOMERGE_DISARM_FAILED}`]], 'still queued: the retryable disarm hold');
+});
+
 // Gap-check of aa882775 (P6, P8) — the consumer reads the newest codex-current-head verdict, whatever newer status of
 // another context sits above it, and runs on a Codex record event too
 test('2A3b-2 — the ownership consumer: past a newer status of another context, and on a Codex record event', { timeout: 30_000 }, async () => {
@@ -293,6 +359,10 @@ test('2A3b-2 — the ownership consumer: past a newer status of another context,
     ['a recovery request above the verdict, on an arm', [request, withholding], events.armed(610)],
     ['a re-arm settlement above the verdict, on an arm', [settlement, withholding], events.armed(610)],
     ['a Codex record not running, on a record event', [withholding], events.record(610, codexRecord(HEAD, 'completed'))],
+    // #1318 Codex 4448897194 — judged first: a run on the head writes no hold over the ownership verdict
+    ['a Codex run on the head, on a record event', [withholding], events.record(610, codexRecord(HEAD, 'in_progress'))],
+    ['security findings on the head, on a record event', [withholding], events.record(610, securityFindingsWhileRunning(HEAD))],
+    ['a push', [withholding], events.synchronize(610)],
   ]) {
     const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
     const result = await runDisarm({ number: 610, pulls, statuses: [...statuses], event });
@@ -337,17 +407,30 @@ test('2A3b-1 — a disarm that fails takes the retryable disarm hold; a mode on 
   assert.match(String(wrongEvent.error?.message), /does not run on a relabel event/u);
 });
 
-test('2A3b-2 — the record reader: Codex\'s login, the marker, the live head, a run not completed', () => {
-  assert.equal(codexRecordRunningOn(codexRecord(HEAD, 'in_progress'), HEAD), true);
-  assert.equal(codexRecordRunningOn(codexRecord(HEAD, 'queued'), HEAD), true);
-  assert.equal(codexRecordRunningOn(codexRecord(HEAD, 'completed'), HEAD), false);
-  assert.equal(codexRecordRunningOn(securityRecord(HEAD, 'in_progress'), HEAD), true, 'a security review running counts');
-  assert.equal(codexRecordRunningOn(securityRecord(HEAD, 'completed'), HEAD), false);
-  assert.equal(codexRecordRunningOn(securityRecord(OLD, 'in_progress'), HEAD), false);
-  assert.equal(codexRecordRunningOn(codexRecord(OLD, 'in_progress'), HEAD), false);
-  assert.equal(codexRecordRunningOn(codexRecord(HEAD, 'in_progress', 'chatgpt-codex-connector'), HEAD), false, 'the REST login only');
-  assert.equal(codexRecordRunningOn(codexRecord(HEAD, 'in_progress'), null), false);
-  assert.equal(codexRecordRunningOn(null, HEAD), false);
+// #1318 Codex 4448897199 — the event judges the live record whole, with the one classifier the authorization uses
+test('2A3b-2 — the record judgement: Codex\'s login, the marker, the live head, a run not completed, security findings first', () => {
+  const judge = (comment, head = HEAD) => codexStateRecordVerdict(comment ? [comment] : [], head, 0);
+  assert.equal(judge(codexRecord(HEAD, 'in_progress')), 'hold');
+  assert.equal(judge(codexRecord(HEAD, 'queued')), 'hold');
+  assert.notEqual(judge(codexRecord(HEAD, 'completed')), 'hold');
+  assert.equal(judge(securityRecord(HEAD, 'in_progress')), 'hold', 'a security review running counts');
+  assert.notEqual(judge(securityRecord(HEAD, 'completed')), 'hold');
+  assert.equal(judge(securityRecord(OLD, 'in_progress')), 'none');
+  assert.equal(judge(codexRecord(OLD, 'in_progress')), 'none');
+  assert.equal(judge(codexRecord(HEAD, 'in_progress', 'chatgpt-codex-connector')), 'none', 'the REST login only');
+  assert.equal(judge(null), 'none');
+  assert.equal(judge(securityFindingsWhileRunning(HEAD)), 'security', 'security findings outrank a run still going');
+});
+
+test('2A3b-2 (#1318 Codex 4448897188) — the record fingerprint: Codex\'s records only, by id and body, in id order', () => {
+  const a = codexRecord(HEAD, 'in_progress');
+  const b = { ...securityRecord(HEAD, 'completed'), id: 12 };
+  const note = { id: 5, user: { login: 'someone' }, body: 'note' };
+  assert.equal(codexRecordFingerprint([a, b, note]), codexRecordFingerprint([note, b, a]), 'order and other comments do not count');
+  assert.notEqual(codexRecordFingerprint([a]), codexRecordFingerprint([codexRecord(HEAD, 'completed')]), 'an edited record changes it');
+  assert.equal(codexRecordFingerprint([codexRecord(HEAD, 'in_progress', 'someone')]), '', 'another login carrying the marker');
+  assert.equal(codexRecordFingerprint([{ ...note, user: { login: 'chatgpt-codex-connector[bot]' } }]), '', 'Codex without the marker');
+  assert.equal(codexRecordFingerprint(null), '');
 });
 
 test('2A3b-2 — structural: the workflow runs trusted default-branch code on its three events, and both login checks exist', async () => {
@@ -377,13 +460,16 @@ test('2A3b-2 — structural: the workflow runs trusted default-branch code on it
   assert.match(workflow, /contains\(github\.event\.comment\.body, 'codex-review-state:v1'\)/u);
   // Stage 1's ruling: neither login check can be dropped alone — the job filter, and the reader's own re-check
   assert.match(workflow, /github\.event\.comment\.user\.login == 'chatgpt-codex-connector\[bot\]'/u);
-  const reader = state.slice(state.indexOf('export function codexRecordRunningOn'), state.indexOf('export function codexStateRecordClears'));
-  assert.match(reader, /if \(!isCodexActor\(comment\)/u);
+  const reader = state.slice(state.indexOf('export function codexStateRecordVerdict'), state.indexOf('export function codexRecordFingerprint'));
+  assert.match(reader, /if \(!isCodexActor\(comment\)\) continue;/u);
   // eventDisarm never arms and never writes a success
   const disarm = gate.slice(gate.indexOf('export async function eventDisarm'), gate.indexOf('\n}\n', gate.indexOf('export async function eventDisarm')));
   assert.doesNotMatch(disarm, /enableAutoMerge|completeReviewedPullRequest|publishSettledSuccess|publishDisarmedSuccess|completeCleanReview|'success'/u);
-  // the ownership predicate has its consumer
+  // the live record is judged by that reader, and the ownership predicate has its consumer, judged before any write
+  assert.match(disarm, /codexStateRecordVerdict\(\[live\], expectedHead, 0\)/u);
   assert.match(disarm, /ownershipStatusWithholdsAutoMerge\(/u);
+  assert.ok(disarm.indexOf('ownershipStatusWithholdsAutoMerge(') < Math.min(disarm.indexOf('refuseSharedCommit('), disarm.indexOf('refuseReviewedGreen(')),
+    'the ownership verdict is judged before any event write (#1318 Codex 4448897194)');
   assert.doesNotMatch(gate, /deferred to (the )?2A3b/u);
 });
 
@@ -397,7 +483,7 @@ const armTailPull = (extra = {}) => ({
 });
 const greenChecks = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
 const eligible = { outcome: 'eligible', mergeEligible: true, owner: 'claude' };
-function armTailClient(afterArm) {
+function armTailClient(afterArm, atAuthorization = () => []) {
   const log = [];
   let armedNow = false;
   let reads = 0;
@@ -410,8 +496,8 @@ function armTailClient(afterArm) {
     async statuses() { return [{ id: 600, context: 'codex-current-head', state: 'success', description: 'review: clean [wi:none]' }]; },
     async checkRuns() { return greenChecks; },
     async commit() { return { commit: { message: 'fix: x\n\nCorrection-Owner: claude\n' } }; },
-    // the authorization's read sees nothing running; the read after the arm sees `afterArm`
-    async issueComments() { reads += 1; log.push(['comments', reads]); return reads === 1 ? [] : afterArm(); },
+    // the authorization's read sees `atAuthorization` (nothing, by default); the read after the arm sees `afterArm`
+    async issueComments() { reads += 1; log.push(['comments', reads]); return reads === 1 ? atAuthorization() : afterArm(); },
     async mergeExactHead() { return { merged: false, message: 'Pull request is not mergeable yet' }; },
     async enableAutoMerge(pull, head) { log.push(['arm', pull.number, head]); armedNow = true; },
     async dispatchHandoff() { log.push(['handoff']); },
@@ -438,7 +524,7 @@ test('2A3b-2 (gap 4) — a Codex run found after the arm disarms and takes the h
   assert.equal(await completeReviewedPullRequest(securityRunning, armTailPull(), HEAD, eligible), 'review_refused');
   assert.ok(securityRunning.log.some(([k]) => k === 'disable'));
 
-  for (const [name, after] of [['idle', () => []], ['completed', () => [codexRecord(HEAD, 'completed')]], ['another head', () => [codexRecord(OLD, 'in_progress')]]]) {
+  for (const [name, after] of [['idle', () => []], ['completed clean', () => [cleanRecord(HEAD)]], ['another head', () => [codexRecord(OLD, 'in_progress')]]]) {
     const idle = armTailClient(after);
     assert.equal(await completeReviewedPullRequest(idle, armTailPull(), HEAD, eligible), 'queued', name);
     assert.equal(idle.log.some(([k]) => k === 'disable' || k === 'status'), false, `${name}: the arm stays`);
@@ -503,12 +589,40 @@ test('2A3b-2 (fold 2) — issueComment reads this repository\'s comment by id; a
   }
 });
 
+// #1318 Codex 4448897188 — a review that started after the authorization's read and completed with findings before the
+// re-read leaves the record dirty, which no event disarms: refused as changed evidence (retryable, re-judged). A dirty
+// record the authorization already saw (the evidence judged it; a cap-deferred head merges on it) keeps the arm
+test('2A3b-2 (#1318 Codex 4448897188) — a record that turned dirty since the authorization disarms and is re-judged; one it already saw keeps the arm', { timeout: 30_000 }, async () => {
+  const changed = armTailClient(() => [dirtyRecord(HEAD)]);
+  assert.equal(await completeReviewedPullRequest(changed, armTailPull(), HEAD, eligible), 'review_refused');
+  const kinds = changed.log.map(([k]) => k);
+  assert.ok(kinds.indexOf('arm') < kinds.indexOf('disable') && kinds.indexOf('disable') < kinds.indexOf('status'), kinds.join(','));
+  assert.deepEqual(written(changed.log), [['failure', 'review: Codex evidence changed during final verification']], 'the retryable changed-evidence hold');
+  assert.equal(kinds.includes('handoff'), false);
+
+  for (const [name, before, after] of [
+    ['clean, then a new dirty record', () => [cleanRecord(HEAD)], () => [dirtyRecord(HEAD)]],
+    ['dirty, then another review completed dirty', () => [dirtyRecord(HEAD)], () => [{ ...dirtyRecord(HEAD), body: `${dirtyRecord(HEAD).body}\nrerun` }]],
+  ]) {
+    const moved = armTailClient(after, before);
+    assert.equal(await completeReviewedPullRequest(moved, armTailPull(), HEAD, eligible), 'review_refused', name);
+  }
+
+  const seen = armTailClient(() => [dirtyRecord(HEAD)], () => [dirtyRecord(HEAD)]);
+  assert.equal(await completeReviewedPullRequest(seen, armTailPull(), HEAD, eligible), 'queued');
+  assert.equal(seen.log.some(([k]) => k === 'disable' || k === 'status'), false, 'the record the authorization judged keeps the arm');
+  assert.ok(seen.log.some(([k]) => k === 'handoff'));
+});
+
 test('2A3b-2 (gap 4) — structural: the record re-read follows the one arm, inside the guarded tail', async () => {
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const tail = gate.slice(gate.indexOf('async function mergeOrArmAuthorizedHead('), gate.indexOf('export class AutoMergeDisarmFailed'));
   const arm = tail.indexOf('await client.enableAutoMerge(pullRequest, expectedHead);');
-  const reread = tail.indexOf('codexStateRecordVerdict(await client.issueComments(pullRequest.number), expectedHead, 0)');
+  const reread = tail.indexOf('const comments = await client.issueComments(pullRequest.number);');
   const queuedReturn = tail.indexOf("return { outcome: 'queued', pullRequest };");
   assert.ok(arm > 0 && reread > arm && queuedReturn > reread, 'arm, then the re-read, then the queued outcome');
-  assert.match(tail.slice(reread, queuedReturn), /await disarmQueuedAutoMerge\(client, pullRequest\.number, expectedHead\);\s*await refuseReviewedGreen\(/u);
+  const judged = tail.slice(reread, queuedReturn);
+  assert.match(judged, /codexStateRecordVerdict\(comments, expectedHead, 0\)/u);
+  assert.match(judged, /after === 'dirty' && codexRecordFingerprint\(comments\) !== authorization\.recordFingerprint/u);
+  assert.match(judged, /await disarmQueuedAutoMerge\(client, pullRequest\.number, expectedHead\);\s*await refuseReviewedGreen\(/u);
 });

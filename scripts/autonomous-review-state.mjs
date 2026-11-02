@@ -190,19 +190,16 @@ export function codexStateRecordVerdict(issueComments, expectedHead, readyAtMs) 
 }
 
 /**
- * 2A3b — whether this one comment is Codex's review-state record showing a code or security review still running on
- * `expectedHead` (the `running` rule of `codexStateRecordVerdict`). The author is checked here by REST login, whatever
- * the workflow's own filter already checked; anything else (another author, no marker, unparseable JSON, another head,
- * a completed run) is false.
+ * 2A3b-2 (#1318 Codex 4448897188) — what Codex's review-state records say, as one string: each Codex-authored record
+ * (REST login and marker, as `codexStateRecordVerdict` reads them) by id and body, in id order. Two reads with the same
+ * fingerprint saw the same records; a review that completed between them changes it.
  */
-export function codexRecordRunningOn(comment, expectedHead) {
-  if (!isCodexActor(comment) || typeof expectedHead !== 'string' || expectedHead.length === 0) return false;
-  const match = /<!--\s*codex-review-state:v1\s+([\s\S]*?)\s*-->/u.exec(String(comment?.body ?? ''));
-  if (!match) return false;
-  let record;
-  try { record = JSON.parse(match[1]); } catch { return false; }
-  const running = (review) => review?.commit_sha === expectedHead && review.status != null && review.status !== 'completed';
-  return running(record?.code_review) || running(record?.security_review);
+export function codexRecordFingerprint(issueComments) {
+  return (issueComments ?? [])
+    .filter((comment) => isCodexActor(comment) && /<!--\s*codex-review-state:v1\s/u.test(String(comment?.body ?? '')))
+    .map((comment) => `${String(comment.id)}\u0000${String(comment.body)}`)
+    .sort()
+    .join('\u0001');
 }
 
 export function codexStateRecordClears(issueComments, expectedHead, readyAtMs) {
