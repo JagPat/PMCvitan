@@ -4,6 +4,7 @@ import {
   isRetryableReviewFailureDescription,
   isOwnershipInconsistentScopeDetail,
   OWNERSHIP_CANDIDATE_HELD,
+  REARM_SETTLEMENTS,
   STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT,
 } from './review-policy.mjs';
 export { CORRECTION_LEASE_GRACE_MS, STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT } from './review-policy.mjs';
@@ -134,14 +135,18 @@ export function gateRecoveryStatus(combinedStatus) {
 
 /**
  * G3 (gap-check F2) — the green that nothing will arm: this exact head's required status is a success carrying an
- * approval token, the pull request is open and ready (not draft) and has no auto-merge queued, and the gate has never been
- * asked to re-judge this success (no `codex-recovery-request/<id>` status for it, pending or settled). The gate
- * disarms a queued auto-merge before each success and re-arms only after the merge's authorization, so a re-arm lost
- * on any path (a failed re-arm whose hold could not be written, a moved-head dispatch that failed, a read that lagged
- * on a push) leaves exactly this. The watchdog hands it to the gate's recovery once per success, which re-judges the
- * head from Codex's record and re-arms only through its own authorization (`authorizeRecoveryDispatch` accepts the
- * newest tokened success named exactly). A republished success is a new id, so a head still unarmed after that
- * re-judge is asked again on a later tick, never twice for one success.
+ * approval token, the pull request is open and ready (not draft) and has no auto-merge queued. The gate disarms a
+ * queued auto-merge before each success and re-arms only after the merge's authorization, so a re-arm lost on any
+ * path (a failed re-arm whose hold could not be written, a moved-head dispatch that failed, a read that lagged on a
+ * push) leaves exactly this. The watchdog hands it to the gate's recovery, which re-judges the head from Codex's
+ * record and re-arms only through its own authorization (`authorizeRecoveryDispatch` accepts the newest tokened
+ * success named exactly).
+ *
+ * Once per HEAD (Stage 1's re-check G1): the re-judge republishes the success under a new id, and a head the merge
+ * still holds for other gates (`held_for_gates`) stays unarmed, so a per-success bound would ask on every handoff
+ * pass. The skip is keyed on this head's own record of a success re-judge, whatever success it named
+ * (`REARM_SETTLEMENTS`), and on a request for this success still pending. A head still unarmed after its one
+ * re-judge waits for a real change (CI completing, a push, a review event), each of which wakes the gate itself.
  */
 export function gateRearmStatus(combinedStatus, pullRequest) {
   if (pullRequest?.state !== 'open' || pullRequest?.draft !== false || pullRequest?.auto_merge) return null;
@@ -150,7 +155,11 @@ export function gateRearmStatus(combinedStatus, pullRequest) {
   if (newest?.state !== 'success' || !parseApprovalToken(newest.description)) return null;
   const id = String(newest.id ?? '');
   if (!id) return null;
-  return statuses.some((status) => status?.context === `${RECOVERY_REQUEST_CONTEXT}${id}`) ? null : newest;
+  if (statuses.some((status) => status?.context === `${RECOVERY_REQUEST_CONTEXT}${id}`)) return null;
+  // once per head: this head already had its success re-judged (or that request was superseded)
+  if (statuses.some((status) => String(status?.context ?? '').startsWith(RECOVERY_REQUEST_CONTEXT)
+    && REARM_SETTLEMENTS.includes(String(status?.description ?? '')))) return null;
+  return newest;
 }
 
 /** The failing required status on this exact head, or null. */

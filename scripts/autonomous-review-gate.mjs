@@ -25,6 +25,8 @@ import {
   CODEX_RECORD_UNREADABLE_DETAIL,
   CODEX_AUTOMERGE_DISARM_FAILED,
   CODEX_AUTOMERGE_REARM_FAILED,
+  REARM_CONSUMED_OUTCOME,
+  REARM_REQUEST_SUPERSEDED,
   CODEX_SECURITY_FINDINGS_DETAIL,
 } from './review-policy.mjs';
 export {
@@ -2991,6 +2993,30 @@ async function eventContext() {
   return contextForEvent(eventName, event, process.env.PR_NUMBER);
 }
 
+/**
+ * A pending recovery request that names no terminal status recovery can resume. G3 — one that names this head's
+ * newest tokened success (a re-arm: the watchdog's or a moved-head disarm's hint) is consumed, and the success is
+ * re-judged by the ordinary recovery, which re-arms only after its own authorization. Any other is superseded; a
+ * superseded one that named a success keeps that on the head (Stage 1 re-check G1), so the watchdog's once-per-head
+ * re-arm bound (`gateRearmStatus`) still holds after it. Either way the caller continues without the request.
+ */
+export async function settleUnmatchedRecoveryRequest(client, pullRequest, expectedHead, statuses, recoveryRequest) {
+  if (newestTokenedSuccess(statuses, recoveryRequest.terminalStatusId)) {
+    await settleRecoveryRequest(client, expectedHead, pullRequest, recoveryRequest, REARM_CONSUMED_OUTCOME);
+    return 'consumed';
+  }
+  const namedSuccess = statuses.some((status) => status.context === STATUS_CONTEXT
+    && String(status.id) === String(recoveryRequest.terminalStatusId) && status.state === 'success');
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    namedSuccess ? REARM_REQUEST_SUPERSEDED : 'recovery: request superseded by newer review state',
+    pullRequest.html_url,
+    recoveryRequest.status.context,
+  );
+  return 'superseded';
+}
+
 export async function run() {
   const context = await eventContext();
   if (!context?.number) {
@@ -3109,23 +3135,10 @@ export async function run() {
     existingStatuses,
     recoveryRequest,
   );
-  // G3 — a request that names this head's newest tokened success (a moved-head disarm's hint) is consumed, and the
-  // success is re-judged by the ordinary recovery below, which re-arms only after its own authorization
-  if (recoveryRequest && !requestedTerminalStatus
-    && newestTokenedSuccess(existingStatuses, recoveryRequest.terminalStatusId)) {
-    await settleRecoveryRequest(client, expectedHead, pullRequest, recoveryRequest, 'recovered success re-authorization');
-    recoveryRequest = null;
-  }
   if (recoveryRequest && !requestedTerminalStatus) {
-    await client.setStatus(
-      expectedHead,
-      'failure',
-      'recovery: request superseded by newer review state',
-      pullRequest.html_url,
-      recoveryRequest.status.context,
-    );
+    const settledRequest = await settleUnmatchedRecoveryRequest(client, pullRequest, expectedHead, existingStatuses, recoveryRequest);
     recoveryRequest = null;
-    if (!terminalStatus) {
+    if (settledRequest === 'superseded' && !terminalStatus) {
       throw new Error(
         'Recovery request no longer matches the latest terminal review state',
       );

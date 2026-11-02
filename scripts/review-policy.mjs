@@ -250,6 +250,13 @@ export const CODEX_AUTOMERGE_DISARM_FAILED = 'queued auto-merge could not be dis
  */
 export const CODEX_AUTOMERGE_REARM_FAILED = 'auto-merge could not be re-armed after authorization';
 
+/** G3 — the gate's settlement of a recovery request that named this head's newest tokened success (a re-arm). */
+export const REARM_CONSUMED_OUTCOME = 'recovered success re-authorization';
+/** G3 (Stage 1 re-check G1) — a re-arm request superseded by a newer review status on the same head. */
+export const REARM_REQUEST_SUPERSEDED = 'recovery: re-arm request superseded by newer review state';
+/** The head-scoped record that a re-arm was asked for and settled: the watchdog asks once per head. */
+export const REARM_SETTLEMENTS = Object.freeze([`recovery: consumed by ${REARM_CONSUMED_OUTCOME}`, REARM_REQUEST_SUPERSEDED]);
+
 const RETRYABLE_REVIEW_FAILURES = [
   FOLLOW_UP_RETRY,
   'Codex review timed out',

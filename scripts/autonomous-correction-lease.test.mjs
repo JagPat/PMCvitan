@@ -759,8 +759,8 @@ test('L33: a branch-reservation inconsistency gives a resolving action, never on
 
 // G3 (gap-check F2) — a green that nothing will arm: the gate disarms a queued auto-merge before each success and
 // re-arms only after the merge's authorization, so a re-arm lost on any path leaves a ready, tokened, unarmed head
-// that no failure will ever dispatch. The watchdog hands it to the gate's recovery once per success.
-test('G3: a ready, tokened green with no auto-merge queued is handed to the gate once per success', async () => {
+// that no failure will ever dispatch. The watchdog hands it to the gate's recovery once per head.
+test('G3: a ready, tokened green with no auto-merge queued is handed to the gate once per head', async () => {
   const tokened = { ...status('review: Codex found no blocking issue on this exact head [wi:none]', 'success'), id: 6100 };
   const ready = (extra = {}) => ({ ...pullRequest(), draft: false, auto_merge: null, ...extra });
   const run = async ({ pull = ready(), live = pull, statuses = [tokened] } = {}) => {
@@ -793,8 +793,39 @@ test('G3: a ready, tokened green with no auto-merge queued is handed to the gate
     assert.deepEqual(calls.dispatched, [], `${name}: nothing dispatched`);
   }
 
-  // a request about an older success says nothing about this one
-  const older = await run({ statuses: [
-    { context: 'codex-recovery-request/5000', state: 'success', id: 5001, description: 'recovery: consumed by recovered success re-authorization' }, tokened] });
-  assert.equal(older.calls.dispatched.length, 1);
+  // Stage 1 re-check G1 — once per HEAD: a re-judge of an earlier success on this head (consumed, or a re-arm request
+  // superseded) holds this one too; a request about a retryable failure, or a request still pending for another id,
+  // does not
+  for (const [name, settled] of [
+    ['consumed', { context: 'codex-recovery-request/5000', state: 'success', id: 5001, description: 'recovery: consumed by recovered success re-authorization' }],
+    ['superseded re-arm', { context: 'codex-recovery-request/5000', state: 'failure', id: 5001, description: 'recovery: re-arm request superseded by newer review state' }],
+  ]) {
+    const older = await run({ statuses: [settled, tokened] });
+    assert.deepEqual(older.calls.dispatched, [], `an earlier re-judge on this head (${name}): nothing dispatched`);
+  }
+  for (const other of [
+    { context: 'codex-recovery-request/5000', state: 'success', id: 5001, description: 'recovery: consumed by review timeout' },
+    { context: 'codex-recovery-request/5000', state: 'failure', id: 5001, description: 'recovery: request superseded by newer review state' },
+  ]) {
+    assert.equal((await run({ statuses: [other, tokened] })).calls.dispatched.length, 1, other.description);
+  }
+});
+
+test('G3 (Stage 1 re-check G1) — two handoff passes over the same unarmed head give one dispatch', async () => {
+  const ready = { ...pullRequest(), draft: false, auto_merge: null };
+  const statuses = [{ ...status('review: Codex found no blocking issue on this exact head [wi:none]', 'success'), id: 6100 }];
+  const pass = async () => {
+    const { client, calls } = fakeClient({ pull: ready, statuses });
+    await handOffCorrectionLease(client, ready, REPOSITORY, 'main', { now: DUE });
+    return calls.dispatched.length;
+  };
+  assert.equal(await pass(), 1);
+  // what the dispatched gate runs leave behind: request-recovery's request, consumed by the orchestrate run's re-judge,
+  // which republishes the success under a new id, and the merge still held for other gates (nothing armed)
+  statuses.unshift(
+    { ...status('review: recovered prior clean Codex result on this exact head [wi:none]', 'success'), id: 6300 },
+    { context: 'codex-recovery-request/6100', state: 'success', id: 6201, description: 'recovery: consumed by recovered success re-authorization' },
+  );
+  assert.equal(await pass(), 0, 'the head was re-judged once; it waits for a real change');
+  assert.equal(await pass(), 0);
 });

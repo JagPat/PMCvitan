@@ -221,6 +221,39 @@ test('G3 — structural: both writers take the one disarm-then-success step; onl
   assert.match(hold, /publishBlockingVerdict\(client, pullRequest, expectedHead, \{ description: `review: \$\{detail\}` \}\)/u);
   assert.match(hold, /state: 'review_retry'/u);
   assert.doesNotMatch(hold, /correctionNotice|changes_required/u);
-  const consume = gate.indexOf("'recovered success re-authorization'");
-  assert.ok(consume > 0 && consume < gate.indexOf("'recovery: request superseded by newer review state'"));
+  const settle = gate.slice(gate.indexOf('export async function settleUnmatchedRecoveryRequest('), gate.indexOf('export async function run()'));
+  const consume = settle.indexOf('REARM_CONSUMED_OUTCOME');
+  assert.ok(consume > 0 && consume < settle.indexOf("'recovery: request superseded by newer review state'"));
+  const runBody = gate.slice(gate.indexOf('export async function run()'));
+  assert.ok(runBody.indexOf('await settleUnmatchedRecoveryRequest(') > 0
+    && runBody.indexOf('await settleUnmatchedRecoveryRequest(') < runBody.indexOf('await guardAgainstCurrentHeadFinding('));
+});
+
+// Stage 1 re-check G2 (mutant M13) — the orchestrate run tells a re-arm request from a stale one: the request naming
+// this head's newest tokened success is CONSUMED (a success settlement, then the success's own recovery), never
+// marked superseded; a request naming an older success is superseded under the re-arm name, so the watchdog's
+// once-per-head bound holds; any other is superseded as before.
+test('G3 — an unmatched recovery request: the re-arm hint is consumed, a stale one superseded', async () => {
+  const { settleUnmatchedRecoveryRequest } = await import('./autonomous-review-gate.mjs');
+  const { REARM_REQUEST_SUPERSEDED, REARM_SETTLEMENTS } = await import('./review-policy.mjs');
+  const head = 'c'.repeat(40);
+  const pull = { number: 7, html_url: 'u' };
+  const success = (id) => ({ id, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head [wi:none]' });
+  const request = (id) => ({ terminalStatusId: String(id), status: { context: `codex-recovery-request/${id}` } });
+  const settle = async (statuses, req) => {
+    const writes = [];
+    const client = { async setStatus(sha, state, description, url, context) { writes.push({ state, description, context }); return { id: 1 }; } };
+    const outcome = await settleUnmatchedRecoveryRequest(client, pull, head, statuses, req);
+    return { outcome, writes };
+  };
+  const hint = await settle([success(6100)], request(6100));
+  assert.equal(hint.outcome, 'consumed');
+  assert.deepEqual(hint.writes, [{ state: 'success', description: 'recovery: consumed by recovered success re-authorization', context: 'codex-recovery-request/6100' }]);
+  assert.ok(REARM_SETTLEMENTS.includes(hint.writes[0].description));
+  const stale = await settle([success(6300), success(6100)], request(6100));
+  assert.equal(stale.outcome, 'superseded');
+  assert.deepEqual(stale.writes, [{ state: 'failure', description: REARM_REQUEST_SUPERSEDED, context: 'codex-recovery-request/6100' }]);
+  const failure = { id: 6050, context: 'codex-current-head', state: 'failure', description: 'review: Codex review timed out after two attempts' };
+  const other = await settle([success(6300), failure], request(6050));
+  assert.deepEqual(other.writes.map((w) => w.description), ['recovery: request superseded by newer review state']);
 });
