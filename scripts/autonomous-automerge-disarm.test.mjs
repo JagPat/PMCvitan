@@ -448,3 +448,22 @@ test('G3 — a buried retryable failure does not starve the re-arm', async () =>
   // the newest retryable failure is still asked about
   assert.equal(gateRecoveryStatus({ statuses: [buried, green] })?.id, 6050);
 });
+
+// #1289 round-2 audit, row 16 — a re-judge that finds the pull request drafted writes nothing and arms nothing: the
+// same run's ordinary review takes the head on, and its own success (newer than the consumed request) is what the
+// watchdog later judges.
+test('G3 — a recovered success on a drafted pull request writes nothing and arms nothing', async () => {
+  const { ensureTerminalReviewState } = await import('./autonomous-review-gate.mjs');
+  const calls = [];
+  const client = new Proxy({}, { get: (_, name) => async (...args) => {
+    calls.push(name);
+    if (name === 'pullRequest') return pr(HEAD, { draft: true });
+    if (name === 'statuses' || name === 'checkRuns' || name === 'issueComments') return [];
+    throw new Error(`unexpected ${String(name)}`);
+  } });
+  const green = success(6100);
+  const outcome = {};
+  assert.equal(await ensureTerminalReviewState(client, pr(), HEAD, green, [green], outcome), false);
+  assert.deepEqual(calls, ['pullRequest'], 'one live read, then nothing written, disabled or armed');
+  assert.equal(outcome.completion, undefined, 'no merge outcome: the request is consumed, not marked failed');
+});
