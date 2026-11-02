@@ -39,13 +39,45 @@ export const ISSUER_ACCOUNT_EXISTS = 'This email already has a Redbracket ID. En
 export const NEEDS_HELP = 'This email cannot be set up here. Ask your PMC for help.';
 const TOO_MANY = 'Too many attempts. Try again in a few minutes.';
 const RETRY_AFTER_SECONDS = 15 * 60;
-/** A cost-12 bcrypt hash of a random value nobody holds: compared when there is no real hash, so timing is even. */
-const DUMMY_HASH = '$2b$12$J2vHlAmNHuv2YPnp0gUFkOV/9l1q9pK3sQIYMOO0nyq0bngT27Q.G';
+/** The bcrypt cost new PMC passwords use (password-credentials.service.ts); every break-glass try does this much work. */
+const EVEN_COST = 12;
+/** bcrypt hashes of random values nobody holds, one per cost: compared to make every break-glass try cost the same. */
+const DUMMY_HASHES: Record<number, string> = {
+  4: '$2b$04$bcdJsaA5i0JvmSP2rlOoOe.gy3s/PLdMQpsoibzMfv2QrMy8MtmBy',
+  5: '$2b$05$cgMaxtnOsO1xHwkRS1gBDuk0B.51q2eAeMDExfgQt0oh.xaYGFlf2',
+  6: '$2b$06$yKiOrC3R3jDxf.o03IlzluM2qtMnhPZrVyidgvWnEGIyFrp0WG/.i',
+  7: '$2b$07$BGx3Dz7LwRycENx9oxr5G.WmiVrard9ml.3qLfdk0zNdP5Jv6CkaC',
+  8: '$2b$08$KbM7m5FqdvEwNIVdyW/B8uJlRM2Q.MyDz44pWeik49HDVA9tTzxkW',
+  9: '$2b$09$mQHF5CvfH39wPHHGTFYdFO1DOg/8UEN3acDBr.Wiocv0qPC99rzqO',
+  10: '$2b$10$edJKtON4dLjKtCfQo0RVquD0W8YERZenkgPCuVgaBurK56JcmvFtS',
+  11: '$2b$11$oce4JZn2qgCbQ1ZUcaDWk.zxUdPVfH1I.DSTVL2dDNOKPXh0yNt6C',
+  12: '$2b$12$J2vHlAmNHuv2YPnp0gUFkOV/9l1q9pK3sQIYMOO0nyq0bngT27Q.G',
+};
+
+/**
+ * The costs of the dummy compares that pad a compare against a hash of `cost` up to the work of one cost-12 compare
+ * (bcrypt's work is 2^cost rounds, and 2^12 - 2^c = 2^c + 2^(c+1) + ... + 2^11). A legacy cost-10 password
+ * (ensure-accounts.ts) then takes as long as a cost-12 one or no account at all. Above 12 nothing is added.
+ */
+export function paddingCosts(cost: number): number[] {
+  const pad: number[] = [];
+  for (let c = Math.max(cost, 4); c < EVEN_COST; c += 1) pad.push(c);
+  return pad;
+}
+
+/** Compares `password` with `hash` (or with nothing, when there is none) at the same total bcrypt work every time. */
+async function compareEvenly(password: string, hash: string | null): Promise<boolean> {
+  const cost = hash ? Number.parseInt(hash.slice(4, 6), 10) : EVEN_COST;
+  const real = Number.isFinite(cost) && DUMMY_HASHES[cost] !== undefined ? cost : EVEN_COST;
+  const matches = await bcrypt.compare(password, hash ?? DUMMY_HASHES[EVEN_COST]!);
+  for (const c of paddingCosts(real)) await bcrypt.compare(password, DUMMY_HASHES[c]!);
+  return hash !== null && matches;
+}
 
 /** The account a session is issued for (the fields `AuthService.signInUser` reads). */
 export type SignInAccount = Pick<User, 'id' | 'projectId' | 'role' | 'name' | 'credentialVersion' | 'lastProjectId'>;
 /** What a route does next: issue PMC's session for `account`; `fresh` when it was made by this sign-in. */
-export type IdentityOutcome = { account: SignInAccount; fresh: boolean };
+export type IdentityOutcome = { account: SignInAccount; fresh: boolean; breakGlass?: true };
 
 @Injectable()
 export class IdentitySignInService {
@@ -86,15 +118,9 @@ export class IdentitySignInService {
     const email = input.email.trim().toLowerCase();
     const attempt = await this.counted('sign-in', 'login', email, address);
     const read = readIdentityConfig();
-    if (read.state !== 'on') {
-      this.line('login', attempt, 'settings incomplete');
-      return this.breakGlass(email, input.password, attempt);
-    }
+    if (read.state !== 'on') return this.breakGlass(email, input.password, attempt, 'settings incomplete');
     const result = await this.clientFor(read.config).login(email, input.password);
-    if (!result.ok && result.failure === 'down') {
-      this.line('login', attempt, 'issuer unavailable');
-      return this.breakGlass(email, input.password, attempt);
-    }
+    if (!result.ok && result.failure === 'down') return this.breakGlass(email, input.password, attempt, 'issuer unavailable');
     if (!result.ok) {
       this.line('login', attempt, 'wrong password');
       throw new UnauthorizedException(WRONG_PASSWORD);
@@ -126,19 +152,22 @@ export class IdentitySignInService {
   /**
    * While Redbracket ID is unavailable: a company owner or admin may sign in with the PMC password their account still
    * holds, or, for an account a first Redbracket ID sign-in made, the one the replaced account held (`breakGlassHash`).
-   * Anyone else is told sign-in is unavailable (never "wrong password"), whatever they typed.
+   * Anyone else is told sign-in is unavailable (never "wrong password"), whatever they typed. Every try does the same
+   * bcrypt work (`compareEvenly`), so the time taken does not tell who is an admin or how old their password is. The
+   * standing is read again, authoritatively, under the companies' standing keys when the session is issued
+   * (`AuthService.signInIdentity`). Its one log line names why the issuer was not used and what break-glass decided.
    */
-  private async breakGlass(email: string, password: string, attempt: string): Promise<IdentityOutcome> {
+  private async breakGlass(email: string, password: string, attempt: string, why: string): Promise<IdentityOutcome> {
     // a test account never signs in here (the operator door is its way in), as with the issuer up
     const user = QA_ACCOUNT_EMAIL.test(email) ? null : await this.orgs.accountByAddress(this.prisma, { email });
     const hash = user ? await breakGlassHash(this.prisma, user) : null;
     const admin = hash && user ? await this.orgs.administersCompany(this.prisma, user.id) : false;
-    // one bcrypt compare on every path, so the time taken does not tell who is an admin holding a PMC password
-    const matches = await bcrypt.compare(password, admin && hash ? hash : DUMMY_HASH);
+    const matches = await compareEvenly(password, admin && hash ? hash : null);
     if (user && admin && matches) {
-      this.line('login', attempt, 'signed in, break-glass');
-      return { account: user, fresh: false };
+      this.line('login', attempt, `${why}; break-glass password accepted`);
+      return { account: user, fresh: false, breakGlass: true };
     }
+    this.line('login', attempt, why);
     throw new ServiceUnavailableException(UNAVAILABLE);
   }
 
@@ -203,7 +232,12 @@ export class IdentitySignInService {
         throw new BadRequestException('Redbracket ID did not accept this password. Choose another one.');
       }
       issuerPasswordSet = true;
-      if (!found.verified && (await client.markVerified(found.userId, email)) === 'down') return this.unavailable(attempt);
+      if (!found.verified) {
+        // the issuer must hold the email as verified before PMC reports the setup done (PMC's code proved the mailbox)
+        const marked = await client.markVerified(found.userId, email);
+        if (marked === 'down') return this.unavailable(attempt);
+        if (marked !== null) return this.needsHelp(attempt, 'issuer refused to mark the email verified');
+      }
     }
     // an existing issuer person who is not linked is left exactly as they are: the typed password must already be theirs
 

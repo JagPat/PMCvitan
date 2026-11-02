@@ -355,6 +355,19 @@ export class OrgsParticipant {
     return row !== null;
   }
 
+  /** The companies this account is owner or admin of, by id ascending (the order their standing keys are taken in). */
+  async administeredCompanyIds(db: Prisma.TransactionClient, userId: string): Promise<string[]> {
+    const rows = await db.orgMembership.findMany({ where: { userId, role: { in: ['owner', 'admin'] } }, select: { orgId: true }, orderBy: { orgId: 'asc' } });
+    return rows.map((row) => row.orgId);
+  }
+
+  /** Whether this account is owner or admin of one of `orgIds` (read under those companies' standing keys to be authoritative). */
+  async administersAnyOf(db: Prisma.TransactionClient, userId: string, orgIds: readonly string[]): Promise<boolean> {
+    if (orgIds.length === 0) return false;
+    const row = await db.orgMembership.findFirst({ where: { userId, orgId: { in: [...orgIds] }, role: { in: ['owner', 'admin'] } }, select: { orgId: true } });
+    return row !== null;
+  }
+
   /** The account a sign-in or a redeemed code names, by id; null when it no longer exists. */
   async accountById(db: Prisma.TransactionClient, userId: string): Promise<User | null> {
     return db.user.findUnique({ where: { id: userId } });

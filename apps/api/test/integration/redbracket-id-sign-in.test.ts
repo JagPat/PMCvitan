@@ -17,6 +17,8 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { startFakeIssuer, type FakeIssuer } from '../unit-support/fake-issuer';
 import { AuthService } from '../../src/auth/auth.service';
+import { IdentitySignInService } from '../../src/auth/identity/identity-sign-in.service';
+import { lockOrgStanding } from '../../src/common/readiness-lock';
 
 const ENV = ['IDENTITY_OIDC', 'IDENTITY_ISSUER', 'IDENTITY_ISSUER_ENDPOINT', 'IDENTITY_CLIENT_ID', 'IDENTITY_REDIRECT_URI', 'IDENTITY_SERVICE_TOKEN', 'THROTTLE_DISABLED'] as const;
 
@@ -295,6 +297,84 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     made.push((await t.prisma.user.findUniqueOrThrow({ where: { email: plain.email! } })).id);
     fake.force = { '/v2/sessions': 503 };
     await login(plain.email!, 'the plain local passphrase').expect(503);
+  });
+
+  it('break-glass asks the admin standing again under the company lock: a demotion before or during issuance is refused', async () => {
+    const identity = t.app.get(IdentitySignInService);
+    const auth = t.app.get(AuthService);
+    /** an old admin who joined fresh and was re-seated as the company admin; returns the new account */
+    const reseated = async (label: string) => {
+      const old = await invitee(label);
+      await t.prisma.user.update({ where: { id: old.id }, data: { passwordHash: await bcrypt.hash(`the ${label} local passphrase`, 4), emailVerifiedAt: new Date() } });
+      fake.addPerson(old.email!, `the ${label} redbracket passphrase`);
+      fake.force = {};
+      await login(old.email!, `the ${label} redbracket passphrase`).expect(401);
+      const fresh = await t.prisma.user.findUniqueOrThrow({ where: { email: old.email! } });
+      made.push(fresh.id);
+      await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: fresh.id, role: 'admin' } });
+      fake.force = { '/v2/sessions': 503 };
+      return fresh;
+    };
+
+    // demoted after the password check, before the session: refused, no token
+    const before = await reseated('demoted');
+    const outcome = await identity.login({ email: before.email!, password: 'the demoted local passphrase' }, '127.0.0.1');
+    expect(outcome).toMatchObject({ breakGlass: true, account: { id: before.id } });
+    await t.prisma.orgMembership.deleteMany({ where: { orgId: f.orgA.id, userId: before.id } });
+    await expect(auth.signInIdentity(outcome)).rejects.toMatchObject({ status: 503 });
+
+    // demoted by a writer holding the company key while the session waits on it: the session sees the demotion
+    const during = await reseated('during');
+    const held = await identity.login({ email: during.email!, password: 'the during local passphrase' }, '127.0.0.1');
+    expect(held.breakGlass).toBe(true);
+    let release!: () => void;
+    const go = new Promise<void>((r) => { release = r; });
+    let holding!: () => void;
+    const isHolding = new Promise<void>((r) => { holding = r; });
+    const writer = t.prisma.$transaction(async (tx) => {
+      await lockOrgStanding(tx, f.orgA.id);
+      await tx.orgMembership.deleteMany({ where: { orgId: f.orgA.id, userId: during.id } });
+      holding();
+      await go;
+    }, { timeout: 20_000 });
+    await isHolding;
+    const signing = auth.signInIdentity(held).then(() => 'signed', (err: { status?: number }) => err.status);
+    const waiting = async () => (await t.prisma.$queryRaw<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`)[0]!.n;
+    const deadline = Date.now() + 10_000;
+    while ((await waiting()) < 1) {
+      if (Date.now() > deadline) { release(); await writer; await signing; throw new Error('the session never waited on the company key'); }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    release();
+    await writer;
+    expect(await signing).toBe(503);
+
+    // still an admin: the same path signs in
+    const kept = await reseated('kept');
+    const ok = await auth.signInIdentity(await identity.login({ email: kept.email!, password: 'the kept local passphrase' }, '127.0.0.1'));
+    expect(sub(ok.token)).toBe(kept.id);
+  }, 30_000);
+
+  it('a linked person whose email the issuer will not mark verified is not told the setup worked', async () => {
+    const user = await invitee('unmarked');
+    await setPassword(user.email!, 'the first issuer passphrase', 201);
+    const person = [...fake.people.values()].find((p) => p.email === user.email)!;
+    person.verified = false;
+    const done = ['auth.password_reset', 'auth.password_enrolled', 'auth.identity_joined'];
+    const successes = () => t.prisma.securityAuditEvent.count({ where: { targetUserId: user.id, action: { in: done } } });
+    const before = await successes();
+    fake.force = { '/zitadel.user.v2.UserService/UpdateUser': 400 };
+    const refused = await setPassword(user.email!, 'the second issuer passphrase', 409);
+    expect(refused.body.token).toBeUndefined();
+    expect(person.verified).toBe(false);
+    expect(await successes()).toBe(before); // no success recorded
+    // the issuer down for the same step is "unavailable", never success
+    fake.force = { '/zitadel.user.v2.UserService/UpdateUser': 503 };
+    await setPassword(user.email!, 'the third issuer passphrase', 503);
+    fake.force = {};
+    await setPassword(user.email!, 'the fourth issuer passphrase', 201);
+    expect(person.verified).toBe(true);
   });
 
   it('a reset code sent before retirement is refused after it, switch on or off: nothing reaches the issuer, the old hash stays', async () => {

@@ -1,9 +1,9 @@
-import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma.service';
-import { lockProjectReadiness } from '../common/readiness-lock';
+import { lockOrgStanding, lockProjectReadiness } from '../common/readiness-lock';
 import { SmsService } from './sms.service';
 import { EmailService } from '../platform/email.service';
 import { GoogleAuthService } from './google.service';
@@ -14,7 +14,7 @@ import { systemActor } from '../common/actor';
 import { OrgsParticipant, QA_ACCOUNT_EMAIL, rethrowQaLock } from '../orgs/orgs.participant';
 import { countersignReloadMessage, understandsCountersign, type DecisionsContract } from '../common/decisions-contract';
 import type { Role } from '../common/auth';
-import { NO_PROJECT, type IdentityOutcome } from './identity/identity-sign-in.service';
+import { NO_PROJECT, UNAVAILABLE, type IdentityOutcome } from './identity/identity-sign-in.service';
 import { isRetired } from './identity/identity-accounts';
 import type {
   SessionInput,
@@ -294,12 +294,36 @@ export class AuthService {
    * same access rule as every sign-in. An account this sign-in just made holds no project yet, and is told so.
    */
   async signInIdentity(outcome: IdentityOutcome): Promise<TokenResult> {
+    if (outcome.breakGlass) return this.breakGlassSession(outcome.account);
     try {
       return await this.signInUser(outcome.account);
     } catch (err) {
       if (outcome.fresh && err instanceof UnauthorizedException) throw new UnauthorizedException(NO_PROJECT);
       throw err;
     }
+  }
+
+  /**
+   * Redbracket ID A3 break-glass (issuer unavailable, a company owner or admin's PMC password matched): the standing that
+   * allowed it is read again under the standing key of every company the account administers (the key every owner/admin
+   * writer takes first), and the session is landed and signed while those keys are held. A demotion therefore either
+   * committed before (refused here: unavailable, as for anyone else) or waits for this sign-in, as it would for any
+   * sign-in that came before it.
+   */
+  private async breakGlassSession(user: IdentityOutcome['account']): Promise<TokenResult> {
+    return this.prisma.$transaction(async (tx) => {
+      const orgIds = await this.orgs.administeredCompanyIds(tx, user.id);
+      for (const orgId of orgIds) await lockOrgStanding(tx, orgId);
+      if (!(await this.orgs.administersAnyOf(tx, user.id, orgIds))) throw new ServiceUnavailableException(UNAVAILABLE);
+      const landing = await this.orgs.signInLanding(tx, user);
+      if (!landing) throw new UnauthorizedException(ACCESS_REMOVED);
+      return {
+        token: await this.issueNamedUser(user, landing.role, landing.projectId),
+        role: landing.role,
+        projectId: landing.projectId,
+        name: user.name,
+      };
+    });
   }
 
   /** #827 one-screen sign-in: with no SMS channel but working mail, a phone sign-in's code is emailed to the
