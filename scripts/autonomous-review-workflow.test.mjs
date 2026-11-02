@@ -1952,7 +1952,9 @@ test('findings 4100230308 (#628) and 4103625675 (#630): a relabel to a candidate
     reviewGate.contextForEvent('pull_request_target', { action: 'edited', pull_request: { number: 258, head: { sha: head } } }),
     { number: 258, expectedHead: head, ciConclusion: null, trigger: 'relabel' },
   );
-  assert.equal(reviewGate.contextForEvent('pull_request_target', { action: 'synchronize', pull_request: { number: 258 } }), null);
+  // 2A3b — a push is the event disarm's, never the relabel guard's
+  assert.equal(reviewGate.contextForEvent('pull_request_target', { action: 'synchronize', pull_request: { number: 258 } }).trigger, 'synchronize');
+  assert.equal(reviewGate.contextForEvent('pull_request_target', { action: 'labeled', pull_request: { number: 258 } }), null);
 });
 
 test('the relabel guard workflow runs trusted default-branch code with only the permissions it needs', async () => {
