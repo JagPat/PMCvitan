@@ -898,6 +898,11 @@ export class GitHubClient {
     return this.paginated(`/repos/${this.repository}/issues/${number}/comments`);
   }
 
+  // 2A3b-2 — one comment, read by its id (the event disarm's live re-read of Codex's record)
+  issueComment(id) {
+    return this.request(`/repos/${this.repository}/issues/comments/${encodeURIComponent(String(id))}`);
+  }
+
   createIssueComment(number, body) {
     return this.request(`/repos/${this.repository}/issues/${number}/comments`, { method: 'POST', body: { body } });
   }
@@ -1643,6 +1648,22 @@ async function mergeOrArmAuthorizedHead(client, pullRequest, expectedHead, verdi
   try {
     // G3a (gap-check F2d) — a re-arm that fails, other than GitHub's clean-status answer, is held by the tail
     await client.enableAutoMerge(pullRequest, expectedHead);
+    // 2A3b-2 (Stage 1's gap-check of aa882775) — a Codex run that started after the authorization's record read and
+    // before this arm landed: the event disarm's comment run may have read before the arm and found nothing queued,
+    // and the gate's own arm wakes no run. So the record is read once more, after the arm: running (or security
+    // findings) on this head disarms and takes the authorization's own refusal. A Codex start after this read wakes the
+    // comment run, which then finds the merge queued. A read that fails throws into the tail (`holdUnarmedGreen`), whose
+    // retryable hold drafts the pull request, dropping the queued merge (fail closed)
+    const after = codexStateRecordVerdict(await client.issueComments(pullRequest.number), expectedHead, 0);
+    if (after === 'hold' || after === 'security') {
+      await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead);
+      await refuseReviewedGreen(client, pullRequest, expectedHead, {
+        refusal: after === 'security' ? 'security' : 'held',
+        recoveryRequest,
+        attempt,
+      });
+      return { outcome: 'review_refused', pullRequest };
+    }
     return { outcome: 'queued', pullRequest };
   } catch (error) {
     if (
@@ -3320,18 +3341,21 @@ const GATE_TOKEN_LOGIN = 'github-actions[bot]';
 
 /**
  * The comment the event named, as it reads now (by id), or null when it is gone or the payload named none. A read that
- * fails falls back to the payload's body, which fails closed: at worst a spurious retryable hold the recovery re-judges.
+ * fails otherwise falls back to the payload's body, which fails closed: at worst a spurious retryable hold the recovery
+ * re-judges. A comment on another issue (the id read back on another pull request) is not this record.
  */
 async function liveCodexRecord(client, number, comment) {
   if (comment?.id == null) return null;
-  let comments;
+  let live;
   try {
-    comments = await client.issueComments(number);
+    live = await client.issueComment(comment.id);
   } catch (error) {
+    if (/failed \(404\)/u.test(String(error?.message))) return null;
     console.log(`Event disarm: the Codex record could not be re-read (${error?.message}); judging the event's copy.`);
     return comment;
   }
-  return (comments ?? []).find((candidate) => String(candidate?.id) === String(comment.id)) ?? null;
+  if (live?.issue_url && !String(live.issue_url).endsWith(`/issues/${number}`)) return null;
+  return live ?? null;
 }
 
 /**
