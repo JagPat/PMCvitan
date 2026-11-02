@@ -182,11 +182,15 @@ function CopyOf({ files, at, copyId, lang }: { files: NonNullable<SiteVisit['fil
   );
 }
 
-/** #1239: how long a removal offer has left, or null when it has no end. The server's own count (`endsAt`, set when
- *  the read arrived) wins; an API before it gives only `until`, read against the phone's clock as before. */
+/** #1239: how long a removal offer has left, or null when it has no end. The server's own count (`endsAt` and
+ *  `endsAtWall`, set when the answer arrived) wins, on whichever clock runs out first; an API before it gives only
+ *  `until`, read against the phone's clock as before. */
 function offerLeft(given: RemovalOffer | null): number | null {
   if (!given?.until) return null;
-  if (typeof given.endsAt === 'number') return given.endsAt - performance.now();
+  if (typeof given.endsAt === 'number') {
+    const steady = given.endsAt - performance.now();
+    return typeof given.endsAtWall === 'number' ? Math.min(steady, given.endsAtWall - Date.now()) : steady;
+  }
   return Date.parse(given.until) - Date.now();
 }
 

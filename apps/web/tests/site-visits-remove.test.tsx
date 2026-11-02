@@ -308,6 +308,18 @@ describe('#1179 R3: taking a file off a visit', () => {
     expect(within(card).queryByTestId('sv-remove-m-v')).toBeNull();
   });
 
+  it('a phone whose steady clock stops while it sleeps still ends the offer by its own clock (gap-check)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.spyOn(performance, 'now').mockReturnValue(1_000);
+    const asleep = voice({ removable: { reasonRequired: false, until: new Date(NOW + 60_000).toISOString(), remainingMs: 60_000, endsAt: 61_000, endsAtWall: NOW + 60_000 } });
+    const card = await mount('consultant', CONSULTANT, server(visit({ files: [asleep] })).gw);
+    expect(within(card).getByTestId('sv-remove-m-v')).toBeTruthy();
+    // the steady clock did not move while the phone slept; the phone's clock did
+    now = NOW + 60_001;
+    await act(async () => { vi.advanceTimersByTime(60_100); });
+    expect(within(card).queryByTestId('sv-remove-m-v')).toBeNull();
+  });
+
   it('a phone whose clock is ahead keeps the offer for the time the server said is left (#1239)', async () => {
     let steady = 1_000;
     vi.spyOn(performance, 'now').mockImplementation(() => steady);
