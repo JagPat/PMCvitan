@@ -96,6 +96,9 @@ function redirectOf(raw: string, local: boolean): string | null {
     return null;
   }
   if (url.username || url.password || url.hash) return null;
+  // only the URL exactly as it will be sent: `new URL` quietly drops whitespace, tabs and newlines, which the issuer's
+  // registered redirect would then not match (every sign-in down, though the settings looked whole)
+  if (raw !== url.href) return null;
   if (url.protocol === 'https:') return raw;
   // a local fake issuer in tests runs over loopback http, and so may its registered redirect
   if (local && !isProduction() && url.protocol === 'http:' && LOOPBACK.has(url.hostname)) return raw;

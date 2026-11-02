@@ -14,7 +14,7 @@ import type { AddressInfo } from 'node:net';
 
 export type FakePerson = { userId: string; email: string; password: string; verified: boolean; givenName: string; familyName: string; locked?: boolean };
 export type Recorded = { method: string; path: string; headers: IncomingMessage['headers']; body: string };
-export type Spoil = 'none' | 'issuer' | 'alg-none' | 'alg-hs256' | 'state' | 'nonce' | 'audience' | 'expired' | 'kid' | 'signature';
+export type Spoil = 'none' | 'issuer' | 'alg-none' | 'alg-hs256' | 'state' | 'nonce' | 'audience' | 'expired' | 'kid' | 'signature' | 'no-iat';
 
 export type FakeIssuer = {
   /** where it listens (loopback http); PMC reaches it through IDENTITY_ISSUER_ENDPOINT */
@@ -97,6 +97,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     if (fake.spoil === 'audience') { payload.aud = ['someone-else']; payload.azp = 'someone-else'; }
     if (fake.spoil === 'expired') payload.exp = now - 3600;
     if (fake.spoil === 'kid') header.kid = 'unknown';
+    if (fake.spoil === 'no-iat') delete payload.iat;
     if (fake.spoil === 'alg-none') header.alg = 'none';
     if (fake.spoil === 'alg-hs256') header.alg = 'HS256';
     const signingInput = `${b64u(JSON.stringify(header))}.${b64u(JSON.stringify(payload))}`;

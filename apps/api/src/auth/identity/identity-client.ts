@@ -153,8 +153,8 @@ export class IdentityClient {
   async find(email: string): Promise<Lookup> {
     try {
       const r = await this.send('POST', '/v2/users', { json: searchBody(email), service: true });
-      if (r.status >= 500 || r.status === 401 || r.status === 403) return { found: 'down' };
-      return readLookup(r.status, r.body);
+      if (isOutage(r.status)) return { found: 'down' };
+      return readLookup(r.status, r.body, email);
     } catch {
       return { found: 'down' };
     }
@@ -238,9 +238,16 @@ export class IdentityClient {
   }
 }
 
-/** A 401/403 on a service call is PMC's own service token refused: the issuer can't be used, not the person's fault. */
+/**
+ * The issuer can't be used just now, not the person's fault: a 5xx, a 429 (rate limited; try again later), or a 401/403
+ * on a service call, which is PMC's own service token refused.
+ */
+function isOutage(status: number): boolean {
+  return status >= 500 || status === 429 || status === 401 || status === 403;
+}
+
 function serviceFailure(status: number): IdentityFailure {
-  return status >= 500 || status === 401 || status === 403 ? 'down' : 'rejected';
+  return isOutage(status) ? 'down' : 'rejected';
 }
 
 async function readCapped(res: Response): Promise<string> {
@@ -276,8 +283,12 @@ export function searchBody(email: string): unknown {
   };
 }
 
-/** Reads a ListUsers answer as Zitadel v4.16 gives it. Exported for its own tests. */
-export function readLookup(status: number, body: string): Lookup {
+/**
+ * Reads a ListUsers answer as Zitadel v4.16 gives it, for `email`. A person is `one` only when their CURRENT email is
+ * that address: a login name can keep an old address after the email changed, and a match on it alone is `unclear`
+ * (never a person PMC may set a password on). Exported for its own tests.
+ */
+export function readLookup(status: number, body: string, email: string): Lookup {
   if (status !== 200) return { found: 'unclear' };
   let o: Record<string, unknown>;
   try {
@@ -302,6 +313,8 @@ export function readLookup(status: number, body: string): Lookup {
   const human = row && typeof row === 'object' ? (row.human as Record<string, unknown> | undefined) : undefined;
   const mail = human && typeof human === 'object' ? (human.email as Record<string, unknown> | undefined) : undefined;
   if (!userId || !mail || typeof mail !== 'object') return { found: 'unclear' };
+  const current = str(mail.email).trim().toLowerCase();
+  if (!current || current !== email.trim().toLowerCase()) return { found: 'unclear' };
   // Zitadel leaves out a false boolean: a missing isVerified is not verified
   return { found: 'one', userId, verified: mail.isVerified === true };
 }

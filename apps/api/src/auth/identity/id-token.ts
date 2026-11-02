@@ -72,7 +72,8 @@ export async function checkIdToken(token: string, check: IdTokenCheck): Promise<
     const exp = payload.exp;
     const iat = payload.iat;
     if (typeof exp !== 'number' || !Number.isFinite(exp) || exp + SKEW_SECONDS <= check.now) return null;
-    if (iat !== undefined && (typeof iat !== 'number' || !Number.isFinite(iat) || iat - SKEW_SECONDS > check.now)) return null;
+    // iat is a required id-token claim (OIDC Core 2): a token without one is refused, not let through unchecked
+    if (typeof iat !== 'number' || !Number.isFinite(iat) || iat - SKEW_SECONDS > check.now) return null;
     const sub = str(payload.sub);
     if (!SUB.test(sub)) return null;
     return {

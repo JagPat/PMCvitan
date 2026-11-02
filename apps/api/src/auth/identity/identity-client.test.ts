@@ -44,6 +44,11 @@ describe('Redbracket ID A2: the switch', () => {
     }
     const local = readIdentityConfig({ ...full, IDENTITY_ISSUER: 'https://id.fake.test', IDENTITY_ISSUER_ENDPOINT: 'http://127.0.0.1:9', IDENTITY_REDIRECT_URI: 'http://127.0.0.1:1/cb' });
     expect(local).toMatchObject({ state: 'on', config: { issuer: 'https://id.fake.test', endpoint: 'http://127.0.0.1:9' } });
+    // a redirect not exactly as it will be sent (whitespace `new URL` would drop) is malformed, not quietly mangled
+    for (const redirect of [' https://pms-api.vitan.in/auth/oidc/callback', 'https://pms-api.vitan.in/auth/oidc/callback ', 'https://pms-api.vitan.in/auth/oidc/\tcallback', 'https://pms-api.vitan.in/auth/oidc/call\nback']) {
+      expect([redirect, readIdentityConfig({ ...full, IDENTITY_REDIRECT_URI: redirect }).state]).toEqual([redirect, 'broken']);
+    }
+    expect(readIdentityConfig({ ...full, IDENTITY_REDIRECT_URI: 'https://pms-api.vitan.in/auth/oidc/callback' }).state).toBe('on');
     // a loopback http redirect is only for a local fake
     expect(readIdentityConfig({ ...full, IDENTITY_REDIRECT_URI: 'http://127.0.0.1:1/cb' }).state).toBe('broken');
   });
@@ -175,6 +180,16 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
       .toEqual(['Right-pass-123', false, false]);
   });
 
+  it('the issuer rate-limiting (429) is down on every call, never "your details were refused"', async () => {
+    const p = fake.addPerson('r@example.in', 'Right-pass-123', false);
+    fake.force = { '/v2/users': 429, '/zitadel.user.v2.UserService/UpdateUser': 429, '/v2/sessions': 429 };
+    expect(await client.find('r@example.in')).toEqual({ found: 'down' });
+    expect(await client.create({ email: 'r2@example.in', password: 'New-pass-123', verified: true })).toEqual({ ok: false, taken: false, failure: 'down' });
+    expect(await client.setPassword(p.userId, 'Other-pass-456')).toBe('down');
+    expect(await client.markVerified(p.userId, 'r@example.in')).toBe('down');
+    expect(await client.login('r@example.in', 'Right-pass-123')).toEqual({ ok: false, failure: 'down' });
+  });
+
   it('PMC’s client unknown at the issuer (no auth request) is down, not a wrong password', async () => {
     fake.addPerson('f@example.in', 'Right-pass-123');
     const wrongClient = new IdentityClient({ issuer: fake.issuer, endpoint: fake.url, clientId: 'hub-client', redirectUri, serviceToken: fake.serviceToken }, { timeoutMs: 500 });
@@ -182,7 +197,7 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(fake.requests.some((q) => q.path === '/v2/sessions')).toBe(false);
   });
 
-  for (const spoil of ['issuer', 'alg-none', 'alg-hs256', 'state', 'nonce', 'audience', 'expired', 'kid', 'signature'] as const) {
+  for (const spoil of ['issuer', 'alg-none', 'alg-hs256', 'state', 'nonce', 'audience', 'expired', 'kid', 'signature', 'no-iat'] as const) {
     it(`an id token or callback spoiled by ${spoil} opens no session`, async () => {
       fake.addPerson('g@example.in', 'Right-pass-123');
       fake.spoil = spoil;
@@ -191,17 +206,20 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
   }
 
   it('reads v4.16 ListUsers: details-only and empty results are nobody; anything else unclear; a missing isVerified is false', async () => {
-    expect(readLookup(200, JSON.stringify({ details: { timestamp: 'x' } }))).toEqual({ found: 'none' });
-    expect(readLookup(200, JSON.stringify({ details: { totalResult: '0' }, result: [] }))).toEqual({ found: 'none' });
-    expect(readLookup(200, JSON.stringify({ details: { totalResult: 0 } }))).toEqual({ found: 'none' });
-    expect(readLookup(200, JSON.stringify({ details: { totalResult: '2' }, result: [] }))).toEqual({ found: 'unclear' });
-    expect(readLookup(200, JSON.stringify({ result: 'nope' }))).toEqual({ found: 'unclear' });
-    expect(readLookup(200, JSON.stringify({}))).toEqual({ found: 'unclear' });
-    expect(readLookup(200, 'not json')).toEqual({ found: 'unclear' });
-    expect(readLookup(404, '{}')).toEqual({ found: 'unclear' });
-    expect(readLookup(200, JSON.stringify({ result: [{ userId: 'u1', human: { email: { email: 'a@b.in' } } }] }))).toEqual({ found: 'one', userId: 'u1', verified: false });
-    expect(readLookup(200, JSON.stringify({ result: [{ userId: 'u1', human: { email: { email: 'a@b.in', isVerified: true } } }] }))).toEqual({ found: 'one', userId: 'u1', verified: true });
-    expect(readLookup(200, JSON.stringify({ result: [{ userId: 'u1', human: { email: {} } }, { userId: 'u2', human: { email: {} } }] }))).toEqual({ found: 'unclear' });
+    expect(readLookup(200, JSON.stringify({ details: { timestamp: 'x' } }), 'a@b.in')).toEqual({ found: 'none' });
+    expect(readLookup(200, JSON.stringify({ details: { totalResult: '0' }, result: [] }), 'a@b.in')).toEqual({ found: 'none' });
+    expect(readLookup(200, JSON.stringify({ details: { totalResult: 0 } }), 'a@b.in')).toEqual({ found: 'none' });
+    expect(readLookup(200, JSON.stringify({ details: { totalResult: '2' }, result: [] }), 'a@b.in')).toEqual({ found: 'unclear' });
+    expect(readLookup(200, JSON.stringify({ result: 'nope' }), 'a@b.in')).toEqual({ found: 'unclear' });
+    expect(readLookup(200, JSON.stringify({}), 'a@b.in')).toEqual({ found: 'unclear' });
+    expect(readLookup(200, 'not json', 'a@b.in')).toEqual({ found: 'unclear' });
+    expect(readLookup(404, '{}', 'a@b.in')).toEqual({ found: 'unclear' });
+    expect(readLookup(200, JSON.stringify({ result: [{ userId: 'u1', human: { email: { email: 'a@b.in' } } }] }), 'a@b.in')).toEqual({ found: 'one', userId: 'u1', verified: false });
+    expect(readLookup(200, JSON.stringify({ result: [{ userId: 'u1', human: { email: { email: 'a@b.in', isVerified: true } } }] }), 'a@b.in')).toEqual({ found: 'one', userId: 'u1', verified: true });
+    expect(readLookup(200, JSON.stringify({ result: [{ userId: 'u1', human: { email: {} } }, { userId: 'u2', human: { email: {} } }] }), 'a@b.in')).toEqual({ found: 'unclear' });
+    // a login name can keep an old address after the email changed: only the CURRENT email names the person
+    expect(readLookup(200, JSON.stringify({ result: [{ userId: 'u1', human: { email: { email: 'new@b.in', isVerified: true } } }] }), 'a@b.in')).toEqual({ found: 'unclear' });
+    expect(readLookup(200, JSON.stringify({ result: [{ userId: 'u1', human: { email: { email: 'A@B.in', isVerified: true } } }] }), 'a@b.in')).toEqual({ found: 'one', userId: 'u1', verified: true });
     expect(searchBody('a@b.in')).toEqual({
       query: { offset: 0, limit: 2, asc: true },
       queries: [{ orQuery: { queries: [{ loginNameQuery: { loginName: 'a@b.in', method: 'TEXT_QUERY_METHOD_EQUALS_IGNORE_CASE' } }, { emailQuery: { emailAddress: 'a@b.in', method: 'TEXT_QUERY_METHOD_EQUALS_IGNORE_CASE' } }] } }],
