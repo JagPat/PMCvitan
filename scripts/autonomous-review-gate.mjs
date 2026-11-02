@@ -1544,7 +1544,11 @@ export async function completeReviewedPullRequest(
       // G3 (gap-check F2d) — a re-arm that fails would leave this head green with nothing queued and nothing
       // scheduled (the watchdog dispatches failures). The green is replaced by the retryable hold, so recovery
       // re-judges the head and re-arms it through this same authorization
-      await holdAutoMergeRetry(client, pullRequest, expectedHead, CODEX_AUTOMERGE_REARM_FAILED, { recoveryRequest, attempt });
+      await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
+      detail: CODEX_AUTOMERGE_REARM_FAILED,
+      attempt,
+      next: AUTOMERGE_RETRY_NEXT[CODEX_AUTOMERGE_REARM_FAILED],
+    });
       throw error;
     }
     await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
@@ -1625,7 +1629,11 @@ export async function publishDisarmedSuccess(client, pullRequest, expectedHead, 
     live = await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead);
   } catch (error) {
     if (!(error instanceof AutoMergeDisarmFailed)) throw error;
-    await holdAutoMergeRetry(client, pullRequest, expectedHead, CODEX_AUTOMERGE_DISARM_FAILED, { recoveryRequest, attempt });
+    await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
+      detail: CODEX_AUTOMERGE_DISARM_FAILED,
+      attempt,
+      next: AUTOMERGE_RETRY_NEXT[CODEX_AUTOMERGE_DISARM_FAILED],
+    });
     throw error;
   }
   if (!live) return null;
@@ -1637,19 +1645,6 @@ const AUTOMERGE_RETRY_NEXT = {
   [CODEX_AUTOMERGE_DISARM_FAILED]: 'A queued auto-merge could not be disarmed before success; the gate re-judges this exact head.',
   [CODEX_AUTOMERGE_REARM_FAILED]: 'Auto-merge could not be re-armed after authorization; the gate re-judges this exact head.',
 };
-
-/** G3 — an auto-merge step that could not be confirmed (the disarm before a success, or the re-arm after the merge's
- *  authorization): the retryable failure (no correction notice), the recovery request settled, and a `review_retry`
- *  sticky, as an unsettled settlement leaves them. Nothing green is left standing. */
-async function holdAutoMergeRetry(client, pullRequest, expectedHead, detail, { recoveryRequest = null, attempt = 0 }) {
-  const live = await publishBlockingVerdict(client, pullRequest, expectedHead, { description: `review: ${detail}` });
-  if (!live) return;
-  await settleRecoveryRequest(client, expectedHead, live, recoveryRequest, 'changed review evidence');
-  await client.updateStickyComment(
-    live.number,
-    statusBody({ state: 'review_retry', head: expectedHead, detail, attempt, next: AUTOMERGE_RETRY_NEXT[detail] }),
-  );
-}
 
 /** G3 — the head moved under a disarm: hand a green, tokened new head back to its own recovery (a hint it re-checks). */
 async function redispatchMovedGreenHead(client, pullRequest) {

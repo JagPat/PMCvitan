@@ -209,7 +209,7 @@ test('G3 — structural: both writers take the one disarm-then-success step; onl
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const step = gate.slice(gate.indexOf('export async function publishDisarmedSuccess('), gate.indexOf('const AUTOMERGE_RETRY_NEXT'));
   assert.ok(step.indexOf('disarmQueuedAutoMerge(client') > 0 && step.indexOf('disarmQueuedAutoMerge(client') < step.indexOf('await publishSettledSuccess('));
-  assert.match(step, /if \(!\(error instanceof AutoMergeDisarmFailed\)\) throw error;\s*await holdAutoMergeRetry\(client, pullRequest, expectedHead, CODEX_AUTOMERGE_DISARM_FAILED[^;]*;\s*throw error;/u);
+  assert.match(step, /if \(!\(error instanceof AutoMergeDisarmFailed\)\) throw error;\s*await publishRetryableHold\(client, pullRequest, expectedHead, recoveryRequest, \{\s*detail: CODEX_AUTOMERGE_DISARM_FAILED,[^;]*;\s*throw error;/u);
   assert.equal([...gate.matchAll(/await publishSettledSuccess\(/gu)].length, 1, 'the success writer is called only by the shared step');
   assert.equal([...gate.matchAll(/await publishDisarmedSuccess\(/gu)].length, 2, 'the review path and the recovered success');
   const arms = [...gate.matchAll(/client\.enableAutoMerge\(/gu)].map((m) => m.index);
@@ -217,10 +217,14 @@ test('G3 — structural: both writers take the one disarm-then-success step; onl
   const complete = gate.indexOf('export async function completeReviewedPullRequest(');
   assert.ok(arms[0] > gate.indexOf('authorizeExactHeadMerge(client', complete) && arms[0] > complete);
   assert.equal([...gate.matchAll(/client\.disableAutoMerge\(/gu)].length, 1, 'one disable, inside the shared helper');
-  const hold = gate.slice(gate.indexOf('async function holdAutoMergeRetry('), gate.indexOf('/** G3 — the head moved under a disarm'));
-  assert.match(hold, /publishBlockingVerdict\(client, pullRequest, expectedHead, \{ description: `review: \$\{detail\}` \}\)/u);
-  assert.match(hold, /state: 'review_retry'/u);
-  assert.doesNotMatch(hold, /correctionNotice|changes_required/u);
+  // #1290 fold — the auto-merge holds are the shared retryable hold (failure, draft, settle, `review_retry`, no notice),
+  // and both of their details are ones recovery re-judges
+  const rearm = gate.slice(gate.indexOf('export async function completeReviewedPullRequest('), gate.indexOf('export class AutoMergeDisarmFailed'));
+  assert.match(rearm, /await publishRetryableHold\(client, pullRequest, expectedHead, recoveryRequest, \{\s*detail: CODEX_AUTOMERGE_REARM_FAILED,/u);
+  const { isRetryableReviewFailureDescription, CODEX_AUTOMERGE_DISARM_FAILED, CODEX_AUTOMERGE_REARM_FAILED } = await import('./review-policy.mjs');
+  for (const detail of [CODEX_AUTOMERGE_DISARM_FAILED, CODEX_AUTOMERGE_REARM_FAILED]) {
+    assert.equal(isRetryableReviewFailureDescription(`review: ${detail}`), true, detail);
+  }
   const settle = gate.slice(gate.indexOf('export async function settleUnmatchedRecoveryRequest('), gate.indexOf('export async function run()'));
   const consume = settle.indexOf('REARM_CONSUMED_OUTCOME');
   assert.ok(consume > 0 && consume < settle.indexOf("'recovery: request superseded by newer review state'"));
