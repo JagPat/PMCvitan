@@ -124,4 +124,44 @@ describe('a photo goes only on a published place (live PG)', () => {
     expect(res.status).toBe(201);
     expect((await t.prisma.media.findUniqueOrThrow({ where: { id: res.body.id } })).nodeId).toBe(nodeId('racing'));
   });
+
+  // A refile racing the photo's delete: the refile has read the photo and waits on the tree lock while the delete
+  // commits. It is answered as a photo that is not there (404), as a refile sent after the delete is, never a 500 from
+  // the update finding no row (Prisma P2025), and it records no refile.
+  it('a refile whose photo is deleted while it waits is answered 404, not 500, and records nothing', async () => {
+    const photo = await upload(engineer, { nodeId: nodeId('published') });
+    expect(photo.status).toBe(201);
+    await t.prisma.projectNode.create({ data: { id: nodeId('refile-to'), projectId: f.projectA.id, name: 'refile-to', kind: 'zone', publishedAt: new Date(), authorId: f.memberUser.id } });
+    let release!: () => void;
+    const released = new Promise<void>((r) => { release = r; });
+    let locked!: () => void;
+    const holding = new Promise<void>((r) => { locked = r; });
+    // a tree write in flight holds the exclusive tree lock; the photo's delete commits inside it, while the refile waits
+    const tree = t.prisma.$transaction(async (tx) => {
+      await lockProjectTree(tx, f.projectA.id);
+      locked();
+      await released;
+      await tx.media.delete({ where: { id: photo.body.id } });
+    }, { timeout: 20_000 });
+    await holding;
+    const refile$ = refile(pmc, photo.body.id, nodeId('refile-to')).then((r) => r);
+    // barrier: the refile is queued on THIS project's tree lock, after its reads of the photo
+    let waiting = 0;
+    for (let i = 0; i < 100 && waiting === 0; i++) {
+      const [row] = await t.prisma.$queryRaw<Array<{ n: number }>>`
+        WITH k AS (SELECT hashtextextended(${treeLockKey(f.projectA.id)}, 0) AS h)
+        SELECT count(*)::int AS n FROM pg_locks, k
+        WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+          AND classid::bigint = ((k.h >> 32) & 4294967295) AND objid::bigint = (k.h & 4294967295)`;
+      waiting = row.n;
+      if (!waiting) await new Promise((r) => setTimeout(r, 50));
+    }
+    release();
+    await tree;
+    const res = await refile$;
+    expect(waiting).toBeGreaterThan(0);
+    expect(res.status).toBe(404);
+    expect(res.body.message).toBe('Media not found');
+    expect(await t.prisma.domainEvent.count({ where: { entityType: 'Media', entityId: photo.body.id, eventType: 'media.refiled' } })).toBe(0);
+  });
 });
