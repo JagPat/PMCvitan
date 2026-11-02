@@ -631,6 +631,27 @@ describe('#1179 R3: taking a file off a visit', () => {
     localStorage.removeItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-a`);
   });
 
+  it('removal records that cannot be read leave out a queued send too: its answer may have been lost and its file removed (#1266, Codex 4438362505)', async () => {
+    useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
+    const st = useStore.getState();
+    const scope = visitPhotoScope(st.sessionToken, CONSULTANT);
+    const project = st.activeProjectId;
+    const op = {
+      t: 'siteVisitAddFile', visitId: 'v-1', idempotencyKey: 'idem-ck-l', scope,
+      file: { id: 'ck-l', mime: 'image/jpeg' }, by: { name: 'Kiran Rao', role: 'consultant' }, placeName: null, queuedAt: new Date(NOW).toISOString(),
+    } as SiteVisitAddFileOp;
+    await putVisitPhoto(scope, project, op, 'AAAA');
+    localStorage.setItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-l`, '1');
+    const unreadable = vi.spyOn(Storage.prototype, 'key').mockImplementation(() => { throw new Error('storage blocked'); });
+    const card = await mount('consultant', CONSULTANT, server(visit()).gw);
+    // the send is still queued in this tab, its row still queued on the phone
+    await act(async () => { useStore.setState({ online: false, outbox: [op as unknown as OutboxOp] }); });
+    await settled();
+    expect(within(card).queryByTestId('sv-file-ck-l')).toBeNull();
+    unreadable.mockRestore();
+    localStorage.removeItem(`${REMOVED_VISIT_PHOTO_PREFIX}${scope}.${project}.ck-l`);
+  });
+
   it('a removal another tab recorded hides the phone\'s copy on an open screen at once', async () => {
     useStore.setState({ ...getInitialState(), sessionUserId: CONSULTANT });
     const st = useStore.getState();

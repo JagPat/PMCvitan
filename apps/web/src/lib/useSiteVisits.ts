@@ -737,12 +737,11 @@ export function useSiteVisits() {
     const st = useStore.getState();
     const read = removedVisitPhotos(visitPhotoScope(st.sessionToken, st.sessionUserId), st.activeProjectId);
     const queuedKeys = new Set(queued.map((o) => o.idempotencyKey));
-    // #1266: records that cannot be read may name any of the phone's filed copies, so none is shown from the phone:
-    // the server's own list still shows each file it holds. A filed row's act still queued here (one this tab kept
-    // while another tab filed the row, or a clip whose still frame is to send) is that same copy, so it is left out too
-    // (Codex 4438228523)
-    const filedKeys = read === 'unreadable' ? new Set(filed.map((r) => r.op.idempotencyKey)) : null;
-    const sending = filedKeys ? queued.filter((o) => !filedKeys.has(o.idempotencyKey)) : queued;
+    // #1266: records that cannot be read may name any copy of a file on this phone, filed or still queued (a send whose
+    // answer was lost may have reached the server, and another tab may have removed it), so no file is shown from the
+    // phone at all: not a filed row, and not a queued send, whatever its row says (Codex 4438228523, 4438362505). The
+    // server's own list still shows each file it holds, and the visit's hold says a photo may still be waiting
+    const sending = read === 'unreadable' ? queued.filter((o) => o.t !== 'siteVisitAddFile') : queued;
     const taken = read === 'unreadable' ? [] : filed.filter((r) => !queuedKeys.has(r.op.idempotencyKey)).map((r) => r.op);
     const all = withQueued(rows, [...sending, ...taken], me, previews, new Set(taken.map((o) => o.file.id)));
     const recorded: ReadonlySet<string> = read === 'unreadable' ? new Set() : read;
