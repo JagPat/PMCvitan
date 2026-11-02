@@ -224,10 +224,10 @@ test('G3b — the abandoned limit stays above twice the owner job\'s limit', asy
 // authorize, so the watchdog does not ask about it: the unarmed green goes to the re-arm instead.
 test('G3b — a buried retryable failure does not starve the re-arm', () => {
   const buried = { id: 6050, context: 'codex-current-head', state: 'failure', description: 'review: Codex review timed out after two attempts' };
-  assert.equal(gateRecoveryStatus({ statuses: [green, buried] }), null);
+  assert.equal(gateRecoveryStatus({ statuses: [green, buried] }, CLOCK), null);
   assert.equal(gateRearmStatus({ statuses: [green, buried] }, ready(), CLOCK)?.id, 6100);
   assert.equal(authorizeRecoveryDispatch([green, buried], '6050'), null);
-  assert.equal(gateRecoveryStatus({ statuses: [buried, green] })?.id, 6050);
+  assert.equal(gateRecoveryStatus({ statuses: [buried, green] }, CLOCK)?.id, 6050);
 });
 
 test('G3b — the owner job\'s cleanup marks only this PR\'s still-pending re-arm request', async () => {
@@ -353,16 +353,24 @@ test('G3b (gap-check G1) — a consumption from an earlier re-arm stops holding 
   // (a) a CI-triggered run's confirmed disarm lifts this PR's newest consumed settlement, and only this PR's
   const armed = full({ auto_merge: { enabled_at: '2026-11-02T10:00:00Z' } });
   const unarmed = { ...armed, auto_merge: null };
-  const make = (failMark = false) => {
+  const urls = [];
+  // `fresh`: the statuses read again before the lift (#1307 gap-check F4); without it the read fails and the lift
+  // falls back to the run's snapshot
+  const make = (failMark = false, fresh = null) => {
     const calls = [];
     const reads = [armed, unarmed];
     return { calls, client: {
       async pullRequest() { calls.push(['read']); return reads.shift(); },
+      async statuses(head) {
+        calls.push(['statuses', head]);
+        if (!fresh) throw new Error('statuses read 502');
+        return fresh;
+      },
       async openPullRequestsAt() { return [unarmed]; },
       async disableAutoMerge() { calls.push(['disable']); },
       async setStatus(sha, state, description, url, context) {
         if (failMark && description === REARM_ATTEMPT_FAILED) throw new Error('status write 502');
-        calls.push(['status', state, description, context]); return { id: 1 };
+        calls.push(['status', state, description, context]); urls.push(url); return { id: 1 };
       },
     } };
   };
@@ -388,6 +396,34 @@ test('G3b (gap-check G1) — a consumption from an earlier re-arm stops holding 
   assert.equal((await disarmBeforeRun(gone.client, armed, HEAD, [consumed, s2])).auto_merge, null);
   assert.equal(gone.calls.some(([k]) => k === 'disable'), false);
   assert.equal(gone.calls.some(([k]) => k === 'status'), false, 'no re-mark without an actual disable');
+  // Codex 4445107594 — a sibling PR at this commit whose queued merge this disarm disabled is left green and unarmed
+  // too: its own newest consumed settlement is lifted, and this PR's (nothing of its own disabled) is not
+  const sibArmed = { ...armed, number: PR + 1, html_url: 'https://github.com/JagPat/PMCvitan/pull/sibling' };
+  const sibling = make();
+  const sibReads = [{ ...sibArmed, auto_merge: null }];
+  sibling.client.pullRequest = async (n) => { sibling.calls.push(['read', n]); return n === PR ? unarmed : sibReads.shift(); };
+  sibling.client.openPullRequestsAt = async () => [sibArmed];
+  sibling.client.disableAutoMerge = async (pull) => { sibling.calls.push(['disable', pull.number]); };
+  urls.length = 0;
+  assert.equal((await disarmBeforeRun(sibling.client, unarmed, HEAD, [other, consumed, s2])).auto_merge, null);
+  assert.deepEqual(sibling.calls.filter(([k]) => k === 'disable' || k === 'status'),
+    [['disable', PR + 1], ['status', 'failure', REARM_ATTEMPT_FAILED, other.context]]);
+  assert.deepEqual(urls, [sibArmed.html_url], 'the lift names the sibling\'s own pull request');
+  // #1307 gap-check F4 — a consumption recorded after the run's opening snapshot (a sibling's own re-judge, in its own
+  // concurrency group) is read again before the lift and lifted
+  const late = make(false, [other, consumed, s2]);
+  late.client.pullRequest = async (n) => { late.calls.push(['read', n]); return n === PR ? unarmed : { ...sibArmed, auto_merge: null }; };
+  late.client.openPullRequestsAt = async () => [sibArmed];
+  late.client.disableAutoMerge = async (pull) => { late.calls.push(['disable', pull.number]); };
+  assert.equal((await disarmBeforeRun(late.client, unarmed, HEAD, [s2])).auto_merge, null);
+  assert.deepEqual(late.calls.filter(([k]) => k === 'disable' || k === 'statuses' || k === 'status'),
+    [['disable', PR + 1], ['statuses', HEAD], ['status', 'failure', REARM_ATTEMPT_FAILED, other.context]]);
+  // a sibling listed with no merge queued is not disabled, and nothing of its own is lifted
+  const idle = make();
+  idle.client.pullRequest = async () => { idle.calls.push(['read']); return unarmed; };
+  idle.client.openPullRequestsAt = async () => [{ ...sibArmed, auto_merge: null }];
+  assert.equal((await disarmBeforeRun(idle.client, unarmed, HEAD, [other, consumed, s2])).auto_merge, null);
+  assert.equal(idle.calls.some(([k]) => k === 'disable' || k === 'status'), false);
 });
 
 // G3b (Stage 1, X2g) — behavioural, through `run()` itself: every GitHubClient method, `request` and `graphql`
@@ -509,4 +545,87 @@ test('G3b (X2g) — run() end to end: an arm or merge, by any name, comes only a
   assert.deepEqual(refused.violations, []);
   assert.equal(refused.log.some(([k]) => k === 'enableAutoMerge' || k === 'mergeExactHead'), false, 'a security finding by the authorization arms nothing');
   assert.equal(refused.log.filter(([k]) => k === 'status').at(-1)[1], 'failure', 'and the green is replaced');
+});
+
+// #1307 (Codex 4445107604 on #1304) — the watchdog reads every page of the combined status: a commit shared by several
+// open PRs carries their PR-scoped re-arm contexts too, and this head's success or re-arm context can fall on page 2.
+test('#1307 — the watchdog reads every combined-status page, so a success on page 2 is still re-armed', async () => {
+  const { readCombinedStatus } = await import('./autonomous-handoff.mjs');
+  const filler = Array.from({ length: 100 }, (_, index) =>
+    ({ id: 7000 + index, context: rearmRequestContext(String(5000 + index), 100 + index), state: 'success', description: REARM_SETTLEMENTS[0] }));
+  const paths = [];
+  const pages = [{ state: 'success', sha: HEAD, total_count: 101, statuses: filler }, { state: 'success', sha: HEAD, statuses: [green] }];
+  const combined = await readCombinedStatus(async (path) => { paths.push(path); return pages.shift(); }, 'JagPat/PMCvitan', HEAD);
+  assert.deepEqual(paths, [
+    `/repos/JagPat/PMCvitan/commits/${HEAD}/status?per_page=100&page=1`,
+    `/repos/JagPat/PMCvitan/commits/${HEAD}/status?per_page=100&page=2`,
+  ]);
+  assert.equal(combined.statuses.length, 101);
+  assert.equal(combined.sha, HEAD);
+  assert.equal(combined.total_count, 101);
+  assert.equal(gateRearmStatus(combined, ready(), CLOCK)?.id, 6100, 'the success on page 2 is asked about');
+  assert.equal(gateRearmStatus({ statuses: filler }, ready(), CLOCK), null, 'reading page 1 alone misses it');
+  // a short first page ends the read
+  const single = [];
+  await readCombinedStatus(async (path) => { single.push(path); return { statuses: [green] }; }, 'JagPat/PMCvitan', HEAD);
+  assert.equal(single.length, 1);
+  // the client reads it through this, structurally
+  const handoff = await readFile(new URL('./autonomous-handoff.mjs', import.meta.url), 'utf8');
+  assert.match(handoff, /combinedStatus\(head\) \{\n\s*return readCombinedStatus\(\(path\) => this\.request\(path\), this\.repository, head\);/u);
+});
+
+// #1307 unpaginated-read audit — the gate's reactions and its sticky-comment lookup read every page too.
+test('#1307 — the gate reads every page of reactions and of the comments it searches for its sticky comment', async () => {
+  const { GitHubClient } = await import('./autonomous-review-gate.mjs');
+  const client = new GitHubClient({ repository: 'JagPat/PMCvitan', token: 'stub' });
+  const calls = [];
+  const reactionPages = [Array.from({ length: 100 }, (_, i) => ({ id: i, content: 'eyes' })), [{ id: 100, content: '+1' }]];
+  client.request = async (path, options = {}) => { calls.push([options.method ?? 'GET', path]); return reactionPages.shift(); };
+  assert.equal((await client.reactions(12)).length, 101);
+  assert.deepEqual(calls.map(([, path]) => path), [
+    '/repos/JagPat/PMCvitan/issues/12/reactions?per_page=100&page=1',
+    '/repos/JagPat/PMCvitan/issues/12/reactions?per_page=100&page=2',
+  ]);
+  // the sticky comment on page 2 is edited, not posted again
+  calls.length = 0;
+  const commentPages = [
+    Array.from({ length: 100 }, (_, i) => ({ id: i, user: { login: 'someone' }, body: 'note' })),
+    [{ id: 555, user: { login: 'github-actions[bot]' }, body: '<!-- autonomous-review-state -->\nold' }],
+  ];
+  client.request = async (path, options = {}) => {
+    calls.push([options.method ?? 'GET', path]);
+    return (options.method ?? 'GET') === 'GET' ? commentPages.shift() : {};
+  };
+  await client.updateStickyComment(12, 'new');
+  assert.deepEqual(calls.filter(([method]) => method !== 'GET'), [['PATCH', '/repos/JagPat/PMCvitan/issues/comments/555']]);
+  // #1307 gap-check F3 — duplicates the old first-page search left: the newest copy is the one edited
+  calls.length = 0;
+  const sticky = (id) => ({ id, user: { login: 'github-actions[bot]' }, body: '<!-- autonomous-review-state -->\nold' });
+  const duplicated = [[sticky(301), { id: 302, user: { login: 'someone' }, body: '<!-- autonomous-review-state --> quoted' }, sticky(303), { id: 304, user: { login: 'someone' }, body: 'note' }]];
+  client.request = async (path, options = {}) => {
+    calls.push([options.method ?? 'GET', path]);
+    return (options.method ?? 'GET') === 'GET' ? duplicated.shift() : {};
+  };
+  await client.updateStickyComment(12, 'new');
+  assert.deepEqual(calls.filter(([method]) => method !== 'GET'), [['PATCH', '/repos/JagPat/PMCvitan/issues/comments/303']]);
+});
+
+// #1307 sibling audit — a failure's recovery request names no pull request (the failure is the commit's), so one
+// request holds the ask for every open PR at the commit. A run that never settles it (a lost runner; a dispatched PR
+// whose head moved or which closed, so its run returns before reading the request) must not hold every sibling's ask
+// forever: past `REARM_REQUEST_ABANDONED_MS` it no longer holds, as for a re-arm.
+test('#1307 — a failure\'s pending recovery request stops holding the watchdog past the abandoned limit', () => {
+  const requestedAt = '2026-11-02T10:00:00Z';
+  const failing = { id: 6200, context: 'codex-current-head', state: 'failure', description: 'review: Codex review timed out on this exact head; retrying is safe' };
+  const request = { id: 6201, context: 'codex-recovery-request/6200', state: 'pending', description: 'recovery: requested terminal status 6200', updated_at: requestedAt };
+  const at = (ms) => new Date(Date.parse(requestedAt) + ms).toISOString();
+  const retryable = gateRecoveryStatus({ statuses: [failing] }, at(0));
+  if (!retryable) return assert.fail('the fixture failure must be retryable');
+  assert.equal(gateRecoveryStatus({ statuses: [failing, request] }, at(60_000)), null, 'within the limit it holds');
+  assert.equal(gateRecoveryStatus({ statuses: [failing, request] }, at(REARM_REQUEST_ABANDONED_MS)), null, 'at exactly the limit it still holds');
+  assert.equal(gateRecoveryStatus({ statuses: [failing, request] }, at(REARM_REQUEST_ABANDONED_MS + 1))?.id, 6200, 'one millisecond past it, asked again');
+  assert.equal(gateRecoveryStatus({ statuses: [failing, request] }, at(REARM_REQUEST_ABANDONED_MS + 60_000))?.id, 6200, 'past it, asked again');
+  assert.equal(gateRecoveryStatus({ statuses: [failing, { ...request, updated_at: 'garbage' }] }, at(REARM_REQUEST_ABANDONED_MS + 60_000)), null, 'an unreadable time holds');
+  assert.throws(() => gateRecoveryStatus({ statuses: [failing, request] }), TypeError, 'the clock is required');
+  assert.throws(() => gateRecoveryStatus({ statuses: [failing] }, 'not a time'), TypeError);
 });

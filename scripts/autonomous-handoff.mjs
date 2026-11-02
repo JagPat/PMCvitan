@@ -57,6 +57,23 @@ function requiredEnvironment(name) {
   return value;
 }
 
+// #1307 (Codex 4445107604 on #1304) — the combined status is paged (thirty contexts a page unless asked for more), and
+// one commit can carry many contexts (the PR-scoped re-arm requests of every open PR at it). Every page is read, so this
+// head's `codex-current-head` status, a recovery request or a re-arm settlement on a later page is never missed by the
+// watchdog's decisions (`owedCorrectionStatus`, `gateRecoveryStatus`, `gateRearmStatus`). The other fields come from
+// the first page.
+export async function readCombinedStatus(request, repository, head) {
+  let combined = null;
+  const statuses = [];
+  for (let page = 1; ; page += 1) {
+    const batch = await request(`/repos/${repository}/commits/${head}/status?per_page=100&page=${page}`);
+    combined ??= batch;
+    const pageStatuses = batch?.statuses ?? [];
+    statuses.push(...pageStatuses);
+    if (pageStatuses.length < 100) return { ...combined, statuses };
+  }
+}
+
 class GitHubClient {
   constructor({ repository, token }) {
     this.repository = repository;
@@ -184,7 +201,7 @@ class GitHubClient {
   }
 
   combinedStatus(head) {
-    return this.request(`/repos/${this.repository}/commits/${head}/status`);
+    return readCombinedStatus((path) => this.request(path), this.repository, head);
   }
 
   async comments(number) {
@@ -577,7 +594,7 @@ export async function handOffCorrectionLease(
   // itself, so the watchdog asks for the recovery rather than describing it.
   // `gateRecoveryStatus` holds the ask while the gate's own accepted request is
   // still pending.
-  const recoverable = gateRecoveryStatus(combined);
+  const recoverable = gateRecoveryStatus(combined, now);
   if (recoverable) {
     await client.dispatchRecovery(defaultBranch, {
       pr_number: String(pullRequest.number),

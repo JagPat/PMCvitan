@@ -109,12 +109,17 @@ export function correctionReasonFor(status) {
 // can run 90 minutes, several times the hourly interval.
 const RECOVERY_REQUEST_CONTEXT = 'codex-recovery-request/';
 
-function hasPendingRecoveryRequest(statuses, terminalStatusId) {
+// #1307 sibling audit — a failure's request names no pull request: the failure is the commit's, so one request holds
+// the ask for every open PR at the commit. A run that never settles it (a lost runner, or a dispatched PR whose head
+// moved or which closed, so its run returns before reading the request) would hold every sibling's ask forever, so a
+// request pending past `REARM_REQUEST_ABANDONED_MS` no longer holds it, as for a re-arm (row 24)
+function hasPendingRecoveryRequest(statuses, terminalStatusId, now) {
   const id = String(terminalStatusId ?? '');
   return (statuses ?? []).some((status) =>
     status?.context === `${RECOVERY_REQUEST_CONTEXT}${id}`
     && status?.state === 'pending'
-    && String(status?.description ?? '') === `recovery: requested terminal status ${id}`);
+    && String(status?.description ?? '') === `recovery: requested terminal status ${id}`
+    && !pastAbandonedLimit(status, now));
 }
 
 /**
@@ -123,7 +128,9 @@ function hasPendingRecoveryRequest(statuses, terminalStatusId) {
  * these, but something has to ask the gate to retry — which is why they are
  * surfaced separately rather than merely skipped.
  */
-export function gateRecoveryStatus(combinedStatus) {
+export function gateRecoveryStatus(combinedStatus, now) {
+  // The clock is required, as for `gateRearmStatus`: without it no abandoned request could ever stop holding
+  if (!Number.isFinite(Date.parse(String(now ?? '')))) throw new TypeError('gateRecoveryStatus needs the watchdog\'s clock');
   const statuses = combinedStatus?.statuses ?? [];
   // G3b (#1289 round 2, Codex 4440043736) — a head whose newest review status is a success has no failure the gate
   // will recover (`authorizeRecoveryDispatch` refuses every failure id beneath it), so a retryable failure buried
@@ -138,7 +145,7 @@ export function gateRecoveryStatus(combinedStatus) {
   if (!failing) return null;
   // Per terminal status id, because that is what the gate authorises against: a
   // request for an older failure says nothing about this one.
-  return hasPendingRecoveryRequest(statuses, failing.id) ? null : failing;
+  return hasPendingRecoveryRequest(statuses, failing.id, now) ? null : failing;
 }
 
 /**
