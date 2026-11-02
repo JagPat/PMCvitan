@@ -11,7 +11,7 @@
  * end-to-end in CI (the sandbox has no Postgres). Validate it once the API is
  * deployed and `VITE_API_URL` points at it.
  */
-import { clearVisitPoster, deleteVisitPhoto, failVisitPhoto, fileVisitPhoto, forgetRemovedVisitPhoto, getVisitPhoto, posterWaits, removedVisitPhotos, withinWait, type CommittedPhoto } from './visitPhotoStore';
+import { clearVisitPoster, deleteVisitPhoto, failVisitPhoto, fileVisitPhoto, forgetRemovedVisitPhoto, getVisitPhoto, posterWaits, removedVisitPhotos, VisitPhotoUnreadable, withinWait, type CommittedPhoto } from './visitPhotoStore';
 import { deleteEvidence, getEvidence, markEvidenceFailed } from './evidenceStore';
 import { MEDIA_NOT_FOUND_MESSAGE, NOT_A_VISIT_FILE_MESSAGE, SITE_PHOTO_DELETED_MESSAGE, VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
 import { deleteSitePhotoRow, getSitePhotoRow, ifSitePhotoUnlocked, isSitePhotoSent, markSitePhotoRefused, markSitePhotoSent, SitePhotoBusy, SitePhotoUnreadable } from './sitePhotoStore';
@@ -554,6 +554,11 @@ export const AWAITING_CLIENT_TIMEOUT_MS = 15_000;
 
 /** #995 V2b-2 — how long a clip's still frame (at most ~225 KB) may take to send before the flush goes on without it. */
 export const POSTER_SEND_WAIT_MS = 30_000;
+
+/** #1273 — how long a visit file removal may wait for the server's answer. A request that gets none by then is given
+ *  up, and the person is told no answer came (or that there is no signal), with the visit read again: a stalled
+ *  connection never leaves Remove busy for as long as it stays open. */
+export const REMOVE_VISIT_FILE_WAIT_MS = 20_000;
 
 /** A signal that aborts with a TimeoutError after `ms`. Browsers without AbortSignal.timeout (Mobile Safari
  *  before 16.4) get the same behaviour from a controller and a timer, so the read still fails instead of throwing. */
@@ -1367,9 +1372,10 @@ export class ApiGateway {
   }
 
   /** Upload a site photo; returns its id + resolvable URL. */
-  // `at`: when the server recorded it (#482); absent from an API older than this web build
-  uploadMedia(input: UploadMediaInput): Promise<{ id: string; url: string; at?: string }> {
-    return this.req<{ id: string; url: string; at?: string }>(`/projects/${this.projectId}/media`, {
+  // `at`: when the server recorded it (#482); `nodeId`: the place it is filed on, null for none (#919). Each is absent
+  // from an API older than it
+  uploadMedia(input: UploadMediaInput): Promise<{ id: string; url: string; at?: string; nodeId?: string | null }> {
+    return this.req<{ id: string; url: string; at?: string; nodeId?: string | null }>(`/projects/${this.projectId}/media`, {
       method: 'POST',
       body: JSON.stringify(input),
     });
@@ -1544,6 +1550,7 @@ export class ApiGateway {
     return this.req<{ ok: true }>(`/projects/${this.projectId}/media/${mediaId}/visit-removal`, {
       method: 'POST',
       body: JSON.stringify(reason === undefined ? {} : { reason }),
+      signal: timeoutSignal(REMOVE_VISIT_FILE_WAIT_MS),
     });
   }
   private visitAct(path: string, body: unknown, idempotencyKey: string): Promise<SiteVisit> {
@@ -2077,6 +2084,77 @@ export function refusalMessage(err: unknown): string | null {
   return typeof m === 'string' && m.trim() ? m : null;
 }
 
+/** #919 — the server's own words for a place that is unknown to the project, a draft, or deleted (node-scope.ts
+ *  `assertPublishedNode`), by its exact text: no other 400 is taken for it. */
+export const PLACE_GONE_MESSAGE = 'Unknown location for this project';
+export function isPlaceGone(err: unknown): boolean {
+  return (err as { status?: number } | null)?.status === 400 && refusalMessage(err) === PLACE_GONE_MESSAGE;
+}
+
+/** #919 part 1 — a site photo whose place was removed (deleted or unpublished) after it was chosen is saved without the
+ *  place, never lost. The one stated exception to "a 4xx is final for the web": only that exact 400, only when the photo
+ *  named a place, once, under the same key. The server stores nothing for the key on that 400 (its early place check
+ *  runs before the bytes are stored, and the transaction's own check rolls back and clears this request's object), so
+ *  the second send is the one photo. Its answer is final whatever it is: there is never a third send. The input kept on
+ *  the phone is not changed: a replay after a lost answer to the second send sends the photo with its place again, and
+ *  the server's key fast path answers it with the stored photo, before any place check. That answer names the stored
+ *  photo's place, so a photo that named one and is stored with none was saved without it, and the person is told then
+ *  (Codex 4436483105). An API older than that answer names none: nothing is said. The second send's own answer is taken
+ *  the same way: a photo another tab sent under the key, stored on the place once it was back, is answered with that
+ *  place, and is not said to be without it (Codex 4436566611). */
+export async function uploadSitePhotoInput(gw: Pick<ApiGateway, 'uploadMedia' | 'snapshot'>, input: UploadMediaInput): Promise<{ id: string; url: string; at?: string; nodeId?: string | null; placeDropped?: true }> {
+  let res: Awaited<ReturnType<ApiGateway['uploadMedia']>>;
+  try {
+    res = await gw.uploadMedia(input);
+  } catch (err) {
+    if (!input.nodeId || !isPlaceGone(err)) throw err;
+    const { nodeId: _gone, ...unplaced } = input;
+    const second = await gw.uploadMedia(unplaced);
+    if (second.nodeId) return second;
+    if (second.nodeId === null) return { ...second, placeDropped: true };
+    // an API older than the answer's place names none: the photo the key holds may be another tab's, stored on the place
+    // once it was published. Decided as below, from the tree as it is now (Codex 4437554261). Either way it is listed with
+    // no place, the one this send asked for, until a refresh names where it is (Codex 4437841460)
+    return (await placeStandsNow(gw, input.nodeId, { ...second, nodeId: null })) ? { ...second, nodeId: null } : { ...second, placeDropped: true };
+  }
+  if (!input.nodeId || res.nodeId !== null) return res;
+  // stored with no place, though this send named one: saved without it after its place was removed (an earlier send's
+  // second try, whose answer was lost), or taken off its place since, by a re-file, while the place stands. Which one is
+  // read from the tree as it is now, never from one the tab already holds, so a stale tab cannot decide "removed" from
+  // an old tree (Codex 4437127228, Stage 1). That read failing answers nothing: the send is not settled, and its next
+  // send asks again.
+  return (await placeStandsNow(gw, input.nodeId, res)) ? res : { ...res, placeDropped: true };
+}
+
+/** #919: the upload was answered, but the tree read that says whether its place was removed failed for now (no answer,
+ *  or one to try again). It carries the answer, and no status: never a terminal refusal, so a queued send is not settled
+ *  (nor its row marked refused) and its next send asks again, and a direct send with no row kept takes the answer as the
+ *  photo it is (Codex 4438007023). */
+export class PlaceCheckFailed extends Error {
+  readonly answer: { id: string; url: string; at?: string; nodeId?: string | null };
+  constructor(answer: PlaceCheckFailed['answer']) {
+    super('the place this site photo named could not be read');
+    this.answer = answer;
+  }
+}
+
+/** #919: is the place a photo named published in the project's tree as it is now (a fresh read, never the tab's own)?
+ *  A read that fails for now is a PlaceCheckFailed carrying the upload's answer. A read refused for good (a 4xx that is
+ *  final) will never answer: the photo is taken as answered, with no place, and nothing is said about one, so its send
+ *  ends rather than asking again forever (Stage 1, Codex 4438007023). */
+async function placeStandsNow(gw: Pick<ApiGateway, 'snapshot'>, nodeId: string, answer: PlaceCheckFailed['answer']): Promise<boolean> {
+  const now = await gw.snapshot().catch((err: unknown) => {
+    if (isTerminalOutboxError(err)) return null;
+    throw new PlaceCheckFailed(answer);
+  });
+  return !now || now.nodes.some((n) => n.id === nodeId && !n.draft);
+}
+
+/** #919: a queued `uploadMedia` that is a plain site photo (an earlier release's offline pick): not evidence, not a visit
+ *  file, not a decision's photo. Only these are saved without a removed place. */
+const isPlainSitePhotoInput = (input: UploadMediaInput): boolean =>
+  input.kind === 'progress' && !input.siteVisit && !input.inspectionId && !input.inspectionItemId && !input.decisionId && !input.sourceMediaId;
+
 export type SiteVisitOp = Extract<OutboxOp, { t: `siteVisit${string}` }>;
 export function isSiteVisitOp(op: OutboxOp): op is SiteVisitOp {
   return op.t.startsWith('siteVisit');
@@ -2157,8 +2235,9 @@ export async function legacyActKey(op: LegacyKeyless, project: string, person: s
  *  person whose queue the act was read from: a keyless act of an earlier release is sent under `legacyActKey`, and one
  *  replayed with no person named goes keyless, as before. So does one whose key cannot be made (no `crypto.subtle`
  *  outside a secure context, or a digest that fails): a key that can never be made must not hold it, and every act
- *  behind it, at every flush (gap check of d581a1bf) */
-export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, onPhotoGone?: (localEvidence?: { url: string; inspectionId?: string; inspectionItemId?: string }) => void, person?: string): Promise<ApiSnapshot | null> {
+ *  behind it, at every flush (gap check of d581a1bf). `onPlaceDropped` is told when a queued site photo was saved
+ *  without its place because the place was removed (#919) */
+export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, onPhotoGone?: (localEvidence?: { url: string; inspectionId?: string; inspectionItemId?: string }) => void, person?: string, onPlaceDropped?: () => void): Promise<ApiSnapshot | null> {
   const keyOf = (o: LegacyKeyless): Promise<string | undefined> =>
     person === undefined ? Promise.resolve(o.idempotencyKey) : legacyActKey(o, gw.project, person).catch(() => o.idempotencyKey);
   const visit = (sent: Promise<SiteVisit>): Promise<null> =>
@@ -2208,7 +2287,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
       };
       // #1241: a file the server removed whose row this phone could not delete then is settled here, unsent, whatever
       // the row still says: its act goes, and its row is deleted when the phone can (the record stays until then)
-      if (removedVisitPhotos(op.scope, gw.project).has(id)) {
+      // #1266: records that cannot be read may hold this one: the act is held for this visit alone, never uploaded
+      const removed = removedVisitPhotos(op.scope, gw.project);
+      if (removed === 'unreadable') return Promise.reject(new VisitPhotoUnreadable());
+      if (removed.has(id)) {
         return withinWait(() => deleteVisitPhoto(op.scope, gw.project, id)).then(() => forgetRemovedVisitPhoto(op.scope, gw.project, id), () => {}).then(() => null);
       }
       // every read and write of the phone's record is bounded: one that fails or never answers rejects with
@@ -2374,8 +2456,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
       // #482: a 410 says the photo was deleted after an earlier send of this key landed (on this device or another):
       // the send is settled, not refused, so it leaves the queue quietly and the snapshot no longer lists it. Settled by
       // the 410 alone: a refresh after it that fails answers no snapshot, never a resend (Codex 4339094809)
-      return gw.uploadMedia(op.input).then(
-        () => gw.snapshot(),
+      return (isPlainSitePhotoInput(op.input) ? uploadSitePhotoInput(gw, op.input) : gw.uploadMedia(op.input) as Promise<{ placeDropped?: true }>).then(
+        // told only once the send is settled: a refresh that fails keeps the op, and its next send is told instead
+        // (Codex 4436566606)
+        async (res) => { const snap = await gw.snapshot(); if (res.placeDropped) onPlaceDropped?.(); return snap; },
         (err: unknown) => {
           if (!isDeletedPhoto(err)) throw err;
           onPhotoGone?.();
@@ -2447,10 +2531,14 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
         // good there: discarded here too
         if (isSitePhotoSent(row)) {
           if (row.refused) throw new SitePhotoRefusedElsewhere();
+          // saved there without its removed place: said here too, as a refusal there is (Codex 4436566600)
+          if (row.placeDropped) onPlaceDropped?.();
           return false;
         }
+        // a place removed since the pick: saved without it (#919)
+        let placeDropped = false;
         try {
-          await gw.uploadMedia(row.input);
+          placeDropped = (await uploadSitePhotoInput(gw, row.input)).placeDropped === true;
         } catch (err) {
           // answered for good (the photo was deleted after an earlier send of this key landed, or refused): the row goes
           // with the op. A row the phone could not remove keeps its op (no status: sent and answered again)
@@ -2463,7 +2551,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
         }
         // a row the phone could not mark keeps this op, which is sent again; the server answers with the same photo. Never
         // settled with its bytes still in the row: a later load would rebuild an op for a photo said to be sent (Codex 4389428571)
-        await markSitePhotoSent(op.scope, gw.project, op.clientKey).catch(() => { throw new SitePhotoUnreadable(); });
+        await markSitePhotoSent(op.scope, gw.project, op.clientKey, placeDropped).catch(() => { throw new SitePhotoUnreadable(); });
+        // told once the op is settled: a row the phone could not mark keeps the op, and its next send is told instead
+        // (Codex 4436566606)
+        if (placeDropped) onPlaceDropped?.();
         return false;
       }).then((gone) => {
         if (gone === null) throw new SitePhotoBusy();

@@ -489,7 +489,8 @@ export function useSiteVisits() {
         // a file the server removed whose row could not be deleted then (#1241): never shown from it, and deleted now.
         // Its record goes once the row is gone; a delete that fails again leaves both for the next read
         const removed = removedVisitPhotos(owner, scope.projectId);
-        if (removed.size === 0) return list;
+        // #1266: records that cannot be read: nothing is deleted, and the shown files leave out every filed copy
+        if (removed === 'unreadable' || removed.size === 0) return list;
         for (const key of removed) {
           if (!list.some((r) => r.clientKey === key)) { forgetRemovedVisitPhoto(owner, scope.projectId, key); continue; }
           void withinWait(() => deleteVisitPhoto(owner, scope.projectId, key)).then(() => forgetRemovedVisitPhoto(owner, scope.projectId, key), () => {});
@@ -731,13 +732,19 @@ export function useSiteVisits() {
   // a photo the server took is shown from its filed row (not as waiting to send) until the server's list shows it
   const filed = useMemo(() => kept.filter((r) => r.state === 'filed'), [kept]);
   const shown = useMemo(() => {
-    const queuedKeys = new Set(queued.map((o) => o.idempotencyKey));
-    const taken = filed.filter((r) => !queuedKeys.has(r.op.idempotencyKey)).map((r) => r.op);
-    const all = withQueued(rows, [...queued, ...taken], me, previews, new Set(taken.map((o) => o.file.id)));
     // a file removed here, or one this phone recorded as removed (#1241, read again on every server read and on another
     // tab's record), is never shown, from the server's rows or the phone's own copy
     const st = useStore.getState();
-    const recorded = removedVisitPhotos(visitPhotoScope(st.sessionToken, st.sessionUserId), st.activeProjectId);
+    const read = removedVisitPhotos(visitPhotoScope(st.sessionToken, st.sessionUserId), st.activeProjectId);
+    const queuedKeys = new Set(queued.map((o) => o.idempotencyKey));
+    // #1266: records that cannot be read may name any copy of a file on this phone, filed or still queued (a send whose
+    // answer was lost may have reached the server, and another tab may have removed it), so no file is shown from the
+    // phone at all: not a filed row, and not a queued send, whatever its row says (Codex 4438228523, 4438362505). The
+    // server's own list still shows each file it holds, and the visit's hold says a photo may still be waiting
+    const sending = read === 'unreadable' ? queued.filter((o) => o.t !== 'siteVisitAddFile') : queued;
+    const taken = read === 'unreadable' ? [] : filed.filter((r) => !queuedKeys.has(r.op.idempotencyKey)).map((r) => r.op);
+    const all = withQueued(rows, [...sending, ...taken], me, previews, new Set(taken.map((o) => o.file.id)));
+    const recorded: ReadonlySet<string> = read === 'unreadable' ? new Set() : read;
     const gone = recorded.size === 0 ? removedFiles.current : new Set([...removedFiles.current, ...recorded]);
     if (gone.size === 0) return all;
     const kept = (f: SiteVisitFile) => !gone.has(f.mediaId) && !(f.clientKey && gone.has(f.clientKey));
