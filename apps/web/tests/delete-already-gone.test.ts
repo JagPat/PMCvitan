@@ -163,15 +163,16 @@ describe('a delete whose record is already gone is done, not refused', () => {
     const removeOrgMember = vi.fn(() => new Promise((_, r) => { reject = r; }));
     const listOrgMembers = vi.fn().mockResolvedValue([{ userId: 'u9', orgRole: 'owner' }]);
     useStore.getState()._setGateway(tracked({ addOrgMember, updateOrgMemberRole, correctInvitationEmail, removeOrgMember, listOrgMembers }) as never);
-    useStore.setState({ toast: null, memberships: [member('villa-b', 'org1'), member('villa-c', 'org1')] } as never);
+    useStore.setState({ toast: null, sessionToken: 'tok-villa-b', sessionUserId: 'u1', memberships: [member('villa-b', 'org1'), member('villa-c', 'org1')] } as never);
     const said: string[] = [];
     const unsubscribe = useStore.subscribe((s, before) => { if (s.toast && s.toast !== before.toast) said.push(s.toast); });
     useStore.getState().addOrgMember('org1', { name: 'Asha', role: 'member', email: 'asha@example.test' } as never);
     useStore.getState().updateOrgMemberRole('org1', 'u2', 'admin' as never);
     useStore.getState().correctInvitationEmail('org1', 'u3', 'u3@example.test');
     useStore.getState().removeOrgMember('org1', 'u4');
-    // the viewer moves to another project of the SAME org: the roster on screen is still org1's, and is not re-read
-    useStore.setState({ activeProjectId: 'villa-c', projectScopeGeneration: 2 } as never);
+    // the viewer moves to another project of the SAME org: the roster on screen is still org1's, and is not re-read.
+    // #1286 (Codex 4439325620) — the switch adopts that project's own token, as `applyAuthResult` does; the person is the same
+    useStore.setState({ activeProjectId: 'villa-c', projectScopeGeneration: 2, sessionToken: 'tok-villa-c' } as never);
     for (const answer of answers) answer();
     reject(refusal(404, NOT_AN_ORG_MEMBER_MESSAGE));
     await settled();
@@ -182,15 +183,18 @@ describe('a delete whose record is already gone is done, not refused', () => {
     expect(useStore.getState().orgMembers).toEqual([{ userId: 'u9', orgRole: 'owner' }]);
   });
 
-  it('#1278 round 2: a roster answer after a sign-out or re-auth is dropped', async () => {
+  it.each([
+    ['a sign-out', { sessionToken: null, sessionUserId: null }],
+    ['another person signing in', { sessionToken: 'tok-2', sessionUserId: 'u2' }],
+  ])('#1278 round 2: a roster answer after %s is dropped', async (_what, after) => {
     const useStore = await load();
     let answer!: () => void;
     const addOrgMember = vi.fn(() => new Promise<void>((res) => { answer = res; }));
     const listOrgMembers = vi.fn().mockResolvedValue([]);
     useStore.getState()._setGateway(tracked({ addOrgMember, listOrgMembers }) as never);
-    useStore.setState({ toast: null, sessionToken: 'tok-1', memberships: [member('villa-b', 'org1')] } as never);
+    useStore.setState({ toast: null, sessionToken: 'tok-1', sessionUserId: 'u1', memberships: [member('villa-b', 'org1')] } as never);
     useStore.getState().addOrgMember('org1', { name: 'Asha', role: 'member', email: 'asha@example.test' } as never);
-    useStore.setState({ sessionToken: 'tok-2' } as never);
+    useStore.setState(after as never);
     answer();
     await settled();
     expect(listOrgMembers).not.toHaveBeenCalled();

@@ -2491,13 +2491,16 @@ export const useStore = create<Store>()(
     /** #1278 round 2 (Codex 4438923112) — an org-roster command's reply (reload + flash) belongs to the SESSION and
      *  the ORG it was issued for, not to the project: the roster on screen is the active project's org's
      *  (TeamScreen's `activeOrgId`), and it is not re-read on a switch between projects of the same org. So the
-     *  reply holds while the same session is signed in and the active project's org is still `orgId`; a switch to
-     *  another org, a sign-out or a re-auth drops it. */
+     *  reply holds while the same person is signed in and the active project's org is still `orgId`; a switch to
+     *  another org, a sign-out or another person's sign-in drops it.
+     *  #1286 (Codex 4439325620) — the person is `sessionUserId` (the token's subject), never the token itself: every
+     *  project switch adopts a newly issued project-scoped token (`applyAuthResult`), so a switch WITHIN the org would
+     *  otherwise drop the reply. */
     const rosterReplyHolds = (orgId: string): (() => boolean) => {
-      const tok = get().sessionToken;
+      const who = get().sessionUserId;
       return () => {
         const s = get();
-        return s.sessionToken === tok && s.memberships.find((m) => m.projectId === s.activeProjectId)?.orgId === orgId;
+        return s.sessionUserId === who && s.memberships.find((m) => m.projectId === s.activeProjectId)?.orgId === orgId;
       };
     };
     /** Delete races (S1): a delete whose record is already gone is done, not refused. `when` names the route's own
