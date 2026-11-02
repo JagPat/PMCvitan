@@ -120,9 +120,10 @@ about at once (once per close), and that re-judge goes on to the remaining pull
 request's own verdict. Pushing a distinct commit clears it too. When the open
 pull requests at a head cannot be listed, the gate fails closed with the retryable
 `review: open pull requests at this commit could not be read` and drafts the pull
-request. The watchdog routes no correction for a verdict written for another pull
-request (its status target names that pull request); this pull request's own run
-writes its own verdict.
+request. A body verdict written for another pull request (its status target names
+that pull request) is still routed, never silenced, and its notice says which pull
+request's body it read and that an edit or push has the gate judge this one's.
+Codex and CI verdicts are the commit's and are routed as this pull request's own.
 Before publishing a new pending status or changing readiness, the owner checks live
 current-head Codex reviews and inline comments. A finding that arrived after a
 timeout is republished as the required failure and requires a new SHA; recovery

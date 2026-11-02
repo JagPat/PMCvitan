@@ -561,14 +561,19 @@ export function otherOpenPullRequestAt(open, head, number) {
 }
 
 /**
- * 2A3a (#1311 Codex 4446635318) — was this status written for another pull request? The gate writes every
- * `codex-current-head` status with the pull request it judged as its target (`html_url`), so a target naming a different
- * pull request number is that pull request's verdict. A status with no such target is read as this
- * pull request's, as before.
+ * 2A3a (#1311 Codex 4446635318; Stage 1's re-check of cc1f0412) — the other pull request a BODY verdict was written for,
+ * or null. The gate writes every `codex-current-head` status with the pull request it judged as its target (`html_url`).
+ * A body verdict (the `scope` reason: a scope refusal, an ownership inconsistency, the PR-side review-scope check; or an
+ * ownership `validation:` hold) whose target names another pull request read that pull request's body, not this one's,
+ * so its notice says so and how to have this body judged. A commit-level verdict (Codex findings, CI) is the commit's
+ * and is routed as this pull request's own, as is any status with no pull request target. Never silence: every owed
+ * verdict is still routed.
  */
-export function writtenForAnotherPullRequest(status, pullRequest) {
+export function inheritedBodyVerdictFrom(status, pullRequest) {
   const match = /\/pull\/([0-9]+)\/?$/u.exec(String(status?.target_url ?? ''));
-  return Boolean(match) && Number(match[1]) !== Number(pullRequest?.number);
+  if (!match || Number(match[1]) === Number(pullRequest?.number)) return null;
+  const bodyVerdict = correctionReasonFor(status) === 'scope' || /^\s*validation:/u.test(String(status?.description ?? ''));
+  return bodyVerdict ? Number(match[1]) : null;
 }
 
 /**
@@ -684,14 +689,6 @@ export async function handOffCorrectionLease(
   if (sharesHead && await sharesHead(head, pullRequest.number)) {
     return { state: 'shared_commit', head, body: null, reason: 'another open pull request has this exact head' };
   }
-  // 2A3a (#1311 Codex 4446635318) — a verdict written for ANOTHER pull request (its target names that pull request) is not
-  // this one's, even once that pull request has closed: a body verdict left at the commit by a pull request that closed
-  // before any run here wrote the shared-commit refusal. No correction is routed for it; this pull request's own run (its
-  // open or push runs CI, then the gate) writes its own verdict, and a notice follows that if one is owed
-  if (writtenForAnotherPullRequest(owed, pullRequest)) {
-    return { state: 'inherited', head, body: null, reason: 'the newest verdict at this head was written for another pull request' };
-  }
-
   const [comments, reviewComments, reviews] = await Promise.all([
     client.comments(pullRequest.number),
     client.reviewComments(pullRequest.number),
@@ -721,6 +718,8 @@ export async function handOffCorrectionLease(
     occurrence: owed.id ?? null,
     now,
     comments,
+    // 2A3a (#1311 Codex 4446635318) — a body verdict written for another pull request is named as such
+    writtenFor: inheritedBodyVerdictFrom(owed, pullRequest),
   });
 
   if (assessment.state === 'notify') {
@@ -769,6 +768,7 @@ export async function handOffCorrectionLease(
         occurrence: freshOwed.id ?? null,
         now,
         comments,
+        writtenFor: inheritedBodyVerdictFrom(freshOwed, pullRequest),
       })
       : null;
     // The RAW BODY too, not only the notice it renders. A checklist item ticked
@@ -778,7 +778,6 @@ export async function handOffCorrectionLease(
     // 2A3a — and the head is still this pull request's alone, on a fresh list
     if (
       fresh?.state !== 'notify' || fresh.body !== assessment.body || live.body !== assessed.body
-      || writtenForAnotherPullRequest(freshOwed, pullRequest)
       || (sharesHead && await sharesHead(head, pullRequest.number, { fresh: true }))
     ) {
       return {

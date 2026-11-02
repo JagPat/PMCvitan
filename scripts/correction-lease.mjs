@@ -266,6 +266,7 @@ function leaseBody({
   stalledMinutes,
   instruction,
   resumeAction,
+  writtenFor = null,
 }) {
   const heading = `**Autonomous correction watchdog — \`${reportedState}\`**`;
   return [
@@ -276,6 +277,9 @@ function leaseBody({
     `- **Exact head:** \`${head}\``,
     `- **Correction owner:** ${ownerLabel}`,
     `- **Failing required status:** ${detail}`,
+    // 2A3a (#1311 Stage 1 re-check of cc1f0412) — a body verdict written for another pull request, now closed
+    ...(writtenFor ? [`- **Written for:** #${writtenFor}, not this pull request, whose body this verdict did not read. `
+      + 'Edit or push this pull request and the gate judges its own body.'] : []),
     `- **Movement since it was published:** ${
       stalledMinutes === null ? 'none observed' : `none for ${stalledMinutes} minutes`
     }`,
@@ -316,6 +320,7 @@ export function assessCorrectionLease({
   now,
   comments = [],
   graceMs = CORRECTION_LEASE_GRACE_MS,
+  writtenFor = null,
 }) {
   const expected = typeof head === 'string' && head.length > 0 ? head : null;
   if (!expected) {
@@ -454,6 +459,7 @@ export function assessCorrectionLease({
       detail,
       stalledMinutes,
       instruction: ownershipInconsistent ? neutralInconsistentInstruction : routing.instruction,
+      writtenFor,
     }),
   };
 }

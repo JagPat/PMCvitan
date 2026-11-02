@@ -1785,7 +1785,7 @@ export class SharedCommitRefused extends AutoMergeDisarmFailed {
  * A disarm that fails still writes the refusal (a red required status keeps every queued merge at this commit waiting);
  * a pull request no longer current at this head writes nothing. Returns the outcome: 'refused' or 'superseded'.
  */
-async function publishSharedCommitRefusal(client, pullRequest, expectedHead, others, recoveryRequest = null) {
+async function publishSharedCommitRefusal(client, pullRequest, expectedHead, others, recoveryRequest = null, { withheld = false } = {}) {
   try {
     const live = await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead);
     if (!live) return 'superseded';
@@ -1802,12 +1802,18 @@ async function publishSharedCommitRefusal(client, pullRequest, expectedHead, oth
   } catch (error) {
     console.warn(`Could not list the open pull requests again; the earlier list stands: ${error?.message ?? error}`);
   }
-  if (current.length === 0) return 'alone';
+  // Stage 1's re-check of cc1f0412 — inside the success step (`withheld`) a success already withheld is not written on
+  // this run even when the sibling has gone since: the same retryable refusal, saying the commit was shared during this
+  // run, and the watchdog asks the gate to re-judge this pull request alone
+  if (current.length === 0 && !withheld) return 'alone';
   await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
     detail: CODEX_SHARED_COMMIT_DETAIL,
     attempt: 0,
-    next: `This exact commit is also the head of ${current.map((pull) => `#${pull.number}`).join(', ')}. Close all but one `
-      + 'of these pull requests, or push a distinct commit; the gate re-judges this exact head.',
+    next: current.length === 0
+      ? `This exact commit was also the head of ${others.map((pull) => `#${pull.number}`).join(', ')} during this run, `
+        + 'which no longer has it; the gate re-judges this exact head.'
+      : `This exact commit is also the head of ${current.map((pull) => `#${pull.number}`).join(', ')}. Close all but one `
+        + 'of these pull requests, or push a distinct commit; the gate re-judges this exact head.',
     settleReason: 'shared commit refusal',
   });
   return 'refused';
@@ -1859,11 +1865,10 @@ export async function publishDisarmedSuccess(client, pullRequest, expectedHead, 
   } catch (error) {
     if (!(error instanceof AutoMergeDisarmFailed)) throw error;
     // 2A3a — another open pull request at this commit: the shared-commit refusal instead of the success, and the run stops
-    // (#1311 Codex 4446635304: a sibling gone by then leaves this pull request alone, and the success is still withheld
-    // on this run; the retryable hold below asks the gate to re-judge it)
+    // (#1311 Codex 4446635304: a sibling gone by then still withholds this run's success, with the refusal saying so)
     if (error instanceof SharedCommitRefused) {
-      const outcome = await publishSharedCommitRefusal(client, pullRequest, expectedHead, error.others, recoveryRequest);
-      if (outcome !== 'alone') return null;
+      await publishSharedCommitRefusal(client, pullRequest, expectedHead, error.others, recoveryRequest, { withheld: true });
+      return null;
     }
     await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
       detail: CODEX_AUTOMERGE_DISARM_FAILED,

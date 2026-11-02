@@ -4,7 +4,7 @@ import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GitHubClient, REQUIRED_CHECKS, refuseSharedCommit, run } from './autonomous-review-gate.mjs';
-import { handOffCorrectionLease, otherOpenPullRequestAt, sharedHeadCheck, writtenForAnotherPullRequest } from './autonomous-handoff.mjs';
+import { handOffCorrectionLease, otherOpenPullRequestAt, sharedHeadCheck, inheritedBodyVerdictFrom } from './autonomous-handoff.mjs';
 import { gateRecoveryStatus } from './correction-lease.mjs';
 import { CODEX_SHARED_COMMIT_DETAIL, CODEX_SHARED_COMMIT_UNREADABLE, isRetryableReviewFailureDescription } from './review-policy.mjs';
 
@@ -421,37 +421,89 @@ test('#1311 Codex 4446635311 — the watchdog asks no re-arm while another open 
   assert.equal(dispatched.length, 1);
 });
 
-// #1311 round 1 (Codex 4446635318) — a verdict written for another pull request is not routed to this one, even after
-// that pull request has closed (its target names it); this pull request's own run writes its own verdict.
-test('#1311 Codex 4446635318 — a verdict written for another pull request routes no correction here, even once that PR is closed', async () => {
-  const owedFor = (number) => ({ id: 9, context: 'codex-current-head', state: 'failure', description: 'scope: missing review-size marker',
+// #1311 round 1 (Codex 4446635318; Stage 1's re-check of cc1f0412, probe L5) — a verdict written for another pull request
+// is never silence. A BODY verdict it wrote is routed with its provenance (it read that pull request's body, not this one's,
+// and an edit or push has the gate judge this body); a commit-level verdict (a Codex finding) is the commit's and is routed
+// as this pull request's own.
+test('#1311 Codex 4446635318 — a verdict written for a closed sibling is routed, never silent; a body verdict names its provenance', async () => {
+  const verdict = (number, description) => ({ id: 9, context: 'codex-current-head', state: 'failure', description,
     updated_at: '2026-11-01T00:00:00Z', target_url: `https://github.com/JagPat/PMCvitan/pull/${number}` });
-  const posted = [];
-  const clientFor = (owed) => ({
-    combinedStatus: async () => ({ statuses: [owed] }),
-    comments: async () => [], reviews: async () => [], reviewComments: async () => [],
-    pullRequest: async () => pullAt(610),
-    comment: async (number, body) => { posted.push(body); return { id: 1 }; },
-  });
-  const inherited = await handOffCorrectionLease(clientFor(owedFor(611)), pullAt(610), 'JagPat/PMCvitan', 'main', {
-    now: '2026-11-02T12:00:00Z', sharesHead: async () => false,
-  });
-  assert.equal(inherited?.state, 'inherited');
-  assert.deepEqual(posted, []);
-  // its own verdict is still routed: the row is live
-  const own = await handOffCorrectionLease(clientFor(owedFor(610)), pullAt(610), 'JagPat/PMCvitan', 'main', {
-    now: '2026-11-02T12:00:00Z', sharesHead: async () => false,
-  });
-  assert.notEqual(own?.state, 'inherited');
-  assert.equal(posted.length, 1, 'its own verdict is routed');
-  // the fresh read before posting judges it again: a verdict that became another PR's is not posted
+  const route = async (owed, { flip = null } = {}) => {
+    const posted = [];
+    let reads = 0;
+    const client = {
+      combinedStatus: async () => ({ statuses: [flip && reads++ > 0 ? flip : owed] }),
+      comments: async () => [], reviews: async () => [], reviewComments: async () => [],
+      pullRequest: async () => pullAt(611),
+      comment: async (number, body) => { posted.push(body); return { id: 1 }; },
+    };
+    const result = await handOffCorrectionLease(client, pullAt(611), 'JagPat/PMCvitan', 'main', { now: '2026-11-02T12:00:00Z', sharesHead: async () => false });
+    return { result, posted };
+  };
+  // L5: 611 was refused; 610's long run then published a Codex finding (written for 610) and 610 closed. The finding is the
+  // commit's, so it is on 611's code too: 611's owner is told, as before 2A3a
+  const finding = await route(verdict(610, 'review: 1 current-head Codex finding'));
+  assert.equal(finding.result?.state, 'notify');
+  assert.equal(finding.posted.length, 1, 'L5: notified, not stranded');
+  assert.doesNotMatch(finding.posted[0], /Written for/u, 'a commit-level verdict is this pull request\'s own');
+  // a body verdict 610 wrote (its scope, or a mid-run ownership inconsistency): routed, naming 610 and how to re-judge
+  const body = await route(verdict(610, 'scope: missing review-size marker'));
+  assert.equal(body.result?.state, 'notify');
+  assert.equal(body.posted.length, 1, 'never silence');
+  assert.match(body.posted[0], /\*\*Written for:\*\* #610, not this pull request/u);
+  assert.match(body.posted[0], /Edit or push this pull request and the gate judges its own body/u);
+  // its own body verdict carries no provenance line
+  const own = await route(verdict(611, 'scope: missing review-size marker'));
+  assert.doesNotMatch(own.posted[0], /Written for/u);
+  // the fresh read before posting is judged the same way: a verdict that changed hands is not posted on the stale text
+  const flipped = await route(verdict(611, 'scope: missing review-size marker'), { flip: verdict(610, 'scope: missing review-size marker') });
+  assert.equal(flipped.result?.state, 'superseded');
+  assert.deepEqual(flipped.posted, []);
+  assert.equal(inheritedBodyVerdictFrom(verdict(610, 'validation: head commit ownership is inconsistent'), pullAt(611)), 610, 'an ownership validation hold');
+  assert.equal(inheritedBodyVerdictFrom(verdict(610, 'ci: Failed checks: lint'), pullAt(611)), null, 'CI is the commit\'s');
+  assert.equal(inheritedBodyVerdictFrom({ description: 'scope: x', target_url: 'u' }, pullAt(611)), null, 'no pull request target: this one\'s');
+  assert.equal(inheritedBodyVerdictFrom({ description: 'scope: x' }, pullAt(611)), null);
+});
+
+// Stage 1's re-check of cc1f0412 (mutant C2) — the re-list after the disarm counts only gate-judged pull requests: an
+// eligible sibling that leaves beside a fork that stays leaves this pull request alone.
+test('#1311 re-check C2 — the re-list counts only gate-judged pull requests: a fork that stays does not keep the refusal', async () => {
+  const fork = pullAt(612, { head: { sha: HEAD, ref: 'patch', repo: { full_name: 'someone/PMCvitan' } } });
+  const lists = [[pullAt(610), pullAt(611), fork], [pullAt(610), fork], [pullAt(610), fork]];
   let reads = 0;
-  const flipping = { ...clientFor(owedFor(610)), combinedStatus: async () => ({ statuses: [reads++ === 0 ? owedFor(610) : owedFor(611)] }) };
-  const late = await handOffCorrectionLease(flipping, pullAt(610), 'JagPat/PMCvitan', 'main', { now: '2026-11-02T12:00:00Z', sharesHead: async () => false });
-  assert.equal(late?.state, 'superseded');
-  assert.equal(posted.length, 1);
-  assert.equal(writtenForAnotherPullRequest({ target_url: 'u' }, pullAt(610)), false, 'no pull request target: read as this one\'s');
-  assert.equal(writtenForAnotherPullRequest({}, pullAt(610)), false);
+  const log = [];
+  const client = {
+    async openPullRequestsAt() { return lists[Math.min(reads++, lists.length - 1)].map((p) => ({ ...p })); },
+    async pullRequest(n) { return n === 612 ? fork : pullAt(n); },
+    async setStatus(...args) { log.push(args); return { id: 1 }; },
+    async setDraft(current, draft) { return { ...current, draft }; },
+    async updateStickyComment() {},
+  };
+  assert.equal(await refuseSharedCommit(client, pullAt(610), HEAD), null);
+  assert.deepEqual(log, [], 'nothing written: alone among gate-judged pull requests');
+});
+
+// Stage 1's re-check of cc1f0412 (mutant C3) — the check after the CI-triggered disarm: a sibling that appears only after
+// the first check (here, on the list after the disarm) still gets the refusal before anything derived from this body.
+test('#1311 re-check C3 — a sibling arriving during the CI-triggered disarm is refused by the second check', { timeout: 30_000 }, async () => {
+  const pulls = new Map([[610, pullAt(610)], [611, pullAt(611)]]);
+  const statuses = [];
+  let reads = 0;
+  const result = await runGate({ number: 610, pulls, statuses, overrides: {
+    async openPullRequestsAt(sha) {
+      reads += 1;
+      // the first check and the disarm's own list see 610 alone; 611 arrives after
+      const open = [...pulls.values()].filter((p) => p.state === 'open' && p.head.sha === sha && (reads > 2 || p.number === 610));
+      return open.map((p) => ({ ...p }));
+    },
+    // anything derived from this body ends the run at once, so a run that is not stopped fails here, not on the clock
+    async pullRequestFiles() { throw new Error('the body-derived scope was read'); },
+    async replacementLineage() { throw new Error('the body-derived scope was read'); },
+  } });
+  assert.equal(result.error, null);
+  assert.ok(reads > 2, 'the list was read again after the disarm');
+  assert.equal(reviewStatuses(result.log).filter(([, state]) => state !== 'pending').at(-1)?.[2], SHARED);
+  assert.equal(result.log.some(([k]) => k === 'scope-read' || k === 'record' || k === 'checks'), false, 'nothing derived from this body');
 });
 
 // #1311 round 1 (Codex 4446635322) — a shared-head list that cannot be read fails closed, on the relabel guard and on the
