@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { ApiGateway, REMOVE_VISIT_FILE_WAIT_MS } from '@/data/apiGateway';
+import { ApiGateway, REMOVE_VISIT_FILE_WAIT_MS, type SiteVisit } from '@/data/apiGateway';
 
 /**
  * #1273 (Codex 4437700410 on #1254): a visit file removal waits a bounded time for the server's answer, so a stalled
@@ -25,5 +25,39 @@ describe('#1273: a visit file removal is bounded', () => {
     const err = await removal.then(() => null, (e: unknown) => e);
     expect(err).toMatchObject({ name: 'TimeoutError' });
     expect((err as { status?: unknown }).status).toBeUndefined();
+  });
+});
+
+/**
+ * #1239 (Codex 4409903389 on #1232): a removal offer ends on the server's count of the time left, kept on this page's
+ * steady clock from when the read was asked, so a phone whose own clock is off ends it when the server would.
+ */
+describe('#1239: a removal offer ends on the server\'s count', () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  const file = (removable: unknown) => ({ mediaId: 'm-1', removable });
+  const page = (files: unknown[]) => [{ id: 'v-1', files }] as unknown as SiteVisit[];
+
+  it('marks each offer with its end, counted from when the read was asked; an offer with no count is left as it was', async () => {
+    let steady = 5_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => steady);
+    let answer!: (r: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((ok) => { answer = ok; })));
+    const read = new ApiGateway('http://api.test', 'p-1').listSiteVisits();
+    // the answer takes 2 seconds to come: the end still counts from the ask, so it is never late
+    steady += 2_000;
+    answer(new Response(JSON.stringify(page([
+      file({ reasonRequired: false, until: '2026-10-14T05:50:00.000Z', remainingMs: 600_000 }),
+      file({ reasonRequired: false, until: '2026-10-14T05:50:00.000Z' }),
+      file({ reasonRequired: true, until: null, remainingMs: null }),
+      file(null),
+    ])), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const v = (await read)[0]!;
+    expect((v.files ?? []).map((f) => f.removable)).toEqual([
+      { reasonRequired: false, until: '2026-10-14T05:50:00.000Z', remainingMs: 600_000, endsAt: 605_000 },
+      { reasonRequired: false, until: '2026-10-14T05:50:00.000Z' },
+      { reasonRequired: true, until: null, remainingMs: null },
+      null,
+    ]);
   });
 });

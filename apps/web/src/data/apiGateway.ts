@@ -1520,8 +1520,11 @@ export class ApiGateway {
     if (page.status) q.set('status', page.status);
     if (page.limit) q.set('limit', String(page.limit));
     const qs = q.toString();
+    // #1239: the time each removal offer has left counts from when the read was asked, so its end is never late
+    const asked = performance.now();
     // M3: a read the person no longer waits for (a markup open stopped or past its bound) is cancelled with it
-    return this.req<SiteVisit[]>(`/projects/${this.projectId}/site-visits${qs ? `?${qs}` : ''}`, signal ? { signal } : undefined);
+    return this.req<SiteVisit[]>(`/projects/${this.projectId}/site-visits${qs ? `?${qs}` : ''}`, signal ? { signal } : undefined)
+      .then((page) => offersFrom(page, asked));
   }
   startSiteVisit(input: StartSiteVisitBody, idempotencyKey: string): Promise<SiteVisit> {
     return this.visitAct('', input, idempotencyKey);
@@ -1632,7 +1635,30 @@ export interface SiteVisitFile {
   /** #1179 — whether the viewer may remove it now, as the server read its rule: a reason is needed, and until when the
    *  offer lasts (the end of the viewer's hour on their own file; null for the PMC's offer on anyone's). Null when the
    *  viewer may not; absent from an API before removals and on a file the phone still holds. */
-  removable?: { reasonRequired: boolean; until: string | null } | null;
+  removable?: RemovalOffer | null;
+}
+/** #1179 — a removal offer as the server read its rule. `remainingMs` (#1239) is how long the offer had left at that
+ *  read, on the server's clock; absent from an API before it. `endsAt` is never sent: this page sets it when the read
+ *  arrives (`offersFrom`), on its own steady clock (`performance.now()`), so a phone whose wall clock is off, or is
+ *  changed, still ends the offer when the server would. */
+export interface RemovalOffer {
+  reasonRequired: boolean;
+  until: string | null;
+  remainingMs?: number | null;
+  endsAt?: number;
+}
+
+/** #1239: marks each file's removal offer in a read with when it ends on this page's steady clock, counted from
+ *  `asked` (when the read was asked, so the end is early by the round trip at most, never late). An offer from an
+ *  API before `remainingMs` is left as it was, and ends at its `until` on the phone's clock, as before. */
+export function offersFrom(visits: SiteVisit[], asked: number): SiteVisit[] {
+  for (const v of visits) {
+    for (const f of v.files ?? []) {
+      const r = f.removable;
+      if (r && typeof r.remainingMs === 'number' && Number.isFinite(r.remainingMs)) r.endsAt = asked + r.remainingMs;
+    }
+  }
+  return visits;
 }
 /** A photo queued for a visit: the upload's own fields, under its `clientKey` (`id`), so a replay is the same file. The
  *  bytes are not here: they wait in `visitPhotoStore` beside this act (localStorage cannot hold photos). */

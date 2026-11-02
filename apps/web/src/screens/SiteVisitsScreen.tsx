@@ -11,7 +11,7 @@ import { clockText, pickRecordType, RecordError, startRecording, type Recorded, 
 import { UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
 import { refusalWords, SV, visitTime } from '@/lib/siteVisitWords';
 import { stampText } from '@/lib/captureStamp';
-import { resolveMediaUrl, type SiteVisit, type SiteVisitFile, type SiteVisitRating, type SiteVisitRemoval } from '@/data/apiGateway';
+import { resolveMediaUrl, type SiteVisit, type SiteVisitFile, type SiteVisitRating, type SiteVisitRemoval, type RemovalOffer } from '@/data/apiGateway';
 import { guideRunToken } from '@/guide/outcomes';
 import { useVisitGuideReports } from '@/guide/visitGuideReports';
 import styles from './SiteVisitsScreen.module.css';
@@ -182,6 +182,14 @@ function CopyOf({ files, at, copyId, lang }: { files: NonNullable<SiteVisit['fil
   );
 }
 
+/** #1239: how long a removal offer has left, or null when it has no end. The server's own count (`endsAt`, set when
+ *  the read arrived) wins; an API before it gives only `until`, read against the phone's clock as before. */
+function offerLeft(given: RemovalOffer | null): number | null {
+  if (!given?.until) return null;
+  if (typeof given.endsAt === 'number') return given.endsAt - performance.now();
+  return Date.parse(given.until) - Date.now();
+}
+
 /** #1179: Remove on a visit file the server says the viewer may remove now. It asks once before removing, because the
  *  file goes for everyone and does not come back; the PMC says why when the file is not their own within the hour. When
  *  the hour on one's own file is up, the offer leaves, except the PMC's, which then asks for a reason as the server does.
@@ -190,19 +198,21 @@ function RemoveFile({ file, lang, pmc, busy, remove }: {
   file: SiteVisitFile; lang: Lang; pmc: boolean; busy: boolean; remove: (file: SiteVisitFile, reason?: string) => Promise<string | null>;
 }) {
   const given = file.removable ?? null;
-  const [now, setNow] = useState(() => Date.now());
+  const [turn, tick] = useState(0);
   const [asking, setAsking] = useState(false);
   const [reason, setReason] = useState('');
   const [said, setSaid] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-  const until = given?.until ? Date.parse(given.until) : null;
-  const over = until !== null && now >= until;
+  const left = offerLeft(given);
+  const over = left !== null && left <= 0;
   const offer = !given ? null : over ? (pmc ? { reasonRequired: true, until: null } : null) : given;
   useEffect(() => {
-    if (!given || until === null || over) return;
-    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, until - Date.now()) + 50);
+    const wait = offerLeft(given);
+    if (wait === null || wait <= 0) return;
+    // each turn looks again, so a timer that fires early sets another rather than leaving the offer up
+    const timer = setTimeout(() => tick((n) => n + 1), wait + 50);
     return () => clearTimeout(timer);
-  }, [given, until, over]);
+  }, [given, over, turn]);
   const id = file.mediaId;
   const told = said && <div className={styles.error} role="alert" data-testid={`sv-remove-said-${id}`}>{said}</div>;
   if (!offer) return told || null;
