@@ -2820,6 +2820,31 @@ removal. Exit 1 means nothing was changed. Exit 3 means the removal COMMITTED bu
 record failed: the printed record is the deletion record. Run it from the deployed image, like
 every operator CLI.
 
+## §OB. A company from nothing (`org:bootstrap`, fresh start)
+
+On an EMPTY database nobody can sign in: every account needs a home project, and only a signed-in owner can
+make one. This command makes one company, its first project and its people in one transaction:
+
+    pnpm --filter api org:bootstrap --spec <spec.json> [--commit]
+
+The spec names the company (`qaOnly: true` for a QA company), the project (`name`, `short`, `siteCode`, and
+optionally `descriptor`, `stage`, `location`, `timeZone`), and `people`, each with a `name`, an `email` (required:
+password set-up and, until SMS is live, the phone code go to it), optionally a 10-digit `phone`, and a `companyRole` (`owner`/`admin`), a `projectRole` (`pmc`, `client`, `engineer`,
+`contractor`, `consultant`; a consultant may carry a `discipline`), or both. At least one owner is required. Example:
+
+    {"company":{"name":"Vitan Architecture"},
+     "project":{"name":"Vitan first project","short":"Vitan first project","siteCode":"VFP-01"},
+     "people":[{"name":"JP (Vitan Architecture)","email":"jp@vitan.in","companyRole":"owner","projectRole":"pmc"},
+               {"name":"Ar. Vitan","email":"pmc@vitan.in","companyRole":"owner"}]}
+
+Without `--commit` it is a dry run: it writes and checks everything, then rolls back, and prints what a commit
+would make. It only creates. It refuses, before any write, a company name already in use and any email or
+phone that already has an account, so it never changes an existing account. A QA company takes only
+`qa.<letters>@vitan.in` accounts (the QA lock refuses anything else and nothing is written). Nobody gets a
+password: each person uses "Forgot password" on the sign-in page. Exit 0: a good dry run or a commit;
+1: nothing changed; 2: wrong command line or spec. Keep `AUTO_ENSURE_ACCOUNTS` off: the boot-time
+`ensure-accounts` adds its demo roster to whatever project `PROJECT_ID` names.
+
 ## §MG. The deleted-photo guard (`20280118000000_media_tombstone_guard`, #482)
 
 The guard refuses to store a photo again under the key of a deleted one (SQLSTATE `MT410`). It installs only
