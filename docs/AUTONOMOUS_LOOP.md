@@ -82,13 +82,14 @@ by the watchdog once per re-judged success and per pull request: its request is
 `codex-recovery-request/<success-id>/pr-<number>`, so another pull request at
 the same commit never holds it. The re-judge republishes the success and then
 consumes the request, so a consumed request newer than the head's newest success
-holds the ask; a success any later run writes is asked about once more. A
-re-judge that threw, whose merge was held by a base, head or readiness race or a
-draft, or that fell through to the ordinary review, marks its request failed and
-is asked again; the owner job's `failure() || cancelled()` step marks a request
-its timed-out or cancelled run left pending, and a request still pending past
-twice the owner job's limit lost its runner and is asked again. A retryable
-failure under a newer success is not asked about.
+holds the ask for at most four hours; a success any later run writes is asked
+about once more, and a run that disarms the head again lifts that consumption so
+the next pass asks. A re-judge that threw, whose merge was held by a base, head
+or readiness race or a draft, or that fell through to the ordinary review, marks
+its request failed and is asked again; the owner job's `failure() || cancelled()`
+step marks a request its timed-out or cancelled run left pending, and a request
+still pending past twice the owner job's limit lost its runner and is asked
+again. A retryable failure under a newer success is not asked about.
 The dispatch job only writes a durable `codex-recovery-request/<terminal-id>`
 marker; it never
 changes draft state, invokes Codex, publishes `codex-current-head`, or queues a
