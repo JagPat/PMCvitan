@@ -1492,7 +1492,14 @@ export async function completeReviewedPullRequest(
   try {
     completed = await mergeOrArmAuthorizedHead(client, pullRequest, expectedHead, verdict, { recoveryRequest, attempt });
   } catch (error) {
-    if (!(error instanceof CodexRecordUnreadable)) await holdUnarmedGreen(client, pullRequest, expectedHead, { recoveryRequest, attempt });
+    if (!(error instanceof CodexRecordUnreadable)) {
+      try {
+        await holdUnarmedGreen(client, pullRequest, expectedHead, { recoveryRequest, attempt });
+      } catch (holdError) {
+        // G3a′ gap-check F2 — a hold that fails never replaces the error recovery acts on (as `withFollowUpRetry`)
+        console.warn(`Could not write the re-arm hold after a failed merge or arm: ${holdError instanceof Error ? holdError.message : String(holdError)}`);
+      }
+    }
     throw error;
   }
   // the hand-off follows a merge that landed or an arm that took: outside the tail, so its failure never holds a head
@@ -1506,7 +1513,10 @@ export async function completeReviewedPullRequest(
 /**
  * G3a′ (Stage 1's condition 2) — a throw may be a merge that in fact landed (a reply lost after GitHub merged), or the
  * head may have moved on: the pull request is read again, and a merged one, or one whose head is no longer this commit,
- * gets no hold, so no failure is left that could block anything. Otherwise, and when that read fails too, the green is
+ * gets no hold, so no failure is left that could block anything. A closed, unmerged one on this head is held: harmless
+ * (nothing merges it) and fail closed. A head whose newest `codex-current-head` status is no longer the success (a
+ * refusal or finding the authorization's writers already put over the green, then threw after: gap-check F1) keeps
+ * that status: it is not overwritten with the retryable hold. Otherwise, and when either read fails, the green is
  * replaced by the retryable re-arm hold (fail closed), and recovery re-judges the head.
  */
 async function holdUnarmedGreen(client, pullRequest, expectedHead, { recoveryRequest = null, attempt = 0 } = {}) {
@@ -1517,10 +1527,17 @@ async function holdUnarmedGreen(client, pullRequest, expectedHead, { recoveryReq
     live = null;
   }
   if (live && (live.merged === true || Boolean(live.merged_at) || live.head?.sha !== expectedHead)) return;
+  try {
+    const newest = (await client.statuses(expectedHead)).find((status) => status.context === STATUS_CONTEXT);
+    if (newest && newest.state !== 'success') return;
+  } catch {
+    // unreadable: hold (fail closed)
+  }
   await publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
     detail: CODEX_AUTOMERGE_REARM_FAILED,
     attempt,
     next: AUTOMERGE_RETRY_NEXT[CODEX_AUTOMERGE_REARM_FAILED],
+    settleReason: 'auto-merge re-arm failed',
   });
 }
 

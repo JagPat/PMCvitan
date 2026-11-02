@@ -480,6 +480,8 @@ test('G3a′ — the tail re-reads before holding: merged or moved gets no hold;
     ['merged', () => pr(HEAD, { state: 'closed', merged: true, merged_at: '2026-11-02T11:00:00Z' }), false],
     ['head moved', () => pr(NEXT), false],
     ['still open on this head', () => pr(), true],
+    // gap-check F3 — closed and not merged, on this head: held (harmless: nothing merges it; fail closed)
+    ['closed, not merged', () => pr(HEAD, { state: 'closed', merged: false, merged_at: null }), true],
     ['re-read fails', () => { throw new Error('ECONNRESET'); }, true],
   ]) {
     let thrown = false;
@@ -500,7 +502,7 @@ test('G3a′ — structural: no client call after the authorization sits outside
   const complete = body('completeReviewedPullRequest');
   // the tail is called once, inside the one try, and every throw from it but the unreadable record's refusal is held
   assert.equal([...gate.matchAll(/\bmergeOrArmAuthorizedHead\(/gu)].length, 2, 'defined once, called once');
-  assert.match(complete, /try \{\s*completed = await mergeOrArmAuthorizedHead\(client, pullRequest, expectedHead, verdict, \{ recoveryRequest, attempt \}\);\s*\} catch \(error\) \{\s*if \(!\(error instanceof CodexRecordUnreadable\)\) await holdUnarmedGreen\(client, pullRequest, expectedHead, \{ recoveryRequest, attempt \}\);\s*throw error;\s*\}/u);
+  assert.match(complete, /try \{\s*completed = await mergeOrArmAuthorizedHead\(client, pullRequest, expectedHead, verdict, \{ recoveryRequest, attempt \}\);\s*\} catch \(error\) \{\s*if \(!\(error instanceof CodexRecordUnreadable\)\) \{\s*try \{\s*await holdUnarmedGreen\(client, pullRequest, expectedHead, \{ recoveryRequest, attempt \}\);\s*\} catch \(holdError\) \{[\s\S]*?\}\s*\}\s*throw error;\s*\}/u);
   // the only other client call in it is the hand-off, after a merge that landed or an arm that took
   assert.deepEqual([...complete.matchAll(/\bclient\s*(?:\.|\[\s*['"`])(\w+)/gu)].map((m) => m[1]), ['dispatchHandoff'], 'one client call outside the tail: the hand-off');
   assert.match(complete, /if \(completed\.outcome === 'merged' \|\| completed\.outcome === 'queued'\) \{\s*await client\.dispatchHandoff\(/u);
@@ -516,4 +518,71 @@ test('G3a′ — structural: no client call after the authorization sits outside
   // the review path: the settlement and the re-read after its success are held (Codex 4441198800 row), then the completion
   const clean = body('completeCleanReview');
   assert.ok(clean.indexOf('await completeReviewedPullRequest(') > clean.indexOf('catch (error)'));
+});
+
+// G3a′ gap-check F1, F2, F4 — a fake whose `codex-current-head` statuses reflect the writes (newest first)
+function liveStatusClient(options) {
+  const client = gateClient(options);
+  // the finding writer's other calls (the marker, convergence)
+  Object.assign(client, {
+    async createIssueComment() { return { id: 1 }; },
+    async markReplacementRequired() {},
+    async reviews() { return []; },
+    async reviewComments() { return []; },
+  });
+  const written = [success(600)];
+  const set = client.setStatus;
+  client.setStatus = async (sha, state, description, url, context) => {
+    if (!context) written.unshift({ id: 700 + written.length, context: 'codex-current-head', state, description });
+    client.log.push(['context', context ?? 'codex-current-head', state, description]);
+    return set(sha, state, description, url, context);
+  };
+  client.statuses = async () => written;
+  return client;
+}
+const securityRecord = {
+  user: { login: 'chatgpt-codex-connector[bot]' }, created_at: '2026-11-02T00:00:00Z',
+  body: `<!-- codex-review-state:v1 ${JSON.stringify({
+    code_review: { commit_sha: HEAD, has_any_findings: false, has_unresolved_findings: false, status: 'completed' },
+    security_review: { commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: 'completed' },
+  })} -->`,
+};
+const reviewStatuses = (log) => log.filter(([k, context, , description]) => k === 'context' && context === 'codex-current-head' && !/^recovery: /u.test(description));
+
+test('G3a′ (gap-check F1) — a refusal already written over the green is kept when its writer throws after: no re-arm hold over it', async () => {
+  for (const [name, breakIt] of [
+    ['sticky', (client) => { client.updateStickyComment = async (number, body) => { if (/changes_required|correction/iu.test(body)) throw new Error('GitHub 502 on sticky'); }; }],
+    ['draft', (client) => { client.setDraft = async () => { throw new Error('GitHub 502 on draft'); }; }],
+  ]) {
+    const client = liveStatusClient();
+    client.issueComments = async () => [securityRecord];
+    breakIt(client);
+    await assert.rejects(completeReviewedPullRequest(client, pr(), HEAD, verdict), /GitHub 502/u, name);
+    const last = reviewStatuses(client.log).at(-1);
+    assert.equal(last[2], 'failure', name);
+    assert.match(last[3], /security/u, name);
+    assert.equal(reviewStatuses(client.log).some(([, , , description]) => description === `review: ${CODEX_AUTOMERGE_REARM_FAILED}`), false, `${name}: no re-arm hold`);
+  }
+  // the same reader still holds a head whose newest status is the success, and an unreadable status list is held
+  for (const [name, unreadable] of [['still green', false], ['statuses unreadable', true]]) {
+    const client = liveStatusClient();
+    let tried = false;
+    const statuses = client.statuses;
+    // the authorization reads them first; the hold's read after the failed merge is the one that fails
+    client.statuses = async (...args) => { if (unreadable && tried) throw new Error('GitHub 502'); return statuses(...args); };
+    client.mergeExactHead = async () => { tried = true; throw new Error('socket hang up'); };
+    await assert.rejects(completeReviewedPullRequest(client, pr(), HEAD, verdict), /socket hang up/u, name);
+    assert.equal(reviewStatuses(client.log).at(-1)[3], `review: ${CODEX_AUTOMERGE_REARM_FAILED}`, name);
+  }
+});
+
+test('G3a′ (gap-check F2, F4) — a hold that throws does not replace the original error; the hold settles the request as a failed re-arm', async () => {
+  const failing = liveStatusClient();
+  failing.mergeExactHead = async () => { throw new Error('socket hang up'); };
+  failing.updateStickyComment = async () => { throw new Error('GitHub 502 on sticky'); };
+  await assert.rejects(completeReviewedPullRequest(failing, pr(), HEAD, verdict), /socket hang up/u);
+  const settled = liveStatusClient();
+  settled.mergeExactHead = async () => { throw new Error('socket hang up'); };
+  await assert.rejects(completeReviewedPullRequest(settled, pr(), HEAD, verdict, { recoveryRequest: { status: { id: 7001, context: 'codex-recovery-request/6100' } }, attempt: 1 }), /socket hang up/u);
+  assert.ok(settled.log.some(([k, context, , description]) => k === 'context' && context !== 'codex-current-head' && description === 'recovery: consumed by auto-merge re-arm failed'), JSON.stringify(settled.log.filter(([k]) => k === 'context')));
 });
