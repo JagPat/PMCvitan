@@ -22,6 +22,11 @@ export const platformManifest: ModuleManifest = {
     'notificationReceipt',
     'pushSubscription',
     'passwordCredentialChallenge',
+    // Redbracket ID A1 (20280203000000) — the issuer-person link, the per-email sign-in attempt count, and the record
+    // of an older account switched off on its email's first Redbracket ID sign-in
+    'platformPersonLink',
+    'signInAttempt',
+    'identityRetirement',
     'securityAuditEvent',
     'domainEvent',
     'projectEventStream',
