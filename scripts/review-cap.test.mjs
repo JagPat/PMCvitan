@@ -473,12 +473,15 @@ test('Codex 4220861349 — the non-blocking findings beside a blocker are kept a
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   // every call (not the definition), wherever it sits in the file
   const calls = [...gate.matchAll(/(?<!function )publishCurrentHeadFinding\(/gu)].map((match) => gate.slice(match.index + match[0].length));
-  assert.equal(calls.length, 6, '#1288 — + recovery\'s security verdict');
+  assert.equal(calls.length, 7, '#1287/#1288 audit — + recovery\'s findings and the latched finding');
   // G2 — except the merge refusal's security verdict: it reads only Codex's record (no findings to hand over), after
-  // the settlement already filed this head's deferrable findings
+  // the settlement already filed this head's deferrable findings; and the latched finding re-published over a
+  // withdrawn success, whose findings were handed over when it was first published
   const refusal = calls.filter((call) => call.slice(0, 400).includes('detail: CODEX_SECURITY_FINDINGS_DETAIL'));
   assert.equal(refusal.length, 1);
-  for (const call of calls.filter((c) => !refusal.includes(c))) assert.match(call.slice(0, 400), /deferred: \w+\.deferred \?\? \[\]/u);
+  const latched = calls.filter((call) => call.slice(0, 400).includes('detail: LATCHED_FINDING_DETAIL'));
+  assert.equal(latched.length, 1);
+  for (const call of calls.filter((c) => !refusal.includes(c) && !latched.includes(c))) assert.match(call.slice(0, 400), /deferred: \w+\.deferred \?\? \[\]/u);
 });
 
 test('Codex 4221120404 / 4226440227 / 4229506050 — a blocking verdict is published in one fixed order: non-green, record, verdict, draft, filing', async () => {
@@ -521,8 +524,14 @@ test('Codex 4221120404 / 4226440227 / 4229506050 — a blocking verdict is publi
     && publish.indexOf('await publishBlockingVerdict(') < publish.indexOf('await enforceReviewConvergence('), 'published before anything can return early');
   assert.doesNotMatch(publish, /client\.setStatus\(|setDraftForCurrentHead\(|fileDeferredFindings\(/u, 'no step of its own');
   const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState'), gate.indexOf('async function waitForRequiredChecks'));
-  assert.match(recovery, /if \(settled\.state === 'changes_required'\) \{\s*await publishBlockingVerdict\(/u);
-  assert.equal([...gate.matchAll(/await publishBlockingVerdict\(/gu)].length, 5, 'the finding path, recovery, changed final evidence, an unsettled settlement and a merge refused as held or unreadable');
+  assert.match(recovery, /if \(settled\.state === 'changes_required'\) \{\s*await publishCurrentHeadFinding\(/u);
+  // #1287/#1288 root-cause audit — publishBlockingVerdict has exactly two callers, the two shared writers: the
+  // retryable hold (no correction notice) and the finding publisher (convergence, the correction notice)
+  const callers = [...gate.matchAll(/(?<!function )publishBlockingVerdict\(/gu)].map((match) => {
+    const before = gate.slice(0, match.index);
+    return before.slice(before.lastIndexOf('\nexport async function ') + 1).match(/^export async function (\w+)/u)?.[1];
+  });
+  assert.deepEqual(callers, ['publishRetryableHold', 'publishCurrentHeadFinding'], 'no other site calls publishBlockingVerdict directly');
 });
 test('Codex 4220861370 — a blank Codex review container that opens no thread is no review round', () => {
   const blank = (id, head) => ({ id, user: { login: CODEX }, commit_id: head, body: '', state: 'COMMENTED' });
@@ -652,15 +661,16 @@ test('Codex 4226440219 — an unsettled final settlement is published on the rec
   const retry = success.indexOf('if (settled.retryable) {');
   assert.ok(retry > 0 && retry < success.indexOf('if (settled.state === \'changes_required\') {'), 'checked before the correction path');
   const branch = success.slice(retry, success.indexOf('if (settled.state === \'changes_required\') {'));
-  assert.match(branch, /publishBlockingVerdict\(/u);
-  assert.match(branch, /'changed review evidence'/u);
-  assert.doesNotMatch(branch, /publishCurrentHeadFinding|correctionNotice|changes_required/u, 'no correction instruction for the author');
-  // G2 (#1280 round 2, Codex 4438874587): the `review_clean` sticky is replaced by `review_retry`, after the verdict and
-  // the settle and before the throw, so a held settlement never reads clean
-  const sticky = branch.indexOf('updateStickyComment(');
-  assert.ok(sticky > branch.indexOf("'changed review evidence'") && sticky < branch.indexOf('throw new Error(settled.detail)'), 'sticky replaced before the throw');
-  assert.match(branch.slice(sticky), /state: 'review_retry'/u);
-  assert.equal([...branch.matchAll(/updateStickyComment\(/gu)].length, 1);
+  // #1287/#1288 audit — through the one retryable-hold writer, before the throw
+  assert.ok(branch.indexOf('await publishRetryableHold(') >= 0 && branch.indexOf('await publishRetryableHold(') < branch.indexOf('throw new Error(settled.detail)'));
+  assert.doesNotMatch(branch, /publishCurrentHeadFinding|publishBlockingVerdict|correctionNotice|changes_required/u, 'no correction instruction for the author');
+  // G2 (#1280 round 2, Codex 4438874587): that writer replaces the `review_clean` sticky with `review_retry`, after the
+  // verdict and the settle, so a held settlement never reads clean
+  const helper = gate.slice(gate.indexOf('export async function publishRetryableHold('), gate.indexOf('export async function publishCurrentHeadFinding('));
+  const sticky = helper.indexOf('updateStickyComment(');
+  assert.ok(sticky > helper.indexOf('settleRecoveryRequest(') && helper.indexOf('settleRecoveryRequest(') > helper.indexOf('publishBlockingVerdict('));
+  assert.match(helper.slice(sticky), /state: 'review_retry'/u);
+  assert.match(helper, /settleReason = 'changed review evidence'/u);
   // and the settlement marks exactly that case retryable
   let reads = 0;
   const client = { ...fakeGitHub().client, reviews: async () => { reads += 1; return [{ id: reads }]; } };
@@ -850,7 +860,7 @@ test('#1254 — a record back in progress at the verification re-read is not cle
   // the orchestrator publishes success only on a `clear` re-read; anything else is a blocking verdict
   const { readFile } = await import('node:fs/promises');
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
-  assert.match(gate, /const verifiedResult = await reclassifyCurrentCodexEvidence\([\s\S]*?if \(verifiedResult\.state !== 'clear'\) \{[\s\S]*?publishBlockingVerdict\(/u);
+  assert.match(gate, /const verifiedResult = await reclassifyCurrentCodexEvidence\([\s\S]*?if \(verifiedResult\.state !== 'clear'\) \{[\s\S]*?publishRetryableHold\(/u);
 });
 
 // G2 (#1094 6565074822) — Codex's REAL record for a head it commented on is `completed` with has_unresolved_findings:
@@ -1008,7 +1018,7 @@ test('G2 gap 2 — security findings settle as a non-retryable finding a correct
   const { readFile } = await import('node:fs/promises');
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const recovery = gate.slice(gate.indexOf('export async function ensureTerminalReviewState'), gate.indexOf('async function waitForRequiredChecks'));
-  assert.match(recovery, /settled\.state === 'changes_required'\) \{\s*await publishBlockingVerdict\(client, finalPolicy\.pullRequest, expectedHead, \{\s*description: settled\.detail,/u);
+  assert.match(recovery, /settled\.state === 'changes_required'\) \{\s*await publishCurrentHeadFinding\(client, finalPolicy\.pullRequest, expectedHead, null, \{\s*detail: settled\.detail,/u);
   assert.equal(isRetryableReviewFailureDescription(`review: ${CODEX_SECURITY_FINDINGS_DETAIL}`), false);
   assert.equal(correctionReasonFor(status(`review: ${CODEX_SECURITY_FINDINGS_DETAIL}`)), 'review');
   assert.equal(correctionReasonFor(status(`review: ${CODEX_RUN_HELD_DETAIL}`)), null);
