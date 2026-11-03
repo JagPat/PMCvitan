@@ -11,6 +11,7 @@ import { INSPECTIONS_PROJECTION } from './inspections.projection';
 import { readServableGeneration } from '../platform/projections/generation';
 import { nextSeqId } from '../domain/ids';
 import { isFailedItem } from './failed-item';
+import { lineageApproval } from './inspection-lineage';
 import { AuditQuery } from '../platform/audit.query';
 
 /** The CHECKLIST-definition structure a project-copy/module-extract reads from a source project through
@@ -146,16 +147,7 @@ export class InspectionsQueryService {
       where: { projectId },
       select: { id: true, reinspectionOfId: true, decided: true },
     });
-    const childOf = new Map<string, string>();
-    for (const i of lineage) if (i.reinspectionOfId) childOf.set(i.reinspectionOfId, i.id);
-    const decided = new Map(lineage.map((i) => [i.id, i.decided] as const));
-    const approved = (id: string): boolean => {
-      const seen = new Set<string>();
-      let tip = id;
-      // at most one child per inspection (a partial unique index); `seen` only guards a malformed cycle
-      while (childOf.has(tip) && !seen.has(tip)) { seen.add(tip); tip = childOf.get(tip)!; }
-      return decided.get(tip) === true && !childOf.has(tip);
-    };
+    const { childOf, approved } = lineageApproval(lineage);
     const open = held.map((h) => h.inspectionId).filter((id) => !approved(id));
     if (open.length === 0) return [];
     const rows = await this.prisma.inspection.findMany({

@@ -6,6 +6,7 @@ import type { Actor } from '../common/actor';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import type { GateState } from '../domain/transitions';
 import { LabourRequirementQuery } from '../labour/labour.query';
+import { tallyOpenWork, type OpenWorkCounts } from '../common/open-work';
 
 /** The §E labour block banner — the clear selector, so a material block is never labour-cleared. */
 export const LABOUR_MISMATCH_BLOCK = 'Crew ≠ allocated';
@@ -45,6 +46,37 @@ export class ActivityParticipant {
     // back into activities.
     private readonly commercial: CommercialParticipant,
   ) {}
+
+  /**
+   * Redbracket ID A4b-2 — open requirements still NAMED on these accounts, per project: each requirement whose LATEST
+   * revision (a cancel or an edit appends one) is `open` and names the account as responsible, on an activity that is
+   * not `done`. An older revision naming the account does not count once a later one names someone else or cancels it;
+   * a requirement of finished work waits on nobody (its status never leaves `open` by itself, and revising it needs the
+   * capability on). Read by the operator door's list of retired accounts.
+   */
+  async openWorkOf(db: Prisma.TransactionClient, userIds: string[]): Promise<OpenWorkCounts> {
+    const counts: OpenWorkCounts = new Map();
+    if (userIds.length === 0) return counts;
+    const ever = await db.activityRequirement.findMany({
+      where: { responsibleId: { in: userIds } },
+      select: { requirementId: true },
+      distinct: ['requirementId'],
+    });
+    if (ever.length === 0) return counts;
+    const latest = await db.activityRequirement.findMany({
+      where: { requirementId: { in: ever.map((r) => r.requirementId) } },
+      orderBy: [{ requirementId: 'asc' }, { revision: 'desc' }],
+      distinct: ['requirementId'],
+      select: { projectId: true, responsibleId: true, status: true, activity: { select: { status: true } } },
+    });
+    const wanted = new Set(userIds);
+    for (const r of latest) {
+      if (r.status === 'open' && r.activity.status !== 'done' && r.responsibleId && wanted.has(r.responsibleId)) {
+        tallyOpenWork(counts, r.responsibleId, r.projectId);
+      }
+    }
+    return counts;
+  }
 
   /**
    * The sign-off TARGET a closing-inspection decide reads before its command runs: the linked
