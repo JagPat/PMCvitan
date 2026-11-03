@@ -394,13 +394,20 @@ function shapes(): string[] {
 }
 
 describe('the ledger matrix: key, made records, stranded acts, marks and memory together', () => {
-  // one test per key, stranded count, record count and marks made or failing, so each stays small
-  const rows = shapes().flatMap((shape) => [0, 1, 2].flatMap((stranded) => [0, 1, 2].flatMap((records) => [true, false].map((marks) => ({ shape: shape || '(empty)', stranded, records, marks })))));
-  it.each(rows)('key $shape, stranded $stranded, records $records, marks made $marks', ({ shape, stranded, records, marks }) => {
-    let cases = 0;
+  // one test per key, stranded count, record count, marks made or failing and acts sent, so each stays small: the
+  // heaviest cases are CPU-bound, and a whole key's sends in one test took about 3 s alone, close enough to vitest's
+  // 5 s default that a loaded worker timed out (notes/coordinator/queue-ledger-kuku.md)
+  const rows = shapes().flatMap((shape) => [0, 1, 2].flatMap((stranded) => [0, 1, 2].flatMap((records) => [true, false].flatMap((marks) => {
+    const len = shape.length + stranded + records;
+    return Array.from({ length: len + 1 }, (_, sent) => ({ shape: shape || '(empty)', stranded, records, marks, sent }));
+  }))));
+  /** the cases one sent count runs, so each test starts the earlier-release rotation where the whole key's test did */
+  const perSent = (marks: boolean) => OTHERS.reduce((n, op) => n + [false, true].reduce((m, extra) => m + (op === 'none' && marks && !extra ? 2 : 1), 0), 0) * MODES.length;
+  it.each(rows)('key $shape, stranded $stranded, records $records, marks made $marks, sent $sent', ({ shape, stranded, records, marks, sent }) => {
+    let cases = sent * perSent(marks);
+    const first = cases;
     {
-      const len = shape.replace('(empty)', '').length + stranded + records;
-      for (let sent = 0; sent <= len; sent++) for (const op of OTHERS) for (const extra of [false, true]) for (const front of op === 'none' && marks && !extra ? [false, true] : [false]) for (const mode of MODES) {
+      for (const op of OTHERS) for (const extra of [false, true]) for (const front of op === 'none' && marks && !extra ? [false, true] : [false]) for (const mode of MODES) {
         const name = `${shape} stranded ${stranded} records ${records} sent ${sent}${marks ? '' : ' (marks fail)'} other ${op} new ${extra ? 'U' : 'none'}${front ? ' front' : ''} write ${mode}`;
         current = name;
         fenceNow = true;
@@ -481,7 +488,7 @@ describe('the ledger matrix: key, made records, stranded acts, marks and memory 
         cases += 1;
       }
     }
-    expect(cases).toBeGreaterThan(0);
+    expect(cases - first).toBe(perSent(marks));
   });
 });
 
