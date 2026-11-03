@@ -189,6 +189,20 @@ export function codexStateRecordVerdict(issueComments, expectedHead, readyAtMs) 
   return clears ? 'clear' : 'none';
 }
 
+/**
+ * 2A3b-2 B (#1318 Codex 4448897188) — what Codex's review-state records say, as one string: each Codex-authored record
+ * (REST login and marker, as `codexStateRecordVerdict` reads them) by id, last update and body, sorted. Two reads with
+ * the same fingerprint saw the same records; a review that completed between them changes it, even one that ends with
+ * an identical body (its update time moves).
+ */
+export function codexRecordFingerprint(issueComments) {
+  return (issueComments ?? [])
+    .filter((comment) => isCodexActor(comment) && /<!--\s*codex-review-state:v1\s/u.test(String(comment?.body ?? '')))
+    .map((comment) => `${String(comment.id)}\u0000${String(comment.updated_at ?? comment.created_at ?? '')}\u0000${String(comment.body)}`)
+    .sort()
+    .join('\u0001');
+}
+
 export function codexStateRecordClears(issueComments, expectedHead, readyAtMs) {
   return codexStateRecordVerdict(issueComments, expectedHead, readyAtMs) === 'clear';
 }

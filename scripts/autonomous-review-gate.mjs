@@ -52,6 +52,7 @@ import {
   codexThreadIdsToResolve,
   classifyCodexState,
   codexStateRecordVerdict,
+  codexRecordFingerprint,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
 import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mjs';
@@ -1532,9 +1533,12 @@ export function candidateBodyHold(pullRequest, verdict) {
  * run has just turned green, as ONE guarded tail. Both callers write the success first (`publishDisarmedSuccess`, which
  * disarmed any queued merge), so every throw from the authorization to a merge that landed or an arm that took would
  * leave the head green with nothing queued and nothing scheduled. Every such throw takes the one re-arm hold here
- * (`holdUnarmedGreen`), whichever call threw: the authorization's reads, the first exact-head merge, the arm, or the
- * clean-status retry. An unreadable Codex record has already replaced the green with its own refusal, so it only
- * rethrows. A refusal by the authorization writes its own state and returns (G2), and a hold for gates returns as before.
+ * (`holdUnarmedGreen`), whichever call threw: the authorization's reads, the first exact-head merge, the arm, the
+ * clean-status retry, or (2A3b-2 B) the re-read of Codex's record after the arm, its disarm and its refusal. An unreadable
+ * Codex record has already replaced the green with its own refusal, so it only rethrows. A refusal by the authorization
+ * writes its own state and returns (G2), and a hold for gates returns as before. 2A3b-2 B — after the arm the record is
+ * read again: a run that started on the head, security findings completed on it, or (#1318 Codex 4448897188) a record
+ * that turned `dirty` since the authorization's read disarms the queued merge and takes the refusal (`review_refused`).
  */
 export async function completeReviewedPullRequest(
   client,
@@ -1643,6 +1647,26 @@ async function mergeOrArmAuthorizedHead(client, pullRequest, expectedHead, verdi
   try {
     // G3a (gap-check F2d) — a re-arm that fails, other than GitHub's clean-status answer, is held by the tail
     await client.enableAutoMerge(pullRequest, expectedHead);
+    // 2A3b-2 B (Stage 1's gap-check of aa882775; #1318 Codex 4448897188) — Codex may start, or start and complete with
+    // findings, after the authorization's record read and before this arm landed, and the gate's own arm wakes no run.
+    // So the records are read once more, after the arm, and judged by the authorization's own classifier: a run on this
+    // head or security findings on it, or a `dirty` set whose fingerprint changed since the authorization's read,
+    // disarms and takes the authorization's own refusal (retryable, so the recovery re-judges the head with its
+    // evidence). The baseline is the authorization's record read: a `dirty` set it saw is admitted here exactly as the
+    // authorization admits any `dirty` set (a cap-deferred head merges on it), so this cannot loop. A read that fails
+    // throws into the tail (`holdUnarmedGreen`), whose retryable hold drafts the pull request, dropping the queued merge
+    const comments = await client.issueComments(pullRequest.number);
+    const after = codexStateRecordVerdict(comments, expectedHead, 0);
+    const changed = after === 'dirty' && codexRecordFingerprint(comments) !== authorization.recordFingerprint;
+    if (after === 'hold' || after === 'security' || changed) {
+      await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead);
+      await refuseReviewedGreen(client, pullRequest, expectedHead, {
+        refusal: after === 'security' ? 'security' : changed ? 'changed' : 'held',
+        recoveryRequest,
+        attempt,
+      });
+      return { outcome: 'review_refused', pullRequest };
+    }
     return { outcome: 'queued', pullRequest };
   } catch (error) {
     if (
@@ -1938,6 +1962,9 @@ export class CodexRecordUnreadable extends Error {
  * the correction notice. A run still going, or a record that could not be read, is a retryable failure whose
  * sticky says so: never `clean`.
  */
+/** 2A3b-2 B (#1318 Codex 4448897188) — the retryable detail of a record that changed between the authorization and the arm. */
+const CODEX_EVIDENCE_CHANGED_DETAIL = 'Codex evidence changed during final verification';
+
 async function refuseReviewedGreen(client, pullRequest, expectedHead, { refusal, recoveryRequest = null, attempt = 0 }) {
   if (refusal === 'security') {
     return publishCurrentHeadFinding(client, pullRequest, expectedHead, recoveryRequest, {
@@ -1947,7 +1974,9 @@ async function refuseReviewedGreen(client, pullRequest, expectedHead, { refusal,
     });
   }
   return publishRetryableHold(client, pullRequest, expectedHead, recoveryRequest, {
-    detail: refusal === 'unreadable' ? CODEX_RECORD_UNREADABLE_DETAIL : CODEX_RUN_HELD_DETAIL,
+    detail: refusal === 'unreadable' ? CODEX_RECORD_UNREADABLE_DETAIL
+      : refusal === 'changed' ? CODEX_EVIDENCE_CHANGED_DETAIL
+      : CODEX_RUN_HELD_DETAIL,
     attempt,
     next: 'The merge was refused at its last check; the gate re-judges this exact head once Codex\'s review state settles.',
   });
@@ -2011,7 +2040,8 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   const record = codexStateRecordVerdict(issueComments, expectedHead, 0);
   if (record === 'security') return { allowed: false, state: 'codex_review_security' };
   if (record === 'hold') return { allowed: false, state: 'codex_review_held' };
-  return { allowed: true, state: 'authorized', pullRequest: finalLive };
+  // 2A3b-2 B (#1318 Codex 4448897188) — what the records said when this authorized: the baseline for the re-read after the arm
+  return { allowed: true, state: 'authorized', pullRequest: finalLive, recordFingerprint: codexRecordFingerprint(issueComments) };
 }
 
 /**
