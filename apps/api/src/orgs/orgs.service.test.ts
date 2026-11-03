@@ -472,6 +472,8 @@ describe('OrgsService.addOrgMember', () => {
         }),
       },
       org: { findUnique: vi.fn(async () => ({ id: 'org1', name: 'Vitan Architects', projects })) },
+      // Redbracket ID A4b — the add asks whether the account it found was retired; none here is
+      identityRetirement: { count: vi.fn(async () => 0) },
       user: {
         findUnique: vi.fn(async () => existingUser),
         create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -547,7 +549,7 @@ describe('OrgsService.addOrgMember', () => {
 
 describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
   // rows model the org's memberships; findUnique/count/update/delete key off userId.
-  function makeManage(rows: Array<{ userId: string; role: string; name?: string }>) {
+  function makeManage(rows: Array<{ userId: string; role: string; name?: string }>, retired: string[] = []) {
     const state = rows.map((r) => ({ ...r, name: r.name ?? r.userId }));
     const prisma = {
       orgMembership: {
@@ -555,7 +557,9 @@ describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
           const r = state.find((x) => x.userId === where.orgId_userId.userId);
           return r ? { role: r.role, user: { name: r.name, email: null, phone: null } } : null;
         }),
-        count: vi.fn(async () => state.filter((r) => r.role === 'owner').length),
+        // the other owners (Redbracket ID A4b: the guard then drops any retired one)
+        findMany: vi.fn(async ({ where }: { where: { role: string; userId: { not: string } } }) =>
+          state.filter((r) => r.role === where.role && r.userId !== where.userId.not).map((r) => ({ userId: r.userId }))),
         update: vi.fn(async ({ where, data }: { where: { orgId_userId: { userId: string } }; data: { role: string } }) => {
           const r = state.find((x) => x.userId === where.orgId_userId.userId)!;
           r.role = data.role;
@@ -571,6 +575,7 @@ describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
       // over every covered project (none in this fixture, so the guard finds nothing to judge).
       project: { findMany: vi.fn(async () => []) },
       membership: { findFirst: vi.fn(async () => null) },
+      identityRetirement: { count: vi.fn(async ({ where }: { where: { userId: string } }) => (retired.includes(where.userId) ? 1 : 0)) },
       $executeRaw: vi.fn(async () => 0),
       $transaction: vi.fn(async (arg: unknown) =>
         typeof arg === 'function' ? (arg as (tx: unknown) => Promise<unknown>)(prisma) : Promise.all(arg as Promise<unknown>[])),
@@ -593,6 +598,13 @@ describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
   it('refuses to demote the last owner', async () => {
     const { svc } = makeManage([{ userId: 'owner1', role: 'owner' }]);
     await expect(svc.updateOrgMemberRole('org1', 'owner1', 'owner1', { role: 'admin' })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('Redbracket ID A4b: an owner seat held by a retired account does not count, so the last live owner keeps it', async () => {
+    const { svc } = makeManage([{ userId: 'owner1', role: 'owner' }, { userId: 'retired', role: 'owner' }], ['retired']);
+    await expect(svc.updateOrgMemberRole('org1', 'owner1', 'owner1', { role: 'admin' })).rejects.toBeInstanceOf(BadRequestException);
+    // the retired row's own owner seat can still be removed by the live owner (the re-seat)
+    await expect(svc.removeOrgMember('org1', 'owner1', 'retired')).resolves.toEqual({ ok: true });
   });
 
   it('demoting one of two owners is allowed', async () => {
@@ -1282,6 +1294,7 @@ describe('OrgsService.addOrgMember — invite notice', () => {
         upsert: vi.fn(async ({ create }: { create: { role: string } }) => { orgMemberships.push(create); return create; }),
       },
       org: { findUnique: vi.fn(async () => ({ id: 'org1', name: 'Vitan Architects', projects: [{ id: 'ambli' }] })) },
+      identityRetirement: { count: vi.fn(async () => 0) },
       user: {
         findUnique: vi.fn(async () => existingUser),
         create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'newuser', passwordHash: null, emailVerifiedAt: null, ...data })),

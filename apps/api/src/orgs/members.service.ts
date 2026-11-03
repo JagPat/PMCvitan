@@ -10,6 +10,8 @@ import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { lockStandingForWrite, resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
 import { lockStandingAnchors } from '../common/standing-anchor';
+import { isRetired, RETIRED_ADD } from '../auth/identity/identity-accounts';
+import { liveRoleStanding } from './live-standing';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import { DecisionsParticipant } from '../decisions/decisions.participant';
 import { OrgsParticipant, refuseQaLock } from './orgs.participant';
@@ -155,7 +157,7 @@ export class MembersService {
     const holders = (role: string) =>
       role === 'architect'
         ? RoleStandingQuery.activeCount(tx, projectId, 'architect')
-        : this.standing.effectiveRoleStanding(tx, projectId, role);
+        : liveRoleStanding(tx, this.standing, projectId, role);
     for (const role of heldRoles) {
       if (!atRisk.has(role)) continue;
       if ((await holders(role)) === 0) {
@@ -410,6 +412,8 @@ export class MembersService {
           (email && (await tx.user.findUnique({ where: { email } }))) ||
           (phone && (await tx.user.findUnique({ where: { phone } }))) ||
           null;
+        // Redbracket ID A4b — never seat a retired account: the person's new account holds their address
+        if (user && (await isRetired(tx, user.id))) throw new ConflictException(RETIRED_ADD);
         if (!user) {
           // provision the invited identity (they set a credential on first sign-in)
           user = await tx.user.create({ data: { projectId, role: input.role, name: input.name, email, phone } }).catch((e: unknown) => {
@@ -716,7 +720,7 @@ export class MembersService {
           const remaining = () =>
             cur.role === 'architect'
               ? RoleStandingQuery.activeCount(tx, projectId, 'architect')
-              : this.standing.effectiveRoleStanding(tx, projectId, cur.role);
+              : liveRoleStanding(tx, this.standing, projectId, cur.role);
           if (holders.heldRoles.includes(cur.role) && (await remaining()) === 0) {
             throw new ConflictException(
               `An open decision is held by the ${cur.role} role and removing its last active holder would leave it undecidable — withdraw and reissue the decision first`,

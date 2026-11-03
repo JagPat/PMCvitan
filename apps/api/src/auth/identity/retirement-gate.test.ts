@@ -77,7 +77,7 @@ describe('retirement gate (structural)', () => {
 
   it('isRetired is asked exactly where this file says, and nowhere answers it another way', () => {
     const callers = sources(SRC).filter((path) => /\bisRetired\(/.test(read(path))).sort();
-    expect(callers).toEqual(['auth/auth.service.ts', 'auth/identity/identity-accounts.ts', 'auth/password-credentials.service.ts']);
+    expect(callers).toEqual(['auth/auth.service.ts', 'auth/identity/identity-accounts.ts', 'auth/password-credentials.service.ts', 'orgs/live-standing.ts', 'orgs/members.service.ts', 'orgs/orgs.service.ts']);
     const others = sources(SRC).filter((path) => /identityRetirement\.(count|findFirst|findUnique|findMany)\(/.test(read(path)));
     expect(others).toEqual(['auth/identity/identity-accounts.ts']);
   });

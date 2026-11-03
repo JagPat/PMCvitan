@@ -8,6 +8,7 @@ import { SWITCHABLE_CAPABILITIES } from '../capabilities.service';
 import { disableCapability, enableCapability, ProjectNotOperableError } from '../capability-switch';
 import { OrgsParticipant } from '../../orgs/orgs.participant';
 import { OpsTokenGuard } from './ops-token.guard';
+import { retirements } from '../../auth/identity/identity-accounts';
 
 export const switchSchema = z.object({
   operator: z.string().trim().min(3).max(200),
@@ -22,6 +23,17 @@ export interface OpsProjectRow {
   lastActivity: string | null;
 }
 
+/** A retired account (Redbracket ID) that still holds seats; `email` is the address it was retired from, which the
+ *  person's new linked account now holds, so the re-seat adds that address. */
+export interface OpsRetiredRow {
+  userId: string;
+  name: string;
+  email: string;
+  retiredAt: string;
+  projects: Array<{ id: string; name: string; role: string; status: string; approvalLimit: string | null }>;
+  companies: Array<{ id: string; name: string; role: string }>;
+}
+
 /** Recorded on the audit row of a switch made through this door, beside the operator and reason. */
 export const OPS_VIA = 'ops-api';
 
@@ -31,7 +43,8 @@ export const OPS_VIA = 'ops-api';
  *
  *  - `GET  /ops/projects`: every live project with its switched-on capabilities and last activity (reads only).
  *  - `GET  /ops/people`: each company's owners and admins, and each live project's active members with their
- *    role (reads only), so "who can manage this project" is answered without a terminal paste.
+ *    role (reads only), so "who can manage this project" is answered without a terminal paste; and (Redbracket ID
+ *    A4b) `retired`: each account a first Redbracket ID sign-in set aside that still holds a seat.
  *  - `POST /ops/orgs/:orgId/qa-only`: mark a company QA-only, in {@link OpsQaController}.
  *  - `GET  /ops/compat/state-pins?since=<ISO>`: seen-state pin counts per pinned act, in {@link OpsCompatController}.
  *  - `GET  /ops/compat/client-keys?since=<ISO>`: keyless and legacy-keyed request counts on five routes (Idempotency-Key
@@ -79,8 +92,25 @@ export class OpsController {
 
   @Public()
   @Get('people')
-  async people(): Promise<Awaited<ReturnType<OrgsParticipant['operatorRoster']>>> {
-    return this.orgs.operatorRoster(this.prisma);
+  async people(): Promise<Awaited<ReturnType<OrgsParticipant['operatorRoster']>> & { retired: OpsRetiredRow[] }> {
+    const roster = await this.orgs.operatorRoster(this.prisma);
+    return { ...roster, retired: await this.retiredWithSeats() };
+  }
+
+  /**
+   * Redbracket ID A4b — every account a first Redbracket ID sign-in set aside that still holds a seat, oldest first.
+   * Retirement writes no seats: the project's PMC or a company owner re-seats the person by adding them by email (which
+   * lands on their new linked account) and then removing the retired row, through the normal team commands
+   * (docs/RUNBOOK.md, "Redbracket ID re-seat"). The pilot widens only when this list is empty.
+   */
+  private async retiredWithSeats(): Promise<OpsRetiredRow[]> {
+    const retired = await retirements(this.prisma);
+    const seats = await this.orgs.seatsOf(this.prisma, retired.map((r) => r.userId));
+    return retired.flatMap((r) => {
+      const held = seats.get(r.userId);
+      if (!held) return [];
+      return [{ userId: r.userId, name: held.name, email: r.email, retiredAt: r.retiredAt.toISOString(), projects: held.projects, companies: held.companies }];
+    });
   }
 
   @Public()

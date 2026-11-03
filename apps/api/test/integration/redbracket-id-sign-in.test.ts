@@ -14,7 +14,8 @@ import * as bcrypt from 'bcryptjs';
 import { JwtService } from '@nestjs/jwt';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, wipeMembershipTransitionsVia, type TwoProjectFixture } from './fixtures';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { startFakeIssuer, type FakeIssuer } from '../unit-support/fake-issuer';
 import { AuthService } from '../../src/auth/auth.service';
 import { IdentitySignInService } from '../../src/auth/identity/identity-sign-in.service';
@@ -26,7 +27,7 @@ import { OrgsParticipant } from '../../src/orgs/orgs.participant';
 import { lockOrgStanding, orgStandingLockKey } from '../../src/common/readiness-lock';
 import { Prisma } from '@prisma/client';
 
-const ENV = ['IDENTITY_OIDC', 'IDENTITY_ISSUER', 'IDENTITY_ISSUER_ENDPOINT', 'IDENTITY_CLIENT_ID', 'IDENTITY_REDIRECT_URI', 'IDENTITY_SERVICE_TOKEN', 'THROTTLE_DISABLED'] as const;
+const ENV = ['IDENTITY_OIDC', 'IDENTITY_ISSUER', 'IDENTITY_ISSUER_ENDPOINT', 'IDENTITY_CLIENT_ID', 'IDENTITY_REDIRECT_URI', 'IDENTITY_SERVICE_TOKEN', 'THROTTLE_DISABLED', 'OPS_TOKEN'] as const;
 
 describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
   let t: TestApp;
@@ -49,6 +50,17 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
       else process.env[name] = saved[name];
     }
     if (made.length) {
+      // the re-seat case's decision and recorded team acts (immutable evidence: the sanctioned test resets)
+      const projectId = f.projectA.id;
+      // the guards case approves a decision (immutable register rows) and opens a change request; as change-control
+      await sanctionedReset(t.prisma, ['LabourDemandSlice', 'LabourRequirementSpec', 'MaterialRequirementSpec', 'DecisionApprovalRevision'], { cascade: true });
+      await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } });
+      await wipeDecisionEvents(t.prisma, { decision: { projectId } });
+      await wipeDecisionsVia(t.prisma, async (tx) => {
+        await tx.decisionOption.deleteMany({ where: { decision: { projectId } } });
+        await tx.decision.deleteMany({ where: { projectId } });
+      });
+      await wipeMembershipTransitionsVia(t.prisma, made);
       await t.prisma.securityAuditEvent.deleteMany({ where: { OR: [{ targetUserId: { in: made } }, { actorUserId: { in: made } }] } });
       await t.prisma.passwordCredentialChallenge.deleteMany({ where: { userId: { in: made } } });
       await t.prisma.membership.deleteMany({ where: { userId: { in: made } } });
@@ -984,5 +996,191 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const r = await login(qa.email!, 'a qa passphrase').expect(401);
     expect(r.body.message).toMatch(/operator door/);
     expect(await t.prisma.user.findUniqueOrThrow({ where: { id: qa.id } })).toMatchObject({ email: qa.email });
+  });
+
+  it('A4b guards: a retired row never counts as the last owner or the last holder; a decision under change is re-seated through its change request', async () => {
+    const pmc = t.issueProjectToken(f.memberUser.id, f.projectA.id, 'pmc');
+    const owner = t.issueOrgOwnerToken(f.ownerUser.id, f.projectA.id, f.orgA.id);
+    const retire = async (label: string, role: string) => {
+      const row = await invitee(label, role);
+      await t.prisma.user.update({ where: { id: row.id }, data: { passwordHash: await bcrypt.hash('the old local passphrase', 4), emailVerifiedAt: new Date() } });
+      return row;
+    };
+    const signInFresh = async (row: { email: string | null }) => {
+      fake.addPerson(row.email!, `the ${row.email} passphrase`);
+      await login(row.email!, `the ${row.email} passphrase`).expect(401); // joins fresh: the old row is retired
+      const fresh = await t.prisma.user.findUniqueOrThrow({ where: { email: row.email! } });
+      made.push(fresh.id);
+      return fresh;
+    };
+    const OPTIONS = [
+      { label: 'Option A', material: 'Granite', delta: 0, swatch: 'sw1', recommended: true },
+      { label: 'Option B', material: 'Quartz', delta: 20000, swatch: 'sw2', recommended: false },
+    ];
+    const publish = async (body: Record<string, unknown>) => {
+      const title = `rbid a4b guard ${Date.now()} ${Math.random()}`;
+      const r = await http().post(`/projects/${f.projectA.id}/decisions`).set('Authorization', `Bearer ${pmc}`).send({ title, room: 'Kitchen', publish: true, options: OPTIONS, ...body });
+      expect(r.status, r.text).toBe(201);
+      return (await t.prisma.decision.findFirstOrThrow({ where: { projectId: f.projectA.id, title } })).id;
+    };
+
+    // 1. company: with owners {ownerUser, a retired row}, the live owner cannot step down; it can remove the retired seat
+    const oldOwner = await retire('guard-owner', 'client');
+    await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: oldOwner.id, role: 'owner' } });
+    await signInFresh(oldOwner);
+    const demote = await http().patch(`/orgs/${f.orgA.id}/members/${f.ownerUser.id}`).set('Authorization', `Bearer ${owner}`).send({ role: 'admin' });
+    expect(demote.status, demote.text).toBe(400);
+    expect(demote.body.message).toBe('The org must keep at least one owner');
+    expect(await t.prisma.orgMembership.findUniqueOrThrow({ where: { orgId_userId: { orgId: f.orgA.id, userId: f.ownerUser.id } } })).toMatchObject({ role: 'owner' });
+    await http().delete(`/orgs/${f.orgA.id}/members/${oldOwner.id}`).set('Authorization', `Bearer ${owner}`).expect(200);
+
+    // 2. project: a client-held open decision whose other client is retired: the live client cannot be removed. Earlier
+    // cases leave live client seats on this project (the re-seat's new account); the PMC removes them first, so the only
+    // client holders are the fixture's client and the retired row.
+    const retiredIds = new Set((await t.prisma.identityRetirement.findMany({ select: { userId: true } })).map((r) => r.userId));
+    const otherClients = await t.prisma.membership.findMany({ where: { projectId: f.projectA.id, role: 'client', status: 'active', userId: { not: f.clientUser.id } }, select: { userId: true } });
+    for (const m of otherClients.filter((m) => !retiredIds.has(m.userId))) {
+      await http().delete(`/projects/${f.projectA.id}/members/${m.userId}`).set('Authorization', `Bearer ${pmc}`).expect(200);
+    }
+    const clientHeld = await publish({ deciderKind: 'client' });
+    const removeClient = await http().delete(`/projects/${f.projectA.id}/members/${f.clientUser.id}`).set('Authorization', `Bearer ${pmc}`);
+    expect(removeClient.status, removeClient.text).toBe(409); // oldOwner's client seat, retired, does not count
+    expect(removeClient.body.message).toMatch(/held by the client role/);
+    const reroleClient = await http().patch(`/projects/${f.projectA.id}/members/${f.clientUser.id}`).set('Authorization', `Bearer ${pmc}`).send({ role: 'engineer' });
+    expect(reroleClient.status, reroleClient.text).toBe(409); // the role change's guard counts live holders too
+    expect(reroleClient.body.message).toMatch(/held by the client role/);
+    await http().post(`/projects/${f.projectA.id}/decisions/${clientHeld}/withdraw`).set('Authorization', `Bearer ${pmc}`).send({ reason: 'A4b guard row' }).expect(201);
+
+    // 3. a decision in `change` status named on the retired row: withdraw and forward refuse; the PMC withdraws the
+    //    change request (the approved outcome stands), removes the row, and asks the changed need as a new decision
+    const engineer = await retire('guard-change', 'engineer');
+    const seat = await t.prisma.membership.findUniqueOrThrow({ where: { projectId_userId: { projectId: f.projectA.id, userId: engineer.id } } });
+    const named = await publish({ deciderKind: 'member', deciderMembershipId: seat.id });
+    await http().post(`/projects/${f.projectA.id}/decisions/${named}/approve`).set('Authorization', `Bearer ${t.issueProjectToken(engineer.id, f.projectA.id, 'engineer')}`).send({ optionIndex: 0 }).expect(201);
+    const change = { reason: 'Slab cracked', costImpact: 0, timeImpactDays: 0 };
+    const raised = await http().post(`/projects/${f.projectA.id}/decisions/${named}/change`).set('Authorization', `Bearer ${pmc}`).send(change);
+    expect(raised.status, raised.text).toBe(201);
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: named } })).status).toBe('change');
+    const fresh = await signInFresh(engineer);
+    const added = await http().post(`/projects/${f.projectA.id}/members`).set('Authorization', `Bearer ${pmc}`).send({ name: 'guard-change', role: 'engineer', email: engineer.email });
+    expect(added.body.userId).toBe(fresh.id);
+    expect((await http().delete(`/projects/${f.projectA.id}/members/${engineer.id}`).set('Authorization', `Bearer ${pmc}`)).status).toBe(409);
+    expect((await http().post(`/projects/${f.projectA.id}/decisions/${named}/withdraw`).set('Authorization', `Bearer ${pmc}`).send({ reason: 'x' })).status).toBe(409);
+    await http().post(`/projects/${f.projectA.id}/decisions/${named}/change/withdraw`).set('Authorization', `Bearer ${pmc}`).expect(201);
+    await http().delete(`/projects/${f.projectA.id}/members/${engineer.id}`).set('Authorization', `Bearer ${pmc}`).expect(200);
+    // the change cannot be raised again on it (its named decider is gone): the changed need is a NEW decision, naming
+    // the person's new seat
+    const again = await http().post(`/projects/${f.projectA.id}/decisions/${named}/change`).set('Authorization', `Bearer ${pmc}`).send(change);
+    expect(again.status, again.text).toBe(409);
+    expect(again.body.message).toMatch(/a changed need is a NEW decision/);
+    await publish({ deciderKind: 'member', deciderMembershipId: added.body.membershipId });
+  });
+
+  it('A4b re-seat: the ops list names a retired row still holding seats; the PMC and an owner add by email (the new account), then remove the old row; a named-decider seat refuses until the decision is withdrawn', async () => {
+    const OPS = 'rbid-reseat-ops-token-0123456789abcdef';
+    process.env.OPS_TOKEN = OPS;
+    type Retired = { userId: string; email: string; projects: Array<{ id: string; role: string; status: string }>; companies: Array<{ id: string; role: string }> };
+    const retiredList = async () => {
+      const r = await http().get('/ops/people').set('Authorization', `Bearer ${OPS}`);
+      expect(r.status, r.text).toBe(200);
+      expect(r.text).not.toMatch(/passwordHash|"password"/);
+      return r.body.retired as Retired[];
+    };
+    const pmc = t.issueProjectToken(f.memberUser.id, f.projectA.id, 'pmc');
+    const owner = t.issueOrgOwnerToken(f.ownerUser.id, f.projectA.id, f.orgA.id);
+
+    // an established engineer on project A, a member of company A, and the named decider of an open decision
+    const old = await invitee('reseat', 'engineer');
+    const phone = String(9_000_000_000 + Math.floor(Math.random() * 999_999_999));
+    await t.prisma.user.update({ where: { id: old.id }, data: { phone, passwordHash: await bcrypt.hash('the old local passphrase', 4), emailVerifiedAt: new Date() } });
+    await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: old.id, role: 'member' } });
+    // a seat with an approval ceiling (no team command sets one): the list carries it so the re-seat stops on it
+    const oldSeat = await t.prisma.membership.update({ where: { projectId_userId: { projectId: f.projectA.id, userId: old.id } }, data: { approvalLimit: 50000 } });
+    const title = `rbid reseat ${Date.now()}`;
+    const issued = await http().post(`/projects/${f.projectA.id}/decisions`).set('Authorization', `Bearer ${pmc}`).send({
+      title, room: 'Kitchen', publish: true, deciderKind: 'member', deciderMembershipId: oldSeat.id,
+      options: [
+        { label: 'Option A', material: 'Granite', delta: 0, swatch: 'sw1', recommended: true },
+        { label: 'Option B', material: 'Quartz', delta: 20000, swatch: 'sw2', recommended: false },
+      ],
+    });
+    expect(issued.status, issued.text).toBe(201);
+    const decision = await t.prisma.decision.findFirstOrThrow({ where: { projectId: f.projectA.id, title } });
+    expect((await retiredList()).map((r) => r.userId)).not.toContain(old.id); // not retired yet
+
+    // the first Redbracket ID sign-in retires the old row; retirement itself writes no seat
+    fake.addPerson(old.email!, 'my redbracket passphrase');
+    await login(old.email!, 'my redbracket passphrase').expect(401);
+    const fresh = await t.prisma.user.findUniqueOrThrow({ where: { email: old.email! } });
+    made.push(fresh.id);
+    expect(fresh.id).not.toBe(old.id);
+    const listed = (await retiredList()).find((r) => r.userId === old.id);
+    expect(listed).toMatchObject({
+      email: old.email,
+      projects: [{ id: f.projectA.id, role: 'engineer', status: 'active', approvalLimit: '50000.00' }],
+      companies: [{ id: f.orgA.id, role: 'member' }],
+    });
+
+    // 0. the retired row keeps its phone: an add by phone (project or company) finds the retired row and is refused,
+    //    seating nobody (the set-aside address `<email>#retired-<id>` is not an address the add accepts)
+    const retiredAdds = [
+      http().post(`/projects/${f.projectA.id}/members`).set('Authorization', `Bearer ${pmc}`).send({ name: 'reseat', role: 'engineer', phone }),
+      http().post(`/orgs/${f.orgA.id}/members`).set('Authorization', `Bearer ${owner}`).send({ name: 'reseat', role: 'admin', phone }),
+    ];
+    for (const add of retiredAdds) {
+      const r = await add;
+      expect(r.status, r.text).toBe(409);
+      expect(r.body.message).toBe('This person now signs in with a new account. Add them by email.');
+    }
+    expect(await t.prisma.orgMembership.findUniqueOrThrow({ where: { orgId_userId: { orgId: f.orgA.id, userId: old.id } } })).toMatchObject({ role: 'member' });
+
+    // 1. the PMC adds the person by email: the add lands on the new linked account, never the retired row
+    const added = await http().post(`/projects/${f.projectA.id}/members`).set('Authorization', `Bearer ${pmc}`)
+      .send({ name: 'reseat', role: 'engineer', email: old.email });
+    expect(added.status, added.text).toBe(201);
+    expect(added.body.userId).toBe(fresh.id);
+
+    // 2. removing the retired row is refused while it is the named decider of an open decision
+    const refused = await http().delete(`/projects/${f.projectA.id}/members/${old.id}`).set('Authorization', `Bearer ${pmc}`);
+    expect(refused.status, refused.text).toBe(409);
+    expect(refused.body.message).toMatch(/named decider/);
+    expect((await retiredList()).map((r) => r.userId)).toContain(old.id);
+
+    // 3. withdrawn (the refusal's own instruction; it is reissued to the new seat after), the old seat can go
+    const withdrawn = await http().post(`/projects/${f.projectA.id}/decisions/${decision.id}/withdraw`).set('Authorization', `Bearer ${pmc}`)
+      .send({ reason: 'Redbracket ID re-seat' });
+    expect(withdrawn.status, withdrawn.text).toBe(201);
+    await http().delete(`/projects/${f.projectA.id}/members/${old.id}`).set('Authorization', `Bearer ${pmc}`).expect(200);
+    expect((await retiredList()).find((r) => r.userId === old.id)).toMatchObject({ projects: [], companies: [{ id: f.orgA.id, role: 'member' }] });
+
+    // 4. the company seat: an owner adds the address (the new account), then removes the retired row
+    const orgAdded = await http().post(`/orgs/${f.orgA.id}/members`).set('Authorization', `Bearer ${owner}`)
+      .send({ name: 'reseat', email: old.email, role: 'member' });
+    expect(orgAdded.status, orgAdded.text).toBe(201);
+    expect(await t.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId: f.orgA.id, userId: fresh.id } } })).not.toBeNull();
+    await http().delete(`/orgs/${f.orgA.id}/members/${old.id}`).set('Authorization', `Bearer ${owner}`).expect(200);
+
+    // re-seated: the list no longer names the row, and the person signs in to the new account with the seat
+    expect((await retiredList()).map((r) => r.userId)).not.toContain(old.id);
+    // a seat on an archived project is off the list (nobody can re-seat there); restored, it is listed again
+    await t.prisma.membership.create({ data: { projectId: f.projectB.id, userId: old.id, role: 'engineer', status: 'active' } });
+    await t.prisma.project.update({ where: { id: f.projectB.id }, data: { archivedAt: new Date() } });
+    try {
+      expect((await retiredList()).map((r) => r.userId)).not.toContain(old.id);
+    } finally {
+      await t.prisma.project.update({ where: { id: f.projectB.id }, data: { archivedAt: null } });
+    }
+    expect((await retiredList()).find((r) => r.userId === old.id)?.projects).toEqual([expect.objectContaining({ id: f.projectB.id })]);
+    // an invited (not yet active) seat is a seat too
+    await t.prisma.membership.update({ where: { projectId_userId: { projectId: f.projectB.id, userId: old.id } }, data: { status: 'invited' } });
+    expect((await retiredList()).find((r) => r.userId === old.id)?.projects).toEqual([expect.objectContaining({ id: f.projectB.id, status: 'invited' })]);
+    await t.prisma.membership.delete({ where: { projectId_userId: { projectId: f.projectB.id, userId: old.id } } });
+    expect((await retiredList()).map((r) => r.userId)).not.toContain(old.id);
+    const ok = await login(old.email!, 'my redbracket passphrase').expect(201);
+    expect(sub(ok.body.token)).toBe(fresh.id);
+    expect(role(ok.body.token)).toBe('engineer');
+    // the removal is the normal team command's: a recorded transition attributed to the PMC who made it
+    const removal = await t.prisma.membershipTransition.findFirstOrThrow({ where: { membershipId: oldSeat.id, toStatus: 'removed' } });
+    expect(removal.actorId).toBe(f.memberUser.id);
   });
 });

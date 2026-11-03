@@ -53,6 +53,13 @@ export async function linkOf(tx: Prisma.TransactionClient, userId: string): Prom
 }
 
 /**
+ * The refusal a team add gives when the address or phone it names finds a retired account (Redbracket ID A4b): the
+ * person now signs in with a new account, which holds their address (an add by phone would otherwise land on the
+ * retired row, which keeps its number).
+ */
+export const RETIRED_ADD = 'This person now signs in with a new account. Add them by email.';
+
+/**
  * Whether this account was set aside by a first Redbracket ID sign-in: the ONE predicate. Every named-account token
  * (`AuthService.issueNamedUser`), the sign-in access rule (`AuthService.signInAccess`, which also decides whether a phone
  * code is sent) and password-credential eligibility (`PasswordCredentialsService`) ask it; retirement-gate.test.ts pins
@@ -60,6 +67,18 @@ export async function linkOf(tx: Prisma.TransactionClient, userId: string): Prom
  */
 export async function isRetired(db: Prisma.TransactionClient, userId: string): Promise<boolean> {
   return (await db.identityRetirement.count({ where: { userId } })) > 0;
+}
+
+/**
+ * Every account a first Redbracket ID sign-in set aside, oldest first: its id, the address it was retired from (which
+ * the person's new linked account now holds) and when. Read by the operator door's list of retired accounts that still
+ * hold seats (Redbracket ID A4b); kept here so the retirement record is read in this one file.
+ */
+export async function retirements(db: Prisma.TransactionClient): Promise<Array<{ userId: string; email: string; retiredAt: Date }>> {
+  return db.identityRetirement.findMany({
+    select: { userId: true, email: true, retiredAt: true },
+    orderBy: [{ retiredAt: 'asc' }, { userId: 'asc' }],
+  });
 }
 
 /**
