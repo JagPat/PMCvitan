@@ -668,8 +668,10 @@ export interface Worker {
 export type SignInErrorKey =
   | 'enterEmailPassword' | 'demoEmails' | 'accessRemoved' | 'serverDown' | 'wrongPassword'
   | 'invalidInvitedEmail' | 'setupNeedsServer' | 'passwordMismatch' | 'codeSendFailed' | 'setupWrongCode' | 'passwordLength'
-  | 'setupExpired' | 'passwordSaveFailed' | 'setupStillFinishing' | 'invalidEmail' | 'emailSendFailed' | 'emailWrongCode' | 'enterMobile'
-  | 'tooManySignIns' | 'tooManyCodes';
+  | 'setupExpired' | 'passwordSaveFailed' | 'setupStillFinishing' | 'setupMayBeSet' | 'invalidEmail' | 'emailSendFailed' | 'emailWrongCode' | 'enterMobile'
+  | 'tooManySignIns' | 'tooManyCodes'
+  | 'identityNoProject' | 'identityInvitePending' | 'identityTestAccount' | 'identityEmailUnverified'
+  | 'identityPasswordChanged' | 'identityNeedsHelp' | 'identityIssuerAccountExists' | 'identityPasswordRejected' | 'identityRetired';
 
 /**
  * Redbracket ID A4a: the machine-readable `code` on the 409 `/auth/password/complete` answers while another password
@@ -677,6 +679,26 @@ export type SignInErrorKey =
  * answers 409 for an email that cannot be set up (its code is spent; the person asks their PMC for help).
  */
 export const SETUP_RUNNING_CODE = 'setup-running';
+
+/**
+ * Redbracket ID A5: the machine-readable `code` on each refusal of the switched-on email sign-in and password setup
+ * (`IdentitySignInService`). The status and the English `message` are unchanged; the web words the refusal from this
+ * code in the gate's language (`signInErrors`), matched together with its status, never from the message. A server
+ * that sends no code keeps today's words.
+ */
+export const IDENTITY_REFUSAL_CODES = {
+  noProject: 'no-project',
+  invitePending: 'invite-pending',
+  testAccount: 'test-account',
+  emailUnverified: 'email-unverified',
+  passwordChanged: 'password-changed',
+  needsHelp: 'needs-help',
+  issuerAccountExists: 'issuer-account-exists',
+  passwordRejected: 'password-rejected',
+  /** A3/A4: the account a first Redbracket ID sign-in replaced (any sign-in path that lands on it) */
+  retired: 'retired',
+} as const;
+export type IdentityRefusalCode = (typeof IDENTITY_REFUSAL_CODES)[keyof typeof IDENTITY_REFUSAL_CODES];
 
 /** #886: a phone sign-in failure as an `accessDict` key (plus the throttle wait), and the text it produced. */
 export type AccessErrorKey =

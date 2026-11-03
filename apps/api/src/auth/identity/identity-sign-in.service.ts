@@ -19,6 +19,7 @@
  */
 import { BadRequestException, ConflictException, HttpException, HttpStatus, Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { Prisma as PrismaErrors, type Prisma, type User } from '@prisma/client';
+import { IDENTITY_REFUSAL_CODES as CODE, type IdentityRefusalCode } from '@vitan/shared';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../../prisma.service';
 import { lockUserCredential } from '../../common/credential-lock';
@@ -39,6 +40,32 @@ export const ISSUER_ACCOUNT_EXISTS = 'This email already has a Redbracket ID. En
 export const NEEDS_HELP = 'This email cannot be set up here. Ask your PMC for help.';
 export const PASSWORD_CHANGED = 'Your password was just changed. Sign in with the new one.';
 const TOO_MANY = 'Too many attempts. Try again in a few minutes.';
+export const PASSWORD_REJECTED = 'Redbracket ID did not accept this password. Choose another one.';
+
+/**
+ * Redbracket ID A5: a refusal carries a machine `code` beside its unchanged status and English message (the A4a
+ * `SETUP_RUNNING_CODE` shape), so the web words it in the person's language instead of reading every 401 as a wrong
+ * password. Each message has exactly one code (`CODE_OF`), so a site cannot pair a message with another's code.
+ */
+const CODE_OF: ReadonlyMap<string, IdentityRefusalCode> = new Map([
+  [NO_PROJECT, CODE.noProject],
+  [INVITE_PENDING, CODE.invitePending],
+  [TEST_ACCOUNT, CODE.testAccount],
+  [EMAIL_UNVERIFIED, CODE.emailUnverified],
+  [PASSWORD_CHANGED, CODE.passwordChanged],
+  [NEEDS_HELP, CODE.needsHelp],
+  [ISSUER_ACCOUNT_EXISTS, CODE.issuerAccountExists],
+  [PASSWORD_REJECTED, CODE.passwordRejected],
+]);
+
+function coded(statusCode: number, message: string): { statusCode: number; message: string; code: IdentityRefusalCode } {
+  const code = CODE_OF.get(message);
+  if (!code) throw new Error(`identity refusal without a code: ${message}`);
+  return { statusCode, message, code };
+}
+export const refusedSignIn = (message: string) => new UnauthorizedException(coded(401, message));
+export const refusedSetup = (message: string) => new BadRequestException(coded(400, message));
+const refusedConflict = (message: string) => new ConflictException(coded(409, message));
 /** The bcrypt cost new PMC passwords use (password-credentials.service.ts); every break-glass try does this much work. */
 const EVEN_COST = 12;
 /** bcrypt hashes of random values nobody holds, one per cost: compared to make every break-glass try cost the same. */
@@ -163,11 +190,11 @@ export class IdentitySignInService {
     }
     if (settled.kind === 'stale') {
       this.line('login', attempt, 'password changed during sign-in');
-      throw new UnauthorizedException(PASSWORD_CHANGED);
+      throw refusedSignIn(PASSWORD_CHANGED);
     }
     if (settled.kind === 'other-account') {
       this.line('login', attempt, 'email names another account');
-      throw new UnauthorizedException(NEEDS_HELP);
+      throw refusedSignIn(NEEDS_HELP);
     }
     return this.landed('login', attempt, settled);
   }
@@ -179,16 +206,16 @@ export class IdentitySignInService {
         return { account: settled.user, fresh: settled.fresh };
       case 'no-account':
         this.line(route, attempt, 'no PMC account');
-        throw new UnauthorizedException(NO_PROJECT);
+        throw refusedSignIn(NO_PROJECT);
       case 'invite-pending':
         this.line(route, attempt, 'invitation not accepted');
-        throw new UnauthorizedException(INVITE_PENDING);
+        throw refusedSignIn(INVITE_PENDING);
       case 'test-account':
         this.line(route, attempt, 'test account refused');
-        throw new UnauthorizedException(TEST_ACCOUNT);
+        throw refusedSignIn(TEST_ACCOUNT);
       case 'email-unverified':
         this.line(route, attempt, 'email unverified');
-        throw new UnauthorizedException(EMAIL_UNVERIFIED);
+        throw refusedSignIn(EMAIL_UNVERIFIED);
     }
   }
 
@@ -245,10 +272,10 @@ export class IdentitySignInService {
     unsettled: () => void,
   ): Promise<IdentityOutcome> {
     const email = (account.email ?? '').trim().toLowerCase();
-    if (!email) throw new BadRequestException(NEEDS_HELP);
+    if (!email) throw refusedSetup(NEEDS_HELP);
     if (QA_ACCOUNT_EMAIL.test(email)) {
       this.line('password', attempt, 'test account refused');
-      throw new BadRequestException(TEST_ACCOUNT);
+      throw refusedSetup(TEST_ACCOUNT);
     }
     const read = readIdentityConfig();
     if (read.state !== 'on') {
@@ -302,7 +329,7 @@ export class IdentitySignInService {
           }
           if (set === 'rejected') {
             this.line('password', attempt, 'issuer refused password');
-            throw new BadRequestException('Redbracket ID did not accept this password. Choose another one.');
+            throw refusedSetup(PASSWORD_REJECTED);
           }
           issuerPasswordSet = true;
         }
@@ -312,7 +339,7 @@ export class IdentitySignInService {
         if (!signedIn.ok && signedIn.failure === 'down') return this.unavailable(attempt);
         if (!signedIn.ok) {
           this.line('password', attempt, found.found === 'one' && !link ? 'issuer person exists' : 'issuer refused new password');
-          throw new BadRequestException(found.found === 'one' && !link ? ISSUER_ACCOUNT_EXISTS : NEEDS_HELP);
+          throw refusedSetup(found.found === 'one' && !link ? ISSUER_ACCOUNT_EXISTS : NEEDS_HELP);
         }
         const claims = signedIn.claims;
         return await this.prisma.$transaction(async (tx) => {
@@ -355,16 +382,16 @@ export class IdentitySignInService {
     attempt: string,
   ): Promise<IdentityOutcome> {
     const current = await this.orgs.accountById(tx, accountId);
-    if (!current || (current.email ?? '').toLowerCase() !== email) throw new BadRequestException(NEEDS_HELP);
+    if (!current || (current.email ?? '').toLowerCase() !== email) throw refusedSetup(NEEDS_HELP);
     const linked = await linkOf(tx, current.id);
     if (linked) {
-      if (linked.issuer !== issuer || linked.subject !== claims.sub) throw new BadRequestException(NEEDS_HELP);
+      if (linked.issuer !== issuer || linked.subject !== claims.sub) throw refusedSetup(NEEDS_HELP);
       const user = await tx.user.update({ where: { id: current.id }, data: { emailVerifiedAt: new Date(), credentialVersion: { increment: 1 } } });
       return { account: user, fresh: false };
     }
     if (neverSetUp(current)) {
       // the invitation's own acceptance: PMC's code proved the mailbox and the issuer took (or already had) the password
-      if (!(await linkInvite(tx, issuer, claims.sub, current.id))) throw new BadRequestException(NEEDS_HELP);
+      if (!(await linkInvite(tx, issuer, claims.sub, current.id))) throw refusedSetup(NEEDS_HELP);
       const user = await tx.user.update({ where: { id: current.id }, data: { emailVerifiedAt: new Date(), credentialVersion: { increment: 1 } } });
       return { account: user, fresh: false };
     }
@@ -382,6 +409,6 @@ export class IdentitySignInService {
 
   private needsHelp(attempt: string, why: string): never {
     this.line('password', attempt, why);
-    throw new ConflictException(NEEDS_HELP);
+    throw refusedConflict(NEEDS_HELP);
   }
 }
