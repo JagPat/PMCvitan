@@ -8,7 +8,8 @@ import { TeamAccessScreen } from '@/screens/TeamAccessScreen';
 /**
  * A failed sign-in used to show its reason only as red text, so a screen reader announced nothing when the form
  * failed. Each sign-in step now shows the error as an alert (`role="alert"`), mounted only while there is an error
- * and keyed by its reason, so a different error on the same step is a new alert and is announced again.
+ * and keyed by the failure, so each new failure on the same step (a different error, or the same one again) is a new
+ * alert and is announced again, while a language switch re-words it in place.
  */
 
 afterEach(() => cleanup());
@@ -52,6 +53,26 @@ describe('a sign-in error is announced to screen readers', () => {
     expect(second.textContent).toBe(signInErrors.en.serverDown);
     expect(second).not.toBe(first);
     expect(first.isConnected).toBe(false);
+  });
+
+  it('the same error again is a new alert too, so a repeated failure is announced again', () => {
+    const view = show({ step: 'login' });
+    act(() => { useStore.getState().login('', ''); });
+    const first = view.getByRole('alert');
+    act(() => { useStore.getState().login('', ''); });
+    const second = view.getByRole('alert');
+    expect(second.textContent).toBe(first.textContent);
+    expect(second).not.toBe(first);
+    expect(first.isConnected).toBe(false);
+  });
+
+  it('a language switch re-words the same alert in place, without a second announcement of a new error', () => {
+    const view = show({ step: 'login', ...failed('wrongPassword') });
+    const first = view.getByRole('alert');
+    act(() => { useStore.getState().setLang('hi'); });
+    const after = view.getByRole('alert');
+    expect(after).toBe(first);
+    expect(after.textContent).toBe(signInErrors.hi.wrongPassword);
   });
 
   it('the code rows keep the alert in line, and hide it while a check is sending', () => {

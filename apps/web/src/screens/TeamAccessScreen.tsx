@@ -84,8 +84,20 @@ function BackBtn({ onClick, label }: { onClick: () => void; label: string }) {
   );
 }
 
+/** One id per recorded failure. `failAccess` stores a fresh key object for every failure, even a repeat of the
+ *  same reason, and a language switch keeps that object, so its identity is the failure's identity. An error
+ *  written without a key (its own words) is identified by those words. */
+const failureIds = new WeakMap<object, string>();
+let failureCount = 0;
+function failureId(errorKey: object | null | undefined, error: string | null | undefined): string {
+  if (!errorKey) return `text:${error ?? ''}`;
+  let id = failureIds.get(errorKey);
+  if (!id) { failureCount += 1; id = `failure:${failureCount}`; failureIds.set(errorKey, id); }
+  return id;
+}
+
 /** The sign-in error, announced to screen readers (`role="alert"`). Mounted only while there is an error and
- *  keyed by its reason, so a different error on the same step is a new alert and is announced again. `inline`
+ *  keyed by `failureId`, so each new failure on the same step is a new alert and is announced again. `inline`
  *  keeps the code rows' in-line style. */
 function AccessErrorText({ error, inline = false }: { error: string; inline?: boolean }) {
   if (inline) return <span role="alert" data-testid="access-error" style={{ color: 'var(--red-solid)' }}>{error}</span>;
@@ -102,8 +114,9 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
   const sending = useStore((s) => s.access.sending);
   // #886: worded in the gate's current language, so a language switch after a failure re-translates it
   const error = useStore((s) => shownAccessError(s.access, s.lang));
-  // which error this is (its reason, not its words), so a different error on the same step mounts a fresh alert
-  const errorId = useStore((s) => s.access.errorKey?.key ?? s.access.error ?? '');
+  // which failure this is, so each new one (a different error, or the same one again) mounts a fresh alert, while
+  // a language switch re-words the same failure in place
+  const errorId = useStore((s) => failureId(s.access.errorKey, s.access.error));
   const devCode = useStore((s) => s.access.devCode);
   const channel = useStore((s) => s.access.channel ?? null);
   const codeLength = useStore((s) => s.access.codeLength ?? 4);
