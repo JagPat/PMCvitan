@@ -1076,6 +1076,38 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     await publish({ deciderKind: 'member', deciderMembershipId: added.body.membershipId });
   });
 
+  // A4b r3 (Codex 4452559441): a company whose projects are all archived still takes the person's new account by email,
+  // so its retired seat can be re-seated and the `retired` list emptied; a brand-new identity still needs a home project
+  it('A4b re-seat into a company with no live project: the owner adds the new account by email, then removes the retired row', async () => {
+    const old = await invitee('no-live-co', 'pmc');
+    await t.prisma.user.update({ where: { id: old.id }, data: { passwordHash: await bcrypt.hash('the old local passphrase', 4), emailVerifiedAt: new Date() } });
+    await t.prisma.orgMembership.create({ data: { orgId: f.orgB.id, userId: old.id, role: 'admin' } });
+    await t.prisma.orgMembership.create({ data: { orgId: f.orgB.id, userId: f.otherUser.id, role: 'owner' } });
+    await t.prisma.project.update({ where: { id: f.projectB.id }, data: { archivedAt: new Date() } });
+    try {
+      fake.addPerson(old.email!, `the ${old.email} passphrase`);
+      await login(old.email!, `the ${old.email} passphrase`).expect(401); // joins fresh: the old row is retired
+      const fresh = await t.prisma.user.findUniqueOrThrow({ where: { email: old.email! } });
+      made.push(fresh.id);
+      const owner = t.issueOrgOwnerToken(f.otherUser.id, f.projectB.id, f.orgB.id);
+      const added = await http().post(`/orgs/${f.orgB.id}/members`).set('Authorization', `Bearer ${owner}`)
+        .send({ name: 'no-live-co', email: old.email, role: 'admin' });
+      expect(added.status, added.text).toBe(201); // at b69084d: 400 "Create a project in this org first"
+      expect(added.body.userId).toBe(fresh.id);
+      await http().delete(`/orgs/${f.orgB.id}/members/${old.id}`).set('Authorization', `Bearer ${owner}`).expect(200);
+      expect(await t.prisma.orgMembership.findMany({ where: { orgId: f.orgB.id, userId: { in: [old.id, fresh.id] } }, select: { userId: true, role: true } }))
+        .toEqual([{ userId: fresh.id, role: 'admin' }]);
+      // a brand-new identity still has no home project there
+      const brandNew = await http().post(`/orgs/${f.orgB.id}/members`).set('Authorization', `Bearer ${owner}`)
+        .send({ name: 'nobody yet', email: `rbid-no-home-${Date.now()}@test.local`, role: 'member' });
+      expect(brandNew.status, brandNew.text).toBe(400);
+      expect(brandNew.body.message).toBe('Create a project in this org first, so the new member has a home project');
+    } finally {
+      await t.prisma.project.update({ where: { id: f.projectB.id }, data: { archivedAt: null } });
+      await t.prisma.orgMembership.deleteMany({ where: { orgId: f.orgB.id, userId: { in: [old.id, f.otherUser.id] } } });
+    }
+  });
+
   // A4b r1 (Codex 4451627324): two owner-roster writes on the last two owners, held behind the org key so both pass every
   // read before it and queue on the key together; the key orders them and the second is refused
   async function raceLastTwoOwners(
