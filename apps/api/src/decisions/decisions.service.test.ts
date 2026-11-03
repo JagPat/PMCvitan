@@ -98,6 +98,10 @@ const orgsStub = {
   lockActiveMembership: vi.fn(async () => true),
   lockActiveMembershipById: vi.fn(async () => ({ userId: 'u-client', name: 'Mr. Shah', role: 'client' })),
   effectiveRoleStanding: vi.fn(async () => 1),
+  // Redbracket ID A4b-s: the live count and the retirement read are healthy here (integration-probed in
+  // redbracket-id-decisions-live-holder.test.ts)
+  liveRoleStanding: vi.fn(async () => 1),
+  accountRetired: vi.fn(async () => false),
   // round-11 Codex F1 — approve re-validates the caller's LIVE role standing in-tx; healthy here
   // (the stale-standing refusals are integration-probed, R11-F1)
   hasProjectRoleStanding: vi.fn(async () => true),

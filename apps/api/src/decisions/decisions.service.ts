@@ -27,6 +27,17 @@ import { RoleStandingQuery } from '../platform/role-standing.query';
 import { lockStandingAnchors } from '../common/standing-anchor';
 import { decisionPath } from '../platform/record-paths';
 
+/**
+ * Redbracket ID A4b-s — the refusals for a holder nobody can sign in as: an account a first Redbracket ID sign-in
+ * retired keeps its seats until the team re-seats the person (RUNBOOK "Redbracket ID re-seat"). Publishing, a published
+ * birth, a reopen or a forward that would hand a decision to such holders alone is refused here as a 409, before the
+ * database seal (`Decision_x_live_holder_standing`, A4b-m) would refuse it as a server error.
+ */
+const retiredRoleHolders = (kind: string, then: string) =>
+  `This project's only ${kind} holders are accounts retired by Redbracket ID, which nobody can sign in as — re-seat the person first (add their new account, RUNBOOK "Redbracket ID re-seat"), then ${then}`;
+const RETIRED_NAMED_DECIDER =
+  'The named decider\'s account was retired by Redbracket ID, and nobody can sign in as it — re-seat the person (add their new account) and name their new membership';
+
 /** The consultation commands REQUIRE a client key (review round 19) — see `requestConsultation`. */
 function requireIdempotencyKey(key: string | undefined, commandType: string): string {
   const trimmed = (key ?? '').trim();
@@ -215,6 +226,7 @@ export class DecisionsService {
         if (input.deciderKind === 'member') {
           member = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, input.deciderMembershipId!);
           if (!member) throw new BadRequestException('The named decider must be an ACTIVE member of this project');
+          if (input.publish && (await this.orgsParticipant.accountRetired(tx, member.userId))) throw new ConflictException(RETIRED_NAMED_DECIDER);
         }
         // 4b round 10: publishing a ROLE-held decision into a project with no active holder
         // would birth the zero-holder state the removal guard exists to prevent.
@@ -222,6 +234,9 @@ export class DecisionsService {
           const standing = await this.orgsParticipant.effectiveRoleStanding(tx, projectId, input.deciderKind);
           if (standing === 0) {
             throw new ConflictException(`This project has no active ${input.deciderKind} to hold the decision — name a member decider, or add the ${input.deciderKind} first`);
+          }
+          if ((await this.orgsParticipant.liveRoleStanding(tx, projectId, input.deciderKind)) === 0) {
+            throw new ConflictException(retiredRoleHolders(input.deciderKind, 'publish the decision'));
           }
         }
         // 4b round 18 — the RE-ORDERED create: the head births UNPUBLISHED, its options land,
@@ -357,11 +372,15 @@ export class DecisionsService {
           if (!member) {
             throw new ConflictException('The named decider is no longer an active member — edit the draft\'s holder (updateDraft) before publishing');
           }
+          if (await this.orgsParticipant.accountRetired(tx, member.userId)) throw new ConflictException(RETIRED_NAMED_DECIDER);
         }
         if (d.deciderKind === 'client' || d.deciderKind === 'pmc') {
           const standing = await this.orgsParticipant.effectiveRoleStanding(tx, projectId, d.deciderKind);
           if (standing === 0) {
             throw new ConflictException(`This project has no active ${d.deciderKind} to hold the decision — edit the draft's holder (updateDraft) before publishing`);
+          }
+          if ((await this.orgsParticipant.liveRoleStanding(tx, projectId, d.deciderKind)) === 0) {
+            throw new ConflictException(retiredRoleHolders(d.deciderKind, 'publish the decision'));
           }
         }
         // 4b rounds 13/17 — the option floor re-judged at the publish door under the row lock
@@ -823,11 +842,15 @@ export class DecisionsService {
         if (toKind === 'member') {
           const to = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, toMembershipId!);
           if (!to) throw new ConflictException('The forward target holds no active membership on this project — the new holder must be able to act');
+          if (await this.orgsParticipant.accountRetired(tx, to.userId)) throw new ConflictException(RETIRED_NAMED_DECIDER);
           targetUserIds = [to.userId];
           toLabel = to.name;
         } else {
           targetUserIds = await this.orgsParticipant.effectiveRoleHolderUserIds(tx, projectId, toKind);
           if (targetUserIds.length === 0) throw new ConflictException(`Nobody holds the ${toKind} role on this project — the decision would land with nobody able to act on it`);
+          if ((toKind === 'client' || toKind === 'pmc') && (await this.orgsParticipant.liveRoleStanding(tx, projectId, toKind)) === 0) {
+            throw new ConflictException(retiredRoleHolders(toKind, 'forward the decision'));
+          }
           toLabel = DESIGNATION_ROLE_LABEL[toKind];
         }
         // the actor's FROZEN pair (A2's seam) — the fact's `forwardedByRole`/`forwardedByName`, the event's
@@ -1767,10 +1790,14 @@ export class DecisionsService {
             if (!member) {
               throw new ConflictException('The named decider is no longer an active member — the approved outcome stands; a changed need is a NEW decision (or, from 4d, forward this one)');
             }
+            if (await this.orgsParticipant.accountRetired(tx, member.userId)) throw new ConflictException(RETIRED_NAMED_DECIDER);
           } else if (d.deciderKind === 'client' || d.deciderKind === 'pmc') {
             const standing = await this.orgsParticipant.effectiveRoleStanding(tx, projectId, d.deciderKind);
             if (standing === 0) {
               throw new ConflictException(`This project has no active ${d.deciderKind} to re-decide — the approved outcome stands; a changed need is a NEW decision`);
+            }
+            if ((await this.orgsParticipant.liveRoleStanding(tx, projectId, d.deciderKind)) === 0) {
+              throw new ConflictException(retiredRoleHolders(d.deciderKind, 'request the change'));
             }
           }
           const { count } = await tx.decision.updateMany({
