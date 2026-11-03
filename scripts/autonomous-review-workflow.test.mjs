@@ -1929,6 +1929,22 @@ test('findings 4100230308 (#628) and 4103625675 (#630): a relabel to a candidate
   assert.equal(relabel.log.statuses.at(-1).sha, head);
   assert.match(relabel.log.statuses.at(-1).description, /^scope: .*head commit does not declare it/u);
 
+  // The refusal's writes, in order: the draft (which cancels a queued auto-merge), then the `scope:` failure on the
+  // exact head, then the scope notice. A draft GitHub refuses (FORBIDDEN, as under contents: read in run 41566154069)
+  // throws before any status: the job goes red and the edited CI run's `review-scope` and the controller's re-judge
+  // hold the merge (notes/gate-codex-silent/relabel-guard-perm.md (b)). contents: write is what keeps the draft working.
+  const ordered = [];
+  const tracked = harness(pull('codex'), 'fix\n\nCorrection-Owner: claude\n');
+  tracked.client.setDraft = async (pr, draft) => { ordered.push(['draft', draft]); return { ...pr, draft }; };
+  tracked.client.setStatus = async (sha, state, description) => { ordered.push(['status', state, description.split(':')[0]]); };
+  tracked.client.updateStickyComment = async () => { ordered.push(['sticky']); };
+  assert.equal(await reviewGate.guardCandidateRelabel(tracked.client, pull('codex'), head), 'refused');
+  assert.deepEqual(ordered, [['draft', true], ['status', 'failure', 'scope'], ['sticky']]);
+  const forbidden = harness(pull('codex'), 'fix\n\nCorrection-Owner: claude\n');
+  forbidden.client.setDraft = async () => { throw new Error('GitHub GraphQL failed: [{"type":"FORBIDDEN","path":["convertPullRequestToDraft"]}]'); };
+  await assert.rejects(reviewGate.guardCandidateRelabel(forbidden.client, pull('codex'), head), /FORBIDDEN/u);
+  assert.deepEqual(forbidden.log.statuses, [], 'a refused draft throws before any status: the job goes red');
+
   // A truthful candidate seed (the head declares codex) is untouched: no status, no draft.
   const seed = harness(pull('codex'), 'seed\n\nCorrection-Owner: codex\n');
   assert.equal(await reviewGate.guardCandidateRelabel(seed.client, pull('codex'), head), 'admitted');
@@ -1957,7 +1973,7 @@ test('findings 4100230308 (#628) and 4103625675 (#630): a relabel to a candidate
   assert.equal(reviewGate.contextForEvent('pull_request_target', { action: 'labeled', pull_request: { number: 258 } }), null);
 });
 
-test('the relabel guard workflow runs trusted default-branch code with only the permissions it needs', async () => {
+test('the relabel guard workflow runs trusted default-branch code with the permissions its refusal needs', async () => {
   const workflow = await readFile(new URL('../.github/workflows/candidate-relabel-guard.yml', import.meta.url), 'utf8');
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const orchestrator = await readFile(workflowPath, 'utf8');
@@ -1975,7 +1991,9 @@ test('the relabel guard workflow runs trusted default-branch code with only the 
   assert.doesNotMatch(workflow, /pnpm|npm (ci|install)/u);
   // the whole permissions block, exactly, and the only one (no job-level override), so no scope changes silently
   assert.equal([...workflow.matchAll(/^\s*permissions:/gmu)].length, 1, 'one permissions block, never a job-level override');
-  assert.match(workflow, /^permissions:\n {2}contents: read\n {2}issues: write\n {2}pull-requests: write\n {2}statuses: write\n\n/mu);
+  // contents: write — the refusal's draft (convertPullRequestToDraft) is FORBIDDEN under contents: read (run 41566154069),
+  // and that draft is what cancels a queued auto-merge
+  assert.match(workflow, /^permissions:\n {2}contents: write\n {2}issues: write\n {2}pull-requests: write\n {2}statuses: write\n\n/mu);
   // The controller's exact-head concurrency group, never cancelled: one writer per head at a time.
   assert.match(workflow, /group: autonomous-review-owner-\$\{\{ github\.event\.pull_request\.number \}\}-\$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
   assert.match(workflow, /cancel-in-progress:\s*false/u);

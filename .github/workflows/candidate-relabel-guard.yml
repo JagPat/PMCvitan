@@ -9,8 +9,12 @@ on:
   pull_request_target:
     types: [edited]
 
+# contents: write — GitHub refuses the GITHUB_TOKEN's convertPullRequestToDraft without it ("Resource not accessible by
+# integration", run 41566154069 on #1322, where event-disarm.yml died the same way), and the refusal's draft is what
+# cancels a queued auto-merge. The job still checks out only the default branch, with no persisted credentials, and
+# never runs PR code.
 permissions:
-  contents: read
+  contents: write
   issues: write
   pull-requests: write
   statuses: write
