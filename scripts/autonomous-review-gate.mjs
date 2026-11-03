@@ -1657,7 +1657,7 @@ async function mergeOrArmAuthorizedHead(client, pullRequest, expectedHead, verdi
     // throws into the tail (`holdUnarmedGreen`), whose retryable hold drafts the pull request, dropping the queued merge
     const comments = await client.issueComments(pullRequest.number);
     const after = codexStateRecordVerdict(comments, expectedHead, 0);
-    const changed = after === 'dirty' && codexRecordFingerprint(comments) !== authorization.recordFingerprint;
+    const changed = after === 'dirty' && codexRecordFingerprint(comments, expectedHead) !== authorization.recordFingerprint;
     if (after === 'hold' || after === 'security' || changed) {
       await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead);
       await refuseReviewedGreen(client, pullRequest, expectedHead, {
@@ -2041,7 +2041,7 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead,
   if (record === 'security') return { allowed: false, state: 'codex_review_security' };
   if (record === 'hold') return { allowed: false, state: 'codex_review_held' };
   // 2A3b-2 B (#1318 Codex 4448897188) — what the records said when this authorized: the baseline for the re-read after the arm
-  return { allowed: true, state: 'authorized', pullRequest: finalLive, recordFingerprint: codexRecordFingerprint(issueComments) };
+  return { allowed: true, state: 'authorized', pullRequest: finalLive, recordFingerprint: codexRecordFingerprint(issueComments, expectedHead) };
 }
 
 /**

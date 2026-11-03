@@ -147,6 +147,9 @@ test('2A3b-2 B (#1318 Codex 4448897188) — a record that turned dirty since the
     ['clean, then a new dirty record', () => [cleanRecord(HEAD)], () => [dirtyRecord(HEAD)]],
     // Stage 1's re-check of 5c0102ba — a second review ending dirty with an identical body: only its update time moves
     ['dirty, then another review completed dirty, same body', () => [dirtyRecord(HEAD)], () => [{ ...dirtyRecord(HEAD), updated_at: '2026-11-02T22:00:00Z' }]],
+    // #1320 Codex 4450011604 — a record about another head that comes to name this head, dirty, is new evidence
+    ['another head\'s record, then the same record dirty on this head', () => [dirtyRecord(HEAD), { ...codexRecord(OLD, 'completed'), id: 80 }],
+      () => [dirtyRecord(HEAD), { ...dirtyRecord(HEAD), id: 80, updated_at: '2026-11-02T22:00:00Z' }]],
   ]) {
     const moved = armTailClient(after, before);
     assert.equal(await completeReviewedPullRequest(moved, armTailPull(), HEAD, eligible), 'review_refused', name);
@@ -156,6 +159,17 @@ test('2A3b-2 B (#1318 Codex 4448897188) — a record that turned dirty since the
   assert.equal(await completeReviewedPullRequest(seen, armTailPull(), HEAD, eligible), 'queued');
   assert.equal(seen.log.some(([k]) => k === 'disable' || k === 'status'), false, 'the record the authorization judged keeps the arm');
   assert.ok(seen.log.some(([k]) => k === 'handoff'));
+
+  // #1320 Codex 4450011604 — the dirty record the authorization admitted is unchanged; only a record about another head
+  // moved (a late edit, or a new one): not evidence for this head, so the arm stays
+  for (const [name, after] of [
+    ['an old-head run completed late', () => [dirtyRecord(HEAD), { ...codexRecord(OLD, 'completed'), id: 80, updated_at: '2026-11-02T22:00:00Z' }]],
+    ['a new old-head record', () => [dirtyRecord(HEAD), { ...codexRecord(OLD, 'in_progress'), id: 80 }, { ...securityRecord(OLD, 'completed'), id: 81 }]],
+  ]) {
+    const late = armTailClient(after, () => [dirtyRecord(HEAD), { ...codexRecord(OLD, 'in_progress'), id: 80 }]);
+    assert.equal(await completeReviewedPullRequest(late, armTailPull(), HEAD, eligible), 'queued', name);
+    assert.equal(late.log.some(([k]) => k === 'disable' || k === 'status'), false, name);
+  }
 });
 
 test('2A3b-2 B — structural: the record re-read follows the one arm, inside the guarded tail', async () => {
@@ -167,20 +181,28 @@ test('2A3b-2 B — structural: the record re-read follows the one arm, inside th
   assert.ok(arm > 0 && reread > arm && queuedReturn > reread, 'arm, then the re-read, then the queued outcome');
   const judged = tail.slice(reread, queuedReturn);
   assert.match(judged, /codexStateRecordVerdict\(comments, expectedHead, 0\)/u);
-  assert.match(judged, /after === 'dirty' && codexRecordFingerprint\(comments\) !== authorization\.recordFingerprint/u);
+  assert.match(judged, /after === 'dirty' && codexRecordFingerprint\(comments, expectedHead\) !== authorization\.recordFingerprint/u);
   assert.match(judged, /await disarmQueuedAutoMerge\(client, pullRequest\.number, expectedHead\);\s*await refuseReviewedGreen\(/u);
 });
 
-test('2A3b-2 B (#1318 Codex 4448897188) — the record fingerprint: Codex\'s records only, by id, update time and body, sorted', () => {
+test('2A3b-2 B (#1318 Codex 4448897188) — the record fingerprint: Codex\'s records naming the head only, by id, update time and body, sorted', () => {
   const a = codexRecord(HEAD, 'in_progress');
   const b = { ...securityRecord(HEAD, 'completed'), id: 12 };
   const note = { id: 5, user: { login: 'someone' }, body: 'note' };
-  assert.equal(codexRecordFingerprint([a, b, note]), codexRecordFingerprint([note, b, a]), 'order and other comments do not count');
-  assert.notEqual(codexRecordFingerprint([a]), codexRecordFingerprint([codexRecord(HEAD, 'completed')]), 'an edited record changes it');
-  assert.notEqual(codexRecordFingerprint([a]), codexRecordFingerprint([{ ...a, updated_at: '2026-11-02T22:00:00Z' }]), 'a record edited again with the same body changes it');
-  assert.equal(codexRecordFingerprint([codexRecord(HEAD, 'in_progress', 'someone')]), '', 'another login carrying the marker');
-  assert.equal(codexRecordFingerprint([{ ...note, user: { login: 'chatgpt-codex-connector[bot]' } }]), '', 'Codex without the marker');
-  assert.equal(codexRecordFingerprint(null), '');
+  const fp = (comments) => codexRecordFingerprint(comments, HEAD);
+  assert.equal(fp([a, b, note]), fp([note, b, a]), 'order and other comments do not count');
+  assert.notEqual(fp([a]), fp([codexRecord(HEAD, 'completed')]), 'an edited record changes it');
+  assert.notEqual(fp([a]), fp([{ ...a, updated_at: '2026-11-02T22:00:00Z' }]), 'a record edited again with the same body changes it');
+  assert.equal(fp([codexRecord(HEAD, 'in_progress', 'someone')]), '', 'another login carrying the marker');
+  assert.equal(fp([{ ...note, user: { login: 'chatgpt-codex-connector[bot]' } }]), '', 'Codex without the marker');
+  assert.equal(fp(null), '');
+  // #1320 Codex 4450011604 — a record naming only another head, or one whose JSON does not parse, is not this head's
+  const other = { ...codexRecord(OLD, 'in_progress'), id: 80 };
+  assert.equal(fp([a, other]), fp([a, { ...other, updated_at: '2026-11-02T22:00:00Z', body: codexRecord(OLD, 'completed').body }]), 'another head\'s record does not count');
+  assert.equal(fp([other]), '');
+  assert.equal(fp([{ ...a, body: '<!-- codex-review-state:v1 {not json -->' }]), '', 'an unparseable record');
+  assert.notEqual(fp([a, b]), fp([a, { ...b, body: securityRecord(OLD, 'completed').body }]), 'a record that stops naming the head changes it');
+  assert.notEqual(fp([b]), fp([{ ...b, body: securityRecord(null, null).body }]), 'the security section naming the head counts');
 });
 
 // Stage 1's split check (B-M2, B-M3) — the arm tail's refusal carries the adopted recovery request and the attempt: the

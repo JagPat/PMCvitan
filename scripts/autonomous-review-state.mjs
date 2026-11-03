@@ -190,14 +190,24 @@ export function codexStateRecordVerdict(issueComments, expectedHead, readyAtMs) 
 }
 
 /**
- * 2A3b-2 B (#1318 Codex 4448897188) — what Codex's review-state records say, as one string: each Codex-authored record
- * (REST login and marker, as `codexStateRecordVerdict` reads them) by id, last update and body, sorted. Two reads with
- * the same fingerprint saw the same records; a review that completed between them changes it, even one that ends with
- * an identical body (its update time moves).
+ * 2A3b-2 B (#1318 Codex 4448897188) — what Codex's review-state records say about `expectedHead`, as one string: each
+ * Codex-authored record (REST login, marker and parseable JSON, as `codexStateRecordVerdict` reads them) whose code or
+ * security section names `expectedHead`, by id, last update and body, sorted. Two reads with the same fingerprint saw
+ * the same records for this head; a review that completed between them changes it, even one that ends with an
+ * identical body (its update time moves), and so does a record that comes to name this head or stops naming it.
+ * #1320 Codex 4450011604 — a record about another head only, edited late, is not evidence for this head and does not
+ * change it.
  */
-export function codexRecordFingerprint(issueComments) {
+export function codexRecordFingerprint(issueComments, expectedHead) {
   return (issueComments ?? [])
-    .filter((comment) => isCodexActor(comment) && /<!--\s*codex-review-state:v1\s/u.test(String(comment?.body ?? '')))
+    .filter((comment) => {
+      if (!isCodexActor(comment)) return false;
+      const match = /<!--\s*codex-review-state:v1\s+([\s\S]*?)\s*-->/u.exec(String(comment?.body ?? ''));
+      if (!match) return false;
+      let record;
+      try { record = JSON.parse(match[1]); } catch { return false; }
+      return record?.code_review?.commit_sha === expectedHead || record?.security_review?.commit_sha === expectedHead;
+    })
     .map((comment) => `${String(comment.id)}\u0000${String(comment.updated_at ?? comment.created_at ?? '')}\u0000${String(comment.body)}`)
     .sort()
     .join('\u0001');
