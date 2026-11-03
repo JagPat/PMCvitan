@@ -366,13 +366,18 @@ test('2A3b-2 (#1318 Codex 4449402449) — an ownership verdict that became newes
   const withholding = { id: 6105, context: 'codex-current-head', state: 'failure', description: `${OWNERSHIP_CANDIDATE_HELD}` };
   const statuses = [tokenedSuccess()];
   const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  // Stage 1's gap-check of 127efc12 (U13) — every status read, the re-read included, is of this head
+  const readShas = [];
   const result = await runDisarm({
     number: 610, pulls, statuses, event: events.record(610, codexRecord(HEAD, 'in_progress')),
     overrides: {
       async disableAutoMerge(pull) { pulls.get(pull.number).auto_merge = null; statuses.unshift(withholding); },
+      async statuses(sha) { readShas.push(sha); return [...statuses]; },
     },
   });
   assert.equal(result.error, null);
+  assert.ok(readShas.length >= 2, 'the statuses were read again after the disarm');
+  assert.deepEqual([...new Set(readShas)], [HEAD], 'every status read is of the head');
   assert.equal(pulls.get(610).auto_merge, null, 'disarmed');
   assert.deepEqual(result.log.filter(([k]) => k === 'status' || k === 'draft' || k === 'sticky'), [], 'nothing written over the ownership verdict');
 
@@ -397,7 +402,7 @@ test('2A3b-2 (#1318 Codex 4449402449) — an ownership verdict that became newes
 
 // #1318 round 2 (Codex 4449402452) — a review that ran and completed with findings before this run read it leaves the
 // record dirty with no run left to see. Written after the head's green: news that green never judged, so disarmed and
-// re-judged. Written before it (the record the green judged; a cap-deferred head), or with no green newest: nothing
+// re-judged. A set the green was written strictly after (a cap-deferred head), or no green newest: nothing
 test('2A3b-2 C (#1318 Codex 4449402452) — a dirty record written after the green disarms and is re-judged; one the green was written after stays', { timeout: 30_000 }, async () => {
   const dirty = dirtyRecord(HEAD); // written 21:00
   for (const [name, event] of [['the run event, read after it completed', events.record(610, codexRecord(HEAD, 'in_progress'))], ['the completion event', events.record(610, dirty)]]) {
@@ -409,7 +414,7 @@ test('2A3b-2 C (#1318 Codex 4449402452) — a dirty record written after the gre
     neverArmsOrMerges(result.log, name);
   }
   for (const [name, statuses] of [
-    ['the green was written after it (the record it judged)', [tokenedSuccess('2026-11-02T21:30:00Z')]],
+    ['the green was written strictly after it', [tokenedSuccess('2026-11-02T21:30:00Z')]],
     ['no green newest', [{ id: 6106, context: 'codex-current-head', state: 'failure', description: 'review: 1 current-head Codex finding', created_at: '2026-11-02T20:30:00Z' }]],
   ]) {
     const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
@@ -680,6 +685,20 @@ test('2A3b-2 C — dirty-after-green is strict and spans every record: a tie, an
   assert.equal(oldKept.error, null);
   assert.ok(oldPulls.get(610).auto_merge, 'another head\'s late record: the merge stays queued');
   assert.deepEqual(oldKept.log.filter(([k]) => k === 'status' || k === 'disable'), []);
+});
+
+// Stage 1's gap-check of 127efc12 (U4) — a set that cannot be listed is judged on the named record alone: a named record
+// completed clean on the head writes nothing and keeps the merge (at worst nothing; every record's own event and the
+// authorization judge the rest)
+test('2A3b-2 C — an unlistable set with a clean named record writes nothing', { timeout: 30_000 }, async () => {
+  const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const result = await runDisarm({
+    number: 610, pulls, statuses: [tokenedSuccess('2026-11-02T20:30:00Z')], event: events.record(610, cleanRecord(HEAD)), comments: [cleanRecord(HEAD)],
+    overrides: { async issueComments() { throw new Error('GitHub GET issue comments failed (502)'); } },
+  });
+  assert.equal(result.error, null);
+  assert.ok(pulls.get(610).auto_merge, 'the merge stays queued');
+  assert.deepEqual(result.log.filter(([k]) => k === 'status' || k === 'disable' || k === 'draft' || k === 'sticky'), [], 'nothing written');
 });
 
 test('2A3b-2 C — codexRecordLatestMs: Codex\'s records naming the head only; none is -Infinity; an unreadable time is NaN', () => {
