@@ -78,7 +78,7 @@ describe('retirement gate (structural)', () => {
   it('isRetired is asked exactly where this file says, and nowhere answers it another way', () => {
     const callers = sources(SRC).filter((path) => /\bisRetired\(/.test(read(path))).sort();
     // the ONE predicate is defined with the record's platform owner (A4b r1, Codex 4451627330), which auth and orgs both ask
-    expect(callers).toEqual(['auth/auth.service.ts', 'auth/password-credentials.service.ts', 'orgs/live-standing.ts', 'orgs/members.service.ts', 'orgs/operator-owner-reseat.ts', 'orgs/orgs.service.ts', 'platform/identity-retirement.query.ts']);
+    expect(callers).toEqual(['auth/auth.service.ts', 'auth/password-credentials.service.ts', 'orgs/live-standing.ts', 'orgs/members.service.ts', 'orgs/operator-owner-reseat.ts', 'orgs/orgs.participant.ts', 'orgs/orgs.service.ts', 'platform/identity-retirement.query.ts']);
     const others = sources(SRC).filter((path) => /identityRetirement\.(count|findFirst|findUnique|findMany)\(/.test(read(path)));
     // every read of the platform-owned record is the platform's own (A4b r2, Codex 4452016253): auth and the operator door ask it
     expect(others).toEqual(['platform/identity-retirement.query.ts']);
