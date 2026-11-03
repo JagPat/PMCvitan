@@ -53,6 +53,8 @@ import {
   classifyCodexState,
   codexStateRecordVerdict,
   codexRecordFingerprint,
+  codexRecordLatestMs,
+  codexRecordMayNameHead,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
 import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mjs';
@@ -898,6 +900,11 @@ export class GitHubClient {
     return this.paginated(`/repos/${this.repository}/issues/${number}/comments`);
   }
 
+  // 2A3b-2 C — one comment, read by its id (the event disarm's live re-read of Codex's record)
+  issueComment(id) {
+    return this.request(`/repos/${this.repository}/issues/comments/${encodeURIComponent(String(id))}`);
+  }
+
   createIssueComment(number, body) {
     return this.request(`/repos/${this.repository}/issues/${number}/comments`, { method: 'POST', body: { body } });
   }
@@ -1438,9 +1445,9 @@ async function refreshCurrentHead(client, number, expectedHead) {
 //   - a temporarily UNREADABLE head (`validation:` read-retry): the trailer could not be read at all; and
 //   - a CANDIDATE head held for independent-reviewer activation (`validation:` candidate-held): a recognised
 //     but never-merge-eligible owner.
-// A PURE predicate over the shared vocabulary. 2A3b-2 A — its consumer is `eventDisarm`: on a push or an arm, a merge
-// queued under a status it withholds is disarmed (head-checked, every PR at the commit); the withholding failure itself
-// stays, and only the ordinary review's `completeReviewedPullRequest` re-arms.
+// A PURE predicate over the shared vocabulary. 2A3b-2 A/C — its consumer is `eventDisarm`: on a push, an arm or a Codex
+// record edit, a merge queued under a status it withholds is disarmed (head-checked, every PR at the commit); the
+// withholding failure itself stays, and only the ordinary review's `completeReviewedPullRequest` re-arms.
 export function ownershipStatusWithholdsAutoMerge(status) {
   if (status?.context !== STATUS_CONTEXT || status?.state !== 'failure') return false;
   const description = String(status?.description ?? '');
@@ -1715,9 +1722,28 @@ export class AutoMergeDisarmFailed extends Error {
  * `AutoMergeDisarmFailed` on ANY failure inside it (gap-check F1): a read or the disable that throws, or a re-read that
  * still shows a queued auto-merge. Its callers' settlement has already written the settling pending status, which
  * nothing resumes, so every failure here must take the retryable hold.
+ *
+ * #1324 r2 gap-check 1 and 3 — `known`, a copy of this pull request the caller already has at `expectedHead` (the one
+ * `run` read, or the event's payload), is disabled FIRST when it shows a merge queued, before any read here that can
+ * fail; the reads and the re-read below still decide (`observed.disabledFirst` when that first disable took). The one
+ * disable call stays here.
  */
-export async function disarmQueuedAutoMerge(client, number, expectedHead, observed = {}) {
+export async function disarmQueuedAutoMerge(client, number, expectedHead, observed = {}, known = null) {
+  const disable = async (pull) => {
+    try {
+      await client.disableAutoMerge(pull);
+      return null;
+    } catch (error) {
+      return error;
+    }
+  };
   try {
+    if (known?.auto_merge && known.head?.sha === expectedHead) {
+      const firstRefused = await disable(known);
+      // a refused first disable is judged by the re-read below (another run may already have disabled it)
+      if (firstRefused) console.log(`Auto-merge disarm: the first disable was refused (${firstRefused?.message}); the re-read decides.`);
+      else observed.disabledFirst = true;
+    }
     let live = await refreshCurrentHead(client, number, expectedHead);
     if (!live) return null;
     // Codex 4440931056 on #1295 — the success is the commit's, not the PR's: every open PR whose head is this commit
@@ -1729,12 +1755,7 @@ export async function disarmQueuedAutoMerge(client, number, expectedHead, observ
       // 2A3b-2 A (#1318 Codex 4448897209) — another run may disable it first, and GitHub refuses the second disable.
       // The re-read below decides: a merge no longer queued is disarmed, whoever disabled it; one still queued throws
       // with this error as its cause
-      let refused = null;
-      try {
-        await client.disableAutoMerge(pull);
-      } catch (error) {
-        refused = error;
-      }
+      const refused = await disable(pull);
       const after = await client.pullRequest(pull.number);
       // Codex 4445107594 — every PR whose queued merge this disarm disabled, siblings too, so each one's consumed
       // re-arm settlement can be lifted (read by disarmBeforeRun)
@@ -3328,7 +3349,8 @@ export function contextForEvent(eventName, event, dispatchNumber) {
       trigger: 'relabel',
     };
   }
-  // 2A3b-1 — the event-driven disarm (event-disarm.yml), seen from trusted default-branch code: a push or an arm
+  // 2A3b — the event-driven disarm (event-disarm.yml), seen from trusted default-branch code: a push, an arm, or an edit
+  // of Codex's review-state record. A comment's payload names no head, so the record's head is the live one.
   if (eventName === 'pull_request_target' && (event.action === 'synchronize' || event.action === 'auto_merge_enabled')) {
     return {
       number: Number(event.pull_request?.number),
@@ -3336,14 +3358,64 @@ export function contextForEvent(eventName, event, dispatchNumber) {
       ciConclusion: null,
       trigger: event.action === 'synchronize' ? 'synchronize' : 'auto-merge-enabled',
       enabledBy: event.pull_request?.auto_merge?.enabled_by?.login ?? event.sender?.login ?? null,
+      // #1324 r2 gap-check 3 — the payload's pull request (node id, auto-merge, head), so a queued merge can be disabled
+      // when the pull request read itself fails (`disarmFromPayload`)
+      payloadPullRequest: event.pull_request ?? null,
+    };
+  }
+  if (eventName === 'issue_comment' && event.issue?.pull_request && ['created', 'edited', 'deleted'].includes(event.action)) {
+    // #1324 Codex 4450461173 — a record deleted, or edited so that it no longer carries the marker it carried, is a
+    // removal: the evidence a green was judged on is gone, so the run fails closed (eventDisarm)
+    const marked = (body) => CODEX_RECORD_MARKER.test(String(body ?? ''));
+    const removed = event.action === 'deleted'
+      || (event.action === 'edited' && !marked(event.comment?.body) && marked(event.changes?.body?.from));
+    return {
+      number: Number(event.issue.number),
+      expectedHead: null,
+      ciConclusion: null,
+      trigger: 'codex-record',
+      comment: event.comment ?? null,
+      removed,
+      // #1324 r2 gap-check 4 — the record as it read before its removal (a deletion carries it; an edit carries its
+      // previous body), so a removal is judged only when that record named the head
+      removedRecord: !removed ? null
+        : event.action === 'deleted' ? event.comment ?? null
+          : { ...event.comment, body: event.changes?.body?.from },
     };
   }
   return null;
 }
 
-const EVENT_DISARM_TRIGGERS = ['synchronize', 'auto-merge-enabled'];
+const EVENT_DISARM_TRIGGERS = ['synchronize', 'auto-merge-enabled', 'codex-record'];
+const CODEX_RECORD_MARKER = /codex-review-state:v1/u;
 // The login of this workflow token: an arm it made never starts a workflow run, so this only guards a replayed event
 const GATE_TOKEN_LOGIN = 'github-actions[bot]';
+
+// #1324 r2 gap-check 2 — the named record is gone (404) or no longer carries the marker: a removal
+const CODEX_RECORD_GONE = Symbol('codex record gone');
+
+/**
+ * 2A3b-2 C — the comment the event named, as it reads now (by id), or null when the payload named none. A read that
+ * fails otherwise falls back to the payload's copy (the record as the event carried it). A comment on another issue
+ * (the id read back on another pull request) is not this record (null). #1324 r2 gap-check 2 — a record that is gone
+ * (404) or that no longer carries the marker is `CODEX_RECORD_GONE`: the caller judges it as a removal, so a removal
+ * whose own run a newer record event cancelled is still seen by that newer run.
+ */
+async function liveCodexRecord(client, number, comment) {
+  if (comment?.id == null) return null;
+  let live;
+  try {
+    live = await client.issueComment(comment.id);
+  } catch (error) {
+    if (/failed \(404\)/u.test(String(error?.message))) return CODEX_RECORD_GONE;
+    console.log(`Event disarm: the Codex record could not be re-read (${error?.message}); judging the event's copy.`);
+    return comment;
+  }
+  if (live?.issue_url && !String(live.issue_url).endsWith(`/issues/${number}`)) return null;
+  if (!live) return null;
+  if (!CODEX_RECORD_MARKER.test(String(live.body ?? ''))) return CODEX_RECORD_GONE;
+  return live;
+}
 
 /**
  * 2A3b-1 (notes/gate-codex-silent/2a3/2a3b-design.md; Stage 1's rulings of 2 Nov) — the event-driven disarm for W1.
@@ -3359,8 +3431,69 @@ const GATE_TOKEN_LOGIN = 'github-actions[bot]';
  *    status that `ownershipStatusWithholdsAutoMerge` withholds is disarmed, and nothing is written, so the SHA-immutable
  *    ownership verdict stays the newest. Both events run in the exact-head group the orchestrator shares
  *    (event-disarm.yml), so this opening read is not raced by the orchestrator's own writes.
- * W2 (a Codex run starting while a merge waits) is 2A3b-2 C's.
+ *  - 2A3b-2 C, Codex's review-state record (W2; #1318 Codex 4448897199, 4449402442, 4449402449, 4449402452): after the
+ *    ownership check, the named record read live by id, judged with every Codex record on the pull request by
+ *    `codexStateRecordVerdict` (a set that cannot be listed judges the named record alone). With a merge queued at the
+ *    head: a run takes the retryable `CODEX_RUN_HELD_DETAIL` hold, security findings take the security verdict, and a
+ *    `dirty` set written no earlier than the newest green (a tie or an unreadable time counts) takes the retryable
+ *    `CODEX_EVIDENCE_CHANGED_DETAIL`. This runs in a per-PR group beside the orchestrator, so the newest status is read
+ *    again after the disarm and before the write: an ownership verdict that became the newest meanwhile is kept.
+ *    With none queued, the orchestrate run that waits sees the same records.
  */
+/**
+ * #1324 Codex 4450375966 — every Codex review-state record on the pull request (`issueComments`, paged), with the named
+ * live record added when the list does not carry it. `null` when the list cannot be read: the caller fails closed.
+ */
+async function readCodexRecordSet(client, number, live) {
+  let records;
+  try {
+    records = await client.issueComments(number);
+  } catch (error) {
+    console.log(`Event disarm: the review-state records could not be listed (${error?.message}).`);
+    return null;
+  }
+  if (live && !records.some((comment) => String(comment?.id) === String(live.id))) records = [...records, live];
+  return records;
+}
+
+/**
+ * #1324 Codex 4450461165 — an event disarm whose opening status read failed still disarms: every queued merge at the
+ * head is disabled (a disable that fails throws, and the job goes red). Nothing is written: with the statuses unknown,
+ * a hold could cover a withholding ownership verdict (2A3b-2 A). The green stays unarmed, and G3b's lost-arm recovery
+ * re-judges and re-arms it. The gate's own arm on its own arm event is never disarmed (it starts no run; this guards a
+ * replay); on a push or a record event any queued merge, the gate's included, is disabled.
+ * A person's arm on a pull request alone at its commit is disabled too, unlike Q1 = a: Q1 keeps it only under a newest
+ * verdict that does not withhold, and with the statuses unread that verdict is unknown, so this fails closed.
+ * #1324 r2 gap-check 1 — this pull request's own queued merge is disabled FIRST, from the pull request `run` already
+ * read at this head, before any further read: a read inside `disarmQueuedAutoMerge` that fails (the same outage class
+ * as the statuses read) then leaves only the siblings, whose own push or arm events run their own disarm.
+ */
+export async function disarmOnUnreadStatuses(client, pullRequest, expectedHead, context) {
+  if (!EVENT_DISARM_TRIGGERS.includes(context.trigger)) throw new Error(`The event disarm has no trigger ${context.trigger}`);
+  if (context.trigger === 'auto-merge-enabled' && context.enabledBy === GATE_TOKEN_LOGIN) return 'gate arm';
+  const observed = {};
+  const live = await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead, observed, pullRequest);
+  if (!live) return 'superseded';
+  return observed.disabledFirst || observed.disabled?.length ? 'statuses unread, disarmed' : 'statuses unread, nothing queued';
+}
+
+/**
+ * #1324 r2 gap-check 3 — the pull request read itself failed. On a push or an arm, the event's payload carries the pull
+ * request's node id, head and auto-merge, so a queued merge it shows is disabled first, through the shared disarm, without
+ * that read (a same-repository, open pull request only; never the gate's own arm). The shared disarm then tries its own
+ * reads (siblings too) and throws if they fail. Nothing is written, and the caller still throws: the job goes red. A
+ * Codex record event carries no pull request, so nothing can be disabled there (residual R2-1).
+ */
+export async function disarmFromPayload(client, context) {
+  const payload = context.payloadPullRequest;
+  if (!payload?.node_id || !payload.auto_merge) return 'nothing';
+  if (!isEligiblePullRequest(eligibleShape(payload))) return 'ineligible';
+  if (context.trigger === 'auto-merge-enabled' && context.enabledBy === GATE_TOKEN_LOGIN) return 'gate arm';
+  const observed = {};
+  await disarmQueuedAutoMerge(client, Number(payload.number), payload.head?.sha, observed, payload);
+  return 'disarmed';
+}
+
 export async function eventDisarm(client, pullRequest, expectedHead, context, statuses) {
   if (!EVENT_DISARM_TRIGGERS.includes(context.trigger)) throw new Error(`The event disarm has no trigger ${context.trigger}`);
   if (context.trigger === 'auto-merge-enabled' && context.enabledBy === GATE_TOKEN_LOGIN) return 'gate arm';
@@ -3378,7 +3511,72 @@ export async function eventDisarm(client, pullRequest, expectedHead, context, st
     if (!(await disarmBeforeRun(client, pullRequest, expectedHead, statuses))) return 'superseded';
     return (await refuseSharedCommit(client, pullRequest, expectedHead, recoveryRequest)) ?? 'disarmed';
   }
-  return (await refuseSharedCommit(client, pullRequest, expectedHead, recoveryRequest)) ?? 'nothing';
+  if (context.trigger === 'auto-merge-enabled') {
+    return (await refuseSharedCommit(client, pullRequest, expectedHead, recoveryRequest)) ?? 'nothing';
+  }
+  // The payload's copy is what Codex wrote when the event fired; this run may start after the record moved on. The
+  // record the event names is read live, by its id: one on another issue ends the event
+  // #1324 Codex 4450461173 — a removal names no record left to read: it goes straight to the fail-closed path below.
+  // #1324 r2 gap-check 2 — a record that reads back gone (404) or without its marker is a removal too, so a removal
+  // whose own run was cancelled is still judged
+  let removedRecord = context.removed ? context.removedRecord ?? context.comment : null;
+  let live = null;
+  if (!removedRecord) {
+    const read = await liveCodexRecord(client, pullRequest.number, context.comment);
+    if (read === CODEX_RECORD_GONE) removedRecord = context.comment;
+    else live = read;
+  }
+  if (!live && !removedRecord) return 'nothing';
+  // #1324 r2 gap-check 4 — a removed record that named another head only was no evidence for this head's green (the
+  // shared selection; one whose JSON cannot be read may have named it, so it counts)
+  if (removedRecord && !codexRecordMayNameHead(removedRecord, expectedHead)) return 'nothing';
+  const removed = removedRecord !== null;
+  // #1318 Codex 4448897199, 4449402442 — judged whole, by the authorization's classifier, over EVERY current record:
+  // security findings completed on the head (in any record) outrank a run still going.
+  // #1324 Codex 4450375966 — the per-PR group keeps one pending run, so a newer record event cancels a pending one: a run
+  // cannot count on every record's own event. A set that cannot be listed fails closed: a queued merge is disarmed and
+  // the head re-judged, retryable (`unreadable`), whatever the named record says
+  let records = await readCodexRecordSet(client, pullRequest.number, live);
+  const listed = records !== null;
+  if (!listed) records = live ? [live] : [];
+  const verdict = codexStateRecordVerdict(records, expectedHead, 0);
+  // #1318 Codex 4449402452 — a review that ran and completed with findings before this run read it leaves the set
+  // `dirty`, with no run left to see. A `dirty` set the newest green was written strictly after stays: the authorization
+  // admits any `dirty` set (a cap-deferred head merges on it), and one written after its record read and before the arm
+  // is the arm tail's changed fingerprint (2A3b-2 B). A set written at or after the green (a same-second tie, or a time
+  // that cannot be read) is news that green may not have judged: the queued merge is disarmed and the head re-judged,
+  // retryable. With no green newest, no queued merge can land (the required status is a failure).
+  const green = newest?.state === 'success' ? Date.parse(newest.updated_at ?? newest.created_at) : null;
+  const changed = verdict === 'dirty' && green !== null && !(codexRecordLatestMs(records, expectedHead) < green);
+  // a removal, like an unlistable set, never ends here: a queued merge is disarmed and the refusal follows the re-read
+  if (listed && !removed && verdict !== 'hold' && verdict !== 'security' && !changed) return 'nothing';
+  // the refusal only when a merge was actually queued here: with none, the orchestrate run that waits sees the records
+  const observed = {};
+  if (!(await disarmBeforeRun(client, pullRequest, expectedHead, statuses, observed))) return 'superseded';
+  if (!observed.disabled?.length) return 'nothing queued';
+  // #1318 Codex 4449402449 — this per-PR group runs beside the exact-head orchestrator, so an ownership verdict may have
+  // become newest since this run's opening read: read again just before the write, and keep it. A re-read that fails
+  // still writes the retryable refusal: the merge is already disarmed, and the re-judge republishes any ownership verdict
+  try {
+    if (ownershipStatusWithholdsAutoMerge((await client.statuses(expectedHead)).find((status) => status.context === STATUS_CONTEXT) ?? null)) {
+      return 'ownership disarmed';
+    }
+  } catch (error) {
+    console.log(`Event disarm: the statuses could not be read again before the refusal (${error?.message}).`);
+  }
+  // #1324 Codex 4450375961 — the records may move while the disarm runs (security findings cleared, a run finished):
+  // the refusal is chosen from a fresh read of the whole set, never the opening one. Only security findings still on the
+  // head take the security verdict (it is not retryable); anything else, a set now clear or one that cannot be read
+  // again included, takes a retryable hold, because the merge is already disarmed and the re-judge restores a clean head
+  const current = await readCodexRecordSet(client, pullRequest.number, null);
+  const now = current === null ? 'unreadable' : codexStateRecordVerdict(current, expectedHead, 0);
+  const refusal = now === 'security' ? 'security'
+    : now === 'hold' ? 'held'
+      : now === 'unreadable' ? 'unreadable'
+        : 'changed';
+  const refused = await refuseReviewedGreen(client, pullRequest, expectedHead, { refusal, recoveryRequest });
+  if (refused?.superseded || refused === null) return 'superseded';
+  return refusal === 'security' ? 'security refused' : refusal;
 }
 
 export function assertCurrentHeadForContext(context, currentHead, mode) {
@@ -3590,7 +3788,20 @@ export async function run() {
     repository,
     token: requiredEnvironment('GITHUB_TOKEN'),
   });
-  let pullRequest = await client.pullRequest(context.number);
+  let pullRequest;
+  try {
+    pullRequest = await client.pullRequest(context.number);
+  } catch (error) {
+    // #1324 r2 gap-check 3 — the event disarm still disables a queued merge its payload shows; the job goes red
+    if (process.env.AUTONOMOUS_REVIEW_MODE === 'event-disarm' && EVENT_DISARM_TRIGGERS.includes(context.trigger)) {
+      try {
+        console.log(`Event disarm: the pull request could not be read; from the payload: ${await disarmFromPayload(client, context)}.`);
+      } catch (disarmError) {
+        console.log(`Event disarm: the payload's disable failed (${disarmError?.message}).`);
+      }
+    }
+    throw error;
+  }
   if (!isEligiblePullRequest(eligibleShape(pullRequest))) {
     console.log('Pull request is closed or comes from a fork; leaving it untouched.');
     return;
@@ -3603,8 +3814,16 @@ export async function run() {
     return;
   }
 
-  const existingStatuses = await client.statuses(expectedHead);
-  const existingStatus = existingStatuses.find(
+  let existingStatuses;
+  try {
+    existingStatuses = await client.statuses(expectedHead);
+  } catch (error) {
+    // #1324 Codex 4450461165 — only the event disarm goes on without its opening status read (`disarmOnUnreadStatuses`)
+    if (mode !== 'event-disarm') throw error;
+    console.log(`Event disarm: the statuses could not be read (${error?.message}).`);
+    existingStatuses = null;
+  }
+  const existingStatus = existingStatuses?.find(
     (status) => status.context === STATUS_CONTEXT,
   ) ?? null;
 
@@ -3621,12 +3840,14 @@ export async function run() {
     return;
   }
 
-  // 2A3b-1 — the event-driven disarm runs only in its own mode, and that mode only on its own events
+  // 2A3b — the event-driven disarm runs only in its own mode, and that mode only on its own events
   if ((mode === 'event-disarm') !== EVENT_DISARM_TRIGGERS.includes(context.trigger)) {
     throw new Error(`Mode ${mode} does not run on a ${context.trigger} event`);
   }
   if (mode === 'event-disarm') {
-    const outcome = await eventDisarm(client, pullRequest, expectedHead, context, existingStatuses);
+    const outcome = existingStatuses === null
+      ? await disarmOnUnreadStatuses(client, pullRequest, expectedHead, context)
+      : await eventDisarm(client, pullRequest, expectedHead, context, existingStatuses);
     console.log(`Event disarm (${context.trigger}): ${outcome}.`);
     return;
   }
