@@ -98,6 +98,8 @@ export const platformManifest: ModuleManifest = {
     'POST /ops/projects/:projectId/capabilities/:capability/enable', 'POST /ops/projects/:projectId/capabilities/:capability/disable',
     // #482 QA door rebuild — mark a company QA-only (the orgs participant writes the mark; the database guards it)
     'POST /ops/orgs/:orgId/qa-only',
+    // Redbracket ID A4c — put back one owner of a company whose every owner seat is retired (the orgs participant writes it)
+    'POST /ops/orgs/:orgId/owner-reseat',
   ],
   permissions: [],
 };

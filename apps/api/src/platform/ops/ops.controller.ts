@@ -15,12 +15,21 @@ import { SiteVisitsParticipant } from '../../site-visits/site-visits.participant
 import type { OpenWorkCounts } from '../../common/open-work';
 import { OpsTokenGuard } from './ops-token.guard';
 import { retirements } from '../identity-retirement.query';
+import { recordAudit } from '../audit';
+import { systemActor } from '../../common/actor';
+import { randomUUID } from 'node:crypto';
 
 export const switchSchema = z.object({
   operator: z.string().trim().min(3).max(200),
   reason: z.string().trim().min(3).max(500),
 });
 export type SwitchInput = z.infer<typeof switchSchema>;
+
+/** Redbracket ID A4c — the operator owner re-seat: who, why, and the retired account whose owner seat is put back. */
+export const ownerReseatSchema = switchSchema.extend({
+  retiredUserId: z.string().trim().min(1).max(200),
+});
+export type OwnerReseatInput = z.infer<typeof ownerReseatSchema>;
 
 export interface OpsProjectRow {
   id: string;
@@ -72,6 +81,10 @@ export const OPS_VIA = 'ops-api';
  *  - `GET  /ops/compat/state-pins?since=<ISO>`: seen-state pin counts per pinned act, in {@link OpsCompatController}.
  *  - `GET  /ops/compat/client-keys?since=<ISO>`: keyless and legacy-keyed request counts on five routes (Idempotency-Key
  *    2a), in {@link OpsCompatController}.
+ *  - `POST /ops/orgs/:orgId/owner-reseat` (Redbracket ID A4c): when every owner seat of a company is held by an account
+ *    a first Redbracket ID sign-in set aside, seat as owner the new account made for one of those owners
+ *    (`retiredUserId`), so that person can re-seat the rest through the team commands (RUNBOOK). Refused while any
+ *    owner of the company can sign in. Audited on every live project's trail and on the person's security trail.
  *  - `POST /ops/projects/:projectId/capabilities/:capability/enable|disable`: the same `capability-switch`
  *    functions the `capability:enable` / `capability:disable` CLIs call, limited to `SWITCHABLE_CAPABILITIES`
  *    (presentation only, no data touched). Each change writes the usual audit row on the project's trail
@@ -179,6 +192,49 @@ export class OpsController {
         openWork: [...work.values()].sort((a, b) => a.projectId.localeCompare(b.projectId)),
       }];
     });
+  }
+
+  /**
+   * Redbracket ID A4c — put back one owner of a company whose every owner seat is held by a retired account
+   * (`OrgsParticipant.operatorOwnerReseat`, which judges and writes under the company's key). A repeat changes nothing.
+   * A live call is an operator-door write: it needs Jagrut's yes naming the company and the person (RUNBOOK step 0).
+   */
+  @Public()
+  @Post('orgs/:orgId/owner-reseat')
+  @HttpCode(200)
+  async ownerReseat(
+    @Param('orgId') orgId: string,
+    @Body(new ZodPipe(ownerReseatSchema)) body: OwnerReseatInput,
+  ): Promise<{ ok: true; orgId: string; userId: string; changed: boolean }> {
+    const result = await this.prisma.$transaction(async (tx) => {
+      const reseat = await this.orgs.operatorOwnerReseat(tx, orgId, body.retiredUserId);
+      if (reseat.changed) {
+        const payload = { reason: body.reason, via: OPS_VIA, retiredUserId: body.retiredUserId, userId: reseat.userId };
+        for (const projectId of reseat.projectIds.length ? reseat.projectIds : [null]) {
+          await recordAudit(tx, {
+            projectId,
+            actor: systemActor(body.operator, body.operator, 'operator'),
+            action: 'org.ownerReseated',
+            entity: 'Org',
+            entityId: orgId,
+            payload,
+          });
+        }
+        // the person's own security trail names the grant, as the retirement that preceded it is named there
+        await tx.securityAuditEvent.create({
+          data: {
+            action: 'auth.operator_owner_reseat',
+            targetUserId: reseat.userId,
+            actorUserId: null,
+            actorKind: 'operator',
+            correlationId: randomUUID(),
+            payload: { orgId, retiredUserId: body.retiredUserId, operator: body.operator, reason: body.reason, via: OPS_VIA },
+          },
+        });
+      }
+      return reseat;
+    });
+    return { ok: true, orgId, userId: result.userId, changed: result.changed };
   }
 
   @Public()

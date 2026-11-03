@@ -34,3 +34,27 @@ export async function retirements(db: Prisma.TransactionClient): Promise<Array<{
 export async function retiredFrom(db: Prisma.TransactionClient, email: string, at: Date): Promise<{ userId: string } | null> {
   return db.identityRetirement.findFirst({ where: { email, retiredAt: { equals: at } }, select: { userId: true } });
 }
+
+/**
+ * Redbracket ID A4c — one account's retirement record, or null: the address it was retired from and the moment. The
+ * operator owner re-seat finds the person's new account from it (see `madeAtRetirement`).
+ */
+export async function retirementOf(db: Prisma.TransactionClient, userId: string): Promise<{ email: string; retiredAt: Date } | null> {
+  return db.identityRetirement.findUnique({ where: { userId }, select: { email: true, retiredAt: true } });
+}
+
+/**
+ * Redbracket ID A4c — whether `account` is the one a first Redbracket ID sign-in made when it retired `retirement`'s
+ * account: linked to its issuer person at `signup`, and created at the retirement's own moment (`retireAndReplace` writes
+ * one timestamp as the retirement's `retiredAt` and the new account's `createdAt`, the binding break-glass already uses).
+ * The address alone is not that binding: it would also name a later invitation sent to a freed address.
+ */
+export async function madeAtRetirement(
+  db: Prisma.TransactionClient,
+  account: { id: string; createdAt: Date },
+  retirement: { retiredAt: Date },
+): Promise<boolean> {
+  if (account.createdAt.getTime() !== retirement.retiredAt.getTime()) return false;
+  const link = await db.platformPersonLink.findUnique({ where: { userId: account.id }, select: { matchedOn: true } });
+  return link?.matchedOn === 'signup';
+}
