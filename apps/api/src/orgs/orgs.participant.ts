@@ -571,18 +571,19 @@ export class OrgsParticipant {
    * not yet re-seated (`GET /ops/people`, `retired`). A seat is a project membership that is not `removed`, on a live
    * project (an archived project is off the roster too, and nobody can re-seat on it), or any company membership.
    * Keyed by account; an account holding no seat is absent. Each project seat carries its `approvalLimit` (null:
-   * unlimited), which the re-seat copies onto the new seat. A plain read: it lists, it authorises nothing.
+   * unlimited), which the re-seat copies onto the new seat, and its consultant `discipline` (null for other roles), which
+   * the re-seat's add must name again (A4b r2, Codex 4452016258). A plain read: it lists, it authorises nothing.
    */
   async seatsOf(tx: OrgsParticipantClient | Prisma.TransactionClient, userIds: string[]): Promise<Map<string, {
     name: string;
-    projects: Array<{ id: string; name: string; role: string; status: string; approvalLimit: string | null }>;
+    projects: Array<{ id: string; name: string; role: string; status: string; approvalLimit: string | null; discipline: string | null }>;
     companies: Array<{ id: string; name: string; role: string }>;
   }>> {
-    const seats = new Map<string, { name: string; projects: Array<{ id: string; name: string; role: string; status: string; approvalLimit: string | null }>; companies: Array<{ id: string; name: string; role: string }> }>();
+    const seats = new Map<string, { name: string; projects: Array<{ id: string; name: string; role: string; status: string; approvalLimit: string | null; discipline: string | null }>; companies: Array<{ id: string; name: string; role: string }> }>();
     if (userIds.length === 0) return seats;
     const client = tx as OrgsParticipantClient;
-    const project = await client.$queryRawUnsafe<Array<{ userId: string; userName: string; id: string; name: string; role: string; status: string; approvalLimit: string | null }>>(
-      `SELECT m."userId", u."name" AS "userName", p."id", p."name", m."role", m."status", m."approvalLimit"::text AS "approvalLimit"
+    const project = await client.$queryRawUnsafe<Array<{ userId: string; userName: string; id: string; name: string; role: string; status: string; approvalLimit: string | null; discipline: string | null }>>(
+      `SELECT m."userId", u."name" AS "userName", p."id", p."name", m."role", m."status", m."approvalLimit"::text AS "approvalLimit", m."discipline"
          FROM "Membership" m
          JOIN "Project" p ON p."id" = m."projectId"
          JOIN "User" u ON u."id" = m."userId"
@@ -604,7 +605,7 @@ export class OrgsParticipant {
       seats.set(userId, s);
       return s;
     };
-    for (const r of project) of(r.userId, r.userName).projects.push({ id: r.id, name: r.name, role: r.role, status: r.status, approvalLimit: r.approvalLimit });
+    for (const r of project) of(r.userId, r.userName).projects.push({ id: r.id, name: r.name, role: r.role, status: r.status, approvalLimit: r.approvalLimit, discipline: r.discipline });
     for (const r of company) of(r.userId, r.userName).companies.push({ id: r.id, name: r.name, role: r.role });
     return seats;
   }

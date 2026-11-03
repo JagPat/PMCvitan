@@ -1164,7 +1164,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const listed = (await retiredList()).find((r) => r.userId === old.id);
     expect(listed).toMatchObject({
       email: old.email,
-      projects: [{ id: f.projectA.id, role: 'engineer', status: 'active', approvalLimit: '50000.00' }],
+      projects: [{ id: f.projectA.id, role: 'engineer', status: 'active', approvalLimit: '50000.00', discipline: null }],
       companies: [{ id: f.orgA.id, role: 'member' }],
     });
 
@@ -1218,9 +1218,10 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
       await t.prisma.project.update({ where: { id: f.projectB.id }, data: { archivedAt: null } });
     }
     expect((await retiredList()).find((r) => r.userId === old.id)?.projects).toEqual([expect.objectContaining({ id: f.projectB.id })]);
-    // an invited (not yet active) seat is a seat too
-    await t.prisma.membership.update({ where: { projectId_userId: { projectId: f.projectB.id, userId: old.id } }, data: { status: 'invited' } });
-    expect((await retiredList()).find((r) => r.userId === old.id)?.projects).toEqual([expect.objectContaining({ id: f.projectB.id, status: 'invited' })]);
+    // an invited (not yet active) seat is a seat too; a consultant seat carries its discipline, which the re-seat's add
+    // names again (no roster shows an invited seat's discipline: A4b r2, Codex 4452016258)
+    await t.prisma.membership.update({ where: { projectId_userId: { projectId: f.projectB.id, userId: old.id } }, data: { status: 'invited', role: 'consultant', discipline: 'mep' } });
+    expect((await retiredList()).find((r) => r.userId === old.id)?.projects).toEqual([expect.objectContaining({ id: f.projectB.id, status: 'invited', role: 'consultant', discipline: 'mep' })]);
     await t.prisma.membership.delete({ where: { projectId_userId: { projectId: f.projectB.id, userId: old.id } } });
     expect((await retiredList()).map((r) => r.userId)).not.toContain(old.id);
     const ok = await login(old.email!, 'my redbracket passphrase').expect(201);

@@ -14,3 +14,23 @@ import type { Prisma } from '@prisma/client';
 export async function isRetired(db: Prisma.TransactionClient, userId: string): Promise<boolean> {
   return (await db.identityRetirement.count({ where: { userId } })) > 0;
 }
+
+/**
+ * Every account a first Redbracket ID sign-in set aside, oldest first: its id, the address it was retired from (which
+ * the person's new linked account now holds) and when. Read by the operator door's list of retired accounts that still
+ * hold seats (Redbracket ID A4b); kept beside `isRetired` with the record's platform owner (A4b r2, Codex 4452016253).
+ */
+export async function retirements(db: Prisma.TransactionClient): Promise<Array<{ userId: string; email: string; retiredAt: Date }>> {
+  return db.identityRetirement.findMany({
+    select: { userId: true, email: true, retiredAt: true },
+    orderBy: [{ retiredAt: 'asc' }, { userId: 'asc' }],
+  });
+}
+
+/**
+ * The account retired from `email` at exactly `at`, if any: the one a first Redbracket ID sign-in replaced in the same
+ * transaction that made the new account (retireAndReplace writes one moment as both). Asked by auth's break-glass check.
+ */
+export async function retiredFrom(db: Prisma.TransactionClient, email: string, at: Date): Promise<{ userId: string } | null> {
+  return db.identityRetirement.findFirst({ where: { email, retiredAt: { equals: at } }, select: { userId: true } });
+}

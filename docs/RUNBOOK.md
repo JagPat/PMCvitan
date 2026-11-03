@@ -2669,11 +2669,12 @@ Each sign-in writes an `auth.qaSignIn` audit row with the operator and reason.
 PMC account whose email first signs in through Redbracket ID is set aside (retired), and the person gets a new, linked
 account with no seats. Retirement moves no seat: the retired row keeps its project and company seats until someone
 with authority re-seats the person. `GET /ops/people` lists those rows under `retired` (oldest first: `userId`,
-`name`, `email` it was retired from, `retiredAt`, and the `projects` and `companies` it still holds). Re-seat each
+`name`, `email` it was retired from, `retiredAt`, and the `projects` (each with its `role`, `status`, `approvalLimit`
+and consultant `discipline`) and `companies` it still holds). Re-seat each
 person right after their first sign-in, and widen the pilot only when `retired` is empty:
 
 1. On each project in the row's `projects`, the project's PMC (or a company owner/admin) adds the person with the
-   **email** shown, same role and discipline. The address now belongs to the new account, so the add lands there.
+   **email** shown, same `role` and, for a consultant, the seat's `discipline`. The address now belongs to the new account, so the add lands there.
    Add by email, not phone: the retired row keeps its phone number, so an add by phone finds the retired row and is
    refused (409 "This person now signs in with a new account. Add them by email."), seating nobody. If the seat shows
    an `approvalLimit`, stop before the add: no team command sets a limit, and the new seat would have none (unlimited);

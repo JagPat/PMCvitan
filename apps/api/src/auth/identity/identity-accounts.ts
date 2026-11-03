@@ -54,18 +54,7 @@ export async function linkOf(tx: Prisma.TransactionClient, userId: string): Prom
 
 // The ONE predicate lives with the record's platform owner (A4b r1, Codex 4451627330); auth asks it from there.
 export { isRetired } from '../../platform/identity-retirement.query';
-
-/**
- * Every account a first Redbracket ID sign-in set aside, oldest first: its id, the address it was retired from (which
- * the person's new linked account now holds) and when. Read by the operator door's list of retired accounts that still
- * hold seats (Redbracket ID A4b); kept here so the retirement record is read in this one file.
- */
-export async function retirements(db: Prisma.TransactionClient): Promise<Array<{ userId: string; email: string; retiredAt: Date }>> {
-  return db.identityRetirement.findMany({
-    select: { userId: true, email: true, retiredAt: true },
-    orderBy: [{ retiredAt: 'asc' }, { userId: 'asc' }],
-  });
-}
+import { retiredFrom } from '../../platform/identity-retirement.query';
 
 /**
  * The PMC password hash a break-glass sign-in checks for `user` (the account now holding the typed email): its own,
@@ -79,10 +68,7 @@ export async function breakGlassHash(db: Prisma.TransactionClient, user: Pick<Us
   // (retireAndReplace writes one moment as the retirement's `retiredAt` and this account's `createdAt`)
   const link = await db.platformPersonLink.findUnique({ where: { userId: user.id }, select: { matchedOn: true } });
   if (!user.email || link?.matchedOn !== 'signup') return null;
-  const replaced = await db.identityRetirement.findFirst({
-    where: { email: user.email, retiredAt: { equals: user.createdAt } },
-    select: { userId: true },
-  });
+  const replaced = await retiredFrom(db, user.email, user.createdAt);
   if (!replaced) return null;
   return (await orgs.accountById(db, replaced.userId))?.passwordHash ?? null;
 }

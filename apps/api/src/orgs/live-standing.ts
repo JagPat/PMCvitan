@@ -13,8 +13,10 @@ export const RETIRED_ADD = 'This person now signs in with a new account. Add the
 /**
  * Redbracket ID A4b — the effective standing of `role` on a project that someone can still act on: the effective
  * holders less any account a first Redbracket ID sign-in retired (nobody signs in as it again; it keeps its seats only
- * until the re-seat). The last-holder guards of the team and roster writes count with this, so a live holder can never
- * be removed or demoted leaving a role-held open decision (or a company) to a retired row alone.
+ * until the re-seat). The last-holder guards of the team and roster commands count with this, so those commands never
+ * remove or demote a live holder leaving a role-held open decision to a retired row alone. The database holder seals stay
+ * the raw-count backstop for every other writer (A4b r2, Codex 4452016264: a writer outside the commands, which only the
+ * operator's SQL is, is held to the raw count; see the PR's residuals), and a later retirement is ended by the re-seat.
  */
 export async function liveRoleStanding(
   tx: Prisma.TransactionClient,

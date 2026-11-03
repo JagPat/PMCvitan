@@ -8,7 +8,7 @@ import { SWITCHABLE_CAPABILITIES } from '../capabilities.service';
 import { disableCapability, enableCapability, ProjectNotOperableError } from '../capability-switch';
 import { OrgsParticipant } from '../../orgs/orgs.participant';
 import { OpsTokenGuard } from './ops-token.guard';
-import { retirements } from '../../auth/identity/identity-accounts';
+import { retirements } from '../identity-retirement.query';
 
 export const switchSchema = z.object({
   operator: z.string().trim().min(3).max(200),
@@ -30,7 +30,7 @@ export interface OpsRetiredRow {
   name: string;
   email: string;
   retiredAt: string;
-  projects: Array<{ id: string; name: string; role: string; status: string; approvalLimit: string | null }>;
+  projects: Array<{ id: string; name: string; role: string; status: string; approvalLimit: string | null; discipline: string | null }>;
   companies: Array<{ id: string; name: string; role: string }>;
 }
 
