@@ -132,8 +132,6 @@ test('2A3b-2 B — security findings found after the arm disarm before any statu
   assert.equal(kinds.includes('handoff'), false);
 });
 
-// Fold check of 190a20b4 (2) — the client method behind the live re-read: the scoped path, and a 404 from the real
-
 // #1318 Codex 4448897188 — a review that started after the authorization's read and completed with findings before the
 // re-read leaves the record dirty, which no event disarms: refused as changed evidence (retryable, re-judged). A dirty
 // record the authorization already saw (the evidence judged it; a cap-deferred head merges on it) keeps the arm
@@ -183,4 +181,31 @@ test('2A3b-2 B (#1318 Codex 4448897188) — the record fingerprint: Codex\'s rec
   assert.equal(codexRecordFingerprint([codexRecord(HEAD, 'in_progress', 'someone')]), '', 'another login carrying the marker');
   assert.equal(codexRecordFingerprint([{ ...note, user: { login: 'chatgpt-codex-connector[bot]' } }]), '', 'Codex without the marker');
   assert.equal(codexRecordFingerprint(null), '');
+});
+
+// Stage 1's split check (B-M2, B-M3) — the arm tail's refusal carries the adopted recovery request and the attempt: the
+// request is settled, and the refusal's own sticky shows the attempt
+test('2A3b-2 B — the arm-tail refusal settles the adopted recovery request and carries the attempt', { timeout: 30_000 }, async () => {
+  const recoveryRequest = { status: { id: 7002, context: 'codex-recovery-request/6101', state: 'pending', description: 'recovery: requested terminal status 6101' } };
+  const findings = {
+    id: 79, user: { login: 'chatgpt-codex-connector[bot]' }, updated_at: '2026-11-02T21:00:00Z',
+    body: `<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 ${JSON.stringify({
+      code_review: { commit_sha: HEAD, has_any_findings: false, has_unresolved_findings: false, status: 'completed' },
+      security_review: { commit_sha: HEAD, has_any_findings: true, has_unresolved_findings: true, status: 'completed' },
+    })} -->`,
+  };
+  for (const [name, after, before, retry] of [
+    ['a run after the arm', () => [codexRecord(HEAD, 'in_progress')], () => [], true],
+    ['a record turned dirty since the authorization', () => [dirtyRecord(HEAD)], () => [cleanRecord(HEAD)], true],
+    ['security findings after the arm', () => [findings], () => [], false],
+  ]) {
+    const client = armTailClient(after, before);
+    assert.equal(await completeReviewedPullRequest(client, armTailPull(), HEAD, eligible, { recoveryRequest, attempt: 2 }), 'review_refused', name);
+    assert.ok(client.log.some(([k, state, description, context]) => k === 'status' && state === 'success' && context === 'codex-recovery-request/6101' && /^recovery: consumed by /u.test(description)),
+      `${name}: the adopted recovery request is settled`);
+    // the refusal's own sticky is the last one written (the green's sticky before the arm carries the attempt too)
+    const last = String(client.log.filter(([k]) => k === 'sticky').at(-1)?.[2] ?? '');
+    if (retry) assert.match(last, /review_retry/u, `${name}: the refusal's sticky is the last`);
+    assert.match(last, /\*\*Codex attempt:\*\* 2\//u, `${name}: the refusal's sticky carries the attempt`);
+  }
 });
