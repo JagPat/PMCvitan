@@ -3403,6 +3403,22 @@ async function liveCodexRecord(client, number, comment) {
  *    again after the disarm and before the write: an ownership verdict that became the newest meanwhile is kept.
  *    With none queued, the orchestrate run that waits sees the same records.
  */
+/**
+ * #1324 Codex 4450375966 — every Codex review-state record on the pull request (`issueComments`, paged), with the named
+ * live record added when the list does not carry it. `null` when the list cannot be read: the caller fails closed.
+ */
+async function readCodexRecordSet(client, number, live) {
+  let records;
+  try {
+    records = await client.issueComments(number);
+  } catch (error) {
+    console.log(`Event disarm: the review-state records could not be listed (${error?.message}).`);
+    return null;
+  }
+  if (live && !records.some((comment) => String(comment?.id) === String(live.id))) records = [...records, live];
+  return records;
+}
+
 export async function eventDisarm(client, pullRequest, expectedHead, context, statuses) {
   if (!EVENT_DISARM_TRIGGERS.includes(context.trigger)) throw new Error(`The event disarm has no trigger ${context.trigger}`);
   if (context.trigger === 'auto-merge-enabled' && context.enabledBy === GATE_TOKEN_LOGIN) return 'gate arm';
@@ -3428,17 +3444,13 @@ export async function eventDisarm(client, pullRequest, expectedHead, context, st
   const live = await liveCodexRecord(client, pullRequest.number, context.comment);
   if (!live) return 'nothing';
   // #1318 Codex 4448897199, 4449402442 — judged whole, by the authorization's classifier, over EVERY current record:
-  // security findings completed on the head (in any record) outrank a run still going. A list that cannot be read
-  // judges the named record alone: at worst nothing, for a named record that is clear, and every record's own event
-  // and the authorization judge the rest
-  let records;
-  try {
-    records = await client.issueComments(pullRequest.number);
-  } catch (error) {
-    console.log(`Event disarm: the review-state records could not be listed (${error?.message}); judging the named record.`);
-    records = [];
-  }
-  if (!records.some((comment) => String(comment?.id) === String(live.id))) records = [...records, live];
+  // security findings completed on the head (in any record) outrank a run still going.
+  // #1324 Codex 4450375966 — the per-PR group keeps one pending run, so a newer record event cancels a pending one: a run
+  // cannot count on every record's own event. A set that cannot be listed fails closed: a queued merge is disarmed and
+  // the head re-judged, retryable (`unreadable`), whatever the named record says
+  let records = await readCodexRecordSet(client, pullRequest.number, live);
+  const listed = records !== null;
+  if (!listed) records = [live];
   const verdict = codexStateRecordVerdict(records, expectedHead, 0);
   // #1318 Codex 4449402452 — a review that ran and completed with findings before this run read it leaves the set
   // `dirty`, with no run left to see. A `dirty` set the newest green was written strictly after stays: the authorization
@@ -3448,7 +3460,7 @@ export async function eventDisarm(client, pullRequest, expectedHead, context, st
   // retryable. With no green newest, no queued merge can land (the required status is a failure).
   const green = newest?.state === 'success' ? Date.parse(newest.updated_at ?? newest.created_at) : null;
   const changed = verdict === 'dirty' && green !== null && !(codexRecordLatestMs(records, expectedHead) < green);
-  if (verdict !== 'hold' && verdict !== 'security' && !changed) return 'nothing';
+  if (listed && verdict !== 'hold' && verdict !== 'security' && !changed) return 'nothing';
   // the refusal only when a merge was actually queued here: with none, the orchestrate run that waits sees the records
   const observed = {};
   if (!(await disarmBeforeRun(client, pullRequest, expectedHead, statuses, observed))) return 'superseded';
@@ -3463,7 +3475,16 @@ export async function eventDisarm(client, pullRequest, expectedHead, context, st
   } catch (error) {
     console.log(`Event disarm: the statuses could not be read again before the refusal (${error?.message}).`);
   }
-  const refusal = verdict === 'security' ? 'security' : verdict === 'hold' ? 'held' : 'changed';
+  // #1324 Codex 4450375961 — the records may move while the disarm runs (security findings cleared, a run finished):
+  // the refusal is chosen from a fresh read of the whole set, never the opening one. Only security findings still on the
+  // head take the security verdict (it is not retryable); anything else, a set now clear or one that cannot be read
+  // again included, takes a retryable hold, because the merge is already disarmed and the re-judge restores a clean head
+  const current = await readCodexRecordSet(client, pullRequest.number, null);
+  const now = current === null ? 'unreadable' : codexStateRecordVerdict(current, expectedHead, 0);
+  const refusal = now === 'security' ? 'security'
+    : now === 'hold' ? 'held'
+      : now === 'unreadable' ? 'unreadable'
+        : 'changed';
   const refused = await refuseReviewedGreen(client, pullRequest, expectedHead, { refusal, recoveryRequest });
   if (refused?.superseded || refused === null) return 'superseded';
   return refusal === 'security' ? 'security refused' : refusal;

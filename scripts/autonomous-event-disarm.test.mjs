@@ -7,7 +7,7 @@ import { GitHubClient, contextForEvent, run } from './autonomous-review-gate.mjs
 import { codexRecordLatestMs, codexStateRecordVerdict } from './autonomous-review-state.mjs';
 import { securityVerdictMarker } from './security-verdict-marker.mjs';
 import {
-  CODEX_RUN_HELD_DETAIL, CODEX_SECURITY_FINDINGS_DETAIL, CODEX_SHARED_COMMIT_DETAIL, CODEX_AUTOMERGE_DISARM_FAILED, OWNERSHIP_CANDIDATE_HELD, REARM_SETTLEMENTS, REARM_ATTEMPT_FAILED,
+  CODEX_RUN_HELD_DETAIL, CODEX_RECORD_UNREADABLE_DETAIL, CODEX_SECURITY_FINDINGS_DETAIL, CODEX_SHARED_COMMIT_DETAIL, CODEX_AUTOMERGE_DISARM_FAILED, OWNERSHIP_CANDIDATE_HELD, REARM_SETTLEMENTS, REARM_ATTEMPT_FAILED,
 } from './review-policy.mjs';
 
 /**
@@ -138,6 +138,7 @@ async function runDisarm({ number, pulls, statuses, event, overrides = {}, mode 
   }
 }
 
+const CODEX_EVIDENCE_CHANGED = 'Codex evidence changed during final verification';
 const written = (log) => log.filter(([k, , , context]) => k === 'status' && context === 'codex-current-head').map(([, state, description]) => [state, description]);
 const neverArmsOrMerges = (log, name) => assert.equal(log.some(([k, , state]) => k === 'arm' || k === 'merge' || (k === 'status' && state === 'success')), false, `${name}: never arms, merges or writes a success`);
 
@@ -333,7 +334,7 @@ test('2A3b-2 (#1318 Codex 4448897199) — security findings on the head with a r
 
 // #1318 round 2 (Codex 4449402442) — the refusal is chosen over every current record, the named one verified live:
 // security findings in another record outrank the run the event names
-test('2A3b-2 (#1318 Codex 4449402442) — security findings in another record outrank the named run; an unlistable set judges the named record', { timeout: 30_000 }, async () => {
+test('2A3b-2 (#1318 Codex 4449402442) — security findings in another record outrank the named run; an unlistable set fails closed', { timeout: 30_000 }, async () => {
   const running = codexRecord(HEAD, 'in_progress');
   const findings = { ...securityFindingsWhileRunning(HEAD), id: 80 };
   const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
@@ -357,7 +358,9 @@ test('2A3b-2 (#1318 Codex 4449402442) — security findings in another record ou
     overrides: { async issueComments() { throw new Error('GitHub GET comments failed (502)'); } },
   });
   assert.equal(unlisted.error, null);
-  assert.deepEqual(written(unlisted.log), [['failure', `review: ${CODEX_RUN_HELD_DETAIL}`]], 'the named live record alone: held');
+  // #1324 Codex 4450375966 — a set that cannot be listed is never judged on the named record alone: retryable
+  assert.equal(listless.get(610).auto_merge, null, 'disarmed');
+  assert.deepEqual(written(unlisted.log), [['failure', `review: ${CODEX_RECORD_UNREADABLE_DETAIL}`]], 'unreadable: retryable');
 });
 
 // #1318 round 2 (Codex 4449402449) — the exact-head orchestrator may publish a withholding ownership verdict after this
@@ -501,6 +504,12 @@ test('2A3b-2 — structural: the workflow runs trusted default-branch code on it
   assert.doesNotMatch(gate, /deferred to (the )?2A3b|has NO consumer in this unit/u);
   // 2A3b-2 C (Stage 1's re-check of dc9d177a, gap A) — strict: a tie or an unreadable time counts as changed
   assert.match(disarm, /!\(codexRecordLatestMs\(records, expectedHead\) < green\)/u);
+  // #1324 Codex 4450375966 — an unlistable set never returns early on the named record: only a listed set may write nothing
+  assert.match(disarm, /if \(listed && verdict !== 'hold' && verdict !== 'security' && !changed\) return 'nothing';/u);
+  // #1324 Codex 4450375961 — the set is read again after the ownership re-read, and the refusal is chosen from that read
+  const reread = disarm.indexOf('readCodexRecordSet(client, pullRequest.number, null)');
+  assert.ok(reread > disarm.lastIndexOf('ownershipStatusWithholdsAutoMerge(') && reread < disarm.lastIndexOf('refuseReviewedGreen('), 'the records re-read between the ownership re-read and the refusal');
+  assert.match(disarm, /const refusal = now === 'security' \? 'security'/u, 'the refusal follows the re-read, never the opening verdict');
   // the push and arm keep the orchestrator's exact-head group, which the orchestrator itself names (auto-merge.yml)
   const automerge = await readFile(new URL('../.github/workflows/auto-merge.yml', import.meta.url), 'utf8');
   assert.match(automerge, /group: autonomous-review-owner-\$\{\{ github\.event\.workflow_run\.pull_requests\[0\]\.number [^\n]*\}\}-\$\{\{ github\.event\.workflow_run\.head_sha /u,
@@ -689,18 +698,81 @@ test('2A3b-2 C — dirty-after-green is strict and spans every record: a tie, an
   assert.deepEqual(oldKept.log.filter(([k]) => k === 'status' || k === 'disable'), []);
 });
 
-// Stage 1's gap-check of 127efc12 (U4) — a set that cannot be listed is judged on the named record alone: a named record
-// completed clean on the head writes nothing and keeps the merge (at worst nothing; every record's own event and the
-// authorization judge the rest)
-test('2A3b-2 C — an unlistable set with a clean named record writes nothing', { timeout: 30_000 }, async () => {
+// Stage 1's gap-check of 127efc12 (U4), reversed by #1324 Codex 4450375966 — the per-PR group keeps one pending run, so
+// a newer record event cancels a pending one and no run can count on every record's own event. A set that cannot be
+// listed fails closed: a queued merge is disarmed and the head held retryable, even for a clean named record; with no
+// merge queued nothing is written (the orchestrate run that waits reads the records itself)
+test('2A3b-2 C (#1324 Codex 4450375966) — an unlistable set fails closed: a queued merge is disarmed and held, retryable', { timeout: 30_000 }, async () => {
   const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
   const result = await runDisarm({
     number: 610, pulls, statuses: [tokenedSuccess('2026-11-02T20:30:00Z')], event: events.record(610, cleanRecord(HEAD)), comments: [cleanRecord(HEAD)],
     overrides: { async issueComments() { throw new Error('GitHub GET issue comments failed (502)'); } },
   });
   assert.equal(result.error, null);
-  assert.ok(pulls.get(610).auto_merge, 'the merge stays queued');
-  assert.deepEqual(result.log.filter(([k]) => k === 'status' || k === 'disable' || k === 'draft' || k === 'sticky'), [], 'nothing written');
+  assert.equal(pulls.get(610).auto_merge, null, 'disarmed');
+  assert.deepEqual(written(result.log), [['failure', `review: ${CODEX_RECORD_UNREADABLE_DETAIL}`]]);
+  assert.ok(result.log.some(([k, n, d]) => k === 'draft' && n === 610 && d === true), 'the hold drafts');
+
+  const idle = new Map([[610, pullAt(610)]]);
+  const none = await runDisarm({
+    number: 610, pulls: idle, statuses: [tokenedSuccess('2026-11-02T20:30:00Z')], event: events.record(610, cleanRecord(HEAD)), comments: [cleanRecord(HEAD)],
+    overrides: { async issueComments() { throw new Error('GitHub GET issue comments failed (502)'); } },
+  });
+  assert.equal(none.error, null);
+  assert.deepEqual(none.log.filter(([k]) => k === 'status' || k === 'disable' || k === 'draft' || k === 'sticky'), [], 'nothing queued: nothing written');
+});
+
+// #1324 Codex 4450375961 — the refusal is chosen from the records as they read after the disarm, never the opening read:
+// security findings cleared meanwhile take a retryable hold (no non-retryable verdict, no marker); findings still there
+// take the security verdict; a run that finished clean meanwhile is held retryable (the merge is already disarmed); a
+// set that cannot be read again is held retryable
+test('2A3b-2 C (#1324 Codex 4450375961) — the records are read again after the disarm, and the refusal follows that read', { timeout: 30_000 }, async () => {
+  const cases = [
+    { name: 'security cleared', before: [securityFindingsWhileRunning(HEAD)], after: [{ ...cleanRecord(HEAD), id: 79 }], expect: CODEX_EVIDENCE_CHANGED, marker: false },
+    { name: 'security still there', before: [securityFindingsWhileRunning(HEAD)], after: [securityFindingsWhileRunning(HEAD)], expect: CODEX_SECURITY_FINDINGS_DETAIL, marker: true },
+    { name: 'run finished clean', before: [codexRecord(HEAD, 'in_progress')], after: [cleanRecord(HEAD)], expect: CODEX_EVIDENCE_CHANGED, marker: false },
+    { name: 'run became security', before: [codexRecord(HEAD, 'in_progress')], after: [{ ...securityFindingsWhileRunning(HEAD), id: 77 }], expect: CODEX_SECURITY_FINDINGS_DETAIL, marker: true },
+    { name: 'unreadable again', before: [securityFindingsWhileRunning(HEAD)], after: null, expect: CODEX_RECORD_UNREADABLE_DETAIL, marker: false },
+  ];
+  for (const { name, before, after, expect, marker } of cases) {
+    const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+    let disarmed = false;
+    let lists = 0;
+    const markers = [];
+    const result = await runDisarm({
+      number: 610, pulls, statuses: [tokenedSuccess()], event: events.record(610, before[0]), comments: before,
+      overrides: {
+        async disableAutoMerge(pull) { pulls.get(pull.number).auto_merge = null; disarmed = true; },
+        async issueComments() {
+          lists += 1;
+          if (!disarmed) return before.map((c) => ({ ...c }));
+          if (after === null) throw new Error('GitHub GET issue comments failed (502)');
+          return after.map((c) => ({ ...c }));
+        },
+        async createIssueComment(n, body) { markers.push([n, body]); return { id: 904 }; },
+        async reviews() { return []; },
+        async reviewComments() { return []; },
+      },
+    });
+    assert.equal(result.error, null, name);
+    assert.equal(pulls.get(610).auto_merge, null, `${name}: disarmed`);
+    assert.ok(lists >= 2, `${name}: the set was read again after the disarm`);
+    assert.deepEqual(written(result.log).filter(([state]) => state === 'failure'), [['failure', `review: ${expect}`]], name);
+    assert.equal(markers.length > 0, marker, `${name}: the security marker only for findings still there`);
+  }
+});
+
+// A list that does not carry the named record yet (a record just created) still judges it: the live record is added
+test('2A3b-2 C — a list without the named record still judges it: a run on the head disarms and holds', { timeout: 30_000 }, async () => {
+  const running = codexRecord(HEAD, 'in_progress');
+  const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const result = await runDisarm({
+    number: 610, pulls, statuses: [tokenedSuccess()], event: events.record(610, running), comments: [running],
+    overrides: { async issueComments() { return []; } },
+  });
+  assert.equal(result.error, null);
+  assert.equal(pulls.get(610).auto_merge, null, 'disarmed');
+  assert.equal(written(result.log).filter(([state]) => state === 'failure').length, 1, 'held');
 });
 
 test('2A3b-2 C — codexRecordLatestMs: Codex\'s records naming the head only; none is -Infinity; an unreadable time is NaN', () => {
