@@ -27,14 +27,14 @@
 --     row (the re-seat's last step) is never refused by this file, even when no live holder exists yet, because
 --     that shortfall is not this write's (the delivered seals' rule: "never for a pre-existing shortfall some
 --     unrelated write did not cause").
---   · DELETING A RETIRED USER is judged at the `User` row, BEFORE any cascade (#1327 r1, Codex 4452669493). The
---     retirement record goes only with its user (ON DELETE CASCADE), and PostgreSQL does not order that cascade
---     against the membership cascade, so the membership trigger cannot tell whether the retirement row is still
---     there. `User_x_retired_seats_guard` refuses the delete of a retired user who still holds an ACTIVE project seat
---     or an owner/admin company seat (the seats these seals count): the re-seat ends those seats first, and no
---     deployed path deletes a user. With that refusal in place, every membership row a retired user's delete
---     cascades is one these seals never judge (not active, or not an owner/admin arm). A missing user row is NOT read
---     as "not live": that would let a LIVE user's hard delete leave a decision to retired holders alone.
+--   · A USER'S DELETE is judged as a whole at the `User` row, BEFORE any cascade (#1327 r1 Codex 4452669493, r2
+--     Codex 4453555401). PostgreSQL fires the FK actions on `User` (the retirement record, the memberships, the org
+--     memberships) in no promised order, so a per-row judgement in the cascade sees a half-deleted user: the
+--     retirement record may already be gone, or an explicit seat may already have stopped (or not yet stopped)
+--     suppressing the org arm. `User_x_live_holder_guard` refuses a RETIRED user's delete while it holds an active
+--     project seat or an owner/admin company seat (re-seat first), and judges a LIVE user's delete per affected
+--     project on its own contribution (the live count with and without them: one precedence function). The cascaded org-membership rows then
+--     skip the org guard, because their user row is gone and the boundary already judged the delete.
 --   · The raise starts `phase6-4b:`, so a member or org command that meets it answers 409 through
 --     `rethrowHolderSealViolation`, like the delivered seal.
 --
@@ -75,22 +75,32 @@ RETURNS BOOLEAN LANGUAGE sql STABLE SET search_path = pg_catalog, public, pg_tem
   SELECT EXISTS (SELECT 1 FROM public."IdentityRetirement" r WHERE r."userId" = p_user);
 $$;
 
-CREATE OR REPLACE FUNCTION public.phase6_live_role_standing(p_project TEXT, p_role TEXT)
+-- One implementation of the precedence (an explicit active membership counts its role; the membership-less org
+-- owner/admin arm counts `pmc`), with an optional user left out: the User-row guard asks the same function what the
+-- project's live standing is without the user being deleted, never a second copy of the rule.
+CREATE OR REPLACE FUNCTION public.phase6_live_role_standing(p_project TEXT, p_role TEXT, p_without_user TEXT)
 RETURNS BIGINT LANGUAGE sql STABLE SET search_path = pg_catalog, public, pg_temp AS $$
   SELECT (
     SELECT count(*) FROM public."Membership" m
      WHERE m."projectId" = p_project AND m."status" = 'active' AND m."role" = p_role
+       AND m."userId" IS DISTINCT FROM p_without_user
        AND NOT public.platform_user_retired(m."userId")
   ) + CASE WHEN p_role = 'pmc' THEN (
     SELECT count(*) FROM public."Project" p
       JOIN public."OrgMembership" om ON om."orgId" = p."orgId" AND om."role" IN ('owner', 'admin')
      WHERE p."id" = p_project
+       AND om."userId" IS DISTINCT FROM p_without_user
        AND NOT public.platform_user_retired(om."userId")
        AND NOT EXISTS (
          SELECT 1 FROM public."Membership" m2
           WHERE m2."projectId" = p_project AND m2."userId" = om."userId" AND m2."status" = 'active'
        )
   ) ELSE 0 END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.phase6_live_role_standing(p_project TEXT, p_role TEXT)
+RETURNS BIGINT LANGUAGE sql STABLE SET search_path = pg_catalog, public, pg_temp AS $$
+  SELECT public.phase6_live_role_standing(p_project, p_role, NULL);
 $$;
 
 -- A published open decision held by this role: pending or change (the delivered 4b set) or awaiting countersign
@@ -160,6 +170,16 @@ BEGIN
     RETURN NULL;
   END IF;
   IF public.platform_user_retired(OLD."userId") THEN RETURN NULL; END IF;
+  -- cascaded from a USER delete: `User_x_live_holder_guard` judged that delete as a whole, before any cascade. Only a
+  -- DELETE is skipped, and only when its user row no longer exists: the FK keeps an org membership's user present,
+  -- so that holds only inside the user's own ON DELETE CASCADE (an org-membership UPDATE, or a DELETE of a user who
+  -- still exists, is always judged)
+  -- (#1327 r2). If the user's explicit seats cascaded first, this arm would look unsuppressed here and a shortfall
+  -- the delete did not cause would be judged as its own. (The membership guard needs no such skip: a lost explicit
+  -- seat's judgement reads the same counts the User row already judged.)
+  IF TG_OP = 'DELETE' AND NOT EXISTS (SELECT 1 FROM public."User" u WHERE u."id" = OLD."userId") THEN
+    RETURN NULL;
+  END IF;
   -- key before judgement, every covered project in ascending id, as the delivered guard does
   FOR proj IN
     SELECT p."id" FROM public."Project" p
@@ -239,19 +259,56 @@ CREATE TRIGGER "Decision_x_live_holder_standing"
   BEFORE INSERT OR UPDATE ON public."Decision"
   FOR EACH ROW EXECUTE FUNCTION public.phase6_live_holder_decision_seal();
 
--- ── a retired user's delete, judged before any cascade (#1327 r1, Codex 4452669493) ────────────────────────────────
-CREATE OR REPLACE FUNCTION public.phase6_retired_user_delete_guard() RETURNS TRIGGER
+-- ── a user's delete, judged as a whole before any cascade (#1327 r1 Codex 4452669493; r2 Codex 4453555401) ─────────
+-- The User row is the one place that sees the whole delete: PostgreSQL fires the FK actions on `User` (every one an
+-- AFTER trigger) in no promised order, so the membership and org-membership cascades would each see a half-deleted
+-- user (an explicit seat suppressing, or no longer suppressing, the org arm). Here, before any cascade:
+--   · a RETIRED user still holding an active project seat or an owner/admin company seat is refused (re-seat first);
+--   · a LIVE user is judged per affected project (its active seats' projects and every project of a company where
+--     it is owner/admin), in ascending id, each under its readiness key: for `client` and `pmc`, a published open
+--     decision held by the role, the user's own contribution above zero, and the delete leaving live standing at
+--     zero while effective standing stays above zero (the gap; a zero effective count stays the delivered seals').
+-- The cascaded org-membership rows then skip the org guard above (their user row is gone). A named `member` decider's
+-- membership is refused by the delivered named-decider guard on its own row, which reads no other row, so its
+-- cascade order does not matter.
+CREATE OR REPLACE FUNCTION public.phase6_live_holder_user_guard() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $fn$
+DECLARE proj RECORD; r TEXT; c INT;
 BEGIN
-  IF public.platform_user_retired(OLD."id")
-     AND (EXISTS (SELECT 1 FROM public."Membership" m WHERE m."userId" = OLD."id" AND m."status" = 'active')
-          OR EXISTS (SELECT 1 FROM public."OrgMembership" om WHERE om."userId" = OLD."id" AND om."role" IN ('owner', 'admin'))) THEN
-    RAISE EXCEPTION 'phase6-4b: user % was retired by Redbracket ID and still holds an active project seat or an owner/admin company seat — end those seats first (RUNBOOK "Redbracket ID re-seat")', OLD."id";
+  IF public.platform_user_retired(OLD."id") THEN
+    IF EXISTS (SELECT 1 FROM public."Membership" m WHERE m."userId" = OLD."id" AND m."status" = 'active')
+       OR EXISTS (SELECT 1 FROM public."OrgMembership" om WHERE om."userId" = OLD."id" AND om."role" IN ('owner', 'admin')) THEN
+      RAISE EXCEPTION 'phase6-4b: user % was retired by Redbracket ID and still holds an active project seat or an owner/admin company seat — end those seats first (RUNBOOK "Redbracket ID re-seat")', OLD."id";
+    END IF;
+    RETURN OLD;
   END IF;
+  FOR proj IN
+    SELECT DISTINCT x.pid FROM (
+      SELECT m."projectId" AS pid FROM public."Membership" m WHERE m."userId" = OLD."id" AND m."status" = 'active'
+      UNION
+      SELECT p."id" FROM public."Project" p
+        JOIN public."OrgMembership" om ON om."orgId" = p."orgId"
+       WHERE om."userId" = OLD."id" AND om."role" IN ('owner', 'admin')
+    ) x ORDER BY x.pid ASC
+  LOOP
+    IF NOT public.phase6_try_readiness(proj.pid) THEN
+      RAISE EXCEPTION 'phase6-4b: the readiness key for project % is contended — retry deleting user %', proj.pid, OLD."id";
+    END IF;
+    FOREACH r IN ARRAY ARRAY['client', 'pmc'] LOOP
+      -- the user's own contribution, through the one precedence function (a live user counts the same in the
+      -- effective and the live count, so the effective standing without them is effective minus this)
+      c := public.phase6_live_role_standing(proj.pid, r) - public.phase6_live_role_standing(proj.pid, r, OLD."id");
+      IF c > 0 AND public.phase6_live_role_held(proj.pid, r)
+         AND public.phase6_effective_role_standing(proj.pid, r) - c > 0
+         AND public.phase6_live_role_standing(proj.pid, r) - c = 0 THEN
+        RAISE EXCEPTION 'phase6-4b: deleting user % leaves project % with NO live % holder while a published open decision is held by that role: the only remaining holder is an account retired by Redbracket ID, which nobody can sign in as — add the person''s new account first (RUNBOOK "Redbracket ID re-seat")', OLD."id", proj.pid, r;
+      END IF;
+    END LOOP;
+  END LOOP;
   RETURN OLD;
 END $fn$;
 
-DROP TRIGGER IF EXISTS "User_x_retired_seats_guard" ON public."User";
-CREATE TRIGGER "User_x_retired_seats_guard"
+DROP TRIGGER IF EXISTS "User_x_live_holder_guard" ON public."User";
+CREATE TRIGGER "User_x_live_holder_guard"
   BEFORE DELETE ON public."User"
-  FOR EACH ROW EXECUTE FUNCTION public.phase6_retired_user_delete_guard();
+  FOR EACH ROW EXECUTE FUNCTION public.phase6_live_holder_user_guard();

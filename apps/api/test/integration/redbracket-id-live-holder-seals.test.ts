@@ -89,7 +89,7 @@ describe('Redbracket ID A4b-m — the holder seals count live holders (live PG)'
       ...(await t.prisma.user.findMany({ where: { email: newClientEmail }, select: { id: true } })).map((u) => u.id)];
     await wipeMembershipTransitionsVia(t.prisma, [...extra, f.clientUser.id, f.memberUser.id, f.ownerUser.id]);
     await t.prisma.commandExecution.deleteMany({ where: { projectId } });
-    // the seats go before the users: `User_x_retired_seats_guard` refuses deleting a retired user who still holds an
+    // the seats go before the users: `User_x_live_holder_guard` refuses deleting a retired user who still holds an
     // active seat or an owner/admin company seat
     await t.prisma.membership.deleteMany({ where: { projectId: f.projectA.id } });
     await t.prisma.orgMembership.deleteMany({ where: { userId: { in: extra } } });
@@ -106,7 +106,7 @@ describe('Redbracket ID A4b-m — the holder seals count live holders (live PG)'
       { tbl: 'Decision', tgname: 'Decision_x_live_holder_standing' },
       { tbl: 'Membership', tgname: 'Membership_x_live_holder_guard' },
       { tbl: 'OrgMembership', tgname: 'OrgMembership_x_live_holder_guard' },
-      { tbl: 'User', tgname: 'User_x_retired_seats_guard' },
+      { tbl: 'User', tgname: 'User_x_live_holder_guard' },
     ]);
     expect(['Membership_t4b2_holder_guard', 'Membership_t4d_holder_guard'].every((n) => n < 'Membership_x_live_holder_guard')).toBe(true);
     expect('OrgMembership_t4b2_holder_guard' < 'OrgMembership_x_live_holder_guard').toBe(true);
@@ -120,15 +120,15 @@ describe('Redbracket ID A4b-m — the holder seals count live holders (live PG)'
     const userDel = await t.prisma.$queryRawUnsafe<Array<{ proname: string; before: boolean }>>(
       `SELECT p.proname, (t.tgtype & 2) = 2 AS before FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid
         WHERE t.tgrelid = '"User"'::regclass AND (t.tgtype & 8) = 8`);
-    expect(userDel.filter((x) => x.before).map((x) => x.proname)).toEqual(['phase6_retired_user_delete_guard']);
+    expect(userDel.filter((x) => x.before).map((x) => x.proname)).toEqual(['phase6_live_holder_user_guard']);
     expect(userDel.some((x) => x.proname === 'RI_FKey_cascade_del' && !x.before)).toBe(true);
     for (const d of dec) expect(d.tgname < 'Decision_x_live_holder_standing', d.tgname).toBe(true);
     const fns = await t.prisma.$queryRawUnsafe<Array<{ proname: string; cfg: string[] | null }>>(
       `SELECT p.proname, p.proconfig AS cfg FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public' AND p.proname IN ('platform_user_retired', 'phase6_live_role_standing', 'phase6_live_role_held',
           'phase6_live_holder_membership_guard', 'phase6_live_holder_org_membership_guard',
-          'phase6_live_holder_decision_seal', 'phase6_retired_user_delete_guard', 'phase6_membership_held_by_retired') ORDER BY 1`);
-    expect(fns.map((x) => x.proname)).toHaveLength(8);
+          'phase6_live_holder_decision_seal', 'phase6_live_holder_user_guard', 'phase6_membership_held_by_retired') ORDER BY 1`);
+    expect(fns.map((x) => x.proname)).toHaveLength(9);
     for (const fn of fns) expect(fn.cfg, fn.proname).toEqual(['search_path=pg_catalog, public, pg_temp']);
   });
 
@@ -265,13 +265,81 @@ describe('Redbracket ID A4b-m — the holder seals count live holders (live PG)'
       await deleteUser(tx);
     })).toBeNull();
     expect(await rolledBack(async (tx) => { await seatUp(tx, { status: 'invited', orgRole: 'member' }); await deleteUser(tx); })).toBeNull();
-    // a LIVE user's delete is not this guard's: it is judged by the membership seal as a live loss
+    // a LIVE user's delete is judged at the same row as a live loss (#1327 r2)
     expect(await rolledBack(async (tx) => {
       await tx.user.create({ data: { id: second, projectId: f.projectA.id, role: 'client', name: 'A4b-m live', email: `${second}@test.local` } });
       await tx.membership.create({ data: { projectId: f.projectA.id, userId: second, role: 'client', status: 'active' } });
       await retire(tx, f.clientUser.id);
       await deleteUser(tx);
-    })).toMatch(/NO live client holder/);
+    })).toMatch(/phase6-4b: deleting user \S+ leaves project \S+ with NO live client holder/);
+  });
+
+  it('deleting a LIVE user is judged as a whole at the User row, whatever order the cascades run in', async () => {
+    // #1327 r2 (Codex 4453555401): the membership and org-membership cascades run in no promised order, and an explicit
+    // seat suppresses the org owner/admin arm, so each cascade alone sees a half-deleted user. The User row judges the
+    // user's own contribution per project. World: a retired org-admin pmc (effective, never live), memberUser's pmc seat
+    // ended and the owner's arm suppressed by an engineer seat, planted with triggers off so the shapes below are reachable.
+    const u = `rbid-a4bm-dual-${run}`;
+    const shape = (orgRole: string | null, role: string | null, childGuardsOff: boolean) => rolledBack(async (tx) => {
+      await tx.user.create({ data: { id: u, projectId: f.projectA.id, role: 'pmc', name: 'A4b-m dual', email: `${u}@test.local` } });
+      if (orgRole) await tx.orgMembership.create({ data: { orgId: f.orgA.id, userId: u, role: orgRole as never } });
+      if (role) await tx.membership.create({ data: { projectId: f.projectA.id, userId: u, role: role as never, status: 'active' } });
+      await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = replica`);
+      await tx.membership.update({ where: { id: pmcMembershipId }, data: { status: 'removed' } });
+      await tx.membership.create({ data: { projectId: f.projectA.id, userId: f.ownerUser.id, role: 'engineer', status: 'active' } });
+      await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = origin`);
+      if (childGuardsOff) {
+        // only the User row judges: proves the refusal does not depend on which cascade runs first
+        await tx.$executeRawUnsafe(`DROP TRIGGER "Membership_x_live_holder_guard" ON "Membership"`);
+        await tx.$executeRawUnsafe(`DROP TRIGGER "OrgMembership_x_live_holder_guard" ON "OrgMembership"`);
+      }
+      await tx.$executeRawUnsafe(`DELETE FROM "User" WHERE "id" = $1`, u);
+    });
+    const refused = /phase6-4b: deleting user \S+ leaves project \S+ with NO live pmc holder/;
+    for (const off of [false, true]) {
+      expect(await shape('admin', 'pmc', off), `admin+pmc off=${off}`).toMatch(refused); // dual source, a real pmc
+      expect(await shape('owner', 'pmc', off), `owner+pmc off=${off}`).toMatch(refused);
+      expect(await shape(null, 'pmc', off), `pmc off=${off}`).toMatch(refused);
+      expect(await shape('admin', null, off), `admin off=${off}`).toMatch(refused); // the org arm alone
+      // Codex's shape: the explicit engineer seat suppresses the arm, so this user holds no pmc standing and the
+      // shortfall (live 0) is not this delete's; it passes in every cascade order
+      expect(await shape('admin', 'engineer', off), `admin+engineer off=${off}`).toBeNull();
+      expect(await shape('owner', 'engineer', off), `owner+engineer off=${off}`).toBeNull();
+    }
+    // the org guard skips only a cascade from its own user's delete: an unrelated user's delete in the same
+    // transaction leaves a plain org-membership DELETE (and a demotion) judged
+    for (const write of ['delete', 'demote'] as const) {
+      expect(await rolledBack(async (tx) => {
+        await tx.user.create({ data: { id: u, projectId: f.projectA.id, role: 'pmc', name: 'A4b-m unrelated', email: `${u}@test.local` } });
+        await tx.$executeRawUnsafe(`DELETE FROM "User" WHERE "id" = $1`, u);
+        await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = replica`);
+        await tx.membership.update({ where: { id: pmcMembershipId }, data: { status: 'removed' } });
+        await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = origin`);
+        // the owner's membership-less arm is now the only live pmc
+        if (write === 'delete') await tx.orgMembership.delete({ where: { orgId_userId: { orgId: f.orgA.id, userId: f.ownerUser.id } } });
+        else await tx.orgMembership.update({ where: { orgId_userId: { orgId: f.orgA.id, userId: f.ownerUser.id } }, data: { role: 'member' } });
+      }), write).toMatch(/phase6-4b: this change leaves project \S+ with NO live pmc/);
+    }
+    // the precedence of the user's own contribution: an explicit non-pmc seat suppresses the arm, so with exactly one
+    // OTHER live pmc (memberUser) this user's delete leaves that one, and passes
+    expect(await rolledBack(async (tx) => {
+      await tx.user.create({ data: { id: u, projectId: f.projectA.id, role: 'pmc', name: 'A4b-m dual', email: `${u}@test.local` } });
+      await tx.orgMembership.create({ data: { orgId: f.orgA.id, userId: u, role: 'admin' } });
+      await tx.membership.create({ data: { projectId: f.projectA.id, userId: u, role: 'engineer', status: 'active' } });
+      await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = replica`);
+      await tx.membership.create({ data: { projectId: f.projectA.id, userId: f.ownerUser.id, role: 'engineer', status: 'active' } });
+      await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = origin`);
+      await tx.$executeRawUnsafe(`DELETE FROM "User" WHERE "id" = $1`, u);
+    })).toBeNull();
+    // the gap only: when the delete leaves NO effective holder either, the delivered seal refuses with its own message
+    expect(await rolledBack(async (tx) => {
+      await tx.user.create({ data: { id: u, projectId: f.projectA.id, role: 'client', name: 'A4b-m only client', email: `${u}@test.local` } });
+      await tx.membership.create({ data: { projectId: f.projectA.id, userId: u, role: 'client', status: 'active' } });
+      await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = replica`);
+      await tx.membership.updateMany({ where: { id: { in: [clientMembershipId, retiredMembershipId] } }, data: { status: 'removed' } });
+      await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = origin`);
+      await tx.$executeRawUnsafe(`DELETE FROM "User" WHERE "id" = $1`, u);
+    })).toMatch(/phase6-4b: this change leaves NO effective client holder/);
   });
 
   it('a decision born published, published or reopened is refused while the role\'s only holders are retired', async () => {
