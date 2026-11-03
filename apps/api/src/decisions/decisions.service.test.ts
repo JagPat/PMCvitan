@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, type Mock } from 'vitest';
 import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { DecisionsService, consultationRequesterStanding } from './decisions.service';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { DecisionsService, consultationRequesterStanding, rethrowRetiredHolderSeal } from './decisions.service';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
@@ -102,6 +104,7 @@ const orgsStub = {
   // redbracket-id-decisions-live-holder.test.ts)
   liveRoleStanding: vi.fn(async () => 1),
   accountRetired: vi.fn(async () => false),
+  liveArchitectStanding: vi.fn(async () => 1),
   // round-11 Codex F1 — approve re-validates the caller's LIVE role standing in-tx; healthy here
   // (the stale-standing refusals are integration-probed, R11-F1)
   hasProjectRoleStanding: vi.fn(async () => true),
@@ -563,5 +566,48 @@ describe('DecisionsService — the countersign-v1 client contract on approve (4d
       await svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, as(contract));
       expect(row.status, String(contract)).toBe('approved');
     }
+  });
+});
+
+describe('Redbracket ID A4b-s r1 — live forward targets and the seal translation', () => {
+  const tx = {} as Prisma.TransactionClient;
+  const svcWith = (over: Record<string, unknown>) => new DecisionsService(
+    {} as PrismaService, {} as SnapshotService, {} as ExternalEffectDispatcher,
+    { ...(orgsStub as unknown as Record<string, unknown>), ...over } as unknown as OrgsParticipant,
+  ) as unknown as { assertLiveForwardTarget: (tx: Prisma.TransactionClient, p: string, k: string, u: string | null) => Promise<void> };
+
+  it('refuses a retired named member, and a client, pmc or architect role with no live holder (Codex 4454804520/4454804540)', async () => {
+    await expect(svcWith({ accountRetired: vi.fn(async () => true) }).assertLiveForwardTarget(tx, 'p', 'member', 'u'))
+      .rejects.toThrow(/The named decider's account was retired by Redbracket ID/);
+    for (const kind of ['client', 'pmc']) {
+      await expect(svcWith({ liveRoleStanding: vi.fn(async () => 0) }).assertLiveForwardTarget(tx, 'p', kind, null))
+        .rejects.toThrow(new RegExp(`This project's only ${kind} holders are accounts retired by Redbracket ID`));
+    }
+    await expect(svcWith({ liveArchitectStanding: vi.fn(async () => 0) }).assertLiveForwardTarget(tx, 'p', 'architect', null))
+      .rejects.toThrow(/This project's only architect holders are accounts retired by Redbracket ID/);
+    await expect(svcWith({}).assertLiveForwardTarget(tx, 'p', 'architect', null)).resolves.toBeUndefined();
+    await expect(svcWith({}).assertLiveForwardTarget(tx, 'p', 'member', 'u')).resolves.toBeUndefined();
+  });
+
+  it('both holder-moving doors ask it: forward, and the bundled forward of a rejected provisional approval (disagree, a returned stranded resolution)', () => {
+    const src = readFileSync(join(__dirname, 'decisions.service.ts'), 'utf8');
+    const body = (name: string) => {
+      const start = src.indexOf(`  ${name}(`);
+      return src.slice(start, src.indexOf('\n  }\n', start));
+    };
+    expect(body('async forward').match(/assertLiveForwardTarget/g)).toHaveLength(2);
+    expect(body('private async rejectProvisionalApproval').match(/assertLiveForwardTarget/g)).toHaveLength(2);
+  });
+
+  it('translates the live-holder seal\'s two refusals to the commands\' 409, and leaves every other error as it is (Codex 4454804553)', () => {
+    // the raises of Decision_x_live_holder_standing (migration 20280208000000), verbatim
+    const named = new Error('phase6-4b: the named decider membership m1 belongs to an account retired by Redbracket ID, which nobody can sign in as — a decision nobody can decide is refused; re-seat the person and name their new membership (RUNBOOK "Redbracket ID re-seat") (decision d1)');
+    const role = new Error('phase6-4b: this project has no LIVE client holder: its only holders are accounts retired by Redbracket ID, which nobody can sign in as — a decision nobody can decide is refused; re-seat the person first (RUNBOOK "Redbracket ID re-seat") (decision d1)');
+    expect(() => rethrowRetiredHolderSeal(named)).toThrow(ConflictException);
+    expect(() => rethrowRetiredHolderSeal(named)).toThrow(/The named decider's account was retired by Redbracket ID/);
+    expect(() => rethrowRetiredHolderSeal(role)).toThrow(/This project's only client holders are accounts retired by Redbracket ID/);
+    const other = new Error('phase6-4b: the project readiness key is contended — retry (decision d1)');
+    expect(() => rethrowRetiredHolderSeal(other)).toThrow(other);
+    expect(() => rethrowRetiredHolderSeal('x')).toThrow();
   });
 });

@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { ConflictException } from '@nestjs/common';
+import { rethrowRetiredHolderSeal } from '../../src/decisions/decisions.service';
 
 /**
  * Redbracket ID A4b-s — the decisions commands judge LIVE holders. An account a first Redbracket ID sign-in retired
@@ -108,6 +110,20 @@ describe('Redbracket ID A4b-s — the decisions commands count live holders (liv
     expect(res.text).toMatch(/This project's only client holders are accounts retired by Redbracket ID[\s\S]*then request the change/);
     expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: approvedId } })).status).toBe('approved');
     expect(await t.prisma.changeRequest.count({ where: { decisionId: approvedId } })).toBe(0);
+  });
+
+  it('the seal\'s own refusal (a retirement landing between a command\'s check and its write) translates to the same 409 (Codex 4454804553)', async () => {
+    // the write a command makes after its check, made here with no check at all: the database seal refuses it
+    const raw = async (id: string) => t.prisma.decision.update({ where: { id }, data: { publishedAt: new Date() } }).then(() => null, (e: unknown) => e);
+    for (const [id, text] of [[clientDraftId, RETIRED_ROLE], [memberDraftId, RETIRED_NAMED]] as const) {
+      const e = await raw(id);
+      expect(e, 'the seal refuses the raw write').toBeInstanceOf(Error);
+      let translated: unknown;
+      try { rethrowRetiredHolderSeal(e); } catch (x) { translated = x; }
+      expect(translated).toBeInstanceOf(ConflictException);
+      expect((translated as ConflictException).message).toMatch(text);
+    }
+    expect((await t.prisma.decision.findMany({ where: { id: { in: [clientDraftId, memberDraftId] } }, select: { publishedAt: true } })).every((d) => d.publishedAt === null)).toBe(true);
   });
 
   it('a role with a live holder still publishes (the pmc control)', async () => {

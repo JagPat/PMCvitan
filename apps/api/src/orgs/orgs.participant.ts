@@ -5,7 +5,7 @@ import { readinessLockKey } from '../common/readiness-lock';
 import { readPhase6_4dRollout } from '../platform/phase6-4d-rollout';
 import { RoleStandingQuery } from '../platform/role-standing.query';
 import { holdProjectExchangeFence } from './project-exchange-fence';
-import { liveRoleStanding } from './live-standing';
+import { liveArchitectStanding, liveRoleStanding } from './live-standing';
 import { isRetired } from '../platform/identity-retirement.query';
 
 /** #482 — the address pattern the Board fixed for the QA accounts (`qa.<lowercase letters>@vitan.in`), matched as stored. */
@@ -884,6 +884,12 @@ export class OrgsParticipant {
    * The decisions commands judge publication, a published birth, a reopen and a forward with it, so they refuse with a
    * clear 409 the state the database seal `Decision_x_live_holder_standing` (A4b-m) would otherwise refuse as a 500.
    */
+  /** Redbracket ID A4b-s r1 — the project's LIVE architect standing (retired accounts excluded), the count the team
+   *  commands use since #1326; asked by the decisions forward doors. */
+  async liveArchitectStanding(tx: Prisma.TransactionClient, projectId: string): Promise<number> {
+    return liveArchitectStanding(tx, projectId);
+  }
+
   async liveRoleStanding(
     tx: Prisma.TransactionClient,
     projectId: string,

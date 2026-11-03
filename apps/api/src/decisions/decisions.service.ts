@@ -38,6 +38,22 @@ const retiredRoleHolders = (kind: string, then: string) =>
 const RETIRED_NAMED_DECIDER =
   'The named decider\'s account was retired by Redbracket ID, and nobody can sign in as it — re-seat the person (add their new account) and name their new membership';
 
+/**
+ * Redbracket ID A4b-s r1 (Codex 4454804553) — the database seal `Decision_x_live_holder_standing` (#1327) judges the
+ * same state the commands judge first, but a first Redbracket ID sign-in can retire a holder between the command's
+ * check and its write (retirement takes no readiness key). The seal then refuses the write; on these command doors its
+ * refusal is the command's own, so it answers the same 409 instead of a raw database error. Any other error, and the
+ * seal's raise outside these doors, is left as it is.
+ */
+export function rethrowRetiredHolderSeal(e: unknown): never {
+  if (e instanceof Error && /phase6-4b: the named decider membership .* retired by Redbracket ID/.test(e.message)) {
+    throw new ConflictException(RETIRED_NAMED_DECIDER);
+  }
+  const role = e instanceof Error ? /phase6-4b: this project has no LIVE (\w+) holder/.exec(e.message) : null;
+  if (role) throw new ConflictException(retiredRoleHolders(role[1]!, 'try again'));
+  throw e;
+}
+
 /** The consultation commands REQUIRE a client key (review round 19) — see `requestConsultation`. */
 function requireIdempotencyKey(key: string | undefined, commandType: string): string {
   const trimmed = (key ?? '').trim();
@@ -301,7 +317,7 @@ export class DecisionsService {
         }
         return { resultRef: id, events: [ev] };
       },
-    });
+    }).catch(rethrowRetiredHolderSeal);
 
     // Hand the committed events to the single sender (fresh execution only — a replay re-sends
     // nothing, and its `events` is empty). A draft's intent is weightless, so a draft still
@@ -417,7 +433,7 @@ export class DecisionsService {
         await tx.notification.create({ data: { projectId, text: notice, color: record ? RECORDED_DECISION_NOTICE_COLOR : PENDING_DECISION_NOTICE_COLOR, time: 'just now', decisionId, kind: 'decision.published', eventId } });
         return { resultRef: decisionId, events: [ev] };
       },
-    });
+    }).catch(rethrowRetiredHolderSeal);
 
     // now it's live — surface it on the client's side, exactly like a one-step issue (fresh only)
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
@@ -842,15 +858,13 @@ export class DecisionsService {
         if (toKind === 'member') {
           const to = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, toMembershipId!);
           if (!to) throw new ConflictException('The forward target holds no active membership on this project — the new holder must be able to act');
-          if (await this.orgsParticipant.accountRetired(tx, to.userId)) throw new ConflictException(RETIRED_NAMED_DECIDER);
+          await this.assertLiveForwardTarget(tx, projectId, toKind, to.userId);
           targetUserIds = [to.userId];
           toLabel = to.name;
         } else {
           targetUserIds = await this.orgsParticipant.effectiveRoleHolderUserIds(tx, projectId, toKind);
           if (targetUserIds.length === 0) throw new ConflictException(`Nobody holds the ${toKind} role on this project — the decision would land with nobody able to act on it`);
-          if ((toKind === 'client' || toKind === 'pmc') && (await this.orgsParticipant.liveRoleStanding(tx, projectId, toKind)) === 0) {
-            throw new ConflictException(retiredRoleHolders(toKind, 'forward the decision'));
-          }
+          await this.assertLiveForwardTarget(tx, projectId, toKind, null);
           toLabel = DESIGNATION_ROLE_LABEL[toKind];
         }
         // the actor's FROZEN pair (A2's seam) — the fact's `forwardedByRole`/`forwardedByName`, the event's
@@ -914,7 +928,7 @@ export class DecisionsService {
         // the receipt names the FACT (the provenance seal's `resultRef` arm)
         return { resultRef: forwardId, events: [ev] };
       },
-    });
+    }).catch(rethrowRetiredHolderSeal);
 
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -1200,6 +1214,26 @@ export class DecisionsService {
    * standing writer takes it, so neither the holder nor the role's holders can move before commit, and a
    * membership's user never changes.
    */
+  /**
+   * Redbracket ID A4b-s — the forward target must be LIVE, on every door that moves the holder: `forward` and the
+   * bundled forward of `rejectProvisionalApproval` (`disagree` with `forward_on`, a returned stranded resolution;
+   * Codex 4454804520). A named member whose account is retired, or a client/pmc/architect role whose only holders are
+   * retired accounts, is refused with the fix named. The architect is counted live too (Codex 4454804540): the
+   * database seal leaves its arm raw while the architect doors are closed (#1327 note A), so the command is the guard.
+   */
+  private async assertLiveForwardTarget(
+    tx: Prisma.TransactionClient, projectId: string, toKind: string, toUserId: string | null,
+  ): Promise<void> {
+    if (toKind === 'member') {
+      if (toUserId && (await this.orgsParticipant.accountRetired(tx, toUserId))) throw new ConflictException(RETIRED_NAMED_DECIDER);
+      return;
+    }
+    const live = toKind === 'architect'
+      ? await this.orgsParticipant.liveArchitectStanding(tx, projectId)
+      : await this.orgsParticipant.liveRoleStanding(tx, projectId, toKind);
+    if (live === 0) throw new ConflictException(retiredRoleHolders(toKind, 'forward the decision'));
+  }
+
   private async forwardLockedPeople(
     tx: Prisma.TransactionClient, projectId: string, decisionId: string, toKind: string, toMembershipId: string | null,
   ): Promise<string[]> {
@@ -1351,11 +1385,13 @@ export class DecisionsService {
       if (toKind === 'member') {
         const to = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, toMembershipId!);
         if (!to) throw new ConflictException('The target holds no active membership on this project — the new holder must be able to act');
+        await this.assertLiveForwardTarget(tx, projectId, toKind, to.userId);
         targetUserIds = [to.userId];
         toLabel = to.name;
       } else {
         targetUserIds = await this.orgsParticipant.effectiveRoleHolderUserIds(tx, projectId, toKind);
         if (targetUserIds.length === 0) throw new ConflictException(`Nobody holds the ${toKind} role on this project — the decision would land with nobody able to act on it`);
+        await this.assertLiveForwardTarget(tx, projectId, toKind, null);
         toLabel = DESIGNATION_ROLE_LABEL[toKind];
       }
       const forwardId = `dfw-${randomUUID()}`;
@@ -1615,7 +1651,7 @@ export class DecisionsService {
         // same receipt through the bundle arm of the provenance seal)
         return { resultRef: requestId, events };
       },
-    });
+    }).catch(rethrowRetiredHolderSeal);
 
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -1742,7 +1778,7 @@ export class DecisionsService {
         // the same receipt through the bundle arm of the provenance seal
         return { resultRef: resolutionId, events };
       },
-    });
+    }).catch(rethrowRetiredHolderSeal);
 
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -1850,7 +1886,7 @@ export class DecisionsService {
         // `ChangeRequest_t4d_source_bound` requires this receipt's `resultRef` to be the request.
         return { resultRef: requestId, events };
       },
-    });
+    }).catch(rethrowRetiredHolderSeal);
 
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
