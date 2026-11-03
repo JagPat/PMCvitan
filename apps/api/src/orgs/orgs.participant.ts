@@ -467,12 +467,6 @@ export class OrgsParticipant {
   }
 
   /**
-   * #482 operator door — mark a company QA-only, so its QA accounts can be signed in through the door. The mark is
-   * refused (409, naming no one) while the company holds a real person, or else a QA account still in an unmarked
-   * company; the database trigger refuses the same, as the backstop for every other writer. Marking a marked company
-   * changes nothing. Returns the company's live projects so the caller can record the mark on each trail.
-   */
-  /**
    * Redbracket ID A4c — the operator door's company owner re-seat, for a company whose every owner seat is held by a
    * retired account ({@link operatorOwnerReseat}). Runs in the caller's transaction.
    */
@@ -480,6 +474,12 @@ export class OrgsParticipant {
     return operatorOwnerReseat(tx, orgId, retiredUserId, rethrowQaLock);
   }
 
+  /**
+   * #482 operator door — mark a company QA-only, so its QA accounts can be signed in through the door. The mark is
+   * refused (409, naming no one) while the company holds a real person, or else a QA account still in an unmarked
+   * company; the database trigger refuses the same, as the backstop for every other writer. Marking a marked company
+   * changes nothing. Returns the company's live projects so the caller can record the mark on each trail.
+   */
   async markQaOnly(tx: Prisma.TransactionClient, orgId: string): Promise<{ found: boolean; changed: boolean; projectIds: string[] }> {
     const client = tx as OrgsParticipantClient;
     // a company already marked changes nothing and, as before, takes no lock: a repeated mark never holds up a QA

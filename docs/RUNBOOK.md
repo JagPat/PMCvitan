@@ -2685,7 +2685,7 @@ person right after their first sign-in, and widen the pilot only when `retired` 
    owner re-seats instead; nothing written); 409 "No account made at that retirement holds its address now" (the
    person's new account moved off the address, or a later account holds it: repair the person's account first, then
    call again); 400 for an account that is not retired or holds no owner seat in that company. Then that person
-   signs in and follows steps 1 to 3 for everyone, removing the retired owner seats last.
+   signs in and follows steps 1 to 4 for everyone (company seats are step 4), removing the retired owner seats last.
 1. On each project in the row's `projects`, the project's PMC (or a company owner/admin) adds the person with the
    **email** shown, same `role` and, for a consultant, the seat's `discipline`. The address now belongs to the new account, so the add lands there.
    Add by email, not phone: the retired row keeps its phone number, so an add by phone finds the retired row and is
@@ -2727,9 +2727,8 @@ person right after their first sign-in, and widen the pilot only when `retired` 
 4. In each company in `companies`, an owner adds the person by the same email with the same role, then removes the
    retired row. This works in a company whose projects are all archived too: only a brand-new identity needs a home
    project, and the person's new account already exists. A retired owner seat never counts as an owner: the last live owner cannot step down or be removed while
-   only a retired row would be left holding the company. A retired row that is a company's only owner cannot be
-   re-seated this way (A4c, an operator owner seat, must be live before any single-owner company is onboarded with the
-   switch on).
+   only a retired row would be left holding the company. When every owner seat of a company is held by
+   retired rows, no owner can add anyone: use step 0 first (the operator puts back one owner), then this step.
 
 Until the re-seat, a role-held decision whose role only the retired row holds (published in the window, or left when
 the last live holder was removed before this unit) can be published but nobody can decide it: it waits for step 1,

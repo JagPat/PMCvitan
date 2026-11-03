@@ -5,6 +5,8 @@ import { JwtService } from '@nestjs/jwt';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { startFakeIssuer, type FakeIssuer } from '../unit-support/fake-issuer';
+import { orgStandingLockKey } from '../../src/common/readiness-lock';
+import { OPS_TOKEN_MIN_LENGTH } from '../../src/platform/ops/ops-token.guard';
 import { RESEAT_NO_SUCCESSOR, RESEAT_NOT_OWNER, RESEAT_NOT_RETIRED, RESEAT_OWNER_CAN_ACT } from '../../src/orgs/operator-owner-reseat';
 
 const ENV = ['IDENTITY_OIDC', 'IDENTITY_ISSUER', 'IDENTITY_ISSUER_ENDPOINT', 'IDENTITY_CLIENT_ID', 'IDENTITY_REDIRECT_URI', 'IDENTITY_SERVICE_TOKEN', 'THROTTLE_DISABLED', 'OPS_TOKEN'] as const;
@@ -22,6 +24,7 @@ const ENV = ['IDENTITY_OIDC', 'IDENTITY_ISSUER', 'IDENTITY_ISSUER_ENDPOINT', 'ID
 describe('Redbracket ID A4c — operator owner re-seat (live PG, fake issuer)', () => {
   let t: TestApp;
   let f: TwoProjectFixture;
+  const extra: TwoProjectFixture[] = [];
   let fake: FakeIssuer;
   const saved: Partial<Record<(typeof ENV)[number], string | undefined>> = {};
   const made: string[] = [];
@@ -46,6 +49,7 @@ describe('Redbracket ID A4c — operator owner re-seat (live PG, fake issuer)', 
       await t.prisma.membership.deleteMany({ where: { userId: { in: made } } });
       await t.prisma.user.deleteMany({ where: { id: { in: made } } });
     }
+    for (const x of extra) await x.cleanup();
     await f?.cleanup();
     await fake?.close();
     await t?.close();
@@ -71,13 +75,13 @@ describe('Redbracket ID A4c — operator owner re-seat (live PG, fake issuer)', 
   const trail = async () => t.prisma.auditLog.findMany({ where: { projectId: f.projectB.id, action: 'org.ownerReseated' } });
 
   /** An established PMC account (a password and a proved mailbox from before Redbracket ID), owner (or admin) of company B. */
-  async function owner(label: string, role: 'owner' | 'admin' = 'owner') {
+  async function owner(label: string, role: 'owner' | 'admin' = 'owner', in_: TwoProjectFixture = f) {
     const email = `rbid-a4c-${label}-${Date.now()}@test.local`;
     const user = await t.prisma.user.create({
-      data: { projectId: f.projectB.id, role: 'pmc', name: label, email, passwordHash: await bcrypt.hash(`the ${label} local passphrase`, 4), emailVerifiedAt: new Date() },
+      data: { projectId: in_.projectB.id, role: 'pmc', name: label, email, passwordHash: await bcrypt.hash(`the ${label} local passphrase`, 4), emailVerifiedAt: new Date() },
     });
     made.push(user.id);
-    await t.prisma.orgMembership.create({ data: { orgId: f.orgB.id, userId: user.id, role } });
+    await t.prisma.orgMembership.create({ data: { orgId: in_.orgB.id, userId: user.id, role } });
     fake.addPerson(email, `the ${label} redbracket passphrase`);
     return { id: user.id, email };
   }
@@ -122,6 +126,13 @@ describe('Redbracket ID A4c — operator owner re-seat (live PG, fake issuer)', 
     expect([notOwner.status, notOwner.body.message]).toEqual([400, RESEAT_NOT_OWNER]);
     expect((await reseat('no-such-company', o1.id)).status).toBe(404);
     expect((await http().post(`/ops/orgs/${f.orgB.id}/owner-reseat`).send(body(o1.id))).status).toBe(401);
+    // and closed (404, as a path the server does not have) with no OPS_TOKEN, or one shorter than the minimum
+    delete process.env.OPS_TOKEN;
+    expect((await http().post(`/ops/orgs/${f.orgB.id}/owner-reseat`).set('Authorization', `Bearer ${OPS}`).send(body(o1.id))).status).toBe(404);
+    const short = 'x'.repeat(OPS_TOKEN_MIN_LENGTH - 1);
+    process.env.OPS_TOKEN = short;
+    expect((await http().post(`/ops/orgs/${f.orgB.id}/owner-reseat`).set('Authorization', `Bearer ${short}`).send(body(o1.id))).status).toBe(404);
+    process.env.OPS_TOKEN = OPS;
     expect((await http().post(`/ops/orgs/${f.orgB.id}/owner-reseat`).set('Authorization', `Bearer ${OPS}x`).send(body(o1.id))).status).toBe(401);
     const bad = await http().post(`/ops/orgs/${f.orgB.id}/owner-reseat`).set('Authorization', `Bearer ${OPS}`).send({ operator: 'op', reason: 'why' });
     expect(bad.status).toBe(400);
@@ -129,7 +140,32 @@ describe('Redbracket ID A4c — operator owner re-seat (live PG, fake issuer)', 
   });
 
   it('every owner retired: two operator calls at once seat exactly one owner; the other is refused because that owner can now act', async () => {
-    const [x, y] = await Promise.all([reseat(f.orgB.id, o1.id), reseat(f.orgB.id, o2.id)]);
+    // barrier: hold company B's org key, let both calls queue behind it, and release only once both are waiting on it,
+    // so the two calls are certainly concurrent (they wait on the key every owner writer takes first)
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let held!: () => void;
+    const holding = new Promise<void>((resolve) => (held = resolve));
+    const holder = t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtextextended('${orgStandingLockKey(f.orgB.id)}', 0))`);
+      held();
+      await gate;
+    }, { timeout: 60_000 });
+    await holding;
+    const calls = [reseat(f.orgB.id, o1.id).then((r) => r), reseat(f.orgB.id, o2.id).then((r) => r)];
+    const waiting = async () =>
+      Number((await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT count(*)::bigint AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND wait_event = 'advisory'`,
+      ))[0]!.n);
+    let queued = 0;
+    for (let i = 0; i < 400 && queued < 2; i++) {
+      queued = await waiting();
+      if (queued < 2) await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(queued).toBe(2);
+    release();
+    await holder;
+    const [x, y] = await Promise.all(calls);
     const answers = [x, y].map((r) => [r.status, r.body.changed ?? r.body.message]);
     expect(answers).toEqual(expect.arrayContaining([[200, true], [409, RESEAT_OWNER_CAN_ACT]]));
     const won = x.status === 200 ? x : y;
@@ -177,5 +213,32 @@ describe('Redbracket ID A4c — operator owner re-seat (live PG, fake issuer)', 
     const stranger = await reseat(f.orgB.id, o3.id);
     expect([stranger.status, stranger.body.message]).toEqual([409, RESEAT_NO_SUCCESSOR]);
     expect(await t.prisma.orgMembership.count({ where: { orgId: f.orgB.id, userId: { in: [later.id, s3] } } })).toBe(0);
+  });
+
+  it('a new account already seated as company ADMIN is promoted to owner, and its authority and standing follow', async () => {
+    const g = await createTwoProjectFixture(t.prisma);
+    extra.push(g);
+    const o = await owner('p1o', 'owner', g);
+    const s = await firstSignIn(o, 'p1o');
+    // seated as admin before the company's last owner signed in (an earlier re-seat that stopped at admin)
+    await t.prisma.orgMembership.create({ data: { orgId: g.orgB.id, userId: s, role: 'admin' } });
+    const r = await reseat(g.orgB.id, o.id);
+    expect([r.status, r.body.changed, r.body.userId]).toEqual([200, true, s]);
+    expect((await t.prisma.orgMembership.findUniqueOrThrow({ where: { orgId_userId: { orgId: g.orgB.id, userId: s } } })).role).toBe('owner');
+    expect(await t.prisma.orgUserAuthority.findMany({ where: { orgId: g.orgB.id, userId: s }, select: { role: true } })).toEqual([{ role: 'owner' }]);
+    expect(await t.prisma.projectUserStanding.count({ where: { projectId: g.projectB.id, userId: s, role: 'pmc' } })).toBe(1);
+  });
+
+  it('a company with no live project gets one company-level audit row', async () => {
+    const g = await createTwoProjectFixture(t.prisma);
+    extra.push(g);
+    const o = await owner('p2o', 'owner', g);
+    await firstSignIn(o, 'p2o');
+    await t.prisma.project.update({ where: { id: g.projectB.id }, data: { archivedAt: new Date() } });
+    const r = await reseat(g.orgB.id, o.id);
+    expect([r.status, r.body.changed]).toEqual([200, true]);
+    const rows = await t.prisma.auditLog.findMany({ where: { action: 'org.ownerReseated', entityId: g.orgB.id } });
+    expect(rows.map((row) => row.projectId)).toEqual([null]);
+    await t.prisma.auditLog.deleteMany({ where: { action: 'org.ownerReseated', entityId: g.orgB.id, projectId: null } });
   });
 });
