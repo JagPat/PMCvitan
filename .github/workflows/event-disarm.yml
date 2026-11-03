@@ -1,26 +1,43 @@
 name: Event-driven auto-merge disarm
 
-# 2A3b-1 (notes/gate-codex-silent/2a3/2a3b-design.md). On the event that invalidates a queued merge, within seconds
-# and not after CI, the gate disarms it from trusted default-branch code (it never checks out or runs PR code):
+# 2A3b (notes/gate-codex-silent/2a3/2a3b-design.md). On the event that invalidates a queued merge, within seconds and
+# not after CI, the gate disarms it from trusted default-branch code (it never checks out or runs PR code):
 #  - a push to the pull request (its merge was queued for the old head);
-#  - an arm by anyone but the gate, on a commit another open pull request shares (2A3a's one pull request per commit).
+#  - an arm by anyone but the gate, on a commit another open pull request shares (2A3a's one pull request per commit);
+#  - Codex's review-state record changing while the head's merge is queued (W2, 2A3b-2 C), including its deletion or an
+#    edit that removes its marker (#1324 Codex 4450461173): the gate fails closed on those.
 # Events this workflow token causes (the gate's own arm, drafts and stickies) never start a workflow run.
 on:
   pull_request_target:
     types: [synchronize, auto_merge_enabled]
+  issue_comment:
+    types: [created, edited, deleted]
 
+# contents: write — GitHub refuses the GITHUB_TOKEN's disablePullRequestAutoMerge and convertPullRequestToDraft without
+# it ("Resource not accessible by integration", run 41566154069 on #1322), as auto-merge.yml's own grant shows. The job
+# still checks out only the default branch, with no persisted credentials, and never runs PR code.
 permissions:
-  contents: read
+  contents: write
   issues: write
   pull-requests: write
   statuses: write
 
 jobs:
   disarm:
-    if: github.event.pull_request.head.repo.full_name == github.repository
-    # The controller's exact-head group: never racing the orchestrator on the same head
+    if: >-
+      (github.event_name == 'pull_request_target' &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+        github.event.comment.user.login == 'chatgpt-codex-connector[bot]' &&
+        (contains(github.event.comment.body, 'codex-review-state:v1') ||
+          contains(github.event.changes.body.from, 'codex-review-state:v1')))
+    # A push or an arm: the controller's exact-head group, never racing the orchestrator on the same head. A comment's
+    # payload names no head, so a per-pull-request group; every write inside is head-checked, and the newest status is
+    # read again before the write (it runs beside the orchestrator). A removal (a deletion, or an edit that dropped the
+    # marker) gets a group of its own run (#1324 r2 gap-check 2): a newer record event, whose run reads the set without
+    # the removed record, can never cancel it while it is pending.
     concurrency:
-      group: autonomous-review-owner-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+      group: ${{ github.event_name == 'pull_request_target' && format('autonomous-review-owner-{0}-{1}', github.event.pull_request.number, github.event.pull_request.head.sha) || (github.event.action == 'deleted' || !contains(github.event.comment.body, 'codex-review-state:v1')) && format('autonomous-review-event-disarm-removal-{0}-{1}', github.event.issue.number, github.run_id) || format('autonomous-review-event-disarm-{0}', github.event.issue.number) }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
