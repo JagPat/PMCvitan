@@ -2669,8 +2669,9 @@ Each sign-in writes an `auth.qaSignIn` audit row with the operator and reason.
 PMC account whose email first signs in through Redbracket ID is set aside (retired), and the person gets a new, linked
 account with no seats. Retirement moves no seat: the retired row keeps its project and company seats until someone
 with authority re-seats the person. `GET /ops/people` lists those rows under `retired` (oldest first: `userId`,
-`name`, `email` it was retired from, `retiredAt`, and the `projects` (each with its `role`, `status`, `approvalLimit`
-and consultant `discipline`) and `companies` it still holds). Re-seat each
+`name` (the address, once it holds no seat), `email` it was retired from, `retiredAt`, the `projects` (each with its
+`role`, `status`, `approvalLimit` and consultant `discipline`) and `companies` it still holds, and `openWork`, step 2).
+Re-seat each
 person right after their first sign-in, and widen the pilot only when `retired` is empty:
 
 1. On each project in the row's `projects`, the project's PMC (or a company owner/admin) adds the person with the
@@ -2681,10 +2682,22 @@ person right after their first sign-in, and widen the pilot only when `retired` 
    ask for an operator step to copy it.
 2. Before the removal, the project's PMC moves the person's open work from the retired row to the new seat, through
    the normal commands: open inspections naming it responsible (`PUT .../inspections/<id>/responsible` with the new
-   seat) or assigned to it, open activity requirements naming it responsible (revise the requirement), consultations
-   asked of it and not yet answered (ask the new seat), and drawing revisions issued to it (a revision's recipients
-   are fixed at issue; issue again to the new seat if it still needs one). Once A4b-2 is live, the `retired` entry
-   counts this open work, and a row stays listed until it has neither seats nor open work.
+   seat), open activity requirements naming it responsible (revise the requirement), consultations asked of it and not
+   yet answered (ask the new seat), and drawing revisions issued to it (a revision's recipients are fixed at issue;
+   issue again to the new seat if it still needs one). No command moves an inspection's ASSIGNEE: once the retired
+   seat is removed (step 3) the assignment stops binding, and any eligible engineer can submit the checklist. The
+   `retired` entry's `openWork` counts what the retired row still blocks, per live project (A4b-2): `inspections`
+   (naming it responsible, lineage not yet approved; or assigned to it and not yet submitted), `requirements` (latest
+   revision open and naming it responsible, on an activity not yet done), `decisions` (published, open decisions naming
+   its membership as decider: step 3 handles them), `consultations` (asked of its ACTIVE seat, not answered, on an open
+   decision in the cycle it was asked in; once the seat is removed nobody can answer it, so it stops counting here and
+   is settled at the decision itself, when it is decided or withdrawn), `drawings` (governing revisions issued to it
+   that it has not acknowledged; a revision issued again to the new seat ends the wait once the old one is superseded)
+   and `siteVisits` (visits it started that are still open: only the visitor can end one, so the PMC closes it with a
+   reason). An archived project counts for neither: its seats (as since A4b) and its work are frozen with it, so after
+   a project is restored (`restoreProject`), check `GET /ops/people` `retired` again and re-seat anything it lists. A
+   row stays listed until it has neither seats nor open work, so a row with an empty `projects` list and some
+   `openWork` still needs this step.
 3. Then the PMC removes the retired row from that project's team (a company owner/admin with no seat on the project
    cannot withdraw decisions, so this step is the project PMC's). If the row is the named decider of an open decision:
    - a pending decision: the removal is refused ("withdraw and reissue it first"); withdraw it, remove the row, and

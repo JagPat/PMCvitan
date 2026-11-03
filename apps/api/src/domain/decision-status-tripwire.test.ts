@@ -210,6 +210,8 @@ describe('the decision status tripwire (4d-ii-a / A4d)', () => {
     // 4d-ii-a / A8a — the awaiting audience: the pending demand's (pmc, the decider, a standing consultee)
     // plus the architect whose action item it is; an architect sees every pending decision too
     "apps/api/src/decisions/decision-serialize.ts :: d.status === 'pending' || d.status === 'awaiting_countersign'": 'answered',
+    // Redbracket ID A4b-2 — open decisions still waiting on a retired account as named decider (the operator list)
+    "apps/api/src/decisions/decisions.participant.ts :: ['pending', 'change', 'awaiting_countersign']": 'answered',
     "apps/api/src/decisions/decisions.participant.ts :: ['pending', 'change']": 'excludes: the delivered open set; a decision awaiting countersign is answered by its own set (`namedAwaiting`/`awaitingRoles`), which carries the last architect’s exemption',
     // 4d-ii-a / A7d — the decider and forward push targets: the demand stands only while the decision
     // awaits its DECIDER; an awaiting decision demands a countersign through its own family

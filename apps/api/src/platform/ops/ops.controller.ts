@@ -7,6 +7,12 @@ import { ZodPipe } from '../../common/zod.pipe';
 import { SWITCHABLE_CAPABILITIES } from '../capabilities.service';
 import { disableCapability, enableCapability, ProjectNotOperableError } from '../capability-switch';
 import { OrgsParticipant } from '../../orgs/orgs.participant';
+import { InspectionParticipant } from '../../inspections/inspection.participant';
+import { ActivityParticipant } from '../../activities/activity.participant';
+import { DecisionsParticipant } from '../../decisions/decisions.participant';
+import { DrawingParticipant } from '../../drawings/drawing.participant';
+import { SiteVisitsParticipant } from '../../site-visits/site-visits.participant';
+import type { OpenWorkCounts } from '../../common/open-work';
 import { OpsTokenGuard } from './ops-token.guard';
 import { retirements } from '../identity-retirement.query';
 
@@ -23,8 +29,9 @@ export interface OpsProjectRow {
   lastActivity: string | null;
 }
 
-/** A retired account (Redbracket ID) that still holds seats; `email` is the address it was retired from, which the
- *  person's new linked account now holds, so the re-seat adds that address. */
+/** A retired account (Redbracket ID) that still holds seats or open work; `email` is the address it was retired from,
+ *  which the person's new linked account now holds, so the re-seat adds that address. `name` is the address when the
+ *  account holds no seat (the seat read is what names it). */
 export interface OpsRetiredRow {
   userId: string;
   name: string;
@@ -32,6 +39,22 @@ export interface OpsRetiredRow {
   retiredAt: string;
   projects: Array<{ id: string; name: string; role: string; status: string; approvalLimit: string | null; discipline: string | null }>;
   companies: Array<{ id: string; name: string; role: string }>;
+  /** Redbracket ID A4b-2 — open work still named on the account, per live project (only projects with some) */
+  openWork: OpsOpenWork[];
+}
+
+/** Open work named on a retired account in one live project, each kind answered by its owning module. */
+export interface OpsOpenWork {
+  projectId: string;
+  projectName: string;
+  inspections: number;
+  requirements: number;
+  /** published open decisions naming one of the account's memberships as decider */
+  decisions: number;
+  consultations: number;
+  drawings: number;
+  /** open site visits only the account (their visitor) can end */
+  siteVisits: number;
 }
 
 /** Recorded on the audit row of a switch made through this door, beside the operator and reason. */
@@ -44,7 +67,7 @@ export const OPS_VIA = 'ops-api';
  *  - `GET  /ops/projects`: every live project with its switched-on capabilities and last activity (reads only).
  *  - `GET  /ops/people`: each company's owners and admins, and each live project's active members with their
  *    role (reads only), so "who can manage this project" is answered without a terminal paste; and (Redbracket ID
- *    A4b) `retired`: each account a first Redbracket ID sign-in set aside that still holds a seat.
+ *    A4b) `retired`: each account a first Redbracket ID sign-in set aside that still holds a seat or (A4b-2) open work.
  *  - `POST /ops/orgs/:orgId/qa-only`: mark a company QA-only, in {@link OpsQaController}.
  *  - `GET  /ops/compat/state-pins?since=<ISO>`: seen-state pin counts per pinned act, in {@link OpsCompatController}.
  *  - `GET  /ops/compat/client-keys?since=<ISO>`: keyless and legacy-keyed request counts on five routes (Idempotency-Key
@@ -64,7 +87,17 @@ export const OPS_VIA = 'ops-api';
 @UseGuards(OpsTokenGuard, ThrottleGuard)
 @Throttle(30, 60_000)
 export class OpsController {
-  constructor(private readonly prisma: PrismaService, private readonly orgs: OrgsParticipant) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly orgs: OrgsParticipant,
+    // Redbracket ID A4b-2 — the open work named on a retired account, each kind asked of its owning module through its
+    // participant (platform.workflowParticipants declares the edges); this door never reads their tables.
+    private readonly inspections: InspectionParticipant,
+    private readonly activities: ActivityParticipant,
+    private readonly decisions: DecisionsParticipant,
+    private readonly drawings: DrawingParticipant,
+    private readonly siteVisits: SiteVisitsParticipant,
+  ) {}
 
   @Public()
   @Get('projects')
@@ -101,15 +134,50 @@ export class OpsController {
    * Redbracket ID A4b — every account a first Redbracket ID sign-in set aside that still holds a seat, oldest first.
    * Retirement writes no seats: the project's PMC or a company owner re-seats the person by adding them by email (which
    * lands on their new linked account) and then removing the retired row, through the normal team commands
-   * (docs/RUNBOOK.md, "Redbracket ID re-seat"). The pilot widens only when this list is empty.
+   * (docs/RUNBOOK.md, "Redbracket ID re-seat"). A4b-2: an account also stays listed while open work in a live project
+   * still names it (inspections, requirements, decisions, consultations, drawings and site visits waiting on it), which the re-seat moves by hand;
+   * it leaves the list only when its seats and its open work are both zero. The pilot widens only when this list is empty.
    */
   private async retiredWithSeats(): Promise<OpsRetiredRow[]> {
     const retired = await retirements(this.prisma);
-    const seats = await this.orgs.seatsOf(this.prisma, retired.map((r) => r.userId));
+    const ids = retired.map((r) => r.userId);
+    const [seats, live, inspections, requirements, decisions, consultations, drawings, siteVisits] = await Promise.all([
+      this.orgs.seatsOf(this.prisma, ids),
+      this.orgs.operableProjects(this.prisma),
+      this.inspections.openWorkOf(this.prisma, ids),
+      this.activities.openWorkOf(this.prisma, ids),
+      this.decisions.openDecisionsOf(this.prisma, ids),
+      this.decisions.openWorkOf(this.prisma, ids),
+      this.drawings.openWorkOf(this.prisma, ids),
+      this.siteVisits.openWorkOf(this.prisma, ids),
+    ]);
+    const projectName = new Map(live.map((p) => [p.id, p.name] as const));
+    const kinds: Array<[keyof Omit<OpsOpenWork, 'projectId' | 'projectName'>, OpenWorkCounts]> = [
+      ['inspections', inspections], ['requirements', requirements], ['decisions', decisions],
+      ['consultations', consultations], ['drawings', drawings], ['siteVisits', siteVisits],
+    ];
     return retired.flatMap((r) => {
       const held = seats.get(r.userId);
-      if (!held) return [];
-      return [{ userId: r.userId, name: held.name, email: r.email, retiredAt: r.retiredAt.toISOString(), projects: held.projects, companies: held.companies }];
+      const work = new Map<string, OpsOpenWork>();
+      for (const [kind, counts] of kinds) {
+        for (const [projectId, n] of counts.get(r.userId) ?? []) {
+          const name = projectName.get(projectId);
+          if (name === undefined || n === 0) continue; // an archived project's work is frozen with it
+          const row = work.get(projectId) ?? { projectId, projectName: name, inspections: 0, requirements: 0, decisions: 0, consultations: 0, drawings: 0, siteVisits: 0 };
+          row[kind] += n;
+          work.set(projectId, row);
+        }
+      }
+      if (!held && work.size === 0) return [];
+      return [{
+        userId: r.userId,
+        name: held?.name ?? r.email,
+        email: r.email,
+        retiredAt: r.retiredAt.toISOString(),
+        projects: held?.projects ?? [],
+        companies: held?.companies ?? [],
+        openWork: [...work.values()].sort((a, b) => a.projectId.localeCompare(b.projectId)),
+      }];
     });
   }
 
