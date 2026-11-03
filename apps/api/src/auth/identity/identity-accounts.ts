@@ -52,22 +52,8 @@ export async function linkOf(tx: Prisma.TransactionClient, userId: string): Prom
   return tx.platformPersonLink.findUnique({ where: { userId }, select: { issuer: true, subject: true } });
 }
 
-/**
- * The refusal a team add gives when the address or phone it names finds a retired account (Redbracket ID A4b): the
- * person now signs in with a new account, which holds their address (an add by phone would otherwise land on the
- * retired row, which keeps its number).
- */
-export const RETIRED_ADD = 'This person now signs in with a new account. Add them by email.';
-
-/**
- * Whether this account was set aside by a first Redbracket ID sign-in: the ONE predicate. Every named-account token
- * (`AuthService.issueNamedUser`), the sign-in access rule (`AuthService.signInAccess`, which also decides whether a phone
- * code is sent) and password-credential eligibility (`PasswordCredentialsService`) ask it; retirement-gate.test.ts pins
- * the callers. A retired account never signs in or holds a new credential again.
- */
-export async function isRetired(db: Prisma.TransactionClient, userId: string): Promise<boolean> {
-  return (await db.identityRetirement.count({ where: { userId } })) > 0;
-}
+// The ONE predicate lives with the record's platform owner (A4b r1, Codex 4451627330); auth asks it from there.
+export { isRetired } from '../../platform/identity-retirement.query';
 
 /**
  * Every account a first Redbracket ID sign-in set aside, oldest first: its id, the address it was retired from (which

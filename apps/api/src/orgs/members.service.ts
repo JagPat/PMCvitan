@@ -10,8 +10,8 @@ import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { lockStandingForWrite, resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
 import { lockStandingAnchors } from '../common/standing-anchor';
-import { isRetired, RETIRED_ADD } from '../auth/identity/identity-accounts';
-import { liveRoleStanding } from './live-standing';
+import { isRetired } from '../platform/identity-retirement.query';
+import { liveArchitectStanding, liveRoleStanding, RETIRED_ADD } from './live-standing';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import { DecisionsParticipant } from '../decisions/decisions.participant';
 import { OrgsParticipant, refuseQaLock } from './orgs.participant';
@@ -156,7 +156,7 @@ export class MembersService {
     // delivered orgs derivation knows nothing of the role); `client`/`pmc` stay on it
     const holders = (role: string) =>
       role === 'architect'
-        ? RoleStandingQuery.activeCount(tx, projectId, 'architect')
+        ? liveArchitectStanding(tx, projectId)
         : liveRoleStanding(tx, this.standing, projectId, role);
     for (const role of heldRoles) {
       if (!atRisk.has(role)) continue;
@@ -719,7 +719,7 @@ export class MembersService {
           // Phase 6 task 4d (§A.2, P39) — the architect's standing is the KERNEL register's
           const remaining = () =>
             cur.role === 'architect'
-              ? RoleStandingQuery.activeCount(tx, projectId, 'architect')
+              ? liveArchitectStanding(tx, projectId)
               : liveRoleStanding(tx, this.standing, projectId, cur.role);
           if (holders.heldRoles.includes(cur.role) && (await remaining()) === 0) {
             throw new ConflictException(

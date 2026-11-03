@@ -1076,6 +1076,53 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     await publish({ deciderKind: 'member', deciderMembershipId: added.body.membershipId });
   });
 
+  // A4b r1 (Codex 4451627324): two owner-roster writes on the last two owners, held behind the org key so both pass every
+  // read before it and queue on the key together; the key orders them and the second is refused
+  async function raceLastTwoOwners(
+    act: (ownerTok: string, otherTok: string, otherId: string) => [Promise<{ status: number }>, Promise<{ status: number }>],
+  ) {
+    const other = await invitee('race-owner', 'client');
+    await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: other.id, role: 'owner' } });
+    const ownerTok = t.issueOrgOwnerToken(f.ownerUser.id, f.projectA.id, f.orgA.id);
+    const otherTok = t.issueOrgOwnerToken(other.id, f.projectA.id, f.orgA.id);
+    const waiting = async () =>
+      Number((await t.prisma.$queryRaw<Array<{ n: bigint }>>`SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`)[0]?.n ?? 0);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let locked!: () => void;
+    const isLocked = new Promise<void>((r) => (locked = r));
+    const holder = t.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${'org:' + f.orgA.id}, 0))`;
+      locked();
+      await held;
+    }, { timeout: 60_000 });
+    await isLocked;
+    const [a, b] = act(ownerTok, otherTok, other.id);
+    await vi.waitFor(async () => expect(await waiting()).toBeGreaterThanOrEqual(2), { timeout: 30_000, interval: 50 });
+    release();
+    await holder;
+    expect([(await a).status, (await b).status].sort()).toEqual([200, 400]);
+    const owners = await t.prisma.orgMembership.count({ where: { orgId: f.orgA.id, role: 'owner', userId: { in: [f.ownerUser.id, other.id] } } });
+    expect(owners).toBe(1);
+    // leave the fixture's owner as it was
+    await t.prisma.orgMembership.update({ where: { orgId_userId: { orgId: f.orgA.id, userId: f.ownerUser.id } }, data: { role: 'owner' } });
+    await t.prisma.orgMembership.deleteMany({ where: { orgId: f.orgA.id, userId: other.id } });
+  }
+
+  it('A4b r1: two owners stepping each other down at once are ordered by the org key; the second is refused and the company keeps an owner (Codex 4451627324)', async () => {
+    await raceLastTwoOwners((ownerTok, otherTok, otherId) => [
+      http().patch(`/orgs/${f.orgA.id}/members/${otherId}`).set('Authorization', `Bearer ${ownerTok}`).send({ role: 'admin' }).then((r) => r),
+      http().patch(`/orgs/${f.orgA.id}/members/${f.ownerUser.id}`).set('Authorization', `Bearer ${otherTok}`).send({ role: 'admin' }).then((r) => r),
+    ]);
+  });
+
+  it('A4b r1: a removal and a step-down racing on the last two owners are ordered by the org key; one is refused and an owner remains (Codex 4451627324)', async () => {
+    await raceLastTwoOwners((ownerTok, otherTok, otherId) => [
+      http().delete(`/orgs/${f.orgA.id}/members/${otherId}`).set('Authorization', `Bearer ${ownerTok}`).then((r) => r),
+      http().patch(`/orgs/${f.orgA.id}/members/${f.ownerUser.id}`).set('Authorization', `Bearer ${otherTok}`).send({ role: 'admin' }).then((r) => r),
+    ]);
+  });
+
   it('A4b re-seat: the ops list names a retired row still holding seats; the PMC and an owner add by email (the new account), then remove the old row; a named-decider seat refuses until the decision is withdrawn', async () => {
     const OPS = 'rbid-reseat-ops-token-0123456789abcdef';
     process.env.OPS_TOKEN = OPS;

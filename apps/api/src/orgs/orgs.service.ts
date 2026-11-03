@@ -30,8 +30,8 @@ import { executeCommand, hashRequest } from '../platform/commands';
 import { projectsInReach } from './project-reach';
 import { closeProjectExchangeFence, PROJECT_ARCHIVE_TX_TIMEOUT_MS } from './project-exchange-fence';
 import { lockStandingAnchors } from '../common/standing-anchor';
-import { isRetired, RETIRED_ADD } from '../auth/identity/identity-accounts';
-import { liveRoleStanding } from './live-standing';
+import { isRetired } from '../platform/identity-retirement.query';
+import { liveRoleStanding, RETIRED_ADD } from './live-standing';
 import {
   lockInitializationDisplayIds,
   runSerializableProjectInit,
@@ -213,6 +213,12 @@ export class OrgsService {
         where: { orgId_userId: { orgId, userId: targetUserId } },
         select: { role: true },
       });
+      // Redbracket ID A4b r1 (Codex 4451627324) — the last-live-owner refusal is judged HERE, under the org key every
+      // owner/admin writer takes first, on the role read under it: two owners stepping down at once are ordered, and the
+      // second sees the first's commit. (A later first sign-in can still retire the remaining owner; residual, End A4c.)
+      if (current?.role === 'owner' && nextRole !== 'owner' && (await this.otherLiveOwners(tx, orgId, targetUserId)) === 0) {
+        throw new BadRequestException('The org must keep at least one owner');
+      }
       if (!holdsOrgStanding(current?.role) && !holdsOrgStanding(nextRole)) return write(tx);
       const projects = await lockOrgStandingWriters(tx, orgId);
       // #1061 — the target's standing anchor, after the keys and before the write deletes or re-creates
@@ -259,10 +265,10 @@ export class OrgsService {
    * ID A4b: an owner seat held by a retired account (nobody signs in as it again) does not count, so the last live owner
    * cannot step down or be removed leaving the company to a retired row alone.
    */
-  private async otherLiveOwners(orgId: string, userId: string): Promise<number> {
-    const owners = await this.prisma.orgMembership.findMany({ where: { orgId, role: 'owner', userId: { not: userId } }, select: { userId: true } });
+  private async otherLiveOwners(tx: Prisma.TransactionClient, orgId: string, userId: string): Promise<number> {
+    const owners = await tx.orgMembership.findMany({ where: { orgId, role: 'owner', userId: { not: userId } }, select: { userId: true } });
     let live = 0;
-    for (const o of owners) if (!(await isRetired(this.prisma, o.userId))) live += 1;
+    for (const o of owners) if (!(await isRetired(tx, o.userId))) live += 1;
     return live;
   }
 
@@ -384,9 +390,6 @@ export class OrgsService {
     if ((await this.orgRole(orgId, callerId)) !== 'owner') throw new ForbiddenException('Only an org owner can change roles');
     const existing = await this.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId } }, include: { user: true } });
     if (!existing) throw new NotFoundException(NOT_AN_ORG_MEMBER_MESSAGE);
-    if (existing.role === 'owner' && input.role !== 'owner' && (await this.otherLiveOwners(orgId, userId)) === 0) {
-      throw new BadRequestException('The org must keep at least one owner');
-    }
     // Phase 6 task 4b (§A.1 round 11) — demoting an owner/admin below admin can strand a
     // covered project's pmc-held open decision; judged per project under its readiness key.
     const membership = await this.guardedOrgStandingWrite(orgId, userId, input.role, (tx) =>
@@ -478,9 +481,6 @@ export class OrgsService {
     if (userId === callerId) throw new BadRequestException('You cannot remove yourself from the org');
     const existing = await this.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId } } });
     if (!existing) throw new NotFoundException(NOT_AN_ORG_MEMBER_MESSAGE);
-    if (existing.role === 'owner' && (await this.otherLiveOwners(orgId, userId)) === 0) {
-      throw new BadRequestException('The org must keep at least one owner');
-    }
     // Phase 6 task 4b (§A.1 round 11) — removing an owner/admin can strand a covered project's
     // pmc-held open decision; judged per project under its readiness key.
     await this.guardedOrgStandingWrite(orgId, userId, null, (tx) =>
