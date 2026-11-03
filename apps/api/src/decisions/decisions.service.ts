@@ -37,6 +37,8 @@ const retiredRoleHolders = (kind: string, then: string) =>
   `This project's only ${kind} holders are accounts retired by Redbracket ID, which nobody can sign in as — re-seat the person first (add their new account, RUNBOOK "Redbracket ID re-seat"), then ${then}`;
 const RETIRED_NAMED_DECIDER =
   'The named decider\'s account was retired by Redbracket ID, and nobody can sign in as it — re-seat the person (add their new account) and name their new membership';
+const RETIRED_RETAINED_DECIDER =
+  'The named decider\'s account was retired by Redbracket ID, and nobody can sign in as it — forward the decision to a live holder instead, or re-seat the person first (add their new account)';
 
 /**
  * Redbracket ID A4b-s r1 (Codex 4454804553) — the database seal `Decision_x_live_holder_standing` (#1327) judges the
@@ -1234,6 +1236,32 @@ export class DecisionsService {
     if (live === 0) throw new ConflictException(retiredRoleHolders(toKind, 'forward the decision'));
   }
 
+  /**
+   * Redbracket ID A4b-s r2 (Codex 4455247538) — is the holder a reopen KEEPS live? A rejection without a target
+   * (`disagree` `reject_back`, a returned stranded resolution with no target) moves `awaiting_countersign → change` on
+   * the installed designation; the live-holder seal judges only holder moves and births, so this status-only reopen is
+   * judged here. A named member whose account is retired, or a role whose only holders are retired accounts, is not
+   * live. A designation with no holder at all is left to the callers' existing rules (the stranded 400, the open-holder
+   * rule at commit).
+   */
+  private async retainedHolderLive(
+    tx: Prisma.TransactionClient, projectId: string, cur: { deciderKind: string; deciderMembershipId: string | null },
+  ): Promise<boolean> {
+    if (cur.deciderKind === 'none') return true;
+    if (cur.deciderKind === 'member') {
+      const [userId] = await this.orgsParticipant.membershipUserIds(tx, projectId, [cur.deciderMembershipId!]);
+      return !userId || !(await this.orgsParticipant.accountRetired(tx, userId));
+    }
+    // as the seal judges a role: not live only when someone holds it (effective > 0) and none of them is live; a
+    // role nobody holds is left to the existing rules
+    const kind = cur.deciderKind as 'client' | 'pmc' | 'architect';
+    if ((await this.orgsParticipant.effectiveRoleHolderUserIds(tx, projectId, kind)).length === 0) return true;
+    const live = kind === 'architect'
+      ? await this.orgsParticipant.liveArchitectStanding(tx, projectId)
+      : await this.orgsParticipant.liveRoleStanding(tx, projectId, kind);
+    return live > 0;
+  }
+
   private async forwardLockedPeople(
     tx: Prisma.TransactionClient, projectId: string, decisionId: string, toKind: string, toMembershipId: string | null,
   ): Promise<string[]> {
@@ -1406,6 +1434,10 @@ export class DecisionsService {
         },
       });
       forward = { forwardId, targetUserIds, toLabel, from: { kind: cur.deciderKind, membershipId: fromMembershipId }, to: { kind: toKind, membershipId: toMembershipId } };
+    } else if (!(await this.retainedHolderLive(tx, projectId, cur))) {
+      throw new ConflictException(cur.deciderKind === 'member'
+        ? RETIRED_RETAINED_DECIDER
+        : `${retiredRoleHolders(cur.deciderKind, 'try again')} — or forward it to a live holder instead`);
     }
     // ONE row write lands the transition and — when the bundle re-homes — the holder move with it:
     // `Decision_t4d_change_paired` judges every row event of this transaction at commit against the
@@ -1755,6 +1787,12 @@ export class DecisionsService {
           : cur.deciderKind === 'none'
             ? false
             : (await this.orgsParticipant.effectiveRoleHolderUserIds(tx, projectId, cur.deciderKind as 'client' | 'pmc' | 'architect')).length > 0;
+        // A4b-s r2 (Codex 4455247538): a holder whose only accounts are retired by Redbracket ID cannot act either, so
+        // a returned resolution must re-home it too
+        const holderLive = holderPresent && (await this.retainedHolderLive(tx, projectId, cur));
+        if (holderPresent && !holderLive && !target) {
+          throw new BadRequestException('The decision\'s holder is an account retired by Redbracket ID — a returned resolution must name a live target to re-home it to');
+        }
         if (!holderPresent && !target) {
           throw new BadRequestException('The decision\'s designation has no active holder — a returned resolution must name a target to re-home it to');
         }
