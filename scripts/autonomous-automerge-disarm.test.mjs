@@ -59,8 +59,13 @@ test('G3a — a queued auto-merge is disabled, in the order check the head, disa
 });
 
 test('G3a — a disable that fails, or a re-read still armed, is the retryable failure: nothing green may follow', async () => {
-  const failing = fakeClient({ reads: [armed()], disable: async () => { throw new Error('GraphQL down'); } });
-  await assert.rejects(disarmQueuedAutoMerge(failing, 900, HEAD), AutoMergeDisarmFailed);
+  // 2A3b-2 A (#1318 Codex 4448897209) — a disable that fails is judged by the re-read: still queued is the retryable
+  // failure, carrying the refusal as its cause; no longer queued (another run disabled it first) is disarmed
+  const failing = fakeClient({ reads: [armed(), armed()], disable: async () => { throw new Error('GraphQL down'); } });
+  await assert.rejects(disarmQueuedAutoMerge(failing, 900, HEAD), (error) => error instanceof AutoMergeDisarmFailed && /GraphQL down/u.test(error.message));
+  const raced = fakeClient({ reads: [armed(), pr()], disable: async () => { throw new Error('Auto merge is not enabled for this pull request'); } });
+  assert.equal((await disarmQueuedAutoMerge(raced, 900, HEAD)).auto_merge, null);
+  assert.deepEqual(raced.calls.map(([k]) => k), ['read', 'list', 'disable', 'read']);
   const stuck = fakeClient({ reads: [armed(), armed()] });
   await assert.rejects(disarmQueuedAutoMerge(stuck, 900, HEAD), AutoMergeDisarmFailed);
   assert.equal(isRetryableReviewFailureDescription(`review: ${CODEX_AUTOMERGE_DISARM_FAILED}`), true);
