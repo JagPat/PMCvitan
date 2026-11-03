@@ -12,6 +12,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as bcrypt from 'bcryptjs';
 import { JwtService } from '@nestjs/jwt';
+import { UnauthorizedException } from '@nestjs/common';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, wipeMembershipTransitionsVia, type TwoProjectFixture } from './fixtures';
@@ -346,8 +347,9 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const row = await t.prisma.user.findUniqueOrThrow({ where: { id: old.id } });
     await expect(auth.signInUser(row)).rejects.toThrow(/moved to Redbracket ID/);
     // A5: the refusal names itself, so the web words it instead of reading a wrong password or a wrong code
-    const refusal = await auth.signInUser(row).catch((e: { getStatus(): number; getResponse(): unknown }) => e);
-    expect([refusal.getStatus(), refusal.getResponse()]).toEqual([401, expect.objectContaining({ code: 'retired' })]);
+    const refusal: unknown = await auth.signInUser(row).then(() => null, (e: unknown) => e);
+    expect(refusal).toBeInstanceOf(UnauthorizedException);
+    expect((refusal as UnauthorizedException).getResponse()).toEqual(expect.objectContaining({ code: 'retired' }));
   });
 
   it('break-glass after joining: a re-seated admin uses the PMC password of the account their first sign-in replaced', async () => {

@@ -201,8 +201,9 @@ describe('Redbracket ID refusals are worded from their code (A5)', () => {
     });
   }
 
-  it('password setup: a server fault (5xx) says the server could not sign you in, not "request a new code"', async () => {
-    expect(await failingCompletion(refusal(503, undefined))).toBe(signInErrors.en.serverDown);
+  it('password setup: a server fault (5xx) says the new password may already be set, then to request a new code', async () => {
+    expect(await failingCompletion(refusal(503, undefined))).toBe(signInErrors.en.setupMayBeSet);
+    expect(await failingCompletion(refusal(500, undefined))).toBe(signInErrors.en.setupMayBeSet);
   });
 
   it('no code keeps today\'s words, whatever the message says (a server from before A5)', async () => {
@@ -273,6 +274,16 @@ describe('Redbracket ID refusals are worded from their code (A5)', () => {
     expect(keys).toHaveLength(Object.keys(C).length);
     for (const lang of ['en', 'hi', 'gu'] as const) {
       for (const k of keys) expect((signInErrors[lang] as Record<string, string>)[k]?.trim()).toBeTruthy();
+    }
+  });
+
+  it('the refusals that come after the emailed code is spent tell the person to request a new code, in every language', () => {
+    // the setup claims the code before Redbracket ID is asked, so these refusals (and any 5xx on that step) leave it spent
+    const newCode = { en: /request a new code/i, hi: /नया कोड मँगा/, gu: /નવો કોડ મંગાવ/ } as const;
+    for (const lang of ['en', 'hi', 'gu'] as const) {
+      for (const k of ['identityIssuerAccountExists', 'identityPasswordRejected', 'setupMayBeSet'] as const) {
+        expect(signInErrors[lang][k]).toMatch(newCode[lang]);
+      }
     }
   });
 });

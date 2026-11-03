@@ -8051,11 +8051,12 @@ export const useStore = create<Store>()(
           // the code, never the status alone: the same route's other 409 (an email that cannot be set up, its code
           // spent) keeps the save-failed words
           const running = httpStatusOf(err) === 409 && (err as { serverCode?: unknown } | null)?.serverCode === SETUP_RUNNING_CODE;
-          // Redbracket ID A5: a refusal that names itself is worded from its code; an unavailable server (5xx) says so
-          // instead of asking for a new code. Anything else keeps the save-failed words
+          // Redbracket ID A5: a refusal that names itself is worded from its code. A server fault (5xx) cannot tell the
+          // web which stage failed, and the emailed code is claimed before any issuer step, so the password may already
+          // be set: the words say to sign in with it, else request a new code. Anything else keeps the save-failed words
           const status = httpStatusOf(err);
           const refused = running ? null : identityRefusal(err);
-          const key = running ? 'setupStillFinishing' : refused ?? (status !== undefined && status >= 500 ? 'serverDown' : 'passwordSaveFailed');
+          const key = running ? 'setupStillFinishing' : refused ?? (status !== undefined && status >= 500 ? 'setupMayBeSet' : 'passwordSaveFailed');
           set((s) => { s.access.sending = false; failAccess(s, { key }); });
         });
     },

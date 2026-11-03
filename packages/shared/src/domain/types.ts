@@ -668,7 +668,7 @@ export interface Worker {
 export type SignInErrorKey =
   | 'enterEmailPassword' | 'demoEmails' | 'accessRemoved' | 'serverDown' | 'wrongPassword'
   | 'invalidInvitedEmail' | 'setupNeedsServer' | 'passwordMismatch' | 'codeSendFailed' | 'setupWrongCode' | 'passwordLength'
-  | 'setupExpired' | 'passwordSaveFailed' | 'setupStillFinishing' | 'invalidEmail' | 'emailSendFailed' | 'emailWrongCode' | 'enterMobile'
+  | 'setupExpired' | 'passwordSaveFailed' | 'setupStillFinishing' | 'setupMayBeSet' | 'invalidEmail' | 'emailSendFailed' | 'emailWrongCode' | 'enterMobile'
   | 'tooManySignIns' | 'tooManyCodes'
   | 'identityNoProject' | 'identityInvitePending' | 'identityTestAccount' | 'identityEmailUnverified'
   | 'identityPasswordChanged' | 'identityNeedsHelp' | 'identityIssuerAccountExists' | 'identityPasswordRejected' | 'identityRetired';
