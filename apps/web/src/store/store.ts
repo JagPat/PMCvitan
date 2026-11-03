@@ -8051,12 +8051,15 @@ export const useStore = create<Store>()(
           // the code, never the status alone: the same route's other 409 (an email that cannot be set up, its code
           // spent) keeps the save-failed words
           const running = httpStatusOf(err) === 409 && (err as { serverCode?: unknown } | null)?.serverCode === SETUP_RUNNING_CODE;
-          // Redbracket ID A5: a refusal that names itself is worded from its code. A server fault (5xx) cannot tell the
-          // web which stage failed, and the emailed code is claimed before any issuer step, so the password may already
-          // be set: the words say to sign in with it, else request a new code. Anything else keeps the save-failed words
+          // Redbracket ID A5: a refusal that names itself is worded from its code. A server fault (5xx), a timeout (408)
+          // or no answer at all (the request may have reached the server and committed, its answer lost) cannot tell
+          // the web whether or where setup stopped, and the emailed code is claimed before any issuer step, so the
+          // password may already be set: the words say to sign in with it, else request a new code. Any other refusal
+          // keeps the save-failed words
           const status = httpStatusOf(err);
           const refused = running ? null : identityRefusal(err);
-          const key = running ? 'setupStillFinishing' : refused ?? (status !== undefined && status >= 500 ? 'setupMayBeSet' : 'passwordSaveFailed');
+          const unknownOutcome = status === undefined || status === 408 || status >= 500;
+          const key = running ? 'setupStillFinishing' : refused ?? (unknownOutcome ? 'setupMayBeSet' : 'passwordSaveFailed');
           set((s) => { s.access.sending = false; failAccess(s, { key }); });
         });
     },
@@ -8106,7 +8109,8 @@ export const useStore = create<Store>()(
       gateway
         .emailOtpVerify(email.trim().toLowerCase(), otp)
         .then((res) => applyAuthResult(res))
-        .catch(() => set((s) => { s.access.sending = false; s.access.otp = ''; failAccess(s, { key: 'emailWrongCode' }); }));
+        // Redbracket ID A5: a right code for an account that moved to Redbracket ID is not a wrong code
+        .catch((err: unknown) => set((s) => { s.access.sending = false; s.access.otp = ''; failAccess(s, { key: identityRefusal(err) ?? 'emailWrongCode' }); }));
     },
     requestOtp: () => {
       const { phone, sending } = get().access;

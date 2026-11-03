@@ -206,6 +206,12 @@ describe('Redbracket ID refusals are worded from their code (A5)', () => {
     expect(await failingCompletion(refusal(500, undefined))).toBe(signInErrors.en.setupMayBeSet);
   });
 
+  it('password setup: a lost answer (no status) or a timeout (408) may also have set the password, so it says the same', async () => {
+    expect(await failingCompletion(new TypeError('Failed to fetch'))).toBe(signInErrors.en.setupMayBeSet);
+    expect(await failingCompletion(refusal(408, undefined))).toBe(signInErrors.en.setupMayBeSet);
+    expect(await failingCompletion(refusal(400, undefined))).toBe(signInErrors.en.passwordSaveFailed);
+  });
+
   it('no code keeps today\'s words, whatever the message says (a server from before A5)', async () => {
     expect(await signInFailingWith(refusal(401, undefined, 'You are signed in, but you are not on any PMC project yet. Ask your PMC to add you.')))
       .toBe(signInErrors.en.wrongPassword);
@@ -267,6 +273,26 @@ describe('Redbracket ID refusals are worded from their code (A5)', () => {
     await flush();
     expect(s().access.errorKey?.key).toBe('wrongCode');
     expect(s().access.otp).toBe('');
+  });
+
+  const failingEmailCode = async (err: unknown) => {
+    s()._setGateway({ emailOtpVerify: vi.fn().mockRejectedValue(err) } as unknown as ApiGateway);
+    useStore.setState({ access: { ...s().access, step: 'emailcode', email: 'owner@example.com', otp: '123456' } });
+    s().emailOtpVerify();
+    await flush();
+    expect(s().sessionToken).toBeNull();
+    expect(s().access.sending).toBe(false);
+    expect(s().access.otp).toBe('');
+    return s().access.errorKey?.key;
+  };
+
+  it('email code sign-in: a right code for an account that moved to Redbracket ID says so, not "wrong code"', async () => {
+    expect(await failingEmailCode(refusal(401, C.retired))).toBe('identityRetired');
+  });
+
+  it('email code sign-in: a 401 without a code, or a code on another status, is still a wrong code', async () => {
+    expect(await failingEmailCode(refusal(401, undefined))).toBe('emailWrongCode');
+    expect(await failingEmailCode(refusal(403, C.retired))).toBe('emailWrongCode');
   });
 
   it('every refusal key has words in English, Hindi and Gujarati', () => {
