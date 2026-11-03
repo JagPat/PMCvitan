@@ -101,18 +101,34 @@ describe('Redbracket ID A4b-m — the holder seals count live holders (live PG)'
   it('the seals are installed, with fixed search paths, and fire after the delivered ones', async () => {
     const rows = await t.prisma.$queryRawUnsafe<Array<{ tbl: string; tgname: string }>>(
       `SELECT c.relname AS tbl, t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
-        WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND t.tgname LIKE '%\\_x\\_live\\_holder\\_guard' ORDER BY 1`);
+        WHERE NOT t.tgisinternal AND t.tgenabled = 'O' AND t.tgname LIKE '%\\_x\\_%' ORDER BY 1`);
     expect(rows).toEqual([
+      { tbl: 'Decision', tgname: 'Decision_x_live_holder_standing' },
       { tbl: 'Membership', tgname: 'Membership_x_live_holder_guard' },
       { tbl: 'OrgMembership', tgname: 'OrgMembership_x_live_holder_guard' },
+      { tbl: 'User', tgname: 'User_x_retired_seats_guard' },
     ]);
     expect(['Membership_t4b2_holder_guard', 'Membership_t4d_holder_guard'].every((n) => n < 'Membership_x_live_holder_guard')).toBe(true);
     expect('OrgMembership_t4b2_holder_guard' < 'OrgMembership_x_live_holder_guard').toBe(true);
+    // every delivered BEFORE trigger on Decision fires first, so its own refusal and message win
+    const dec = await t.prisma.$queryRawUnsafe<Array<{ tgname: string }>>(
+      `SELECT t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+        WHERE c.relname = 'Decision' AND NOT t.tgisinternal AND (t.tgtype & 2) = 2 AND t.tgname <> 'Decision_x_live_holder_standing'`);
+    expect(dec.length).toBeGreaterThan(0);
+    // the User guard is a BEFORE DELETE row trigger and every FK action on User (the IdentityRetirement and membership
+    // cascades included) is an AFTER trigger, so the guard reads the retirement record before any cascade removes it
+    const userDel = await t.prisma.$queryRawUnsafe<Array<{ proname: string; before: boolean }>>(
+      `SELECT p.proname, (t.tgtype & 2) = 2 AS before FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid
+        WHERE t.tgrelid = '"User"'::regclass AND (t.tgtype & 8) = 8`);
+    expect(userDel.filter((x) => x.before).map((x) => x.proname)).toEqual(['phase6_retired_user_delete_guard']);
+    expect(userDel.some((x) => x.proname === 'RI_FKey_cascade_del' && !x.before)).toBe(true);
+    for (const d of dec) expect(d.tgname < 'Decision_x_live_holder_standing', d.tgname).toBe(true);
     const fns = await t.prisma.$queryRawUnsafe<Array<{ proname: string; cfg: string[] | null }>>(
       `SELECT p.proname, p.proconfig AS cfg FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public' AND p.proname IN ('platform_user_retired', 'phase6_live_role_standing', 'phase6_live_role_held',
-          'phase6_live_holder_membership_guard', 'phase6_live_holder_org_membership_guard') ORDER BY 1`);
-    expect(fns.map((x) => x.proname)).toHaveLength(5);
+          'phase6_live_holder_membership_guard', 'phase6_live_holder_org_membership_guard',
+          'phase6_live_holder_decision_seal', 'phase6_retired_user_delete_guard', 'phase6_membership_held_by_retired') ORDER BY 1`);
+    expect(fns.map((x) => x.proname)).toHaveLength(8);
     for (const fn of fns) expect(fn.cfg, fn.proname).toEqual(['search_path=pg_catalog, public, pg_temp']);
   });
 
@@ -218,29 +234,105 @@ describe('Redbracket ID A4b-m — the holder seals count live holders (live PG)'
     })).toBeNull();
   });
 
-  it('deleting a RETIRED user is judged as a live write once the cascade removes its retirement row (fail closed)', async () => {
-    // The retirement record goes only with its user (ON DELETE CASCADE), and the cascade can remove it before the
-    // membership trigger reads it. With only retired client holders left, the delete is refused; no deployed path
-    // deletes a user, and the re-seat ends the seats first. A missing user row is NOT treated as not live: that would
-    // let a live user's hard delete leave a decision to retired holders alone.
+  it('deleting a RETIRED user who still holds a counted seat is refused at the User row, before any cascade', async () => {
+    // #1327 r1 (Codex 4452669493): PostgreSQL does not order the retirement-record cascade against the membership
+    // cascade, so the refusal is judged at the User row, where the retirement record is still there.
     const second = `rbid-a4bm-gone-${run}`;
-    const raised = await rolledBack(async (tx) => {
+    const seatUp = async (tx: Prisma.TransactionClient, seat: { status?: string; orgRole?: string }) => {
       await tx.user.create({ data: { id: second, projectId: f.projectA.id, role: 'client', name: 'A4b-m gone', email: `${second}@test.local` } });
-      await tx.membership.create({ data: { projectId: f.projectA.id, userId: second, role: 'client', status: 'active' } });
+      const m = await tx.membership.create({ data: { projectId: f.projectA.id, userId: second, role: 'client', status: seat.status ?? 'active' } });
+      if (seat.orgRole) await tx.orgMembership.create({ data: { orgId: f.orgA.id, userId: second, role: seat.orgRole } });
       await retire(tx, second);
-      await retire(tx, f.clientUser.id);
-      await tx.$executeRawUnsafe(`DELETE FROM "User" WHERE "id" = $1`, second);
-    });
-    expect(raised).toMatch(/NO live client holder/);
-    // with the seat ended first (the re-seat order), the same delete passes
+      return m.id;
+    };
+    const deleteUser = (tx: Prisma.TransactionClient) => tx.$executeRawUnsafe(`DELETE FROM "User" WHERE "id" = $1`, second);
+    const refusal = /phase6-4b: user \S+ was retired by Redbracket ID and still holds an active project seat or an owner\/admin company seat/;
+    // an active project seat: refused even while a live client remains (no holder question is asked at all)
+    expect(await rolledBack(async (tx) => { await seatUp(tx, {}); await deleteUser(tx); })).toMatch(refusal);
+    // and with only retired client holders left (the case a cascade order could have let through)
+    expect(await rolledBack(async (tx) => { await seatUp(tx, {}); await retire(tx, f.clientUser.id); await deleteUser(tx); })).toMatch(refusal);
+    // an owner/admin company arm: refused
     expect(await rolledBack(async (tx) => {
-      await tx.user.create({ data: { id: second, projectId: f.projectA.id, role: 'client', name: 'A4b-m gone', email: `${second}@test.local` } });
-      const m = await tx.membership.create({ data: { projectId: f.projectA.id, userId: second, role: 'client', status: 'active' } });
-      await retire(tx, second);
+      const m = await seatUp(tx, { orgRole: 'admin' });
+      await tx.$executeRawUnsafe(`UPDATE "Membership" SET "status" = 'removed' WHERE "id" = $1`, m);
+      await deleteUser(tx);
+    })).toMatch(refusal);
+    // seats ended first (the re-seat order), or seats these seals never count (invited; a plain company member): passes
+    expect(await rolledBack(async (tx) => {
+      const m = await seatUp(tx, {});
       await retire(tx, f.clientUser.id);
-      await tx.$executeRawUnsafe(`UPDATE "Membership" SET "status" = 'removed' WHERE "id" = $1`, m.id);
-      await tx.$executeRawUnsafe(`DELETE FROM "User" WHERE "id" = $1`, second);
+      await tx.$executeRawUnsafe(`UPDATE "Membership" SET "status" = 'removed' WHERE "id" = $1`, m);
+      await deleteUser(tx);
     })).toBeNull();
+    expect(await rolledBack(async (tx) => { await seatUp(tx, { status: 'invited', orgRole: 'member' }); await deleteUser(tx); })).toBeNull();
+    // a LIVE user's delete is not this guard's: it is judged by the membership seal as a live loss
+    expect(await rolledBack(async (tx) => {
+      await tx.user.create({ data: { id: second, projectId: f.projectA.id, role: 'client', name: 'A4b-m live', email: `${second}@test.local` } });
+      await tx.membership.create({ data: { projectId: f.projectA.id, userId: second, role: 'client', status: 'active' } });
+      await retire(tx, f.clientUser.id);
+      await deleteUser(tx);
+    })).toMatch(/NO live client holder/);
+  });
+
+  it('a decision born published, published or reopened is refused while the role\'s only holders are retired', async () => {
+    // #1327 r1 (Codex 4452669484): the delivered Decision seal counts the retired rows (effective 2), this one does not (live 0)
+    const birth = await rolledBack(async (tx) => {
+      await retire(tx, f.clientUser.id);
+      await tx.decision.create({ data: { id: `a4bm-born-${run}`, projectId: f.projectA.id, authorId: f.memberUser.id, title: 'born', room: 'Kitchen', photoSwatch: 'sw1', deciderKind: 'client', status: 'pending', publishedAt: new Date() } as never });
+    });
+    expect(birth).toMatch(/phase6-4b: this project has no LIVE client holder/);
+    const published = await rolledBack(async (tx) => {
+      await retire(tx, f.clientUser.id);
+      await tx.decision.create({ data: { id: `a4bm-draft-${run}`, projectId: f.projectA.id, authorId: f.memberUser.id, title: 'draft', room: 'Kitchen', photoSwatch: 'sw1', deciderKind: 'client', status: 'pending', publishedAt: null } as never });
+      await tx.$executeRawUnsafe(`UPDATE "Decision" SET "publishedAt" = now() WHERE "id" = $1`, `a4bm-draft-${run}`);
+    });
+    expect(published).toMatch(/phase6-4b: this project has no LIVE client holder/);
+    // with a live client the same publication passes this seal (the deferred option floor is never reached: rolled back)
+    expect(await rolledBack(async (tx) => {
+      await tx.decision.create({ data: { id: `a4bm-draft-${run}`, projectId: f.projectA.id, authorId: f.memberUser.id, title: 'draft', room: 'Kitchen', photoSwatch: 'sw1', deciderKind: 'client', status: 'pending', publishedAt: null } as never });
+      await tx.$executeRawUnsafe(`UPDATE "Decision" SET "publishedAt" = now() WHERE "id" = $1`, `a4bm-draft-${run}`);
+    })).toBeNull();
+    // the reopen boundary (approved -> change): the trigger's own arm, called on a planted approved row with only the
+    // delivered lifecycle seal and this seal left on Decision (the other doors are dropped inside the rolled-back tx)
+    const reopened = await rolledBack(async (tx) => {
+      const others = await tx.$queryRawUnsafe<Array<{ tgname: string }>>(
+        `SELECT tgname FROM pg_trigger WHERE tgrelid = '"Decision"'::regclass AND NOT tgisinternal
+            AND tgname NOT IN ('Decision_t4b2_lifecycle_seal', 'Decision_x_live_holder_standing')`);
+      for (const o of others) await tx.$executeRawUnsafe(`DROP TRIGGER "${o.tgname}" ON "Decision"`);
+      await tx.decision.create({ data: { id: `a4bm-appr-${run}`, projectId: f.projectA.id, authorId: f.memberUser.id, title: 'approved', room: 'Kitchen', photoSwatch: 'sw1', deciderKind: 'client', status: 'approved', publishedAt: new Date() } as never });
+      await retire(tx, f.clientUser.id);
+      await tx.$executeRawUnsafe(`UPDATE "Decision" SET "status" = 'change' WHERE "id" = $1`, `a4bm-appr-${run}`);
+    });
+    expect(reopened).toMatch(/phase6-4b: this project has no LIVE client holder/);
+  });
+
+  it('a decision naming a RETIRED user\'s membership, or forwarded to a retired-only holder, is refused', async () => {
+    // #1327 r1 inventory: the delivered seals read a named membership as merely ACTIVE, and a forward moves the holder
+    // on a published row without any publication; this seal judges both on live holders
+    const named = await rolledBack(async (tx) => {
+      await tx.decision.create({ data: { id: `a4bm-mem-${run}`, projectId: f.projectA.id, authorId: f.memberUser.id, title: 'named', room: 'Kitchen', photoSwatch: 'sw1', deciderKind: 'member', deciderMembershipId: retiredMembershipId, status: 'pending', publishedAt: new Date() } as never });
+    });
+    expect(named).toMatch(/phase6-4b: the named decider membership \S+ belongs to an account retired by Redbracket ID/);
+    // the same birth naming the live client's membership passes this seal
+    expect(await rolledBack(async (tx) => {
+      await tx.decision.create({ data: { id: `a4bm-mem-${run}`, projectId: f.projectA.id, authorId: f.memberUser.id, title: 'named', room: 'Kitchen', photoSwatch: 'sw1', deciderKind: 'member', deciderMembershipId: clientMembershipId, status: 'pending', publishedAt: new Date() } as never });
+    })).toBeNull();
+    // the forward (a holder move on a published open row): only the delivered lifecycle seal and this seal left on
+    // Decision inside the rolled-back tx, so the forward fact's pairing is not in play
+    const forward = (to: { kind: string; membershipId: string | null }, retireClient: boolean) => rolledBack(async (tx) => {
+      const others = await tx.$queryRawUnsafe<Array<{ tgname: string }>>(
+        `SELECT tgname FROM pg_trigger WHERE tgrelid = '"Decision"'::regclass AND NOT tgisinternal
+            AND tgname NOT IN ('Decision_t4b2_lifecycle_seal', 'Decision_x_live_holder_standing')`);
+      for (const o of others) await tx.$executeRawUnsafe(`DROP TRIGGER "${o.tgname}" ON "Decision"`);
+      await tx.decision.create({ data: { id: `a4bm-fwd-${run}`, projectId: f.projectA.id, authorId: f.memberUser.id, title: 'fwd', room: 'Kitchen', photoSwatch: 'sw1', deciderKind: 'pmc', status: 'pending', publishedAt: new Date() } as never });
+      if (retireClient) await retire(tx, f.clientUser.id);
+      await tx.$executeRawUnsafe(`UPDATE "Decision" SET "deciderKind" = $2::"DeciderKind", "deciderMembershipId" = $3 WHERE "id" = $1`,
+        `a4bm-fwd-${run}`, to.kind, to.membershipId);
+    });
+    expect(await forward({ kind: 'client', membershipId: null }, true)).toMatch(/phase6-4b: this project has no LIVE client holder/);
+    expect(await forward({ kind: 'member', membershipId: retiredMembershipId }, false)).toMatch(/phase6-4b: the named decider membership \S+ belongs to an account retired/);
+    expect(await forward({ kind: 'client', membershipId: null }, false)).toBeNull();
+    expect(await forward({ kind: 'member', membershipId: clientMembershipId }, false)).toBeNull();
   });
 
   // last: without the seal the command commits the removal, which would change every arm after it

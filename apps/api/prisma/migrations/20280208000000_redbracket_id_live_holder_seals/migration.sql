@@ -11,7 +11,8 @@
 -- team commands already refuse that write (#1326, `liveRoleStanding`); this file teaches the database backstop
 -- the same rule, so a writer outside the commands (operator SQL) meets it too.
 --
--- WHAT. Two SEPARATE AFTER-row triggers beside the delivered ones, the 4d-i way (its PART 3d note: a second
+-- WHAT. SEPARATE triggers beside the delivered ones (two AFTER-row membership seals here; the decision and user seals
+-- below), the 4d-i way (its PART 3d note: a second
 -- trigger adds refusals without touching a byte of the delivered function, so nothing delivered is reverted):
 --   · `public.platform_user_retired(user)`: PLATFORM-owned, the one read of the platform's retirement record.
 --     The orgs functions below ask it and never read `IdentityRetirement` themselves.
@@ -26,16 +27,30 @@
 --     row (the re-seat's last step) is never refused by this file, even when no live holder exists yet, because
 --     that shortfall is not this write's (the delivered seals' rule: "never for a pre-existing shortfall some
 --     unrelated write did not cause").
---   · ONE EXCEPTION, FAIL CLOSED: deleting a retired USER. The retirement record goes only with its user (ON DELETE
---     CASCADE), and the cascade can remove it before the membership trigger reads it, so that delete is judged as a
---     live write and refused while only retired holders would be left. No deployed path deletes a user, and the
---     re-seat ends the seats first. A missing user row is deliberately NOT read as "not live": that would let a LIVE
---     user's hard delete leave a decision to retired holders alone.
+--   · DELETING A RETIRED USER is judged at the `User` row, BEFORE any cascade (#1327 r1, Codex 4452669493). The
+--     retirement record goes only with its user (ON DELETE CASCADE), and PostgreSQL does not order that cascade
+--     against the membership cascade, so the membership trigger cannot tell whether the retirement row is still
+--     there. `User_x_retired_seats_guard` refuses the delete of a retired user who still holds an ACTIVE project seat
+--     or an owner/admin company seat (the seats these seals count): the re-seat ends those seats first, and no
+--     deployed path deletes a user. With that refusal in place, every membership row a retired user's delete
+--     cascades is one these seals never judge (not active, or not an owner/admin arm). A missing user row is NOT read
+--     as "not live": that would let a LIVE user's hard delete leave a decision to retired holders alone.
 --   · The raise starts `phase6-4b:`, so a member or org command that meets it answers 409 through
 --     `rethrowHolderSealViolation`, like the delivered seal.
 --
--- NAMES SORT LAST. PostgreSQL fires same-kind triggers in name order. `_x_` sorts after `_qa_`, `_t4b2_` and
--- `_t4d_`, so the delivered seals judge first and keep their messages; these add only the live arm.
+-- PUBLICATION, BIRTH, REOPEN AND FORWARD (#1327 r1, Codex 4452669484). `Decision_x_live_holder_standing` judges the
+-- three boundaries the delivered `Decision_t4b2_lifecycle_seal` judges (a row born published as pending or change; a
+-- draft's publication; `approved → change`) plus a holder move on a published open row (the 4d forward), under the
+-- same readiness key: a role holder (client, pmc) on live standing, a named membership (member) on its user not
+-- being retired. It refuses only the gap (effective above zero, live zero; or an active named membership of a
+-- retired user); a zero effective count or an inactive named membership stays the delivered seal's refusal. The
+-- decisions service judges the same boundaries on the effective count and on an active membership today, so a
+-- publication, create-published, change request or forward that meets this seal (only while a retired row holds a
+-- seat, which needs `IDENTITY_OIDC=1`) fails closed as a server error until the service judges live holders too
+-- (A4b-s, a pilot switch-on precondition).
+--
+-- NAMES SORT LAST. PostgreSQL fires same-kind triggers in name order. `_x_` sorts after `_qa_`, `_t4a_`, `_t4b_`,
+-- `_t4b2_` and `_t4d_`, so the delivered seals judge first and keep their messages; these add only the live arm.
 --
 -- WHAT THIS FILE DOES NOT DO. No delivered function or trigger is replaced or dropped; no deployed migration is
 -- edited; no table, column or row is written. The architect arm is not added: an architect membership and an
@@ -45,7 +60,8 @@
 -- inventory is 4d-i's own (phase6-t4d-i-seal-inventory).
 --
 -- SAFE UNDER THE PREVIOUS RELEASE. It refuses a write only while a retired row holds a seat, and a retired row
--- exists only with `IDENTITY_OIDC=1`, which is off. A previous-release command that met it would answer 409.
+-- exists only with `IDENTITY_OIDC=1`, which is off. A previous-release member or org command that met it would
+-- answer 409; a previous-release publication or change request would fail closed (500), as above.
 --
 -- ORDERING. The readiness key is the delivered seals' (`phase6_try_readiness`, reentrant, try-or-refuse), taken
 -- before the judgement, as they do. A retirement takes no readiness key and is never refused (it is a person's
@@ -170,3 +186,72 @@ DROP TRIGGER IF EXISTS "OrgMembership_x_live_holder_guard" ON public."OrgMembers
 CREATE TRIGGER "OrgMembership_x_live_holder_guard"
   AFTER UPDATE OR DELETE ON public."OrgMembership"
   FOR EACH ROW EXECUTE FUNCTION public.phase6_live_holder_org_membership_guard();
+
+-- ── the decision boundaries on live standing (#1327 r1, Codex 4452669484) ────────────────────────────────────────
+-- ORGS-owned: the named membership is active AND its user is retired (a named holder nobody can sign in as). It
+-- asks the platform's `platform_user_retired`, never `IdentityRetirement` itself.
+CREATE OR REPLACE FUNCTION public.phase6_membership_held_by_retired(p_project TEXT, p_membership TEXT)
+RETURNS BOOLEAN LANGUAGE sql STABLE SET search_path = pg_catalog, public, pg_temp AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public."Membership" m
+     WHERE m."id" = p_membership AND m."projectId" = p_project AND m."status" = 'active'
+       AND public.platform_user_retired(m."userId")
+  );
+$$;
+
+-- Judged boundaries: a row born published as pending or change; a draft's publication; `approved → change`; and
+-- a HOLDER MOVE on a published open row (the forward: `deciderKind`/`deciderMembershipId` change while pending,
+-- change or awaiting countersign). Each is judged on the NEW holder: a role (client, pmc) must keep a live holder
+-- where it has an effective one; a named membership (member) must not belong to a retired user. An inactive named
+-- membership or a zero effective count stays the delivered seals' refusal. The architect kind is not judged here
+-- (4d-i's doors refuse an architect-held decision; see the head note).
+CREATE OR REPLACE FUNCTION public.phase6_live_holder_decision_seal() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $fn$
+DECLARE pid TEXT := NEW."projectId"; k TEXT := NEW."deciderKind"::text;
+BEGIN
+  IF k NOT IN ('client', 'pmc', 'member') THEN RETURN NEW; END IF;
+  IF NOT (
+       (TG_OP = 'INSERT' AND NEW."publishedAt" IS NOT NULL AND NEW."status"::text IN ('pending', 'change'))
+    OR (TG_OP = 'UPDATE' AND OLD."publishedAt" IS NULL AND NEW."publishedAt" IS NOT NULL)
+    OR (TG_OP = 'UPDATE' AND OLD."status"::text = 'approved' AND NEW."status"::text = 'change')
+    OR (TG_OP = 'UPDATE' AND NEW."publishedAt" IS NOT NULL
+        AND NEW."status"::text IN ('pending', 'change', 'awaiting_countersign')
+        AND (NEW."deciderKind" IS DISTINCT FROM OLD."deciderKind"
+             OR NEW."deciderMembershipId" IS DISTINCT FROM OLD."deciderMembershipId"))
+  ) THEN
+    RETURN NEW;
+  END IF;
+  IF NOT public.phase6_try_readiness(pid) THEN
+    RAISE EXCEPTION 'phase6-4b: the project readiness key is contended — retry (decision %)', NEW."id";
+  END IF;
+  IF k = 'member' THEN
+    IF public.phase6_membership_held_by_retired(pid, NEW."deciderMembershipId") THEN
+      RAISE EXCEPTION 'phase6-4b: the named decider membership % belongs to an account retired by Redbracket ID, which nobody can sign in as — a decision nobody can decide is refused; re-seat the person and name their new membership (RUNBOOK "Redbracket ID re-seat") (decision %)', NEW."deciderMembershipId", NEW."id";
+    END IF;
+  ELSIF public.phase6_effective_role_standing(pid, k) > 0 AND public.phase6_live_role_standing(pid, k) = 0 THEN
+    RAISE EXCEPTION 'phase6-4b: this project has no LIVE % holder: its only holders are accounts retired by Redbracket ID, which nobody can sign in as — a decision nobody can decide is refused; re-seat the person first (RUNBOOK "Redbracket ID re-seat") (decision %)', k, NEW."id";
+  END IF;
+  RETURN NEW;
+END $fn$;
+
+DROP TRIGGER IF EXISTS "Decision_x_live_holder_standing" ON public."Decision";
+CREATE TRIGGER "Decision_x_live_holder_standing"
+  BEFORE INSERT OR UPDATE ON public."Decision"
+  FOR EACH ROW EXECUTE FUNCTION public.phase6_live_holder_decision_seal();
+
+-- ── a retired user's delete, judged before any cascade (#1327 r1, Codex 4452669493) ────────────────────────────────
+CREATE OR REPLACE FUNCTION public.phase6_retired_user_delete_guard() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $fn$
+BEGIN
+  IF public.platform_user_retired(OLD."id")
+     AND (EXISTS (SELECT 1 FROM public."Membership" m WHERE m."userId" = OLD."id" AND m."status" = 'active')
+          OR EXISTS (SELECT 1 FROM public."OrgMembership" om WHERE om."userId" = OLD."id" AND om."role" IN ('owner', 'admin'))) THEN
+    RAISE EXCEPTION 'phase6-4b: user % was retired by Redbracket ID and still holds an active project seat or an owner/admin company seat — end those seats first (RUNBOOK "Redbracket ID re-seat")', OLD."id";
+  END IF;
+  RETURN OLD;
+END $fn$;
+
+DROP TRIGGER IF EXISTS "User_x_retired_seats_guard" ON public."User";
+CREATE TRIGGER "User_x_retired_seats_guard"
+  BEFORE DELETE ON public."User"
+  FOR EACH ROW EXECUTE FUNCTION public.phase6_retired_user_delete_guard();
