@@ -222,6 +222,19 @@ function codexRecordNamesHead(comment, expectedHead) {
 }
 
 /**
+ * #1324 r2 gap-check 4 — could this removed Codex record have been evidence for `expectedHead`? The shared selection
+ * (`codexRecordNamesHead`), except that a Codex record whose JSON cannot be read may have named it, so it counts (fail
+ * closed). Another login, or no marker, is no record.
+ */
+export function codexRecordMayNameHead(comment, expectedHead) {
+  if (!isCodexActor(comment)) return false;
+  const match = /<!--\s*codex-review-state:v1\s+([\s\S]*?)\s*-->/u.exec(String(comment?.body ?? ''));
+  if (!match) return false;
+  try { JSON.parse(match[1]); } catch { return true; }
+  return codexRecordNamesHead(comment, expectedHead);
+}
+
+/**
  * 2A3b-2 C (#1318 Codex 4449402452) — when Codex's review-state records about `expectedHead` were last written: the
  * latest update time over every Codex record naming the head (Gap C: every such record, not only the one an event
  * names; the selection is `codexRecordFingerprint`'s), in ms; -Infinity with none, NaN when one is unreadable (a caller

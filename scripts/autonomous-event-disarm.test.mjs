@@ -4,7 +4,7 @@ import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GitHubClient, contextForEvent, run } from './autonomous-review-gate.mjs';
-import { codexRecordLatestMs, codexStateRecordVerdict } from './autonomous-review-state.mjs';
+import { codexRecordLatestMs, codexRecordMayNameHead, codexStateRecordVerdict } from './autonomous-review-state.mjs';
 import { securityVerdictMarker } from './security-verdict-marker.mjs';
 import {
   CODEX_RUN_HELD_DETAIL, CODEX_RECORD_UNREADABLE_DETAIL, CODEX_SECURITY_FINDINGS_DETAIL, CODEX_SHARED_COMMIT_DETAIL, CODEX_AUTOMERGE_DISARM_FAILED, OWNERSHIP_CANDIDATE_HELD, REARM_SETTLEMENTS, REARM_ATTEMPT_FAILED,
@@ -144,14 +144,25 @@ const neverArmsOrMerges = (log, name) => assert.equal(log.some(([k, , state]) =>
 
 test('2A3b-1/2 — the three event contexts, and none for other events', () => {
   assert.deepEqual(contextForEvent(...events.synchronize(610)),
-    { number: 610, expectedHead: HEAD, ciConclusion: null, trigger: 'synchronize', enabledBy: null });
+    { number: 610, expectedHead: HEAD, ciConclusion: null, trigger: 'synchronize', enabledBy: null, payloadPullRequest: { number: 610, head: { sha: HEAD } } });
   assert.equal(contextForEvent(...events.armed(610)).trigger, 'auto-merge-enabled');
   assert.equal(contextForEvent(...events.armed(610)).enabledBy, 'a-person');
   const record = codexRecord(HEAD, 'in_progress');
   assert.deepEqual(contextForEvent(...events.record(610, record)),
-    { number: 610, expectedHead: null, ciConclusion: null, trigger: 'codex-record', comment: record });
+    { number: 610, expectedHead: null, ciConclusion: null, trigger: 'codex-record', comment: record, removed: false, removedRecord: null });
+  // #1324 Codex 4450461173 — a deletion, or an edit that removed the marker it carried, is a removal; #1324 r2 gap-check
+  // 4 — it carries the record as it read before (the deleted comment, or the edit's previous body)
+  const deleted = contextForEvent('issue_comment', { action: 'deleted', issue: { number: 9, pull_request: {} }, comment: record });
+  assert.equal(deleted.removed, true);
+  assert.deepEqual(deleted.removedRecord, record);
+  const unmarked = { ...record, body: 'Codex review summary' };
+  const dropped = contextForEvent('issue_comment', { action: 'edited', issue: { number: 9, pull_request: {} }, comment: unmarked, changes: { body: { from: record.body } } });
+  assert.equal(dropped.removed, true);
+  assert.deepEqual(dropped.removedRecord, { ...unmarked, body: record.body }, 'the previous body, under the same author');
+  assert.equal(contextForEvent('issue_comment', { action: 'edited', issue: { number: 9, pull_request: {} }, comment: record, changes: { body: { from: record.body } } }).removed, false, 'still marked');
+  assert.equal(contextForEvent('issue_comment', { action: 'edited', issue: { number: 9, pull_request: {} }, comment: unmarked, changes: { body: { from: 'note' } } }).removed, false, 'never marked');
   assert.equal(contextForEvent('issue_comment', { action: 'created', issue: { number: 9 }, comment: record }), null, 'an issue, not a pull request');
-  assert.equal(contextForEvent('issue_comment', { action: 'deleted', issue: { number: 9, pull_request: {} }, comment: record }), null);
+  assert.equal(contextForEvent('issue_comment', { action: 'pinned', issue: { number: 9, pull_request: {} }, comment: record }), null);
   assert.equal(contextForEvent('pull_request_target', { action: 'labeled', pull_request: { number: 610 } }), null);
 });
 
@@ -256,7 +267,6 @@ test('2A3b-2 (W2) — the Codex record is re-read live: a run the event saw that
   for (const [name, live] of [
     ['completed since the event', [{ ...codexRecord(HEAD, 'completed'), id: running.id }]],
     ['now names another head', [{ ...codexRecord(OLD, 'in_progress'), id: running.id }]],
-    ['deleted since the event', []],
   ]) {
     const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
     const result = await runDisarm({ number: 610, pulls, statuses: [tokenedSuccess()], event: events.record(610, running), comments: live });
@@ -264,6 +274,21 @@ test('2A3b-2 (W2) — the Codex record is re-read live: a run the event saw that
     assert.ok(pulls.get(610).auto_merge, `${name}: the merge stays queued`);
     assert.deepEqual(result.log.filter(([k]) => k === 'status' || k === 'draft' || k === 'sticky' || k === 'disable'), [], `${name}: nothing written`);
   }
+  // #1324 r2 gap-check 2 — gone since the event (404), or read back without its marker: a removal of a record that named
+  // the head, so it fails closed even when its own deletion run was cancelled by this newer event
+  for (const [name, live] of [['deleted since the event', []], ['lost its marker since the event', [{ ...running, body: 'Codex review summary' }]]]) {
+    const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+    const result = await runDisarm({ number: 610, pulls, statuses: [tokenedSuccess()], event: events.record(610, running), comments: live });
+    assert.equal(result.error, null, name);
+    assert.equal(pulls.get(610).auto_merge, null, `${name}: disarmed`);
+    assert.deepEqual(written(result.log), [['failure', `review: ${CODEX_EVIDENCE_CHANGED}`]], `${name}: the retryable changed hold`);
+    neverArmsOrMerges(result.log, name);
+  }
+  // a clean record on the head that is gone since its event: the removal fails closed (never the payload's clean copy)
+  const cleanGone = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const goneRun = await runDisarm({ number: 610, pulls: cleanGone, statuses: [tokenedSuccess()], event: events.record(610, cleanRecord(HEAD)), comments: [] });
+  assert.equal(cleanGone.get(610).auto_merge, null, 'a clean record gone since its event: disarmed');
+  assert.deepEqual(written(goneRun.log), [['failure', `review: ${CODEX_EVIDENCE_CHANGED}`]]);
   // the id read back belongs to another pull request: not this PR's record
   const elsewhere = new Map([[610, pullAt(610, { auto_merge: queued })]]);
   const other = await runDisarm({ number: 610, pulls: elsewhere, statuses: [tokenedSuccess()], event: events.record(610, running),
@@ -462,7 +487,7 @@ test('2A3b-2 — structural: the workflow runs trusted default-branch code on it
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const state = await readFile(new URL('./autonomous-review-state.mjs', import.meta.url), 'utf8');
   assert.match(workflow, /pull_request_target:\s*\n\s*types: \[synchronize, auto_merge_enabled\]/u);
-  assert.match(workflow, /issue_comment:\s*\n\s*types: \[created, edited\]/u);
+  assert.match(workflow, /issue_comment:\s*\n\s*types: \[created, edited, deleted\]/u, 'a deletion runs too (#1324 Codex 4450461173)');
   assert.doesNotMatch(workflow, /^\s*(push|pull_request|workflow_run|schedule|workflow_dispatch):/mu);
   assert.deepEqual([...workflow.matchAll(/^\s*ref:\s*(.+)$/gmu)].map(([, ref]) => ref.trim()), ['${{ github.event.repository.default_branch }}'], 'never PR code');
   assert.match(workflow, /persist-credentials:\s*false/u);
@@ -480,10 +505,15 @@ test('2A3b-2 — structural: the workflow runs trusted default-branch code on it
     'a push or an arm shares the controller\'s exact-head group');
   assert.match(workflow, /\|\| format\('autonomous-review-event-disarm-\{0\}', github\.event\.issue\.number\) \}\}/u,
     'a Codex record: a per-PR group (Q3), never per run');
+  // #1324 r2 gap-check 2 — a removal runs in a group of its own run, so no newer record event can cancel it pending
+  assert.match(workflow, /\|\| \(github\.event\.action == 'deleted' \|\| !contains\(github\.event\.comment\.body, 'codex-review-state:v1'\)\) && format\('autonomous-review-event-disarm-removal-\{0\}-\{1\}', github\.event\.issue\.number, github\.run_id\) \|\| format\('autonomous-review-event-disarm-\{0\}'/u,
+    'a removal: a group per run, ahead of the per-PR group');
   assert.match(workflow, /cancel-in-progress:\s*false/u);
   // the job filter: only a pull request's comment, by Codex, carrying the record marker
   assert.match(workflow, /github\.event\.issue\.pull_request &&/u);
   assert.match(workflow, /contains\(github\.event\.comment\.body, 'codex-review-state:v1'\)/u);
+  // #1324 Codex 4450461173 — an edit that removed the marker it carried still runs
+  assert.match(workflow, /contains\(github\.event\.comment\.body, 'codex-review-state:v1'\) \|\|\s*\n\s*contains\(github\.event\.changes\.body\.from, 'codex-review-state:v1'\)/u);
   // Stage 1's ruling: neither login check can be dropped alone — the job filter, and the reader's own re-check
   assert.match(workflow, /github\.event\.comment\.user\.login == 'chatgpt-codex-connector\[bot\]'/u);
   const reader = state.slice(state.indexOf('export function codexStateRecordVerdict'), state.indexOf('export function codexRecordFingerprint'));
@@ -494,7 +524,20 @@ test('2A3b-2 — structural: the workflow runs trusted default-branch code on it
   assert.equal([...disarm.matchAll(/'success'/gu)].length, 1, 'its one success is the newest green it reads, never one it writes');
   // the live record is judged by that reader, and the ownership predicate has its consumer, judged before any write
   assert.match(disarm, /codexStateRecordVerdict\(records, expectedHead, 0\)/u, 'every current record (#1318 Codex 4449402442)');
-  assert.match(disarm, /const live = await liveCodexRecord\(client, pullRequest\.number, context\.comment\);\s*if \(!live\) return 'nothing';/u);
+  assert.match(disarm, /if \(read === CODEX_RECORD_GONE\) removedRecord = context\.comment;/u, 'a record read back gone is a removal (#1324 r2 gap-check 2)');
+  assert.match(disarm, /if \(!live && !removedRecord\) return 'nothing';/u);
+  assert.match(disarm, /if \(removedRecord && !codexRecordMayNameHead\(removedRecord, expectedHead\)\) return 'nothing';/u, 'only a removal of a record that may have named the head (#1324 r2 gap-check 4)');
+  // #1324 Codex 4450461173 — a removal never ends early: like an unlistable set it reaches the disarm and the re-read
+  assert.match(disarm, /if \(listed && !removed && verdict !== 'hold'/u);
+  // #1324 Codex 4450461165 — an unreadable opening status read still disarms in the event mode, and writes nothing
+  const runBody = gate.slice(gate.indexOf('export async function run()'));
+  assert.match(runBody, /if \(mode !== 'event-disarm'\) throw error;/u, 'only the event disarm goes on without its statuses');
+  const unread = gate.slice(gate.indexOf('export async function disarmOnUnreadStatuses'), gate.indexOf('\n}\n', gate.indexOf('export async function disarmOnUnreadStatuses')));
+  // #1324 r2 gap-check 1 — this pull request's own merge is disabled before any further read
+  assert.match(unread, /await disarmQueuedAutoMerge\(client, pullRequest\.number, expectedHead, observed, pullRequest\)/u, 'the own disable first, through the shared disarm');
+  const shared = gate.slice(gate.indexOf('export async function disarmQueuedAutoMerge'), gate.indexOf('\n}\n', gate.indexOf('export async function disarmQueuedAutoMerge')));
+  assert.ok(shared.indexOf('await disable(known)') > 0 && shared.indexOf('await disable(known)') < shared.indexOf('await refreshCurrentHead('), 'the known pull request disabled before any read');
+  assert.doesNotMatch(unread, /setStatus|publishRetryableHold|refuseReviewedGreen|setDraft|updateStickyComment|enableAutoMerge/u, 'nothing written');
   // #1318 Codex 4449402449 — the newest verdict is read again after the disarm, before the refusal
   assert.ok(disarm.lastIndexOf('ownershipStatusWithholdsAutoMerge(') > disarm.indexOf('disarmBeforeRun(client, pullRequest, expectedHead, statuses, observed)', disarm.indexOf('const live'))
     && disarm.lastIndexOf('ownershipStatusWithholdsAutoMerge(') < disarm.lastIndexOf('refuseReviewedGreen('), 'ownership re-read between the disarm and the refusal');
@@ -505,7 +548,7 @@ test('2A3b-2 — structural: the workflow runs trusted default-branch code on it
   // 2A3b-2 C (Stage 1's re-check of dc9d177a, gap A) — strict: a tie or an unreadable time counts as changed
   assert.match(disarm, /!\(codexRecordLatestMs\(records, expectedHead\) < green\)/u);
   // #1324 Codex 4450375966 — an unlistable set never returns early on the named record: only a listed set may write nothing
-  assert.match(disarm, /if \(listed && verdict !== 'hold' && verdict !== 'security' && !changed\) return 'nothing';/u);
+  assert.match(disarm, /if \(listed && !removed && verdict !== 'hold' && verdict !== 'security' && !changed\) return 'nothing';/u);
   // #1324 Codex 4450375961 — the set is read again after the ownership re-read, and the refusal is chosen from that read
   const reread = disarm.indexOf('readCodexRecordSet(client, pullRequest.number, null)');
   assert.ok(reread > disarm.lastIndexOf('ownershipStatusWithholdsAutoMerge(') && reread < disarm.lastIndexOf('refuseReviewedGreen('), 'the records re-read between the ownership re-read and the refusal');
@@ -518,7 +561,7 @@ test('2A3b-2 — structural: the workflow runs trusted default-branch code on it
 
 // Fold check of 190a20b4 (2) — the client method behind the live re-read: the scoped path, and a 404 from the real
 // request() is the "gone" the reader treats as no record (null), so nothing is disarmed
-test('2A3b-2 (fold 2) — issueComment reads this repository\'s comment by id; a real 404 makes the record gone', { timeout: 30_000 }, async () => {
+test('2A3b-2 (fold 2) — issueComment reads this repository\'s comment by id; a real 404 makes the record a removal', { timeout: 30_000 }, async () => {
   const client = new GitHubClient({ repository: 'JagPat/PMCvitan', token: 'test-token' });
   const calls = [];
   client.request = async (path, options = {}) => { calls.push([options.method ?? 'GET', path]); return { id: 77 }; };
@@ -535,12 +578,14 @@ test('2A3b-2 (fold 2) — issueComment reads this repository\'s comment by id; a
   try {
     const pulls = new Map([[12, pullAt(12, { auto_merge: queued })]]);
     const { log, error } = await runDisarm({
-      number: 12, pulls, statuses: [tokenedSuccess()], event: events.record(12, codexRecord(HEAD, 'in_progress')),
+      number: 12, pulls, statuses: [tokenedSuccess()], event: events.record(12, codexRecord(HEAD, 'in_progress')), comments: [],
       overrides: { request: realRequest, issueComment: realIssueComment },
     });
     assert.equal(error, null);
     assert.deepEqual(fetched, [['GET', 'https://api.github.com/repos/JagPat/PMCvitan/issues/comments/77']]);
-    assert.equal(log.some(([k]) => k === 'disable' || k === 'status' || k === 'draft'), false, 'a gone record disarms and writes nothing');
+    // #1324 r2 gap-check 2 — a record gone since its event is a removal: disarmed and held, retryable
+    assert.equal(pulls.get(12).auto_merge, null, 'a gone record that named the head disarms');
+    assert.deepEqual(written(log), [['failure', `review: ${CODEX_EVIDENCE_CHANGED}`]]);
   } finally {
     globalThis.fetch = savedFetch;
   }
@@ -773,6 +818,185 @@ test('2A3b-2 C — a list without the named record still judges it: a run on the
   assert.equal(result.error, null);
   assert.equal(pulls.get(610).auto_merge, null, 'disarmed');
   assert.equal(written(result.log).filter(([state]) => state === 'failure').length, 1, 'held');
+});
+
+// #1324 Codex 4450461173 — a record deleted, or edited so that it lost its marker, removes the evidence a green was
+// judged on: the run fails closed. A queued merge is disarmed and the refusal follows the re-read (a set now clear is
+// the retryable changed hold); with nothing queued, nothing is written
+test('2A3b-2 C (#1324 Codex 4450461173) — a deleted record, or one that lost its marker, fails closed', { timeout: 30_000 }, async () => {
+  const record = cleanRecord(HEAD);
+  const removals = {
+    deleted: ['issue_comment', { action: 'deleted', issue: { number: 610, pull_request: { url: 'u' } }, comment: record }],
+    unmarked: ['issue_comment', { action: 'edited', issue: { number: 610, pull_request: { url: 'u' } }, comment: { ...record, body: 'Codex review summary' }, changes: { body: { from: record.body } } }],
+  };
+  for (const [name, event] of Object.entries(removals)) {
+    const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+    const result = await runDisarm({ number: 610, pulls, statuses: [tokenedSuccess()], event, comments: [] });
+    assert.equal(result.error, null, name);
+    assert.equal(pulls.get(610).auto_merge, null, `${name}: disarmed`);
+    assert.deepEqual(written(result.log), [['failure', `review: ${CODEX_EVIDENCE_CHANGED}`]], `${name}: the retryable changed hold`);
+    assert.ok(!result.log.some(([k]) => k === 'comment'), `${name}: no record left to read`);
+    neverArmsOrMerges(result.log, name);
+
+    const idle = new Map([[610, pullAt(610)]]);
+    const none = await runDisarm({ number: 610, pulls: idle, statuses: [tokenedSuccess()], event, comments: [] });
+    assert.equal(none.error, null, name);
+    assert.deepEqual(none.log.filter(([k]) => k === 'status' || k === 'disable' || k === 'draft' || k === 'sticky'), [], `${name}: nothing queued, nothing written`);
+
+    // the removal is the event's own fact: a live read that would fail (and fall back to the payload's clean copy) is
+    // never made, so it cannot turn the removal back into a clean record
+    const flaky = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+    const noLive = await runDisarm({ number: 610, pulls: flaky, statuses: [tokenedSuccess()], event, comments: [],
+      overrides: { async issueComment() { throw new Error('GitHub GET /repos/JagPat/PMCvitan/issues/comments/77 failed (502): Bad Gateway'); } } });
+    assert.equal(flaky.get(610).auto_merge, null, `${name}: disarmed without a live read`);
+    assert.deepEqual(written(noLive.log), [['failure', `review: ${CODEX_EVIDENCE_CHANGED}`]], `${name}: held`);
+  }
+});
+
+// #1324 Codex 4450461165 — an event disarm whose opening status read fails still disarms every queued merge at the head
+// and writes nothing (an unknown newest verdict may be a withholding ownership one); the gate's own arm is left alone
+test('2A3b-2 C (#1324 Codex 4450461165) — an unreadable opening status read still disarms, and writes nothing', { timeout: 30_000 }, async () => {
+  const unreadable = { async statuses() { throw new Error('GitHub GET statuses failed (502)'); } };
+  const cases = {
+    record: events.record(610, codexRecord(HEAD, 'in_progress')),
+    push: events.synchronize(610),
+    arm: events.armed(610),
+  };
+  for (const [name, event] of Object.entries(cases)) {
+    const pulls = new Map([[610, pullAt(610, { auto_merge: queued })], [611, pullAt(611, { auto_merge: queued })]]);
+    const result = await runDisarm({ number: 610, pulls, statuses: [], event, overrides: unreadable });
+    assert.equal(result.error, null, name);
+    assert.deepEqual([...pulls.values()].filter((p) => p.auto_merge).map((p) => p.number), [], `${name}: every queued merge at the head disarmed`);
+    assert.deepEqual(result.log.filter(([k]) => k === 'status' || k === 'draft' || k === 'sticky'), [], `${name}: nothing written`);
+    neverArmsOrMerges(result.log, name);
+  }
+  const gatePulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const gateArm = await runDisarm({ number: 610, pulls: gatePulls, statuses: [], event: events.armed(610, 'github-actions[bot]'), overrides: unreadable });
+  assert.equal(gateArm.error, null);
+  assert.ok(gatePulls.get(610).auto_merge, 'the gate\'s own arm stays');
+  const failing = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const refused = await runDisarm({
+    number: 610, pulls: failing, statuses: [], event: events.synchronize(610),
+    overrides: { ...unreadable, async disableAutoMerge() { throw new Error('GitHub GraphQL failed: FORBIDDEN'); } },
+  });
+  assert.ok(refused.error, 'a disable that fails throws: the job goes red');
+  // r2-exit-audit E2 — a pull request that cannot be read: a record event carries no pull request, so nothing can be
+  // disabled (residual R2-1, End: the Board ruling); the run throws and the job goes red, with nothing written
+  const unread = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const noPull = await runDisarm({
+    number: 610, pulls: unread, statuses: [], event: events.record(610, codexRecord(HEAD, 'in_progress')),
+    overrides: { async pullRequest() { throw new Error('GitHub GET pull failed (502)'); } },
+  });
+  assert.ok(noPull.error, 'red');
+  assert.deepEqual(noPull.log.filter(([k]) => k === 'status' || k === 'disable' || k === 'draft'), [], 'nothing written');
+  // the orchestrate path still throws on an unreadable status read
+  const orchestrate = await runDisarm({ number: 610, pulls: new Map([[610, pullAt(610)]]), statuses: [], event: events.synchronize(610), overrides: unreadable, mode: 'orchestrate' });
+  assert.ok(orchestrate.error);
+});
+
+// #1324 r2 gap-check 1 — with the statuses unread, this pull request's own queued merge is disabled first, from the
+// pull request run() read, so a read inside disarmQueuedAutoMerge that fails (the pull request again, or the list of
+// pull requests at the commit) still leaves it disarmed; the job goes red and nothing is written
+test('2A3b-2 C (#1324 r2 gap-check 1) — unread statuses: the own merge is disabled before any read that can fail', { timeout: 30_000 }, async () => {
+  const unreadable = { async statuses() { throw new Error('GitHub GET statuses failed (502)'); } };
+  for (const [name, failing] of [
+    ['the pull request re-read fails', (pulls) => {
+      let reads = 0;
+      return { async pullRequest(n) { reads += 1; if (reads > 1) throw new Error('GitHub GET pull failed (502)'); return { ...pulls.get(n) }; } };
+    }],
+    ['the list at the commit fails', () => ({ async openPullRequestsAt() { throw new Error('GitHub GET pulls failed (502)'); } })],
+  ]) {
+    for (const [kind, event] of Object.entries({ record: events.record(610, codexRecord(HEAD, 'in_progress')), push: events.synchronize(610), arm: events.armed(610) })) {
+      const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+      const result = await runDisarm({ number: 610, pulls, statuses: [], event, overrides: { ...unreadable, ...failing(pulls) } });
+      assert.ok(result.error, `${name}, ${kind}: red`);
+      assert.equal(pulls.get(610).auto_merge, null, `${name}, ${kind}: the own merge is disarmed`);
+      assert.deepEqual(result.log.filter(([k]) => k === 'status' || k === 'draft' || k === 'sticky'), [], `${name}, ${kind}: nothing written`);
+    }
+  }
+  // the first disable refused but the merge already gone (another run): the re-read decides, nothing thrown
+  const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  let disables = 0;
+  const raced = await runDisarm({
+    number: 610, pulls, statuses: [], event: events.synchronize(610),
+    overrides: { ...unreadable, async disableAutoMerge(pull) { disables += 1; pulls.get(pull.number).auto_merge = null; throw new Error('GitHub GraphQL failed: already disabled'); } },
+  });
+  assert.equal(raced.error, null, 'a refused first disable whose merge is gone is disarmed');
+  assert.equal(disables, 1);
+  assert.equal(pulls.get(610).auto_merge, null);
+  // a push or a record event disables a gate-made arm too (only the gate's own arm EVENT is ignored)
+  for (const [kind, event] of Object.entries({ record: events.record(610, codexRecord(HEAD, 'in_progress')), push: events.synchronize(610) })) {
+    const gateArmed = new Map([[610, pullAt(610, { auto_merge: { ...queued, enabled_by: { login: 'github-actions[bot]' } } })]]);
+    const result = await runDisarm({ number: 610, pulls: gateArmed, statuses: [], event, overrides: unreadable });
+    assert.equal(result.error, null, kind);
+    assert.equal(gateArmed.get(610).auto_merge, null, `${kind}: the gate's arm is disabled`);
+  }
+});
+
+// #1324 r2 gap-check 3 — the pull request read itself fails: on a push or an arm, the payload's pull request (node id,
+// auto-merge) is enough to disable its queued merge; the job still goes red and nothing is written
+test('2A3b-2 C (#1324 r2 gap-check 3) — an unreadable pull request on a push or an arm is disabled from the payload', { timeout: 30_000 }, async () => {
+  const noRead = { async pullRequest() { throw new Error('GitHub GET pull failed (502)'); } };
+  const payloadEvent = (action, pull, login = 'a-person') => ['pull_request_target', { action, sender: { login }, pull_request: pull }];
+  for (const action of ['synchronize', 'auto_merge_enabled']) {
+    const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+    const result = await runDisarm({ number: 610, pulls, statuses: [], event: payloadEvent(action, pullAt(610, { auto_merge: queued })), overrides: noRead });
+    assert.ok(result.error, `${action}: red`);
+    assert.equal(pulls.get(610).auto_merge, null, `${action}: disarmed from the payload`);
+    assert.deepEqual(result.log.filter(([k]) => k === 'status' || k === 'draft' || k === 'sticky'), [], `${action}: nothing written`);
+  }
+  for (const [name, pull, login] of [
+    ['the gate\'s own arm', pullAt(610, { auto_merge: { ...queued, enabled_by: { login: 'github-actions[bot]' } } }), 'github-actions[bot]'],
+    ['a fork', pullAt(610, { auto_merge: queued, head: { sha: HEAD, ref: 'x', repo: { full_name: 'someone/PMCvitan' } } }), 'a-person'],
+    ['nothing queued in the payload', pullAt(610), 'a-person'],
+  ]) {
+    const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+    const result = await runDisarm({ number: 610, pulls, statuses: [], event: payloadEvent('auto_merge_enabled', pull, login), overrides: noRead });
+    assert.ok(result.error, `${name}: red`);
+    assert.ok(!result.log.some(([k]) => k === 'disable'), `${name}: nothing disabled`);
+  }
+  // a disable from the payload that fails still leaves the read's own error as the job's
+  const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const refused = await runDisarm({ number: 610, pulls, statuses: [], event: payloadEvent('synchronize', pullAt(610, { auto_merge: queued })),
+    overrides: { ...noRead, async disableAutoMerge() { throw new Error('GitHub GraphQL failed: FORBIDDEN'); } } });
+  assert.match(String(refused.error?.message), /GET pull failed/u);
+});
+
+// #1324 r2 gap-check 4 — a removal is judged only when the removed record may have named the head: deleting a stale
+// record about another head leaves a queued merge alone; one whose JSON cannot be read fails closed
+test('2A3b-2 C (#1324 r2 gap-check 4) — a removal of a record about another head only writes nothing', { timeout: 30_000 }, async () => {
+  const stale = cleanRecord(OLD);
+  const unparseable = { ...cleanRecord(HEAD), body: '<!-- codex-review-state:v1 {not json -->' };
+  const removal = (comment) => ['issue_comment', { action: 'deleted', issue: { number: 610, pull_request: { url: 'u' } }, comment }];
+  const kept = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const staleRun = await runDisarm({ number: 610, pulls: kept, statuses: [tokenedSuccess()], event: removal(stale), comments: [] });
+  assert.equal(staleRun.error, null);
+  assert.ok(kept.get(610).auto_merge, 'a stale record\'s deletion: the merge stays queued');
+  assert.deepEqual(staleRun.log.filter(([k]) => k === 'status' || k === 'disable' || k === 'draft' || k === 'sticky'), []);
+  // the same for an edit that dropped the marker from a stale record
+  const keptEdit = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const staleEdit = await runDisarm({ number: 610, pulls: keptEdit, statuses: [tokenedSuccess()], comments: [],
+    event: ['issue_comment', { action: 'edited', issue: { number: 610, pull_request: { url: 'u' } }, comment: { ...stale, body: 'note' }, changes: { body: { from: stale.body } } }] });
+  assert.ok(keptEdit.get(610).auto_merge, 'a stale record unmarked: the merge stays queued');
+  assert.deepEqual(written(staleEdit.log), []);
+  // another login's comment carrying the marker was never a record
+  const keptLogin = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  await runDisarm({ number: 610, pulls: keptLogin, statuses: [tokenedSuccess()], event: removal({ ...cleanRecord(HEAD), user: { login: 'someone' } }), comments: [] });
+  assert.ok(keptLogin.get(610).auto_merge, 'another login: the merge stays queued');
+  // a removed record whose JSON cannot be read may have named the head: fail closed
+  const closed = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const unreadRun = await runDisarm({ number: 610, pulls: closed, statuses: [tokenedSuccess()], event: removal(unparseable), comments: [] });
+  assert.equal(closed.get(610).auto_merge, null, 'unparseable: disarmed');
+  assert.deepEqual(written(unreadRun.log), [['failure', `review: ${CODEX_EVIDENCE_CHANGED}`]]);
+  // a security section naming the head counts
+  const security = { ...securityRecord(HEAD, 'completed') };
+  const secPulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  await runDisarm({ number: 610, pulls: secPulls, statuses: [tokenedSuccess()], event: removal(security), comments: [] });
+  assert.equal(secPulls.get(610).auto_merge, null, 'a security section on the head: disarmed');
+  assert.equal(codexRecordMayNameHead(stale, HEAD), false);
+  assert.equal(codexRecordMayNameHead(unparseable, HEAD), true);
+  assert.equal(codexRecordMayNameHead({ ...unparseable, user: { login: 'someone' } }, HEAD), false, 'another login is never a record, parseable or not');
+  assert.equal(codexRecordMayNameHead(cleanRecord(HEAD), HEAD), true);
 });
 
 test('2A3b-2 C — codexRecordLatestMs: Codex\'s records naming the head only; none is -Infinity; an unreadable time is NaN', () => {
