@@ -200,28 +200,38 @@ export function codexStateRecordVerdict(issueComments, expectedHead, readyAtMs) 
  */
 export function codexRecordFingerprint(issueComments, expectedHead) {
   return (issueComments ?? [])
-    .filter((comment) => {
-      if (!isCodexActor(comment)) return false;
-      const match = /<!--\s*codex-review-state:v1\s+([\s\S]*?)\s*-->/u.exec(String(comment?.body ?? ''));
-      if (!match) return false;
-      let record;
-      try { record = JSON.parse(match[1]); } catch { return false; }
-      return record?.code_review?.commit_sha === expectedHead || record?.security_review?.commit_sha === expectedHead;
-    })
+    .filter((comment) => codexRecordNamesHead(comment, expectedHead))
     .map((comment) => `${String(comment.id)}\u0000${String(comment.updated_at ?? comment.created_at ?? '')}\u0000${String(comment.body)}`)
     .sort()
     .join('\u0001');
 }
 
 /**
- * 2A3b-2 C (#1318 Codex 4449402452) — when Codex's review-state records were last written: the latest update time of any
- * Codex-authored record (as `codexRecordFingerprint` selects them), in ms; -Infinity with none, NaN when one is
- * unreadable (a caller comparing with `!(latest < t)` treats NaN as newer, fail closed).
+ * Is this comment a Codex review-state record about `expectedHead`: Codex's REST login, the marker, parseable JSON (as
+ * `codexStateRecordVerdict` reads them), and a code or security section naming the head? The one selection both
+ * `codexRecordFingerprint` (2A3b-2 B, #1320 Codex 4450011604) and `codexRecordLatestMs` (2A3b-2 C) make: a record about
+ * another head only is not evidence for this one.
  */
-export function codexRecordLatestMs(issueComments) {
+function codexRecordNamesHead(comment, expectedHead) {
+  if (!isCodexActor(comment)) return false;
+  const match = /<!--\s*codex-review-state:v1\s+([\s\S]*?)\s*-->/u.exec(String(comment?.body ?? ''));
+  if (!match) return false;
+  let record;
+  try { record = JSON.parse(match[1]); } catch { return false; }
+  return record?.code_review?.commit_sha === expectedHead || record?.security_review?.commit_sha === expectedHead;
+}
+
+/**
+ * 2A3b-2 C (#1318 Codex 4449402452) — when Codex's review-state records about `expectedHead` were last written: the
+ * latest update time over every Codex record naming the head (Gap C: every such record, not only the one an event
+ * names; the selection is `codexRecordFingerprint`'s), in ms; -Infinity with none, NaN when one is unreadable (a caller
+ * comparing with `!(latest < t)` treats NaN as newer, fail closed). A record about another head only, written late, is
+ * not news about this head (as #1320 Codex 4450011604 ruled for the fingerprint).
+ */
+export function codexRecordLatestMs(issueComments, expectedHead) {
   let latest = -Infinity;
   for (const comment of issueComments ?? []) {
-    if (!isCodexActor(comment) || !/<!--\s*codex-review-state:v1\s/u.test(String(comment?.body ?? ''))) continue;
+    if (!codexRecordNamesHead(comment, expectedHead)) continue;
     const written = Date.parse(comment?.updated_at ?? comment?.created_at);
     if (!Number.isFinite(written)) return Number.NaN;
     if (written > latest) latest = written;

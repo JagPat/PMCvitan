@@ -3447,7 +3447,7 @@ export async function eventDisarm(client, pullRequest, expectedHead, context, st
   // that cannot be read) is news that green may not have judged: the queued merge is disarmed and the head re-judged,
   // retryable. With no green newest, no queued merge can land (the required status is a failure).
   const green = newest?.state === 'success' ? Date.parse(newest.updated_at ?? newest.created_at) : null;
-  const changed = verdict === 'dirty' && green !== null && !(codexRecordLatestMs(records) < green);
+  const changed = verdict === 'dirty' && green !== null && !(codexRecordLatestMs(records, expectedHead) < green);
   if (verdict !== 'hold' && verdict !== 'security' && !changed) return 'nothing';
   // the refusal only when a merge was actually queued here: with none, the orchestrate run that waits sees the records
   const observed = {};

@@ -493,7 +493,7 @@ test('2A3b-2 — structural: the workflow runs trusted default-branch code on it
     'the ownership verdict is judged before any event write (#1318 Codex 4448897194)');
   assert.doesNotMatch(gate, /deferred to (the )?2A3b|has NO consumer in this unit/u);
   // 2A3b-2 C (Stage 1's re-check of dc9d177a, gap A) — strict: a tie or an unreadable time counts as changed
-  assert.match(disarm, /!\(codexRecordLatestMs\(records\) < green\)/u);
+  assert.match(disarm, /!\(codexRecordLatestMs\(records, expectedHead\) < green\)/u);
   // the push and arm keep the orchestrator's exact-head group, which the orchestrator itself names (auto-merge.yml)
   const automerge = await readFile(new URL('../.github/workflows/auto-merge.yml', import.meta.url), 'utf8');
   assert.match(automerge, /group: autonomous-review-owner-\$\{\{ github\.event\.workflow_run\.pull_requests\[0\]\.number [^\n]*\}\}-\$\{\{ github\.event\.workflow_run\.head_sha /u,
@@ -671,16 +671,32 @@ test('2A3b-2 C — dirty-after-green is strict and spans every record: a tie, an
   assert.equal(kept.error, null);
   assert.ok(pulls.get(610).auto_merge, 'the merge stays queued');
   assert.deepEqual(kept.log.filter(([k]) => k === 'status' || k === 'disable'), []);
+
+  // #1320 Codex 4450011604, carried to C — the head's dirty set the green was written after is unchanged; only a record
+  // about another head was written after the green (and named by the event): not this head's evidence, nothing
+  const oldLate = { ...codexRecord(OLD, 'completed'), id: 82, updated_at: '2026-11-02T21:45:00Z' };
+  const oldPulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const oldKept = await runDisarm({ number: 610, pulls: oldPulls, statuses: [tokenedSuccess('2026-11-02T21:30:00Z')], event: events.record(610, oldLate), comments: [dirtyRecord(HEAD), oldLate] });
+  assert.equal(oldKept.error, null);
+  assert.ok(oldPulls.get(610).auto_merge, 'another head\'s late record: the merge stays queued');
+  assert.deepEqual(oldKept.log.filter(([k]) => k === 'status' || k === 'disable'), []);
 });
 
-test('2A3b-2 C — codexRecordLatestMs: Codex\'s records only; none is -Infinity; an unreadable time is NaN', () => {
+test('2A3b-2 C — codexRecordLatestMs: Codex\'s records naming the head only; none is -Infinity; an unreadable time is NaN', () => {
   const late = { ...dirtyRecord(HEAD), id: 81, updated_at: '2026-11-02T22:00:00Z' };
-  assert.equal(codexRecordLatestMs([dirtyRecord(HEAD), late]), Date.parse('2026-11-02T22:00:00Z'));
-  assert.equal(codexRecordLatestMs([{ ...late, user: { login: 'someone' } }]), -Infinity, 'another login with the marker');
-  assert.equal(codexRecordLatestMs([{ id: 5, user: { login: 'chatgpt-codex-connector[bot]' }, body: 'note', updated_at: '2026-11-02T23:00:00Z' }]), -Infinity, 'Codex without the marker');
-  assert.ok(Number.isNaN(codexRecordLatestMs([late, { ...dirtyRecord(HEAD), updated_at: 'x' }])), 'one unreadable time makes it unreadable');
-  assert.equal(codexRecordLatestMs([{ ...dirtyRecord(HEAD), updated_at: undefined, created_at: '2026-11-02T20:00:00Z' }]), Date.parse('2026-11-02T20:00:00Z'), 'created when never updated');
-  assert.equal(codexRecordLatestMs(null), -Infinity);
+  const at = (comments) => codexRecordLatestMs(comments, HEAD);
+  assert.equal(at([dirtyRecord(HEAD), late]), Date.parse('2026-11-02T22:00:00Z'));
+  assert.equal(at([{ ...late, user: { login: 'someone' } }]), -Infinity, 'another login with the marker');
+  assert.equal(at([{ id: 5, user: { login: 'chatgpt-codex-connector[bot]' }, body: 'note', updated_at: '2026-11-02T23:00:00Z' }]), -Infinity, 'Codex without the marker');
+  assert.ok(Number.isNaN(at([late, { ...dirtyRecord(HEAD), updated_at: 'x' }])), 'one unreadable time makes it unreadable');
+  assert.equal(at([{ ...dirtyRecord(HEAD), updated_at: undefined, created_at: '2026-11-02T20:00:00Z' }]), Date.parse('2026-11-02T20:00:00Z'), 'created when never updated');
+  assert.equal(at(null), -Infinity);
+  // #1320 Codex 4450011604, carried to C — a record about another head only, or one that does not parse, is not this
+  // head's evidence, however late it was written; the security section naming the head counts
+  assert.equal(at([dirtyRecord(HEAD), { ...dirtyRecord(OLD), id: 82, updated_at: '2026-11-02T23:00:00Z' }]), Date.parse('2026-11-02T21:00:00Z'), 'another head');
+  assert.equal(at([{ ...late, body: '<!-- codex-review-state:v1 {not json -->' }]), -Infinity, 'unparseable');
+  assert.ok(Number.isNaN(at([{ ...dirtyRecord(OLD), updated_at: 'x' }, { ...dirtyRecord(HEAD), updated_at: 'x', id: 83 }])), 'an unreadable time on the head');
+  assert.equal(at([{ ...dirtyRecord(OLD), id: 82, updated_at: 'x' }]), -Infinity, 'an unreadable time on another head');
 });
 
 // 2A3b-2 C (#1318 Codex 4448897194, the event half) — the ownership verdict is judged first on a Codex record event
