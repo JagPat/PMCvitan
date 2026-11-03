@@ -5,6 +5,8 @@ import { assignmentStillBinds, bindingAssigneeIds } from './assignment-eligibili
 import { emitEvent } from '../platform/events';
 import type { Actor } from '../common/actor';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
+import { lineageApproval } from './inspection-lineage';
+import { tallyOpenWork, type OpenWorkCounts } from '../common/open-work';
 
 /**
  * Phase 2 Task 7 / Task 10 (Module 3) correction — the inspection module's transaction-bound WORKFLOW
@@ -24,6 +26,38 @@ import type { EmittedEventMeta } from '../platform/outbox/registry';
 @Injectable()
 export class InspectionParticipant {
   constructor(private readonly orgs: OrgsParticipant) {}
+
+  /**
+   * Redbracket ID A4b-2 — open inspections still NAMED on these accounts, per project, counting only what the account
+   * blocks: as RESPONSIBLE member, each inspection whose lineage is not yet approved (`lineageApproval`, the rule "Your
+   * open items" reads; `PUT .../responsible` moves it at any stage); as ASSIGNEE, each one not yet submitted and in an
+   * unapproved lineage (the submit predicate: once submitted, the assignee has nothing left to do, and no command moves
+   * an assignee, so a decided parent or a submitted checklist must not keep the account listed). The raw naming
+   * counts: the work stays on the row after its seat is removed (then the assignment stops binding, and any eligible
+   * engineer can submit). Read by the operator door's list of retired accounts.
+   */
+  async openWorkOf(db: Prisma.TransactionClient, userIds: string[]): Promise<OpenWorkCounts> {
+    const counts: OpenWorkCounts = new Map();
+    if (userIds.length === 0) return counts;
+    const named = await db.inspection.findMany({
+      where: { OR: [{ assigneeId: { in: userIds } }, { responsibleMemberId: { in: userIds } }] },
+      select: { id: true, projectId: true, assigneeId: true, responsibleMemberId: true, submitted: true },
+    });
+    if (named.length === 0) return counts;
+    const lineage = await db.inspection.findMany({
+      where: { projectId: { in: [...new Set(named.map((i) => i.projectId))] } },
+      select: { id: true, reinspectionOfId: true, decided: true },
+    });
+    const { approved } = lineageApproval(lineage);
+    const wanted = new Set(userIds);
+    for (const i of named) {
+      if (approved(i.id)) continue;
+      // one inspection naming the account twice (assignee and responsible) is one open item
+      const blocking = new Set([i.submitted ? null : i.assigneeId, i.responsibleMemberId]);
+      for (const u of blocking) if (u && wanted.has(u)) tallyOpenWork(counts, u, i.projectId);
+    }
+    return counts;
+  }
 
   /**
    * MAY THIS ACTOR CHANGE THIS INSPECTION'S EVIDENCE? — the binding-assignment rule at the third

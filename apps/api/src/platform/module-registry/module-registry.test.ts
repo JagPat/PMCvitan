@@ -207,7 +207,8 @@ describe('Phase 2 Task 7 — module registry', () => {
       // targeted-claim time) go through OrgsParticipant, so the platform → orgs interaction
       // is a DECLARED participant edge the graph validation can see. `platform.dependsOn`
       // stays empty (the kernel owns no domain logic).
-      platform: ['orgs'],
+      // Redbracket ID A4b-2 — the operator door's retired list asks five owners for open work (`openWorkOf`, reads only).
+      platform: ['orgs', 'inspections', 'activities', 'decisions', 'drawings', 'site-visits'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.workflowParticipants, `${m.id} workflowParticipants`).toEqual(expectedParticipants[m.id] ?? []);

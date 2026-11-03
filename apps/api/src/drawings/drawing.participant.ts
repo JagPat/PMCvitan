@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { tallyOpenWork, type OpenWorkCounts } from '../common/open-work';
 import { emitEvent } from '../platform/events';
 import type { Actor } from '../common/actor';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
@@ -24,6 +25,28 @@ import type { EmittedEventMeta } from '../platform/outbox/registry';
  */
 @Injectable()
 export class DrawingParticipant {
+  /**
+   * Redbracket ID A4b-2 — drawings still waiting on these accounts, per project: each revision that governs
+   * construction (`for_construction`) whose frozen recipient set names the account and which the account has not
+   * acknowledged. A superseded revision no longer waits on anyone. Read by the operator door's list of retired accounts.
+   */
+  async openWorkOf(db: Prisma.TransactionClient, userIds: string[]): Promise<OpenWorkCounts> {
+    const counts: OpenWorkCounts = new Map();
+    if (userIds.length === 0) return counts;
+    const waiting = await db.drawingRecipient.findMany({
+      where: { userId: { in: userIds }, revision: { status: 'for_construction' } },
+      select: { projectId: true, revisionId: true, userId: true },
+    });
+    if (waiting.length === 0) return counts;
+    const acks = await db.drawingAck.findMany({
+      where: { revisionId: { in: [...new Set(waiting.map((w) => w.revisionId))] }, userId: { in: userIds } },
+      select: { revisionId: true, userId: true },
+    });
+    const acked = new Set(acks.map((a) => `${a.revisionId}\u0000${a.userId}`));
+    for (const w of waiting) if (!acked.has(`${w.revisionId}\u0000${w.userId}`)) tallyOpenWork(counts, w.userId, w.projectId);
+    return counts;
+  }
+
   /**
    * Clear the governed-activity link of every drawing linked to an activity being deleted (edge 5's
    * owner-aligned half) and append `drawing.activity_unlinked` when any row changed — invoked on the
