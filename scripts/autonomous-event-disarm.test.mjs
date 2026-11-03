@@ -468,9 +468,11 @@ test('2A3b-2 — structural: the workflow runs trusted default-branch code on it
   assert.doesNotMatch(workflow, /pnpm|npm (ci|install)/u);
   assert.match(workflow, /head\.repo\.full_name == github\.repository/u);
   assert.match(workflow, /AUTONOMOUS_REVIEW_MODE: event-disarm/u);
-  const permissions = workflow.slice(workflow.indexOf('permissions:'), workflow.indexOf('jobs:'));
-  assert.deepEqual([...permissions.matchAll(/^\s+([a-z-]+):\s*(\w+)/gmu)].map(([, name, level]) => `${name}:${level}`).sort(),
-    ['contents:read', 'issues:write', 'pull-requests:write', 'statuses:write']);
+  // the whole permissions block, exactly, and the only one (no job-level override): every write eventDisarm reaches needs
+  // its scope — the disable and the draft need contents: write (run 41566154069 on #1322 died FORBIDDEN on the draft
+  // under contents: read), the stickies issues: write, the holds statuses: write — so no scope can silently drop again
+  assert.equal([...workflow.matchAll(/^\s*permissions:/gmu)].length, 1, 'one permissions block, never a job-level override');
+  assert.match(workflow, /^permissions:\n {2}contents: write\n {2}issues: write\n {2}pull-requests: write\n {2}statuses: write\n\n/mu);
   assert.match(workflow, /format\('autonomous-review-owner-\{0\}-\{1\}', github\.event\.pull_request\.number, github\.event\.pull_request\.head\.sha\)/u,
     'a push or an arm shares the controller\'s exact-head group');
   assert.match(workflow, /\|\| format\('autonomous-review-event-disarm-\{0\}', github\.event\.issue\.number\) \}\}/u,

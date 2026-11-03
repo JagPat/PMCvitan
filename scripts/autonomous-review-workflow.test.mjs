@@ -1973,11 +1973,9 @@ test('the relabel guard workflow runs trusted default-branch code with only the 
   assert.deepEqual([...workflow.matchAll(/^\s*ref:\s*(.+)$/gmu)].map(([, ref]) => ref.trim()),
     ['${{ github.event.repository.default_branch }}']);
   assert.doesNotMatch(workflow, /pnpm|npm (ci|install)/u);
-  const permissions = workflow.slice(workflow.indexOf('permissions:'), workflow.indexOf('jobs:'));
-  assert.deepEqual(
-    [...permissions.matchAll(/^\s+([a-z-]+):\s*(\w+)/gmu)].map(([, name, level]) => `${name}:${level}`).sort(),
-    ['contents:read', 'issues:write', 'pull-requests:write', 'statuses:write'],
-  );
+  // the whole permissions block, exactly, and the only one (no job-level override), so no scope changes silently
+  assert.equal([...workflow.matchAll(/^\s*permissions:/gmu)].length, 1, 'one permissions block, never a job-level override');
+  assert.match(workflow, /^permissions:\n {2}contents: read\n {2}issues: write\n {2}pull-requests: write\n {2}statuses: write\n\n/mu);
   // The controller's exact-head concurrency group, never cancelled: one writer per head at a time.
   assert.match(workflow, /group: autonomous-review-owner-\$\{\{ github\.event\.pull_request\.number \}\}-\$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
   assert.match(workflow, /cancel-in-progress:\s*false/u);
