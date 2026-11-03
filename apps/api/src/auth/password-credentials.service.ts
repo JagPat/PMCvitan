@@ -10,7 +10,7 @@ import type {
   PasswordCredentialVerifyInput,
 } from '../contracts';
 import { PrismaService } from '../prisma.service';
-import { lockUserCredential, PASSWORD_SETUP_PURPOSE } from '../common/credential-lock';
+import { CredentialClockUnreadable, credentialClock, lockUserCredential, PASSWORD_SETUP_PURPOSE } from '../common/credential-lock';
 import { EmailService } from '../platform/email.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { UNAVAILABLE, type IdentityOutcome, type IdentitySignInService } from './identity/identity-sign-in.service';
@@ -51,6 +51,8 @@ export const SETUP_RUNNING = 'Another password setup for this account is still f
 
 /** A transaction the server closed (P2028: its time ran out, e.g. waiting on the account's lock) as the 503 it is. */
 function unavailableOnTimeout(err: unknown): unknown {
+  // a transaction the server closed (P2028) and an unreadable claim clock are both transient: answered 503, code unspent
+  if (err instanceof CredentialClockUnreadable) return new ServiceUnavailableException(UNAVAILABLE);
   return err instanceof PrismaErrors.PrismaClientKnownRequestError && err.code === 'P2028' ? new ServiceUnavailableException(UNAVAILABLE) : err;
 }
 
@@ -249,8 +251,14 @@ export class PasswordCredentialsService {
    * another code for the same account is refused here, under the account's credential lock, until that completion
    * clears its hash on ending (`settleCompletion`) or its lease runs out. So two completions never write passwords at
    * the issuer at once, and an older one cannot overwrite the password a newer one reported set.
+   *
+   * The lease starts when the claim is taken: the time is read from the database clock here, after the credential lock
+   * (`clock_timestamp()`, not the transaction's start, which can predate a long lock wait), and that one value is both
+   * the cutoff for a running claim and the new claim's `consumedAt`. A completion that waited or paused before its claim
+   * therefore never commits a lease that is already over (Codex 4450806612).
    */
-  private async claimChallenge(tx: Prisma.TransactionClient, challengeId: string, userId: string, setupTokenHash: string, now: Date) {
+  private async claimChallenge(tx: Prisma.TransactionClient, challengeId: string, userId: string, setupTokenHash: string) {
+    const now = await credentialClock(tx);
     const running = await tx.passwordCredentialChallenge.findFirst({
       where: {
         userId,
@@ -300,7 +308,7 @@ export class PasswordCredentialsService {
         async () => {
           const eligible = await this.prisma.$transaction(async (tx) => {
             await lockUserCredential(tx, challenge.userId);
-            return this.claimChallenge(tx, challenge.id, challenge.userId, setupTokenHash, now);
+            return this.claimChallenge(tx, challenge.id, challenge.userId, setupTokenHash);
           });
           claimed = true;
           established = Boolean(eligible.passwordHash || eligible.emailVerifiedAt);
@@ -356,7 +364,7 @@ export class PasswordCredentialsService {
     const passwordHash = await bcrypt.hash(input.password, BCRYPT_COST);
     return this.prisma.$transaction(async (tx) => {
       await lockUserCredential(tx, challenge.userId);
-      const eligible = await this.claimChallenge(tx, challenge.id, challenge.userId, setupTokenHash, now);
+      const eligible = await this.claimChallenge(tx, challenge.id, challenge.userId, setupTokenHash);
       // this completion ends in this same transaction: it never holds the account (A4a)
       await tx.passwordCredentialChallenge.update({ where: { id: challenge.id }, data: { setupTokenHash: null } });
 

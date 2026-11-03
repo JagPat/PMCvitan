@@ -113,6 +113,8 @@ function fakePrisma(seed: UserRow[]) {
       }),
     },
     $executeRaw: vi.fn(async () => 1),
+    // the claim reads the lease start from the database clock (A4a)
+    $queryRaw: vi.fn(async () => [{ at: new Date() }]),
     $transaction: vi.fn(async (work: (tx: unknown) => Promise<unknown>) => {
       const beforeUsers = structuredClone(users);
       const beforeChallenges = structuredClone(challenges);

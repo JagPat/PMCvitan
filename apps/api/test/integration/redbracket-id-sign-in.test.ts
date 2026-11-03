@@ -811,6 +811,47 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     await login(user.email!, 'a long issuer passphrase').expect(500);
   });
 
+  it('a completion that waited before its claim still holds the account for a whole lease from the claim (Codex 4450806612)', async () => {
+    const user = await invitee('late-claim');
+    await setPassword(user.email!, 'the first issuer passphrase', 201);
+    await t.prisma.signInAttempt.deleteMany({});
+    const codeFor = async () => {
+      const requested = await http().post('/auth/password/request').send({ email: user.email }).expect(201);
+      const verified = await http().post('/auth/password/verify').send({ requestId: requested.body.requestId, code: codes.get(user.email!) }).expect(201);
+      return verified.body.setupToken as string;
+    };
+    const older = await codeFor();
+    const original = IdentityClient.prototype.find;
+    let reached!: () => void;
+    const atIssuer = new Promise<void>((resolve) => { reached = resolve; });
+    let release!: () => void;
+    const go = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(IdentityClient.prototype, 'find').mockImplementationOnce(async function (this: IdentityClient, ...args: Parameters<IdentityClient['find']>) {
+      reached();
+      await go;
+      return original.apply(this, args);
+    });
+    // the older completion's own clock reads 3 min back (as if it had waited that long before its claim, longer than the
+    // lease): the lease must still start at the claim itself, so the account is held from then
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() - 3 * 60_000 });
+    let first: Promise<{ status: number }>;
+    try {
+      first = http().post('/auth/password/complete').send({ setupToken: older, password: 'the older passphrase A' }).then((r) => r);
+      await atIssuer;
+    } finally {
+      vi.useRealTimers();
+    }
+    const claim = await t.prisma.passwordCredentialChallenge.findFirstOrThrow({ where: { userId: user.id, setupTokenExpiresAt: null, setupTokenHash: { not: null } }, orderBy: { consumedAt: 'desc' } });
+    expect(Date.now() - claim.consumedAt!.getTime()).toBeLessThan(60_000); // stamped when the claim was taken
+    const newer = await codeFor();
+    const second = await http().post('/auth/password/complete').send({ setupToken: newer, password: 'the newer passphrase B' }).expect(409);
+    expect(second.body.code).toBe('setup-running');
+    release();
+    expect((await first!).status).toBe(201);
+    expect([...fake.people.values()].find((p) => p.email === user.email)?.password).toBe('the older passphrase A');
+    await t.prisma.signInAttempt.deleteMany({});
+  });
+
   it('one password setup at a time per account: a second, claimed while the first is at the issuer, is refused and changes nothing', async () => {
     const user = await invitee('one-at-a-time');
     await setPassword(user.email!, 'the first issuer passphrase', 201);
@@ -903,7 +944,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     expect(await t.prisma.passwordCredentialChallenge.count({ where: { userId: user.id, setupTokenExpiresAt: null, verifiedAt: { not: null }, setupTokenHash: { not: null }, id: { not: stuck.id }, consumedAt: { gt: new Date(Date.now() - 2 * 60_000) } } })).toBe(0);
   }, 30_000);
 
-  it('a password completion whose transaction the server closed (P2028) answers 503, switch on or off; its code stays unspent', async () => {
+  it('a password completion whose transaction the server closed (P2028), or whose claim clock is unreadable, answers 503, switch on or off; its code stays unspent', async () => {
     const user = await invitee('complete-p2028');
     const p2028 = () => new Prisma.PrismaClientKnownRequestError('Transaction already closed: timeout', { code: 'P2028', clientVersion: 'test' });
     for (const value of ['1', '0']) {
@@ -917,6 +958,20 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
       expect(tx).toHaveBeenCalled();
       expect(r.body.message).toBe('Sign-in is unavailable just now. Try again in a few minutes.');
       tx.mockRestore();
+      // the claim's clock read answers no usable time (the claim reads the database clock under the lock): also 503
+      const realTransaction = t.prisma.$transaction.bind(t.prisma) as (work: (tx: unknown) => Promise<unknown>, options?: unknown) => Promise<unknown>;
+      const clock = vi.spyOn(t.prisma, '$transaction').mockImplementationOnce(((work: (tx: unknown) => Promise<unknown>, options?: unknown) =>
+        realTransaction((tx) => work(new Proxy(tx as object, {
+          get: (target, key) => {
+            if (key === '$queryRaw') return async () => [{ at: null }];
+            const v = (target as Record<string | symbol, unknown>)[key];
+            return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+          },
+        })), options)) as never);
+      const unreadable = await http().post('/auth/password/complete').send({ setupToken: verified.body.setupToken, password: `a ${value} passphrase of length` }).expect(503);
+      expect(clock).toHaveBeenCalled();
+      expect(unreadable.body.message).toBe('Sign-in is unavailable just now. Try again in a few minutes.');
+      clock.mockRestore();
       // nothing was claimed: the same code completes now
       await http().post('/auth/password/complete').send({ setupToken: verified.body.setupToken, password: `a ${value} passphrase of length` }).expect(201);
     }
