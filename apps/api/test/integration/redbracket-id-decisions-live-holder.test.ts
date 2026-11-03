@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, type TwoProjectFixture } from './fixtures';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Redbracket ID A4b-s — the decisions commands judge LIVE holders. An account a first Redbracket ID sign-in retired
@@ -58,28 +59,20 @@ describe('Redbracket ID A4b-s — the decisions commands count live holders (liv
   });
 
   afterAll(async () => {
-    const ids = [f.projectA.id, f.projectB.id];
-    await t?.prisma.$transaction([
-      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER USER'),
-      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER USER'),
-      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER USER'),
-      t.prisma.$executeRawUnsafe('ALTER TABLE "ChangeRequest" DISABLE TRIGGER USER'),
-      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionApprovalRevision" DISABLE TRIGGER USER'),
-      t.prisma.decisionApprovalRevision.deleteMany({ where: { decision: { projectId: { in: ids } } } }),
-      t.prisma.changeRequest.deleteMany({ where: { decision: { projectId: { in: ids } } } }),
-      t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: { in: ids } } } }),
-      t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: { in: ids } } } }),
-      t.prisma.activity.deleteMany({ where: { projectId: { in: ids } } }),
-      t.prisma.decision.deleteMany({ where: { projectId: { in: ids } } }),
-      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionApprovalRevision" ENABLE TRIGGER USER'),
-      t.prisma.$executeRawUnsafe('ALTER TABLE "ChangeRequest" ENABLE TRIGGER USER'),
-      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER USER'),
-      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER USER'),
-      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER USER'),
-    ]);
+    if (t && f) {
+      const projectId = { in: [f.projectA.id, f.projectB.id] };
+      // the approve wrote immutable register rows (the refused reopen opened no change request); wiped through the sanctioned helpers
+      await sanctionedReset(t.prisma, ['DecisionApprovalRevision'], { cascade: true });
+      await wipeDecisionEvents(t.prisma, { decision: { projectId } });
+      await wipeDecisionsVia(t.prisma, async (tx) => {
+        await tx.decisionOption.deleteMany({ where: { decision: { projectId } } });
+        await tx.activity.deleteMany({ where: { projectId } });
+        await tx.decision.deleteMany({ where: { projectId } });
+      });
+    }
     // seats before the retired user (the User-row guard refuses a retired user who still holds one)
-    await t.prisma.membership.deleteMany({ where: { userId: retiredClient } });
-    await t.prisma.user.deleteMany({ where: { id: retiredClient } });
+    await t?.prisma.membership.deleteMany({ where: { userId: retiredClient } });
+    await t?.prisma.user.deleteMany({ where: { id: retiredClient } });
     await f?.cleanup();
     await t?.close();
   });
