@@ -328,7 +328,6 @@ export class OrgsService {
     });
     if (!org) throw new NotFoundException('Org not found');
     const homeProject = org.projects[0];
-    if (!homeProject) throw new BadRequestException('Create a project in this org first, so the new member has a home project');
 
     const email = input.email?.toLowerCase();
     const phone = input.phone;
@@ -338,6 +337,10 @@ export class OrgsService {
       null;
     // Redbracket ID A4b — never seat a retired account: the person's new account holds their address
     if (existing && (await isRetired(this.prisma, existing.id))) throw new ConflictException(RETIRED_ADD);
+    // A new identity needs a home project (the required `User.projectId`), and only a new one: an existing account is
+    // seated as it is, so a company with no live project still takes it (Redbracket ID A4b r3, Codex 4452559441: the
+    // re-seat adds the person's new account to every company the retired row holds, archived projects or not)
+    if (!existing && !homeProject) throw new BadRequestException('Create a project in this org first, so the new member has a home project');
     // #482: a new identity is provisioned inside the roster write's own transaction, so a refusal there (the QA
     // company lock's, or the holder guard's) rolls it back and a refused add leaves no User row behind
     const userId = existing?.id ?? randomUUID();
@@ -351,7 +354,7 @@ export class OrgsService {
     const { user, membership } = await this.guardedOrgStandingWrite(orgId, userId, input.role, async (tx) => {
       // Least-privilege home role: dormant now (access is membership + org-role only),
       // but if the field is ever consulted again it must not read as `pmc`.
-      const user = existing ?? (await tx.user.create({ data: { id: userId, projectId: homeProject.id, role: 'contractor', name: input.name, email, phone } })
+      const user = existing ?? (await tx.user.create({ data: { id: userId, projectId: homeProject!.id, role: 'contractor', name: input.name, email, phone } })
         .catch((e: unknown) => {
           if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') throw new ConflictException('This person was just registered by someone else; try adding them again');
           throw e;

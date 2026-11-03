@@ -2700,7 +2700,8 @@ person right after their first sign-in, and widen the pilot only when `retired` 
    added the new seat, which is why the add comes first. A retired row never counts as a holder for those guards: a
    live holder cannot be removed or demoted leaving a role-held decision to the retired row alone.
 4. In each company in `companies`, an owner adds the person by the same email with the same role, then removes the
-   retired row. A retired owner seat never counts as an owner: the last live owner cannot step down or be removed while
+   retired row. This works in a company whose projects are all archived too: only a brand-new identity needs a home
+   project, and the person's new account already exists. A retired owner seat never counts as an owner: the last live owner cannot step down or be removed while
    only a retired row would be left holding the company. A retired row that is a company's only owner cannot be
    re-seated this way (A4c, an operator owner seat, must be live before any single-owner company is onboarded with the
    switch on).
