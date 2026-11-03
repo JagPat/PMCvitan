@@ -2620,7 +2620,7 @@ capability. Run both from the deployed image, like every operator CLI (see the s
 ## §OPS. The operator door (`/ops`, behind `OPS_TOKEN`)
 
 The project list (id, name, switched-on capabilities, last activity), the people list (each company's owners and
-admins, and each live project's active members with role and discipline) and the `home-nav` switch (§HN) can
+admins, each live project's active members with role and discipline, and retired accounts still holding seats) and the `home-nav` switch (§HN) can
 also be run over HTTPS, so an operator, or Claude holding the token, does not need the Coolify terminal. The door is closed (every `/ops`
 route answers 404) unless the API's environment sets `OPS_TOKEN` to a random value of at least 32 characters.
 Generate one with `openssl rand -hex 32`, set it on the API in Coolify, and redeploy. To close the door,
@@ -2664,6 +2664,51 @@ a QA address with no account 404, and 409 while a sign-in or membership change f
 now (nothing is written; try again).
 Because the database keeps real people out of those companies, the session needs no re-check while it lasts.
 Each sign-in writes an `auth.qaSignIn` audit row with the operator and reason.
+
+**Redbracket ID re-seat** (Redbracket ID A4b, Stage 1 ruling 3 Nov 2026). With `IDENTITY_OIDC=1`, an established
+PMC account whose email first signs in through Redbracket ID is set aside (retired), and the person gets a new, linked
+account with no seats. Retirement moves no seat: the retired row keeps its project and company seats until someone
+with authority re-seats the person. `GET /ops/people` lists those rows under `retired` (oldest first: `userId`,
+`name`, `email` it was retired from, `retiredAt`, and the `projects` (each with its `role`, `status`, `approvalLimit`
+and consultant `discipline`) and `companies` it still holds). Re-seat each
+person right after their first sign-in, and widen the pilot only when `retired` is empty:
+
+1. On each project in the row's `projects`, the project's PMC (or a company owner/admin) adds the person with the
+   **email** shown, same `role` and, for a consultant, the seat's `discipline`. The address now belongs to the new account, so the add lands there.
+   Add by email, not phone: the retired row keeps its phone number, so an add by phone finds the retired row and is
+   refused (409 "This person now signs in with a new account. Add them by email."), seating nobody. If the seat shows
+   an `approvalLimit`, stop before the add: no team command sets a limit, and the new seat would have none (unlimited);
+   ask for an operator step to copy it.
+2. Before the removal, the project's PMC moves the person's open work from the retired row to the new seat, through
+   the normal commands: open inspections naming it responsible (`PUT .../inspections/<id>/responsible` with the new
+   seat) or assigned to it, open activity requirements naming it responsible (revise the requirement), consultations
+   asked of it and not yet answered (ask the new seat), and drawing revisions issued to it (a revision's recipients
+   are fixed at issue; issue again to the new seat if it still needs one). Once A4b-2 is live, the `retired` entry
+   counts this open work, and a row stays listed until it has neither seats nor open work.
+3. Then the PMC removes the retired row from that project's team (a company owner/admin with no seat on the project
+   cannot withdraw decisions, so this step is the project PMC's). If the row is the named decider of an open decision:
+   - a pending decision: the removal is refused ("withdraw and reissue it first"); withdraw it, remove the row, and
+     issue it again naming the person's new seat;
+   - a decision in `change` (approved, with a change request open): withdraw and forward are both refused; the PMC
+     withdraws the change request (`POST .../decisions/<id>/change/withdraw`), so the approved outcome stands, removes
+     the row, and asks the changed need as a new decision naming the new seat (a change cannot be raised again on a
+     decision whose named decider is gone);
+   - a decision awaiting countersign that names the row as holder: only the architect's countersign or rejection
+     clears it (forward and the stranded resolution are refused while an architect is active); remove the row after.
+     (The architect role is reserved today, so this does not arise yet.)
+   The other refusals (last holder of a role an open or awaiting decision is designated to) clear once step 1 has
+   added the new seat, which is why the add comes first. A retired row never counts as a holder for those guards: a
+   live holder cannot be removed or demoted leaving a role-held decision to the retired row alone.
+4. In each company in `companies`, an owner adds the person by the same email with the same role, then removes the
+   retired row. A retired owner seat never counts as an owner: the last live owner cannot step down or be removed while
+   only a retired row would be left holding the company. A retired row that is a company's only owner cannot be
+   re-seated this way (A4c, an operator owner seat, must be live before any single-owner company is onboarded with the
+   switch on).
+
+Until the re-seat, a role-held decision whose role only the retired row holds (published in the window, or left when
+the last live holder was removed before this unit) can be published but nobody can decide it: it waits for step 1,
+which adds the live holder. Each step is the normal team command, attributed to the person who does it. Check `GET /ops/people` afterwards: the
+row is gone from `retired` once it holds no seat.
 
 ## §SSP. Seen-state pins — when the pins can be required, and rolling back (#482)
 

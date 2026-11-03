@@ -52,15 +52,9 @@ export async function linkOf(tx: Prisma.TransactionClient, userId: string): Prom
   return tx.platformPersonLink.findUnique({ where: { userId }, select: { issuer: true, subject: true } });
 }
 
-/**
- * Whether this account was set aside by a first Redbracket ID sign-in: the ONE predicate. Every named-account token
- * (`AuthService.issueNamedUser`), the sign-in access rule (`AuthService.signInAccess`, which also decides whether a phone
- * code is sent) and password-credential eligibility (`PasswordCredentialsService`) ask it; retirement-gate.test.ts pins
- * the callers. A retired account never signs in or holds a new credential again.
- */
-export async function isRetired(db: Prisma.TransactionClient, userId: string): Promise<boolean> {
-  return (await db.identityRetirement.count({ where: { userId } })) > 0;
-}
+// The ONE predicate lives with the record's platform owner (A4b r1, Codex 4451627330); auth asks it from there.
+export { isRetired } from '../../platform/identity-retirement.query';
+import { retiredFrom } from '../../platform/identity-retirement.query';
 
 /**
  * The PMC password hash a break-glass sign-in checks for `user` (the account now holding the typed email): its own,
@@ -74,10 +68,7 @@ export async function breakGlassHash(db: Prisma.TransactionClient, user: Pick<Us
   // (retireAndReplace writes one moment as the retirement's `retiredAt` and this account's `createdAt`)
   const link = await db.platformPersonLink.findUnique({ where: { userId: user.id }, select: { matchedOn: true } });
   if (!user.email || link?.matchedOn !== 'signup') return null;
-  const replaced = await db.identityRetirement.findFirst({
-    where: { email: user.email, retiredAt: { equals: user.createdAt } },
-    select: { userId: true },
-  });
+  const replaced = await retiredFrom(db, user.email, user.createdAt);
   if (!replaced) return null;
   return (await orgs.accountById(db, replaced.userId))?.passwordHash ?? null;
 }

@@ -63,6 +63,8 @@ function make(orgRole: string | null = null, opts: HolderOpts = {}) {
       create: vi.fn(async ({ data }: { data: T }) => { transitions.push({ ...data }); return { id: data.id }; }),
     },
     orgMembership: { findUnique: vi.fn(async () => (orgRole ? { role: orgRole } : null)) },
+    // Redbracket ID A4b — the add asks whether the account it found was retired; none here is
+    identityRetirement: { count: vi.fn(async () => 0) },
     user: {
       findUnique: vi.fn(async ({ where }: { where: { id?: string; email?: string; phone?: string } }) =>
         users.find((u) => (where.id && u.id === where.id) || (where.email && u.email === where.email) || (where.phone && u.phone === where.phone)) ?? null,
