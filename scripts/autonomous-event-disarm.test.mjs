@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GitHubClient, contextForEvent, run } from './autonomous-review-gate.mjs';
 import {
-  CODEX_SHARED_COMMIT_DETAIL, CODEX_AUTOMERGE_DISARM_FAILED,
+  CODEX_SHARED_COMMIT_DETAIL, CODEX_AUTOMERGE_DISARM_FAILED, OWNERSHIP_CANDIDATE_HELD,
 } from './review-policy.mjs';
 
 /**
@@ -200,6 +200,109 @@ test('2A3b-1 — structural: the workflow runs trusted default-branch code on it
   // eventDisarm never arms and never writes a success
   const disarm = gate.slice(gate.indexOf('export async function eventDisarm'), gate.indexOf('\n}\n', gate.indexOf('export async function eventDisarm')));
   assert.doesNotMatch(disarm, /enableAutoMerge|completeReviewedPullRequest|publishSettledSuccess|publishDisarmedSuccess|completeCleanReview|'success'/u);
-  // 2A3b-2 adds the Codex-record trigger and the ownership consumer
-  assert.doesNotMatch(disarm, /publishRetryableHold|ownershipStatusWithholdsAutoMerge/u);
+  assert.doesNotMatch(disarm, /publishRetryableHold/u);
+  // 2A3b-2 A — the ownership predicate has its consumer, judged before any write, and no deferral text remains
+  assert.ok(disarm.indexOf('ownershipStatusWithholdsAutoMerge(newest)') > 0, 'the consumer');
+  assert.ok(disarm.indexOf('ownershipStatusWithholdsAutoMerge(newest)') < disarm.indexOf('refuseSharedCommit'), 'judged before any write');
+  assert.doesNotMatch(gate, /has NO consumer in this unit|is deferred to 2A3b-2/u);
+  // the ownership read is not raced by the orchestrator only because both events share its exact-head group: the
+  // orchestrator's own workflow (auto-merge.yml) names the same group, by pull request and head
+  const automerge = await readFile(new URL('../.github/workflows/auto-merge.yml', import.meta.url), 'utf8');
+  assert.match(automerge, /group: autonomous-review-owner-\$\{\{ github\.event\.workflow_run\.pull_requests\[0\]\.number [^\n]*\}\}-\$\{\{ github\.event\.workflow_run\.head_sha /u,
+    'the orchestrator\'s exact-head group');
+});
+
+// 2A3b-2 A (#1318 Codex 4448897194) — a withholding ownership verdict is judged FIRST, on a push or a person's arm: a
+// queued merge is disarmed and nothing is written over the SHA-immutable verdict, whatever newer status of another
+// context sits above it
+test('2A3b-2 A — the ownership consumer: a queued merge under a withholding verdict is disarmed, nothing written', { timeout: 30_000 }, async () => {
+  const withholding = { id: 6101, context: 'codex-current-head', state: 'failure', description: `${OWNERSHIP_CANDIDATE_HELD}` };
+  const request = { id: 7002, context: 'codex-recovery-request/6101', state: 'pending', description: 'recovery: requested terminal status 6101' };
+  const settlement = { id: 7003, context: 'codex-recovery-request/6000/pr-610', state: 'success', description: 'recovery: consumed by clean review' };
+  for (const [name, statuses, event, siblings] of [
+    ['a person\'s arm', [withholding], events.armed(610), false],
+    ['a recovery request above the verdict, on an arm', [request, withholding], events.armed(610), false],
+    ['a re-arm settlement above the verdict, on an arm', [settlement, withholding], events.armed(610), false],
+    ['a push', [withholding], events.synchronize(610), false],
+    ['a push onto a commit another open PR has queued', [withholding], events.synchronize(610), true],
+    ['a person\'s arm on a commit another open PR has queued', [withholding], events.armed(610), true],
+  ]) {
+    const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+    if (siblings) pulls.set(611, pullAt(611, { auto_merge: queued }));
+    const lines = [];
+    const saved = console.log;
+    console.log = (...args) => { lines.push(args.join(' ')); };
+    let result;
+    try {
+      result = await runDisarm({ number: 610, pulls, statuses: [...statuses], event });
+    } finally {
+      console.log = saved;
+    }
+    assert.equal(result.error, null, name);
+    // the outcome names what this run did: it disabled the queued merge itself
+    assert.ok(lines.some((line) => /^Event disarm \([a-z-]+\): ownership disarmed\.$/u.test(line)), `${name}: ${lines.join(' | ')}`);
+    assert.equal(pulls.get(610).auto_merge, null, `${name}: disarmed`);
+    if (siblings) assert.equal(pulls.get(611).auto_merge, null, `${name}: the sibling at the commit disarmed too`);
+    assert.deepEqual(result.log.filter(([k]) => k === 'status' || k === 'draft' || k === 'sticky'), [], `${name}: the withholding failure stays; nothing written over it`);
+    neverArmsOrMerges(result.log, name);
+  }
+});
+
+// With nothing queued the ownership branch still ends the event: a push or a person's arm on a commit another open PR
+// has writes no shared-commit refusal over the withholding verdict
+test('2A3b-2 A — the ownership consumer: nothing queued, a shared commit, on a push and on a person\'s arm, writes nothing', { timeout: 30_000 }, async () => {
+  const withholding = { id: 6101, context: 'codex-current-head', state: 'failure', description: `${OWNERSHIP_CANDIDATE_HELD}` };
+  for (const [name, event] of [['a push', events.synchronize(610)], ['a person\'s arm', events.armed(610)]]) {
+    const pulls = new Map([[610, pullAt(610)], [611, pullAt(611)]]);
+    const lines = [];
+    const saved = console.log;
+    console.log = (...args) => { lines.push(args.join(' ')); };
+    let result;
+    try {
+      result = await runDisarm({ number: 610, pulls, statuses: [withholding], event });
+    } finally {
+      console.log = saved;
+    }
+    assert.equal(result.error, null, name);
+    assert.deepEqual(result.log.filter(([k]) => k === 'disable' || k === 'status' || k === 'draft' || k === 'sticky'), [], `${name}: nothing written over the verdict`);
+    assert.ok(lines.some((line) => /^Event disarm \([a-z-]+\): nothing\.$/u.test(line)), `${name}: ${lines.join(' | ')}`);
+  }
+});
+
+test('2A3b-2 A — the ownership consumer: a non-withholding newest verdict, or a withholding one replaced since, is left alone', { timeout: 30_000 }, async () => {
+  const withholding = { id: 6101, context: 'codex-current-head', state: 'failure', description: `${OWNERSHIP_CANDIDATE_HELD}` };
+  const other = { id: 6102, context: 'codex-current-head', state: 'failure', description: 'review: 1 current-head Codex finding' };
+  for (const [name, statuses] of [['a non-withholding failure', [other]], ['a withholding failure a later verdict replaced', [other, withholding]]]) {
+    const pulls = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+    const result = await runDisarm({ number: 610, pulls, statuses, event: events.armed(610) });
+    assert.equal(result.error, null, name);
+    assert.ok(pulls.get(610).auto_merge, `${name}: a person's arm alone at its commit stays (Q1 = a)`);
+    assert.deepEqual(result.log.filter(([k]) => k === 'disable' || k === 'status'), [], name);
+  }
+  // the gate's own arm is still ignored, whatever the newest verdict
+  const own = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const gate = await runDisarm({ number: 610, pulls: own, statuses: [withholding], event: events.armed(610, 'github-actions[bot]') });
+  assert.equal(gate.error, null);
+  assert.ok(own.get(610).auto_merge, 'the gate\'s own arm');
+  assert.deepEqual(gate.log.filter(([k]) => k === 'disable' || k === 'status'), []);
+});
+
+// 2A3b-2 A (#1318 Codex 4448897209) — two runs can disable one queued merge; GitHub refuses the second. The re-read
+// decides: a merge no longer queued is disarmed, whoever disabled it; one still queued is the retryable disarm hold
+test('2A3b-2 A — a disable another run already did is disarmed; a refused disable still queued takes the disarm hold', { timeout: 30_000 }, async () => {
+  const raced = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const done = await runDisarm({
+    number: 610, pulls: raced, statuses: [tokenedSuccess()], event: events.synchronize(610),
+    overrides: { async disableAutoMerge(pull) { raced.get(pull.number).auto_merge = null; throw new Error('GraphQL: Auto merge is not enabled for this pull request.'); } },
+  });
+  assert.equal(done.error, null);
+  assert.equal(raced.get(610).auto_merge, null);
+  assert.deepEqual(written(done.log), [], 'disarmed, not a disarm failure');
+
+  const stuck = new Map([[610, pullAt(610, { auto_merge: queued })]]);
+  const failed = await runDisarm({
+    number: 610, pulls: stuck, statuses: [tokenedSuccess()], event: events.synchronize(610),
+    overrides: { async disableAutoMerge() { throw new Error('GitHub GraphQL failed (502)'); } },
+  });
+  assert.deepEqual(written(failed.log), [['failure', `review: ${CODEX_AUTOMERGE_DISARM_FAILED}`]], 'still queued: the retryable disarm hold');
 });
