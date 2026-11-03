@@ -328,6 +328,8 @@ describe('decision change-control (integration)', () => {
     // another project) mints the same id again, and an audit row left by a run whose teardown never reached
     // `f.cleanup` names it too. The AuditLog has no foreign key to the decision, so only the project tells them apart.
     const audits = await t.prisma.auditLog.findMany({ where: { projectId: f.projectA.id, entity: 'Decision', entityId: id } });
+    // the decoy is never among them (by identity, not by which duplicate comes first)
+    expect(audits.filter((a) => a.projectId !== f.projectA.id || a.actor === 'decoy')).toEqual([]);
     expect(audits.find((a) => a.action === 'decision.approve')?.actorRole).toBe('client');
     expect(audits.find((a) => a.action === 'decision.change')?.actorRole).toBe('pmc');
     expect(audits.find((a) => a.action === 'decision.change_withdraw')?.actorRole).toBe('pmc');
