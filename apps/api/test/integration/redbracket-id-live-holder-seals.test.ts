@@ -89,8 +89,8 @@ describe('Redbracket ID A4b-m — the holder seals count live holders (live PG)'
       ...(await t.prisma.user.findMany({ where: { email: newClientEmail }, select: { id: true } })).map((u) => u.id)];
     await wipeMembershipTransitionsVia(t.prisma, [...extra, f.clientUser.id, f.memberUser.id, f.ownerUser.id]);
     await t.prisma.commandExecution.deleteMany({ where: { projectId } });
-    // the seats go before the users: a retired user's delete is judged as a live write once its retirement row has
-    // cascaded away (the migration's note), so no seat may be left for it to judge
+    // the seats go before the users: `User_x_retired_seats_guard` refuses deleting a retired user who still holds an
+    // active seat or an owner/admin company seat
     await t.prisma.membership.deleteMany({ where: { projectId: f.projectA.id } });
     await t.prisma.orgMembership.deleteMany({ where: { userId: { in: extra } } });
     await t.prisma.user.deleteMany({ where: { id: { in: extra } } }); // cascades the retirement rows
