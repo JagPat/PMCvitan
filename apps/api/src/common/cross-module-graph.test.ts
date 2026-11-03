@@ -569,7 +569,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   // Top 10 #4b unit C (#778) — the bell's seen mark (the viewer's own receipts).
   'snapshot/notifications-seen.controller.ts': ["Post('seen')"],
   // #482 operator door — the presentation-only capability switch behind OPS_TOKEN
-  'platform/ops/ops.controller.ts': ["Post('projects/:projectId/capabilities/:capability/enable')", "Post('projects/:projectId/capabilities/:capability/disable')"],
+  'platform/ops/ops.controller.ts': ["Post('orgs/:orgId/owner-reseat')", "Post('projects/:projectId/capabilities/:capability/enable')", "Post('projects/:projectId/capabilities/:capability/disable')"],
   // #482 operator door — the QA-only mark, door guard before the rate limit (Codex P2 on #1020)
   'platform/ops/ops-qa.controller.ts': ["Post('orgs/:orgId/qa-only')"],
   // #1118 U3 — Hub's signed webhook deliveries (no user; closed without HUB_*)
@@ -653,12 +653,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('178 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only; +1 #995 V1b a video clip\'s still frame; +1 #1118 U3 Hub webhook deliveries; +1 #1179 R2 a file\'s removal from its site visit; +2 #1177 VT2-C1 a voice note\'s words retry/correct; +1 #482 who fixes an inspection\'s failed work)', () => {
+    it('179 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only; +1 #995 V1b a video clip\'s still frame; +1 #1118 U3 Hub webhook deliveries; +1 #1179 R2 a file\'s removal from its site visit; +2 #1177 VT2-C1 a voice note\'s words retry/correct; +1 #482 who fixes an inspection\'s failed work; +1 Redbracket ID A4c operator owner re-seat)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(194);
+      expect(total).toBe(195);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(194);
+      expect(live).toBe(195);
     });
   });
 

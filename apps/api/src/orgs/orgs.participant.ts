@@ -7,6 +7,7 @@ import { RoleStandingQuery } from '../platform/role-standing.query';
 import { holdProjectExchangeFence } from './project-exchange-fence';
 import { liveArchitectStanding, liveRoleStanding } from './live-standing';
 import { isRetired } from '../platform/identity-retirement.query';
+import { operatorOwnerReseat, type OwnerReseat } from './operator-owner-reseat';
 
 /** #482 — the address pattern the Board fixed for the QA accounts (`qa.<lowercase letters>@vitan.in`), matched as stored. */
 export const QA_ACCOUNT_EMAIL = /^qa\.[a-z]+@vitan\.in$/;
@@ -463,6 +464,14 @@ export class OrgsParticipant {
       where: { phone },
       select: { id: true, email: true, passwordHash: true, emailVerifiedAt: true },
     });
+  }
+
+  /**
+   * Redbracket ID A4c — the operator door's company owner re-seat, for a company whose every owner seat is held by a
+   * retired account ({@link operatorOwnerReseat}). Runs in the caller's transaction.
+   */
+  async operatorOwnerReseat(tx: Prisma.TransactionClient, orgId: string, retiredUserId: string): Promise<OwnerReseat> {
+    return operatorOwnerReseat(tx, orgId, retiredUserId, rethrowQaLock);
   }
 
   /**
