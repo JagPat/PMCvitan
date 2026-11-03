@@ -26,6 +26,11 @@
 --     row (the re-seat's last step) is never refused by this file, even when no live holder exists yet, because
 --     that shortfall is not this write's (the delivered seals' rule: "never for a pre-existing shortfall some
 --     unrelated write did not cause").
+--   · ONE EXCEPTION, FAIL CLOSED: deleting a retired USER. The retirement record goes only with its user (ON DELETE
+--     CASCADE), and the cascade can remove it before the membership trigger reads it, so that delete is judged as a
+--     live write and refused while only retired holders would be left. No deployed path deletes a user, and the
+--     re-seat ends the seats first. A missing user row is deliberately NOT read as "not live": that would let a LIVE
+--     user's hard delete leave a decision to retired holders alone.
 --   · The raise starts `phase6-4b:`, so a member or org command that meets it answers 409 through
 --     `rethrowHolderSealViolation`, like the delivered seal.
 --
