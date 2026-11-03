@@ -84,6 +84,14 @@ function BackBtn({ onClick, label }: { onClick: () => void; label: string }) {
   );
 }
 
+/** The sign-in error, announced to screen readers (`role="alert"`). Mounted only while there is an error and
+ *  keyed by its reason, so a different error on the same step is a new alert and is announced again. `inline`
+ *  keeps the code rows' in-line style. */
+function AccessErrorText({ error, inline = false }: { error: string; inline?: boolean }) {
+  if (inline) return <span role="alert" data-testid="access-error" style={{ color: 'var(--red-solid)' }}>{error}</span>;
+  return <div role="alert" data-testid="access-error" style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>;
+}
+
 /** `atGate`: rendered by the sign-in gate (`AuthGate`), not as a screen inside a signed-in console. */
 export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
   const step = useStore((s) => s.access.step);
@@ -94,6 +102,8 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
   const sending = useStore((s) => s.access.sending);
   // #886: worded in the gate's current language, so a language switch after a failure re-translates it
   const error = useStore((s) => shownAccessError(s.access, s.lang));
+  // which error this is (its reason, not its words), so a different error on the same step mounts a fresh alert
+  const errorId = useStore((s) => s.access.errorKey?.key ?? s.access.error ?? '');
   const devCode = useStore((s) => s.access.devCode);
   const channel = useStore((s) => s.access.channel ?? null);
   const codeLength = useStore((s) => s.access.codeLength ?? 4);
@@ -218,7 +228,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
             style={{ flex: 1, height: 56, padding: '0 16px', borderRadius: 13, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-mono)', fontSize: 20, fontWeight: 600, letterSpacing: '.06em', color: 'var(--ink)', outline: 'none' }}
           />
         </div>
-        {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        {error && <AccessErrorText key={errorId} error={error} />}
         <button
           onClick={requestOtp}
           disabled={!ready}
@@ -271,7 +281,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
           data-testid="login-password"
           style={{ ...loginField, marginTop: 12 }}
         />
-        {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        {error && <AccessErrorText key={errorId} error={error} />}
         <button
           onClick={submit}
           disabled={!ready}
@@ -311,7 +321,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
           data-testid="password-email"
           style={loginField}
         />
-        {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        {error && <AccessErrorText key={errorId} error={error} />}
         <button
           onClick={requestPasswordSetup}
           disabled={!ready}
@@ -350,7 +360,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
         />
         <div style={{ textAlign: 'center', minHeight: 20, fontSize: 13, marginTop: 8 }}>
           {sending && <span style={{ color: 'var(--muted)' }}>{t.verifying}</span>}
-          {error && !sending && <span style={{ color: 'var(--red-solid)' }}>{error}</span>}
+          {error && !sending && <AccessErrorText key={errorId} error={error} inline />}
         </div>
         <button onClick={requestPasswordSetup} disabled={sending} style={linkBtn}>{signInLabels.sendNewCode[lang]}</button>
         <button
@@ -418,7 +428,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
         >
           {passwordGuidance}
         </div>
-        {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        {error && <AccessErrorText key={errorId} error={error} />}
         <button
           onClick={submit}
           disabled={!ready}
@@ -452,7 +462,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
           data-testid="email-input"
           style={loginField}
         />
-        {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        {error && <AccessErrorText key={errorId} error={error} />}
         <button
           onClick={requestEmailOtp}
           disabled={!ready}
@@ -492,7 +502,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
         />
         <div style={{ textAlign: 'center', minHeight: 20, fontSize: 13, marginTop: 8 }}>
           {sending && <span style={{ color: 'var(--muted)' }}>{t.verifying}</span>}
-          {error && !sending && <span style={{ color: 'var(--red-solid)' }}>{error}</span>}
+          {error && !sending && <AccessErrorText key={errorId} error={error} inline />}
         </div>
         <button onClick={requestEmailOtp} disabled={sending} style={linkBtn}>
           {t.resend}
@@ -534,7 +544,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
         </div>
         <div style={{ textAlign: 'center', minHeight: 20, fontSize: 13 }}>
           {sending && <span style={{ color: 'var(--muted)' }}>{t.verifying}</span>}
-          {error && !sending && <span style={{ color: 'var(--red-solid)' }}>{error}</span>}
+          {error && !sending && <AccessErrorText key={errorId} error={error} inline />}
         </div>
         {/* #886: a code that could not be checked is kept on screen; this checks it again */}
         {error && !sending && otp.length === codeLength && (
