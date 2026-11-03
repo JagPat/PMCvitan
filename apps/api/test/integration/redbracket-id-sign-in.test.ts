@@ -158,6 +158,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     fake.requests.length = 0;
     const wrong = await login(user.email!, 'not the issuer passphrase').expect(401);
     expect(wrong.body.message).toBe('Invalid email or password');
+    expect(wrong.body.code).toBeUndefined(); // A5: a wrong password names no code, so the web keeps its words
     expect(fake.requests.some((r) => r.path === '/oauth/v2/token')).toBe(false);
 
     // a later request is PMC's own session: the issuer is not asked
@@ -250,6 +251,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     await login(old.email!, 'the old local passphrase').expect(401);
     const first = await login(old.email!, 'my redbracket passphrase').expect(401);
     expect(first.body.message).toMatch(/not on any PMC project yet/);
+    expect(first.body.code).toBe('no-project'); // A5: the web words it from this code
 
     for (const r of fake.requests) {
       expect(r.body).not.toContain(hash);
@@ -292,7 +294,8 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const old = await invitee('unverified');
     await t.prisma.user.update({ where: { id: old.id }, data: { passwordHash: await bcrypt.hash('the old local passphrase', 4), emailVerifiedAt: new Date() } });
     const person = fake.addPerson(old.email!, 'an unverified redbracket passphrase', false);
-    await login(old.email!, 'an unverified redbracket passphrase').expect(401);
+    const unverified = await login(old.email!, 'an unverified redbracket passphrase').expect(401);
+    expect(unverified.body).toMatchObject({ statusCode: 401, message: 'Your email is not confirmed yet. Use "Set or reset password" to confirm it.', code: 'email-unverified' });
     const still = await t.prisma.user.findUniqueOrThrow({ where: { id: old.id }, include: { identityRetirement: true, platformPersonLink: true } });
     expect([still.email, still.credentialVersion, still.identityRetirement, still.platformPersonLink]).toEqual([old.email, old.credentialVersion, null, null]);
     expect(await t.prisma.user.count({ where: { email: { startsWith: old.email! } } })).toBe(1);
@@ -304,9 +307,11 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const person = fake.addPerson(user.email!, 'my existing hub passphrase');
     const pending = await login(user.email!, 'my existing hub passphrase').expect(401);
     expect(pending.body.message).toMatch(/invitation is waiting/);
+    expect(pending.body.code).toBe('invite-pending');
 
     const refused = await setPassword(user.email!, 'a different new passphrase', 400);
     expect(refused.body.message).toMatch(/already has a Redbracket ID/);
+    expect(refused.body.code).toBe('issuer-account-exists');
     expect(fake.people.get(person.userId)!.password).toBe('my existing hub passphrase');
     expect(fake.requests.some((r) => r.path.includes('/password') || r.path === '/v2/users/human')).toBe(false);
 
@@ -340,6 +345,9 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     // every door issues through the same access rule, which refuses the retired row whatever proved who it is
     const row = await t.prisma.user.findUniqueOrThrow({ where: { id: old.id } });
     await expect(auth.signInUser(row)).rejects.toThrow(/moved to Redbracket ID/);
+    // A5: the refusal names itself, so the web words it instead of reading a wrong password or a wrong code
+    const refusal = await auth.signInUser(row).catch((e: { getStatus(): number; getResponse(): unknown }) => e);
+    expect([refusal.getStatus(), refusal.getResponse()]).toEqual([401, expect.objectContaining({ code: 'retired' })]);
   });
 
   it('break-glass after joining: a re-seated admin uses the PMC password of the account their first sign-in replaced', async () => {
@@ -512,7 +520,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const refused = await setPassword(user.email!, 'the second issuer passphrase', 409);
     expect(refused.body.token).toBeUndefined();
     expect(refused.body.message).toBe('This email cannot be set up here. Ask your PMC for help.');
-    expect(refused.body.code).toBeUndefined(); // the needs-help 409 never carries the setup-running code
+    expect(refused.body.code).toBe('needs-help'); // A5: its own code, never the setup-running one
     expect(person.verified).toBe(false);
     expect(person.password).toBe('the first issuer passphrase'); // refused before the password was written
     expect(await successes()).toBe(before); // no success recorded
@@ -614,6 +622,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const lines = vi.spyOn(IdentitySignInService.prototype as unknown as { line: (r: string, a: string, o: string) => void }, 'line');
     const done = await setPassword(old.email!, 'a new redbracket passphrase', 401); // set at the issuer; the new account holds no project
     expect(done.body.message).toMatch(/not on any PMC project yet/);
+    expect(done.body.code).toBe('no-project');
     // one try, one line: the fresh join is reported by the setup alone, never also as a sign-in
     expect(lines.mock.calls.map((c) => [c[0], c[2]])).toEqual([['password', 'set, new account']]);
     const fresh = await t.prisma.user.findUniqueOrThrow({ where: { email: old.email! } });
@@ -777,6 +786,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const lines = vi.spyOn(IdentitySignInService.prototype as unknown as { line: (r: string, a: string, o: string) => void }, 'line');
     const raced = await login(user.email!, 'the old issuer passphrase').expect(401);
     expect(raced.body.message).toBe('Your password was just changed. Sign in with the new one.');
+    expect(raced.body.code).toBe('password-changed');
     expect(raced.body.token).toBeUndefined();
     expect(lines.mock.calls.filter((c) => c[0] === 'login').map((c) => c[2])).toEqual(['password changed during sign-in']);
     await login(user.email!, 'the old issuer passphrase').expect(401);
@@ -791,6 +801,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     await t.prisma.user.update({ where: { id: user.id }, data: { email: `moved-${Date.now()}@test.local` } });
     const r = await login(issuerEmail, 'a long issuer passphrase').expect(401);
     expect(r.body.message).toBe('This email cannot be set up here. Ask your PMC for help.');
+    expect(r.body.code).toBe('needs-help');
   });
 
   it('the issuer email naming another PMC account than the linked one opens no session', async () => {
@@ -803,7 +814,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: other.id, role: 'pmc', status: 'active' } });
     const lines = vi.spyOn(IdentitySignInService.prototype as unknown as { line: (r: string, a: string, o: string) => void }, 'line');
     const r = await login(issuerEmail, 'a long issuer passphrase').expect(401);
-    expect(r.body).toMatchObject({ message: 'This email cannot be set up here. Ask your PMC for help.' });
+    expect(r.body).toMatchObject({ message: 'This email cannot be set up here. Ask your PMC for help.', code: 'needs-help' });
     expect(r.body.token).toBeUndefined();
     expect(lines.mock.calls.map((c) => c[2])).toEqual(['email names another account']);
   });
@@ -989,12 +1000,44 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     }
   });
 
+  it('A5: every code is sent only after the password is proven; a wrong password answers each state exactly as an unknown email', async () => {
+    const stamp = Date.now().toString(36).replace(/[0-9]/g, 'x');
+    // no-project: an issuer person with no PMC account
+    const stranger = `rbid-a5-noproject-${Date.now()}@test.local`;
+    fake.addPerson(stranger, 'the stranger passphrase');
+    // invite-pending: an invitation never set up, whose email already has an issuer person
+    const invited = await invitee('a5-invited');
+    fake.addPerson(invited.email!, 'the invited passphrase');
+    // email-unverified: an issuer person whose email is not verified
+    const unverified = await invitee('a5-unverified');
+    fake.addPerson(unverified.email!, 'the unverified passphrase', false);
+    // test-account: a QA address with an issuer person
+    const qa = await t.prisma.user.create({ data: { projectId: f.projectA.id, role: 'pmc', name: 'qa', email: `qa.rbida${stamp}@vitan.in`, passwordHash: 'x', emailVerifiedAt: new Date() } });
+    made.push(qa.id);
+    fake.addPerson(qa.email!, 'the qa passphrase');
+
+    // with the right password, each state names itself (after proof)
+    expect((await login(stranger, 'the stranger passphrase').expect(401)).body.code).toBe('no-project');
+    expect((await login(invited.email!, 'the invited passphrase').expect(401)).body.code).toBe('invite-pending');
+    expect((await login(unverified.email!, 'the unverified passphrase').expect(401)).body.code).toBe('email-unverified');
+    expect((await login(qa.email!, 'the qa passphrase').expect(401)).body.code).toBe('test-account');
+
+    // with a wrong one, nothing tells them apart from an address nobody holds: same status, no code, same body
+    const unknown = await login(`rbid-a5-nobody-${Date.now()}@test.local`, 'a wrong passphrase').expect(401);
+    expect(unknown.body.code).toBeUndefined();
+    for (const email of [stranger, invited.email!, unverified.email!, qa.email!]) {
+      const wrong = await login(email, 'a wrong passphrase');
+      expect([wrong.status, wrong.body]).toEqual([unknown.status, unknown.body]);
+    }
+  });
+
   it('a test account address is never linked or retired', async () => {
     const qa = await t.prisma.user.create({ data: { projectId: f.projectA.id, role: 'pmc', name: 'qa', email: `qa.rbid${Date.now().toString(36).replace(/[0-9]/g, 'x')}@vitan.in`, passwordHash: 'x', emailVerifiedAt: new Date() } });
     made.push(qa.id);
     fake.addPerson(qa.email!, 'a qa passphrase');
     const r = await login(qa.email!, 'a qa passphrase').expect(401);
     expect(r.body.message).toMatch(/operator door/);
+    expect(r.body.code).toBe('test-account');
     expect(await t.prisma.user.findUniqueOrThrow({ where: { id: qa.id } })).toMatchObject({ email: qa.email });
   });
 

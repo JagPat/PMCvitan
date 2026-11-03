@@ -70,6 +70,8 @@ import {
   type ResolveStrandedCountersignInput,
   ROLE_POLICY,
   SETUP_RUNNING_CODE,
+  IDENTITY_REFUSAL_CODES,
+  type IdentityRefusalCode,
 } from '@vitan/shared';
 import { routableScreensFor, screensFor } from '@/lib/screens';
 import { deleteWaitsForUpload, uploadQueued, type KeptSitePhoto } from '@/lib/queuedSitePhotos';
@@ -987,6 +989,9 @@ function otpRequestFailure(err: unknown): AccessErrorWhy {
 function otpVerifyFailure(err: unknown, retry: boolean): AccessErrorWhy {
   const status = httpStatusOf(err);
   if (status === 429) return otpThrottle(err);
+  // Redbracket ID A5: a right code for an account that moved to Redbracket ID is not a wrong code
+  const refused = identityRefusal(err);
+  if (refused) return { key: refused };
   // 408: the check timed out on the way (a server or proxy), so the code was never judged
   if (status === undefined || status === 408 || status >= 500) return { key: 'checkFailed' };
   return { key: retry ? 'retryRefused' : 'wrongCode' };
@@ -1063,11 +1068,40 @@ function signInFailure(err: unknown): AccessErrorWhy {
   const status = httpStatusOf(err);
   const serverMessage = (err as { serverMessage?: unknown } | null)?.serverMessage;
   if (status === 429) return { key: 'tooManySignIns', seconds: throttleSeconds(err) };
+  // Redbracket ID A5: a refusal that names itself (not on a project, invitation waiting, ...) in the gate's language
+  const refused = identityRefusal(err);
+  if (refused) return { key: refused };
   // the server's own words for a removed access, in the gate's language (V-1018-6)
   if (status === 401 && typeof serverMessage === 'string' && /access has been removed/i.test(serverMessage)) return { key: 'accessRemoved' };
   if (status === undefined) return { key: 'noServer' };
   if (status >= 500) return { key: 'serverDown' };
   return { key: 'wrongPassword' };
+}
+
+/**
+ * Redbracket ID A5: the sign-in words for each machine `code` the switched-on email sign-in and password setup send
+ * (`IdentitySignInService`), and the statuses the server sends that code with. A code is matched only together with
+ * one of its own statuses, never from the English message, so a code on any other status, an unknown code or no code
+ * at all keeps today's words (a server from before A5 sends none).
+ */
+const IDENTITY_REFUSALS: Record<IdentityRefusalCode, { key: SignInErrorKey & `identity${string}`; statuses: readonly number[] }> = {
+  [IDENTITY_REFUSAL_CODES.noProject]: { key: 'identityNoProject', statuses: [401] },
+  [IDENTITY_REFUSAL_CODES.invitePending]: { key: 'identityInvitePending', statuses: [401] },
+  [IDENTITY_REFUSAL_CODES.testAccount]: { key: 'identityTestAccount', statuses: [400, 401] },
+  [IDENTITY_REFUSAL_CODES.emailUnverified]: { key: 'identityEmailUnverified', statuses: [401] },
+  [IDENTITY_REFUSAL_CODES.passwordChanged]: { key: 'identityPasswordChanged', statuses: [401] },
+  [IDENTITY_REFUSAL_CODES.needsHelp]: { key: 'identityNeedsHelp', statuses: [400, 401, 409] },
+  [IDENTITY_REFUSAL_CODES.issuerAccountExists]: { key: 'identityIssuerAccountExists', statuses: [400] },
+  [IDENTITY_REFUSAL_CODES.passwordRejected]: { key: 'identityPasswordRejected', statuses: [400] },
+  [IDENTITY_REFUSAL_CODES.retired]: { key: 'identityRetired', statuses: [401] },
+};
+
+function identityRefusal(err: unknown): (SignInErrorKey & `identity${string}`) | null {
+  const status = httpStatusOf(err);
+  const code = (err as { serverCode?: unknown } | null)?.serverCode;
+  if (status === undefined || typeof code !== 'string' || !Object.hasOwn(IDENTITY_REFUSALS, code)) return null;
+  const known = IDENTITY_REFUSALS[code as IdentityRefusalCode];
+  return known.statuses.includes(status) ? known.key : null;
 }
 
 /** A pristine access-flow state (used to init and to reset after sign-out). */
@@ -8017,7 +8051,12 @@ export const useStore = create<Store>()(
           // the code, never the status alone: the same route's other 409 (an email that cannot be set up, its code
           // spent) keeps the save-failed words
           const running = httpStatusOf(err) === 409 && (err as { serverCode?: unknown } | null)?.serverCode === SETUP_RUNNING_CODE;
-          set((s) => { s.access.sending = false; failAccess(s, { key: running ? 'setupStillFinishing' : 'passwordSaveFailed' }); });
+          // Redbracket ID A5: a refusal that names itself is worded from its code; an unavailable server (5xx) says so
+          // instead of asking for a new code. Anything else keeps the save-failed words
+          const status = httpStatusOf(err);
+          const refused = running ? null : identityRefusal(err);
+          const key = running ? 'setupStillFinishing' : refused ?? (status !== undefined && status >= 500 ? 'serverDown' : 'passwordSaveFailed');
+          set((s) => { s.access.sending = false; failAccess(s, { key }); });
         });
     },
     accGoEmailOtp: () =>

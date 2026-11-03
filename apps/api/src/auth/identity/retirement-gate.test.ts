@@ -48,7 +48,9 @@ describe('retirement gate (structural)', () => {
     expect(issues).toEqual(['user.id', '`dev-${input.role}`', '`worker-${device.id}`']);
     const named = body(auth, /\n {2}private async issueNamedUser\(/);
     expect(named).toContain('this.issue(user.id');
-    expect(named).toMatch(/if \(await isRetired\(db, user\.id\)\) throw new UnauthorizedException\(RETIRED\)/);
+    // A5: the refusal carries its code (retiredRefusal: 401, the same RETIRED words, code 'retired')
+    expect(named).toMatch(/if \(await isRetired\(db, user\.id\)\) throw retiredRefusal\(\)/);
+    expect(auth).toMatch(/export const retiredRefusal = \(\) => new UnauthorizedException\(\{ statusCode: 401, message: RETIRED, code: IDENTITY_REFUSAL_CODES\.retired \}\);/);
     expect(named).toMatch(/db: Prisma\.TransactionClient = this\.prisma,/);
   });
 

@@ -15,7 +15,8 @@ import { systemActor } from '../common/actor';
 import { OrgsParticipant, QA_ACCOUNT_EMAIL, rethrowQaLock } from '../orgs/orgs.participant';
 import { countersignReloadMessage, understandsCountersign, type DecisionsContract } from '../common/decisions-contract';
 import type { Role } from '../common/auth';
-import { NO_PROJECT, UNAVAILABLE, type BreakGlass, type IdentityOutcome } from './identity/identity-sign-in.service';
+import { NO_PROJECT, UNAVAILABLE, refusedSignIn, type BreakGlass, type IdentityOutcome } from './identity/identity-sign-in.service';
+import { IDENTITY_REFUSAL_CODES } from '@vitan/shared';
 import { isRetired } from './identity/identity-accounts';
 import type {
   SessionInput,
@@ -31,6 +32,8 @@ import type {
 /** A valid credential whose account the access rule grants no live project (SEC-01). */
 const ACCESS_REMOVED = 'Your project access has been removed. Ask your PMC to re-add you.';
 const RETIRED = 'This account has moved to Redbracket ID. Sign in with your email and your Redbracket ID password.';
+/** Redbracket ID A5: the retired refusal names itself, so the web words it instead of reading a wrong password */
+export const retiredRefusal = () => new UnauthorizedException({ statusCode: 401, message: RETIRED, code: IDENTITY_REFUSAL_CODES.retired });
 
 export interface TokenResult {
   token: string;
@@ -79,7 +82,7 @@ export class AuthService {
     projectId: string,
     db: Prisma.TransactionClient = this.prisma,
   ): Promise<string> {
-    if (await isRetired(db, user.id)) throw new UnauthorizedException(RETIRED);
+    if (await isRetired(db, user.id)) throw retiredRefusal();
     return this.issue(user.id, role, projectId, { credentialVersion: user.credentialVersion ?? 0 });
   }
 
@@ -132,7 +135,7 @@ export class AuthService {
     // phone, an emailed or SMS code already sent, Google, its old password): what it held stays with it. Checked here
     // as well as where every token is signed (issueNamedUser), because this rule also decides whether a phone code is
     // sent at all. A caller inside an interactive transaction passes it as `db` (one connection, never a second).
-    if (await isRetired(db, user.id)) throw new UnauthorizedException(RETIRED);
+    if (await isRetired(db, user.id)) throw retiredRefusal();
     const landing = await this.orgs.signInLanding(db, user);
     if (!landing) throw new UnauthorizedException(ACCESS_REMOVED);
     return landing;
@@ -309,7 +312,7 @@ export class AuthService {
     try {
       return await this.signInUser(outcome.account);
     } catch (err) {
-      if (outcome.fresh && err instanceof UnauthorizedException) throw new UnauthorizedException(NO_PROJECT);
+      if (outcome.fresh && err instanceof UnauthorizedException) throw refusedSignIn(NO_PROJECT);
       throw err;
     }
   }
