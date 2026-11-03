@@ -1438,10 +1438,9 @@ async function refreshCurrentHead(client, number, expectedHead) {
 //   - a temporarily UNREADABLE head (`validation:` read-retry): the trailer could not be read at all; and
 //   - a CANDIDATE head held for independent-reviewer activation (`validation:` candidate-held): a recognised
 //     but never-merge-eligible owner.
-// This is a PURE predicate over the shared vocabulary and has NO consumer in this unit: it only classifies a
-// status. The auto-merge cancellation/reconciliation that consumes it — including the cross-head serialization
-// a non-head-scoped `disablePullRequestAutoMerge` requires — is deferred to 2A3b-2, the second half of the 2A3b activation unit, where the
-// matching re-arm/requeue behaviour can be designed together. Defining the predicate here grants no behaviour.
+// A PURE predicate over the shared vocabulary. 2A3b-2 A — its consumer is `eventDisarm`: on a push or an arm, a merge
+// queued under a status it withholds is disarmed (head-checked, every PR at the commit); the withholding failure itself
+// stays, and only the ordinary review's `completeReviewedPullRequest` re-arms.
 export function ownershipStatusWithholdsAutoMerge(status) {
   if (status?.context !== STATUS_CONTEXT || status?.state !== 'failure') return false;
   const description = String(status?.description ?? '');
@@ -1727,7 +1726,15 @@ export async function disarmQueuedAutoMerge(client, number, expectedHead, observ
     const siblings = (await client.openPullRequestsAt(expectedHead)).filter((pull) => pull.number !== number);
     for (const pull of [live, ...siblings]) {
       if (!pull.auto_merge) continue;
-      await client.disableAutoMerge(pull);
+      // 2A3b-2 A (#1318 Codex 4448897209) — another run may disable it first, and GitHub refuses the second disable.
+      // The re-read below decides: a merge no longer queued is disarmed, whoever disabled it; one still queued throws
+      // with this error as its cause
+      let refused = null;
+      try {
+        await client.disableAutoMerge(pull);
+      } catch (error) {
+        refused = error;
+      }
       const after = await client.pullRequest(pull.number);
       // Codex 4445107594 — every PR whose queued merge this disarm disabled, siblings too, so each one's consumed
       // re-arm settlement can be lifted (read by disarmBeforeRun)
@@ -1739,7 +1746,7 @@ export async function disarmQueuedAutoMerge(client, number, expectedHead, observ
         observed.disabledThis = true;
       }
       // a sibling that moved off this commit or closed no longer consumes it
-      if (after.auto_merge && after.state === 'open' && after.head?.sha === expectedHead) throw new AutoMergeDisarmFailed();
+      if (after.auto_merge && after.state === 'open' && after.head?.sha === expectedHead) throw new AutoMergeDisarmFailed(refused ?? undefined);
     }
     return live;
   } catch (error) {
@@ -3348,19 +3355,30 @@ const GATE_TOKEN_LOGIN = 'github-actions[bot]';
  *    Ends W1's armed push onto another open PR's commit, apart from the run's start latency (End: the Board ruling).
  *  - an arm by anyone but the gate (`auto_merge_enabled`): the 2A3a refusal only, so a commit shared by open PRs is
  *    disarmed and refused. A person's arm on a PR alone at its commit stays (Q1 = a; the Board ruling on #1094).
- * W2 (a Codex run starting while a merge waits) and the ownership-withhold consumer are 2A3b-2's.
+ *  - 2A3b-2 A (#1318 Codex 4448897194), on either event, first: a merge queued under a newest `codex-current-head`
+ *    status that `ownershipStatusWithholdsAutoMerge` withholds is disarmed, and nothing is written, so the SHA-immutable
+ *    ownership verdict stays the newest. Both events run in the exact-head group the orchestrator shares
+ *    (event-disarm.yml), so this opening read is not raced by the orchestrator's own writes.
+ * W2 (a Codex run starting while a merge waits) is 2A3b-2 C's.
  */
 export async function eventDisarm(client, pullRequest, expectedHead, context, statuses) {
+  if (!EVENT_DISARM_TRIGGERS.includes(context.trigger)) throw new Error(`The event disarm has no trigger ${context.trigger}`);
+  if (context.trigger === 'auto-merge-enabled' && context.enabledBy === GATE_TOKEN_LOGIN) return 'gate arm';
+  // 2A3b-2 A (#1318 Codex 4448897194) — a withholding ownership verdict is judged FIRST: it is the commit's
+  // SHA-immutable newest verdict, and no event write may replace it (a retryable hold over it would draft the pull
+  // request and stop recovery recognizing it). Its queued merge is disarmed and nothing is written
+  const newest = statuses.find((status) => status.context === STATUS_CONTEXT) ?? null;
+  if (ownershipStatusWithholdsAutoMerge(newest)) {
+    const observed = {};
+    if (!(await disarmBeforeRun(client, pullRequest, expectedHead, statuses, observed))) return 'superseded';
+    return observed.disabled?.length ? 'ownership disarmed' : 'nothing';
+  }
   const recoveryRequest = pendingRecoveryRequest(statuses, pullRequest.number);
   if (context.trigger === 'synchronize') {
     if (!(await disarmBeforeRun(client, pullRequest, expectedHead, statuses))) return 'superseded';
     return (await refuseSharedCommit(client, pullRequest, expectedHead, recoveryRequest)) ?? 'disarmed';
   }
-  if (context.trigger === 'auto-merge-enabled') {
-    if (context.enabledBy === GATE_TOKEN_LOGIN) return 'gate arm';
-    return (await refuseSharedCommit(client, pullRequest, expectedHead, recoveryRequest)) ?? 'nothing';
-  }
-  throw new Error(`The event disarm has no trigger ${context.trigger}`);
+  return (await refuseSharedCommit(client, pullRequest, expectedHead, recoveryRequest)) ?? 'nothing';
 }
 
 export function assertCurrentHeadForContext(context, currentHead, mode) {
@@ -3500,13 +3518,13 @@ export function newestConsumedRearmSettlement(statuses, pullNumber) {
   return newest;
 }
 
-export async function disarmBeforeRun(client, pullRequest, expectedHead, statuses = []) {
+export async function disarmBeforeRun(client, pullRequest, expectedHead, statuses = [], observed = {}) {
   // Codex 4444444798 — the snapshot never decides: a merge queued since it was read is found by the disarm's own live
   // read, so the disarm runs on every CI-triggered run
   try {
     // Stage 1's re-check of bf39f441: the consumption is lifted only when this run actually disabled this PR's queued
-    // merge on its live read, never because the snapshot showed one that was already gone
-    const observed = {};
+    // merge on its live read, never because the snapshot showed one that was already gone. 2A3b-2 A: `observed` is the
+    // caller's, so the event disarm can tell whether a merge was actually disabled
     const disarmed = await disarmQueuedAutoMerge(client, pullRequest.number, expectedHead, observed);
     // Codex 4445107594 — a sibling at this commit whose queued merge this disarm disabled is left green and unarmed
     // too, so its own newest consumed settlement is lifted the same way; a sibling's settlement is never lifted
