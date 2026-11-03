@@ -7,9 +7,10 @@ import { TeamAccessScreen } from '@/screens/TeamAccessScreen';
 
 /**
  * A failed sign-in used to show its reason only as red text, so a screen reader announced nothing when the form
- * failed. Each sign-in step now shows the error as an alert (`role="alert"`), mounted only while there is an error
- * and keyed by the failure, so each new failure on the same step (a different error, or the same one again) is a new
- * alert and is announced again, while a language switch re-words it in place.
+ * failed. Each sign-in step now keeps an alert region (`role="alert"`) in the page, empty until an error is written
+ * into it (W3C ARIA19). Each failure is written as a new child keyed by the failure, so each new failure on the same
+ * step (a different error, or the same one again) is a new addition and is announced, while a language switch
+ * re-words it in place.
  */
 
 afterEach(() => cleanup());
@@ -34,51 +35,61 @@ const steps: Array<[string, Partial<AccessState>]> = [
   ['otp', { step: 'otp', who: 'team', phone: '9876543210', codeLength: 4 }],
 ];
 
+/** the alert region and the child its current words were written into */
+const region = (view: ReturnType<typeof show>) => view.getByRole('alert');
+const words = (view: ReturnType<typeof show>) => region(view).firstElementChild;
+
 describe('a sign-in error is announced to screen readers', () => {
-  it.each(steps)('%s: the error is an alert with its words', (_name, access) => {
-    const view = show({ ...access, ...failed('wrongPassword') });
-    expect(view.getByRole('alert').textContent).toBe(signInErrors.en.wrongPassword);
-  });
-
-  it.each(steps)('%s: no error, no alert', (_name, access) => {
+  it.each(steps)('%s: the alert region is in the page, empty, before any error, and the error is written into it', (_name, access) => {
     const view = show(access);
-    expect(view.queryByRole('alert')).toBeNull();
+    const before = region(view);
+    expect(before.textContent).toBe('');
+    expect(before.childElementCount).toBe(0);
+    act(() => { useStore.setState((s) => ({ access: { ...s.access, ...failed('wrongPassword') } })); });
+    expect(region(view)).toBe(before);
+    expect(before.textContent).toBe(signInErrors.en.wrongPassword);
+    expect(words(view)).not.toBeNull();
   });
 
-  it('a different error on the same step is a new alert, so it is announced again', () => {
+  it('a different error on the same step is a new addition to the same region, so it is announced again', () => {
     const view = show({ step: 'login', ...failed('wrongPassword') });
-    const first = view.getByRole('alert');
+    const box = region(view);
+    const first = words(view);
     act(() => { useStore.setState((s) => ({ access: { ...s.access, ...failed('serverDown') } })); });
-    const second = view.getByRole('alert');
-    expect(second.textContent).toBe(signInErrors.en.serverDown);
-    expect(second).not.toBe(first);
-    expect(first.isConnected).toBe(false);
+    expect(region(view)).toBe(box);
+    expect(box.textContent).toBe(signInErrors.en.serverDown);
+    expect(words(view)).not.toBe(first);
+    expect(first?.isConnected).toBe(false);
   });
 
-  it('the same error again is a new alert too, so a repeated failure is announced again', () => {
+  it('the same error again is a new addition too, so a repeated failure is announced again', () => {
     const view = show({ step: 'login' });
+    const box = region(view);
     act(() => { useStore.getState().login('', ''); });
-    const first = view.getByRole('alert');
+    const first = words(view);
     act(() => { useStore.getState().login('', ''); });
-    const second = view.getByRole('alert');
-    expect(second.textContent).toBe(first.textContent);
-    expect(second).not.toBe(first);
-    expect(first.isConnected).toBe(false);
+    expect(region(view)).toBe(box);
+    expect(words(view)?.textContent).toBe(first?.textContent);
+    expect(words(view)).not.toBe(first);
+    expect(first?.isConnected).toBe(false);
   });
 
-  it('a language switch re-words the same alert in place, without a second announcement of a new error', () => {
+  it('a language switch re-words the same words in place, not as a new failure', () => {
     const view = show({ step: 'login', ...failed('wrongPassword') });
-    const first = view.getByRole('alert');
+    const box = region(view);
+    const first = words(view);
     act(() => { useStore.getState().setLang('hi'); });
-    const after = view.getByRole('alert');
-    expect(after).toBe(first);
-    expect(after.textContent).toBe(signInErrors.hi.wrongPassword);
+    expect(region(view)).toBe(box);
+    expect(words(view)).toBe(first);
+    expect(box.textContent).toBe(signInErrors.hi.wrongPassword);
   });
 
-  it('the code rows keep the alert in line, and hide it while a check is sending', () => {
+  it('the code rows keep the region in line, and empty it while a check is sending', () => {
     const view = show({ step: 'emailcode', email: 'asha@vitan.in', ...failed('emailWrongCode') });
-    expect(view.getByRole('alert').tagName).toBe('SPAN');
+    const box = region(view);
+    expect(box.tagName).toBe('SPAN');
     act(() => { useStore.setState((s) => ({ access: { ...s.access, sending: true } })); });
-    expect(view.queryByRole('alert')).toBeNull();
+    expect(region(view)).toBe(box);
+    expect(box.textContent).toBe('');
   });
 });
