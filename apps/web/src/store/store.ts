@@ -69,6 +69,7 @@ import {
   type DisagreeDecisionInput,
   type ResolveStrandedCountersignInput,
   ROLE_POLICY,
+  SETUP_RUNNING_CODE,
 } from '@vitan/shared';
 import { routableScreensFor, screensFor } from '@/lib/screens';
 import { deleteWaitsForUpload, uploadQueued, type KeptSitePhoto } from '@/lib/queuedSitePhotos';
@@ -8009,9 +8010,14 @@ export const useStore = create<Store>()(
           if (get().access.generation !== generation) return;
           applyAuthResult(result, { msg: signInText.passwordSaved(get().lang) });
         })
-        .catch(() => {
+        .catch((err: unknown) => {
           if (get().access.generation !== generation) return;
-          set((s) => { s.access.sending = false; failAccess(s, { key: 'passwordSaveFailed' }); });
+          // Redbracket ID A4a: another setup for this account is still finishing (409 carrying SETUP_RUNNING_CODE). The
+          // code stays valid, so the person tries again in a minute; requesting a new code would cancel it. Matched by
+          // the code, never the status alone: the same route's other 409 (an email that cannot be set up, its code
+          // spent) keeps the save-failed words
+          const running = httpStatusOf(err) === 409 && (err as { serverCode?: unknown } | null)?.serverCode === SETUP_RUNNING_CODE;
+          set((s) => { s.access.sending = false; failAccess(s, { key: running ? 'setupStillFinishing' : 'passwordSaveFailed' }); });
         });
     },
     accGoEmailOtp: () =>

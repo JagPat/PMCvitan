@@ -668,8 +668,15 @@ export interface Worker {
 export type SignInErrorKey =
   | 'enterEmailPassword' | 'demoEmails' | 'accessRemoved' | 'serverDown' | 'wrongPassword'
   | 'invalidInvitedEmail' | 'setupNeedsServer' | 'passwordMismatch' | 'codeSendFailed' | 'setupWrongCode' | 'passwordLength'
-  | 'setupExpired' | 'passwordSaveFailed' | 'invalidEmail' | 'emailSendFailed' | 'emailWrongCode' | 'enterMobile'
+  | 'setupExpired' | 'passwordSaveFailed' | 'setupStillFinishing' | 'invalidEmail' | 'emailSendFailed' | 'emailWrongCode' | 'enterMobile'
   | 'tooManySignIns' | 'tooManyCodes';
+
+/**
+ * Redbracket ID A4a: the machine-readable `code` on the 409 `/auth/password/complete` answers while another password
+ * setup for the same account is still finishing. The web matches this code, never the message: the same route also
+ * answers 409 for an email that cannot be set up (its code is spent; the person asks their PMC for help).
+ */
+export const SETUP_RUNNING_CODE = 'setup-running';
 
 /** #886: a phone sign-in failure as an `accessDict` key (plus the throttle wait), and the text it produced. */
 export type AccessErrorKey =

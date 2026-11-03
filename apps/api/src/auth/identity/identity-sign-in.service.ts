@@ -232,7 +232,9 @@ export class IdentitySignInService {
    * password. Nothing is written to `User.passwordHash`. Last, in one transaction, the PMC account is settled and
    * `record` writes the security trail for the account it settled on (a new one when an established account joins
    * fresh), saying whether this step set the issuer password. `attempt` names the try in the one log line (the
-   * challenge id).
+   * challenge id). `unsettled` is called when the issuer write itself (making the person, or setting the password)
+   * got no clear answer, so it may still land: the caller then leaves its claim to the lease rather than freeing the
+   * account at once (A4a), or a newer setup could report success and be overwritten by this one landing late.
    */
   async setPassword(
     account: { id: string; email: string | null },
@@ -240,6 +242,7 @@ export class IdentitySignInService {
     attempt: string,
     claim: () => Promise<void>,
     record: (tx: Prisma.TransactionClient, outcome: IdentityOutcome, issuerPasswordSet: boolean) => Promise<void>,
+    unsettled: () => void,
   ): Promise<IdentityOutcome> {
     const email = (account.email ?? '').trim().toLowerCase();
     if (!email) throw new BadRequestException(NEEDS_HELP);
@@ -273,7 +276,12 @@ export class IdentitySignInService {
           ended = true;
           const made = await client.create({ email, password, verified: true });
           if (!made.ok && made.taken) return this.needsHelp(attempt, 'issuer person made meanwhile');
-          if (!made.ok) return made.failure === 'down' ? this.unavailable(attempt) : this.needsHelp(attempt, 'issuer refused new person');
+          if (!made.ok && made.failure === 'down') {
+            // the write may still land at the issuer (a timeout, a 5xx, a malformed answer): see `unsettled`
+            unsettled();
+            return this.unavailable(attempt);
+          }
+          if (!made.ok) return this.needsHelp(attempt, 'issuer refused new person');
           issuerPasswordSet = true;
         } else if (link) {
           if (link.issuer !== config.issuer || link.subject !== found.userId) return this.needsHelp(attempt, 'link names another person');
@@ -287,7 +295,11 @@ export class IdentitySignInService {
           await this.endSessions(account.id);
           ended = true;
           const set = await client.setPassword(found.userId, password);
-          if (set === 'down') return this.unavailable(attempt);
+          if (set === 'down') {
+            // the write may still land at the issuer (a timeout, a 5xx): see `unsettled`
+            unsettled();
+            return this.unavailable(attempt);
+          }
           if (set === 'rejected') {
             this.line('password', attempt, 'issuer refused password');
             throw new BadRequestException('Redbracket ID did not accept this password. Choose another one.');
