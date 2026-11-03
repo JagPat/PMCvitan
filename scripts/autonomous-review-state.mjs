@@ -213,6 +213,22 @@ export function codexRecordFingerprint(issueComments, expectedHead) {
     .join('\u0001');
 }
 
+/**
+ * 2A3b-2 C (#1318 Codex 4449402452) — when Codex's review-state records were last written: the latest update time of any
+ * Codex-authored record (as `codexRecordFingerprint` selects them), in ms; -Infinity with none, NaN when one is
+ * unreadable (a caller comparing with `!(latest < t)` treats NaN as newer, fail closed).
+ */
+export function codexRecordLatestMs(issueComments) {
+  let latest = -Infinity;
+  for (const comment of issueComments ?? []) {
+    if (!isCodexActor(comment) || !/<!--\s*codex-review-state:v1\s/u.test(String(comment?.body ?? ''))) continue;
+    const written = Date.parse(comment?.updated_at ?? comment?.created_at);
+    if (!Number.isFinite(written)) return Number.NaN;
+    if (written > latest) latest = written;
+  }
+  return latest;
+}
+
 export function codexStateRecordClears(issueComments, expectedHead, readyAtMs) {
   return codexStateRecordVerdict(issueComments, expectedHead, readyAtMs) === 'clear';
 }
