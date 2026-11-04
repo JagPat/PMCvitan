@@ -5,7 +5,9 @@
  * exchange with PKCE, the key set, ListUsers with v4.16's "no user" shape, create, set password, UpdateUser,
  * DeleteSession), signs RS256 id tokens with its own key, and records every request it gets (method, path, headers,
  * body), so a test can prove what PMC sent and that it sent nothing at all. Like a Connect server that requires the
- * protocol header, it refuses a `/zitadel.*` call without `Connect-Protocol-Version: 1` (400). Knobs let a test make it
+ * protocol header, it refuses a `/zitadel.*` call without `Connect-Protocol-Version: 1` (400). It also answers the issuer
+ * methods fence's questions (TOTP, email and SMS codes, passkeys and security keys per rp id) from `methods(userId)`,
+ * with v4.16's error codes and ids. Knobs let a test make it
  * slow or hold every answer until close, fail a path, send an answer too large to read, lock a person, or spoil the token
  * (another issuer, another algorithm, another state, another nonce). Nothing it schedules outlives close().
  */
@@ -14,6 +16,21 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 
 export type FakePerson = { userId: string; email: string; password: string; verified: boolean; givenName: string; familyName: string; locked?: boolean };
+/**
+ * A person's other ways in, as the issuer's write side holds them (the fence's questions read these): TOTP ready or
+ * pending, email and SMS codes on, a verified phone, and WebAuthn keys (passkey or security key) with the rp id each
+ * was made on ('' = a legacy key stored with no rp id) and whether it is ready.
+ */
+export type FenceMethods = {
+  totp: 'none' | 'pending' | 'ready';
+  otpEmail: boolean;
+  otpSms: boolean;
+  /** an email verified at some time: v4.16's OTP write model keeps it through a later email change (user_human_otp_model.go) */
+  emailEverVerified: boolean;
+  /** a phone verified at some time (cleared only when the phone is removed), as above */
+  phoneVerified: boolean;
+  keys: Array<{ id: string; kind: 'passkey' | 'u2f'; rpId: string; ready: boolean }>;
+};
 export type Recorded = { method: string; path: string; headers: IncomingMessage['headers']; body: string };
 export type Spoil = 'none' | 'issuer' | 'alg-none' | 'alg-hs256' | 'state' | 'nonce' | 'audience' | 'expired' | 'kid' | 'signature' | 'no-iat' | 'azp' | 'nbf-future';
 
@@ -39,8 +56,14 @@ export type FakeIssuer = {
   /** a status forced on a path prefix, e.g. { '/v2/sessions': 503 } */
   force: Record<string, number>;
   spoil: Spoil;
+  /** an answer forced on one exact path (200 unless `status`), e.g. a shape or an error id the real call never sends */
+  answer: { path: string; body: unknown; status?: number } | null;
   /** how ListUsers answers "nobody": v4.16's details-only body by default */
   noneShape: 'details-only' | 'empty-result' | 'odd';
+  /** the instance domain: the only rp id a legacy key (stored with no rp id) is listed for */
+  instanceDomain: string;
+  /** a person's other ways in (made empty on first use), keyed by user id */
+  methods(userId: string): FenceMethods;
   addPerson(email: string, password: string, verified?: boolean): FakePerson;
   /** resolves with the first request recorded on `path` (already recorded or still to come), so a test waits on it */
   received(path: string): Promise<Recorded>;
@@ -73,7 +96,14 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     keysWithdrawn: false,
     force: {} as Record<string, number>,
     spoil: 'none' as Spoil,
+    answer: null as FakeIssuer['answer'],
     noneShape: 'details-only' as FakeIssuer['noneShape'],
+    instanceDomain: 'id.vitan.in',
+    methods(userId: string): FenceMethods {
+      let m = fenceMethods.get(userId);
+      if (!m) fenceMethods.set(userId, (m = { totp: 'none', otpEmail: false, otpSms: false, emailEverVerified: false, phoneVerified: false, keys: [] }));
+      return m;
+    },
     addPerson(email: string, password: string, verified = true): FakePerson {
       const p = { userId: `3${Math.floor(Math.random() * 1e17)}`, email: email.toLowerCase(), password, verified, givenName: 'Test', familyName: 'Person' };
       fake.people.set(p.userId, p);
@@ -86,6 +116,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     close: async () => {},
   };
   const waiters: Array<{ path: string; resolve: (q: Recorded) => void }> = [];
+  const fenceMethods = new Map<string, FenceMethods>();
 
   const byEmail = (email: string) => [...fake.people.values()].find((p) => p.email === email.toLowerCase());
   const send = (res: ServerResponse, status: number, body?: unknown, headers: Record<string, string> = {}) => {
@@ -123,6 +154,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     const url = new URL(req.url ?? '/', fake.url);
     const path = url.pathname;
     for (const [prefix, status] of Object.entries(fake.force)) if (path.startsWith(prefix)) return send(res, status, { message: 'forced' });
+    if (fake.answer && path === fake.answer.path) return send(res, fake.answer.status ?? 200, fake.answer.body);
     if (fake.oversize && path.startsWith(fake.oversize)) return send(res, 200, { padding: 'x'.repeat(1024 * 1024 + 1) });
     // a Connect RPC without its protocol version is refused, as a Connect server that requires the header answers
     if (path.startsWith('/zitadel.') && req.headers['connect-protocol-version'] !== '1') {
@@ -217,6 +249,82 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       if (!p) return send(res, 404, { message: 'Errors.User.NotFound' });
       if (b?.human?.email?.isVerified === true) p.verified = true;
       return send(res, 200, { details: {} });
+    }
+    // ---- the methods fence's questions, answered as Zitadel v4.16's write side does (internal/command; errors as
+    // internal/api/grpc/gerrors ZITADELToConnectError sends them: the kind's Connect code and status, `Key (ID)`)
+    const userService = /^\/zitadel\.user\.v2\.UserService\/(RegisterTOTP|RemoveTOTP|AddOTPEmail|RemoveOTPEmail|AddOTPSMS|RemoveOTPSMS|RegisterPasskey|RemovePasskey|RegisterU2F|RemoveU2F)$/.exec(path);
+    if (req.method === 'POST' && userService) {
+      const cerr = (status: number, code: string, key: string, id: string) => send(res, status, { code, message: `${key} (${id})` });
+      const b = json();
+      const p = fake.people.get(String(b.userId ?? ''));
+      const rpc = userService[1]!;
+      if (!p) {
+        // no such person, as each v4.16 command answers it: createHumanTOTP wraps getHuman's NotFound (SqyJz);
+        // addHumanWebAuthN's getHuman (M9dsd); the OTP write models find no owner, so the permission check answers
+        // NotFound (permission_checks.go newPermissionCheck, 4g3xq); the removals of TOTP and keys check state first
+        // (Hd9sd, DAfb2), the OTP removals the permission first (4g3xq)
+        if (rpc === 'RegisterTOTP') return cerr(400, 'failed_precondition', 'Errors.User.NotFound', 'COMMAND-SqyJz');
+        if (rpc === 'RegisterPasskey' || rpc === 'RegisterU2F') return cerr(404, 'not_found', 'Errors.User.NotFound', 'COMMAND-M9dsd');
+        if (rpc === 'RemoveTOTP') return cerr(404, 'not_found', 'Errors.User.MFA.OTP.NotExisting', 'COMMAND-Hd9sd');
+        if (rpc === 'RemovePasskey' || rpc === 'RemoveU2F') return cerr(404, 'not_found', 'Errors.User.WebAuthN.NotFound', 'COMMAND-DAfb2');
+        return cerr(404, 'not_found', 'Errors.NotFound', 'COMMAND-4g3xq');
+      }
+      const m = fake.methods(p.userId);
+      // a person verified now has been verified (the flag is never cleared by a later change)
+      if (p.verified) m.emailEverVerified = true;
+      switch (rpc) {
+        case 'RegisterTOTP': // addHumanTOTP: ready -> do9se; otherwise a new pending secret replaces any pending one
+          if (m.totp === 'ready') return cerr(409, 'already_exists', 'Errors.User.MFA.OTP.AlreadyReady', 'COMMAND-do9se');
+          m.totp = 'pending';
+          return send(res, 200, { details: {}, uri: 'otpauth://totp/fake', secret: 'FAKESECRET' });
+        case 'RemoveTOTP': // HumanRemoveTOTP: pending or ready is removed; none -> Hd9sd
+          if (m.totp === 'none') return cerr(404, 'not_found', 'Errors.User.MFA.OTP.NotExisting', 'COMMAND-Hd9sd');
+          m.totp = 'none';
+          return send(res, 200, { details: {} });
+        case 'AddOTPEmail': // addHumanOTPEmail: added (MKL2s) is checked before an email ever verified (KLJ2d)
+          if (m.otpEmail) return cerr(409, 'already_exists', 'Errors.User.MFA.OTP.AlreadyReady', 'COMMAND-MKL2s');
+          if (!m.emailEverVerified) return cerr(400, 'failed_precondition', 'Errors.User.MFA.OTP.NotReady', 'COMMAND-KLJ2d');
+          m.otpEmail = true;
+          return send(res, 200, { details: {} });
+        case 'RemoveOTPEmail':
+          if (!m.otpEmail) return cerr(404, 'not_found', 'Errors.User.MFA.OTP.NotExisting', 'COMMAND-b312D');
+          m.otpEmail = false;
+          return send(res, 200, { details: {} });
+        case 'AddOTPSMS': // addHumanOTPSMS: added (Ad3g2) before the verified phone (Q54j2)
+          if (m.otpSms) return cerr(409, 'already_exists', 'Errors.User.MFA.OTP.AlreadyReady', 'COMMAND-Ad3g2');
+          if (!m.phoneVerified) return cerr(400, 'failed_precondition', 'Errors.User.MFA.OTP.NotReady', 'COMMAND-Q54j2');
+          m.otpSms = true;
+          return send(res, 200, { details: {} });
+        case 'RemoveOTPSMS':
+          if (!m.otpSms) return cerr(404, 'not_found', 'Errors.User.MFA.OTP.NotExisting', 'COMMAND-Sr3h3');
+          m.otpSms = false;
+          return send(res, 200, { details: {} });
+        case 'RegisterPasskey':
+        case 'RegisterU2F': {
+          // addHumanWebAuthN: the options exclude this kind's READY keys for the asked rp id, and a key stored with no
+          // rp id only when the rp id is the instance domain (internal/webauthn/converter.go WebAuthNsToCredentials);
+          // go-webauthn leaves `excludeCredentials` out when it is empty. The new key is not ready.
+          // An empty domain is passed on as rp id "" (only legacy keys match it); the key is stored under the domain the
+          // request came in on (configFromContext), here the instance domain.
+          const kind = rpc === 'RegisterPasskey' ? 'passkey' : 'u2f';
+          const asked = String(b.domain ?? '');
+          const rpId = asked || fake.instanceDomain;
+          const listed = m.keys.filter((k) => k.kind === kind && k.ready && (k.rpId === asked || (k.rpId === '' && asked === fake.instanceDomain)));
+          const id = randomUUID();
+          m.keys.push({ id, kind, rpId, ready: false });
+          const publicKey: Record<string, unknown> = { rp: { id: rpId, name: 'ZITADEL' }, challenge: 'c', pubKeyCredParams: [] };
+          if (listed.length > 0) publicKey.excludeCredentials = listed.map((k) => ({ type: 'public-key', id: k.id }));
+          return send(res, 200, { details: {}, [kind === 'passkey' ? 'passkeyId' : 'u2fId']: id, publicKeyCredentialCreationOptions: { publicKey } });
+        }
+        default: {
+          // removeHumanWebAuthN: by id, whatever the key's kind (the per-id write model has none); not there -> DAfb2
+          const id = String(rpc === 'RemovePasskey' ? b.passkeyId ?? '' : b.u2fId ?? '');
+          const at = m.keys.findIndex((k) => k.id === id);
+          if (at < 0) return cerr(404, 'not_found', 'Errors.User.WebAuthN.NotFound', 'COMMAND-DAfb2');
+          m.keys.splice(at, 1);
+          return send(res, 200, { details: {} });
+        }
+      }
     }
     return send(res, 404, { code: 5, message: 'Not Found' });
   };
