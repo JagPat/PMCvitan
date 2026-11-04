@@ -8026,7 +8026,8 @@ export const useStore = create<Store>()(
     },
     completePasswordSetup: (password, confirmation) => {
       const access = get().access;
-      if (access.sending) return;
+      // unit H: the refusal that offered Redbracket ID's reset page spent this code; only a new code may be saved again
+      if (access.sending || access.errorKey?.key === 'issuerAccountReset') return;
       if (password !== confirmation) {
         set((s) => { failAccess(s, { key: 'passwordMismatch' }); });
         return;

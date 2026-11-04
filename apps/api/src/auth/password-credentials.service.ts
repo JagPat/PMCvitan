@@ -50,11 +50,15 @@ export const COMPLETION_LEASE_MS =
 /** A setup token's scope prefix: the one Redbracket ID password, or PMC's own (base64url never holds a dot). */
 const SCOPE_SHARED = 'rb.';
 const SCOPE_PMC = 'pmc.';
-/** The scope a setup token was issued for; one with no prefix predates scopes and was shown PMC-only wording. */
-export function tokenScope(token: string): 'shared' | 'pmc' | 'other' {
+/**
+ * The scope a setup token was issued for. One with no prefix (`unscoped`) was issued by the release before scopes, which
+ * completed it under whichever switch the completing pod read; it is taken under either scope, as that release did, so
+ * a person who verified just before the rollout is not refused mid-setup (Codex 4470403440 on #1341).
+ */
+export function tokenScope(token: string): 'shared' | 'pmc' | 'unscoped' | 'other' {
   if (token.startsWith(SCOPE_SHARED)) return 'shared';
-  if (token.startsWith(SCOPE_PMC) || !token.includes('.')) return 'pmc';
-  return 'other';
+  if (token.startsWith(SCOPE_PMC)) return 'pmc';
+  return token.includes('.') ? 'other' : 'unscoped';
 }
 export const SETUP_RUNNING = 'Another password setup for this account is still finishing. Try again in a minute.';
 
@@ -251,11 +255,13 @@ export class PasswordCredentialsService {
    * The verified, unspent challenge a setup token names, or the generic refusal. `shared`: whether this completion sets
    * the one Redbracket ID password (switch on) or PMC's own; a token bound to the other scope is refused before anything
    * is read or spent, so the person asks for a new code and is told the truth on the next screen. A token without a
-   * scope (issued before this release) was shown today's PMC-only wording: it is taken only for a PMC-only completion.
+   * scope (issued before this release, at most ten minutes before it) is taken under either scope, as the release that
+   * issued it took it.
    */
   private async openChallenge(input: PasswordCredentialCompleteInput, now: Date, shared: boolean) {
     if (input.password.length < 12 || input.password.length > 128) throw this.genericError();
-    if (tokenScope(input.setupToken) !== (shared ? 'shared' : 'pmc')) throw this.genericError();
+    const scope = tokenScope(input.setupToken);
+    if (scope !== 'unscoped' && scope !== (shared ? 'shared' : 'pmc')) throw this.genericError();
     const setupTokenHash = this.tokenHash(input.setupToken);
     const challenge = await this.prisma.passwordCredentialChallenge.findUnique({
       where: { setupTokenHash },

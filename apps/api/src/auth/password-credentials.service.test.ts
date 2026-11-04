@@ -301,11 +301,31 @@ describe('PasswordCredentialsService', () => {
     // refused before the issuer is reached: the identity service is never touched
     await expect(own.service.completeThroughIssuer({ setupToken: toldOwn.setupToken, password: 'a long internal passphrase' }, {} as never)).rejects.toBeInstanceOf(BadRequestException);
     expect(own.prisma.challenges[0]).toMatchObject({ consumedAt: null });
-    // and an unscoped token (issued before this release, shown PMC-only wording) is taken only for PMC's own password
-    expect(tokenScope('a'.repeat(43))).toBe('pmc');
+    expect(tokenScope('a'.repeat(43))).toBe('unscoped');
     expect(tokenScope(toldShared.setupToken)).toBe('shared');
     expect(tokenScope(toldOwn.setupToken)).toBe('pmc');
     expect(tokenScope('x.' + 'a'.repeat(43))).toBe('other');
+  });
+
+  it('takes a token with no scope (issued by the release before scopes) under either switch, as that release did', async () => {
+    // Codex 4470403440 on #1341: a person who verified on the old release just before the rollout is not refused mid-setup
+    const unscoped = 'a'.repeat(43);
+    const own = make([activeUser()]);
+    const first = await own.service.request({ email: 'member@example.com' });
+    await own.service.verify({ requestId: first.requestId, code: own.delivered[0]!.code }, false);
+    own.prisma.challenges[0]!.setupTokenHash = (own.service as unknown as { tokenHash(t: string): string }).tokenHash(unscoped);
+    const updated = await own.service.complete({ setupToken: unscoped, password: 'a long internal passphrase' });
+    expect(await bcrypt.compare('a long internal passphrase', updated.passwordHash!)).toBe(true);
+
+    const shared = make([activeUser()]);
+    const second = await shared.service.request({ email: 'member@example.com' });
+    await shared.service.verify({ requestId: second.requestId, code: shared.delivered[0]!.code }, true);
+    shared.prisma.challenges[0]!.setupTokenHash = (shared.service as unknown as { tokenHash(t: string): string }).tokenHash(unscoped);
+    // past the scope check and the challenge read: the completion reaches the issuer write
+    const reached = new Error('reached the issuer');
+    const identity = { setPassword: vi.fn(async () => { throw reached; }) };
+    await expect(shared.service.completeThroughIssuer({ setupToken: unscoped, password: 'a long internal passphrase' }, identity as never)).rejects.toBe(reached);
+    expect(identity.setPassword).toHaveBeenCalledTimes(1);
   });
 
   it('rolls back token consumption when access is removed after verification', async () => {

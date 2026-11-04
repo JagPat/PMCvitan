@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApiGateway } from '@/data/apiGateway';
 import { TeamAccessScreen } from '@/screens/TeamAccessScreen';
 import { getInitialState, useStore } from '@/store/store';
@@ -90,7 +90,8 @@ describe('TeamAccessScreen password enrollment', () => {
     [undefined, false],
   ])('a refused setup with resetUrl %s shows the reset link: %s', async (resetUrl, shown) => {
     const err = Object.assign(new Error('/auth/password/complete 400'), { status: 400, serverCode: 'issuer-account-exists', ...(resetUrl === undefined ? {} : { serverResetUrl: resetUrl }) });
-    const gateway = { passwordCredentialComplete: async () => { throw err; } } as Partial<ApiGateway> as ApiGateway;
+    const complete = vi.fn(async () => { throw err; });
+    const gateway = { passwordCredentialComplete: complete } as Partial<ApiGateway> as ApiGateway;
     useStore.getState()._setGateway(gateway);
     useStore.setState((state) => {
       state.access.step = 'password-create';
@@ -106,12 +107,24 @@ describe('TeamAccessScreen password enrollment', () => {
       expect(link).toHaveAttribute('rel', 'noopener noreferrer');
       expect(link).toHaveTextContent('Reset on Redbracket ID');
       expect(screen.getByRole('alert')).toHaveTextContent(/reset it on Redbracket ID, then come back and sign in here/);
+      // the spent code's form is gone (Codex 4470403461 on #1341): no password fields and no save, only reset and sign in
+      expect(screen.queryByTestId('password-complete')).toBeNull();
+      expect(screen.queryByLabelText('New password')).toBeNull();
+      expect(screen.queryByLabelText('Confirm password')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+      // and the store will not send the spent token again
+      useStore.getState().completePasswordSetup('a long passphrase here', 'a long passphrase here');
+      expect(complete).toHaveBeenCalledTimes(1);
       // a new attempt forgets it
       useStore.getState().accGoPasswordSetup();
       expect(useStore.getState().access.issuerResetUrl).toBeNull();
+      // and clears the refusal, so the next code can be saved (the store's spent-code guard no longer holds)
+      expect(useStore.getState().access.errorKey).toBeNull();
     } else {
       expect(await screen.findByText(/Request a new code, then enter that Redbracket ID password here/)).toBeInTheDocument();
       expect(screen.queryByTestId('issuer-reset-link')).toBeNull();
+      // today's refusal keeps today's screen
+      expect(screen.getByTestId('password-complete')).toBeInTheDocument();
     }
   });
 });

@@ -418,6 +418,9 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
           <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{(shared ? signInLabels.sharedCreateTitle : signInLabels.createTitle)[lang]}</h1>
           <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{(shared ? signInLabels.sharedCreateSub : signInLabels.createSub)[lang]}</div>
         </div>
+        {/* the refusal that offers the reset page spent this code (Codex 4470403461 on #1341): the form is gone, so only
+            the reset link, sign in and start again are left */}
+        {!issuerResetUrl && (<>
         <label style={{ fontSize: 12, fontWeight: 600, marginTop: 22 }}>
           {signInLabels.newPassword[lang]}
           <input
@@ -450,6 +453,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
         >
           {passwordGuidance}
         </div>
+        </>)}
         <AccessErrorText error={error} errorId={errorId} />
         {issuerResetUrl && (
           <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginTop: 10, fontSize: 14 }}>
@@ -459,6 +463,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
             <button onClick={accGoLogin} style={linkBtn}>{signInLabels.signIn[lang]}</button>
           </div>
         )}
+        {!issuerResetUrl && (
         <button
           onClick={submit}
           disabled={!ready}
@@ -467,6 +472,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
         >
           {sending ? signInLabels.saving[lang] : signInLabels.saveAndSignIn[lang]}
         </button>
+        )}
       </div>
     );
   }
