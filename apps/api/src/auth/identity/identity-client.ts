@@ -37,11 +37,16 @@ export const SESSIONS_PAGE = 100;
 export const SESSIONS_ROUNDS_MAX = 20;
 /**
  * Unit L: how many delete rounds a reset awaits before it answers (each one list and its deletes at once), followed
- * by one confirming list. The rest of a longer sweep runs on, not awaited.
+ * by one confirming list. Nothing runs on after it, and the sweep also stops at its deadline (`mayCall`).
  */
 export const SESSIONS_AWAITED_ROUNDS = 3;
 /** The issuer calls, one after another, an awaited sweep can make: a list per round, its deletes (at once), the confirming list. */
 export const SESSIONS_AWAITED_CALLS = SESSIONS_AWAITED_ROUNDS * 2 + 1;
+/**
+ * The issuer calls `login` makes, each under the timeout: authorize, session, auth request, token, the signing keys,
+ * and ending its own issuer session (not awaited, so counting it over-counts). Pinned in `completion-lease.test.ts`.
+ */
+export const LOGIN_ISSUER_CALLS = 6;
 
 /** What ending a person's issuer sessions came to. Only `ended` means none is left; anything else is recorded. */
 export type SessionsEnd = 'ended' | 'denied' | 'failed' | 'capped';
@@ -196,13 +201,17 @@ export class IdentityClient {
    * whose delete this sweep saw taken (the list can lag its deletes) with nothing past them (a page that is not full,
    * and no larger count); `capped` when sessions are still listed. `denied`: the issuer refused PMC's service account
    * (403), or listed no rows while counting some (the session read permission is missing). `failed`: anything else (no usable answer, an unreadable list, a delete not taken). A portal's own
-   * app session (Hub's, rb's) is that portal's to end. Never throws.
+   * app session (Hub's, rb's) is that portal's to end. `mayCall` is asked before each list and each delete round
+   * (its deletes go at once, so they end within one timeout): whether a call started now and running to its full
+   * timeout still ends before the caller's deadline. When it is not, the sweep sends nothing more and answers `capped`
+   * (a reset's sweep must never outlive the completion's hold on the account: Codex 4472985591 on #1342). Never throws.
    */
-  async endPersonSessions(userId: string, rounds = SESSIONS_ROUNDS_MAX): Promise<SessionsEnd> {
+  async endPersonSessions(userId: string, rounds = SESSIONS_ROUNDS_MAX, mayCall: () => boolean = () => true): Promise<SessionsEnd> {
     const ended = new Set<string>();
     try {
       const last = Math.min(rounds, SESSIONS_ROUNDS_MAX);
       for (let round = 0; ; round += 1) {
+        if (!mayCall()) return 'capped';
         const r = await this.send('POST', '/zitadel.session.v2.SessionService/ListSessions', {
           json: { query: { limit: SESSIONS_PAGE }, queries: [{ userIdQuery: { id: userId } }] },
           service: true,
@@ -231,6 +240,7 @@ export class IdentityClient {
         const whole = ids.length === 0 ? raw === undefined || total === 0 : total === ids.length && ids.length < SESSIONS_PAGE;
         if (whole && ids.every((id) => ended.has(id))) return 'ended';
         if (round >= last) return 'capped';
+        if (!mayCall()) return 'capped';
         const results = await Promise.all(ids.map((id) => this.endSession(id)));
         results.forEach((result, i) => {
           if (result === 'ended') ended.add(ids[i]!);

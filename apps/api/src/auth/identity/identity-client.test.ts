@@ -332,6 +332,39 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(SESSIONS_AWAITED_CALLS).toBe(SESSIONS_AWAITED_ROUNDS * 2 + 1);
   });
 
+  it('stops at its deadline: no list or delete round starts once mayCall says no, and that is capped (Codex 4472985591)', async () => {
+    const p = fake.addPerson('t@example.in', 'x', true);
+    // someone keeps signing in, so without the deadline the sweep would use all its rounds
+    fake.afterSessionsListed = (id) => {
+      if (id === p.userId) fake.openSession(p.userId);
+    };
+    fake.openSession(p.userId);
+    // the deadline as a signal: the caller says yes to the first `allowed` asks, then no
+    const run = async (allowed: number) => {
+      let asked = 0;
+      const before = fake.requests.length;
+      const answer = await client.endPersonSessions(p.userId, SESSIONS_AWAITED_ROUNDS, () => {
+        asked += 1;
+        return asked <= allowed;
+      });
+      const made = fake.requests.slice(before).map((q) => q.path.split('/').pop());
+      return { answer, asked, made };
+    };
+    // already past it before the first call: nothing is sent at all
+    expect(await run(0)).toEqual({ answer: 'capped', asked: 1, made: [] });
+    // one list allowed, then not its delete round
+    expect(await run(1)).toEqual({ answer: 'capped', asked: 2, made: ['ListSessions'] });
+    // a list and its delete round, then not the next list
+    const two = await run(2);
+    expect(two.answer).toBe('capped');
+    expect(two.asked).toBe(3);
+    expect(two.made.filter((m) => m === 'ListSessions')).toHaveLength(1);
+    expect(two.made.at(-1)).toBe('DeleteSession');
+    // asked before each list and each delete round, and only then: SESSIONS_AWAITED_ROUNDS rounds and the confirming list
+    expect((await run(Infinity)).asked).toBe(SESSIONS_AWAITED_ROUNDS * 2 + 1);
+    fake.afterSessionsListed = null;
+  });
+
   it('a list that still shows sessions it just ended (lag) is ended; any other one left is not', async () => {
     const p = fake.addPerson('l@example.in', 'x', true);
     fake.openSession(p.userId);

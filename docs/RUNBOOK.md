@@ -2780,7 +2780,8 @@ on the person's own sign-in during their own reset. Two effects last:
 When "Set up or forgot password" sets the Redbracket ID password of the person an account is already linked to,
 PMC then ends that person's issuer sessions (rb, Hub, the console), so whoever was signed in with the old password is
 signed out of Redbracket ID itself. It does this also when the password write got no clear answer (it may have
-landed). The awaited part is three rounds (list the person's sessions, delete them) and one confirming list. Hub's
+landed). The awaited part is three rounds (list the person's sessions, delete them) and one confirming list, and it
+stops early rather than run past the 26 s after the claim that the 87 s completion lease leaves it. Hub's
 and rb's own app sessions are theirs to end; PMC ends only its own and the issuer's.
 
 Anything but "none left" writes `auth.password_reset_unfinished` on the account, with the issuer person id and the
@@ -2788,7 +2789,8 @@ reason `issuer sessions not ended after the reset (<answer>)`:
 - `denied`: pmc-service may not read or delete sessions (the session permission is missing: a 403, or a list that
   names sessions in its count but shows none). Every linked reset writes this row until the permission is granted.
 - `failed`: no usable answer from the issuer (it was down or answered something unreadable).
-- `capped`: sessions were still listed after the awaited rounds (someone kept signing in).
+- `capped`: sessions were still listed after the awaited rounds (someone kept signing in), or the sweep reached its
+  deadline first (the issuer was slow), which can also mean it sent nothing at all.
 
 Nothing goes on after the setup answers (a sweep left running could end the session a later setup of the same account
 opens for its own sign-in), so for every answer the steps below are what ends the rest.

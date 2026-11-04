@@ -317,6 +317,54 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     expect(JSON.stringify(await reasons())).not.toMatch(/passphrase/);
   });
 
+  it('unit L: the sweep keeps inside the 87 s lease every release holds: past its deadline it stops and is recorded (Codex 4472985591 on #1342)', async () => {
+    const user = await invitee('sweep-late');
+    await setPassword(user.email!, 'the first issuer passphrase', 201);
+    const person = personOf(user.email!);
+    const quota = () => t.prisma.signInAttempt.deleteMany({});
+    const identity = t.app.get(IdentitySignInService);
+    const real = identity.sweepClock;
+    // the clock as a signal, never a wait: it stands still, then jumps a whole lease ahead when the test says so
+    let reads = 0;
+    let late = false;
+    try {
+      // the deadline already past before the sweep's first call: the clock is read once for the deadline (before the
+      // claim) and is late from its next read on, the sweep's first ask. No list, no delete, recorded capped; the setup
+      // still answers 201 and the new password signs in
+      const held = fake.openSession(person.userId);
+      const write = fake.requests.length;
+      identity.sweepClock = () => (++reads > 1 ? 1_000_000 : 0);
+      await setPassword(user.email!, 'the second issuer passphrase', 201);
+      expect(reads).toBe(2);
+      identity.sweepClock = () => (late ? 1_000_000 : 0);
+      expect(listsSince(write)).toBe(0);
+      expect(fake.requests.slice(write).filter((q) => q.path.endsWith('/DeleteSession') && JSON.parse(q.body).sessionId === held)).toEqual([]);
+      expect(fake.sessionsOf(person.userId)).toContain(held);
+      expect((await unfinished(user.id)).map((e) => e.payload)).toEqual([
+        { issuerPerson: person.userId, reason: 'issuer sessions not ended after the reset (capped)' },
+      ]);
+      await login(user.email!, 'the second issuer passphrase').expect(201);
+      await quota();
+
+      // the deadline passes after the first list: its delete round never starts, recorded capped, still 201
+      fake.afterSessionsListed = (id) => {
+        if (id === person.userId) late = true;
+      };
+      const from = fake.requests.length;
+      await setPassword(user.email!, 'the third issuer passphrase', 201);
+      expect(listsSince(from)).toBe(1);
+      const listedAt = fake.requests.findIndex((q, i) => i >= from && q.path.endsWith('/ListSessions'));
+      // nothing of the sweep after its list: the only deletes later are PMC's own sign-in session's end
+      expect(fake.requests.slice(listedAt + 1).filter((q) => q.path.endsWith('/DeleteSession') && JSON.parse(q.body).sessionId === held)).toEqual([]);
+      expect(fake.sessionsOf(person.userId)).toContain(held);
+      expect((await unfinished(user.id)).at(-1)?.payload).toEqual({ issuerPerson: person.userId, reason: 'issuer sessions not ended after the reset (capped)' });
+      await login(user.email!, 'the third issuer passphrase').expect(201);
+    } finally {
+      identity.sweepClock = real;
+      fake.afterSessionsListed = null;
+    }
+  });
+
   it('forgot password, switch on: resets the same issuer person, never writes a PMC password', async () => {
     const user = await invitee('reset');
     await setPassword(user.email!, 'the first issuer passphrase', 201);

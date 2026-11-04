@@ -25,7 +25,7 @@ import { PrismaService } from '../../prisma.service';
 import { lockUserCredential } from '../../common/credential-lock';
 import { OrgsParticipant, QA_ACCOUNT_EMAIL } from '../../orgs/orgs.participant';
 import { RESET_URL_ENV, readIdentityConfig, readResetUrl, resetUrlFor, type IdentityConfig } from './identity-config';
-import { IdentityClient, SESSIONS_AWAITED_ROUNDS } from './identity-client';
+import { IDENTITY_TIMEOUT_MS, IdentityClient, SESSIONS_AWAITED_ROUNDS } from './identity-client';
 import type { IdClaims } from './id-token';
 import { SignInAttempts, type AttemptKind } from './sign-in-attempts';
 import { breakGlassHash, linkInvite, linkOf, lockIssuerPerson, neverSetUp, settleSignIn, type Settled } from './identity-accounts';
@@ -130,6 +130,11 @@ export class IdentitySignInService implements OnModuleInit {
   private readonly orgs = new OrgsParticipant();
   private readonly attempts: SignInAttempts;
   private client: { config: IdentityConfig; client: IdentityClient } | null = null;
+  /**
+   * The monotonic clock a reset's session sweep keeps its deadline by (milliseconds). Only elapsed time is read from
+   * it, so it never depends on the wall clock; a test replaces it to move time without waiting.
+   */
+  sweepClock: () => number = () => performance.now();
 
   constructor(private readonly prisma: PrismaService) {
     this.attempts = new SignInAttempts(prisma);
@@ -273,6 +278,9 @@ export class IdentitySignInService implements OnModuleInit {
    * challenge id). `unsettled` is called when the issuer write itself (making the person, or setting the password)
    * got no clear answer, so it may still land: the caller then leaves its claim to the lease rather than freeing the
    * account at once (A4a), or a newer setup could report success and be overwritten by this one landing late.
+   * `sweepWindowMs`: how long after the claim the linked person's session sweep may still start a call (unit L); the
+   * caller derives it from the completion lease so that nothing the sweep does, nor anything after it, outlives the
+   * claim that every release honours (Codex 4472985591 on #1342).
    */
   async setPassword(
     account: { id: string; email: string | null },
@@ -281,6 +289,7 @@ export class IdentitySignInService implements OnModuleInit {
     claim: () => Promise<void>,
     record: (tx: Prisma.TransactionClient, outcome: IdentityOutcome, issuerPasswordSet: boolean) => Promise<void>,
     unsettled: () => void,
+    sweepWindowMs: number,
   ): Promise<IdentityOutcome> {
     const email = (account.email ?? '').trim().toLowerCase();
     if (!email) throw refusedSetup(NEEDS_HELP);
@@ -294,6 +303,8 @@ export class IdentitySignInService implements OnModuleInit {
       throw new ServiceUnavailableException(UNAVAILABLE);
     }
     const { config } = read;
+    // read before the claim is taken, so the sweep's deadline is never later than the claim's own lease
+    const sweepBy = this.sweepClock() + sweepWindowMs;
     await claim();
     const client = this.clientFor(config);
     const link = await linkOf(this.prisma, account.id);
@@ -337,7 +348,7 @@ export class IdentitySignInService implements OnModuleInit {
             // the write may still land at the issuer (a timeout, a 5xx): see `unsettled`
             unsettled();
             // and if it landed, the old password's issuer sessions must not outlive it (unit L, R3-1)
-            await this.endIssuerSessions(client, account.id, found.userId, attempt);
+            await this.endIssuerSessions(client, account.id, found.userId, attempt, sweepBy);
             return this.unavailable(attempt);
           }
           if (set === 'rejected') {
@@ -347,7 +358,7 @@ export class IdentitySignInService implements OnModuleInit {
           issuerPasswordSet = true;
           // unit L: whoever is signed in to Redbracket ID with the old password (rb, Hub, the console) is signed out
           // before the setup answers
-          await this.endIssuerSessions(client, account.id, found.userId, attempt);
+          await this.endIssuerSessions(client, account.id, found.userId, attempt, sweepBy);
         }
         // an existing issuer person who is not linked is left exactly as they are: the typed password must already be theirs
 
@@ -423,8 +434,9 @@ export class IdentitySignInService implements OnModuleInit {
 
   /**
    * Unit L: ends the person's issuer sessions after PMC set (or may have set) their password, awaited and bounded:
-   * {@link SESSIONS_AWAITED_ROUNDS} delete rounds and a confirming list, each call under the issuer timeout (counted
-   * in `COMPLETION_ISSUER_CALLS`). Anything but `ended` writes `auth.password_reset_unfinished` on the account (the
+   * {@link SESSIONS_AWAITED_ROUNDS} delete rounds and a confirming list, each call under the issuer timeout, and no
+   * call started unless it ends, at its full timeout, by `sweepBy` (the deadline `setPassword` took from the claim).
+   * A sweep whose deadline has already passed sends nothing and is recorded as `capped`. Anything but `ended` writes `auth.password_reset_unfinished` on the account (the
    * issuer person and the reason, never a secret), for the operator's action in RUNBOOK §RBL; the setup still answers
    * as it would have, since the password did change and refusing would not help the person. Nothing goes on after the
    * setup answers: a sweep left running past the account's completion claim could delete the issuer session a later
@@ -432,8 +444,8 @@ export class IdentitySignInService implements OnModuleInit {
    * could not end is the row's to report, and the operator's to finish. A row that cannot be written is logged, never
    * swallowed silently. Never throws.
    */
-  private async endIssuerSessions(client: IdentityClient, accountId: string, personId: string, attempt: string): Promise<void> {
-    const answer = await client.endPersonSessions(personId, SESSIONS_AWAITED_ROUNDS);
+  private async endIssuerSessions(client: IdentityClient, accountId: string, personId: string, attempt: string, sweepBy: number): Promise<void> {
+    const answer = await client.endPersonSessions(personId, SESSIONS_AWAITED_ROUNDS, () => this.sweepClock() + IDENTITY_TIMEOUT_MS <= sweepBy);
     if (answer === 'ended') return;
     const why = `issuer sessions not ended after the reset (${answer})`;
     this.line('password', attempt, why);
