@@ -228,6 +228,9 @@ export class IdentityClient {
     opts: { json?: unknown; form?: URLSearchParams; service?: boolean } = {},
   ): Promise<Reply> {
     const headers: Record<string, string> = { Accept: 'application/json' };
+    // a `/zitadel.*` path is a Connect RPC: it names the protocol version, as the Connect protocol asks of a unary call.
+    // The OIDC/OAuth paths and the REST `/v2/...` paths are not Connect calls and carry no such header.
+    if (path.startsWith(CONNECT_PATH)) headers['Connect-Protocol-Version'] = '1';
     if (opts.service) headers.Authorization = `Bearer ${this.config.serviceToken}`;
     let body: string | undefined;
     if (opts.json !== undefined) {
@@ -243,6 +246,9 @@ export class IdentityClient {
     return { status: res.status, body: text, location: res.headers.get('location') };
   }
 }
+
+/** the path prefix of the issuer's Connect RPCs (DeleteSession, UpdateUser) */
+const CONNECT_PATH = '/zitadel.';
 
 /**
  * The issuer can't be used just now, not the person's fault: a 5xx, a 429 (rate limited; try again later), or a 401/403

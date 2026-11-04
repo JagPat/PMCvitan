@@ -4,9 +4,10 @@
  * It answers the same paths the live issuer does (authorize, `/v2/sessions`, `/v2/oidc/auth_requests/{id}`, the token
  * exchange with PKCE, the key set, ListUsers with v4.16's "no user" shape, create, set password, UpdateUser,
  * DeleteSession), signs RS256 id tokens with its own key, and records every request it gets (method, path, headers,
- * body), so a test can prove what PMC sent and that it sent nothing at all. Knobs let a test make it slow or hold every
- * answer until close, fail a path, send an answer too large to read, lock a person, or spoil the token (another issuer,
- * another algorithm, another state, another nonce). Nothing it schedules outlives close().
+ * body), so a test can prove what PMC sent and that it sent nothing at all. Like a Connect server that requires the
+ * protocol header, it refuses a `/zitadel.*` call without `Connect-Protocol-Version: 1` (400). Knobs let a test make it
+ * slow or hold every answer until close, fail a path, send an answer too large to read, lock a person, or spoil the token
+ * (another issuer, another algorithm, another state, another nonce). Nothing it schedules outlives close().
  */
 import { createHash, generateKeyPairSync, randomUUID, sign, type KeyObject } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -41,6 +42,8 @@ export type FakeIssuer = {
   /** how ListUsers answers "nobody": v4.16's details-only body by default */
   noneShape: 'details-only' | 'empty-result' | 'odd';
   addPerson(email: string, password: string, verified?: boolean): FakePerson;
+  /** resolves with the first request recorded on `path` (already recorded or still to come), so a test waits on it */
+  received(path: string): Promise<Recorded>;
   close(): Promise<void>;
 };
 
@@ -76,8 +79,13 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       fake.people.set(p.userId, p);
       return p;
     },
+    received(path: string): Promise<Recorded> {
+      const had = fake.requests.find((q) => q.path === path);
+      return had ? Promise.resolve(had) : new Promise<Recorded>((resolve) => waiters.push({ path, resolve }));
+    },
     close: async () => {},
   };
+  const waiters: Array<{ path: string; resolve: (q: Recorded) => void }> = [];
 
   const byEmail = (email: string) => [...fake.people.values()].find((p) => p.email === email.toLowerCase());
   const send = (res: ServerResponse, status: number, body?: unknown, headers: Record<string, string> = {}) => {
@@ -116,6 +124,10 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     const path = url.pathname;
     for (const [prefix, status] of Object.entries(fake.force)) if (path.startsWith(prefix)) return send(res, status, { message: 'forced' });
     if (fake.oversize && path.startsWith(fake.oversize)) return send(res, 200, { padding: 'x'.repeat(1024 * 1024 + 1) });
+    // a Connect RPC without its protocol version is refused, as a Connect server that requires the header answers
+    if (path.startsWith('/zitadel.') && req.headers['connect-protocol-version'] !== '1') {
+      return send(res, 400, { code: 'invalid_argument', message: 'missing Connect-Protocol-Version header' });
+    }
     const json = (): Record<string, any> => { try { return JSON.parse(body || '{}'); } catch { return {}; } };
 
     if (req.method === 'GET' && path === '/oauth/v2/authorize') {
@@ -215,7 +227,9 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     req.on('data', (c: Buffer) => chunks.push(c));
     req.on('end', () => {
       const body = Buffer.concat(chunks).toString('utf8');
-      fake.requests.push({ method: req.method ?? '', path: req.url ?? '', headers: req.headers, body });
+      const recorded = { method: req.method ?? '', path: req.url ?? '', headers: req.headers, body };
+      fake.requests.push(recorded);
+      for (let n = waiters.length - 1; n >= 0; n--) if (waiters[n]!.path === recorded.path) waiters.splice(n, 1)[0]!.resolve(recorded);
       const go = () => { try { handle(req, res, body); } catch { send(res, 500, { message: 'fake failed' }); } };
       if (fake.hold) return; // answered by no one: close() drops the connection
       if (fake.delayMs > 0) {
