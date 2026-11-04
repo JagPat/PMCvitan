@@ -3,7 +3,7 @@
  *
  * It answers the same paths the live issuer does (authorize, `/v2/sessions`, `/v2/oidc/auth_requests/{id}`, the token
  * exchange with PKCE, the key set, ListUsers with v4.16's "no user" shape, create, set password, UpdateUser,
- * DeleteSession), signs RS256 id tokens with its own key, and records every request it gets (method, path, headers,
+ * DeleteSession, ListSessions by person), signs RS256 id tokens with its own key, and records every request it gets (method, path, headers,
  * body), so a test can prove what PMC sent and that it sent nothing at all. Like a Connect server that requires the
  * protocol header, it refuses a `/zitadel.*` call without `Connect-Protocol-Version: 1` (400). It also answers the issuer
  * methods fence's questions (TOTP, email and SMS codes, passkeys and security keys per rp id) from `methods(userId)`,
@@ -60,6 +60,12 @@ export type FakeIssuer = {
   answer: { path: string; body: unknown; status?: number } | null;
   /** how ListUsers answers "nobody": v4.16's details-only body by default */
   noneShape: 'details-only' | 'empty-result' | 'odd';
+  /** the most sessions one ListSessions page holds, whatever PMC asks (an issuer's own cap); null: no cap */
+  sessionsPageCap: number | null;
+  /** as Zitadel's session list read from a lagging projection: a session deleted while this is on is still listed */
+  sessionsListLag: boolean;
+  /** run after each ListSessions answer has gone (what lands between that list and the next call) */
+  afterSessionsListed: ((userId: string) => void) | null;
   /** the instance domain: the only rp id a legacy key (stored with no rp id) is listed for */
   instanceDomain: string;
   /** a person's other ways in (made empty on first use), keyed by user id */
@@ -67,6 +73,10 @@ export type FakeIssuer = {
   addPerson(email: string, password: string, verified?: boolean): FakePerson;
   /** resolves with the first request recorded on `path` (already recorded or still to come), so a test waits on it */
   received(path: string): Promise<Recorded>;
+  /** opens an issuer session for a person (as rb's login would), returning its id */
+  openSession(userId: string): string;
+  /** the issuer sessions a person holds now */
+  sessionsOf(userId: string): string[];
   close(): Promise<void>;
 };
 
@@ -80,6 +90,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
   const kid = 'k1';
   const authRequests = new Map<string, { redirectUri: string; state: string; nonce: string; challenge: string; clientId: string; sessionUser?: string }>();
   const sessions = new Map<string, { token: string; userId: string }>();
+  const deletedStillListed = new Map<string, string>(); // session id -> its person, while the list lags
   const codes = new Map<string, { authRequest: string; used: boolean }>();
 
   const fake = {
@@ -98,6 +109,9 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     spoil: 'none' as Spoil,
     answer: null as FakeIssuer['answer'],
     noneShape: 'details-only' as FakeIssuer['noneShape'],
+    sessionsPageCap: null as number | null,
+    sessionsListLag: false,
+    afterSessionsListed: null as ((userId: string) => void) | null,
     instanceDomain: 'id.vitan.in',
     methods(userId: string): FenceMethods {
       let m = fenceMethods.get(userId);
@@ -112,6 +126,14 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     received(path: string): Promise<Recorded> {
       const had = fake.requests.find((q) => q.path === path);
       return had ? Promise.resolve(had) : new Promise<Recorded>((resolve) => waiters.push({ path, resolve }));
+    },
+    openSession(userId: string): string {
+      const id = randomUUID();
+      sessions.set(id, { token: randomUUID(), userId });
+      return id;
+    },
+    sessionsOf(userId: string): string[] {
+      return [...sessions.entries()].filter(([, v]) => v.userId === userId).map(([id]) => id);
     },
     close: async () => {},
   };
@@ -212,8 +234,23 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       return send(res, 200, { callbackUrl: `${ar.redirectUri}?code=${code}&state=${state}` });
     }
     if (req.method === 'POST' && path === '/zitadel.session.v2.SessionService/DeleteSession') {
-      sessions.delete(String(json().sessionId ?? ''));
+      // as Zitadel: a session already gone is answered 2xx too
+      const id = String(json().sessionId ?? '');
+      const had = sessions.get(id);
+      if (had && fake.sessionsListLag) deletedStillListed.set(id, had.userId);
+      sessions.delete(id);
       return send(res, 200, {});
+    }
+    if (req.method === 'POST' && path === '/zitadel.session.v2.SessionService/ListSessions') {
+      const b = json();
+      // as Zitadel v4.16: the person's sessions by userIdQuery, up to the page limit; an empty list is left out
+      const id = String(b?.queries?.[0]?.userIdQuery?.id ?? '');
+      const limit = Math.min(Number(b?.query?.limit ?? 100), fake.sessionsPageCap ?? Infinity);
+      const all = [...fake.sessionsOf(id), ...[...deletedStillListed].filter(([, owner]) => owner === id).map(([sid]) => sid)];
+      const rows = all.slice(0, limit).map((sid) => ({ id: sid }));
+      send(res, 200, rows.length ? { details: { totalResult: String(all.length) }, sessions: rows } : { details: {} });
+      fake.afterSessionsListed?.(id);
+      return;
     }
     if (req.method === 'POST' && path === '/v2/users') {
       const b = json();

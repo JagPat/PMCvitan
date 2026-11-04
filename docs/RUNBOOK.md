@@ -2775,6 +2775,31 @@ on the person's own sign-in during their own reset. Two effects last:
      its own.
    - Never remove a factor the audit row does not name. Then the person runs "Set up or forgot password" again.
 
+## §RBL. Redbracket ID reset — a linked person's issuer sessions not ended (unit L)
+
+When "Set up or forgot password" sets the Redbracket ID password of the person an account is already linked to,
+PMC then ends that person's issuer sessions (rb, Hub, the console), so whoever was signed in with the old password is
+signed out of Redbracket ID itself. It does this also when the password write got no clear answer (it may have
+landed). The awaited part is three rounds (list the person's sessions, delete them) and one confirming list. Hub's
+and rb's own app sessions are theirs to end; PMC ends only its own and the issuer's.
+
+Anything but "none left" writes `auth.password_reset_unfinished` on the account, with the issuer person id and the
+reason `issuer sessions not ended after the reset (<answer>)`:
+- `denied`: pmc-service may not read or delete sessions (the session permission is missing). Every linked reset
+  writes this row until the permission is granted on id.vitan.in.
+- `failed`: no usable answer from the issuer. The rest of a full sweep has already run on after the setup answered;
+  the API log line `issuer sessions still not ended (...)` says whether it finished.
+- `capped`: sessions were still listed after the awaited rounds (someone kept signing in). The full sweep ran on as
+  for `failed`.
+
+The password did change, so the setup still answered as it would have (201, or 503 when the write's outcome was
+unclear). To end it, on Jagrut's yes naming the person:
+1. Whoever holds access to the id.vitan.in console opens that person (the row's `issuerPerson`). The console is reached
+   through the SSH tunnel, because its admin paths are IP-locked.
+2. Ends every session listed for the person.
+3. Confirms in the person's session list that none is left. For `denied`, the permission is then granted to
+   pmc-service (session read and delete, as the pre-deploy check describes), so later resets end sessions themselves.
+
 ## §SSP. Seen-state pins — when the pins can be required, and rolling back (#482)
 
 Eight money and measure acts (payment record and reverse, deduction record and release, advance pay,
