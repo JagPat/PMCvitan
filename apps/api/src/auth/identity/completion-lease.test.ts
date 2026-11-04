@@ -26,15 +26,19 @@ describe('password completion lease (A4a)', () => {
     const client = read('identity-client.ts');
     // every call site, awaited or not, however it is written: `this.send(` and nothing else reaches the network
     const sends = client.match(/\bthis\.send\(/g) ?? [];
-    // less the one of making or setting not made, and the ListSessions that ends the person's sessions, which (with its
-    // deletes) runs only after the password write and is not awaited (a late delete only ends a session); plus the two
-    // asked both before and after the write (other sign-in methods, and whether a never-verified person is signed in)
+    // less the one of making or setting not made; plus the two asked both before and after the write (other sign-in
+    // methods, and whether the person is signed in), and the session delete, reached both by the awaited one-round end
+    // of a verified person's sessions after the write and by the sign-in's own session end
     expect(client.match(/\bthis\.send\('POST', '\/zitadel\.session\.v2\.SessionService\/ListSessions'/g) ?? []).toHaveLength(2);
-    expect(sends.length - 2 + 2).toBe(COMPLETION_ISSUER_CALLS);
+    expect(client.match(/\bthis\.send\('POST', '\/zitadel\.session\.v2\.SessionService\/DeleteSession'/g) ?? []).toHaveLength(1);
+    expect(sends.length - 1 + 2 + 1).toBe(COMPLETION_ISSUER_CALLS);
     const signIn = read('identity-sign-in.service.ts');
     const setPassword = signIn.slice(signIn.indexOf('  async setPassword('), signIn.indexOf('  private async noSessions('));
     expect(setPassword.match(/\bclient\.otherSignInMethods\(/g) ?? []).toHaveLength(2);
     expect(setPassword.match(/\bthis\.noSessions\(/g) ?? []).toHaveLength(2);
+    // the one awaited end of a person's sessions is bounded to one round (one list and its deletes)
+    expect(setPassword.match(/\bawait client\.endPersonSessions\(found\.userId, 1, endedSessions\)/g) ?? []).toHaveLength(1);
+    expect(setPassword.match(/\bclient\.endPersonSessions\(/g) ?? []).toHaveLength(2);
     expect(signIn.match(/\bclient\.hasSessions\(/g) ?? []).toHaveLength(1);
     expect(client.match(/\bsend\b/g)?.length).toBe(sends.length + 1); // + its declaration: no alias, no wrapper
     // one plain fetch per send, in send itself: no retrying wrapper, no loop, no second request

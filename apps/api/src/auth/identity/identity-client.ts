@@ -138,14 +138,16 @@ export class IdentityClient {
    * person whose password PMC just reset), which takes the service account's session.delete permission. `denied` when
    * the issuer refused PMC's service account (403). Never throws.
    */
-  private async endSession(sessionId: string, sessionToken?: string): Promise<'ended' | 'denied' | 'failed'> {
+  private async endSession(sessionId: string, sessionToken?: string): Promise<'ended' | 'absent' | 'denied' | 'failed'> {
     try {
       const r = await this.send('POST', '/zitadel.session.v2.SessionService/DeleteSession', {
         json: sessionToken ? { sessionId, sessionToken } : { sessionId },
         service: true,
       });
-      // a session already gone (it expired, or PMC's own sign-in deleted it first) is ended
-      if ((r.status >= 200 && r.status <= 299) || r.status === 404) return 'ended';
+      // a delete the issuer took is ended; a 404 (Zitadel answers 2xx for a session already gone, so this is not
+      // Zitadel's answer) also counts as ended for a sweep, but is `absent`: not proof the session is gone (Stage 1 N1)
+      if (r.status >= 200 && r.status <= 299) return 'ended';
+      if (r.status === 404) return 'absent';
       return r.status === 403 ? 'denied' : 'failed';
     } catch {
       // best effort: the issuer's session also expires on its own (ISSUER_SESSION_LIFETIME, set at creation)
@@ -159,11 +161,13 @@ export class IdentityClient {
    * {@link SESSIONS_PAGE} of the person's sessions and deletes them; it lists again until none is left. `ended`: none
    * left; `denied`: the issuer refused PMC's service account (403: the session permission is missing); `cap`: still
    * sessions after {@link SESSIONS_ROUNDS_MAX} rounds; `failed`: anything else. A portal's own session (Hub's, PMC's)
-   * is that portal's to end. Best effort: the password is already set. Never throws.
+   * is that portal's to end. Best effort: the password is already set. Never throws. `rounds` bounds it below the
+   * maximum: a reset awaits one round (one list, its deletes at once) before its own sessions check, which refuses
+   * whatever that round left (a round that deleted any answers `cap`: it does not list again). `ended` collects the ids whose delete the issuer took (2xx).
    */
-  async endPersonSessions(userId: string): Promise<'ended' | 'denied' | 'cap' | 'failed'> {
+  async endPersonSessions(userId: string, rounds = SESSIONS_ROUNDS_MAX, ended?: Set<string>): Promise<'ended' | 'denied' | 'cap' | 'failed'> {
     try {
-      for (let round = 0; round < SESSIONS_ROUNDS_MAX; round += 1) {
+      for (let round = 0; round < Math.min(rounds, SESSIONS_ROUNDS_MAX); round += 1) {
         const r = await this.send('POST', '/zitadel.session.v2.SessionService/ListSessions', {
           json: { query: { limit: SESSIONS_PAGE }, queries: [{ userIdQuery: { id: userId } }] },
           service: true,
@@ -175,9 +179,13 @@ export class IdentityClient {
         const ids = (listed ?? []).map((row: unknown) => (row && typeof row === 'object' ? str((row as Record<string, unknown>).id) : ''));
         if (ids.length === 0) return 'ended';
         if (ids.some((id) => !id)) return 'failed';
-        const ended = await Promise.all(ids.map((id) => this.endSession(id)));
-        if (ended.includes('denied')) return 'denied';
-        if (ended.includes('failed')) return 'failed';
+        const results = await Promise.all(ids.map((id) => this.endSession(id)));
+        results.forEach((result, i) => {
+          // only a delete the issuer took (2xx) is left out of a later sessions check
+          if (result === 'ended') ended?.add(ids[i]);
+        });
+        if (results.includes('denied')) return 'denied';
+        if (results.includes('failed')) return 'failed';
       }
       return 'cap';
     } catch {
@@ -187,10 +195,11 @@ export class IdentityClient {
 
   /**
    * Whether the person holds any live issuer session (an expired one, still listed, does not count): `none`, `some`, `denied` (the issuer
-   * refused PMC's service account, 403: the session permission is missing), or `down` (no usable answer). Asked around
-   * the password write for a person whose email was never verified (see `setPassword`).
+   * refused PMC's service account, 403: the session permission is missing), or `down` (no usable answer). Asked before
+   * the password write for a person whose email was never verified, and after it for every unlinked person (see
+   * `setPassword`).
    */
-  async hasSessions(userId: string): Promise<'none' | 'some' | 'denied' | 'down'> {
+  async hasSessions(userId: string, ended: ReadonlySet<string> = new Set()): Promise<'none' | 'some' | 'hidden' | 'denied' | 'down'> {
     try {
       const r = await this.send('POST', '/zitadel.session.v2.SessionService/ListSessions', {
         json: { query: { limit: SESSIONS_PAGE }, queries: [{ userIdQuery: { id: userId } }] },
@@ -198,14 +207,19 @@ export class IdentityClient {
       });
       if (r.status === 403) return 'denied';
       if (r.status < 200 || r.status > 299) return 'down';
-      const listed = json(r.body).sessions;
-      // Zitadel leaves out an empty list
-      if (listed === undefined) return 'none';
+      const body = json(r.body);
+      // Zitadel leaves out an empty list (and a zero count). An empty list is not yet "none": a service account without
+      // the session read permission gets the rows it may not read dropped, while the count can still name them, so
+      // the count below decides (Stage 1 G2)
+      const listed = body.sessions === undefined ? [] : body.sessions;
       if (!Array.isArray(listed)) return 'down';
       // an expired session cannot sign in, though Zitadel lists it until it is deleted (Codex 4464926718); a row with
       // no readable expiry is taken as live
       const now = Date.now();
+      // a session PMC has just ended may still be listed for a moment (Zitadel's session list is read from a projection
+      // that can lag its deletes): one in `ended` does not count (Stage 1 G3)
       const live = listed.filter((row: unknown) => {
+        if (row && typeof row === 'object' && ended.has(str((row as Record<string, unknown>).id))) return false;
         const at = row && typeof row === 'object' ? (row as Record<string, unknown>).expirationDate : undefined;
         if (typeof at !== 'string') return true;
         const t = Date.parse(at);
@@ -215,11 +229,16 @@ export class IdentityClient {
       // every row read has expired: "none" only when they are every session the issuer counts. A row left unread (the
       // issuer's own page cap may be under PMC's limit) may be live, and a count PMC cannot read decides nothing: both
       // are taken as signed in (the reset refuses, never guesses)
-      const raw = (json(r.body).details as Record<string, unknown> | undefined)?.totalResult;
+      const raw = (body.details as Record<string, unknown> | undefined)?.totalResult;
+      // no rows and no count: Zitadel's answer for zero (it leaves a zero count out)
+      if (raw === undefined && listed.length === 0) return 'none';
       const counted = typeof raw === 'number' ? String(raw) : str(raw);
       const total = /^\d+$/.test(counted) ? Number(counted) : NaN;
       if (!Number.isFinite(total)) return 'some';
-      return listed.length >= total ? 'none' : 'some';
+      if (listed.length >= total) return 'none';
+      // no rows read, yet the issuer counts some: rows PMC may not read were dropped (the session read permission is
+      // missing). Signed in, as far as PMC can tell, with its own reason
+      return listed.length === 0 ? 'hidden' : 'some';
     } catch {
       return 'down';
     }
@@ -232,6 +251,9 @@ export class IdentityClient {
    */
   async otherSignInMethods(userId: string): Promise<string[] | 'down'> {
     try {
+      // no domainQuery: with none Zitadel filters nothing, so a passkey or U2F key with no domain (registered through the
+      // v1 hosted login) is listed too; a domainQuery needs a domain, and one would hide methods registered under
+      // another portal's domain (Codex 4465814782, answered on its thread)
       const r = await this.send('POST', '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes', { json: { userId }, service: true });
       if (r.status < 200 || r.status > 299) return 'down';
       const types = json(r.body).authMethodTypes;

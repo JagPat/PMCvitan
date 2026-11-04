@@ -96,6 +96,9 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     fake.afterMethodsListed = null;
     fake.afterCreate = null;
     fake.sessionsPageCap = null;
+    fake.sessionsReadDenied = false;
+    fake.sessionsListLag = false;
+    fake.forgetDeletedSessions();
     fake.sessionsTotalOmitted = false;
   });
 
@@ -434,6 +437,89 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     expect(fake.people.get(person.userId)).toMatchObject({ verified: false });
     expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
     expect(await t.prisma.securityAuditEvent.count({ where: { targetUserId: user.id, action: 'auth.password_reset_refused_contested' } })).toBe(1);
+  });
+
+  it('a verified person signed in elsewhere with the old password: that session ends before the methods are asked, so it cannot add a way in after them (Codex 4465814801)', async () => {
+    const user = await invitee('verifiedsignedin');
+    const person = fake.addPerson(user.email!, 'the old passphrase');
+    const held = fake.openSession(person.userId); // signed in at Hub or rb with the old password
+    let listed = 0;
+    fake.afterMethodsListed = (id) => {
+      listed += 1;
+      // after the re-check's answer: the session would add a passkey, had it not been ended before it
+      if (id === person.userId && listed === 2 && fake.sessionsOf(person.userId).includes(held)) person.methods = ['AUTHENTICATION_METHOD_TYPE_PASSKEY'];
+    };
+    await setPassword(user.email!, 'the owner new passphrase', 201);
+    expect(person.methods ?? []).toEqual([]);
+    expect(fake.sessionsOf(person.userId)).not.toContain(held);
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(1);
+  });
+
+  it('a verified person whose session PMC cannot end is refused after the write, and recorded (Codex 4465814801)', async () => {
+    const user = await invitee('verifiedstuck');
+    const person = fake.addPerson(user.email!, 'the old passphrase');
+    fake.openSession(person.userId);
+    fake.force = { '/zitadel.session.v2.SessionService/DeleteSession': 403 };
+    try {
+      const refused = await setPassword(user.email!, 'the owner new passphrase', 409);
+      expect(refused.body.code).toBe('needs-help');
+    } finally {
+      fake.force = {};
+    }
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'the owner new passphrase' });
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
+    expect(await t.prisma.securityAuditEvent.count({ where: { targetUserId: user.id, action: 'auth.password_reset_refused_contested' } })).toBe(1);
+  });
+
+  it('a verified person whose sessions PMC may not read (rows dropped, the count kept) is refused after the write, and recorded (Stage 1 G2)', async () => {
+    const user = await invitee('verifiedunread');
+    const person = fake.addPerson(user.email!, 'the old passphrase');
+    fake.openSession(person.userId);
+    fake.sessionsReadDenied = true;
+    const refused = await setPassword(user.email!, 'the owner new passphrase', 409);
+    expect(refused.body.code).toBe('needs-help');
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
+    const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: 'auth.password_reset_refused_contested' } });
+    expect(trail.map((e) => (e.payload as { reason: string }).reason)).toEqual([
+      'issuer person: sessions counted but none readable (session read permission missing) during the reset',
+    ]);
+  });
+
+  it('a verified person whose ended sessions are still listed for a moment (the list lags) is reset, not refused (Stage 1 G3)', async () => {
+    const user = await invitee('verifiedlag');
+    const person = fake.addPerson(user.email!, 'the old passphrase');
+    fake.openSession(person.userId);
+    fake.sessionsListLag = true;
+    await setPassword(user.email!, 'the owner new passphrase', 201);
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(1);
+  });
+
+  it('a passkey registered through the hosted login (no domain) is seen with no domainQuery: the unlinked person is left as it is (Codex 4465814782)', async () => {
+    const user = await invitee('domainless');
+    const person = fake.addPerson(user.email!, 'the old passphrase');
+    person.domainlessMethods = ['AUTHENTICATION_METHOD_TYPE_PASSKEY'];
+    const refused = await setPassword(user.email!, 'the owner new passphrase', 409);
+    expect(refused.body.code).toBe('needs-help');
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'the old passphrase' });
+    expect(mailOf(user.email!)).toEqual([]);
+  });
+
+  it('a sign-in after the reset that gets no usable answer is recorded as unfinished (Codex 4465814795)', async () => {
+    const user = await invitee('logindown');
+    const person = fake.addPerson(user.email!, 'the old passphrase');
+    fake.afterPasswordSet = async () => {
+      fake.force = { '/oauth/v2/token': 503 };
+    };
+    try {
+      await setPassword(user.email!, 'the owner new passphrase', 503);
+    } finally {
+      fake.force = {};
+    }
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'the owner new passphrase' });
+    expect(mailOf(user.email!)).toEqual([`${user.email} changed`]);
+    const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: 'auth.password_reset_unfinished' } });
+    expect(trail.map((e) => e.payload)).toEqual([{ issuerPerson: person.userId, reason: 'sign-in after the reset got no usable answer' }]);
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
   });
 
   it('a re-check after the write that gets no answer is recorded: the password changed, the setup is unavailable', async () => {

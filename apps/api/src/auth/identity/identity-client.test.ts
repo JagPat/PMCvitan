@@ -263,6 +263,13 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(await client.otherSignInMethods(p.userId)).toEqual([]);
     p.methods = ['AUTHENTICATION_METHOD_TYPE_PASSKEY', 'AUTHENTICATION_METHOD_TYPE_IDP'];
     expect(await client.otherSignInMethods(p.userId)).toEqual(['AUTHENTICATION_METHOD_TYPE_PASSKEY', 'AUTHENTICATION_METHOD_TYPE_IDP']);
+    // a U2F key registered through the hosted login (v1) has no domain: listed, because PMC asks with no domainQuery
+    // (Zitadel then filters nothing; a domainQuery without a domain is refused, 400; Codex 4465814782)
+    p.methods = [];
+    p.domainlessMethods = ['AUTHENTICATION_METHOD_TYPE_U2F'];
+    expect(await client.otherSignInMethods(p.userId)).toEqual(['AUTHENTICATION_METHOD_TYPE_U2F']);
+    const asked = fake.requests.filter((q) => q.path === '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes').at(-1);
+    expect(JSON.parse(asked!.body)).toEqual({ userId: p.userId });
     fake.force = { '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes': 403 };
     expect(await client.otherSignInMethods(p.userId)).toBe('down');
     fake.force = {};
@@ -295,6 +302,34 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     fake.sessionsTotalOmitted = true; // a count PMC cannot read decides nothing
     expect(await client.hasSessions(r.userId)).toBe('some');
     fake.sessionsTotalOmitted = false;
+    // a service account without the session read permission gets the rows dropped, the count kept: signed in (Stage 1 G2)
+    fake.sessionsReadDenied = true;
+    expect(await client.hasSessions(p.userId)).toBe('hidden');
+    const nobody = fake.addPerson('z@example.in', 'Right-pass-123', false);
+    expect(await client.hasSessions(nobody.userId)).toBe('none'); // no rows, a zero count
+    fake.sessionsReadDenied = false;
+    // a session PMC has just ended may still be listed (the list lags its deletes): one it names as ended does not count (Stage 1 G3)
+    const lag = fake.addPerson('lag@example.in', 'Right-pass-123');
+    fake.openSession(lag.userId);
+    fake.sessionsListLag = true;
+    const ended = new Set<string>();
+    // one round: it lists and deletes, and does not list again (so it answers `cap`, whatever the list now holds)
+    expect(await client.endPersonSessions(lag.userId, 1, ended)).toBe('cap');
+    fake.sessionsListLag = false;
+    expect(ended.size).toBe(1);
+    expect(await client.hasSessions(lag.userId)).toBe('some');
+    expect(await client.hasSessions(lag.userId, ended)).toBe('none');
+    fake.forgetDeletedSessions();
+    // a delete answered 404 (not Zitadel's answer: it gives 2xx for a session already gone) is no proof: the session
+    // stays counted (Stage 1 N1)
+    const stuck = fake.addPerson('stuck@example.in', 'Right-pass-123');
+    fake.openSession(stuck.userId);
+    fake.force = { '/zitadel.session.v2.SessionService/DeleteSession': 404 };
+    const notProof = new Set<string>();
+    await client.endPersonSessions(stuck.userId, 1, notProof);
+    fake.force = {};
+    expect(notProof.size).toBe(0);
+    expect(await client.hasSessions(stuck.userId, notProof)).toBe('some');
     fake.force = { '/zitadel.session.v2.SessionService/ListSessions': 403 };
     expect(await client.hasSessions(p.userId)).toBe('denied');
     fake.force = { '/zitadel.session.v2.SessionService/ListSessions': 503 };

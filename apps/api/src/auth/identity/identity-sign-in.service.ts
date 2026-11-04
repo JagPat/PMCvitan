@@ -365,13 +365,19 @@ export class IdentitySignInService {
           if (!link) {
             // the checks before the write were a snapshot (Codex 4464315055): a way in added meanwhile, by whoever held
             // the old password or a session, would outlive the reset and sign in as the account this links. Asked again
-            // now the old password no longer works, before the person is marked verified or linked. For a person never
-            // verified, nobody may be signed in either: PMC has opened no session yet, so one now was opened with the
-            // old password, and could still add a way in. A refusal here leaves the person unlinked and unverified
+            // now the old password no longer works, before the person is marked verified or linked. Nobody may be signed
+            // in either: PMC has opened no session yet, so one now was opened with the old password, and could still
+            // add a way in. A refusal here leaves the person unlinked and unverified
             // (the password changed, its notice went, its other sessions end below). Sessions first: a way in can only be
             // added from a session, and none can be opened after the write (the old password no longer works), so a
             // session found closed meanwhile has left its method for the methods answer that follows (Stage 1 S4)
-            if (!found.verified) await this.noSessions(client, found.userId, attempt, 'after', account.id);
+            // A verified person may be signed in elsewhere (Hub, rb): a session opened with the old password could
+            // still add a way in after the methods answer, so those sessions end now, awaited, and nobody may be signed
+            // in before the methods are asked (Codex 4465814801). One pass: whatever it could not end, the check
+            // after it refuses (contested)
+            const endedSessions = new Set<string>();
+            if (found.verified) await client.endPersonSessions(found.userId, 1, endedSessions);
+            await this.noSessions(client, found.userId, attempt, 'after', account.id, endedSessions);
             const after = await client.otherSignInMethods(found.userId);
             if (after === 'down') return this.unfinished(account.id, found.userId, attempt, 'other sign-in methods unreadable after the write');
             if (after.length > 0) return this.contested(account.id, found.userId, attempt, 'other sign-in methods added during the reset');
@@ -385,11 +391,15 @@ export class IdentitySignInService {
           }
         }
 
-        const signedIn = await client.login(email, password);
-        if (!signedIn.ok && signedIn.failure === 'down') return this.unavailable(attempt);
-        // an unlinked person whose password PMC just set: a refusal from here on is recorded as contested (409); the
-        // password changed and its notice went, and its other issuer sessions end below
+        // an unlinked person whose password PMC just set: a refusal from here on is recorded as contested (409), and a
+        // sign-in with no usable answer as unfinished (503; Codex 4465814795); the password changed and its notice
+        // went, and its other issuer sessions end below
         const unlinkedReset = found.found === 'one' && !link;
+        const signedIn = await client.login(email, password);
+        if (!signedIn.ok && signedIn.failure === 'down') {
+          if (unlinkedReset) return this.unfinished(account.id, found.userId, attempt, 'sign-in after the reset got no usable answer');
+          return this.unavailable(attempt);
+        }
         if (!signedIn.ok) {
           if (unlinkedReset) return this.contested(account.id, found.userId, attempt, 'issuer refused the new password at sign-in');
           this.line('password', attempt, 'issuer refused new password');
@@ -458,14 +468,26 @@ export class IdentitySignInService {
    * has changed and the refusal is plain; `after` it the refusal is recorded (`contested`). A missing session permission
    * cannot tell, so it refuses too, with its own log line.
    */
-  private async noSessions(client: IdentityClient, personId: string, attempt: string, when: 'before' | 'after', accountId?: string): Promise<void> {
-    const sessions = await client.hasSessions(personId);
+  private async noSessions(
+    client: IdentityClient,
+    personId: string,
+    attempt: string,
+    when: 'before' | 'after',
+    accountId?: string,
+    ended?: ReadonlySet<string>,
+  ): Promise<void> {
+    const sessions = await client.hasSessions(personId, ended);
     if (sessions === 'none') return;
     if (sessions === 'down') {
       if (when === 'before') return this.unavailable(attempt);
       return this.unfinished(accountId!, personId, attempt, 'issuer sessions unreadable after the write');
     }
-    const why = sessions === 'denied' ? 'unverified issuer person: session permission missing' : 'unverified issuer person is signed in';
+    const why =
+      sessions === 'denied'
+        ? 'issuer person: session permission missing'
+        : sessions === 'hidden'
+          ? 'issuer person: sessions counted but none readable (session read permission missing)'
+          : 'issuer person is signed in';
     if (when === 'before') return this.needsHelp(attempt, why);
     return this.contested(accountId!, personId, attempt, `${why} during the reset`);
   }

@@ -14,7 +14,7 @@ import { createHash, generateKeyPairSync, randomUUID, sign, type KeyObject } fro
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-export type FakePerson = { userId: string; email: string; password: string; verified: boolean; givenName: string; familyName: string; locked?: boolean; methods?: string[]; loginName?: string };
+export type FakePerson = { userId: string; email: string; password: string; verified: boolean; givenName: string; familyName: string; locked?: boolean; methods?: string[]; domainlessMethods?: string[]; loginName?: string };
 export type Recorded = { method: string; path: string; headers: IncomingMessage['headers']; body: string };
 export type Spoil = 'none' | 'issuer' | 'alg-none' | 'alg-hs256' | 'state' | 'nonce' | 'audience' | 'expired' | 'kid' | 'signature' | 'no-iat' | 'azp' | 'nbf-future';
 
@@ -52,6 +52,12 @@ export type FakeIssuer = {
   afterCreate: ((made: FakePerson) => void) | null;
   /** ListSessions leaves out `details.totalResult` */
   sessionsTotalOmitted: boolean;
+  /** as Zitadel for a service account without the session read permission: the rows are dropped, the count is not */
+  sessionsReadDenied: boolean;
+  /** as Zitadel's session list read from a lagging projection: a session deleted while this is on is still listed */
+  sessionsListLag: boolean;
+  /** forgets the deleted sessions a lagging list still showed */
+  forgetDeletedSessions(): void;
   /** ends an issuer session (as a sign-out on rb would) */
   closeSession(id: string): void;
   addPerson(email: string, password: string, verified?: boolean): FakePerson;
@@ -74,6 +80,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
   const kid = 'k1';
   const authRequests = new Map<string, { redirectUri: string; state: string; nonce: string; challenge: string; clientId: string; sessionUser?: string }>();
   const sessions = new Map<string, { token: string; userId: string; expiresAt?: string }>();
+  const deletedStillListed = new Map<string, string>(); // session id -> its person, while the list lags
   const codes = new Map<string, { authRequest: string; used: boolean }>();
 
   const fake = {
@@ -96,6 +103,8 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     sessionsPageCap: null as number | null,
     afterCreate: null as ((made: FakePerson) => void) | null,
     sessionsTotalOmitted: false,
+    sessionsReadDenied: false,
+    sessionsListLag: false,
     closeSession(id: string): void {
       sessions.delete(id);
     },
@@ -112,6 +121,9 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       const id = randomUUID();
       sessions.set(id, { token: randomUUID(), userId, expiresAt });
       return id;
+    },
+    forgetDeletedSessions() {
+      deletedStillListed.clear();
     },
     sessionsOf(userId: string): string[] {
       return [...sessions.entries()].filter(([, v]) => v.userId === userId).map(([id]) => id);
@@ -216,6 +228,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     if (req.method === 'POST' && path === '/zitadel.session.v2.SessionService/DeleteSession') {
       const id = String(json().sessionId ?? '');
       if (!sessions.has(id)) return send(res, 404, { message: 'Errors.Session.NotFound' });
+      if (fake.sessionsListLag) deletedStillListed.set(id, sessions.get(id)!.userId);
       sessions.delete(id);
       return send(res, 200, {});
     }
@@ -223,19 +236,30 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       const b = json();
       const id = String(b?.queries?.[0]?.userIdQuery?.id ?? '');
       const limit = Math.min(Number(b?.query?.limit ?? 100), fake.sessionsPageCap ?? Infinity);
-      const all = fake.sessionsOf(id);
+      const all = [...fake.sessionsOf(id), ...[...deletedStillListed].filter(([, owner]) => owner === id).map(([sid]) => sid)];
       const rows = all.slice(0, limit).map((sid) => {
         const at = sessions.get(sid)?.expiresAt;
         return at ? { id: sid, expirationDate: at } : { id: sid };
       });
       // Zitadel leaves out an empty list
       const details = fake.sessionsTotalOmitted ? {} : { totalResult: String(all.length) };
+      if (fake.sessionsReadDenied) return send(res, 200, { details });
       return send(res, 200, rows.length ? { details, sessions: rows } : { details: {} });
     }
     if (req.method === 'POST' && path === '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes') {
-      const p = fake.people.get(String(json().userId ?? ''));
+      const b = json();
+      const p = fake.people.get(String(b.userId ?? ''));
       if (!p) return send(res, 404, { message: 'Errors.User.NotFound' });
-      const types = ['AUTHENTICATION_METHOD_TYPE_PASSWORD', ...(p.methods ?? [])];
+      // as Zitadel v4.16: with no domainQuery nothing is filtered, so a method with no domain (a passkey or U2F key
+      // registered through the v1 login) is listed; a domainQuery must name a domain of 1 to 200 characters (400
+      // otherwise), and then lists methods with no domain only when it includes them
+      const q = b?.domainQuery;
+      if (q !== undefined) {
+        const domain = typeof q?.domain === 'string' ? q.domain : '';
+        if (domain.length < 1 || domain.length > 200) return send(res, 400, { code: 'invalid_argument', message: 'invalid DomainQuery.Domain' });
+      }
+      const domainless = q === undefined || q.includeWithoutDomain === true ? (p.domainlessMethods ?? []) : [];
+      const types = ['AUTHENTICATION_METHOD_TYPE_PASSWORD', ...(p.methods ?? []), ...domainless];
       send(res, 200, { details: {}, authMethodTypes: types });
       fake.afterMethodsListed?.(p.userId);
       return;
