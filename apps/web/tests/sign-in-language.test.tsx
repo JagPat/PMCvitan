@@ -57,6 +57,28 @@ describe.each(['hi', 'gu'] as const)('every email and password sign-in screen in
     expect(leftoverEnglish(view.container, DATA)).toEqual([]);
   });
 
+  it('the Redbracket ID password step names only the portals in English (Redbracket ID, Hub, rb)', async () => {
+    const { useStore, TeamAccessScreen } = await page();
+    useStore.setState((s) => ({ lang, access: { ...s.access, step: 'password-create', passwordSetupToken: 'st', passwordShared: true } }));
+    const view = render(<TeamAccessScreen />);
+    // the Latin words left are exactly the brand names, and "ID" appears only as part of "Redbracket ID"
+    expect(leftoverEnglish(view.container, DATA).sort()).toEqual(['Hub', 'ID', 'Redbracket', 'rb']);
+    const text = view.container.textContent ?? '';
+    const count = (re: RegExp) => (text.match(re) ?? []).length;
+    expect(count(/\bID\b/g)).toBe(count(/Redbracket ID/g));
+    expect(count(/\brb\b/g)).toBe(count(/Hub (और|અને) rb/g));
+    expect(count(/\brb\b/g)).toBeGreaterThan(0);
+  });
+
+  it('the Redbracket ID reset refusal and its link read in the same language, brand names aside (unit H)', async () => {
+    const { useStore, TeamAccessScreen } = await page();
+    useStore.setState((s) => ({ lang, access: { ...s.access, step: 'password-create', passwordSetupToken: 'st', passwordShared: true, issuerResetUrl: 'https://rb.vitan.in/ui/v2/login/loginname?loginName=a%40b.in' } }));
+    useStore.setState((s) => { s.access.error = 'x'; s.access.errorKey = { key: 'issuerAccountReset', text: 'x' }; return s; });
+    const view = render(<TeamAccessScreen />);
+    expect(view.getByTestId('issuer-reset-link')).toBeInTheDocument();
+    expect([...new Set(leftoverEnglish(view.container, DATA))].sort()).toEqual(['Hub', 'ID', 'Redbracket', 'rb']);
+  });
+
   it('the password guidance reads in the same language', async () => {
     const { useStore, TeamAccessScreen } = await page();
     useStore.setState((s) => ({ lang, access: { ...s.access, step: 'password-create', passwordSetupToken: 'st' } }));

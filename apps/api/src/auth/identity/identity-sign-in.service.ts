@@ -17,14 +17,14 @@
  *
  * Each sign-in writes one log line: the route, the outcome and the try's id. Never an email, password, token or code.
  */
-import { BadRequestException, ConflictException, HttpException, HttpStatus, Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpException, HttpStatus, Injectable, Logger, type OnModuleInit, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { Prisma as PrismaErrors, type Prisma, type User } from '@prisma/client';
 import { IDENTITY_REFUSAL_CODES as CODE, type IdentityRefusalCode } from '@vitan/shared';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../../prisma.service';
 import { lockUserCredential } from '../../common/credential-lock';
 import { OrgsParticipant, QA_ACCOUNT_EMAIL } from '../../orgs/orgs.participant';
-import { readIdentityConfig, type IdentityConfig } from './identity-config';
+import { RESET_URL_ENV, readIdentityConfig, readResetUrl, resetUrlFor, type IdentityConfig } from './identity-config';
 import { IdentityClient } from './identity-client';
 import type { IdClaims } from './id-token';
 import { SignInAttempts, type AttemptKind } from './sign-in-attempts';
@@ -64,7 +64,13 @@ function coded(statusCode: number, message: string): { statusCode: number; messa
   return { statusCode, message, code };
 }
 export const refusedSignIn = (message: string) => new UnauthorizedException(coded(401, message));
-export const refusedSetup = (message: string) => new BadRequestException(coded(400, message));
+/**
+ * `resetUrl` (unit H): sent only with the issuer-account-exists refusal, Redbracket ID's own reset page for the email, when
+ * `IDENTITY_RESET_URL` is set and well formed (`resetUrlFor`). That refusal comes only after PMC's emailed code was
+ * proved and spent, so the link tells nobody who has not proved the mailbox that a Redbracket ID exists.
+ */
+export const refusedSetup = (message: string, resetUrl: string | null = null) =>
+  new BadRequestException(resetUrl ? { ...coded(400, message), resetUrl } : coded(400, message));
 const refusedConflict = (message: string) => new ConflictException(coded(409, message));
 /** The bcrypt cost new PMC passwords use (password-credentials.service.ts); every break-glass try does this much work. */
 const EVEN_COST = 12;
@@ -119,7 +125,7 @@ export type IdentityOutcome = { account: SignInAccount; fresh: boolean; breakGla
 export type BreakGlass = { settle: (decision: string) => void };
 
 @Injectable()
-export class IdentitySignInService {
+export class IdentitySignInService implements OnModuleInit {
   private readonly log = new Logger(IdentitySignInService.name);
   private readonly orgs = new OrgsParticipant();
   private readonly attempts: SignInAttempts;
@@ -127,6 +133,11 @@ export class IdentitySignInService {
 
   constructor(private readonly prisma: PrismaService) {
     this.attempts = new SignInAttempts(prisma);
+  }
+
+  /** At start, a malformed `IDENTITY_RESET_URL` is named (never its value): the refusal then carries no link. */
+  onModuleInit(): void {
+    if (readResetUrl().state === 'malformed') this.log.warn(`${RESET_URL_ENV} is malformed: the Redbracket ID reset link is not shown`);
   }
 
   /** One client per settings, so the issuer's keys are fetched once (the settings are read on every call). */
@@ -339,7 +350,10 @@ export class IdentitySignInService {
         if (!signedIn.ok && signedIn.failure === 'down') return this.unavailable(attempt);
         if (!signedIn.ok) {
           this.line('password', attempt, found.found === 'one' && !link ? 'issuer person exists' : 'issuer refused new password');
-          throw refusedSetup(found.found === 'one' && !link ? ISSUER_ACCOUNT_EXISTS : NEEDS_HELP);
+          // an email that already has a Redbracket ID whose password this is not: PMC writes nothing to that person, and
+          // the person is pointed at Redbracket ID's own reset (unit H), then signs in here with that password
+          const exists = found.found === 'one' && !link;
+          throw refusedSetup(exists ? ISSUER_ACCOUNT_EXISTS : NEEDS_HELP, exists ? resetUrlFor(email) : null);
         }
         const claims = signedIn.claims;
         return await this.prisma.$transaction(async (tx) => {
