@@ -363,6 +363,15 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     for (let i = 0; i < SESSIONS_PAGE + 1; i += 1) fake.openSession(q.userId);
     expect(await client.endPersonSessions(q.userId, 1)).toBe('capped');
     expect(fake.sessionsOf(q.userId)).toHaveLength(1);
+    // with no count, a page the issuer capped below the limit asked, holding only lagging rows, is not ended either
+    // (Codex 4472839361): the third session lies past it
+    fake.forgetDeletedSessions();
+    fake.sessionsPageCap = 2;
+    const c = fake.addPerson('h@example.in', 'x', true);
+    for (let i = 0; i < 3; i += 1) fake.openSession(c.userId);
+    expect(await client.endPersonSessions(c.userId, 1)).toBe('capped');
+    expect(fake.sessionsOf(c.userId)).toHaveLength(1);
+    fake.sessionsPageCap = null;
     // a count that cannot be read decides nothing: rows all ended, yet not proven ended
     const ended = fake.addPerson('u@example.in', 'x', true);
     const sid = fake.openSession(ended.userId);

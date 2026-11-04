@@ -224,10 +224,12 @@ export class IdentityClient {
         // no rows, yet the issuer counts some: a service account without the session read permission gets the rows it
         // may not read dropped while the count is kept (v4.16 with PermissionCheckV2 off, the default)
         if (ids.length === 0 && total !== null && total > 0) return 'denied';
-        // more sessions than this page shows (counted, or a full page): not proof that none is left
-        // (a count present but unreadable decides nothing: it is taken as more)
-        const more = (raw !== undefined && total === null) || (total !== null && total > ids.length) || ids.length >= SESSIONS_PAGE;
-        if (!more && ids.every((id) => ended.has(id))) return 'ended';
+        // proof that this page is the whole list: no rows with no count (Zitadel's answer for none) or a zero count; or
+        // rows with a readable count that names exactly them, on a page that is not full. Rows without a readable count
+        // prove nothing about what lies past them, since the issuer may cap a page below the limit asked (Codex
+        // 4472839361); a count present but unreadable decides nothing (an unreadable count is taken as more)
+        const whole = ids.length === 0 ? raw === undefined || total === 0 : total === ids.length && ids.length < SESSIONS_PAGE;
+        if (whole && ids.every((id) => ended.has(id))) return 'ended';
         if (round >= last) return 'capped';
         const results = await Promise.all(ids.map((id) => this.endSession(id)));
         results.forEach((result, i) => {
