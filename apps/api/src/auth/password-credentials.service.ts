@@ -44,12 +44,15 @@ export const COMPLETION_TRANSACTIONS = 4;
 export const PRISMA_TRANSACTION_BOUND_MS = 2_000 + 5_000;
 /**
  * How long a claimed completion holds its account against another one. What it must outlast is the window from the
- * claim to the completion's last issuer WRITE (making the person or setting the password; nothing after it writes at
- * the issuer). That window is bounded as follows. Every issuer call before the write stops at its own timeout. A
+ * claim to the completion's last issuer WRITE. On a reset of an unlinked person that is not the password write: the
+ * methods fence after it adds and removes markers on the person (TOTP, email and SMS codes, keys), and marking the
+ * email verified writes too, so the window runs to the fence's last removal or the mark. That window is bounded as
+ * follows. Every issuer call before the write stops at its own timeout. A
  * transaction's lock wait is not bounded by Prisma's 5 s, but a wait that outlasts it fails the transaction (P2028,
  * answered 503) before the write is sent, so it can delay a completion only into a failure, never into a late write.
  * Root-client reads wait on the pool outside any transaction, and the 30 s margin absorbs that. At worst the window is
- * about 30 s. The lease adds every call and transaction the whole completion can make, so it is 206 s today, and it
+ * about 30 s. The lease adds every call and transaction the whole completion can make (37 calls, the fence's 22
+ * included, so the claim still holds while the fence's last marker is removed), so it is 206 s today, and it
  * is derived: a longer issuer timeout lengthens it. A completion whose process stopped frees the account when its
  * lease runs out. So does one whose issuer write got no clear answer (`unsettled`), which keeps its claim instead of
  * clearing it. A process paused for longer than the lease between claim and write is the residual (PR body).

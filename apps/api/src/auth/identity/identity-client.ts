@@ -66,8 +66,8 @@ export type FenceAnswer =
 
 /**
  * The most issuer calls one fence makes: TOTP, OTP email and OTP SMS (each an add and its removal), and a passkey and
- * a security key registration on every rp id (each with its removal). The completion lease must count these once the
- * fence is called (it is not yet).
+ * a security key registration on every rp id (each with its removal). The completion lease counts them
+ * (`COMPLETION_ISSUER_CALLS`): the reset calls the fence once.
  */
 export const FENCE_ISSUER_CALLS = 3 * 2 + FENCE_RP_IDS.length * 2 * 2;
 
@@ -382,10 +382,12 @@ export class IdentityClient {
   /**
    * Whether the person has a way to sign in at the issuer besides a password, asked of the issuer's WRITE side: each
    * question below is a command Zitadel v4.16 answers from its event store (FilterToQueryReducer), so a method made a
-   * moment ago is never missed the way the methods list (a projection) can miss it. Nothing calls this yet.
+   * moment ago is never missed the way the methods list (a projection) can miss it. The reset calls it once, after
+   * the password write and the person's sessions have ended, inside the account's completion claim (A4a).
    *
-   * The caller must hold the issuer-person lock for `userId` (PMC's reset takes it before any issuer write): RemoveTOTP,
-   * RemoveOTPEmail and RemoveOTPSMS name no marker id, so two fences on one person at once could remove each other's.
+   * No issuer-person lock is held across these calls (`lockIssuerPerson` is transaction-scoped). RemoveTOTP,
+   * RemoveOTPEmail and RemoveOTPSMS name no marker id, so two fences overlapping on one person can see or remove each
+   * other's marker: each then answers `some` or `unfinished`, which only refuses that reset, never a wrong `none`.
    *
    * Questions, in order, stopping at the first that is not `none` (Connect, service token; v4.16 cites):
    * 1. RegisterTOTP: `already_exists` COMMAND-do9se = TOTP ready (internal/command/user_human_otp.go addHumanTOTP).
