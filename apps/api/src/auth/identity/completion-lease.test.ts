@@ -6,11 +6,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { FENCE_ISSUER_CALLS, IDENTITY_TIMEOUT_MS } from './identity-client';
+import { FENCE_ISSUER_CALLS, IDENTITY_TIMEOUT_MS, LOGIN_ISSUER_CALLS, SESSIONS_AWAITED_CALLS, SESSIONS_AWAITED_ROUNDS } from './identity-client';
 import { FENCE_RP_IDS } from './identity-config';
 import {
+  COMPLETION_AFTER_SWEEP_MS,
   COMPLETION_ISSUER_CALLS,
   COMPLETION_LEASE_MS,
+  COMPLETION_SWEEP_WINDOW_MS,
   COMPLETION_TRANSACTIONS,
   PRISMA_TRANSACTION_BOUND_MS,
 } from '../password-credentials.service';
@@ -23,6 +25,20 @@ describe('password completion lease (A4a)', () => {
     expect(COMPLETION_LEASE_MS).toBeGreaterThanOrEqual(longest + 30_000);
   });
 
+  it('unit L: the sweep and everything after it fit inside the same 87 s lease the release before it holds (Codex 4472985591)', () => {
+    // one lease in every release: a pod of the release before unit L and a pod of this one agree on when a claim ends
+    expect(COMPLETION_LEASE_MS).toBe(87_000);
+    // what can follow the sweep, at its worst: the sign-in, two transactions (the settle failing at its bound, then
+    // ending the account's sessions again: every transaction of the lease but the first, which runs before the
+    // write), and the margin
+    expect(COMPLETION_TRANSACTIONS - 1).toBe(2);
+    expect(COMPLETION_AFTER_SWEEP_MS).toBe(LOGIN_ISSUER_CALLS * IDENTITY_TIMEOUT_MS + (COMPLETION_TRANSACTIONS - 1) * PRISMA_TRANSACTION_BOUND_MS + 30_000);
+    expect(COMPLETION_SWEEP_WINDOW_MS + COMPLETION_AFTER_SWEEP_MS).toBe(COMPLETION_LEASE_MS);
+    expect(COMPLETION_SWEEP_WINDOW_MS).toBe(19_000);
+    // the sign-in after the sweep is the lease's calls but the lookup, the email and the write
+    expect(COMPLETION_ISSUER_CALLS).toBe(3 + LOGIN_ISSUER_CALLS);
+  });
+
   it('counts every issuer call the client can make (making a person and setting a password are one or the other)', () => {
     const client = read('identity-client.ts');
     // every call site, awaited or not, however it is written: `this.send(` and nothing else reaches the network
@@ -33,7 +49,42 @@ describe('password completion lease (A4a)', () => {
     expect([fenceAt >= 0, sendAt > fenceAt]).toEqual([true, true]);
     const fence = client.slice(fenceAt, sendAt);
     expect(fence.match(/\bthis\.send\(/g) ?? []).toHaveLength(1);
-    expect(sends.length - 1 - 1).toBe(COMPLETION_ISSUER_CALLS);
+    // unit L: the person's sessions list is one more send site, used only by the sweep, which is bounded by its
+    // window (COMPLETION_SWEEP_WINDOW_MS) rather than counted here; its deletes share endSession's one send site
+    expect(client.match(/\bthis\.send\('POST', '\/zitadel\.session\.v2\.SessionService\/ListSessions'/g) ?? []).toHaveLength(1);
+    expect(client.match(/\bthis\.send\('POST', '\/zitadel\.session\.v2\.SessionService\/DeleteSession'/g) ?? []).toHaveLength(1);
+    expect(SESSIONS_AWAITED_CALLS).toBe(SESSIONS_AWAITED_ROUNDS * 2 + 1);
+    expect(sends.length - 1 - 1 - 1).toBe(COMPLETION_ISSUER_CALLS);
+    // the sweep asks its deadline before every list and every delete round, and before nothing else
+    const sweepAt = client.indexOf('  async endPersonSessions(');
+    const sweepCode = client.slice(sweepAt, client.indexOf('  private async key(', sweepAt));
+    expect(sweepCode.match(/if \(!mayCall\(\)\) return 'capped';\n\s+const r = await this\.send\('POST', '\/zitadel\.session\.v2\.SessionService\/ListSessions'/g) ?? []).toHaveLength(1);
+    expect(sweepCode.match(/if \(!mayCall\(\)\) return 'capped';\n\s+const results = await Promise\.all\(ids\.map\(\(id\) => this\.endSession\(id\)\)\)/g) ?? []).toHaveLength(1);
+    expect(sweepCode.match(/mayCall\(\)/g) ?? []).toHaveLength(2);
+    // the reset awaits exactly one bounded sweep per path (the write's 2xx and its `down` are one or the other), and
+    // nothing runs on after it answers (Codex 4470702899 on #1342: no sweep outlives the completion claim)
+    const signIn = read('identity-sign-in.service.ts');
+    const sweep = signIn.slice(signIn.indexOf('  private async endIssuerSessions('), signIn.indexOf('  private unavailable('));
+    expect(sweep.match(/await client\.endPersonSessions\(personId, SESSIONS_AWAITED_ROUNDS, \(\) => this\.sweepClock\(\) \+ IDENTITY_TIMEOUT_MS <= sweepBy\)/g) ?? []).toHaveLength(1);
+    expect(signIn.match(/\bclient\.endPersonSessions\(/g) ?? []).toHaveLength(1);
+    expect(signIn).not.toMatch(/\bvoid client\./);
+    const setPassword = signIn.slice(signIn.indexOf('  async setPassword('), signIn.indexOf('  private async endSessions('));
+    expect(setPassword.match(/\bawait this\.endIssuerSessions\(client, account\.id, found\.userId, attempt, sweepBy\);/g) ?? []).toHaveLength(2);
+    expect(setPassword.match(/\bthis\.endIssuerSessions\(/g) ?? []).toHaveLength(2);
+    // the deadline is read before the claim is taken, so it is never later than the claim's own lease
+    expect(setPassword.indexOf('const sweepBy = this.sweepClock() + sweepWindowMs;')).toBeGreaterThan(0);
+    expect(setPassword.indexOf('const sweepBy')).toBeLessThan(setPassword.indexOf('await claim();'));
+    // the completion passes the window derived from the lease
+    expect(read('../password-credentials.service.ts').match(/\n\s+COMPLETION_SWEEP_WINDOW_MS,\n\s+\);/g) ?? []).toHaveLength(1);
+    // login's calls, each to its timeout: authorize, session, auth request, token; the keys; its own session's end
+    const loginAt = client.indexOf('  async login(');
+    const loginCode = client.slice(loginAt, client.indexOf('\n  }\n', loginAt));
+    expect([
+      (loginCode.match(/\bthis\.send\(/g) ?? []).length,
+      (loginCode.match(/\bthis\.key\(/g) ?? []).length,
+      (loginCode.match(/\bthis\.endSession\(/g) ?? []).length,
+    ]).toEqual([4, 1, 1]);
+    expect(LOGIN_ISSUER_CALLS).toBe(4 + 1 + 1);
     expect(client.match(/\bsend\b/g)?.length).toBe(sends.length + 1); // + its declaration: no alias, no wrapper
     // one plain fetch per send, in send itself: no retrying wrapper, no loop, no second request
     expect(client.match(/\bfetch\(/g) ?? []).toHaveLength(1);

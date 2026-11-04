@@ -15,7 +15,7 @@ import { EmailService } from '../platform/email.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { UNAVAILABLE, type IdentityOutcome, type IdentitySignInService } from './identity/identity-sign-in.service';
 import { isRetired } from './identity/identity-accounts';
-import { IDENTITY_TIMEOUT_MS } from './identity/identity-client';
+import { IDENTITY_TIMEOUT_MS, LOGIN_ISSUER_CALLS } from './identity/identity-client';
 
 const PURPOSE = PASSWORD_SETUP_PURPOSE;
 const LIFETIME_MS = 10 * 60_000;
@@ -27,6 +27,8 @@ const GENERIC_ERROR = 'Password setup code or link is invalid or expired.';
  * marking the email verified, setting the password or making the person (one of the two), and the sign-in that proves
  * it (authorize, session, auth request, token, signing keys, and ending the issuer session, which is not awaited, so
  * counting it over-counts). `completion-lease.test.ts` counts the client's `send` calls so this cannot fall behind them.
+ * Unit L's session sweep is not counted here: it runs inside {@link COMPLETION_SWEEP_WINDOW_MS}, which this lease
+ * already covers, so the lease is the same in every release (Codex 4472985591 on #1342).
  */
 export const COMPLETION_ISSUER_CALLS = 9;
 /** The transactions after the claim (sessions ended before the issuer write and again on a failure; the settle). */
@@ -47,6 +49,22 @@ export const PRISMA_TRANSACTION_BOUND_MS = 2_000 + 5_000;
  */
 export const COMPLETION_LEASE_MS =
   COMPLETION_ISSUER_CALLS * IDENTITY_TIMEOUT_MS + COMPLETION_TRANSACTIONS * PRISMA_TRANSACTION_BOUND_MS + 30_000;
+/**
+ * Unit L: what a completion may still do after a linked person's session sweep, at its worst: the sign-in that proves
+ * the password ({@link LOGIN_ISSUER_CALLS} calls, each to its timeout), two transactions to their bound (the settle,
+ * and when it fails at its bound, ending the account's sessions again: every transaction of the lease but the first,
+ * which ends them before the write), and the lease's 30 s margin (pool waits, the unfinished row).
+ */
+export const COMPLETION_AFTER_SWEEP_MS =
+  LOGIN_ISSUER_CALLS * IDENTITY_TIMEOUT_MS + (COMPLETION_TRANSACTIONS - 1) * PRISMA_TRANSACTION_BOUND_MS + 30_000;
+/**
+ * Unit L: how long after the claim the sweep may still start a call that ends, at its full timeout, in time (19 s
+ * today). At worst-case timings before it (the lookup, the email, the write and the transaction ending the account's
+ * sessions all near their bounds) the sweep may send nothing: it then answers `capped`, which is recorded. Everything after it fits in {@link COMPLETION_AFTER_SWEEP_MS}, so the whole completion stays inside
+ * {@link COMPLETION_LEASE_MS}: the 87 s lease the release before unit L also holds the account by, so during a rollout
+ * no pod of either release can start a second completion while this one still runs (Codex 4472985591 on #1342).
+ */
+export const COMPLETION_SWEEP_WINDOW_MS = COMPLETION_LEASE_MS - COMPLETION_AFTER_SWEEP_MS;
 /** A setup token's scope prefix: the one Redbracket ID password, or PMC's own (base64url never holds a dot). */
 const SCOPE_SHARED = 'rb.';
 const SCOPE_PMC = 'pmc.';
@@ -375,6 +393,7 @@ export class PasswordCredentialsService {
         () => {
           unsettled = true;
         },
+        COMPLETION_SWEEP_WINDOW_MS,
       );
     } catch (err) {
       // a transaction the server closed (its time ran out waiting on the account's lock) is "unavailable", never a

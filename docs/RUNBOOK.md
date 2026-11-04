@@ -2775,6 +2775,54 @@ on the person's own sign-in during their own reset. Two effects last:
      its own.
    - Never remove a factor the audit row does not name. Then the person runs "Set up or forgot password" again.
 
+## §RBL. Redbracket ID reset — a linked person's issuer sessions not ended (unit L)
+
+When "Set up or forgot password" sets the Redbracket ID password of the person an account is already linked to,
+PMC then ends that person's issuer sessions (rb, Hub, the console), so whoever was signed in with the old password is
+signed out of Redbracket ID itself. It does this also when the password write got no clear answer (it may have
+landed). The awaited part is three rounds (list the person's sessions, delete them) and one confirming list, and it
+stops early rather than run past the 19 s after the claim that the 87 s completion lease leaves it. Hub's
+and rb's own app sessions are theirs to end; PMC ends only its own and the issuer's.
+
+Anything but "none left" writes `auth.password_reset_unfinished` on the account, with the issuer person id and the
+reason `issuer sessions not ended after the reset (<answer>)`:
+- `denied`: pmc-service may not read or delete sessions (the session permission is missing: a 403, or a list that
+  names sessions in its count but shows none). Every linked reset writes this row until the permission is granted.
+- `failed`: no usable answer from the issuer (it was down or answered something unreadable).
+- `capped`: sessions were still listed after the awaited rounds (someone kept signing in), or the sweep reached its
+  deadline first (the issuer was slow), which can also mean it sent nothing at all.
+
+Nothing goes on after the setup answers (a sweep left running could end the session a later setup of the same account
+opens for its own sign-in), so for every answer the steps below are what ends the rest.
+
+The password did change, so the setup still answered as it would have (201, or 503 when the write's outcome was
+unclear). Zitadel v4.16's console has no screen that lists or ends another person's sessions, so the action is two
+API calls with pmc-service's own token, run from the pms-api terminal in Coolify, where the token is already in the
+environment. Never print the token. On Jagrut's yes naming the person (the row's `issuerPerson`):
+
+1. List, then end, the person's sessions (replace `PERSON_ID`):
+
+       cd /app && PERSON=PERSON_ID node -e '
+       const base = process.env.IDENTITY_ISSUER_ENDPOINT || process.env.IDENTITY_ISSUER || "https://id.vitan.in";
+       const headers = { Authorization: "Bearer " + process.env.IDENTITY_SERVICE_TOKEN, "Content-Type": "application/json", "Connect-Protocol-Version": "1" };
+       const call = (m, body) => fetch(base + "/zitadel.session.v2.SessionService/" + m, { method: "POST", headers, body: JSON.stringify(body) });
+       (async () => {
+         const r = await call("ListSessions", { query: { limit: 100 }, queries: [{ userIdQuery: { id: process.env.PERSON } }] });
+         const b = await r.json();
+         const ids = (b.sessions || []).map((s) => s.id);
+         console.log("list", r.status, "shown", ids.length, "counted", (b.details || {}).totalResult || 0);
+         if (process.env.LIST_ONLY) return;
+         for (const id of ids) console.log("end", id, (await call("DeleteSession", { sessionId: id })).status);
+       })();'
+
+   The issuer falls back to `https://id.vitan.in`, the default when both settings are unset; production accepts no
+   other issuer (`IDENTITY_ISSUER` unset or exactly that).
+   Pass: `list 200`, and every `end` line is `200`. A `list 403`, or `shown 0` with `counted` above 0, means the
+   session permission is missing: grant pmc-service session read and delete on id.vitan.in (as the pre-deploy check
+   describes), then run this step again. With more than 100 shown, run it again until fewer are shown.
+2. A minute later (the list can lag its deletes), run the same command with `LIST_ONLY=1` added before `node`.
+   Pass: `shown 0` and `counted 0`. Otherwise repeat step 1.
+
 ## §SSP. Seen-state pins — when the pins can be required, and rolling back (#482)
 
 Eight money and measure acts (payment record and reverse, deduction record and release, advance pay,

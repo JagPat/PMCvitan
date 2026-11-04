@@ -23,7 +23,7 @@ import { IdentitySignInService } from '../../src/auth/identity/identity-sign-in.
 import { PHONE_SIGN_IN_PURPOSE } from '../../src/auth/phone-sign-in.service';
 import { PasswordCredentialsService } from '../../src/auth/password-credentials.service';
 import { SignInAttempts } from '../../src/auth/identity/sign-in-attempts';
-import { IdentityClient } from '../../src/auth/identity/identity-client';
+import { IdentityClient, SESSIONS_AWAITED_ROUNDS } from '../../src/auth/identity/identity-client';
 import { OrgsParticipant } from '../../src/orgs/orgs.participant';
 import { lockOrgStanding, orgStandingLockKey } from '../../src/common/readiness-lock';
 import { Prisma } from '@prisma/client';
@@ -89,6 +89,13 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     fake.oversize = null;
     fake.createAnswersNoId = false;
     fake.spoil = 'none';
+    fake.sessionsPageCap = null;
+    fake.sessionsListLag = false;
+    fake.sessionsLagFirst = false;
+    fake.sessionsTotalOmitted = false;
+    fake.sessionsReadDenied = false;
+    fake.forgetDeletedSessions();
+    fake.afterSessionsListed = null;
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -221,6 +228,141 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     await setPassword(local.email!, 'a new issuer passphrase', 503);
     expect([...fake.people.values()].some((p) => p.email === local.email)).toBe(true);
     await me(old).expect(401);
+  });
+
+  const unfinished = (userId: string) =>
+    t.prisma.securityAuditEvent.findMany({ where: { targetUserId: userId, action: 'auth.password_reset_unfinished' }, orderBy: { createdAt: 'asc' } });
+  const personOf = (email: string) => [...fake.people.values()].find((p) => p.email === email)!;
+  const listsSince = (from: number) => fake.requests.slice(from).filter((q) => q.path.endsWith('/ListSessions')).length;
+
+  it('unit L: a linked reset ends the person\'s issuer sessions before it answers, also when the write may have landed', async () => {
+    const user = await invitee('sweep');
+    await setPassword(user.email!, 'the first issuer passphrase', 201);
+    const person = personOf(user.email!);
+    // signed in elsewhere with the old password (rb, Hub), and someone else signed in too
+    const rb = fake.openSession(person.userId);
+    const hub = fake.openSession(person.userId);
+    const other = fake.addPerson(`rbid-sweep-other-${Date.now()}@test.local`, 'x', true);
+    const kept = fake.openSession(other.userId);
+    await setPassword(user.email!, 'the second issuer passphrase', 201);
+    expect(fake.sessionsOf(person.userId).filter((id) => id === rb || id === hub)).toEqual([]);
+    expect(fake.sessionsOf(other.userId)).toEqual([kept]);
+    // after the password write and before PMC's own sign-in
+    const paths = fake.requests.map((q) => q.path);
+    const written = paths.lastIndexOf(`/v2/users/${person.userId}/password`);
+    const listed = paths.indexOf('/zitadel.session.v2.SessionService/ListSessions', written);
+    expect([written >= 0, listed > written, paths.indexOf('/v2/sessions', written) > listed]).toEqual([true, true, true]);
+    expect(await unfinished(user.id)).toEqual([]);
+
+    // the write itself got no clear answer (it may have landed): the sessions still end, and the setup stays 503
+    const late = fake.openSession(person.userId);
+    fake.force = { '/v2/users/': 503 };
+    await setPassword(user.email!, 'a passphrase maybe taken', 503);
+    fake.force = {};
+    expect(fake.sessionsOf(person.userId)).not.toContain(late);
+    expect(await unfinished(user.id)).toEqual([]);
+  });
+
+  it('unit L: sessions a reset could not end are recorded as unfinished, and the setup answers as it would have', async () => {
+    const user = await invitee('sweep-fail');
+    await setPassword(user.email!, 'the first issuer passphrase', 201);
+    const person = personOf(user.email!);
+    // each step makes a request and a sign-in: the per-person quota is cleared between them
+    const quota = () => t.prisma.signInAttempt.deleteMany({});
+    const reasons = async () => (await unfinished(user.id)).map((e) => e.payload);
+
+    // the delete refused (403: the session permission is missing): 201, recorded, one list
+    fake.openSession(person.userId);
+    fake.force = { '/zitadel.session.v2.SessionService/DeleteSession': 403 };
+    let from = fake.requests.length;
+    await setPassword(user.email!, 'the second issuer passphrase', 201);
+    fake.force = {};
+    expect(await reasons()).toEqual([{ issuerPerson: person.userId, reason: 'issuer sessions not ended after the reset (denied)' }]);
+    expect(listsSince(from)).toBe(1);
+    await login(user.email!, 'the second issuer passphrase').expect(201);
+    await quota();
+
+    // the list down (5xx): 201, recorded, one list; nothing runs on after the answer (Codex 4470702899 on #1342)
+    fake.openSession(person.userId);
+    fake.force = { '/zitadel.session.v2.SessionService/ListSessions': 503 };
+    from = fake.requests.length;
+    await setPassword(user.email!, 'the third issuer passphrase', 201);
+    expect((await reasons()).at(-1)).toEqual({ issuerPerson: person.userId, reason: 'issuer sessions not ended after the reset (failed)' });
+    expect(listsSince(from)).toBe(1);
+    fake.force = {};
+    await quota();
+
+    // someone keeps signing in during the reset: past the awaited rounds the setup answers (201, recorded capped) and
+    // its own sign-in still works; the session opened after the last list is left for the operator (RUNBOOK §RBL)
+    // (a new session after each of the awaited lists)
+    let lists = 0;
+    let confirmed: string | undefined;
+    let kept: string | undefined;
+    fake.afterSessionsListed = (id) => {
+      if (id !== person.userId || ++lists > SESSIONS_AWAITED_ROUNDS + 1) return;
+      const opened = fake.openSession(person.userId);
+      if (lists === SESSIONS_AWAITED_ROUNDS) confirmed = opened;
+      else if (lists === SESSIONS_AWAITED_ROUNDS + 1) kept = opened;
+    };
+    fake.openSession(person.userId);
+    from = fake.requests.length;
+    await setPassword(user.email!, 'the fourth issuer passphrase', 201);
+    expect((await reasons()).at(-1)).toEqual({ issuerPerson: person.userId, reason: 'issuer sessions not ended after the reset (capped)' });
+    // the awaited lists only; what they could not end is still there, and nothing ended it later: the session the
+    // confirming list showed and the one opened after it
+    expect(listsSince(from)).toBe(SESSIONS_AWAITED_ROUNDS + 1);
+    expect(fake.sessionsOf(person.userId)).toEqual([confirmed, kept]);
+    await login(user.email!, 'the fourth issuer passphrase').expect(201);
+    // never a secret in the trail
+    expect(JSON.stringify(await reasons())).not.toMatch(/passphrase/);
+  });
+
+  it('unit L: the sweep keeps inside the 87 s lease every release holds: past its deadline it stops and is recorded (Codex 4472985591 on #1342)', async () => {
+    const user = await invitee('sweep-late');
+    await setPassword(user.email!, 'the first issuer passphrase', 201);
+    const person = personOf(user.email!);
+    const quota = () => t.prisma.signInAttempt.deleteMany({});
+    const identity = t.app.get(IdentitySignInService);
+    const real = identity.sweepClock;
+    // the clock as a signal, never a wait: it stands still, then jumps a whole lease ahead when the test says so
+    let reads = 0;
+    let late = false;
+    try {
+      // the deadline already past before the sweep's first call: the clock is read once for the deadline (before the
+      // claim) and is late from its next read on, the sweep's first ask. No list, no delete, recorded capped; the setup
+      // still answers 201 and the new password signs in
+      const held = fake.openSession(person.userId);
+      const write = fake.requests.length;
+      identity.sweepClock = () => (++reads > 1 ? 1_000_000 : 0);
+      await setPassword(user.email!, 'the second issuer passphrase', 201);
+      expect(reads).toBe(2);
+      identity.sweepClock = () => (late ? 1_000_000 : 0);
+      expect(listsSince(write)).toBe(0);
+      expect(fake.requests.slice(write).filter((q) => q.path.endsWith('/DeleteSession') && JSON.parse(q.body).sessionId === held)).toEqual([]);
+      expect(fake.sessionsOf(person.userId)).toContain(held);
+      expect((await unfinished(user.id)).map((e) => e.payload)).toEqual([
+        { issuerPerson: person.userId, reason: 'issuer sessions not ended after the reset (capped)' },
+      ]);
+      await login(user.email!, 'the second issuer passphrase').expect(201);
+      await quota();
+
+      // the deadline passes after the first list: its delete round never starts, recorded capped, still 201
+      fake.afterSessionsListed = (id) => {
+        if (id === person.userId) late = true;
+      };
+      const from = fake.requests.length;
+      await setPassword(user.email!, 'the third issuer passphrase', 201);
+      expect(listsSince(from)).toBe(1);
+      const listedAt = fake.requests.findIndex((q, i) => i >= from && q.path.endsWith('/ListSessions'));
+      // nothing of the sweep after its list: the only deletes later are PMC's own sign-in session's end
+      expect(fake.requests.slice(listedAt + 1).filter((q) => q.path.endsWith('/DeleteSession') && JSON.parse(q.body).sessionId === held)).toEqual([]);
+      expect(fake.sessionsOf(person.userId)).toContain(held);
+      expect((await unfinished(user.id)).at(-1)?.payload).toEqual({ issuerPerson: person.userId, reason: 'issuer sessions not ended after the reset (capped)' });
+      await login(user.email!, 'the third issuer passphrase').expect(201);
+    } finally {
+      identity.sweepClock = real;
+      fake.afterSessionsListed = null;
+    }
   });
 
   it('forgot password, switch on: resets the same issuer person, never writes a PMC password', async () => {

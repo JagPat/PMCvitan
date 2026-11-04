@@ -28,6 +28,28 @@ export const IDENTITY_TIMEOUT_MS = 4000;
 /** How long an issuer session PMC opens may live (a protobuf Duration): a sign-in finishes well inside it. */
 export const ISSUER_SESSION_LIFETIME = '60s';
 const BODY_LIMIT = 1_000_000;
+/** How many of a person's issuer sessions one list asks for (each round deletes them, then lists again). */
+export const SESSIONS_PAGE = 100;
+/**
+ * How many delete rounds a full sweep of a person's issuer sessions makes: up to 2,000 sessions, far past any person's
+ * own use. Past it the sweep answers `capped`, told apart from a missing permission.
+ */
+export const SESSIONS_ROUNDS_MAX = 20;
+/**
+ * Unit L: how many delete rounds a reset awaits before it answers (each one list and its deletes at once), followed
+ * by one confirming list. Nothing runs on after it, and the sweep also stops at its deadline (`mayCall`).
+ */
+export const SESSIONS_AWAITED_ROUNDS = 3;
+/** The issuer calls, one after another, an awaited sweep can make: a list per round, its deletes (at once), the confirming list. */
+export const SESSIONS_AWAITED_CALLS = SESSIONS_AWAITED_ROUNDS * 2 + 1;
+/**
+ * The issuer calls `login` makes, each under the timeout: authorize, session, auth request, token, the signing keys,
+ * and ending its own issuer session (not awaited, so counting it over-counts). Pinned in `completion-lease.test.ts`.
+ */
+export const LOGIN_ISSUER_CALLS = 6;
+
+/** What ending a person's issuer sessions came to. Only `ended` means none is left; anything else is recorded. */
+export type SessionsEnd = 'ended' | 'denied' | 'failed' | 'capped';
 
 /** `down`: no usable answer (timeout, network, 5xx, PMC's service token refused). `rejected`: the issuer said no. */
 export type IdentityFailure = 'down' | 'rejected';
@@ -151,11 +173,83 @@ export class IdentityClient {
     }
   }
 
-  private async endSession(sessionId: string, sessionToken: string): Promise<void> {
+  /**
+   * Deletes one issuer session: with its token (a session PMC opened itself), or without one (another session of a
+   * person whose password PMC just reset), which takes the service account's session delete permission. Only a 2xx
+   * is `ended` (Zitadel answers 2xx for a session already gone; a 404 is not its answer and proves nothing). `denied`:
+   * the issuer refused PMC's service account (403). Never throws.
+   */
+  private async endSession(sessionId: string, sessionToken?: string): Promise<'ended' | 'denied' | 'failed'> {
     try {
-      await this.send('POST', '/zitadel.session.v2.SessionService/DeleteSession', { json: { sessionId, sessionToken }, service: true });
+      const r = await this.send('POST', '/zitadel.session.v2.SessionService/DeleteSession', {
+        json: sessionToken ? { sessionId, sessionToken } : { sessionId },
+        service: true,
+      });
+      if (r.status >= 200 && r.status <= 299) return 'ended';
+      return r.status === 403 ? 'denied' : 'failed';
     } catch {
       // best effort: the issuer's session also expires on its own (ISSUER_SESSION_LIFETIME, set at creation)
+      return 'failed';
+    }
+  }
+
+  /**
+   * Unit L: after a reset, ends every issuer session the person holds (rb, Hub, the console), so whoever signed in
+   * with the old password is signed out of Redbracket ID itself. Each round lists up to {@link SESSIONS_PAGE} of the
+   * person's sessions (`userIdQuery`) and deletes them at once by id; then it lists again. After `rounds` delete
+   * rounds (at most {@link SESSIONS_ROUNDS_MAX}) one more list confirms: `ended` when it shows none, or only sessions
+   * whose delete this sweep saw taken (the list can lag its deletes) with nothing past them (a page that is not full,
+   * and no larger count); `capped` when sessions are still listed. `denied`: the issuer refused PMC's service account
+   * (403), or listed no rows while counting some (the session read permission is missing). `failed`: anything else (no usable answer, an unreadable list, a delete not taken). A portal's own
+   * app session (Hub's, rb's) is that portal's to end. `mayCall` is asked before each list and each delete round
+   * (its deletes go at once, so they end within one timeout): whether a call started now and running to its full
+   * timeout still ends before the caller's deadline. When it is not, the sweep sends nothing more and answers `capped`
+   * (a reset's sweep must never outlive the completion's hold on the account: Codex 4472985591 on #1342). Never throws.
+   */
+  async endPersonSessions(userId: string, rounds = SESSIONS_ROUNDS_MAX, mayCall: () => boolean = () => true): Promise<SessionsEnd> {
+    const ended = new Set<string>();
+    try {
+      const last = Math.min(rounds, SESSIONS_ROUNDS_MAX);
+      for (let round = 0; ; round += 1) {
+        if (!mayCall()) return 'capped';
+        const r = await this.send('POST', '/zitadel.session.v2.SessionService/ListSessions', {
+          json: { query: { limit: SESSIONS_PAGE }, queries: [{ userIdQuery: { id: userId } }] },
+          service: true,
+        });
+        if (r.status === 403) return 'denied';
+        if (r.status < 200 || r.status > 299) return 'failed';
+        // a 2xx whose body is not a JSON object (empty, cut off, not JSON) is no answer: never read as "none listed"
+        // (Codex 4472729877)
+        const body = strictJson(r.body);
+        if (!body) return 'failed';
+        // Zitadel leaves out an empty list (and a zero count)
+        const listed = body.sessions ?? [];
+        if (!Array.isArray(listed)) return 'failed';
+        const ids = listed.map((row: unknown) => (row && typeof row === 'object' ? str((row as Record<string, unknown>).id) : ''));
+        if (ids.some((id) => !id)) return 'failed';
+        const raw = (body.details as Record<string, unknown> | undefined)?.totalResult;
+        const counted = typeof raw === 'number' ? String(raw) : str(raw);
+        const total = /^\d+$/.test(counted) ? Number(counted) : null;
+        // no rows, yet the issuer counts some: a service account without the session read permission gets the rows it
+        // may not read dropped while the count is kept (v4.16 with PermissionCheckV2 off, the default)
+        if (ids.length === 0 && total !== null && total > 0) return 'denied';
+        // proof that this page is the whole list: no rows with no count (Zitadel's answer for none) or a zero count; or
+        // rows with a readable count that names exactly them, on a page that is not full. Rows without a readable count
+        // prove nothing about what lies past them, since the issuer may cap a page below the limit asked (Codex
+        // 4472839361); a count present but unreadable decides nothing (an unreadable count is taken as more)
+        const whole = ids.length === 0 ? raw === undefined || total === 0 : total === ids.length && ids.length < SESSIONS_PAGE;
+        if (whole && ids.every((id) => ended.has(id))) return 'ended';
+        if (round >= last) return 'capped';
+        if (!mayCall()) return 'capped';
+        const results = await Promise.all(ids.map((id) => this.endSession(id)));
+        results.forEach((result, i) => {
+          if (result === 'ended') ended.add(ids[i]!);
+        });
+        if (results.includes('denied')) return 'denied';
+        if (results.includes('failed')) return 'failed';
+      }
+    } catch {
+      return 'failed';
     }
   }
 
@@ -520,6 +614,16 @@ function json(text: string): Record<string, unknown> {
     return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
   } catch {
     return {};
+  }
+}
+
+/** The body as a JSON object, or null when it is empty, not JSON, or not an object (no lenient `{}` fallback). */
+function strictJson(text: string): Record<string, unknown> | null {
+  try {
+    const v: unknown = JSON.parse(text);
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
   }
 }
 
