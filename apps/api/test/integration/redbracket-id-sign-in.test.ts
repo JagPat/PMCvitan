@@ -28,7 +28,7 @@ import { OrgsParticipant } from '../../src/orgs/orgs.participant';
 import { lockOrgStanding, orgStandingLockKey } from '../../src/common/readiness-lock';
 import { Prisma } from '@prisma/client';
 
-const ENV = ['IDENTITY_OIDC', 'IDENTITY_ISSUER', 'IDENTITY_ISSUER_ENDPOINT', 'IDENTITY_CLIENT_ID', 'IDENTITY_REDIRECT_URI', 'IDENTITY_SERVICE_TOKEN', 'THROTTLE_DISABLED', 'OPS_TOKEN'] as const;
+const ENV = ['IDENTITY_OIDC', 'IDENTITY_ISSUER', 'IDENTITY_ISSUER_ENDPOINT', 'IDENTITY_CLIENT_ID', 'IDENTITY_REDIRECT_URI', 'IDENTITY_SERVICE_TOKEN', 'THROTTLE_DISABLED', 'OPS_TOKEN', 'IDENTITY_RESET_URL'] as const;
 
 describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
   let t: TestApp;
@@ -81,6 +81,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     process.env.IDENTITY_CLIENT_ID = fake.clientId;
     process.env.IDENTITY_REDIRECT_URI = 'http://127.0.0.1:1/cb';
     process.env.IDENTITY_SERVICE_TOKEN = fake.serviceToken;
+    delete process.env.IDENTITY_RESET_URL;
     fake.requests.length = 0;
     fake.force = {};
     fake.delayMs = 0;
@@ -313,6 +314,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const refused = await setPassword(user.email!, 'a different new passphrase', 400);
     expect(refused.body.message).toMatch(/already has a Redbracket ID/);
     expect(refused.body.code).toBe('issuer-account-exists');
+    expect(refused.body).not.toHaveProperty('resetUrl'); // IDENTITY_RESET_URL unset: today's words, no link
     expect(fake.people.get(person.userId)!.password).toBe('my existing hub passphrase');
     expect(fake.requests.some((r) => r.path.includes('/password') || r.path === '/v2/users/human')).toBe(false);
 
@@ -322,6 +324,55 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     // the trail says what happened: a join with the issuer password the person already had, never a reset or enrolment
     const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: { not: 'auth.password_requested' } }, select: { action: true } });
     expect(trail.map((e) => e.action)).toEqual(['auth.identity_joined']);
+  });
+
+  it('an email that already has a Redbracket ID is sent to Redbracket ID\'s own reset page, and only after the code is proved (unit H)', async () => {
+    process.env.IDENTITY_RESET_URL = 'https://rb.vitan.in/ui/v2/login/loginname?loginName={loginName}';
+    const user = await invitee('hostedreset');
+    const person = fake.addPerson(user.email!, 'the forgotten passphrase');
+    const stranger = await invitee('hostednone');
+
+    // before the code is proved, an email with a Redbracket ID and one without get the same answers, and no link
+    const asked = await http().post('/auth/password/request').send({ email: user.email }).expect(201);
+    const askedNone = await http().post('/auth/password/request').send({ email: stranger.email }).expect(201);
+    expect(Object.keys(asked.body).sort()).toEqual(Object.keys(askedNone.body).sort());
+    expect(JSON.stringify([asked.body, askedNone.body])).not.toMatch(/rb\.vitan\.in|resetUrl|Redbracket/);
+    const wrong = await http().post('/auth/password/verify').send({ requestId: asked.body.requestId, code: '000000' }).expect(400);
+    const wrongNone = await http().post('/auth/password/verify').send({ requestId: askedNone.body.requestId, code: '000000' }).expect(400);
+    expect(wrong.body).toEqual(wrongNone.body);
+    const verified = await http().post('/auth/password/verify').send({ requestId: asked.body.requestId, code: codes.get(user.email!) }).expect(201);
+    const verifiedNone = await http().post('/auth/password/verify').send({ requestId: askedNone.body.requestId, code: codes.get(stranger.email!) }).expect(201);
+    expect(Object.keys(verified.body).sort()).toEqual(['expiresInSeconds', 'setupToken', 'sharedPassword']);
+    expect(Object.keys(verifiedNone.body).sort()).toEqual(['expiresInSeconds', 'setupToken', 'sharedPassword']);
+    expect([verified.body.sharedPassword, verifiedNone.body.sharedPassword]).toEqual([true, true]);
+
+    // after it, the refusal names Redbracket ID's reset page for that email; nothing is written to the person
+    fake.requests.length = 0;
+    const refused = await http().post('/auth/password/complete').send({ setupToken: verified.body.setupToken, password: 'a passphrase that is not theirs' }).expect(400);
+    expect(refused.body).toEqual({
+      statusCode: 400,
+      message: 'This email already has a Redbracket ID. Enter that password here to join with it.',
+      code: 'issuer-account-exists',
+      resetUrl: `https://rb.vitan.in/ui/v2/login/loginname?loginName=${encodeURIComponent(user.email!)}`,
+    });
+    expect(fake.people.get(person.userId)!.password).toBe('the forgotten passphrase');
+    expect(fake.requests.some((r) => r.path.includes('/password') || r.path === '/v2/users/human' || r.path.includes('UpdateUser'))).toBe(false);
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
+
+    // reset on Redbracket ID (the issuer sets it), then the person signs in here with it
+    fake.people.get(person.userId)!.password = 'the passphrase set on Redbracket ID';
+    await t.prisma.signInAttempt.deleteMany({});
+    await setPassword(user.email!, 'the passphrase set on Redbracket ID', 201);
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(1);
+
+    // a malformed setting gives no link: today's words
+    process.env.IDENTITY_RESET_URL = 'http://rb.vitan.in/x?l={loginName}';
+    const other = await invitee('hostedbad');
+    fake.addPerson(other.email!, 'another forgotten passphrase');
+    await t.prisma.signInAttempt.deleteMany({});
+    const plain = await setPassword(other.email!, 'not that passphrase either', 400);
+    expect(plain.body.code).toBe('issuer-account-exists');
+    expect(plain.body).not.toHaveProperty('resetUrl');
   });
 
   it('a retired account never signs in again: a phone code sent before or after, any door, all refused', async () => {

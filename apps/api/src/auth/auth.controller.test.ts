@@ -21,7 +21,7 @@ const body = { role: 'pmc', projectId: 'ambli' } as never;
 function fakeCredentials() {
   return {
     request: async () => ({ accepted: true as const, requestId: 'req-id' }),
-    verify: async () => ({ setupToken: 'setup-token', expiresInSeconds: 600 as const }),
+    verify: async (_body: unknown, sharedPassword: boolean) => ({ setupToken: 'setup-token', expiresInSeconds: 600 as const, sharedPassword }),
     complete: async () => ({ id: 'u1', projectId: 'ambli', role: 'pmc', name: 'User', credentialVersion: 1 }),
   } as unknown as PasswordCredentialsService;
 }
@@ -73,8 +73,24 @@ describe('AuthController password credential flow', () => {
   it('returns a setup token but no application session after OTP verification', async () => {
     const { svc } = fakeAuth();
     const result = await new AuthController(svc, fakeCredentials(), {} as never).passwordVerify({ requestId: 'req-id', code: '123456' } as never);
-    expect(result).toEqual({ setupToken: 'setup-token', expiresInSeconds: 600 });
+    // the switch is off here (IDENTITY_OIDC unset): the password chosen next is PMC's own
+    expect(result).toEqual({ setupToken: 'setup-token', expiresInSeconds: 600, sharedPassword: false });
     expect(result).not.toHaveProperty('token');
+  });
+
+  it('tells the screen the password chosen next is the one Redbracket ID password only when the switch is exactly "1"', async () => {
+    const { svc } = fakeAuth();
+    const saved = process.env.IDENTITY_OIDC;
+    try {
+      for (const [value, shared] of [['1', true], ['true', false], ['0', false]] as const) {
+        process.env.IDENTITY_OIDC = value;
+        const result = await new AuthController(svc, fakeCredentials(), {} as never).passwordVerify({ requestId: 'req-id', code: '123456' } as never);
+        expect({ value, shared: result.sharedPassword }).toEqual({ value, shared });
+      }
+    } finally {
+      if (saved === undefined) delete process.env.IDENTITY_OIDC;
+      else process.env.IDENTITY_OIDC = saved;
+    }
   });
 
   it('issues the normal session only after password completion', async () => {

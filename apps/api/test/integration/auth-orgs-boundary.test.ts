@@ -207,7 +207,7 @@ describe('#482 auth reads orgs-owned rows only through the orgs participant (liv
       const { requestId } = await passwords.request({ email });
       const code = passwordCodes.get(email);
       expect(code).toBeTruthy();
-      const { setupToken } = await passwords.verify({ requestId, code: code! });
+      const { setupToken } = await passwords.verify({ requestId, code: code! }, false);
       const user = await passwords.complete({ setupToken, password: PASSWORD });
       await expect(auth.signInUser(user)).resolves.toMatchObject({ projectId: f.projectA.id });
     });
@@ -217,7 +217,7 @@ describe('#482 auth reads orgs-owned rows only through the orgs participant (liv
     // (the challenge no longer includes its user): no password before, so an enrolment; a second setup is a reset
     expect(await t.prisma.securityAuditEvent.count({ where: { targetUserId: f.clientUser.id, action: 'auth.password_enrolled' } })).toBe(1);
     const again = await passwords.request({ email });
-    const { setupToken } = await passwords.verify({ requestId: again.requestId, code: passwordCodes.get(email)! });
+    const { setupToken } = await passwords.verify({ requestId: again.requestId, code: passwordCodes.get(email)! }, false);
     await passwords.complete({ setupToken, password: `${PASSWORD} again` });
     expect(await t.prisma.securityAuditEvent.count({ where: { targetUserId: f.clientUser.id, action: 'auth.password_reset' } })).toBe(1);
   });
@@ -225,7 +225,7 @@ describe('#482 auth reads orgs-owned rows only through the orgs participant (liv
   it('a password completion reads the account after the credential lock and before it writes the credential', async () => {
     const email = `${f.clientUser.id}@test.local`;
     const { requestId } = await passwords.request({ email });
-    const { setupToken } = await passwords.verify({ requestId, code: passwordCodes.get(email)! });
+    const { setupToken } = await passwords.verify({ requestId, code: passwordCodes.get(email)! }, false);
     const seen = await observe(() => passwords.complete({ setupToken, password: `${PASSWORD} ordered` }));
     const at = (pattern: RegExp) => seen.findIndex((a) => pattern.test(a));
     const lock = at(/^\$executeRaw <- .*\/src\/common\/credential-lock\.ts/);

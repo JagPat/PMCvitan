@@ -22,6 +22,7 @@
  * sign-in): `readIdentityConfig` says which variables are at fault, by name only. A value never leaves this file: not
  * in the result, not in a log, not in an error. The environment is read on every call.
  */
+import { REDBRACKET_RESET_HOSTS } from '@vitan/shared';
 import { isProduction } from '../../config';
 
 export const REDBRACKET_ISSUER = 'https://id.vitan.in';
@@ -135,4 +136,43 @@ export function readIdentityConfig(env: NodeJS.ProcessEnv = process.env): Identi
   else if (!TOKEN.test(serviceToken)) faults.push({ name: 'IDENTITY_SERVICE_TOKEN', problem: 'malformed' });
   if (faults.length || !issuer || !endpoint || !redirectUri) return { state: 'broken', faults };
   return { state: 'on', config: { issuer, endpoint, clientId, redirectUri, serviceToken } };
+}
+
+/**
+ * Redbracket ID's own password reset (unit H): `IDENTITY_RESET_URL`, the hosted login page a person whose email already
+ * has a Redbracket ID (not yet linked to this PMC account) is sent to when the password they typed is not theirs.
+ * There the issuer proves the mailbox with its own code, sets the password and says so by email; PMC writes nothing.
+ * Not a secret. The value is a template holding `{loginName}` exactly once (replaced by the email, URL-encoded), an
+ * `https://` URL on a host in `RESET_URL_HOSTS`, with no user info or fragment, exactly as it will be sent. Unset or
+ * malformed means no link: the refusal keeps today's words. Read on each call, like the settings above.
+ */
+export const RESET_URL_ENV = 'IDENTITY_RESET_URL';
+/** The hosts Redbracket ID's login pages are served from (shared with the web, which opens only these). */
+export const RESET_URL_HOSTS = REDBRACKET_RESET_HOSTS;
+const LOGIN_NAME = '{loginName}';
+
+export type ResetUrlResult = { state: 'unset' } | { state: 'malformed' } | { state: 'ok'; template: string };
+
+export function readResetUrl(env: NodeJS.ProcessEnv = process.env): ResetUrlResult {
+  const raw = env[RESET_URL_ENV] ?? '';
+  if (!raw) return { state: 'unset' };
+  if (raw.split(LOGIN_NAME).length !== 2) return { state: 'malformed' };
+  // judged with a plain stand-in for the email, so the parse sees the URL as it will be sent
+  const sample = raw.replace(LOGIN_NAME, 'x');
+  let url: URL;
+  try {
+    url = new URL(sample);
+  } catch {
+    return { state: 'malformed' };
+  }
+  if (sample !== url.href) return { state: 'malformed' };
+  if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.port) return { state: 'malformed' };
+  if (!(RESET_URL_HOSTS as readonly string[]).includes(url.hostname)) return { state: 'malformed' };
+  return { state: 'ok', template: raw };
+}
+
+/** The reset page for `email`, or null when `IDENTITY_RESET_URL` is unset or malformed. */
+export function resetUrlFor(email: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const read = readResetUrl(env);
+  return read.state === 'ok' ? read.template.replace(LOGIN_NAME, encodeURIComponent(email)) : null;
 }

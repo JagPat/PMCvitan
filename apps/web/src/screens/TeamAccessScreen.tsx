@@ -124,6 +124,9 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
   const devCode = useStore((s) => s.access.devCode);
   const channel = useStore((s) => s.access.channel ?? null);
   const codeLength = useStore((s) => s.access.codeLength ?? 4);
+  const passwordShared = useStore((s) => s.access.passwordShared === true);
+  // unit H: Redbracket ID's own reset page, shown only with the refusal that names it (the store checked the url)
+  const issuerResetUrl = useStore((s) => (s.access.errorKey?.key === 'issuerAccountReset' ? s.access.issuerResetUrl ?? null : null));
   const worker = useStore((s) => s.access.worker);
   const lang = useStore((s) => s.lang);
   const setLang = useStore((s) => s.setLang);
@@ -406,12 +409,14 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
           : null;
     const ready = newPassword.length >= 12 && newPassword.length <= 128 && confirmPassword.length > 0 && !confirmationMismatch && !sending;
     const submit = () => ready && completePasswordSetup(newPassword, confirmPassword);
+    // the server said this is the one Redbracket ID password (switch on); otherwise it is PMC's own
+    const shared = passwordShared;
     return (
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
         <BackBtn onClick={accGoPasswordSetup} label={signInLabels.startAgain[lang]} />
         <div style={{ marginTop: 14 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{signInLabels.createTitle[lang]}</h1>
-          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{signInLabels.createSub[lang]}</div>
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{(shared ? signInLabels.sharedCreateTitle : signInLabels.createTitle)[lang]}</h1>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{(shared ? signInLabels.sharedCreateSub : signInLabels.createSub)[lang]}</div>
         </div>
         <label style={{ fontSize: 12, fontWeight: 600, marginTop: 22 }}>
           {signInLabels.newPassword[lang]}
@@ -446,6 +451,14 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
           {passwordGuidance}
         </div>
         <AccessErrorText error={error} errorId={errorId} />
+        {issuerResetUrl && (
+          <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginTop: 10, fontSize: 14 }}>
+            <a href={issuerResetUrl} target="_blank" rel="noopener noreferrer" data-testid="issuer-reset-link" style={{ fontWeight: 700, color: 'var(--ink)' }}>
+              {signInLabels.resetOnRedbracket[lang]}
+            </a>
+            <button onClick={accGoLogin} style={linkBtn}>{signInLabels.signIn[lang]}</button>
+          </div>
+        )}
         <button
           onClick={submit}
           disabled={!ready}

@@ -47,6 +47,15 @@ export const PRISMA_TRANSACTION_BOUND_MS = 2_000 + 5_000;
  */
 export const COMPLETION_LEASE_MS =
   COMPLETION_ISSUER_CALLS * IDENTITY_TIMEOUT_MS + COMPLETION_TRANSACTIONS * PRISMA_TRANSACTION_BOUND_MS + 30_000;
+/** A setup token's scope prefix: the one Redbracket ID password, or PMC's own (base64url never holds a dot). */
+const SCOPE_SHARED = 'rb.';
+const SCOPE_PMC = 'pmc.';
+/** The scope a setup token was issued for; one with no prefix predates scopes and was shown PMC-only wording. */
+export function tokenScope(token: string): 'shared' | 'pmc' | 'other' {
+  if (token.startsWith(SCOPE_SHARED)) return 'shared';
+  if (token.startsWith(SCOPE_PMC) || !token.includes('.')) return 'pmc';
+  return 'other';
+}
 export const SETUP_RUNNING = 'Another password setup for this account is still finishing. Try again in a minute.';
 
 /** A transaction the server closed (P2028: its time ran out, e.g. waiting on the account's lock) as the 503 it is. */
@@ -192,7 +201,17 @@ export class PasswordCredentialsService {
     return { accepted: true, requestId: publicRequestId };
   }
 
-  async verify(input: PasswordCredentialVerifyInput): Promise<{ setupToken: string; expiresInSeconds: 600 }> {
+  /**
+   * `sharedPassword` is the switch as read once for this request (the caller's): it is both what the screen is told and
+   * what the setup token is bound to (its scope prefix, covered by the token's hash), so the completion refuses a token
+   * whose scope is not the switch it runs under (`openChallenge`). The screen can then never promise one password and
+   * the completion write another, even when the switch changes, or a pod with the other value answers, inside the
+   * token's ten minutes (Codex 4464315045 on #1336).
+   */
+  async verify(
+    input: PasswordCredentialVerifyInput,
+    sharedPassword: boolean,
+  ): Promise<{ setupToken: string; expiresInSeconds: 600; sharedPassword: boolean }> {
     const challenge = await this.prisma.passwordCredentialChallenge.findUnique({ where: { id: input.requestId } });
     const now = new Date();
     if (!challenge || challenge.purpose !== PURPOSE || challenge.consumedAt || challenge.verifiedAt || challenge.expiresAt <= now || challenge.attempts >= MAX_ATTEMPTS) {
@@ -209,7 +228,7 @@ export class PasswordCredentialsService {
       throw this.genericError();
     }
 
-    const setupToken = randomBytes(32).toString('base64url');
+    const setupToken = `${sharedPassword ? SCOPE_SHARED : SCOPE_PMC}${randomBytes(32).toString('base64url')}`;
     const updated = await this.prisma.passwordCredentialChallenge.updateMany({
       where: {
         id: challenge.id,
@@ -225,12 +244,18 @@ export class PasswordCredentialsService {
       },
     });
     if (updated.count !== 1) throw this.genericError();
-    return { setupToken, expiresInSeconds: 600 };
+    return { setupToken, expiresInSeconds: 600, sharedPassword };
   }
 
-  /** The verified, unspent challenge a setup token names, or the generic refusal. */
-  private async openChallenge(input: PasswordCredentialCompleteInput, now: Date) {
+  /**
+   * The verified, unspent challenge a setup token names, or the generic refusal. `shared`: whether this completion sets
+   * the one Redbracket ID password (switch on) or PMC's own; a token bound to the other scope is refused before anything
+   * is read or spent, so the person asks for a new code and is told the truth on the next screen. A token without a
+   * scope (issued before this release) was shown today's PMC-only wording: it is taken only for a PMC-only completion.
+   */
+  private async openChallenge(input: PasswordCredentialCompleteInput, now: Date, shared: boolean) {
     if (input.password.length < 12 || input.password.length > 128) throw this.genericError();
+    if (tokenScope(input.setupToken) !== (shared ? 'shared' : 'pmc')) throw this.genericError();
     const setupTokenHash = this.tokenHash(input.setupToken);
     const challenge = await this.prisma.passwordCredentialChallenge.findUnique({
       where: { setupTokenHash },
@@ -293,7 +318,7 @@ export class PasswordCredentialsService {
    */
   async completeThroughIssuer(input: PasswordCredentialCompleteInput, identity: IdentitySignInService): Promise<IdentityOutcome> {
     const now = new Date();
-    const { challenge, setupTokenHash } = await this.openChallenge(input, now);
+    const { challenge, setupTokenHash } = await this.openChallenge(input, now, true);
     const account = await this.userById(this.prisma, challenge.userId);
     if (!account?.eligible) throw this.genericError();
     let established = false;
@@ -359,7 +384,7 @@ export class PasswordCredentialsService {
 
   async complete(input: PasswordCredentialCompleteInput): Promise<CredentialUser> {
     const now = new Date();
-    const { challenge, setupTokenHash } = await this.openChallenge(input, now);
+    const { challenge, setupTokenHash } = await this.openChallenge(input, now, false);
 
     const passwordHash = await bcrypt.hash(input.password, BCRYPT_COST);
     return this.prisma.$transaction(async (tx) => {

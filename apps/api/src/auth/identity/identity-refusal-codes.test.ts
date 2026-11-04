@@ -81,7 +81,7 @@ describe('Redbracket ID refusal codes (A5)', () => {
     }
     const built = [...source.matchAll(/new (\w+Exception)\(([^\n]*)/g)].map(([, cls, rest]) => `${cls}(${rest.trim()}`).sort();
     expect(built).toEqual([
-      'BadRequestException(coded(400, message));',
+      'BadRequestException(resetUrl ? { ...coded(400, message), resetUrl } : coded(400, message));',
       'ConflictException(coded(409, message));',
       'HttpException({ statusCode: 429, message: TOO_MANY, retryAfter: attempt.retryAfterSeconds }, HttpStatus.TOO_MANY_REQUESTS);',
       'ServiceUnavailableException(UNAVAILABLE);',

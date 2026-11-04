@@ -671,7 +671,7 @@ export type SignInErrorKey =
   | 'setupExpired' | 'passwordSaveFailed' | 'setupStillFinishing' | 'setupMayBeSet' | 'invalidEmail' | 'emailSendFailed' | 'emailWrongCode' | 'enterMobile'
   | 'tooManySignIns' | 'tooManyCodes'
   | 'identityNoProject' | 'identityInvitePending' | 'identityTestAccount' | 'identityEmailUnverified'
-  | 'identityPasswordChanged' | 'identityNeedsHelp' | 'identityIssuerAccountExists' | 'identityPasswordRejected' | 'identityRetired';
+  | 'identityPasswordChanged' | 'identityNeedsHelp' | 'identityIssuerAccountExists' | 'issuerAccountReset' | 'identityPasswordRejected' | 'identityRetired';
 
 /**
  * Redbracket ID A4a: the machine-readable `code` on the 409 `/auth/password/complete` answers while another password
@@ -699,6 +699,26 @@ export const IDENTITY_REFUSAL_CODES = {
   retired: 'retired',
 } as const;
 export type IdentityRefusalCode = (typeof IDENTITY_REFUSAL_CODES)[keyof typeof IDENTITY_REFUSAL_CODES];
+
+/**
+ * Unit H: the hosts Redbracket ID's own login pages (its password reset among them) are served from. The API sends a
+ * reset link (`resetUrl`, with `issuer-account-exists`) only on one of these, and the web opens one only on one of
+ * these, over https. A new host is a code change.
+ */
+export const REDBRACKET_RESET_HOSTS = ['rb.vitan.in'] as const;
+
+/** A Redbracket ID reset link the web may open: an `https://` URL on a `REDBRACKET_RESET_HOSTS` host, no user info or port. */
+export function isRedbracketResetUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 2048) return false;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return url.protocol === 'https:' && !url.username && !url.password && !url.port
+    && (REDBRACKET_RESET_HOSTS as readonly string[]).includes(url.hostname);
+}
 
 /** #886: a phone sign-in failure as an `accessDict` key (plus the throttle wait), and the text it produced. */
 export type AccessErrorKey =
@@ -734,6 +754,10 @@ export interface AccessState {
   /** Public request id and one-time setup token; memory-only, never persisted. */
   passwordRequestId: string | null;
   passwordSetupToken: string | null;
+  /** the password being chosen is the one Redbracket ID password every Vitan portal uses (the server said so) */
+  passwordShared?: boolean;
+  /** unit H: Redbracket ID's own reset page for this email, shown with the `issuerAccountReset` refusal only */
+  issuerResetUrl?: string | null;
 }
 
 export interface AppNotification {
