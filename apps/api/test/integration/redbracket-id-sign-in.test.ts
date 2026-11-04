@@ -335,7 +335,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
   it('forgot password: an established account whose issuer person exists resets that password and joins fresh, as a sign-in would', async () => {
     const old = await invitee('forgot');
     await t.prisma.user.update({ where: { id: old.id }, data: { passwordHash: await bcrypt.hash('the old local passphrase', 4), emailVerifiedAt: new Date() } });
-    const person = fake.addPerson(old.email!, 'a forgotten redbracket passphrase', false);
+    const person = fake.addPerson(old.email!, 'a forgotten redbracket passphrase');
     const rbSession = fake.openSession(person.userId); // someone signed in on rb with the old password
 
     // the new account holds no seat until the team re-seats the person (the RUNBOOK "Redbracket ID re-seat")
@@ -353,11 +353,75 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     // the person's issuer sessions end (not awaited by the setup): the rb sign-in with the old password is gone
     await vi.waitFor(() => expect(fake.sessionsOf(person.userId)).toEqual([]));
     expect(fake.sessionsOf(person.userId)).not.toContain(rbSession);
-    // an unverified person with only a password was asked about other ways in before anything was written
-    const asked = fake.requests.findIndex((r) => r.path === '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes');
-    const written = fake.requests.findIndex((r) => r.path.endsWith('/password'));
-    expect(asked).toBeGreaterThanOrEqual(0);
-    expect(asked).toBeLessThan(written);
+  });
+
+  it('an unverified issuer person with only a password and nobody signed in is reset, asked before and after the write, then marked verified', async () => {
+    const user = await invitee('unverifiedreset');
+    const person = fake.addPerson(user.email!, 'a pre-registered passphrase', false);
+    fake.requests.length = 0;
+    await setPassword(user.email!, 'the owner new passphrase', 201);
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'the owner new passphrase', verified: true });
+    const at = (match: (path: string) => boolean) => fake.requests.map((r, i) => (match(r.path) ? i : -1)).filter((i) => i >= 0);
+    const methods = at((p) => p === '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes');
+    const sessions = at((p) => p === '/zitadel.session.v2.SessionService/ListSessions');
+    const [written] = at((p) => p.endsWith('/password'));
+    const [marked] = at((p) => p.includes('UpdateUser'));
+    // once before the write and once after it, both before the person is marked verified
+    expect(methods.filter((i) => i < written!)).toHaveLength(1);
+    expect(methods.filter((i) => i > written! && i < marked!)).toHaveLength(1);
+    expect(sessions.filter((i) => i < written!)).toHaveLength(1);
+    expect(sessions.filter((i) => i > written! && i < marked!)).toHaveLength(1);
+  });
+
+  it('an unverified issuer person someone is signed in as is left as it is: nothing written, no email', async () => {
+    const user = await invitee('unverifiedsignedin');
+    const person = fake.addPerson(user.email!, 'a pre-registered passphrase', false);
+    fake.openSession(person.userId);
+    const refused = await setPassword(user.email!, 'the owner new passphrase', 409);
+    expect(refused.body.code).toBe('needs-help');
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'a pre-registered passphrase', verified: false });
+    expect(fake.requests.some((r) => r.path.endsWith('/password') || r.path.includes('UpdateUser'))).toBe(false);
+    expect(mailOf(user.email!)).toEqual([]);
+  });
+
+  it('a way in added while the password is being set (Codex 4464315055): refused before the person is marked verified or linked, and recorded', async () => {
+    const kinds = ['passkey on a verified person', 'session on an unverified person', 'passkey on an unverified person'] as const;
+    for (const [n, kind] of kinds.entries()) {
+      const user = await invitee(`contested${n}`);
+      const person = fake.addPerson(user.email!, 'the old passphrase', kind === 'passkey on a verified person');
+      fake.afterPasswordSet = async () => {
+        // whoever held the old password, or a session, acts before the write lands: the checks before it saw nothing
+        if (kind.startsWith('passkey')) person.methods = ['AUTHENTICATION_METHOD_TYPE_PASSKEY'];
+        else fake.openSession(person.userId);
+      };
+      const refused = await setPassword(user.email!, 'the owner new passphrase', 409);
+      expect({ kind, code: refused.body.code }).toEqual({ kind, code: 'needs-help' });
+      // the password changed (the notice says so); the person is not linked, and not marked verified by PMC
+      expect(fake.people.get(person.userId)).toMatchObject({ password: 'the owner new passphrase', verified: kind === 'passkey on a verified person' });
+      expect(mailOf(user.email!)).toEqual([`${user.email} changed`]);
+      expect(fake.requests.some((r) => r.path.includes('UpdateUser'))).toBe(false);
+      expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
+      const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: 'auth.password_reset_refused_contested' } });
+      expect(trail.map((e) => (e.payload as { issuerPerson: string }).issuerPerson)).toEqual([person.userId]);
+      expect(JSON.stringify(trail)).not.toContain('passphrase');
+      // its other issuer sessions end, as after any reset
+      await vi.waitFor(() => expect(fake.sessionsOf(person.userId)).toEqual([]));
+      fake.requests.length = 0;
+    }
+  });
+
+  it('a setup token is bound to the password the screen named: switch changed between the code and the password, it is refused, nothing written', async () => {
+    const user = await invitee('scope');
+    fake.addPerson(user.email!, 'the old hub passphrase');
+    process.env.IDENTITY_OIDC = '0';
+    const requested = await http().post('/auth/password/request').send({ email: user.email }).expect(201);
+    const verified = await http().post('/auth/password/verify').send({ requestId: requested.body.requestId, code: codes.get(user.email!) }).expect(201);
+    expect(verified.body.sharedPassword).toBe(false);
+    process.env.IDENTITY_OIDC = '1';
+    fake.requests.length = 0;
+    await http().post('/auth/password/complete').send({ setupToken: verified.body.setupToken, password: 'a brand new passphrase' }).expect(400);
+    expect(fake.requests).toHaveLength(0);
+    expect(mailOf(user.email!)).toEqual([]);
   });
 
   it('an unverified issuer person who holds another way in (a passkey) is left as it is: nothing written, no email', async () => {
@@ -698,7 +762,10 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
       return verified.body.setupToken as string;
     };
     const onToken = await codeFor();
+    // issued with the switch off, so its scope is PMC's own password and only the retirement refuses it below
+    process.env.IDENTITY_OIDC = '0';
     const offToken = await codeFor();
+    process.env.IDENTITY_OIDC = '1';
     await login(old.email!, 'my redbracket passphrase').expect(401); // joins fresh: the old row is retired
     made.push((await t.prisma.user.findUniqueOrThrow({ where: { email: old.email! } })).id);
 

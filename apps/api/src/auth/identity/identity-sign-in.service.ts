@@ -260,7 +260,8 @@ export class IdentitySignInService {
    * holds the email and is not yet linked gets the typed password too (Jagrut, 4 Nov 2026: "Set up or forgot password"
    * resets the one Redbracket ID password every Vitan portal uses): the code proved the same mailbox the person holds.
    * One linked to another PMC account is left as it is, and so is an unlinked one that holds another way in (a passkey,
-   * a one-time code, a linked provider). `passwordSet` is told as soon as the issuer took the
+   * a one-time code, a linked provider), or, never verified, that someone is signed in as; both are asked again once
+   * the password is written, before the person is marked verified or linked (a refusal then is recorded). `passwordSet` is told as soon as the issuer took the
    * password (the "password changed" notice goes then, whatever follows), and the person's other issuer sessions are
    * ended. Nothing is written to `User.passwordHash`. Last, in one transaction, the PMC account is settled and `record`
    * writes the security trail for the account it settled on (a new one when an established account joins fresh), saying
@@ -334,6 +335,10 @@ export class IdentitySignInService {
             const others = await client.otherSignInMethods(found.userId);
             if (others === 'down') return this.unavailable(attempt);
             if (others.length > 0) return this.needsHelp(attempt, 'unlinked issuer person holds other sign-in methods');
+            // a person whose email was never verified is someone's claim to the address, not yet proof of it: PMC takes
+            // it over only when nobody is signed in as it (a session could add a way in while the password is being
+            // set). Asked again after the write, below
+            if (!found.verified) await this.noSessions(client, found.userId, attempt, 'before');
           } else if (!found.verified) {
             // this account's own person: the issuer must hold the email as verified before PMC reports the setup done
             // (PMC's code proved the mailbox); asked before the password is written, so a refusal leaves it as it was
@@ -355,6 +360,18 @@ export class IdentitySignInService {
           }
           issuerPerson = 'existing';
           passwordSet(issuerPerson);
+          if (!link) {
+            // the checks before the write were a snapshot (Codex 4464315055): a way in added meanwhile, by whoever held
+            // the old password or a session, would outlive the reset and sign in as the account this links. Asked again
+            // now the old password no longer works, before the person is marked verified or linked. For a person never
+            // verified, nobody may be signed in either: PMC has opened no session yet, so one now was opened with the
+            // old password, and could still add a way in. A refusal here leaves the person unlinked and unverified
+            // (the password changed, its notice went, its other sessions end below)
+            const after = await client.otherSignInMethods(found.userId);
+            if (after === 'down') return this.unavailable(attempt);
+            if (after.length > 0) return this.contested(account.id, found.userId, attempt, 'other sign-in methods added during the reset');
+            if (!found.verified) await this.noSessions(client, found.userId, attempt, 'after', account.id);
+          }
           if (!link && !found.verified) {
             // a person not yet this account's is marked verified only once its password is set, so a try that fails
             // before it leaves that person exactly as they were (no verified flag a later try could lean on)
@@ -418,6 +435,40 @@ export class IdentitySignInService {
     }
     this.line('password', attempt, outcome.fresh ? 'set, new account' : 'set');
     return outcome;
+  }
+
+  /**
+   * Refuses the setup unless the issuer person holds no session (see `setPassword`). `before` the password write nothing
+   * has changed and the refusal is plain; `after` it the refusal is recorded (`contested`). A missing session permission
+   * cannot tell, so it refuses too, with its own log line.
+   */
+  private async noSessions(client: IdentityClient, personId: string, attempt: string, when: 'before' | 'after', accountId?: string): Promise<void> {
+    const sessions = await client.hasSessions(personId);
+    if (sessions === 'none') return;
+    if (sessions === 'down') return this.unavailable(attempt);
+    const why = sessions === 'denied' ? 'unverified issuer person: session permission missing' : 'unverified issuer person is signed in';
+    if (when === 'before') return this.needsHelp(attempt, why);
+    return this.contested(accountId!, personId, attempt, `${why} during the reset`);
+  }
+
+  /**
+   * A reset refused after the issuer took the password (the person stays unlinked): the trail names the issuer person and
+   * the account the code proved, never a secret, and the setup answers as any refused one.
+   */
+  private async contested(accountId: string, personId: string, attempt: string, why: string): Promise<never> {
+    await this.prisma.securityAuditEvent
+      .create({
+        data: {
+          action: 'auth.password_reset_refused_contested',
+          targetUserId: accountId,
+          actorUserId: accountId,
+          actorKind: 'self',
+          correlationId: attempt,
+          payload: { issuerPerson: personId, reason: why },
+        },
+      })
+      .catch(() => this.line('password', attempt, 'contested reset not recorded'));
+    return this.needsHelp(attempt, why);
   }
 
   /**

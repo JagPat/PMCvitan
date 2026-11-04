@@ -21,7 +21,7 @@ const body = { role: 'pmc', projectId: 'ambli' } as never;
 function fakeCredentials() {
   return {
     request: async () => ({ accepted: true as const, requestId: 'req-id' }),
-    verify: async () => ({ setupToken: 'setup-token', expiresInSeconds: 600 as const }),
+    verify: async (_body: unknown, sharedPassword: boolean) => ({ setupToken: 'setup-token', expiresInSeconds: 600 as const, sharedPassword }),
     complete: async () => ({ id: 'u1', projectId: 'ambli', role: 'pmc', name: 'User', credentialVersion: 1 }),
   } as unknown as PasswordCredentialsService;
 }

@@ -241,6 +241,23 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(await client.otherSignInMethods(p.userId)).toBe('down');
   });
 
+  it('says whether a person holds any issuer session: none, some, denied on a 403, down otherwise', async () => {
+    const p = fake.addPerson('s@example.in', 'Right-pass-123', false);
+    expect(await client.hasSessions(p.userId)).toBe('none');
+    fake.openSession(p.userId);
+    fake.openSession(p.userId);
+    expect(await client.hasSessions(p.userId)).toBe('some');
+    const asked = fake.requests.filter((q) => q.path === '/zitadel.session.v2.SessionService/ListSessions').at(-1);
+    expect(JSON.parse(asked!.body).query.limit).toBe(1); // one is enough to say so
+    fake.force = { '/zitadel.session.v2.SessionService/ListSessions': 403 };
+    expect(await client.hasSessions(p.userId)).toBe('denied');
+    fake.force = { '/zitadel.session.v2.SessionService/ListSessions': 503 };
+    expect(await client.hasSessions(p.userId)).toBe('down');
+    fake.force = {};
+    fake.oversize = '/zitadel.session.v2.SessionService/ListSessions';
+    expect(await client.hasSessions(p.userId)).toBe('down');
+  });
+
   it('a signing key the issuer withdraws is not trusted again, even by a client that used it before', async () => {
     fake.addPerson('k@example.in', 'Right-pass-123');
     expect((await client.login('k@example.in', 'Right-pass-123')).ok).toBe(true);

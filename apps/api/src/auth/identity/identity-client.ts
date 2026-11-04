@@ -186,9 +186,32 @@ export class IdentityClient {
   }
 
   /**
+   * Whether the person holds any issuer session at all (one is enough to say so): `none`, `some`, `denied` (the issuer
+   * refused PMC's service account, 403: the session permission is missing), or `down` (no usable answer). Asked around
+   * the password write for a person whose email was never verified (see `setPassword`).
+   */
+  async hasSessions(userId: string): Promise<'none' | 'some' | 'denied' | 'down'> {
+    try {
+      const r = await this.send('POST', '/zitadel.session.v2.SessionService/ListSessions', {
+        json: { query: { limit: 1 }, queries: [{ userIdQuery: { id: userId } }] },
+        service: true,
+      });
+      if (r.status === 403) return 'denied';
+      if (r.status < 200 || r.status > 299) return 'down';
+      const listed = json(r.body).sessions;
+      // Zitadel leaves out an empty list
+      if (listed === undefined) return 'none';
+      if (!Array.isArray(listed)) return 'down';
+      return listed.length > 0 ? 'some' : 'none';
+    } catch {
+      return 'down';
+    }
+  }
+
+  /**
    * The ways besides a password this person can sign in at the issuer (passkeys, one-time codes, U2F keys, linked
-   * identity providers), as the issuer names them; `down` when it gave no usable answer. Asked before PMC resets a
-   * person whose email was never verified, who may have been registered by someone else (see `setPassword`).
+   * identity providers), as the issuer names them; `down` when it gave no usable answer. Asked before and again after
+   * PMC resets a person not yet linked, who may have been registered by someone else (see `setPassword`).
    */
   async otherSignInMethods(userId: string): Promise<string[] | 'down'> {
     try {
