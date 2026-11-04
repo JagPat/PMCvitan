@@ -93,6 +93,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     fake.createAnswersNoId = false;
     fake.spoil = 'none';
     fake.afterPasswordSet = null;
+    fake.afterMethodsListed = null;
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -408,6 +409,42 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
       await vi.waitFor(() => expect(fake.sessionsOf(person.userId)).toEqual([]));
       fake.requests.length = 0;
     }
+  });
+
+  it('a session opened with the old password just before the write, that adds a way in and signs out after the methods answer, is still caught (Stage 1 S4)', async () => {
+    const user = await invitee('s4');
+    const person = fake.addPerson(user.email!, 'the old passphrase', false);
+    let session = '';
+    fake.afterPasswordSet = async () => {
+      session = fake.openSession(person.userId); // signed in with the old password before the write landed
+    };
+    let listed = 0;
+    fake.afterMethodsListed = (id) => {
+      listed += 1;
+      if (id !== person.userId || listed !== 2) return;
+      // after the re-check's answer: the session adds a passkey, then signs out
+      person.methods = ['AUTHENTICATION_METHOD_TYPE_PASSKEY'];
+      fake.closeSession(session);
+    };
+    const refused = await setPassword(user.email!, 'the owner new passphrase', 409);
+    expect(refused.body.code).toBe('needs-help');
+    expect(fake.people.get(person.userId)).toMatchObject({ verified: false });
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
+    expect(await t.prisma.securityAuditEvent.count({ where: { targetUserId: user.id, action: 'auth.password_reset_refused_contested' } })).toBe(1);
+  });
+
+  it('a re-check after the write that gets no answer is recorded: the password changed, the setup is unavailable', async () => {
+    const user = await invitee('unfinished');
+    const person = fake.addPerson(user.email!, 'the old passphrase', false);
+    fake.afterPasswordSet = async () => {
+      fake.force = { '/zitadel.session.v2.SessionService/ListSessions': 503 };
+    };
+    await setPassword(user.email!, 'the owner new passphrase', 503);
+    fake.force = {};
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'the owner new passphrase', verified: false });
+    expect(mailOf(user.email!)).toEqual([`${user.email} changed`]);
+    const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: 'auth.password_reset_unfinished' } });
+    expect(trail.map((e) => e.payload)).toEqual([{ issuerPerson: person.userId, reason: 'issuer sessions unreadable after the write' }]);
   });
 
   it('a setup token is bound to the password the screen named: switch changed between the code and the password, it is refused, nothing written', async () => {

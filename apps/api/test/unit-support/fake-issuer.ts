@@ -42,6 +42,10 @@ export type FakeIssuer = {
   noneShape: 'details-only' | 'empty-result' | 'odd';
   /** run once after the next password is set and before its answer goes (a barrier: what lands meanwhile) */
   afterPasswordSet: (() => Promise<void>) | null;
+  /** run after each answer to a person's sign-in methods has gone (what lands between that answer and the next call) */
+  afterMethodsListed: ((userId: string) => void) | null;
+  /** ends an issuer session (as a sign-out on rb would) */
+  closeSession(id: string): void;
   addPerson(email: string, password: string, verified?: boolean): FakePerson;
   /** opens an issuer session for a person (as rb's login would), returning its id */
   openSession(userId: string): string;
@@ -78,6 +82,10 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     spoil: 'none' as Spoil,
     noneShape: 'details-only' as FakeIssuer['noneShape'],
     afterPasswordSet: null as (() => Promise<void>) | null,
+    afterMethodsListed: null as ((userId: string) => void) | null,
+    closeSession(id: string): void {
+      sessions.delete(id);
+    },
     addPerson(email: string, password: string, verified = true): FakePerson {
       const p = { userId: `3${Math.floor(Math.random() * 1e17)}`, email: email.toLowerCase(), password, verified, givenName: 'Test', familyName: 'Person' };
       fake.people.set(p.userId, p);
@@ -200,7 +208,9 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       const p = fake.people.get(String(json().userId ?? ''));
       if (!p) return send(res, 404, { message: 'Errors.User.NotFound' });
       const types = ['AUTHENTICATION_METHOD_TYPE_PASSWORD', ...(p.methods ?? [])];
-      return send(res, 200, { details: {}, authMethodTypes: types });
+      send(res, 200, { details: {}, authMethodTypes: types });
+      fake.afterMethodsListed?.(p.userId);
+      return;
     }
     if (req.method === 'POST' && path === '/v2/users') {
       const b = json();

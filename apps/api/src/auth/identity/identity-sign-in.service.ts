@@ -366,18 +366,20 @@ export class IdentitySignInService {
             // now the old password no longer works, before the person is marked verified or linked. For a person never
             // verified, nobody may be signed in either: PMC has opened no session yet, so one now was opened with the
             // old password, and could still add a way in. A refusal here leaves the person unlinked and unverified
-            // (the password changed, its notice went, its other sessions end below)
-            const after = await client.otherSignInMethods(found.userId);
-            if (after === 'down') return this.unavailable(attempt);
-            if (after.length > 0) return this.contested(account.id, found.userId, attempt, 'other sign-in methods added during the reset');
+            // (the password changed, its notice went, its other sessions end below). Sessions first: a way in can only be
+            // added from a session, and none can be opened after the write (the old password no longer works), so a
+            // session found closed meanwhile has left its method for the methods answer that follows (Stage 1 S4)
             if (!found.verified) await this.noSessions(client, found.userId, attempt, 'after', account.id);
+            const after = await client.otherSignInMethods(found.userId);
+            if (after === 'down') return this.unfinished(account.id, found.userId, attempt, 'other sign-in methods unreadable after the write');
+            if (after.length > 0) return this.contested(account.id, found.userId, attempt, 'other sign-in methods added during the reset');
           }
           if (!link && !found.verified) {
             // a person not yet this account's is marked verified only once its password is set, so a try that fails
             // before it leaves that person exactly as they were (no verified flag a later try could lean on)
             const marked = await client.markVerified(found.userId, email);
-            if (marked === 'down') return this.unavailable(attempt);
-            if (marked !== null) return this.needsHelp(attempt, 'issuer refused to mark the email verified');
+            if (marked === 'down') return this.unfinished(account.id, found.userId, attempt, 'email not marked verified after the write');
+            if (marked !== null) return this.contested(account.id, found.userId, attempt, 'issuer refused to mark the email verified');
           }
         }
 
@@ -445,7 +447,10 @@ export class IdentitySignInService {
   private async noSessions(client: IdentityClient, personId: string, attempt: string, when: 'before' | 'after', accountId?: string): Promise<void> {
     const sessions = await client.hasSessions(personId);
     if (sessions === 'none') return;
-    if (sessions === 'down') return this.unavailable(attempt);
+    if (sessions === 'down') {
+      if (when === 'before') return this.unavailable(attempt);
+      return this.unfinished(accountId!, personId, attempt, 'issuer sessions unreadable after the write');
+    }
     const why = sessions === 'denied' ? 'unverified issuer person: session permission missing' : 'unverified issuer person is signed in';
     if (when === 'before') return this.needsHelp(attempt, why);
     return this.contested(accountId!, personId, attempt, `${why} during the reset`);
@@ -456,10 +461,26 @@ export class IdentitySignInService {
    * the account the code proved, never a secret, and the setup answers as any refused one.
    */
   private async contested(accountId: string, personId: string, attempt: string, why: string): Promise<never> {
+    await this.recordAfterWrite('auth.password_reset_refused_contested', accountId, personId, attempt, why);
+    return this.needsHelp(attempt, why);
+  }
+
+  /**
+   * A reset the issuer gave no usable answer for after it took the password (a re-check, or marking the email verified):
+   * the password changed and its notice went, so the trail records it (`auth.password_reset_unfinished`), and the setup
+   * answers "unavailable" (the person asks for a new code).
+   */
+  private async unfinished(accountId: string, personId: string, attempt: string, why: string): Promise<never> {
+    await this.recordAfterWrite('auth.password_reset_unfinished', accountId, personId, attempt, why);
+    return this.unavailable(attempt);
+  }
+
+  /** The trail of a reset that ended after the issuer took the password: the person and the reason, never a secret. */
+  private async recordAfterWrite(action: string, accountId: string, personId: string, attempt: string, why: string): Promise<void> {
     await this.prisma.securityAuditEvent
       .create({
         data: {
-          action: 'auth.password_reset_refused_contested',
+          action,
           targetUserId: accountId,
           actorUserId: accountId,
           actorKind: 'self',
@@ -467,8 +488,7 @@ export class IdentitySignInService {
           payload: { issuerPerson: personId, reason: why },
         },
       })
-      .catch(() => this.line('password', attempt, 'contested reset not recorded'));
-    return this.needsHelp(attempt, why);
+      .catch(() => this.line('password', attempt, 'reset after the write not recorded'));
   }
 
   /**
