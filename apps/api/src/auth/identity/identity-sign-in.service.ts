@@ -437,7 +437,7 @@ export class IdentitySignInService {
           payload: { issuerPerson: personId, reason: why },
         },
       })
-      .catch(() => this.line('password', attempt, `reset not recorded (${why})`));
+      .catch(() => this.line('password', attempt, `reset not recorded (${why}; issuer person ${personId})`));
     // a missing permission is not helped by asking again
     return answer === 'capped' || answer === 'failed';
   }

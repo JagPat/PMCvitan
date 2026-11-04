@@ -193,9 +193,9 @@ export class IdentityClient {
    * with the old password is signed out of Redbracket ID itself. Each round lists up to {@link SESSIONS_PAGE} of the
    * person's sessions (`userIdQuery`) and deletes them at once by id; then it lists again. After `rounds` delete
    * rounds (at most {@link SESSIONS_ROUNDS_MAX}) one more list confirms: `ended` when it shows none, or only sessions
-   * whose delete this sweep saw taken (the list can lag its deletes) on a page that is not full; `capped` when
-   * sessions are still listed. `denied`: the issuer refused PMC's service account (403: the session permission is
-   * missing). `failed`: anything else (no usable answer, an unreadable list, a delete not taken). A portal's own
+   * whose delete this sweep saw taken (the list can lag its deletes) with nothing past them (a page that is not full,
+   * and no larger count); `capped` when sessions are still listed. `denied`: the issuer refused PMC's service account
+   * (403), or listed no rows while counting some (the session read permission is missing). `failed`: anything else (no usable answer, an unreadable list, a delete not taken). A portal's own
    * app session (Hub's, rb's) is that portal's to end. Never throws.
    */
   async endPersonSessions(userId: string, rounds = SESSIONS_ROUNDS_MAX): Promise<SessionsEnd> {
@@ -209,12 +209,22 @@ export class IdentityClient {
         });
         if (r.status === 403) return 'denied';
         if (r.status < 200 || r.status > 299) return 'failed';
-        // Zitadel leaves out an empty list
-        const listed = json(r.body).sessions ?? [];
+        const body = json(r.body);
+        // Zitadel leaves out an empty list (and a zero count)
+        const listed = body.sessions ?? [];
         if (!Array.isArray(listed)) return 'failed';
         const ids = listed.map((row: unknown) => (row && typeof row === 'object' ? str((row as Record<string, unknown>).id) : ''));
         if (ids.some((id) => !id)) return 'failed';
-        if (ids.every((id) => ended.has(id)) && ids.length < SESSIONS_PAGE) return 'ended';
+        const raw = (body.details as Record<string, unknown> | undefined)?.totalResult;
+        const counted = typeof raw === 'number' ? String(raw) : str(raw);
+        const total = /^\d+$/.test(counted) ? Number(counted) : null;
+        // no rows, yet the issuer counts some: a service account without the session read permission gets the rows it
+        // may not read dropped while the count is kept (v4.16 with PermissionCheckV2 off, the default)
+        if (ids.length === 0 && total !== null && total > 0) return 'denied';
+        // more sessions than this page shows (counted, or a full page): not proof that none is left
+        // (a count present but unreadable decides nothing: it is taken as more)
+        const more = (raw !== undefined && total === null) || (total !== null && total > ids.length) || ids.length >= SESSIONS_PAGE;
+        if (!more && ids.every((id) => ended.has(id))) return 'ended';
         if (round >= last) return 'capped';
         const results = await Promise.all(ids.map((id) => this.endSession(id)));
         results.forEach((result, i) => {

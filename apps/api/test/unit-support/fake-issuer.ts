@@ -64,6 +64,14 @@ export type FakeIssuer = {
   sessionsPageCap: number | null;
   /** as Zitadel's session list read from a lagging projection: a session deleted while this is on is still listed */
   sessionsListLag: boolean;
+  /** a lagging list shows the deleted sessions it still holds before the live ones */
+  sessionsLagFirst: boolean;
+  /** ListSessions leaves out `details.totalResult` */
+  sessionsTotalOmitted: boolean;
+  /** as Zitadel v4.16 (PermissionCheckV2 off) for a service account without the session read permission: rows dropped, count kept */
+  sessionsReadDenied: boolean;
+  /** forgets the deleted sessions a lagging list still shows */
+  forgetDeletedSessions(): void;
   /** run after each ListSessions answer has gone (what lands between that list and the next call) */
   afterSessionsListed: ((userId: string) => void) | null;
   /** the instance domain: the only rp id a legacy key (stored with no rp id) is listed for */
@@ -111,7 +119,13 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     noneShape: 'details-only' as FakeIssuer['noneShape'],
     sessionsPageCap: null as number | null,
     sessionsListLag: false,
+    sessionsLagFirst: false,
+    sessionsTotalOmitted: false,
+    sessionsReadDenied: false,
     afterSessionsListed: null as ((userId: string) => void) | null,
+    forgetDeletedSessions() {
+      deletedStillListed.clear();
+    },
     instanceDomain: 'id.vitan.in',
     methods(userId: string): FenceMethods {
       let m = fenceMethods.get(userId);
@@ -246,9 +260,13 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       // as Zitadel v4.16: the person's sessions by userIdQuery, up to the page limit; an empty list is left out
       const id = String(b?.queries?.[0]?.userIdQuery?.id ?? '');
       const limit = Math.min(Number(b?.query?.limit ?? 100), fake.sessionsPageCap ?? Infinity);
-      const all = [...fake.sessionsOf(id), ...[...deletedStillListed].filter(([, owner]) => owner === id).map(([sid]) => sid)];
+      const live = fake.sessionsOf(id);
+      const lagging = [...deletedStillListed].filter(([, owner]) => owner === id).map(([sid]) => sid);
+      const all = fake.sessionsLagFirst ? [...lagging, ...live] : [...live, ...lagging];
       const rows = all.slice(0, limit).map((sid) => ({ id: sid }));
-      send(res, 200, rows.length ? { details: { totalResult: String(all.length) }, sessions: rows } : { details: {} });
+      const details = all.length && !fake.sessionsTotalOmitted ? { totalResult: String(all.length) } : {};
+      if (fake.sessionsReadDenied) send(res, 200, { details });
+      else send(res, 200, rows.length ? { details, sessions: rows } : { details });
       fake.afterSessionsListed?.(id);
       return;
     }

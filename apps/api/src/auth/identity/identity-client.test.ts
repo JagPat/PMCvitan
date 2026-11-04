@@ -346,6 +346,41 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(await client.endPersonSessions(q.userId, 1)).toBe('capped');
   });
 
+  it('just-ended sessions listed first prove nothing about the rest: a larger count, or a full page, is not ended', async () => {
+    fake.sessionsListLag = true;
+    fake.sessionsLagFirst = true;
+    // the issuer's page holds 2 of 3; after one round the lagging two fill the confirming page, and the count says 3
+    const p = fake.addPerson('f@example.in', 'x', true);
+    fake.sessionsPageCap = 2;
+    for (let i = 0; i < 3; i += 1) fake.openSession(p.userId);
+    expect(await client.endPersonSessions(p.userId, 1)).toBe('capped');
+    expect(fake.sessionsOf(p.userId)).toHaveLength(1);
+    // with no count to go by, a full page of them (SESSIONS_PAGE) is not ended either
+    fake.sessionsPageCap = null;
+    fake.sessionsTotalOmitted = true;
+    fake.forgetDeletedSessions();
+    const q = fake.addPerson('g@example.in', 'x', true);
+    for (let i = 0; i < SESSIONS_PAGE + 1; i += 1) fake.openSession(q.userId);
+    expect(await client.endPersonSessions(q.userId, 1)).toBe('capped');
+    expect(fake.sessionsOf(q.userId)).toHaveLength(1);
+    // a count that cannot be read decides nothing: rows all ended, yet not proven ended
+    const ended = fake.addPerson('u@example.in', 'x', true);
+    const sid = fake.openSession(ended.userId);
+    fake.answer = { path: '/zitadel.session.v2.SessionService/ListSessions', body: { details: { totalResult: 'x' }, sessions: [{ id: sid }] } };
+    expect(await client.endPersonSessions(ended.userId, 1)).toBe('capped');
+    fake.answer = null;
+  });
+
+  it('no rows while the count names some (the session read permission missing, v4.16 default) is denied, not ended', async () => {
+    const p = fake.addPerson('r@example.in', 'x', true);
+    const held = fake.openSession(p.userId);
+    fake.sessionsReadDenied = true;
+    expect(await client.endPersonSessions(p.userId)).toBe('denied');
+    expect(fake.sessionsOf(p.userId)).toEqual([held]);
+    // nobody signed in: no rows and no count is Zitadel's answer for none
+    expect(await client.endPersonSessions(fake.addPerson('z@example.in', 'x').userId)).toBe('ended');
+  });
+
   it('a refused list or delete (403) is denied, any other failure is failed, and only a 2xx delete counts', async () => {
     const p = fake.addPerson('d@example.in', 'x', true);
     fake.openSession(p.userId);

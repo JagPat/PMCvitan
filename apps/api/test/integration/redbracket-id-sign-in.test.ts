@@ -90,6 +90,10 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     fake.spoil = 'none';
     fake.sessionsPageCap = null;
     fake.sessionsListLag = false;
+    fake.sessionsLagFirst = false;
+    fake.sessionsTotalOmitted = false;
+    fake.sessionsReadDenied = false;
+    fake.forgetDeletedSessions();
     fake.afterSessionsListed = null;
   });
 
