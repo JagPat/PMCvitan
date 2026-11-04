@@ -2781,7 +2781,7 @@ When "Set up or forgot password" sets the Redbracket ID password of the person a
 PMC then ends that person's issuer sessions (rb, Hub, the console), so whoever was signed in with the old password is
 signed out of Redbracket ID itself. It does this also when the password write got no clear answer (it may have
 landed). The awaited part is three rounds (list the person's sessions, delete them) and one confirming list, and it
-stops early rather than run past the 26 s after the claim that the 87 s completion lease leaves it. Hub's
+stops early rather than run past the 19 s after the claim that the 87 s completion lease leaves it. Hub's
 and rb's own app sessions are theirs to end; PMC ends only its own and the issuer's.
 
 Anything but "none left" writes `auth.password_reset_unfinished` on the account, with the issuer person id and the

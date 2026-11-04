@@ -28,15 +28,14 @@ describe('password completion lease (A4a)', () => {
   it('unit L: the sweep and everything after it fit inside the same 87 s lease the release before it holds (Codex 4472985591)', () => {
     // one lease in every release: a pod of the release before unit L and a pod of this one agree on when a claim ends
     expect(COMPLETION_LEASE_MS).toBe(87_000);
-    // what can follow the sweep, at its worst: the sign-in, one transaction (the settle, or ending the account's
-    // sessions again on a failure), and the margin
-    expect(COMPLETION_AFTER_SWEEP_MS).toBe(LOGIN_ISSUER_CALLS * IDENTITY_TIMEOUT_MS + PRISMA_TRANSACTION_BOUND_MS + 30_000);
+    // what can follow the sweep, at its worst: the sign-in, two transactions (the settle failing at its bound, then
+    // ending the account's sessions again: every transaction of the lease but the first, which runs before the
+    // write), and the margin
+    expect(COMPLETION_TRANSACTIONS - 1).toBe(2);
+    expect(COMPLETION_AFTER_SWEEP_MS).toBe(LOGIN_ISSUER_CALLS * IDENTITY_TIMEOUT_MS + (COMPLETION_TRANSACTIONS - 1) * PRISMA_TRANSACTION_BOUND_MS + 30_000);
     expect(COMPLETION_SWEEP_WINDOW_MS + COMPLETION_AFTER_SWEEP_MS).toBe(COMPLETION_LEASE_MS);
-    // before the sweep, at its worst: the lookup, marking the email verified, the password write, and the transaction
-    // that ends the account's sessions first. Even then the window still lets one list start
-    const beforeSweep = 3 * IDENTITY_TIMEOUT_MS + PRISMA_TRANSACTION_BOUND_MS;
-    expect(beforeSweep + IDENTITY_TIMEOUT_MS).toBeLessThanOrEqual(COMPLETION_SWEEP_WINDOW_MS);
-    // the parts the lease was made of are all still covered: before, sweep window, after
+    expect(COMPLETION_SWEEP_WINDOW_MS).toBe(19_000);
+    // the sign-in after the sweep is the lease's calls but the lookup, the email and the write
     expect(COMPLETION_ISSUER_CALLS).toBe(3 + LOGIN_ISSUER_CALLS);
   });
 

@@ -51,13 +51,16 @@ export const COMPLETION_LEASE_MS =
   COMPLETION_ISSUER_CALLS * IDENTITY_TIMEOUT_MS + COMPLETION_TRANSACTIONS * PRISMA_TRANSACTION_BOUND_MS + 30_000;
 /**
  * Unit L: what a completion may still do after a linked person's session sweep, at its worst: the sign-in that proves
- * the password ({@link LOGIN_ISSUER_CALLS} calls, each to its timeout), one transaction to its bound (the settle, or
- * on a failure ending the account's sessions again), and the lease's 30 s margin (pool waits, the unfinished row).
+ * the password ({@link LOGIN_ISSUER_CALLS} calls, each to its timeout), two transactions to their bound (the settle,
+ * and when it fails at its bound, ending the account's sessions again: every transaction of the lease but the first,
+ * which ends them before the write), and the lease's 30 s margin (pool waits, the unfinished row).
  */
-export const COMPLETION_AFTER_SWEEP_MS = LOGIN_ISSUER_CALLS * IDENTITY_TIMEOUT_MS + PRISMA_TRANSACTION_BOUND_MS + 30_000;
+export const COMPLETION_AFTER_SWEEP_MS =
+  LOGIN_ISSUER_CALLS * IDENTITY_TIMEOUT_MS + (COMPLETION_TRANSACTIONS - 1) * PRISMA_TRANSACTION_BOUND_MS + 30_000;
 /**
- * Unit L: how long after the claim the sweep may still start a call that ends, at its full timeout, in time (26 s
- * today). Everything after it fits in {@link COMPLETION_AFTER_SWEEP_MS}, so the whole completion stays inside
+ * Unit L: how long after the claim the sweep may still start a call that ends, at its full timeout, in time (19 s
+ * today). At worst-case timings before it (the lookup, the email, the write and the transaction ending the account's
+ * sessions all near their bounds) the sweep may send nothing: it then answers `capped`, which is recorded. Everything after it fits in {@link COMPLETION_AFTER_SWEEP_MS}, so the whole completion stays inside
  * {@link COMPLETION_LEASE_MS}: the 87 s lease the release before unit L also holds the account by, so during a rollout
  * no pod of either release can start a second completion while this one still runs (Codex 4472985591 on #1342).
  */

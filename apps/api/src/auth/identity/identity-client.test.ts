@@ -413,6 +413,24 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     fake.answer = null;
   });
 
+  it('a full page is never proof, even when its count names exactly its rows and every one was ended', async () => {
+    const p = fake.addPerson('w@example.in', 'x', true);
+    for (let i = 0; i < SESSIONS_PAGE + 1; i += 1) fake.openSession(p.userId);
+    const firstPage = fake.sessionsOf(p.userId).slice(0, SESSIONS_PAGE);
+    // after the first list (which this round then deletes), the issuer answers a full page of those same, now ended,
+    // rows with a count equal to them, while the 101st session is still there
+    fake.afterSessionsListed = () => {
+      fake.answer = {
+        path: '/zitadel.session.v2.SessionService/ListSessions',
+        body: { details: { totalResult: String(SESSIONS_PAGE) }, sessions: firstPage.map((id) => ({ id })) },
+      };
+    };
+    expect(await client.endPersonSessions(p.userId, 1)).toBe('capped');
+    expect(fake.sessionsOf(p.userId)).toHaveLength(1);
+    fake.afterSessionsListed = null;
+    fake.answer = null;
+  });
+
   it('no rows while the count names some (the session read permission missing, v4.16 default) is denied, not ended', async () => {
     const p = fake.addPerson('r@example.in', 'x', true);
     const held = fake.openSession(p.userId);
