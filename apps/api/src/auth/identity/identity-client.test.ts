@@ -107,6 +107,35 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     }
   });
 
+  it('every Connect call (DeleteSession, UpdateUser) names its protocol version, and only the Connect calls do', async () => {
+    const p = fake.addPerson('connect@example.in', 'Right-pass-123', false);
+    expect((await client.login('connect@example.in', 'Right-pass-123')).ok).toBe(true);
+    // the issuer session is ended without PMC waiting for it: wait for the fake to receive it
+    const ended = await fake.received('/zitadel.session.v2.SessionService/DeleteSession');
+    expect(await client.markVerified(p.userId, p.email)).toBeNull();
+    expect(p.verified).toBe(true);
+    expect(ended.headers['connect-protocol-version']).toBe('1');
+    const seen = fake.requests.map((q) => ({ path: q.path.split('?')[0]!, version: q.headers['connect-protocol-version'] ?? null }));
+    expect(seen.filter((q) => q.path.startsWith('/zitadel.')).map((q) => q.path)).toEqual([
+      '/zitadel.session.v2.SessionService/DeleteSession', '/zitadel.user.v2.UserService/UpdateUser',
+    ]);
+    for (const q of seen) expect(q).toEqual({ path: q.path, version: q.path.startsWith('/zitadel.') ? '1' : null });
+  });
+
+  it('the fake issuer refuses a Connect call without its protocol version, so every suite pins the header', async () => {
+    const p = fake.addPerson('refused@example.in', 'Right-pass-123', false);
+    const call = (headers: Record<string, string>) => fetch(`${fake.url}/zitadel.user.v2.UserService/UpdateUser`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${fake.serviceToken}`, ...headers },
+      body: JSON.stringify({ userId: p.userId, human: { email: { email: p.email, isVerified: true } } }),
+    });
+    expect((await call({})).status).toBe(400);
+    expect((await call({ 'Connect-Protocol-Version': '2' })).status).toBe(400);
+    expect(p.verified).toBe(false);
+    expect((await call({ 'Connect-Protocol-Version': '1' })).status).toBe(200);
+    expect(p.verified).toBe(true);
+  });
+
   it('a wrong password or an unknown email is rejected (not an outage), and no token is asked for', async () => {
     fake.addPerson('a@example.in', 'Right-pass-123');
     expect(await client.login('a@example.in', 'wrong')).toEqual({ ok: false, failure: 'rejected' });
