@@ -378,6 +378,17 @@ export class IdentitySignInService {
             const endedSessions = new Set<string>();
             if (found.verified) await client.endPersonSessions(found.userId, 1, endedSessions);
             await this.noSessions(client, found.userId, attempt, 'after', account.id, endedSessions);
+            // the methods list below is a projection that can lag a method made moments ago (Codex 4466723649): the
+            // fence asks the issuer's write side first (TOTP, email and SMS codes, passkeys and security keys on every
+            // rp id in FENCE_RP_IDS). It runs inside this account's completion claim, so no second reset of this person
+            // runs beside it (one account per email, and the person is found by its current email). Its markers are
+            // removed as it goes; one it could not remove refuses the link (unfinished, naming it)
+            const fence = await client.fenceOtherMethods(found.userId);
+            if (fence.fence === 'some') return this.contested(account.id, found.userId, attempt, `other sign-in method found during the reset (${fence.row})`);
+            if (fence.fence === 'unfinished') {
+              const left = fence.leftover.length > 0 ? `; left: ${fence.leftover.join(', ')}` : '';
+              return this.unfinished(account.id, found.userId, attempt, `methods fence ${fence.why} (${fence.row})${left}`);
+            }
             const after = await client.otherSignInMethods(found.userId);
             if (after === 'down') return this.unfinished(account.id, found.userId, attempt, 'other sign-in methods unreadable after the write');
             if (after.length > 0) return this.contested(account.id, found.userId, attempt, 'other sign-in methods added during the reset');

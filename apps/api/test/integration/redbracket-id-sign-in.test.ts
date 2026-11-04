@@ -22,12 +22,15 @@ import { AuthService } from '../../src/auth/auth.service';
 import { EmailService } from '../../src/platform/email.service';
 import { IdentitySignInService } from '../../src/auth/identity/identity-sign-in.service';
 import { PHONE_SIGN_IN_PURPOSE } from '../../src/auth/phone-sign-in.service';
-import { PasswordCredentialsService } from '../../src/auth/password-credentials.service';
+import { COMPLETION_LEASE_MS, PasswordCredentialsService } from '../../src/auth/password-credentials.service';
 import { SignInAttempts } from '../../src/auth/identity/sign-in-attempts';
-import { IdentityClient } from '../../src/auth/identity/identity-client';
+import { FENCE_ISSUER_CALLS, IdentityClient } from '../../src/auth/identity/identity-client';
 import { OrgsParticipant } from '../../src/orgs/orgs.participant';
 import { lockOrgStanding, orgStandingLockKey } from '../../src/common/readiness-lock';
 import { Prisma } from '@prisma/client';
+
+/** a claim stamped this long ago is past its completion lease (A4a), whatever the lease is today */
+const PAST_LEASE_MS = COMPLETION_LEASE_MS + 60_000;
 
 const ENV = ['IDENTITY_OIDC', 'IDENTITY_ISSUER', 'IDENTITY_ISSUER_ENDPOINT', 'IDENTITY_CLIENT_ID', 'IDENTITY_REDIRECT_URI', 'IDENTITY_SERVICE_TOKEN', 'THROTTLE_DISABLED', 'OPS_TOKEN'] as const;
 
@@ -204,7 +207,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     // that unclear write keeps its claim for its lease (A4a): let the lease run out before the next setup
     await t.prisma.passwordCredentialChallenge.updateMany({
       where: { userId: user.id, setupTokenExpiresAt: null, setupTokenHash: { not: null } },
-      data: { consumedAt: new Date(Date.now() - 3 * 60_000) },
+      data: { consumedAt: new Date(Date.now() - PAST_LEASE_MS) },
     });
 
     // the per-person quota (shared by sign-in and reset requests) is spent by now; the steps below come a quarter hour on
@@ -534,6 +537,82 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     expect(mailOf(user.email!)).toEqual([`${user.email} changed`]);
     const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: 'auth.password_reset_unfinished' } });
     expect(trail.map((e) => e.payload)).toEqual([{ issuerPerson: person.userId, reason: 'issuer sessions unreadable after the write' }]);
+  });
+
+  it('a way in the methods list does not show yet (it lags) is found by the fence after the write: contested, not linked, and the fence leaves it as it was (Codex 4466723649)', async () => {
+    const cases = [
+      { label: 'totp', row: 'totp', give: (m: ReturnType<FakeIssuer['methods']>) => { m.totp = 'ready'; } },
+      { label: 'otpemail', row: 'otp-email', give: (m: ReturnType<FakeIssuer['methods']>) => { m.otpEmail = true; } },
+      { label: 'passkey', row: 'passkey rb.vitan.in', give: (m: ReturnType<FakeIssuer['methods']>) => { m.keys.push({ id: 'k-own', kind: 'passkey', rpId: 'rb.vitan.in', ready: true }); } },
+      { label: 'legacyu2f', row: 'u2f id.vitan.in', give: (m: ReturnType<FakeIssuer['methods']>) => { m.keys.push({ id: 'k-own', kind: 'u2f', rpId: '', ready: true }); } },
+    ] as const;
+    for (const c of cases) {
+      const user = await invitee(`fence-${c.label}`);
+      const person = fake.addPerson(user.email!, 'the old passphrase', false);
+      c.give(fake.methods(person.userId)); // on the write side only: the methods list (person.methods) still shows none
+      const before = JSON.stringify(fake.methods(person.userId));
+      const refused = await setPassword(user.email!, 'the owner new passphrase', 409);
+      expect({ c: c.label, code: refused.body.code }).toEqual({ c: c.label, code: 'needs-help' });
+      expect(fake.people.get(person.userId)).toMatchObject({ password: 'the owner new passphrase', verified: false });
+      expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
+      const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: 'auth.password_reset_refused_contested' } });
+      expect(trail.map((e) => e.payload)).toEqual([{ issuerPerson: person.userId, reason: `other sign-in method found during the reset (${c.row})` }]);
+      // the person's own way in is untouched, and no marker the fence made is left
+      expect(JSON.stringify(fake.methods(person.userId))).toBe(before);
+      expect(fake.requests.some((r) => r.path.includes('UpdateUser'))).toBe(false);
+      fake.requests.length = 0;
+    }
+  });
+
+  it('a reset whose fence finds nothing links the person, asks the fence once after the sessions end and before marking verified, and leaves nothing behind', async () => {
+    const user = await invitee('fence-none');
+    const person = fake.addPerson(user.email!, 'a pre-registered passphrase', false);
+    const m = fake.methods(person.userId);
+    m.emailEverVerified = true; // the email-code question then adds and removes a live factor
+    m.keys.push({ id: 'k-elsewhere', kind: 'passkey', rpId: 'other.example', ready: true }); // an rp outside the list: not seen (residual (f))
+    m.keys.push({ id: 'k-unfinished', kind: 'u2f', rpId: 'rb.vitan.in', ready: false }); // a key never finished: not a way in
+    fake.requests.length = 0;
+    await setPassword(user.email!, 'the owner new passphrase', 201);
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'the owner new passphrase', verified: true });
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(1);
+    expect(fake.methods(person.userId)).toEqual({
+      totp: 'none', otpEmail: false, otpSms: false, emailEverVerified: true, phoneVerified: false,
+      keys: [{ id: 'k-elsewhere', kind: 'passkey', rpId: 'other.example', ready: true }, { id: 'k-unfinished', kind: 'u2f', rpId: 'rb.vitan.in', ready: false }],
+    });
+    const at = (match: (path: string) => boolean) => fake.requests.map((r, i) => (match(r.path) ? i : -1)).filter((i) => i >= 0);
+    const fence = at((p) => /^\/zitadel\.user\.v2\.UserService\/(Register|Remove|Add)/.test(p));
+    const [written] = at((p) => p.endsWith('/password'));
+    const [marked] = at((p) => p.includes('UpdateUser'));
+    const sessionsAfter = at((p) => p === '/zitadel.session.v2.SessionService/ListSessions').filter((i) => i > written!);
+    expect(fence.length).toBeGreaterThan(0);
+    expect(fence.length).toBeLessThanOrEqual(FENCE_ISSUER_CALLS);
+    expect(fence.every((i) => i > sessionsAfter[0]! && i < marked!)).toBe(true);
+  });
+
+  it('a fence marker that cannot be removed: unfinished (503) naming what is left, never linked; while it is left, the next reset is contested', async () => {
+    const user = await invitee('fence-leftover');
+    const person = fake.addPerson(user.email!, 'the old passphrase', false);
+    fake.methods(person.userId).emailEverVerified = true;
+    fake.force = { '/zitadel.user.v2.UserService/RemoveOTPEmail': 503 };
+    try {
+      await setPassword(user.email!, 'the owner new passphrase', 503);
+    } finally {
+      fake.force = {};
+    }
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'the owner new passphrase', verified: false });
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
+    const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: 'auth.password_reset_unfinished' } });
+    expect(trail.map((e) => e.payload)).toEqual([{ issuerPerson: person.userId, reason: 'methods fence cleanup failed (otp-email); left: otp-email' }]);
+    expect(fake.methods(person.userId).otpEmail).toBe(true); // the live factor the fence made is still there (RUNBOOK: remove it)
+    // the questions after the failed removal are not asked
+    expect(fake.requests.some((r) => /RegisterPasskey|RegisterU2F|AddOTPSMS/.test(r.path))).toBe(false);
+
+    await t.prisma.signInAttempt.deleteMany({});
+    const again = await setPassword(user.email!, 'the owner later passphrase', 409);
+    expect(again.body.code).toBe('needs-help');
+    const contested = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: 'auth.password_reset_refused_contested' } });
+    expect(contested.map((e) => e.payload)).toEqual([{ issuerPerson: person.userId, reason: 'other sign-in method found during the reset (otp-email)' }]);
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
   });
 
   it('an unverified person whose only session has expired is reset (an expired session cannot sign in)', async () => {
@@ -1273,9 +1352,9 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
       await go;
       return original.apply(this, args);
     });
-    // the older completion's own clock reads 3 min back (as if it had waited that long before its claim, longer than the
+    // the older completion's own clock reads a lease and a minute back (as if it had waited that long before its claim, longer than the
     // lease): the lease must still start at the claim itself, so the account is held from then
-    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() - 3 * 60_000 });
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() - PAST_LEASE_MS });
     let first: Promise<{ status: number }>;
     try {
       first = http().post('/auth/password/complete').send({ setupToken: older, password: 'the older passphrase A' }).then((r) => r);
@@ -1367,7 +1446,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     // its lease run out, the next setup proceeds
     await t.prisma.passwordCredentialChallenge.updateMany({
       where: { userId: user.id, setupTokenExpiresAt: null, setupTokenHash: { not: null } },
-      data: { consumedAt: new Date(Date.now() - 3 * 60_000) },
+      data: { consumedAt: new Date(Date.now() - PAST_LEASE_MS) },
     });
     await t.prisma.signInAttempt.deleteMany({});
     await http().post('/auth/password/complete').send({ setupToken: afterUnclear, password: 'the passphrase after it' }).expect(201);
@@ -1380,7 +1459,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     });
     const blocked = await codeFor();
     await http().post('/auth/password/complete').send({ setupToken: blocked, password: 'the fourth issuer passphrase' }).expect(409);
-    await t.prisma.passwordCredentialChallenge.update({ where: { id: stuck.id }, data: { consumedAt: new Date(Date.now() - 3 * 60_000) } });
+    await t.prisma.passwordCredentialChallenge.update({ where: { id: stuck.id }, data: { consumedAt: new Date(Date.now() - PAST_LEASE_MS) } });
     await t.prisma.signInAttempt.deleteMany({});
     await http().post('/auth/password/complete').send({ setupToken: blocked, password: 'the fourth issuer passphrase' }).expect(201);
     expect(await t.prisma.passwordCredentialChallenge.count({ where: { userId: user.id, setupTokenExpiresAt: null, verifiedAt: { not: null }, setupTokenHash: { not: null }, id: { not: stuck.id }, consumedAt: { gt: new Date(Date.now() - 2 * 60_000) } } })).toBe(0);

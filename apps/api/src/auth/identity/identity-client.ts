@@ -21,7 +21,7 @@
  *   PMC password or hash can reach the issuer.
  */
 import { createHash, randomBytes, type KeyObject } from 'node:crypto';
-import type { IdentityConfig } from './identity-config';
+import { FENCE_RP_IDS, type IdentityConfig } from './identity-config';
 import { checkIdToken, keyFromJwks, type IdClaims } from './id-token';
 
 export const IDENTITY_TIMEOUT_MS = 4000;
@@ -48,6 +48,31 @@ export type Lookup =
 export type Created = { ok: true; userId: string } | { ok: false; taken: true } | { ok: false; taken: false; failure: IdentityFailure };
 
 type Reply = { status: number; body: string; location: string | null };
+
+/** One question the issuer methods fence asks: an authenticator kind, and for a WebAuthn kind the rp id it asked about. */
+export type FenceRow = 'totp' | 'otp-email' | 'otp-sms' | `passkey ${string}` | `u2f ${string}`;
+/**
+ * The issuer methods fence's answer. `none`: none of the ways in it asks about (TOTP, email and SMS codes, passkeys and
+ * security keys on the rp ids in FENCE_RP_IDS), read from the issuer's write side (no projection lag). Recovery codes
+ * and linked identity providers are NOT asked (residuals (g) and (e)), nor a key on an rp id outside FENCE_RP_IDS (f).
+ * `some`: the person has one, `row` the first found. `unfinished`: a refused or unreadable answer (`row` the question);
+ * a question with no answer at all (timeout, network, 5xx), so what it may have made is in `leftover` as maybe left
+ * (`outcome unknown`); or the marker a question made could not be removed (`cleanup failed`, `leftover` names it).
+ */
+export type FenceAnswer =
+  | { fence: 'none' }
+  | { fence: 'some'; row: FenceRow }
+  | { fence: 'unfinished'; row: FenceRow; why: 'no usable answer' | 'outcome unknown' | 'cleanup failed'; leftover: FenceRow[] };
+
+/**
+ * The most issuer calls one fence makes: TOTP, OTP email and OTP SMS (each an add and its removal), and a passkey and
+ * a security key registration on every rp id (each with its removal). The completion lease must count these once the
+ * fence is called (it is not yet).
+ */
+export const FENCE_ISSUER_CALLS = 3 * 2 + FENCE_RP_IDS.length * 2 * 2;
+
+/** A Connect answer as the fence reads it: the status, the error code and message (Zitadel: `Key (ID)`), the body. */
+type FenceReply = { status: number; code: string; message: string; body: Record<string, unknown> };
 
 export type IdentityClientOptions = { timeoutMs?: number; now?: () => number };
 
@@ -352,6 +377,116 @@ export class IdentityClient {
     }
   }
 
+  // ------------------------------------------------------------------------------------------------- methods fence
+
+  /**
+   * Whether the person has a way to sign in at the issuer besides a password, asked of the issuer's WRITE side: each
+   * question below is a command Zitadel v4.16 answers from its event store (FilterToQueryReducer), so a method made a
+   * moment ago is never missed the way the methods list (a projection) can miss it. Nothing calls this yet.
+   *
+   * The caller must hold the issuer-person lock for `userId` (PMC's reset takes it before any issuer write): RemoveTOTP,
+   * RemoveOTPEmail and RemoveOTPSMS name no marker id, so two fences on one person at once could remove each other's.
+   *
+   * Questions, in order, stopping at the first that is not `none` (Connect, service token; v4.16 cites):
+   * 1. RegisterTOTP: `already_exists` COMMAND-do9se = TOTP ready (internal/command/user_human_otp.go addHumanTOTP).
+   *    A 2xx made a pending (not ready) secret: removed with RemoveTOTP. The secret is never read or kept.
+   * 2. AddOTPEmail: `already_exists` COMMAND-MKL2s = email codes on, checked BEFORE `failed_precondition` COMMAND-KLJ2d
+   *    (email not verified: nothing written), so a person who has them always answers `already_exists`. A 2xx turned
+   *    email codes ON for this person: removed with RemoveOTPEmail by the next call (addHumanOTPEmail; no notifier
+   *    handles HumanOTPEmailAddedType). "Verified" is ever verified: v4.16's write model sets it on a verified event and
+   *    keeps it through an email change (user_human_otp_model.go), so the codes would go to the CURRENT address, which
+   *    the reset has just proved with PMC's own code. 3. AddOTPSMS: the same, COMMAND-Ad3g2 before COMMAND-Q54j2 (no
+   *    phone ever verified).
+   * 4. RegisterPasskey and 5. RegisterU2F on every rp id in FENCE_RP_IDS: the creation options list the person's READY
+   *    keys for that rp id in `excludeCredentials` (internal/webauthn/converter.go WebAuthNsToCredentials; a key stored
+   *    with no rp id is listed only for the instance domain). Any listed = `some`. The registration made a not-ready
+   *    key: removed by its id with RemovePasskey / RemoveU2F.
+   *
+   * A marker a question made is removed by the very next call, before the answer is read or another question asked
+   * (also after a `some`), so a marker lives for one call. A removal answering 2xx, or `not_found` with that removal's
+   * own id (already gone), is clean; anything else stops the fence: `unfinished` / `cleanup failed`, naming the marker,
+   * so the caller never links. A removal is sent only after the question's own 2xx. RemoveTOTP, RemoveOTPEmail and
+   * RemoveOTPSMS name no id, so a factor the person themself made in that one call's window (e.g. their own TOTP,
+   * registered and verified between the fence's RegisterTOTP and RemoveTOTP) is removed too: the person loses a factor
+   * they just made, no one gains one (the answer, none, is then true). A question that gets no answer at all (timeout,
+   * network, 5xx) may still have made its marker, which the fence cannot tell from the person's own, so it is not
+   * removed and the answer is `unfinished` / `outcome unknown` naming it. Never throws; at most FENCE_ISSUER_CALLS calls.
+   *
+   * Lasting effect: the add and removal of email or SMS codes clears the person's "MFA setup skipped" mark (v4.16
+   * query/projection/user.go on HumanOTP*Added), so a person who skipped MFA set-up may be asked again at their next
+   * hosted-login sign-in while the login policy's MFAInitSkipLifetime is above 0. v4.16 has no API call to restore
+   * the mark (HumanSkipMFAInit is used only by its own login UI, internal/api/ui/login/mfa_prompt_handler.go).
+   */
+  async fenceOtherMethods(userId: string): Promise<FenceAnswer> {
+    try {
+      return await this.fenceAsk(userId);
+    } catch {
+      return { fence: 'unfinished', row: 'totp', why: 'no usable answer', leftover: [] };
+    }
+  }
+
+  /** The fence's questions, in order; a marker a question made is removed by the very next call, before any answer. */
+  private async fenceAsk(userId: string): Promise<FenceAnswer> {
+    const unfinished = (row: FenceRow, r?: FenceReply): FenceAnswer =>
+      r && unanswered(r)
+        ? // no answer to a question that writes: it may have made its marker (for the email and SMS rows, codes ON)
+          { fence: 'unfinished', row, why: 'outcome unknown', leftover: [row] }
+        : { fence: 'unfinished', row, why: 'no usable answer', leftover: [] };
+    // removes the marker `row`'s own 2xx made; false when it may still be there (the fence then stops: cleanup failed)
+    const removed = async (rpc: string, body: Record<string, string>, absent: string): Promise<boolean> => {
+      const r = await this.fenceCall(rpc, body);
+      return ok(r) || isError(r, 404, 'not_found', absent);
+    };
+    const leftover = (row: FenceRow): FenceAnswer => ({ fence: 'unfinished', row, why: 'cleanup failed', leftover: [row] });
+
+    const totp = await this.fenceCall('RegisterTOTP', { userId });
+    if (ok(totp)) {
+      if (!(await removed('RemoveTOTP', { userId }, 'COMMAND-Hd9sd'))) return leftover('totp');
+    } else if (isError(totp, 409, 'already_exists', 'COMMAND-do9se')) return { fence: 'some', row: 'totp' };
+    else return unfinished('totp', totp);
+
+    const otps = [
+      { row: 'otp-email', add: 'AddOTPEmail', remove: 'RemoveOTPEmail', on: 'COMMAND-MKL2s', unverified: 'COMMAND-KLJ2d', absent: 'COMMAND-b312D' },
+      { row: 'otp-sms', add: 'AddOTPSMS', remove: 'RemoveOTPSMS', on: 'COMMAND-Ad3g2', unverified: 'COMMAND-Q54j2', absent: 'COMMAND-Sr3h3' },
+    ] as const;
+    for (const o of otps) {
+      const r = await this.fenceCall(o.add, { userId });
+      if (ok(r)) {
+        if (!(await removed(o.remove, { userId }, o.absent))) return leftover(o.row);
+      } else if (isError(r, 409, 'already_exists', o.on)) return { fence: 'some', row: o.row };
+      else if (!isError(r, 400, 'failed_precondition', o.unverified)) return unfinished(o.row, r);
+    }
+
+    for (const rpId of FENCE_RP_IDS) {
+      const keys = [
+        { row: `passkey ${rpId}`, add: 'RegisterPasskey', remove: 'RemovePasskey', id: 'passkeyId' },
+        { row: `u2f ${rpId}`, add: 'RegisterU2F', remove: 'RemoveU2F', id: 'u2fId' },
+      ] as const;
+      for (const k of keys) {
+        const r = await this.fenceCall(k.add, { userId, domain: rpId });
+        const id = ok(r) ? str(r.body[k.id]) : '';
+        // a 2xx with no key id made a key the fence cannot name to remove: its outcome is as unknown as no answer
+        if (!id) return unfinished(k.row, ok(r) ? { ...r, status: 0 } : r);
+        if (!(await removed(k.remove, { userId, [k.id]: id }, 'COMMAND-DAfb2'))) return leftover(k.row);
+        const listed = excluded(r.body.publicKeyCredentialCreationOptions);
+        if (listed === null) return unfinished(k.row);
+        if (listed > 0) return { fence: 'some', row: k.row };
+      }
+    }
+    return { fence: 'none' };
+  }
+
+  /** One fence question to the issuer's user service, read as Connect answers it. Never throws: no answer is status 0. */
+  private async fenceCall(rpc: string, body: Record<string, string>): Promise<FenceReply> {
+    try {
+      const r = await this.send('POST', `/zitadel.user.v2.UserService/${rpc}`, { json: body, service: true });
+      const o = json(r.body);
+      return { status: r.status, code: str(o.code), message: str(o.message), body: o };
+    } catch {
+      return { status: 0, code: '', message: '', body: {} };
+    }
+  }
+
   // ------------------------------------------------------------------------------------------------- HTTP
 
   private async send(
@@ -465,6 +600,31 @@ export function readLookup(status: number, body: string, email: string): Lookup 
   if (!current || current !== email.trim().toLowerCase()) return { found: 'unclear' };
   // Zitadel leaves out a false boolean: a missing isVerified is not verified
   return { found: 'one', userId, verified: mail.isVerified === true };
+}
+
+const ok = (r: FenceReply): boolean => r.status >= 200 && r.status <= 299;
+/** no answer at all: a timeout or network failure (status 0) or a 5xx; the write may or may not have happened */
+const unanswered = (r: FenceReply): boolean => r.status === 0 || r.status >= 500;
+
+/**
+ * A Connect error exactly as Zitadel v4.16 sends it for one command error: the HTTP status and Connect code its kind
+ * maps to, and the message `Key (ID)` carrying that error's own id (internal/api/grpc/gerrors ZITADELToConnectError).
+ */
+function isError(r: FenceReply, status: number, code: string, id: string): boolean {
+  return r.status === status && r.code === code && r.message.endsWith(`(${id})`);
+}
+
+/**
+ * How many keys WebAuthn creation options list in `excludeCredentials` (go-webauthn leaves it out when there are none),
+ * or null when the options are not the `{ publicKey: {...} }` shape Zitadel returns.
+ */
+function excluded(options: unknown): number | null {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) return null;
+  const pk = (options as Record<string, unknown>).publicKey;
+  if (!pk || typeof pk !== 'object' || Array.isArray(pk)) return null;
+  const list = (pk as Record<string, unknown>).excludeCredentials;
+  if (list === undefined || list === null) return 0;
+  return Array.isArray(list) ? list.length : null;
 }
 
 function random(bytes: number): string {

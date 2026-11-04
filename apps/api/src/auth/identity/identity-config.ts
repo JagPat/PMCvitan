@@ -25,6 +25,14 @@
 import { isProduction } from '../../config';
 
 export const REDBRACKET_ISSUER = 'https://id.vitan.in';
+/**
+ * Every WebAuthn relying party (rp id) a passkey or security key of a Redbracket ID person can be made on: the instance
+ * domain (which also stands for legacy keys stored with no rp id) and every `domain` a login UI or app (Hub, rb, the
+ * console, PMC) sends when it registers a key. The issuer methods fence (`IdentityClient.fenceOtherMethods`) asks
+ * about each one, because Zitadel v4.16 lists a key only for the rp it was made on (internal/webauthn/converter.go:13
+ * WebAuthNsToCredentials). A new one is a code change and a deploy, done BEFORE that portal launches (RUNBOOK §RBF).
+ */
+export const FENCE_RP_IDS = ['id.vitan.in', 'rb.vitan.in', 'pms.vitan.in', 'hub.vitan.in'] as const;
 export const IDENTITY_ENV = ['IDENTITY_ISSUER', 'IDENTITY_ISSUER_ENDPOINT', 'IDENTITY_CLIENT_ID', 'IDENTITY_REDIRECT_URI', 'IDENTITY_SERVICE_TOKEN'] as const;
 export type IdentityEnvName = (typeof IDENTITY_ENV)[number];
 

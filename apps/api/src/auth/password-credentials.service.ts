@@ -15,7 +15,7 @@ import { EmailService } from '../platform/email.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { UNAVAILABLE, type IdentityOutcome, type IdentitySignInService } from './identity/identity-sign-in.service';
 import { isRetired } from './identity/identity-accounts';
-import { IDENTITY_TIMEOUT_MS } from './identity/identity-client';
+import { FENCE_ISSUER_CALLS, IDENTITY_TIMEOUT_MS } from './identity/identity-client';
 
 const PURPOSE = PASSWORD_SETUP_PURPOSE;
 const LIFETIME_MS = 10 * 60_000;
@@ -28,12 +28,13 @@ const GENERIC_ERROR = 'Password setup code or link is invalid or expired.';
  * verified, setting the password or making the person (one of the two), a verified unlinked person's sessions ended
  * after the write and awaited (one list, its deletes at once, before the sessions are asked again), and the sign-in
  * that proves it (authorize, session, auth request, token, signing keys, and ending the issuer session, which is not
- * awaited, so counting it over-counts). `completion-lease.test.ts` counts the client's `send` calls (and those reached
+ * awaited, so counting it over-counts), and the issuer methods fence after the write (at most FENCE_ISSUER_CALLS, 22,
+ * through its one send site). `completion-lease.test.ts` counts the client's `send` calls (and those reached
  * twice) so this cannot fall behind them; no one path makes them all, so the sum over-counts. The full sweep of the
  * person's other issuer sessions in `finally` is not counted: it runs after the password write, is not awaited, and a
  * late delete only ends a session.
  */
-export const COMPLETION_ISSUER_CALLS = 15;
+export const COMPLETION_ISSUER_CALLS = 15 + FENCE_ISSUER_CALLS;
 /**
  * The transactions after the claim (the linked-elsewhere read under the person's lock, sessions ended before the issuer
  * write and again on a failure; the settle).
@@ -48,7 +49,7 @@ export const PRISMA_TRANSACTION_BOUND_MS = 2_000 + 5_000;
  * transaction's lock wait is not bounded by Prisma's 5 s, but a wait that outlasts it fails the transaction (P2028,
  * answered 503) before the write is sent, so it can delay a completion only into a failure, never into a late write.
  * Root-client reads wait on the pool outside any transaction, and the 30 s margin absorbs that. At worst the window is
- * about 30 s. The lease adds every call and transaction the whole completion can make, so it is 118 s today, and it
+ * about 30 s. The lease adds every call and transaction the whole completion can make, so it is 206 s today, and it
  * is derived: a longer issuer timeout lengthens it. A completion whose process stopped frees the account when its
  * lease runs out. So does one whose issuer write got no clear answer (`unsettled`), which keeps its claim instead of
  * clearing it. A process paused for longer than the lease between claim and write is the residual (PR body).
