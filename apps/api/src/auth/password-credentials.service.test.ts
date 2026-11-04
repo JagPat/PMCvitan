@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { BadRequestException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -305,6 +306,28 @@ describe('PasswordCredentialsService', () => {
     expect(tokenScope(toldShared.setupToken)).toBe('shared');
     expect(tokenScope(toldOwn.setupToken)).toBe('pmc');
     expect(tokenScope('x.' + 'a'.repeat(43))).toBe('other');
+  });
+
+  it('stores a scoped token under a hash the release before scopes cannot look up, so an old pod cannot complete it', async () => {
+    // Codex 4471261534 on #1341: an old pod finds a setup token by sha256(token) and completes it under its own switch
+    const plain = (token: string) => createHash('sha256').update(token).digest('hex');
+    for (const shared of [true, false]) {
+      const { service, prisma, delivered } = make([activeUser()]);
+      const { requestId } = await service.request({ email: 'member@example.com' });
+      const verified = await service.verify({ requestId, code: delivered[0]!.code }, shared);
+      expect(tokenScope(verified.setupToken)).toBe(shared ? 'shared' : 'pmc');
+      expect(prisma.challenges[0]?.setupTokenHash).not.toBe(plain(verified.setupToken));
+      // the old release's lookup finds nothing: its generic refusal, the code unspent
+      expect(prisma.challenges.find((row) => row.setupTokenHash === plain(verified.setupToken))).toBeUndefined();
+      // while this release still completes it under its own scope
+      if (!shared) {
+        const updated = await service.complete({ setupToken: verified.setupToken, password: 'a long internal passphrase' });
+        expect(await bcrypt.compare('a long internal passphrase', updated.passwordHash!)).toBe(true);
+      }
+    }
+    // an unscoped token keeps the plain hash both releases read
+    const { service } = make([activeUser()]);
+    expect((service as unknown as { tokenHash(t: string): string }).tokenHash('a'.repeat(43))).toBe(plain('a'.repeat(43)));
   });
 
   it('takes a token with no scope (issued by the release before scopes) under either switch, as that release did', async () => {

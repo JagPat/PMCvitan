@@ -50,6 +50,8 @@ export const COMPLETION_LEASE_MS =
 /** A setup token's scope prefix: the one Redbracket ID password, or PMC's own (base64url never holds a dot). */
 const SCOPE_SHARED = 'rb.';
 const SCOPE_PMC = 'pmc.';
+/** Prefixed to a scoped token before it is hashed (see `tokenHash`); never part of the token itself. */
+const SCOPED_TOKEN_HASH_DOMAIN = 'pmc-setup-token-scoped-v1\u0000';
 /**
  * The scope a setup token was issued for. One with no prefix (`unscoped`) was issued by the release before scopes, which
  * completed it under whichever switch the completing pod read; it is taken under either scope, as that release did, so
@@ -102,8 +104,15 @@ export class PasswordCredentialsService {
     return createHmac('sha256', this.hmacSecret).update(`${challengeId}:${code}`).digest('hex');
   }
 
+  /**
+   * A scoped token's stored hash is domain-separated from the plain hash the release before scopes looks tokens up by,
+   * so an old pod still serving during the rollout cannot find (and complete under its own switch) a token a new pod
+   * bound to a scope: it answers the generic refusal, spending nothing, and the person asks for a new code (Codex
+   * 4471261534 on #1341). An unscoped token, which only that release issues, keeps the plain hash both releases read.
+   */
   private tokenHash(token: string): string {
-    return createHash('sha256').update(token).digest('hex');
+    const scoped = tokenScope(token) === 'shared' || tokenScope(token) === 'pmc';
+    return createHash('sha256').update(scoped ? `${SCOPED_TOKEN_HASH_DOMAIN}${token}` : token).digest('hex');
   }
 
   private sameHash(left: string, right: string): boolean {
