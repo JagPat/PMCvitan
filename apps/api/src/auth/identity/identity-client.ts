@@ -28,6 +28,8 @@ export const IDENTITY_TIMEOUT_MS = 4000;
 /** How long an issuer session PMC opens may live (a protobuf Duration): a sign-in finishes well inside it. */
 export const ISSUER_SESSION_LIFETIME = '60s';
 const BODY_LIMIT = 1_000_000;
+/** The most issuer sessions a reset ends for one person; more is not a person's own use, and is left to expire. */
+export const SESSIONS_ENDED_MAX = 20;
 
 /** `down`: no usable answer (timeout, network, 5xx, PMC's service token refused). `rejected`: the issuer said no. */
 export type IdentityFailure = 'down' | 'rejected';
@@ -126,11 +128,65 @@ export class IdentityClient {
     }
   }
 
-  private async endSession(sessionId: string, sessionToken: string): Promise<void> {
+  /**
+   * Deletes one issuer session. With its token (a session PMC opened itself), or without one (another session of a
+   * person whose password PMC just reset), which takes the service account's session.delete permission. True when the
+   * issuer took it. Never throws.
+   */
+  private async endSession(sessionId: string, sessionToken?: string): Promise<boolean> {
     try {
-      await this.send('POST', '/zitadel.session.v2.SessionService/DeleteSession', { json: { sessionId, sessionToken }, service: true });
+      const r = await this.send('POST', '/zitadel.session.v2.SessionService/DeleteSession', {
+        json: sessionToken ? { sessionId, sessionToken } : { sessionId },
+        service: true,
+      });
+      // a session already gone (it expired, or PMC's own sign-in deleted it first) is ended
+      return (r.status >= 200 && r.status <= 299) || r.status === 404;
     } catch {
       // best effort: the issuer's session also expires on its own (ISSUER_SESSION_LIFETIME, set at creation)
+      return false;
+    }
+  }
+
+  /**
+   * After a reset, ends every issuer session the person holds (the rb login and any other portal's sign-in in progress
+   * there), so whoever knew the old password is signed out of Redbracket ID itself. At most {@link SESSIONS_ENDED_MAX}
+   * are ended; true only when the issuer listed them all and took every delete. A portal's own session (Hub's, PMC's) is
+   * that portal's to end. Best effort: the password is already set. Never throws.
+   */
+  async endPersonSessions(userId: string): Promise<boolean> {
+    try {
+      const r = await this.send('POST', '/zitadel.session.v2.SessionService/ListSessions', {
+        json: { queries: [{ userIdQuery: { id: userId } }] },
+        service: true,
+      });
+      if (r.status < 200 || r.status > 299) return false;
+      const listed = json(r.body).sessions;
+      if (listed !== undefined && !Array.isArray(listed)) return false;
+      const ids = (listed ?? []).map((row: unknown) => (row && typeof row === 'object' ? str((row as Record<string, unknown>).id) : ''));
+      if (ids.some((id) => !id)) return false;
+      const ended = await Promise.all(ids.slice(0, SESSIONS_ENDED_MAX).map((id) => this.endSession(id)));
+      return ended.every(Boolean) && ids.length <= SESSIONS_ENDED_MAX;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The ways besides a password this person can sign in at the issuer (passkeys, one-time codes, U2F keys, linked
+   * identity providers), as the issuer names them; `down` when it gave no usable answer. Asked before PMC resets a
+   * person whose email was never verified, who may have been registered by someone else (see `setPassword`).
+   */
+  async otherSignInMethods(userId: string): Promise<string[] | 'down'> {
+    try {
+      const r = await this.send('POST', '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes', { json: { userId }, service: true });
+      if (r.status < 200 || r.status > 299) return 'down';
+      const types = json(r.body).authMethodTypes;
+      // Zitadel leaves out an empty list
+      if (types === undefined) return [];
+      if (!Array.isArray(types) || types.some((t) => typeof t !== 'string')) return 'down';
+      return (types as string[]).filter((t) => t !== 'AUTHENTICATION_METHOD_TYPE_PASSWORD');
+    } catch {
+      return 'down';
     }
   }
 

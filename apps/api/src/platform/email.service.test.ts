@@ -169,26 +169,28 @@ describe('EmailService.sendPasswordChanged', () => {
   });
 
   it('reports not-live without SMTP and does not throw, in production too: the change has already landed', async () => {
-    await expect(new EmailService().sendPasswordChanged('jp@vitan.in')).resolves.toEqual({ live: false });
+    await expect(new EmailService().sendPasswordChanged('jp@vitan.in', 'changed')).resolves.toEqual({ live: false });
     process.env.NODE_ENV = 'production';
     try {
-      await expect(new EmailService().sendPasswordChanged('jp@vitan.in')).resolves.toEqual({ live: false });
+      await expect(new EmailService().sendPasswordChanged('jp@vitan.in', 'changed')).resolves.toEqual({ live: false });
     } finally {
       process.env.NODE_ENV = 'test';
     }
   });
 
-  it('tells the person their one Redbracket ID password changed, and carries no code or link', async () => {
+  it('tells the person their one Redbracket ID password changed (or was set, for a new person), with no code or link', async () => {
     sent.length = 0;
     process.env.SMTP_HOST = 'smtp.zoho.in';
     process.env.SMTP_USER = 'no-reply@vitan.in';
     process.env.SMTP_PASS = 'secret';
-    await expect(new EmailService().sendPasswordChanged(' JP@vitan.in ')).resolves.toEqual({ live: true });
-    expect(sent).toHaveLength(1);
+    await expect(new EmailService().sendPasswordChanged(' JP@vitan.in ', 'changed')).resolves.toEqual({ live: true });
+    await new EmailService().sendPasswordChanged('new@vitan.in', 'set');
+    expect(sent).toHaveLength(2);
     expect(sent[0].to).toBe('jp@vitan.in');
-    expect(sent[0].subject).toBe('Your Redbracket ID password was changed');
+    expect(sent.map((m) => m.subject)).toEqual(['Your Redbracket ID password was changed', 'Your Redbracket ID password was set']);
+    expect(sent[1].text).toMatch(/^Your Redbracket ID password was just set from Vitan PMC\./);
     expect(sent[0].text).toMatch(/one password you use on every Vitan portal \(PMC, Hub and rb\)/);
     expect(sent[0].text).toMatch(/If you did not do this/);
-    expect(`${sent[0].text}${sent[0].html}`).not.toMatch(/\d{6}|https?:/);
+    for (const m of sent) expect(`${m.text}${m.html}`).not.toMatch(/\d{6}|https?:/);
   });
 });

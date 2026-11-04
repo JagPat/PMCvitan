@@ -100,8 +100,10 @@ export class AuthController {
   @Public()
   @Throttle(15, WINDOW)
   @Post('password/verify')
-  passwordVerify(@Body(new ZodPipe(passwordCredentialVerifySchema)) body: PasswordCredentialVerifyInput) {
-    return this.passwordCredentials.verify(body);
+  async passwordVerify(@Body(new ZodPipe(passwordCredentialVerifySchema)) body: PasswordCredentialVerifyInput) {
+    // whether the password chosen next is the one Redbracket ID password every Vitan portal uses (switch on) or PMC's
+    // own (switch off), so the screen says which is true
+    return { ...(await this.passwordCredentials.verify(body)), sharedPassword: identitySwitchOn() };
   }
 
   @Public()

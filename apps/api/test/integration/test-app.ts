@@ -30,7 +30,7 @@ export interface TestAppOptions {
   /** #827 — mail is "configured" and phone sign-in codes are captured here instead of sent (throw to fail a send). */
   capturePhoneCode?: (email: string, code: string) => void;
   /** the "your password was changed" email is captured here instead of sent (throw to fail a send) */
-  capturePasswordChanged?: (email: string) => void;
+  capturePasswordChanged?: (email: string, kind: 'set' | 'changed') => void;
   /** #1177 VT2 — the speech provider a voice note's words are asked of (a fake; production's is Sarvam, when keyed). */
   speechProvider?: SpeechProvider;
 }
@@ -43,8 +43,8 @@ export async function createTestApp(options: TestAppOptions = {}): Promise<TestA
   if (options.capturePasswordCode || options.capturePhoneCode || options.capturePasswordChanged) {
     const email = new EmailService();
     if (options.capturePasswordChanged) {
-      email.sendPasswordChanged = async (address) => {
-        options.capturePasswordChanged!(address);
+      email.sendPasswordChanged = async (address, kind) => {
+        options.capturePasswordChanged!(address, kind);
         return { live: true };
       };
     }

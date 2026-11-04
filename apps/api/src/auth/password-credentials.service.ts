@@ -24,13 +24,18 @@ const BCRYPT_COST = 12;
 const GENERIC_ERROR = 'Password setup code or link is invalid or expired.';
 /**
  * Redbracket ID A4a: the issuer calls one password completion can make after its claim, none retried: the lookup,
- * marking the email verified, setting the password or making the person (one of the two), and the sign-in that proves
- * it (authorize, session, auth request, token, signing keys, and ending the issuer session, which is not awaited, so
- * counting it over-counts). `completion-lease.test.ts` counts the client's `send` calls so this cannot fall behind them.
+ * asking an unverified person's other sign-in methods, marking the email verified, setting the password or making the
+ * person (one of the two), and the sign-in that proves it (authorize, session, auth request, token, signing keys, and
+ * ending the issuer session, which is not awaited, so counting it over-counts). `completion-lease.test.ts` counts the
+ * client's `send` calls so this cannot fall behind them. Ending the person's other issuer sessions after a reset is
+ * not counted: it runs after the password write, is not awaited, and a late delete only ends a session.
  */
-export const COMPLETION_ISSUER_CALLS = 9;
-/** The transactions after the claim (sessions ended before the issuer write and again on a failure; the settle). */
-export const COMPLETION_TRANSACTIONS = 3;
+export const COMPLETION_ISSUER_CALLS = 10;
+/**
+ * The transactions after the claim (the linked-elsewhere read under the person's lock, sessions ended before the issuer
+ * write and again on a failure; the settle).
+ */
+export const COMPLETION_TRANSACTIONS = 4;
 /** Prisma's default bounds for one transaction: 2 s to start and 5 s to run. */
 export const PRISMA_TRANSACTION_BOUND_MS = 2_000 + 5_000;
 /**
@@ -40,7 +45,7 @@ export const PRISMA_TRANSACTION_BOUND_MS = 2_000 + 5_000;
  * transaction's lock wait is not bounded by Prisma's 5 s, but a wait that outlasts it fails the transaction (P2028,
  * answered 503) before the write is sent, so it can delay a completion only into a failure, never into a late write.
  * Root-client reads wait on the pool outside any transaction, and the 30 s margin absorbs that. At worst the window is
- * about 30 s. The lease adds every call and transaction the whole completion can make, so it is 87 s today, and it
+ * about 30 s. The lease adds every call and transaction the whole completion can make, so it is 98 s today, and it
  * is derived: a longer issuer timeout lengthens it. A completion whose process stopped frees the account when its
  * lease runs out. So does one whose issuer write got no clear answer (`unsettled`), which keeps its claim instead of
  * clearing it. A process paused for longer than the lease between claim and write is the residual (PR body).
@@ -299,10 +304,8 @@ export class PasswordCredentialsService {
     let established = false;
     let claimed = false;
     let unsettled = false;
-    let changed = false;
-    let outcome: IdentityOutcome;
     try {
-      outcome = await identity.setPassword(
+      return await identity.setPassword(
         account,
         input.password,
         challenge.id,
@@ -316,13 +319,11 @@ export class PasswordCredentialsService {
           established = Boolean(eligible.passwordHash || eligible.emailVerifiedAt);
         },
         // written once the account is known, about that account: when an established account joined fresh, the new
-        // account (its retirement is recorded on the old one, identity-accounts.ts); and a step that left an existing
-        // issuer password as it was is a join, not a reset or enrolment
-        async (tx, outcome, issuerPasswordSet) => {
-          changed = issuerPasswordSet;
-          const action = !issuerPasswordSet
-            ? 'auth.identity_joined'
-            : outcome.fresh || !established ? 'auth.password_enrolled' : 'auth.password_reset';
+        // account (its retirement is recorded on the old one, identity-accounts.ts). Writing over the password of an
+        // issuer person who already existed is a reset (Hub and rb use it too); making the person is an enrolment,
+        // unless the account was already set up
+        async (tx, outcome, issuerPerson) => {
+          const action = issuerPerson === 'existing' || (established && !outcome.fresh) ? 'auth.password_reset' : 'auth.password_enrolled';
           await tx.securityAuditEvent.create({
             data: {
               action,
@@ -338,6 +339,14 @@ export class PasswordCredentialsService {
         () => {
           unsettled = true;
         },
+        // the issuer took the password: the mailbox the code proved is told at once, whatever PMC's own steps do next
+        // (a refused or failed settle still changed the password). Not awaited, so a slow or failed send never holds or
+        // fails the setup
+        (issuerPerson) => {
+          void this.email
+            .sendPasswordChanged(account.email ?? '', issuerPerson === 'existing' ? 'changed' : 'set')
+            .catch((error: unknown) => this.log.warn(`Password credential completion ${challenge.id}: password-changed email failed: ${error instanceof Error ? error.name : typeof error}`));
+        },
       );
     } catch (err) {
       // a transaction the server closed (its time ran out waiting on the account's lock) is "unavailable", never a
@@ -348,14 +357,6 @@ export class PasswordCredentialsService {
       if (claimed && !unsettled) await this.settleCompletion(challenge.id);
       if (claimed && unsettled) this.log.warn(`Password credential completion ${challenge.id}: issuer write unclear; its lease frees the account`);
     }
-    // after the change has landed, to the mailbox the code proved; not awaited, so a slow or failed send never holds
-    // or fails the setup
-    if (changed) {
-      void this.email
-        .sendPasswordChanged(account.email ?? '')
-        .catch((error: unknown) => this.log.warn(`Password credential completion ${challenge.id}: password-changed email failed: ${(error as Error).constructor.name}`));
-    }
-    return outcome;
   }
 
   /**

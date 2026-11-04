@@ -115,6 +115,8 @@ async function compareEvenly(password: string, hash: string | null): Promise<boo
 export type SignInAccount = Pick<User, 'id' | 'projectId' | 'role' | 'name' | 'credentialVersion' | 'lastProjectId'>;
 /** What a route does next: issue PMC's session for `account`; `fresh` when it was made by this sign-in. */
 export type IdentityOutcome = { account: SignInAccount; fresh: boolean; breakGlass?: BreakGlass };
+/** Whose password a setup wrote at the issuer: a person it just made, or one that already existed (a reset). */
+export type IssuerPersonSet = 'made' | 'existing';
 /** A break-glass password matched; `settle` writes the try's one log line once the session is issued or refused. */
 export type BreakGlass = { settle: (decision: string) => void };
 
@@ -255,13 +257,14 @@ export class IdentitySignInService {
    * the issuer: a code is spent once, and a refused or failed step after it means asking for a new code. (The code is
    * single-use, so this step is not counted against the per-person limit; its request was.) The password is then set
    * on the issuer person this account is (linked), or a new issuer person is made with it. An issuer person who already
-   * holds the email and is not yet linked to this account gets the typed password too (Jagrut, 4 Nov 2026: "Set up or
-   * forgot password" resets the one Redbracket ID password every Vitan portal uses, as Hub's reset does): the code
-   * proved the same mailbox the issuer person holds; one linked to another PMC account is left as it is. Nothing is
-   * written to `User.passwordHash`. Last, in one transaction, the PMC account is settled and `record` writes the
-   * security trail for the account it settled on (a new one when an established account joins fresh), saying whether
-   * this step set the issuer password. `attempt` names the try in the one log line (the
-   * challenge id). `unsettled` is called when the issuer write itself (making the person, or setting the password)
+   * holds the email and is not yet linked gets the typed password too (Jagrut, 4 Nov 2026: "Set up or forgot password"
+   * resets the one Redbracket ID password every Vitan portal uses): the code proved the same mailbox the person holds.
+   * One linked to another PMC account is left as it is, and so is one whose email was never verified that holds another
+   * way in (a passkey, a one-time code, a linked provider). `passwordSet` is told as soon as the issuer took the
+   * password (the "password changed" notice goes then, whatever follows), and the person's other issuer sessions are
+   * ended. Nothing is written to `User.passwordHash`. Last, in one transaction, the PMC account is settled and `record`
+   * writes the security trail for the account it settled on (a new one when an established account joins fresh), saying
+   * whose password was set. `attempt` names the try in the one log line (the challenge id). `unsettled` is called when the issuer write itself (making the person, or setting the password)
    * got no clear answer, so it may still land: the caller then leaves its claim to the lease rather than freeing the
    * account at once (A4a), or a newer setup could report success and be overwritten by this one landing late.
    */
@@ -270,8 +273,9 @@ export class IdentitySignInService {
     password: string,
     attempt: string,
     claim: () => Promise<void>,
-    record: (tx: Prisma.TransactionClient, outcome: IdentityOutcome, issuerPasswordSet: boolean) => Promise<void>,
+    record: (tx: Prisma.TransactionClient, outcome: IdentityOutcome, issuerPerson: IssuerPersonSet) => Promise<void>,
     unsettled: () => void,
+    passwordSet: (issuerPerson: IssuerPersonSet) => void,
   ): Promise<IdentityOutcome> {
     const email = (account.email ?? '').trim().toLowerCase();
     if (!email) throw refusedSetup(NEEDS_HELP);
@@ -288,7 +292,7 @@ export class IdentitySignInService {
     await claim();
     const client = this.clientFor(config);
     const link = await linkOf(this.prisma, account.id);
-    let issuerPasswordSet = false;
+    let issuerPerson: IssuerPersonSet | null = null;
     const found = await client.find(email);
     if (found.found === 'down') return this.unavailable(attempt);
     if (found.found === 'unclear') return this.needsHelp(attempt, 'issuer lookup unclear');
@@ -311,11 +315,27 @@ export class IdentitySignInService {
             return this.unavailable(attempt);
           }
           if (!made.ok) return this.needsHelp(attempt, 'issuer refused new person');
-          issuerPasswordSet = true;
+          issuerPerson = 'made';
+          passwordSet(issuerPerson);
         } else {
           if (link && (link.issuer !== config.issuer || link.subject !== found.userId)) return this.needsHelp(attempt, 'link names another person');
-          // a person linked to another PMC account is that account's, reset from that account: left as it is here
-          if (!link && (await linkedAccount(this.prisma, config.issuer, found.userId))) return this.needsHelp(attempt, 'issuer person linked to another account');
+          if (!link) {
+            // a person linked to another PMC account is that account's, reset from that account: left as it is here. Read
+            // under the person's lock, so a sign-in settling a link to it right now is seen (one that settles after the
+            // write is caught again at the settle, below)
+            const holder = await this.prisma.$transaction(async (tx) => {
+              await lockIssuerPerson(tx, config.issuer, found.userId);
+              return linkedAccount(tx, config.issuer, found.userId);
+            });
+            if (holder) return this.needsHelp(attempt, 'issuer person linked to another account');
+            if (!found.verified) {
+              // a person whose email was never proved may have been registered by someone else, who could still hold a
+              // passkey, a one-time code or a linked provider: PMC resets only a person whose one way in is the password
+              const others = await client.otherSignInMethods(found.userId);
+              if (others === 'down') return this.unavailable(attempt);
+              if (others.length > 0) return this.needsHelp(attempt, 'unverified issuer person holds other sign-in methods');
+            }
+          }
           if (!found.verified) {
             // the issuer must hold the email as verified before PMC reports the setup done (PMC's code proved the mailbox);
             // asked before the password is written, so a refusal leaves the person's issuer password as it was
@@ -335,7 +355,8 @@ export class IdentitySignInService {
             this.line('password', attempt, 'issuer refused password');
             throw refusedSetup(PASSWORD_REJECTED);
           }
-          issuerPasswordSet = true;
+          issuerPerson = 'existing';
+          passwordSet(issuerPerson);
         }
 
         const signedIn = await client.login(email, password);
@@ -345,18 +366,35 @@ export class IdentitySignInService {
           throw refusedSetup(NEEDS_HELP);
         }
         const claims = signedIn.claims;
-        return await this.prisma.$transaction(async (tx) => {
+        const settled = await this.prisma.$transaction(async (tx) => {
           // the person's lock, then the account's credential lock: the order every Redbracket ID writer takes them in
           await lockIssuerPerson(tx, config.issuer, claims.sub);
+          // a sign-in that linked this person to another account while the password was being set: that account's
+          // sessions end here (whoever signed in there with the old password is shut out), and this setup is refused
+          const holder = await linkedAccount(tx, config.issuer, claims.sub);
+          if (holder && holder.id !== account.id) {
+            await lockUserCredential(tx, holder.id);
+            await tx.user.update({ where: { id: holder.id }, data: { credentialVersion: { increment: 1 } } });
+            return null;
+          }
           await lockUserCredential(tx, account.id);
-          const settled = await this.settlePassword(tx, config.issuer, account.id, email, claims, attempt);
-          await record(tx, settled, issuerPasswordSet);
-          return settled;
+          const landed = await this.settlePassword(tx, config.issuer, account.id, email, claims, attempt);
+          await record(tx, landed, issuerPerson!);
+          return landed;
         });
+        if (!settled) return this.needsHelp(attempt, 'issuer person linked to another account meanwhile');
+        return settled;
       })();
     } catch (err) {
       if (ended) await this.endSessions(account.id).catch(() => this.line('password', attempt, 'sessions not ended again after a failed step'));
       throw err;
+    } finally {
+      // the person's other issuer sessions (the rb login, a portal's sign-in in progress) end once the password changed,
+      // whatever PMC's own steps did after it; not awaited: the password is already set, and PMC's own sign-in is done
+      if (issuerPerson === 'existing' && found.found === 'one') {
+        const personId = found.userId;
+        void client.endPersonSessions(personId).then((all) => all || this.line('password', attempt, 'issuer sessions not all ended'));
+      }
     }
     this.line('password', attempt, outcome.fresh ? 'set, new account' : 'set');
     return outcome;

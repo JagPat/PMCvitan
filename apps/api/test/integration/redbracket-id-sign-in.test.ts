@@ -12,13 +12,14 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as bcrypt from 'bcryptjs';
 import { JwtService } from '@nestjs/jwt';
-import { UnauthorizedException } from '@nestjs/common';
+import { Logger, UnauthorizedException } from '@nestjs/common';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, wipeMembershipTransitionsVia, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { startFakeIssuer, type FakeIssuer } from '../unit-support/fake-issuer';
 import { AuthService } from '../../src/auth/auth.service';
+import { EmailService } from '../../src/platform/email.service';
 import { IdentitySignInService } from '../../src/auth/identity/identity-sign-in.service';
 import { PHONE_SIGN_IN_PURPOSE } from '../../src/auth/phone-sign-in.service';
 import { PasswordCredentialsService } from '../../src/auth/password-credentials.service';
@@ -35,14 +36,15 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
   let f: TwoProjectFixture;
   let fake: FakeIssuer;
   const codes = new Map<string, string>();
-  /** the addresses a "your password was changed" email went to, in order */
+  /** each "your password was set/changed" email, as address and kind, in order */
   const changedMail: string[] = [];
+  const mailOf = (email: string) => changedMail.filter((m) => m.startsWith(`${email} `));
   const saved: Partial<Record<(typeof ENV)[number], string | undefined>> = {};
   const made: string[] = [];
 
   beforeAll(async () => {
     for (const name of ENV) saved[name] = process.env[name];
-    t = await createTestApp({ capturePasswordCode: (email, code) => codes.set(email, code), capturePasswordChanged: (email) => changedMail.push(email) });
+    t = await createTestApp({ capturePasswordCode: (email, code) => codes.set(email, code), capturePasswordChanged: (email, kind) => changedMail.push(`${email} ${kind}`) });
     f = await createTwoProjectFixture(t.prisma);
     fake = await startFakeIssuer({ redirectUri: 'http://127.0.0.1:1/cb' });
   });
@@ -90,6 +92,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     fake.oversize = null;
     fake.createAnswersNoId = false;
     fake.spoil = 'none';
+    fake.afterPasswordSet = null;
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -104,6 +107,8 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const code = codes.get(email);
     expect(code).toMatch(/^\d{6}$/);
     const verified = await http().post('/auth/password/verify').send({ requestId: requested.body.requestId, code }).expect(201);
+    // the switch is on: the screen is told the password chosen next is the one Redbracket ID password
+    expect(verified.body.sharedPassword).toBe(true);
     return http().post('/auth/password/complete').send({ setupToken: verified.body.setupToken, password }).expect(status);
   }
 
@@ -318,10 +323,10 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     expect(fake.people.get(person.userId)!.password).toBe('a different new passphrase');
     expect(fake.requests.some((r) => r.path === '/v2/users/human')).toBe(false); // the same person, never a second one
     expect(await t.prisma.platformPersonLink.findUnique({ where: { userId: user.id } })).toMatchObject({ subject: person.userId, matchedOn: 'invite' });
-    expect(changedMail.filter((e) => e === user.email)).toEqual([user.email]);
-    // the trail says what happened: an enrolment (the invitation was never set up), not a join
+    expect(mailOf(user.email!)).toEqual([`${user.email} changed`]);
+    // the trail says what happened: a reset of a password Hub and rb use too, not an enrolment
     const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: { not: 'auth.password_requested' } }, select: { action: true } });
-    expect(trail.map((e) => e.action)).toEqual(['auth.password_enrolled']);
+    expect(trail.map((e) => e.action)).toEqual(['auth.password_reset']);
     // the old issuer password no longer works anywhere; the new one does
     await login(user.email!, 'my existing hub passphrase').expect(401);
     await login(user.email!, 'a different new passphrase').expect(201);
@@ -331,6 +336,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const old = await invitee('forgot');
     await t.prisma.user.update({ where: { id: old.id }, data: { passwordHash: await bcrypt.hash('the old local passphrase', 4), emailVerifiedAt: new Date() } });
     const person = fake.addPerson(old.email!, 'a forgotten redbracket passphrase', false);
+    const rbSession = fake.openSession(person.userId); // someone signed in on rb with the old password
 
     // the new account holds no seat until the team re-seats the person (the RUNBOOK "Redbracket ID re-seat")
     const reset = await setPassword(old.email!, 'the remembered new passphrase', 401);
@@ -342,7 +348,63 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     // the issuer person now holds the new password, and the email the code proved is marked verified there
     expect(fake.people.get(person.userId)).toMatchObject({ password: 'the remembered new passphrase', verified: true });
     expect(await t.prisma.identityRetirement.count({ where: { userId: old.id } })).toBe(1);
-    expect(changedMail.filter((e) => e === old.email)).toEqual([old.email]);
+    expect(mailOf(old.email!)).toEqual([`${old.email} changed`]);
+    expect(await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: fresh.id, action: 'auth.password_reset' } })).toHaveLength(1);
+    // the person's issuer sessions end (not awaited by the setup): the rb sign-in with the old password is gone
+    await vi.waitFor(() => expect(fake.sessionsOf(person.userId)).toEqual([]));
+    expect(fake.sessionsOf(person.userId)).not.toContain(rbSession);
+    // an unverified person with only a password was asked about other ways in before anything was written
+    const asked = fake.requests.findIndex((r) => r.path === '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes');
+    const written = fake.requests.findIndex((r) => r.path.endsWith('/password'));
+    expect(asked).toBeGreaterThanOrEqual(0);
+    expect(asked).toBeLessThan(written);
+  });
+
+  it('an unverified issuer person who holds another way in (a passkey) is left as it is: nothing written, no email', async () => {
+    const user = await invitee('prehijack');
+    const person = fake.addPerson(user.email!, 'a pre-registered passphrase', false);
+    person.methods = ['AUTHENTICATION_METHOD_TYPE_PASSKEY'];
+    const refused = await setPassword(user.email!, 'the owner new passphrase', 409);
+    expect(refused.body.code).toBe('needs-help');
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'a pre-registered passphrase', verified: false });
+    expect(fake.requests.some((r) => r.path.endsWith('/password') || r.path.includes('UpdateUser'))).toBe(false);
+    expect(mailOf(user.email!)).toEqual([]);
+  });
+
+  it('the notice goes once the issuer took the password, even when a later step fails', async () => {
+    const user = await invitee('latefail');
+    const person = fake.addPerson(user.email!, 'the old hub passphrase');
+    fake.force = { '/v2/sessions': 503 }; // the sign-in that proves the new password cannot reach the issuer
+    await setPassword(user.email!, 'the new hub passphrase', 503);
+    expect(fake.people.get(person.userId)!.password).toBe('the new hub passphrase');
+    expect(mailOf(user.email!)).toEqual([`${user.email} changed`]);
+  });
+
+  it('a failed notice (even one rejected with nothing) never fails the setup or escapes as an unhandled rejection', async () => {
+    const user = await invitee('mailfail');
+    fake.addPerson(user.email!, 'the old hub passphrase');
+    const mail = t.app.get(EmailService);
+    const spy = vi.spyOn(mail, 'sendPasswordChanged').mockImplementation(() => Promise.reject(undefined));
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    await setPassword(user.email!, 'the new hub passphrase', 201);
+    expect(spy).toHaveBeenCalledWith(user.email, 'changed');
+    await vi.waitFor(() => expect(warn.mock.calls.some(([m]) => String(m).includes('password-changed email failed: undefined'))).toBe(true));
+  });
+
+  it('a sign-in that links the person to another account while the password is being set: that account is signed out, and this setup refused', async () => {
+    const user = await invitee('race');
+    const other = await invitee('racer');
+    const person = fake.addPerson(user.email!, 'the old hub passphrase');
+    const before = (await t.prisma.user.findUniqueOrThrow({ where: { id: other.id } })).credentialVersion;
+    fake.afterPasswordSet = async () => {
+      await t.prisma.platformPersonLink.create({ data: { userId: other.id, issuer: fake.issuer, subject: person.userId, matchedOn: 'invite' } });
+    };
+    const refused = await setPassword(user.email!, 'the racing new passphrase', 409);
+    expect(refused.body.code).toBe('needs-help');
+    // the password had already changed: the person is told, and the racing account's sessions end
+    expect(mailOf(user.email!)).toEqual([`${user.email} changed`]);
+    expect((await t.prisma.user.findUniqueOrThrow({ where: { id: other.id } })).credentialVersion).toBe(before + 1);
+    expect(await t.prisma.platformPersonLink.findUnique({ where: { userId: user.id } })).toBeNull();
   });
 
   it('an issuer person linked to another PMC account is left as it is: that account resets it', async () => {
@@ -355,7 +417,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     expect(refused.body.code).toBe('needs-help');
     expect(fake.people.get(person.userId)!.password).toBe('the holder redbracket passphrase');
     expect(fake.requests.some((r) => r.path.includes('/password') || r.path === '/v2/users/human')).toBe(false);
-    expect(changedMail).not.toContain(user.email);
+    expect(mailOf(user.email!)).toEqual([]);
   });
 
   it('a retired account never signs in again: a phone code sent before or after, any door, all refused', async () => {
@@ -549,7 +611,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     await setPassword(user.email!, 'the first issuer passphrase', 201);
     const person = [...fake.people.values()].find((p) => p.email === user.email)!;
     person.verified = false;
-    const done = ['auth.password_reset', 'auth.password_enrolled', 'auth.identity_joined'];
+    const done = ['auth.password_reset', 'auth.password_enrolled'];
     const successes = () => t.prisma.securityAuditEvent.count({ where: { targetUserId: user.id, action: { in: done } } });
     const before = await successes();
     fake.force = { '/zitadel.user.v2.UserService/UpdateUser': 400 };

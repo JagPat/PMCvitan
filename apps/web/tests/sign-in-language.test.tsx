@@ -38,8 +38,8 @@ async function page(gateway?: Partial<ApiGateway>) {
   return { useStore, TeamAccessScreen, LangPreference, pref };
 }
 
-/** the person's own words and the names: typed email addresses, the product and portal names (Redbracket ID, Hub, rb), the +91 code */
-const DATA = ['asha@vitan.in', 'you@vitan.in', 'you@example.com', 'Vitan PMC', 'PMC', 'pmc', 'client', 'contractor', 'vitan', 'in', '6-digit', 'Redbracket', 'ID', 'Hub', 'rb'];
+/** the person's own words and the firm's name: typed email addresses, the product name, the +91 code */
+const DATA = ['asha@vitan.in', 'you@vitan.in', 'you@example.com', 'Vitan PMC', 'PMC', 'pmc', 'client', 'contractor', 'vitan', 'in', '6-digit'];
 
 describe.each(['hi', 'gu'] as const)('every email and password sign-in screen in %s', (lang) => {
   const steps: Array<[string, Partial<AccessState>]> = [
@@ -55,6 +55,19 @@ describe.each(['hi', 'gu'] as const)('every email and password sign-in screen in
     useStore.setState((s) => ({ lang, access: { ...s.access, ...access } }));
     const view = render(<TeamAccessScreen />);
     expect(leftoverEnglish(view.container, DATA)).toEqual([]);
+  });
+
+  it('the Redbracket ID password step names only the portals in English (Redbracket ID, Hub, rb)', async () => {
+    const { useStore, TeamAccessScreen } = await page();
+    useStore.setState((s) => ({ lang, access: { ...s.access, step: 'password-create', passwordSetupToken: 'st', passwordShared: true } }));
+    const view = render(<TeamAccessScreen />);
+    // the Latin words left are exactly the brand names, and "ID" appears only as part of "Redbracket ID"
+    expect(leftoverEnglish(view.container, DATA).sort()).toEqual(['Hub', 'ID', 'Redbracket', 'rb']);
+    const text = view.container.textContent ?? '';
+    const count = (re: RegExp) => (text.match(re) ?? []).length;
+    expect(count(/\bID\b/g)).toBe(count(/Redbracket ID/g));
+    expect(count(/\brb\b/g)).toBe(count(/Hub (और|અને) rb/g));
+    expect(count(/\brb\b/g)).toBeGreaterThan(0);
   });
 
   it('the password guidance reads in the same language', async () => {

@@ -625,7 +625,8 @@ export class ApiGateway {
     return this.pub('/auth/password/request', { email });
   }
   /** Prove email control. This returns no application session. */
-  passwordCredentialVerify(requestId: string, code: string): Promise<{ setupToken: string; expiresInSeconds: number }> {
+  /** `sharedPassword`: the password chosen next is the one Redbracket ID password (an older server leaves it out). */
+  passwordCredentialVerify(requestId: string, code: string): Promise<{ setupToken: string; expiresInSeconds: number; sharedPassword?: boolean }> {
     return this.pub('/auth/password/verify', { requestId, code });
   }
   /** Commit the new password and receive the normal project-scoped session. */

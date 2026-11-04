@@ -195,6 +195,40 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(await client.login('r@example.in', 'Right-pass-123')).toEqual({ ok: false, failure: 'down' });
   });
 
+  it('after a reset, ends every issuer session of the person (and only theirs), and says when it could not', async () => {
+    const p = fake.addPerson('s@example.in', 'Right-pass-123');
+    const q = fake.addPerson('s2@example.in', 'Right-pass-123');
+    const mine = [fake.openSession(p.userId), fake.openSession(p.userId)];
+    const theirs = fake.openSession(q.userId);
+    expect(await client.endPersonSessions(p.userId)).toBe(true);
+    expect(fake.sessionsOf(p.userId)).toEqual([]);
+    expect(fake.sessionsOf(q.userId)).toEqual([theirs]);
+    // the deletes carry no session token: the service account's own permission ends them
+    const deletes = fake.requests.filter((r) => r.path.endsWith('/DeleteSession')).map((r) => JSON.parse(r.body));
+    expect(deletes.map((d) => d.sessionId).sort()).toEqual([...mine].sort());
+    expect(deletes.every((d) => d.sessionToken === undefined)).toBe(true);
+    // nobody's sessions: nothing to end
+    expect(await client.endPersonSessions(p.userId)).toBe(true);
+    // the issuer refusing the list or a delete (a missing grant) is reported, never thrown
+    fake.openSession(p.userId);
+    fake.force = { '/zitadel.session.v2.SessionService/DeleteSession': 403 };
+    expect(await client.endPersonSessions(p.userId)).toBe(false);
+    fake.force = { '/zitadel.session.v2.SessionService/ListSessions': 403 };
+    expect(await client.endPersonSessions(p.userId)).toBe(false);
+  });
+
+  it('names the ways besides a password a person can sign in, and is down on a refusal or an odd answer', async () => {
+    const p = fake.addPerson('m@example.in', 'Right-pass-123', false);
+    expect(await client.otherSignInMethods(p.userId)).toEqual([]);
+    p.methods = ['AUTHENTICATION_METHOD_TYPE_PASSKEY', 'AUTHENTICATION_METHOD_TYPE_IDP'];
+    expect(await client.otherSignInMethods(p.userId)).toEqual(['AUTHENTICATION_METHOD_TYPE_PASSKEY', 'AUTHENTICATION_METHOD_TYPE_IDP']);
+    fake.force = { '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes': 403 };
+    expect(await client.otherSignInMethods(p.userId)).toBe('down');
+    fake.force = {};
+    fake.oversize = '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes';
+    expect(await client.otherSignInMethods(p.userId)).toBe('down');
+  });
+
   it('a signing key the issuer withdraws is not trusted again, even by a client that used it before', async () => {
     fake.addPerson('k@example.in', 'Right-pass-123');
     expect((await client.login('k@example.in', 'Right-pass-123')).ok).toBe(true);

@@ -3,7 +3,7 @@
  *
  * It answers the same paths the live issuer does (authorize, `/v2/sessions`, `/v2/oidc/auth_requests/{id}`, the token
  * exchange with PKCE, the key set, ListUsers with v4.16's "no user" shape, create, set password, UpdateUser,
- * DeleteSession), signs RS256 id tokens with its own key, and records every request it gets (method, path, headers,
+ * DeleteSession, ListSessions, ListAuthenticationMethodTypes), signs RS256 id tokens with its own key, and records every request it gets (method, path, headers,
  * body), so a test can prove what PMC sent and that it sent nothing at all. Knobs let a test make it slow or hold every
  * answer until close, fail a path, send an answer too large to read, lock a person, or spoil the token (another issuer,
  * another algorithm, another state, another nonce). Nothing it schedules outlives close().
@@ -12,7 +12,7 @@ import { createHash, generateKeyPairSync, randomUUID, sign, type KeyObject } fro
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-export type FakePerson = { userId: string; email: string; password: string; verified: boolean; givenName: string; familyName: string; locked?: boolean };
+export type FakePerson = { userId: string; email: string; password: string; verified: boolean; givenName: string; familyName: string; locked?: boolean; methods?: string[] };
 export type Recorded = { method: string; path: string; headers: IncomingMessage['headers']; body: string };
 export type Spoil = 'none' | 'issuer' | 'alg-none' | 'alg-hs256' | 'state' | 'nonce' | 'audience' | 'expired' | 'kid' | 'signature' | 'no-iat' | 'azp' | 'nbf-future';
 
@@ -40,7 +40,13 @@ export type FakeIssuer = {
   spoil: Spoil;
   /** how ListUsers answers "nobody": v4.16's details-only body by default */
   noneShape: 'details-only' | 'empty-result' | 'odd';
+  /** run once after the next password is set and before its answer goes (a barrier: what lands meanwhile) */
+  afterPasswordSet: (() => Promise<void>) | null;
   addPerson(email: string, password: string, verified?: boolean): FakePerson;
+  /** opens an issuer session for a person (as rb's login would), returning its id */
+  openSession(userId: string): string;
+  /** the issuer sessions a person holds now */
+  sessionsOf(userId: string): string[];
   close(): Promise<void>;
 };
 
@@ -71,10 +77,19 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     force: {} as Record<string, number>,
     spoil: 'none' as Spoil,
     noneShape: 'details-only' as FakeIssuer['noneShape'],
+    afterPasswordSet: null as (() => Promise<void>) | null,
     addPerson(email: string, password: string, verified = true): FakePerson {
       const p = { userId: `3${Math.floor(Math.random() * 1e17)}`, email: email.toLowerCase(), password, verified, givenName: 'Test', familyName: 'Person' };
       fake.people.set(p.userId, p);
       return p;
+    },
+    openSession(userId: string): string {
+      const id = randomUUID();
+      sessions.set(id, { token: randomUUID(), userId });
+      return id;
+    },
+    sessionsOf(userId: string): string[] {
+      return [...sessions.entries()].filter(([, v]) => v.userId === userId).map(([id]) => id);
     },
     close: async () => {},
   };
@@ -168,8 +183,22 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       return send(res, 200, { callbackUrl: `${ar.redirectUri}?code=${code}&state=${state}` });
     }
     if (req.method === 'POST' && path === '/zitadel.session.v2.SessionService/DeleteSession') {
-      sessions.delete(String(json().sessionId ?? ''));
+      const id = String(json().sessionId ?? '');
+      if (!sessions.has(id)) return send(res, 404, { message: 'Errors.Session.NotFound' });
+      sessions.delete(id);
       return send(res, 200, {});
+    }
+    if (req.method === 'POST' && path === '/zitadel.session.v2.SessionService/ListSessions') {
+      const id = String(json()?.queries?.[0]?.userIdQuery?.id ?? '');
+      const rows = fake.sessionsOf(id).map((sid) => ({ id: sid }));
+      // Zitadel leaves out an empty list
+      return send(res, 200, rows.length ? { details: { totalResult: String(rows.length) }, sessions: rows } : { details: {} });
+    }
+    if (req.method === 'POST' && path === '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes') {
+      const p = fake.people.get(String(json().userId ?? ''));
+      if (!p) return send(res, 404, { message: 'Errors.User.NotFound' });
+      const types = ['AUTHENTICATION_METHOD_TYPE_PASSWORD', ...(p.methods ?? [])];
+      return send(res, 200, { details: {}, authMethodTypes: types });
     }
     if (req.method === 'POST' && path === '/v2/users') {
       const b = json();
@@ -197,6 +226,12 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       const p = fake.people.get(decodeURIComponent(pw[1]!));
       if (!p) return send(res, 404, { message: 'Errors.User.NotFound' });
       p.password = String(json()?.newPassword?.password ?? '');
+      const hook = fake.afterPasswordSet;
+      if (hook) {
+        fake.afterPasswordSet = null;
+        void hook().then(() => send(res, 200, { details: {} }), () => send(res, 500, { message: 'barrier failed' }));
+        return;
+      }
       return send(res, 200, { details: {} });
     }
     if (req.method === 'POST' && path === '/zitadel.user.v2.UserService/UpdateUser') {
