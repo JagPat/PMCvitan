@@ -59,7 +59,8 @@ describe('TeamAccessScreen password enrollment', () => {
   it.each([
     [true, 'Choose your Redbracket ID password', /one password you use on every Vitan portal: PMC, Hub and rb/],
     [false, 'Create your password', /^Use 12 to 128 characters\. A long passphrase is acceptable\.$/],
-    [undefined, 'Create your password', /^Use 12 to 128 characters\. A long passphrase is acceptable\.$/],
+    // an answer without the field (the release before it) keeps the shared warning: Codex 4472065772
+    [undefined, 'Choose your Redbracket ID password', /one password you use on every Vitan portal: PMC, Hub and rb/],
   ])('after the code, sharedPassword %s titles the step "%s"', async (sharedPassword, title, sub) => {
     const gateway = {
       passwordCredentialVerify: async () => ({ setupToken: 'setup-token', expiresInSeconds: 600, ...(sharedPassword === undefined ? {} : { sharedPassword }) }),

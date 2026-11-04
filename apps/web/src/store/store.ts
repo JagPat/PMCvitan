@@ -8016,7 +8016,10 @@ export const useStore = create<Store>()(
             s.access.step = 'password-create';
             s.access.otp = '';
             s.access.passwordSetupToken = result.setupToken;
-            s.access.passwordShared = result.sharedPassword === true;
+            // only an explicit false is PMC's own password: an answer without the field comes from the release before it,
+            // which sets the one Redbracket ID password whenever the switch is on, so the screen warns as for the shared one
+            // (Codex 4472065772 on #1341: a rolling deploy must never hide that warning)
+            s.access.passwordShared = result.sharedPassword !== false;
           });
         })
         .catch(() => {

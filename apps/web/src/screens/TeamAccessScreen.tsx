@@ -409,7 +409,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
           : null;
     const ready = newPassword.length >= 12 && newPassword.length <= 128 && confirmPassword.length > 0 && !confirmationMismatch && !sending;
     const submit = () => ready && completePasswordSetup(newPassword, confirmPassword);
-    // the server said this is the one Redbracket ID password (switch on); otherwise it is PMC's own
+    // the one Redbracket ID password unless the server said it is PMC's own (switch off; see verifyPasswordSetup)
     const shared = passwordShared;
     return (
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
