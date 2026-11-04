@@ -25,7 +25,7 @@ import { PrismaService } from '../../prisma.service';
 import { lockUserCredential } from '../../common/credential-lock';
 import { OrgsParticipant, QA_ACCOUNT_EMAIL } from '../../orgs/orgs.participant';
 import { RESET_URL_ENV, readIdentityConfig, readResetUrl, resetUrlFor, type IdentityConfig } from './identity-config';
-import { IdentityClient } from './identity-client';
+import { IdentityClient, SESSIONS_AWAITED_ROUNDS } from './identity-client';
 import type { IdClaims } from './id-token';
 import { SignInAttempts, type AttemptKind } from './sign-in-attempts';
 import { breakGlassHash, linkInvite, linkOf, lockIssuerPerson, neverSetUp, settleSignIn, type Settled } from './identity-accounts';
@@ -336,6 +336,8 @@ export class IdentitySignInService implements OnModuleInit {
           if (set === 'down') {
             // the write may still land at the issuer (a timeout, a 5xx): see `unsettled`
             unsettled();
+            // and if it landed, the old password's issuer sessions must not outlive it (unit L, R3-1)
+            await this.endIssuerSessions(client, account.id, found.userId, attempt);
             return this.unavailable(attempt);
           }
           if (set === 'rejected') {
@@ -343,6 +345,9 @@ export class IdentitySignInService implements OnModuleInit {
             throw refusedSetup(PASSWORD_REJECTED);
           }
           issuerPasswordSet = true;
+          // unit L: whoever is signed in to Redbracket ID with the old password (rb, Hub, the console) is signed out
+          // before the setup answers
+          await this.endIssuerSessions(client, account.id, found.userId, attempt);
         }
         // an existing issuer person who is not linked is left exactly as they are: the typed password must already be theirs
 
@@ -414,6 +419,36 @@ export class IdentitySignInService implements OnModuleInit {
     // a fresh join is reported once, by `setPassword` ('set, new account'); only a refusal is logged here (and throws)
     if (settled.kind === 'account') return { account: settled.user, fresh: settled.fresh };
     return this.landed('password', attempt, settled);
+  }
+
+  /**
+   * Unit L: ends the person's issuer sessions after PMC set (or may have set) their password, awaited and bounded:
+   * {@link SESSIONS_AWAITED_ROUNDS} delete rounds and a confirming list, each call under the issuer timeout (counted
+   * in `COMPLETION_ISSUER_CALLS`). Anything but `ended` writes `auth.password_reset_unfinished` on the account (the
+   * issuer person and the reason, never a secret), for the operator's action in RUNBOOK §RBL; the setup still answers
+   * as it would have, since the password did change and refusing would not help the person. Nothing goes on after the
+   * setup answers: a sweep left running past the account's completion claim could delete the issuer session a later
+   * completion of the same account opened for its own sign-in (Codex 4470702899 on #1342), so what this bounded sweep
+   * could not end is the row's to report, and the operator's to finish. A row that cannot be written is logged, never
+   * swallowed silently. Never throws.
+   */
+  private async endIssuerSessions(client: IdentityClient, accountId: string, personId: string, attempt: string): Promise<void> {
+    const answer = await client.endPersonSessions(personId, SESSIONS_AWAITED_ROUNDS);
+    if (answer === 'ended') return;
+    const why = `issuer sessions not ended after the reset (${answer})`;
+    this.line('password', attempt, why);
+    await this.prisma.securityAuditEvent
+      .create({
+        data: {
+          action: 'auth.password_reset_unfinished',
+          targetUserId: accountId,
+          actorUserId: accountId,
+          actorKind: 'self',
+          correlationId: attempt,
+          payload: { issuerPerson: personId, reason: why },
+        },
+      })
+      .catch(() => this.line('password', attempt, `reset not recorded (${why}; issuer person ${personId})`));
   }
 
   private unavailable(attempt: string): never {

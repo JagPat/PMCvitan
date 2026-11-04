@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
-import { IdentityClient, readLookup, searchBody, challenge } from './identity-client';
+import { IdentityClient, readLookup, searchBody, challenge, SESSIONS_AWAITED_CALLS, SESSIONS_AWAITED_ROUNDS, SESSIONS_PAGE } from './identity-client';
 import { keyFromJwks, checkIdToken } from './id-token';
 import { readIdentityConfig, identitySwitchOn, REDBRACKET_ISSUER } from './identity-config';
 import { startFakeIssuer, type FakeIssuer } from '../../../test/unit-support/fake-issuer';
@@ -289,6 +289,133 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(await client.setPassword('nobody', 'x')).toBe('rejected');
     fake.noneShape = 'odd';
     expect(await client.find('nobody@example.in')).toEqual({ found: 'unclear' });
+  });
+
+  // unit L: ending a person's issuer sessions after a reset
+  const sessionCalls = () => fake.requests.filter((q) => q.path.startsWith('/zitadel.session.v2.SessionService/'));
+  it('ends every session the person holds, page by page, by id with no token, and leaves other people\'s', async () => {
+    const p = fake.addPerson('s@example.in', 'x', true);
+    const other = fake.addPerson('o@example.in', 'x', true);
+    for (let i = 0; i < 5; i += 1) fake.openSession(p.userId);
+    const kept = fake.openSession(other.userId);
+    fake.sessionsPageCap = 2;
+    expect(await client.endPersonSessions(p.userId)).toBe('ended');
+    expect(fake.sessionsOf(p.userId)).toEqual([]);
+    expect(fake.sessionsOf(other.userId)).toEqual([kept]);
+    const lists = sessionCalls().filter((q) => q.path.endsWith('/ListSessions'));
+    expect(JSON.parse(lists[0]!.body)).toEqual({ query: { limit: SESSIONS_PAGE }, queries: [{ userIdQuery: { id: p.userId } }] });
+    // 2 + 2 + 1 deleted, then a list that shows none
+    expect(lists).toHaveLength(4);
+    const deletes = sessionCalls().filter((q) => q.path.endsWith('/DeleteSession')).map((q) => JSON.parse(q.body));
+    expect(deletes).toHaveLength(5);
+    expect(deletes.every((b) => Object.keys(b).join() === 'sessionId')).toBe(true);
+    // nobody signed in: one list, nothing deleted
+    const before = sessionCalls().length;
+    expect(await client.endPersonSessions(fake.addPerson('n@example.in', 'x').userId)).toBe('ended');
+    expect(sessionCalls().slice(before).map((q) => q.path.split('/').pop())).toEqual(['ListSessions']);
+  });
+
+  it('bounded: after its delete rounds one list confirms, and sessions still listed are capped', async () => {
+    const p = fake.addPerson('c@example.in', 'x', true);
+    // someone keeps signing in on rb: a new session after every list
+    fake.afterSessionsListed = (id) => {
+      if (id === p.userId) fake.openSession(p.userId);
+    };
+    fake.openSession(p.userId);
+    const before = fake.requests.length;
+    expect(await client.endPersonSessions(p.userId, SESSIONS_AWAITED_ROUNDS)).toBe('capped');
+    const made = fake.requests.slice(before);
+    expect(made.filter((q) => q.path.endsWith('/ListSessions'))).toHaveLength(SESSIONS_AWAITED_ROUNDS + 1);
+    // each delete round deletes what its list showed (one each time), at once; the confirming list deletes nothing
+    expect(made.filter((q) => q.path.endsWith('/DeleteSession'))).toHaveLength(SESSIONS_AWAITED_ROUNDS);
+    expect(fake.sessionsOf(p.userId)).toHaveLength(2);
+    expect(SESSIONS_AWAITED_CALLS).toBe(SESSIONS_AWAITED_ROUNDS * 2 + 1);
+  });
+
+  it('a list that still shows sessions it just ended (lag) is ended; any other one left is not', async () => {
+    const p = fake.addPerson('l@example.in', 'x', true);
+    fake.openSession(p.userId);
+    fake.openSession(p.userId);
+    fake.sessionsListLag = true;
+    expect(await client.endPersonSessions(p.userId, 1)).toBe('ended');
+    // a full page of lagging rows proves nothing about what lies past it
+    const q = fake.addPerson('q@example.in', 'x', true);
+    fake.sessionsPageCap = 1;
+    fake.openSession(q.userId);
+    fake.openSession(q.userId);
+    expect(await client.endPersonSessions(q.userId, 1)).toBe('capped');
+  });
+
+  it('just-ended sessions listed first prove nothing about the rest: a larger count, or a full page, is not ended', async () => {
+    fake.sessionsListLag = true;
+    fake.sessionsLagFirst = true;
+    // the issuer's page holds 2 of 3; after one round the lagging two fill the confirming page, and the count says 3
+    const p = fake.addPerson('f@example.in', 'x', true);
+    fake.sessionsPageCap = 2;
+    for (let i = 0; i < 3; i += 1) fake.openSession(p.userId);
+    expect(await client.endPersonSessions(p.userId, 1)).toBe('capped');
+    expect(fake.sessionsOf(p.userId)).toHaveLength(1);
+    // with no count to go by, a full page of them (SESSIONS_PAGE) is not ended either
+    fake.sessionsPageCap = null;
+    fake.sessionsTotalOmitted = true;
+    fake.forgetDeletedSessions();
+    const q = fake.addPerson('g@example.in', 'x', true);
+    for (let i = 0; i < SESSIONS_PAGE + 1; i += 1) fake.openSession(q.userId);
+    expect(await client.endPersonSessions(q.userId, 1)).toBe('capped');
+    expect(fake.sessionsOf(q.userId)).toHaveLength(1);
+    // with no count, a page the issuer capped below the limit asked, holding only lagging rows, is not ended either
+    // (Codex 4472839361): the third session lies past it
+    fake.forgetDeletedSessions();
+    fake.sessionsPageCap = 2;
+    const c = fake.addPerson('h@example.in', 'x', true);
+    for (let i = 0; i < 3; i += 1) fake.openSession(c.userId);
+    expect(await client.endPersonSessions(c.userId, 1)).toBe('capped');
+    expect(fake.sessionsOf(c.userId)).toHaveLength(1);
+    fake.sessionsPageCap = null;
+    // a count that cannot be read decides nothing: rows all ended, yet not proven ended
+    const ended = fake.addPerson('u@example.in', 'x', true);
+    const sid = fake.openSession(ended.userId);
+    fake.answer = { path: '/zitadel.session.v2.SessionService/ListSessions', body: { details: { totalResult: 'x' }, sessions: [{ id: sid }] } };
+    expect(await client.endPersonSessions(ended.userId, 1)).toBe('capped');
+    fake.answer = null;
+  });
+
+  it('no rows while the count names some (the session read permission missing, v4.16 default) is denied, not ended', async () => {
+    const p = fake.addPerson('r@example.in', 'x', true);
+    const held = fake.openSession(p.userId);
+    fake.sessionsReadDenied = true;
+    expect(await client.endPersonSessions(p.userId)).toBe('denied');
+    expect(fake.sessionsOf(p.userId)).toEqual([held]);
+    // nobody signed in: no rows and no count is Zitadel's answer for none
+    expect(await client.endPersonSessions(fake.addPerson('z@example.in', 'x').userId)).toBe('ended');
+  });
+
+  it('a refused list or delete (403) is denied, any other failure is failed, and only a 2xx delete counts', async () => {
+    const p = fake.addPerson('d@example.in', 'x', true);
+    fake.openSession(p.userId);
+    fake.force = { '/zitadel.session.v2.SessionService/DeleteSession': 403 };
+    expect(await client.endPersonSessions(p.userId)).toBe('denied');
+    fake.force = { '/zitadel.session.v2.SessionService/ListSessions': 403 };
+    expect(await client.endPersonSessions(p.userId)).toBe('denied');
+    // a 404 is not Zitadel's answer for a delete: not proof the session is gone
+    fake.force = { '/zitadel.session.v2.SessionService/DeleteSession': 404 };
+    expect(await client.endPersonSessions(p.userId)).toBe('failed');
+    fake.force = { '/zitadel.session.v2.SessionService/ListSessions': 503 };
+    expect(await client.endPersonSessions(p.userId)).toBe('failed');
+    fake.force = {};
+    fake.answer = { path: '/zitadel.session.v2.SessionService/ListSessions', body: { sessions: [{ expirationDate: 'x' }] } };
+    expect(await client.endPersonSessions(p.userId)).toBe('failed');
+    fake.answer = { path: '/zitadel.session.v2.SessionService/ListSessions', body: { sessions: 'odd' } };
+    expect(await client.endPersonSessions(p.userId)).toBe('failed');
+    // a 2xx whose body is not a JSON object is no answer, never "none listed" (Codex 4472729877)
+    for (const raw of ['', '{"sessions":[', 'not json', '[]', '"x"', 'null']) {
+      fake.answer = { path: '/zitadel.session.v2.SessionService/ListSessions', body: null, raw };
+      expect(await client.endPersonSessions(p.userId), JSON.stringify(raw)).toBe('failed');
+    }
+    expect(fake.sessionsOf(p.userId)).toHaveLength(1);
+    fake.answer = null;
+    expect(await client.endPersonSessions(p.userId)).toBe('ended');
+    expect(fake.sessionsOf(p.userId)).toEqual([]);
   });
 });
 

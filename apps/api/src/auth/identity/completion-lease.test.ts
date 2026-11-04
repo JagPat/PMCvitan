@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { FENCE_ISSUER_CALLS, IDENTITY_TIMEOUT_MS } from './identity-client';
+import { FENCE_ISSUER_CALLS, IDENTITY_TIMEOUT_MS, SESSIONS_AWAITED_CALLS, SESSIONS_AWAITED_ROUNDS } from './identity-client';
 import { FENCE_RP_IDS } from './identity-config';
 import {
   COMPLETION_ISSUER_CALLS,
@@ -33,7 +33,22 @@ describe('password completion lease (A4a)', () => {
     expect([fenceAt >= 0, sendAt > fenceAt]).toEqual([true, true]);
     const fence = client.slice(fenceAt, sendAt);
     expect(fence.match(/\bthis\.send\(/g) ?? []).toHaveLength(1);
-    expect(sends.length - 1 - 1).toBe(COMPLETION_ISSUER_CALLS);
+    // unit L: the person's sessions list is one more send site, made up to SESSIONS_AWAITED_ROUNDS + 1 times by the
+    // awaited sweep, with a delete round (its deletes at once, each under the timeout) after all but the last
+    expect(client.match(/\bthis\.send\('POST', '\/zitadel\.session\.v2\.SessionService\/ListSessions'/g) ?? []).toHaveLength(1);
+    expect(client.match(/\bthis\.send\('POST', '\/zitadel\.session\.v2\.SessionService\/DeleteSession'/g) ?? []).toHaveLength(1);
+    expect(SESSIONS_AWAITED_CALLS).toBe(SESSIONS_AWAITED_ROUNDS * 2 + 1);
+    expect(sends.length - 1 - 1 - 1 + SESSIONS_AWAITED_CALLS).toBe(COMPLETION_ISSUER_CALLS);
+    // the reset awaits exactly one bounded sweep per path (the write's 2xx and its `down` are one or the other), and
+    // nothing runs on after it answers (Codex 4470702899 on #1342: no sweep outlives the completion claim)
+    const signIn = read('identity-sign-in.service.ts');
+    const sweep = signIn.slice(signIn.indexOf('  private async endIssuerSessions('), signIn.indexOf('  private unavailable('));
+    expect(sweep.match(/await client\.endPersonSessions\(personId, SESSIONS_AWAITED_ROUNDS\)/g) ?? []).toHaveLength(1);
+    expect(signIn.match(/\bclient\.endPersonSessions\(/g) ?? []).toHaveLength(1);
+    expect(signIn).not.toMatch(/\bvoid client\./);
+    const setPassword = signIn.slice(signIn.indexOf('  async setPassword('), signIn.indexOf('  private async endSessions('));
+    expect(setPassword.match(/\bawait this\.endIssuerSessions\(client, account\.id, found\.userId, attempt\);/g) ?? []).toHaveLength(2);
+    expect(setPassword.match(/\bthis\.endIssuerSessions\(/g) ?? []).toHaveLength(2);
     expect(client.match(/\bsend\b/g)?.length).toBe(sends.length + 1); // + its declaration: no alias, no wrapper
     // one plain fetch per send, in send itself: no retrying wrapper, no loop, no second request
     expect(client.match(/\bfetch\(/g) ?? []).toHaveLength(1);
