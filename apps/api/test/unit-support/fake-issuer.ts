@@ -57,7 +57,8 @@ export type FakeIssuer = {
   force: Record<string, number>;
   spoil: Spoil;
   /** an answer forced on one exact path (200 unless `status`), e.g. a shape or an error id the real call never sends */
-  answer: { path: string; body: unknown; status?: number } | null;
+  /** `raw`: sent as the body text exactly (not JSON-encoded), for a malformed answer */
+  answer: { path: string; body: unknown; status?: number; raw?: string } | null;
   /** how ListUsers answers "nobody": v4.16's details-only body by default */
   noneShape: 'details-only' | 'empty-result' | 'odd';
   /** the most sessions one ListSessions page holds, whatever PMC asks (an issuer's own cap); null: no cap */
@@ -190,7 +191,11 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     const url = new URL(req.url ?? '/', fake.url);
     const path = url.pathname;
     for (const [prefix, status] of Object.entries(fake.force)) if (path.startsWith(prefix)) return send(res, status, { message: 'forced' });
-    if (fake.answer && path === fake.answer.path) return send(res, fake.answer.status ?? 200, fake.answer.body);
+    if (fake.answer && path === fake.answer.path) {
+      if (fake.answer.raw === undefined) return send(res, fake.answer.status ?? 200, fake.answer.body);
+      res.writeHead(fake.answer.status ?? 200, { 'Content-Type': 'application/json' });
+      return res.end(fake.answer.raw);
+    }
     if (fake.oversize && path.startsWith(fake.oversize)) return send(res, 200, { padding: 'x'.repeat(1024 * 1024 + 1) });
     // a Connect RPC without its protocol version is refused, as a Connect server that requires the header answers
     if (path.startsWith('/zitadel.') && req.headers['connect-protocol-version'] !== '1') {

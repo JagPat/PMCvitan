@@ -209,7 +209,10 @@ export class IdentityClient {
         });
         if (r.status === 403) return 'denied';
         if (r.status < 200 || r.status > 299) return 'failed';
-        const body = json(r.body);
+        // a 2xx whose body is not a JSON object (empty, cut off, not JSON) is no answer: never read as "none listed"
+        // (Codex 4472729877)
+        const body = strictJson(r.body);
+        if (!body) return 'failed';
         // Zitadel leaves out an empty list (and a zero count)
         const listed = body.sessions ?? [];
         if (!Array.isArray(listed)) return 'failed';
@@ -599,6 +602,16 @@ function json(text: string): Record<string, unknown> {
     return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
   } catch {
     return {};
+  }
+}
+
+/** The body as a JSON object, or null when it is empty, not JSON, or not an object (no lenient `{}` fallback). */
+function strictJson(text: string): Record<string, unknown> | null {
+  try {
+    const v: unknown = JSON.parse(text);
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
   }
 }
 

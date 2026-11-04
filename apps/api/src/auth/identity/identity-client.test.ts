@@ -398,6 +398,12 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(await client.endPersonSessions(p.userId)).toBe('failed');
     fake.answer = { path: '/zitadel.session.v2.SessionService/ListSessions', body: { sessions: 'odd' } };
     expect(await client.endPersonSessions(p.userId)).toBe('failed');
+    // a 2xx whose body is not a JSON object is no answer, never "none listed" (Codex 4472729877)
+    for (const raw of ['', '{"sessions":[', 'not json', '[]', '"x"', 'null']) {
+      fake.answer = { path: '/zitadel.session.v2.SessionService/ListSessions', body: null, raw };
+      expect(await client.endPersonSessions(p.userId), JSON.stringify(raw)).toBe('failed');
+    }
+    expect(fake.sessionsOf(p.userId)).toHaveLength(1);
     fake.answer = null;
     expect(await client.endPersonSessions(p.userId)).toBe('ended');
     expect(fake.sessionsOf(p.userId)).toEqual([]);
