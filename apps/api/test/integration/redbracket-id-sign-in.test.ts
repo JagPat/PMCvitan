@@ -405,6 +405,62 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     expect(mailOf(user.email!)).toEqual([`${user.email} changed`]);
     expect((await t.prisma.user.findUniqueOrThrow({ where: { id: other.id } })).credentialVersion).toBe(before + 1);
     expect(await t.prisma.platformPersonLink.findUnique({ where: { userId: user.id } })).toBeNull();
+    // the trail keeps the refused-after-write case: on the account signed out, naming the person and where the code went
+    const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: other.id, action: 'auth.password_reset_refused_linked' } });
+    expect(trail.map((e) => [e.actorUserId, e.payload])).toEqual([[user.id, { issuerPerson: person.userId, codeSentTo: user.id }]]);
+    expect(JSON.stringify(trail)).not.toContain('passphrase');
+  });
+
+  it('a first try that fails leaves an unverified person exactly as they were, and the retry is still asked about other ways in', async () => {
+    const user = await invitee('retrycheck');
+    const person = fake.addPerson(user.email!, 'the pre-registered passphrase', false);
+    fake.force = { [`/v2/users/${person.userId}/password`]: 400 }; // the issuer refuses the typed password (its policy)
+    const first = await setPassword(user.email!, 'a refused new passphrase', 400);
+    expect(first.body.code).toBe('password-rejected');
+    expect(fake.people.get(person.userId)).toMatchObject({ verified: false, password: 'the pre-registered passphrase' });
+    fake.force = {};
+    person.methods = ['AUTHENTICATION_METHOD_TYPE_PASSKEY']; // the pre-registrant adds a passkey meanwhile
+    const retry = await setPassword(user.email!, 'the owner second passphrase', 409);
+    expect(retry.body.code).toBe('needs-help');
+    expect(fake.people.get(person.userId)).toMatchObject({ verified: false, password: 'the pre-registered passphrase' });
+    // a verified unlinked person with another way in is asked too, and left as it is
+    person.verified = true;
+    await setPassword(user.email!, 'the owner third passphrase', 409);
+    expect(fake.people.get(person.userId)!.password).toBe('the pre-registered passphrase');
+  });
+
+  it('a sign-in that proved the OLD password before a reset and settles after it gets no session', async () => {
+    for (const kind of ['established', 'invitee'] as const) {
+      const a = await invitee(`oldpw${kind}`);
+      if (kind === 'established') {
+        await t.prisma.user.update({ where: { id: a.id }, data: { passwordHash: await bcrypt.hash('the old local passphrase', 4), emailVerifiedAt: new Date() } });
+      }
+      fake.addPerson(a.email!, 'the old shared passphrase');
+      // the racer's login is held after its issuer proof, before PMC's settle
+      let open!: () => void;
+      let proved!: () => void;
+      const gate = new Promise<void>((r) => (open = r));
+      const reached = new Promise<void>((r) => (proved = r));
+      const real = IdentityClient.prototype.login;
+      vi.spyOn(IdentityClient.prototype, 'login').mockImplementation(async function (this: IdentityClient, email: string, pw: string) {
+        const r = await real.call(this, email, pw);
+        if (pw === 'the old shared passphrase') { proved(); await gate; }
+        return r;
+      });
+      const racer = login(a.email!, 'the old shared passphrase');
+      const racing = racer.then((r) => r);
+      await reached;
+      await setPassword(a.email!, 'the requester new passphrase', kind === 'established' ? 401 : 201);
+      open();
+      const r = await racing;
+      // the settle reads the account and its credential version before the proof and refuses when either moved
+      expect(r.status).toBe(401);
+      expect(r.body.token).toBeUndefined();
+      expect(['needs-help', 'password-changed']).toContain(r.body.code);
+      const fresh = await t.prisma.user.findFirst({ where: { email: a.email! } });
+      if (fresh && fresh.id !== a.id) made.push(fresh.id);
+      vi.restoreAllMocks();
+    }
   });
 
   it('an issuer person linked to another PMC account is left as it is: that account resets it', async () => {

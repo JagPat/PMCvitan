@@ -189,8 +189,10 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       return send(res, 200, {});
     }
     if (req.method === 'POST' && path === '/zitadel.session.v2.SessionService/ListSessions') {
-      const id = String(json()?.queries?.[0]?.userIdQuery?.id ?? '');
-      const rows = fake.sessionsOf(id).map((sid) => ({ id: sid }));
+      const b = json();
+      const id = String(b?.queries?.[0]?.userIdQuery?.id ?? '');
+      const limit = Number(b?.query?.limit ?? 100);
+      const rows = fake.sessionsOf(id).slice(0, limit).map((sid) => ({ id: sid }));
       // Zitadel leaves out an empty list
       return send(res, 200, rows.length ? { details: { totalResult: String(rows.length) }, sessions: rows } : { details: {} });
     }

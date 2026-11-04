@@ -28,8 +28,13 @@ export const IDENTITY_TIMEOUT_MS = 4000;
 /** How long an issuer session PMC opens may live (a protobuf Duration): a sign-in finishes well inside it. */
 export const ISSUER_SESSION_LIFETIME = '60s';
 const BODY_LIMIT = 1_000_000;
-/** The most issuer sessions a reset ends for one person; more is not a person's own use, and is left to expire. */
-export const SESSIONS_ENDED_MAX = 20;
+/** How many of a person's issuer sessions one list asks for (each round deletes them, then lists again). */
+export const SESSIONS_PAGE = 100;
+/**
+ * How many rounds a reset makes: up to 2,000 sessions, far past any person's own use. Past it the reset logs "cap
+ * reached" (whoever opened that many is told apart from a missing permission), and the rest outlive it.
+ */
+export const SESSIONS_ROUNDS_MAX = 20;
 
 /** `down`: no usable answer (timeout, network, 5xx, PMC's service token refused). `rejected`: the issuer said no. */
 export type IdentityFailure = 'down' | 'rejected';
@@ -130,44 +135,53 @@ export class IdentityClient {
 
   /**
    * Deletes one issuer session. With its token (a session PMC opened itself), or without one (another session of a
-   * person whose password PMC just reset), which takes the service account's session.delete permission. True when the
-   * issuer took it. Never throws.
+   * person whose password PMC just reset), which takes the service account's session.delete permission. `denied` when
+   * the issuer refused PMC's service account (403). Never throws.
    */
-  private async endSession(sessionId: string, sessionToken?: string): Promise<boolean> {
+  private async endSession(sessionId: string, sessionToken?: string): Promise<'ended' | 'denied' | 'failed'> {
     try {
       const r = await this.send('POST', '/zitadel.session.v2.SessionService/DeleteSession', {
         json: sessionToken ? { sessionId, sessionToken } : { sessionId },
         service: true,
       });
       // a session already gone (it expired, or PMC's own sign-in deleted it first) is ended
-      return (r.status >= 200 && r.status <= 299) || r.status === 404;
+      if ((r.status >= 200 && r.status <= 299) || r.status === 404) return 'ended';
+      return r.status === 403 ? 'denied' : 'failed';
     } catch {
       // best effort: the issuer's session also expires on its own (ISSUER_SESSION_LIFETIME, set at creation)
-      return false;
+      return 'failed';
     }
   }
 
   /**
    * After a reset, ends every issuer session the person holds (the rb login and any other portal's sign-in in progress
-   * there), so whoever knew the old password is signed out of Redbracket ID itself. At most {@link SESSIONS_ENDED_MAX}
-   * are ended; true only when the issuer listed them all and took every delete. A portal's own session (Hub's, PMC's) is
-   * that portal's to end. Best effort: the password is already set. Never throws.
+   * there), so whoever knew the old password is signed out of Redbracket ID itself. Each round lists up to
+   * {@link SESSIONS_PAGE} of the person's sessions and deletes them; it lists again until none is left. `ended`: none
+   * left; `denied`: the issuer refused PMC's service account (403: the session permission is missing); `cap`: still
+   * sessions after {@link SESSIONS_ROUNDS_MAX} rounds; `failed`: anything else. A portal's own session (Hub's, PMC's)
+   * is that portal's to end. Best effort: the password is already set. Never throws.
    */
-  async endPersonSessions(userId: string): Promise<boolean> {
+  async endPersonSessions(userId: string): Promise<'ended' | 'denied' | 'cap' | 'failed'> {
     try {
-      const r = await this.send('POST', '/zitadel.session.v2.SessionService/ListSessions', {
-        json: { queries: [{ userIdQuery: { id: userId } }] },
-        service: true,
-      });
-      if (r.status < 200 || r.status > 299) return false;
-      const listed = json(r.body).sessions;
-      if (listed !== undefined && !Array.isArray(listed)) return false;
-      const ids = (listed ?? []).map((row: unknown) => (row && typeof row === 'object' ? str((row as Record<string, unknown>).id) : ''));
-      if (ids.some((id) => !id)) return false;
-      const ended = await Promise.all(ids.slice(0, SESSIONS_ENDED_MAX).map((id) => this.endSession(id)));
-      return ended.every(Boolean) && ids.length <= SESSIONS_ENDED_MAX;
+      for (let round = 0; round < SESSIONS_ROUNDS_MAX; round += 1) {
+        const r = await this.send('POST', '/zitadel.session.v2.SessionService/ListSessions', {
+          json: { query: { limit: SESSIONS_PAGE }, queries: [{ userIdQuery: { id: userId } }] },
+          service: true,
+        });
+        if (r.status === 403) return 'denied';
+        if (r.status < 200 || r.status > 299) return 'failed';
+        const listed = json(r.body).sessions;
+        if (listed !== undefined && !Array.isArray(listed)) return 'failed';
+        const ids = (listed ?? []).map((row: unknown) => (row && typeof row === 'object' ? str((row as Record<string, unknown>).id) : ''));
+        if (ids.length === 0) return 'ended';
+        if (ids.some((id) => !id)) return 'failed';
+        const ended = await Promise.all(ids.map((id) => this.endSession(id)));
+        if (ended.includes('denied')) return 'denied';
+        if (ended.includes('failed')) return 'failed';
+      }
+      return 'cap';
     } catch {
-      return false;
+      return 'failed';
     }
   }
 

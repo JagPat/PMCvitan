@@ -259,8 +259,8 @@ export class IdentitySignInService {
    * on the issuer person this account is (linked), or a new issuer person is made with it. An issuer person who already
    * holds the email and is not yet linked gets the typed password too (Jagrut, 4 Nov 2026: "Set up or forgot password"
    * resets the one Redbracket ID password every Vitan portal uses): the code proved the same mailbox the person holds.
-   * One linked to another PMC account is left as it is, and so is one whose email was never verified that holds another
-   * way in (a passkey, a one-time code, a linked provider). `passwordSet` is told as soon as the issuer took the
+   * One linked to another PMC account is left as it is, and so is an unlinked one that holds another way in (a passkey,
+   * a one-time code, a linked provider). `passwordSet` is told as soon as the issuer took the
    * password (the "password changed" notice goes then, whatever follows), and the person's other issuer sessions are
    * ended. Nothing is written to `User.passwordHash`. Last, in one transaction, the PMC account is settled and `record`
    * writes the security trail for the account it settled on (a new one when an established account joins fresh), saying
@@ -328,17 +328,15 @@ export class IdentitySignInService {
               return linkedAccount(tx, config.issuer, found.userId);
             });
             if (holder) return this.needsHelp(attempt, 'issuer person linked to another account');
-            if (!found.verified) {
-              // a person whose email was never proved may have been registered by someone else, who could still hold a
-              // passkey, a one-time code or a linked provider: PMC resets only a person whose one way in is the password
-              const others = await client.otherSignInMethods(found.userId);
-              if (others === 'down') return this.unavailable(attempt);
-              if (others.length > 0) return this.needsHelp(attempt, 'unverified issuer person holds other sign-in methods');
-            }
-          }
-          if (!found.verified) {
-            // the issuer must hold the email as verified before PMC reports the setup done (PMC's code proved the mailbox);
-            // asked before the password is written, so a refusal leaves the person's issuer password as it was
+            // PMC resets only a person whose one way in is the password: one who also holds a passkey, a one-time code
+            // or a linked provider may have been registered by someone else (and verified meanwhile), and a reset would
+            // leave that way in. Asked of every unlinked person, verified or not, so no earlier failed try can skip it
+            const others = await client.otherSignInMethods(found.userId);
+            if (others === 'down') return this.unavailable(attempt);
+            if (others.length > 0) return this.needsHelp(attempt, 'unlinked issuer person holds other sign-in methods');
+          } else if (!found.verified) {
+            // this account's own person: the issuer must hold the email as verified before PMC reports the setup done
+            // (PMC's code proved the mailbox); asked before the password is written, so a refusal leaves it as it was
             const marked = await client.markVerified(found.userId, email);
             if (marked === 'down') return this.unavailable(attempt);
             if (marked !== null) return this.needsHelp(attempt, 'issuer refused to mark the email verified');
@@ -357,6 +355,13 @@ export class IdentitySignInService {
           }
           issuerPerson = 'existing';
           passwordSet(issuerPerson);
+          if (!link && !found.verified) {
+            // a person not yet this account's is marked verified only once its password is set, so a try that fails
+            // before it leaves that person exactly as they were (no verified flag a later try could lean on)
+            const marked = await client.markVerified(found.userId, email);
+            if (marked === 'down') return this.unavailable(attempt);
+            if (marked !== null) return this.needsHelp(attempt, 'issuer refused to mark the email verified');
+          }
         }
 
         const signedIn = await client.login(email, password);
@@ -375,6 +380,17 @@ export class IdentitySignInService {
           if (holder && holder.id !== account.id) {
             await lockUserCredential(tx, holder.id);
             await tx.user.update({ where: { id: holder.id }, data: { credentialVersion: { increment: 1 } } });
+            // the trail: the issuer password changed, and this account's sessions ended, though the setup was refused
+            await tx.securityAuditEvent.create({
+              data: {
+                action: 'auth.password_reset_refused_linked',
+                targetUserId: holder.id,
+                actorUserId: account.id,
+                actorKind: 'self',
+                correlationId: attempt,
+                payload: { issuerPerson: claims.sub, codeSentTo: account.id },
+              },
+            });
             return null;
           }
           await lockUserCredential(tx, account.id);
@@ -393,7 +409,11 @@ export class IdentitySignInService {
       // whatever PMC's own steps did after it; not awaited: the password is already set, and PMC's own sign-in is done
       if (issuerPerson === 'existing' && found.found === 'one') {
         const personId = found.userId;
-        void client.endPersonSessions(personId).then((all) => all || this.line('password', attempt, 'issuer sessions not all ended'));
+        void client.endPersonSessions(personId).then((result) => {
+          if (result === 'denied') this.line('password', attempt, 'issuer sessions not ended: session permission missing');
+          else if (result === 'cap') this.line('password', attempt, 'issuer sessions not all ended: cap reached');
+          else if (result === 'failed') this.line('password', attempt, 'issuer sessions not all ended');
+        });
       }
     }
     this.line('password', attempt, outcome.fresh ? 'set, new account' : 'set');

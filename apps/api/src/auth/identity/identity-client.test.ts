@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
-import { IdentityClient, readLookup, searchBody, challenge } from './identity-client';
+import { IdentityClient, readLookup, searchBody, challenge, SESSIONS_PAGE, SESSIONS_ROUNDS_MAX } from './identity-client';
 import { keyFromJwks, checkIdToken } from './id-token';
 import { readIdentityConfig, identitySwitchOn, REDBRACKET_ISSUER } from './identity-config';
 import { startFakeIssuer, type FakeIssuer } from '../../../test/unit-support/fake-issuer';
@@ -195,26 +195,38 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(await client.login('r@example.in', 'Right-pass-123')).toEqual({ ok: false, failure: 'down' });
   });
 
-  it('after a reset, ends every issuer session of the person (and only theirs), and says when it could not', async () => {
+  it('after a reset, ends every issuer session of the person (and only theirs), page by page, and names why it could not', async () => {
     const p = fake.addPerson('s@example.in', 'Right-pass-123');
     const q = fake.addPerson('s2@example.in', 'Right-pass-123');
-    const mine = [fake.openSession(p.userId), fake.openSession(p.userId)];
+    const mine = Array.from({ length: SESSIONS_PAGE + 5 }, () => fake.openSession(p.userId));
     const theirs = fake.openSession(q.userId);
-    expect(await client.endPersonSessions(p.userId)).toBe(true);
+    expect(await client.endPersonSessions(p.userId)).toBe('ended');
     expect(fake.sessionsOf(p.userId)).toEqual([]);
     expect(fake.sessionsOf(q.userId)).toEqual([theirs]);
+    // more than one page: listed again until none is left
+    expect(fake.requests.filter((r) => r.path.endsWith('/ListSessions'))).toHaveLength(3);
     // the deletes carry no session token: the service account's own permission ends them
     const deletes = fake.requests.filter((r) => r.path.endsWith('/DeleteSession')).map((r) => JSON.parse(r.body));
     expect(deletes.map((d) => d.sessionId).sort()).toEqual([...mine].sort());
     expect(deletes.every((d) => d.sessionToken === undefined)).toBe(true);
     // nobody's sessions: nothing to end
-    expect(await client.endPersonSessions(p.userId)).toBe(true);
-    // the issuer refusing the list or a delete (a missing grant) is reported, never thrown
+    expect(await client.endPersonSessions(p.userId)).toBe('ended');
+    // a missing permission is told apart from any other failure, and never thrown
     fake.openSession(p.userId);
     fake.force = { '/zitadel.session.v2.SessionService/DeleteSession': 403 };
-    expect(await client.endPersonSessions(p.userId)).toBe(false);
+    expect(await client.endPersonSessions(p.userId)).toBe('denied');
     fake.force = { '/zitadel.session.v2.SessionService/ListSessions': 403 };
-    expect(await client.endPersonSessions(p.userId)).toBe(false);
+    expect(await client.endPersonSessions(p.userId)).toBe('denied');
+    fake.force = { '/zitadel.session.v2.SessionService/DeleteSession': 500 };
+    expect(await client.endPersonSessions(p.userId)).toBe('failed');
+    fake.force = {};
+  });
+
+  it('stops after its rounds and says so (cap), when sessions keep coming back', async () => {
+    const p = fake.addPerson('c@example.in', 'Right-pass-123');
+    for (let i = 0; i < SESSIONS_PAGE * SESSIONS_ROUNDS_MAX + 1; i += 1) fake.openSession(p.userId);
+    expect(await client.endPersonSessions(p.userId)).toBe('cap');
+    expect(fake.sessionsOf(p.userId)).toHaveLength(1);
   });
 
   it('names the ways besides a password a person can sign in, and is down on a refusal or an odd answer', async () => {
