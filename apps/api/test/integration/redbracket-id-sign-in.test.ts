@@ -35,12 +35,14 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
   let f: TwoProjectFixture;
   let fake: FakeIssuer;
   const codes = new Map<string, string>();
+  /** the addresses a "your password was changed" email went to, in order */
+  const changedMail: string[] = [];
   const saved: Partial<Record<(typeof ENV)[number], string | undefined>> = {};
   const made: string[] = [];
 
   beforeAll(async () => {
     for (const name of ENV) saved[name] = process.env[name];
-    t = await createTestApp({ capturePasswordCode: (email, code) => codes.set(email, code) });
+    t = await createTestApp({ capturePasswordCode: (email, code) => codes.set(email, code), capturePasswordChanged: (email) => changedMail.push(email) });
     f = await createTwoProjectFixture(t.prisma);
     fake = await startFakeIssuer({ redirectUri: 'http://127.0.0.1:1/cb' });
   });
@@ -303,25 +305,57 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
   });
 
-  it('an invitation is not accepted by a plain sign-in, and an issuer person who already has the email is not taken over', async () => {
+  it('an invitation is not accepted by a plain sign-in, and the emailed code sets the Redbracket ID password of an issuer person who already has the email', async () => {
     const user = await invitee('hubuser');
     const person = fake.addPerson(user.email!, 'my existing hub passphrase');
     const pending = await login(user.email!, 'my existing hub passphrase').expect(401);
     expect(pending.body.message).toMatch(/invitation is waiting/);
     expect(pending.body.code).toBe('invite-pending');
 
-    const refused = await setPassword(user.email!, 'a different new passphrase', 400);
-    expect(refused.body.message).toMatch(/already has a Redbracket ID/);
-    expect(refused.body.code).toBe('issuer-account-exists');
-    expect(fake.people.get(person.userId)!.password).toBe('my existing hub passphrase');
-    expect(fake.requests.some((r) => r.path.includes('/password') || r.path === '/v2/users/human')).toBe(false);
-
-    const joined = await setPassword(user.email!, 'my existing hub passphrase', 201);
+    // Jagrut, 4 Nov 2026: the code proved the mailbox, so the typed password becomes the one Redbracket ID password
+    const joined = await setPassword(user.email!, 'a different new passphrase', 201);
     expect(sub(joined.body.token)).toBe(user.id);
+    expect(fake.people.get(person.userId)!.password).toBe('a different new passphrase');
+    expect(fake.requests.some((r) => r.path === '/v2/users/human')).toBe(false); // the same person, never a second one
     expect(await t.prisma.platformPersonLink.findUnique({ where: { userId: user.id } })).toMatchObject({ subject: person.userId, matchedOn: 'invite' });
-    // the trail says what happened: a join with the issuer password the person already had, never a reset or enrolment
+    expect(changedMail.filter((e) => e === user.email)).toEqual([user.email]);
+    // the trail says what happened: an enrolment (the invitation was never set up), not a join
     const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: { not: 'auth.password_requested' } }, select: { action: true } });
-    expect(trail.map((e) => e.action)).toEqual(['auth.identity_joined']);
+    expect(trail.map((e) => e.action)).toEqual(['auth.password_enrolled']);
+    // the old issuer password no longer works anywhere; the new one does
+    await login(user.email!, 'my existing hub passphrase').expect(401);
+    await login(user.email!, 'a different new passphrase').expect(201);
+  });
+
+  it('forgot password: an established account whose issuer person exists resets that password and joins fresh, as a sign-in would', async () => {
+    const old = await invitee('forgot');
+    await t.prisma.user.update({ where: { id: old.id }, data: { passwordHash: await bcrypt.hash('the old local passphrase', 4), emailVerifiedAt: new Date() } });
+    const person = fake.addPerson(old.email!, 'a forgotten redbracket passphrase', false);
+
+    // the new account holds no seat until the team re-seats the person (the RUNBOOK "Redbracket ID re-seat")
+    const reset = await setPassword(old.email!, 'the remembered new passphrase', 401);
+    expect(reset.body.code).toBe('no-project');
+    const fresh = await t.prisma.user.findUniqueOrThrow({ where: { email: old.email! }, include: { platformPersonLink: true } });
+    made.push(fresh.id);
+    expect(fresh.id).not.toBe(old.id);
+    expect(fresh.platformPersonLink).toMatchObject({ subject: person.userId });
+    // the issuer person now holds the new password, and the email the code proved is marked verified there
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'the remembered new passphrase', verified: true });
+    expect(await t.prisma.identityRetirement.count({ where: { userId: old.id } })).toBe(1);
+    expect(changedMail.filter((e) => e === old.email)).toEqual([old.email]);
+  });
+
+  it('an issuer person linked to another PMC account is left as it is: that account resets it', async () => {
+    const user = await invitee('linkedelsewhere');
+    const other = await invitee('holder');
+    const person = fake.addPerson(user.email!, 'the holder redbracket passphrase');
+    await t.prisma.platformPersonLink.create({ data: { userId: other.id, issuer: fake.issuer, subject: person.userId, matchedOn: 'invite' } });
+
+    const refused = await setPassword(user.email!, 'a takeover passphrase', 409);
+    expect(refused.body.code).toBe('needs-help');
+    expect(fake.people.get(person.userId)!.password).toBe('the holder redbracket passphrase');
+    expect(fake.requests.some((r) => r.path.includes('/password') || r.path === '/v2/users/human')).toBe(false);
+    expect(changedMail).not.toContain(user.email);
   });
 
   it('a retired account never signs in again: a phone code sent before or after, any door, all refused', async () => {

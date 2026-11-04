@@ -38,8 +38,8 @@ async function page(gateway?: Partial<ApiGateway>) {
   return { useStore, TeamAccessScreen, LangPreference, pref };
 }
 
-/** the person's own words and the firm's name: typed email addresses, the product name, the +91 code */
-const DATA = ['asha@vitan.in', 'you@vitan.in', 'you@example.com', 'Vitan PMC', 'PMC', 'pmc', 'client', 'contractor', 'vitan', 'in', '6-digit'];
+/** the person's own words and the names: typed email addresses, the product and portal names (Redbracket ID, Hub, rb), the +91 code */
+const DATA = ['asha@vitan.in', 'you@vitan.in', 'you@example.com', 'Vitan PMC', 'PMC', 'pmc', 'client', 'contractor', 'vitan', 'in', '6-digit', 'Redbracket', 'ID', 'Hub', 'rb'];
 
 describe.each(['hi', 'gu'] as const)('every email and password sign-in screen in %s', (lang) => {
   const steps: Array<[string, Partial<AccessState>]> = [

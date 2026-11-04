@@ -160,3 +160,35 @@ describe('EmailService.sendMemberInvite', () => {
     });
   });
 });
+
+describe('EmailService.sendPasswordChanged', () => {
+  afterEach(() => {
+    delete process.env.SMTP_HOST;
+    delete process.env.SMTP_USER;
+    delete process.env.SMTP_PASS;
+  });
+
+  it('reports not-live without SMTP and does not throw, in production too: the change has already landed', async () => {
+    await expect(new EmailService().sendPasswordChanged('jp@vitan.in')).resolves.toEqual({ live: false });
+    process.env.NODE_ENV = 'production';
+    try {
+      await expect(new EmailService().sendPasswordChanged('jp@vitan.in')).resolves.toEqual({ live: false });
+    } finally {
+      process.env.NODE_ENV = 'test';
+    }
+  });
+
+  it('tells the person their one Redbracket ID password changed, and carries no code or link', async () => {
+    sent.length = 0;
+    process.env.SMTP_HOST = 'smtp.zoho.in';
+    process.env.SMTP_USER = 'no-reply@vitan.in';
+    process.env.SMTP_PASS = 'secret';
+    await expect(new EmailService().sendPasswordChanged(' JP@vitan.in ')).resolves.toEqual({ live: true });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].to).toBe('jp@vitan.in');
+    expect(sent[0].subject).toBe('Your Redbracket ID password was changed');
+    expect(sent[0].text).toMatch(/one password you use on every Vitan portal \(PMC, Hub and rb\)/);
+    expect(sent[0].text).toMatch(/If you did not do this/);
+    expect(`${sent[0].text}${sent[0].html}`).not.toMatch(/\d{6}|https?:/);
+  });
+});

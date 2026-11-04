@@ -28,7 +28,7 @@ import { readIdentityConfig, type IdentityConfig } from './identity-config';
 import { IdentityClient } from './identity-client';
 import type { IdClaims } from './id-token';
 import { SignInAttempts, type AttemptKind } from './sign-in-attempts';
-import { breakGlassHash, linkInvite, linkOf, lockIssuerPerson, neverSetUp, settleSignIn, type Settled } from './identity-accounts';
+import { breakGlassHash, linkedAccount, linkInvite, linkOf, lockIssuerPerson, neverSetUp, settleSignIn, type Settled } from './identity-accounts';
 
 export const UNAVAILABLE = 'Sign-in is unavailable just now. Try again in a few minutes.';
 export const WRONG_PASSWORD = 'Invalid email or password';
@@ -254,11 +254,13 @@ export class IdentitySignInService {
    * code has just proved. `claim` consumes PMC's code first, in its own transaction, before anything is written at
    * the issuer: a code is spent once, and a refused or failed step after it means asking for a new code. (The code is
    * single-use, so this step is not counted against the per-person limit; its request was.) The password is then set
-   * on the issuer person this account is (linked), or a new issuer person is made with it; an issuer person who already
-   * holds the email and is not this account's is never changed: the person joins with it only by typing its
-   * password. Nothing is written to `User.passwordHash`. Last, in one transaction, the PMC account is settled and
-   * `record` writes the security trail for the account it settled on (a new one when an established account joins
-   * fresh), saying whether this step set the issuer password. `attempt` names the try in the one log line (the
+   * on the issuer person this account is (linked), or a new issuer person is made with it. An issuer person who already
+   * holds the email and is not yet linked to this account gets the typed password too (Jagrut, 4 Nov 2026: "Set up or
+   * forgot password" resets the one Redbracket ID password every Vitan portal uses, as Hub's reset does): the code
+   * proved the same mailbox the issuer person holds; one linked to another PMC account is left as it is. Nothing is
+   * written to `User.passwordHash`. Last, in one transaction, the PMC account is settled and `record` writes the
+   * security trail for the account it settled on (a new one when an established account joins fresh), saying whether
+   * this step set the issuer password. `attempt` names the try in the one log line (the
    * challenge id). `unsettled` is called when the issuer write itself (making the person, or setting the password)
    * got no clear answer, so it may still land: the caller then leaves its claim to the lease rather than freeing the
    * account at once (A4a), or a newer setup could report success and be overwritten by this one landing late.
@@ -310,8 +312,10 @@ export class IdentitySignInService {
           }
           if (!made.ok) return this.needsHelp(attempt, 'issuer refused new person');
           issuerPasswordSet = true;
-        } else if (link) {
-          if (link.issuer !== config.issuer || link.subject !== found.userId) return this.needsHelp(attempt, 'link names another person');
+        } else {
+          if (link && (link.issuer !== config.issuer || link.subject !== found.userId)) return this.needsHelp(attempt, 'link names another person');
+          // a person linked to another PMC account is that account's, reset from that account: left as it is here
+          if (!link && (await linkedAccount(this.prisma, config.issuer, found.userId))) return this.needsHelp(attempt, 'issuer person linked to another account');
           if (!found.verified) {
             // the issuer must hold the email as verified before PMC reports the setup done (PMC's code proved the mailbox);
             // asked before the password is written, so a refusal leaves the person's issuer password as it was
@@ -333,13 +337,12 @@ export class IdentitySignInService {
           }
           issuerPasswordSet = true;
         }
-        // an existing issuer person who is not linked is left exactly as they are: the typed password must already be theirs
 
         const signedIn = await client.login(email, password);
         if (!signedIn.ok && signedIn.failure === 'down') return this.unavailable(attempt);
         if (!signedIn.ok) {
-          this.line('password', attempt, found.found === 'one' && !link ? 'issuer person exists' : 'issuer refused new password');
-          throw refusedSetup(found.found === 'one' && !link ? ISSUER_ACCOUNT_EXISTS : NEEDS_HELP);
+          this.line('password', attempt, 'issuer refused new password');
+          throw refusedSetup(NEEDS_HELP);
         }
         const claims = signedIn.claims;
         return await this.prisma.$transaction(async (tx) => {

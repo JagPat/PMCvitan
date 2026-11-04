@@ -2666,7 +2666,8 @@ Because the database keeps real people out of those companies, the session needs
 Each sign-in writes an `auth.qaSignIn` audit row with the operator and reason.
 
 **Redbracket ID re-seat** (Redbracket ID A4b, Stage 1 ruling 3 Nov 2026). With `IDENTITY_OIDC=1`, an established
-PMC account whose email first signs in through Redbracket ID is set aside (retired), and the person gets a new, linked
+PMC account whose email first signs in through Redbracket ID, or first completes "Set up or forgot password" (which
+sets the one Redbracket ID password every Vitan portal uses), is set aside (retired), and the person gets a new, linked
 account with no seats. Retirement moves no seat: the retired row keeps its project and company seats until someone
 with authority re-seats the person. `GET /ops/people` lists those rows under `retired` (oldest first: `userId`,
 `name` (the address, once it holds no seat), `email` it was retired from, `retiredAt`, the `projects` (each with its

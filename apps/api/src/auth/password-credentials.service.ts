@@ -299,8 +299,10 @@ export class PasswordCredentialsService {
     let established = false;
     let claimed = false;
     let unsettled = false;
+    let changed = false;
+    let outcome: IdentityOutcome;
     try {
-      return await identity.setPassword(
+      outcome = await identity.setPassword(
         account,
         input.password,
         challenge.id,
@@ -317,6 +319,7 @@ export class PasswordCredentialsService {
         // account (its retirement is recorded on the old one, identity-accounts.ts); and a step that left an existing
         // issuer password as it was is a join, not a reset or enrolment
         async (tx, outcome, issuerPasswordSet) => {
+          changed = issuerPasswordSet;
           const action = !issuerPasswordSet
             ? 'auth.identity_joined'
             : outcome.fresh || !established ? 'auth.password_enrolled' : 'auth.password_reset';
@@ -345,6 +348,14 @@ export class PasswordCredentialsService {
       if (claimed && !unsettled) await this.settleCompletion(challenge.id);
       if (claimed && unsettled) this.log.warn(`Password credential completion ${challenge.id}: issuer write unclear; its lease frees the account`);
     }
+    // after the change has landed, to the mailbox the code proved; not awaited, so a slow or failed send never holds
+    // or fails the setup
+    if (changed) {
+      void this.email
+        .sendPasswordChanged(account.email ?? '')
+        .catch((error: unknown) => this.log.warn(`Password credential completion ${challenge.id}: password-changed email failed: ${(error as Error).constructor.name}`));
+    }
+    return outcome;
   }
 
   /**
