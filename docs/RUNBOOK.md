@@ -2735,6 +2735,46 @@ the last live holder was removed before this unit) can be published but nobody c
 which adds the live holder. Each step is the normal team command, attributed to the person who does it. Check `GET /ops/people` afterwards: the
 row is gone from `retired` once it holds no seat.
 
+## §RBF. Redbracket ID reset — the issuer methods fence (leftover markers, new portal domains)
+
+Before a "Set up or forgot password" reset links a person who already has a Redbracket ID, PMC asks the issuer's
+write side whether that person has another way in (`IdentityClient.fenceOtherMethods`, unit F; the reset calls it
+once #1338 head 3 lands). To ask, it makes markers on that person one at a time, and removes each one with the very
+next call, before it asks anything else:
+- a pending TOTP secret;
+- email codes switched on, only when the person's email was ever verified (Zitadel keeps "verified" through a later
+  email change, so the codes go to the current address, which the reset has just proved with PMC's own code);
+- SMS codes switched on, only when a phone was ever verified;
+- a not-ready passkey and a not-ready security key on each rp id in `FENCE_RP_IDS`
+  (`apps/api/src/auth/identity/identity-config.ts`).
+
+Every session of the person has already been ended. So for one call the only possible effect is an extra code step
+on the person's own sign-in during their own reset. Two effects last:
+- A TOTP the person registers and verifies in that one call's window is removed with the marker.
+- Turning the email or SMS codes on and off clears the person's "MFA setup skipped" mark. While the login policy's
+  `MFAInitSkipLifetime` is above 0, a person who skipped MFA set-up is asked again at their next hosted-login sign-in
+  and can skip again. Zitadel v4.16 has no API call to restore the mark.
+
+1. **A new portal, or any new place that registers passkeys, goes into `FENCE_RP_IDS` before it launches.** The rp id
+   is the `domain` each login UI or app sends when it registers a passkey or security key (Hub, rb, the console,
+   PMC), and it can be any value, such as a parent domain. A key made under an rp id that is not in the list is
+   invisible to the fence (residual RP-COVERAGE). `FENCE_RP_IDS` is a constant in the code, so adding one is a code
+   change and a deploy, finished before that portal launches. Before #1338 deploys, the id.vitan.in pre-deploy check
+   lists every such `domain` value, and the list must hold all of them.
+2. **A marker that could not be removed.** The reset answers "unfinished", and its audit row names the leftover
+   (`otp-email`, `totp`, `passkey hub.vitan.in` and so on) with a reason. The person is not linked. A later reset of
+   that person is contested ("ask for help"), never treated as a wrong code. To end it, on Jagrut's yes naming the
+   person:
+   - **`cleanup failed`**: the fence made the marker and its removal failed. Whoever holds access to the id.vitan.in
+     console removes exactly that factor from the person: email or SMS codes, the not-ready TOTP, or the not-ready
+     passkey or key on the named domain. The console is reached through the SSH tunnel, because its admin paths are
+     IP-locked. Hub's admin can be used instead where it can remove that factor.
+   - **`outcome unknown`**: the issuer gave no answer, so the factor may be the person's own. First read the person's
+     history on id.vitan.in. Remove the factor only if it shows that factor added by pmc-service at the audit row's
+     time, with no earlier add. Otherwise leave it: it is theirs, and their next reset answers "some" (contested) on
+     its own.
+   - Never remove a factor the audit row does not name. Then the person runs "Set up or forgot password" again.
+
 ## §SSP. Seen-state pins — when the pins can be required, and rolling back (#482)
 
 Eight money and measure acts (payment record and reverse, deduction record and release, advance pay,
