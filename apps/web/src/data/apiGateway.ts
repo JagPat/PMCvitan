@@ -625,7 +625,8 @@ export class ApiGateway {
     return this.pub('/auth/password/request', { email });
   }
   /** Prove email control. This returns no application session. */
-  passwordCredentialVerify(requestId: string, code: string): Promise<{ setupToken: string; expiresInSeconds: number }> {
+  /** `sharedPassword`: the password chosen next is the one Redbracket ID password (an older server leaves it out). */
+  passwordCredentialVerify(requestId: string, code: string): Promise<{ setupToken: string; expiresInSeconds: number; sharedPassword?: boolean }> {
     return this.pub('/auth/password/verify', { requestId, code });
   }
   /** Commit the new password and receive the normal project-scoped session. */
@@ -895,17 +896,19 @@ export class ApiGateway {
     });
     if (!res.ok) {
       // Surface the HTTP status so callers can react (e.g. 429 throttle vs 503 send-failure).
-      const err = new Error(`${path} ${res.status}`) as Error & { status?: number; serverMessage?: string; serverCode?: string; retryAfter?: number };
+      const err = new Error(`${path} ${res.status}`) as Error & { status?: number; serverMessage?: string; serverCode?: string; serverResetUrl?: string; retryAfter?: number };
       err.status = res.status;
       // Phase 6 task 4d-ii-b / B5a — and the server's OWN refusal message (Nest's `{ message }`, a string or
       // a list), so a command the server refuses (a 409 while the doors stand, an ineligible state) can be
       // surfaced as what the server said rather than masked behind a generic line. Read defensively: a body
       // that is not JSON, or carries no message, leaves the field absent.
       try {
-        const body = (await res.json()) as { message?: unknown; retryAfter?: unknown; code?: unknown } | null;
+        const body = (await res.json()) as { message?: unknown; retryAfter?: unknown; code?: unknown; resetUrl?: unknown } | null;
         const m = body?.message;
         // a refusal that names itself (e.g. Redbracket ID A4a's SETUP_RUNNING_CODE) is matched by this code, not its words
         if (typeof body?.code === 'string' && body.code) err.serverCode = body.code;
+        // unit H: Redbracket ID's own reset page, sent with `issuer-account-exists`; the store checks it before showing it
+        if (typeof body?.resetUrl === 'string' && body.resetUrl) err.serverResetUrl = body.resetUrl;
         // A throttle (429) says how many seconds remain in its window (common/throttle.ts).
         if (typeof body?.retryAfter === 'number' && body.retryAfter > 0) err.retryAfter = body.retryAfter;
         if (typeof m === 'string' && m.trim()) err.serverMessage = m;

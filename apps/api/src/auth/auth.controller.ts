@@ -100,8 +100,11 @@ export class AuthController {
   @Public()
   @Throttle(15, WINDOW)
   @Post('password/verify')
-  passwordVerify(@Body(new ZodPipe(passwordCredentialVerifySchema)) body: PasswordCredentialVerifyInput) {
-    return this.passwordCredentials.verify(body);
+  async passwordVerify(@Body(new ZodPipe(passwordCredentialVerifySchema)) body: PasswordCredentialVerifyInput) {
+    // whether the password chosen next is the one Redbracket ID password every Vitan portal uses (switch on) or PMC's
+    // own (switch off), so the screen says which is true. Read once: the setup token is bound to this same value, and
+    // a completion under the other one refuses it (PasswordCredentialsService.openChallenge)
+    return this.passwordCredentials.verify(body, identitySwitchOn());
   }
 
   @Public()

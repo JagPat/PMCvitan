@@ -70,6 +70,7 @@ import {
   type ResolveStrandedCountersignInput,
   ROLE_POLICY,
   SETUP_RUNNING_CODE,
+  isRedbracketResetUrl,
   IDENTITY_REFUSAL_CODES,
   type IdentityRefusalCode,
 } from '@vitan/shared';
@@ -7911,6 +7912,8 @@ export const useStore = create<Store>()(
         s.access.sending = false;
         s.access.passwordRequestId = null;
         s.access.passwordSetupToken = null;
+        s.access.passwordShared = false;
+        s.access.issuerResetUrl = null;
       }),
     login: (email, password) => {
       const em = email.trim().toLowerCase();
@@ -7950,6 +7953,8 @@ export const useStore = create<Store>()(
         s.access.sending = false;
         s.access.passwordRequestId = null;
         s.access.passwordSetupToken = null;
+        s.access.passwordShared = false;
+        s.access.issuerResetUrl = null;
       }),
     requestPasswordSetup: () => {
       const email = get().access.email.trim().toLowerCase();
@@ -7970,6 +7975,8 @@ export const useStore = create<Store>()(
         s.access.errorKey = null; s.access.error = null;
         s.access.passwordRequestId = null;
         s.access.passwordSetupToken = null;
+        s.access.passwordShared = false;
+        s.access.issuerResetUrl = null;
       });
       gateway.passwordCredentialRequest(email)
         .then((result) => {
@@ -8009,6 +8016,10 @@ export const useStore = create<Store>()(
             s.access.step = 'password-create';
             s.access.otp = '';
             s.access.passwordSetupToken = result.setupToken;
+            // only an explicit false is PMC's own password: an answer without the field comes from the release before it,
+            // which sets the one Redbracket ID password whenever the switch is on, so the screen warns as for the shared one
+            // (Codex 4472065772 on #1341: a rolling deploy must never hide that warning)
+            s.access.passwordShared = result.sharedPassword !== false;
           });
         })
         .catch(() => {
@@ -8018,7 +8029,8 @@ export const useStore = create<Store>()(
     },
     completePasswordSetup: (password, confirmation) => {
       const access = get().access;
-      if (access.sending) return;
+      // unit H: the refusal that offered Redbracket ID's reset page spent this code; only a new code may be saved again
+      if (access.sending || access.errorKey?.key === 'issuerAccountReset') return;
       if (password !== confirmation) {
         set((s) => { failAccess(s, { key: 'passwordMismatch' }); });
         return;
@@ -8038,6 +8050,7 @@ export const useStore = create<Store>()(
         generation = s.access.generation;
         s.access.sending = true;
         s.access.errorKey = null; s.access.error = null;
+        s.access.issuerResetUrl = null;
       });
       gateway.passwordCredentialComplete(setupToken, password)
         .then((result) => {
@@ -8059,8 +8072,12 @@ export const useStore = create<Store>()(
           const status = httpStatusOf(err);
           const refused = running ? null : identityRefusal(err);
           const unknownOutcome = status === undefined || status === 408 || status >= 500;
-          const key = running ? 'setupStillFinishing' : refused ?? (unknownOutcome ? 'setupMayBeSet' : 'passwordSaveFailed');
-          set((s) => { s.access.sending = false; failAccess(s, { key }); });
+          // unit H: an email that already has a Redbracket ID, whose password this was not, is pointed at Redbracket ID's
+          // own reset page when the server sent one on a Redbracket ID host (https); otherwise today's words
+          const resetUrl = (err as { serverResetUrl?: unknown } | null)?.serverResetUrl;
+          const reset = refused === 'identityIssuerAccountExists' && isRedbracketResetUrl(resetUrl) ? resetUrl : null;
+          const key = running ? 'setupStillFinishing' : reset ? 'issuerAccountReset' : refused ?? (unknownOutcome ? 'setupMayBeSet' : 'passwordSaveFailed');
+          set((s) => { s.access.sending = false; s.access.issuerResetUrl = reset; failAccess(s, { key }); });
         });
     },
     accGoEmailOtp: () =>
