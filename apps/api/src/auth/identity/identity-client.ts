@@ -28,6 +28,13 @@ export const IDENTITY_TIMEOUT_MS = 4000;
 /** How long an issuer session PMC opens may live (a protobuf Duration): a sign-in finishes well inside it. */
 export const ISSUER_SESSION_LIFETIME = '60s';
 const BODY_LIMIT = 1_000_000;
+/** How many of a person's issuer sessions one list asks for (each round deletes them, then lists again). */
+export const SESSIONS_PAGE = 100;
+/**
+ * How many rounds a reset makes: up to 2,000 sessions, far past any person's own use. Past it the reset logs "cap
+ * reached" (whoever opened that many is told apart from a missing permission), and the rest outlive it.
+ */
+export const SESSIONS_ROUNDS_MAX = 20;
 
 /** `down`: no usable answer (timeout, network, 5xx, PMC's service token refused). `rejected`: the issuer said no. */
 export type IdentityFailure = 'down' | 'rejected';
@@ -126,11 +133,114 @@ export class IdentityClient {
     }
   }
 
-  private async endSession(sessionId: string, sessionToken: string): Promise<void> {
+  /**
+   * Deletes one issuer session. With its token (a session PMC opened itself), or without one (another session of a
+   * person whose password PMC just reset), which takes the service account's session.delete permission. `denied` when
+   * the issuer refused PMC's service account (403). Never throws.
+   */
+  private async endSession(sessionId: string, sessionToken?: string): Promise<'ended' | 'denied' | 'failed'> {
     try {
-      await this.send('POST', '/zitadel.session.v2.SessionService/DeleteSession', { json: { sessionId, sessionToken }, service: true });
+      const r = await this.send('POST', '/zitadel.session.v2.SessionService/DeleteSession', {
+        json: sessionToken ? { sessionId, sessionToken } : { sessionId },
+        service: true,
+      });
+      // a session already gone (it expired, or PMC's own sign-in deleted it first) is ended
+      if ((r.status >= 200 && r.status <= 299) || r.status === 404) return 'ended';
+      return r.status === 403 ? 'denied' : 'failed';
     } catch {
       // best effort: the issuer's session also expires on its own (ISSUER_SESSION_LIFETIME, set at creation)
+      return 'failed';
+    }
+  }
+
+  /**
+   * After a reset, ends every issuer session the person holds (the rb login and any other portal's sign-in in progress
+   * there), so whoever knew the old password is signed out of Redbracket ID itself. Each round lists up to
+   * {@link SESSIONS_PAGE} of the person's sessions and deletes them; it lists again until none is left. `ended`: none
+   * left; `denied`: the issuer refused PMC's service account (403: the session permission is missing); `cap`: still
+   * sessions after {@link SESSIONS_ROUNDS_MAX} rounds; `failed`: anything else. A portal's own session (Hub's, PMC's)
+   * is that portal's to end. Best effort: the password is already set. Never throws.
+   */
+  async endPersonSessions(userId: string): Promise<'ended' | 'denied' | 'cap' | 'failed'> {
+    try {
+      for (let round = 0; round < SESSIONS_ROUNDS_MAX; round += 1) {
+        const r = await this.send('POST', '/zitadel.session.v2.SessionService/ListSessions', {
+          json: { query: { limit: SESSIONS_PAGE }, queries: [{ userIdQuery: { id: userId } }] },
+          service: true,
+        });
+        if (r.status === 403) return 'denied';
+        if (r.status < 200 || r.status > 299) return 'failed';
+        const listed = json(r.body).sessions;
+        if (listed !== undefined && !Array.isArray(listed)) return 'failed';
+        const ids = (listed ?? []).map((row: unknown) => (row && typeof row === 'object' ? str((row as Record<string, unknown>).id) : ''));
+        if (ids.length === 0) return 'ended';
+        if (ids.some((id) => !id)) return 'failed';
+        const ended = await Promise.all(ids.map((id) => this.endSession(id)));
+        if (ended.includes('denied')) return 'denied';
+        if (ended.includes('failed')) return 'failed';
+      }
+      return 'cap';
+    } catch {
+      return 'failed';
+    }
+  }
+
+  /**
+   * Whether the person holds any live issuer session (an expired one, still listed, does not count): `none`, `some`, `denied` (the issuer
+   * refused PMC's service account, 403: the session permission is missing), or `down` (no usable answer). Asked around
+   * the password write for a person whose email was never verified (see `setPassword`).
+   */
+  async hasSessions(userId: string): Promise<'none' | 'some' | 'denied' | 'down'> {
+    try {
+      const r = await this.send('POST', '/zitadel.session.v2.SessionService/ListSessions', {
+        json: { query: { limit: SESSIONS_PAGE }, queries: [{ userIdQuery: { id: userId } }] },
+        service: true,
+      });
+      if (r.status === 403) return 'denied';
+      if (r.status < 200 || r.status > 299) return 'down';
+      const listed = json(r.body).sessions;
+      // Zitadel leaves out an empty list
+      if (listed === undefined) return 'none';
+      if (!Array.isArray(listed)) return 'down';
+      // an expired session cannot sign in, though Zitadel lists it until it is deleted (Codex 4464926718); a row with
+      // no readable expiry is taken as live
+      const now = Date.now();
+      const live = listed.filter((row: unknown) => {
+        const at = row && typeof row === 'object' ? (row as Record<string, unknown>).expirationDate : undefined;
+        if (typeof at !== 'string') return true;
+        const t = Date.parse(at);
+        return Number.isNaN(t) || t > now;
+      });
+      if (live.length > 0) return 'some';
+      // every row read has expired: "none" only when they are every session the issuer counts. A row left unread (the
+      // issuer's own page cap may be under PMC's limit) may be live, and a count PMC cannot read decides nothing: both
+      // are taken as signed in (the reset refuses, never guesses)
+      const raw = (json(r.body).details as Record<string, unknown> | undefined)?.totalResult;
+      const counted = typeof raw === 'number' ? String(raw) : str(raw);
+      const total = /^\d+$/.test(counted) ? Number(counted) : NaN;
+      if (!Number.isFinite(total)) return 'some';
+      return listed.length >= total ? 'none' : 'some';
+    } catch {
+      return 'down';
+    }
+  }
+
+  /**
+   * The ways besides a password this person can sign in at the issuer (passkeys, one-time codes, U2F keys, linked
+   * identity providers), as the issuer names them; `down` when it gave no usable answer. Asked before and again after
+   * PMC resets a person not yet linked, who may have been registered by someone else (see `setPassword`).
+   */
+  async otherSignInMethods(userId: string): Promise<string[] | 'down'> {
+    try {
+      const r = await this.send('POST', '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes', { json: { userId }, service: true });
+      if (r.status < 200 || r.status > 299) return 'down';
+      const types = json(r.body).authMethodTypes;
+      // Zitadel leaves out an empty list
+      if (types === undefined) return [];
+      if (!Array.isArray(types) || types.some((t) => typeof t !== 'string')) return 'down';
+      return (types as string[]).filter((t) => t !== 'AUTHENTICATION_METHOD_TYPE_PASSWORD');
+    } catch {
+      return 'down';
     }
   }
 

@@ -24,6 +24,13 @@ export const signInLabels = {
   startAgain: { en: 'Start again', hi: 'फिर से शुरू करें', gu: 'ફરીથી શરૂ કરો' },
   createTitle: { en: 'Create your password', hi: 'अपना पासवर्ड बनाएँ', gu: 'તમારો પાસવર્ડ બનાવો' },
   createSub: { en: 'Use 12 to 128 characters. A long passphrase is acceptable.', hi: '12 से 128 अक्षर रखें। लंबा वाक्य भी चलेगा।', gu: '12 થી 128 અક્ષર રાખો. લાંબું વાક્ય પણ ચાલશે.' },
+  // Jagrut, 4 Nov 2026: with Redbracket ID on, this step sets the one password every Vitan portal uses (PMC, Hub, rb)
+  sharedCreateTitle: { en: 'Choose your Redbracket ID password', hi: 'अपना Redbracket ID पासवर्ड चुनें', gu: 'તમારો Redbracket ID પાસવર્ડ પસંદ કરો' },
+  sharedCreateSub: {
+    en: 'This is the one password you use on every Vitan portal: PMC, Hub and rb. If you already have one, this replaces it everywhere. Use 12 to 128 characters. A long passphrase is acceptable.',
+    hi: 'यही एक पासवर्ड आप हर Vitan पोर्टल पर इस्तेमाल करेंगे: PMC, Hub और rb। अगर पहले से पासवर्ड है, तो यह हर जगह उसकी जगह लेगा। 12 से 128 अक्षर रखें। लंबा वाक्य भी चलेगा।',
+    gu: 'આ એક જ પાસવર્ડ તમે દરેક Vitan પોર્ટલ પર વાપરશો: PMC, Hub અને rb. જો પહેલેથી પાસવર્ડ હોય, તો તે દરેક જગ્યાએ તેની જગ્યા લેશે. 12 થી 128 અક્ષર રાખો. લાંબું વાક્ય પણ ચાલશે.',
+  },
   newPassword: { en: 'New password', hi: 'नया पासवर्ड', gu: 'નવો પાસવર્ડ' },
   confirmPassword: { en: 'Confirm password', hi: 'पासवर्ड दोबारा डालें', gu: 'પાસવર્ડ ફરી નાખો' },
   mismatch: { en: 'Passwords do not match.', hi: 'दोनों पासवर्ड एक जैसे नहीं हैं।', gu: 'બંને પાસવર્ડ સરખા નથી.' },

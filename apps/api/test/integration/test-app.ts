@@ -29,6 +29,8 @@ export interface TestAppOptions {
   capturePasswordCode?: (email: string, code: string) => void;
   /** #827 — mail is "configured" and phone sign-in codes are captured here instead of sent (throw to fail a send). */
   capturePhoneCode?: (email: string, code: string) => void;
+  /** the "your password was changed" email is captured here instead of sent (throw to fail a send) */
+  capturePasswordChanged?: (email: string, kind: 'set' | 'changed') => void;
   /** #1177 VT2 — the speech provider a voice note's words are asked of (a fake; production's is Sarvam, when keyed). */
   speechProvider?: SpeechProvider;
 }
@@ -38,8 +40,14 @@ export async function createTestApp(options: TestAppOptions = {}): Promise<TestA
     throw new Error('Refusing to run integration tests: DATABASE_URL must point at a disposable *test* database');
   }
   const builder = Test.createTestingModule({ imports: [AppModule] });
-  if (options.capturePasswordCode || options.capturePhoneCode) {
+  if (options.capturePasswordCode || options.capturePhoneCode || options.capturePasswordChanged) {
     const email = new EmailService();
+    if (options.capturePasswordChanged) {
+      email.sendPasswordChanged = async (address, kind) => {
+        options.capturePasswordChanged!(address, kind);
+        return { live: true };
+      };
+    }
     if (options.capturePasswordCode) {
       email.sendPasswordCredentialCode = async (address, code) => {
         options.capturePasswordCode!(address, code);

@@ -734,6 +734,8 @@ export interface AccessState {
   /** Public request id and one-time setup token; memory-only, never persisted. */
   passwordRequestId: string | null;
   passwordSetupToken: string | null;
+  /** the password being chosen is the one Redbracket ID password every Vitan portal uses (the server said so) */
+  passwordShared?: boolean;
 }
 
 export interface AppNotification {

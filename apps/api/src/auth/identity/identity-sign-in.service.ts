@@ -28,7 +28,7 @@ import { readIdentityConfig, type IdentityConfig } from './identity-config';
 import { IdentityClient } from './identity-client';
 import type { IdClaims } from './id-token';
 import { SignInAttempts, type AttemptKind } from './sign-in-attempts';
-import { breakGlassHash, linkInvite, linkOf, lockIssuerPerson, neverSetUp, settleSignIn, type Settled } from './identity-accounts';
+import { breakGlassHash, linkedAccount, linkInvite, linkOf, lockIssuerPerson, neverSetUp, settleSignIn, type Settled } from './identity-accounts';
 
 export const UNAVAILABLE = 'Sign-in is unavailable just now. Try again in a few minutes.';
 export const WRONG_PASSWORD = 'Invalid email or password';
@@ -115,6 +115,8 @@ async function compareEvenly(password: string, hash: string | null): Promise<boo
 export type SignInAccount = Pick<User, 'id' | 'projectId' | 'role' | 'name' | 'credentialVersion' | 'lastProjectId'>;
 /** What a route does next: issue PMC's session for `account`; `fresh` when it was made by this sign-in. */
 export type IdentityOutcome = { account: SignInAccount; fresh: boolean; breakGlass?: BreakGlass };
+/** Whose password a setup wrote at the issuer: a person it just made, or one that already existed (a reset). */
+export type IssuerPersonSet = 'made' | 'existing';
 /** A break-glass password matched; `settle` writes the try's one log line once the session is issued or refused. */
 export type BreakGlass = { settle: (decision: string) => void };
 
@@ -254,12 +256,16 @@ export class IdentitySignInService {
    * code has just proved. `claim` consumes PMC's code first, in its own transaction, before anything is written at
    * the issuer: a code is spent once, and a refused or failed step after it means asking for a new code. (The code is
    * single-use, so this step is not counted against the per-person limit; its request was.) The password is then set
-   * on the issuer person this account is (linked), or a new issuer person is made with it; an issuer person who already
-   * holds the email and is not this account's is never changed: the person joins with it only by typing its
-   * password. Nothing is written to `User.passwordHash`. Last, in one transaction, the PMC account is settled and
-   * `record` writes the security trail for the account it settled on (a new one when an established account joins
-   * fresh), saying whether this step set the issuer password. `attempt` names the try in the one log line (the
-   * challenge id). `unsettled` is called when the issuer write itself (making the person, or setting the password)
+   * on the issuer person this account is (linked), or a new issuer person is made with it. An issuer person who already
+   * holds the email and is not yet linked gets the typed password too (Jagrut, 4 Nov 2026: "Set up or forgot password"
+   * resets the one Redbracket ID password every Vitan portal uses): the code proved the same mailbox the person holds.
+   * One linked to another PMC account is left as it is, and so is an unlinked one that holds another way in (a passkey,
+   * a one-time code, a linked provider), or, never verified, that someone is signed in as; both are asked again once
+   * the password is written, before the person is marked verified or linked (a refusal then is recorded). `passwordSet` is told as soon as the issuer took the
+   * password (the "password changed" notice goes then, whatever follows), and the person's other issuer sessions are
+   * ended. Nothing is written to `User.passwordHash`. Last, in one transaction, the PMC account is settled and `record`
+   * writes the security trail for the account it settled on (a new one when an established account joins fresh), saying
+   * whose password was set. `attempt` names the try in the one log line (the challenge id). `unsettled` is called when the issuer write itself (making the person, or setting the password)
    * got no clear answer, so it may still land: the caller then leaves its claim to the lease rather than freeing the
    * account at once (A4a), or a newer setup could report success and be overwritten by this one landing late.
    */
@@ -268,8 +274,9 @@ export class IdentitySignInService {
     password: string,
     attempt: string,
     claim: () => Promise<void>,
-    record: (tx: Prisma.TransactionClient, outcome: IdentityOutcome, issuerPasswordSet: boolean) => Promise<void>,
+    record: (tx: Prisma.TransactionClient, outcome: IdentityOutcome, issuerPerson: IssuerPersonSet) => Promise<void>,
     unsettled: () => void,
+    passwordSet: (issuerPerson: IssuerPersonSet) => void,
   ): Promise<IdentityOutcome> {
     const email = (account.email ?? '').trim().toLowerCase();
     if (!email) throw refusedSetup(NEEDS_HELP);
@@ -286,7 +293,7 @@ export class IdentitySignInService {
     await claim();
     const client = this.clientFor(config);
     const link = await linkOf(this.prisma, account.id);
-    let issuerPasswordSet = false;
+    let issuerPerson: IssuerPersonSet | null = null;
     const found = await client.find(email);
     if (found.found === 'down') return this.unavailable(attempt);
     if (found.found === 'unclear') return this.needsHelp(attempt, 'issuer lookup unclear');
@@ -294,6 +301,7 @@ export class IdentitySignInService {
     // once the sessions were ended, a step that fails after it ends them again: a session the new password opened in
     // between (the issuer may already hold it) does not outlive a setup PMC reports as failed
     let ended = false;
+    let madeId = '';
     let outcome: IdentityOutcome;
     try {
       outcome = await (async () => {
@@ -309,12 +317,33 @@ export class IdentitySignInService {
             return this.unavailable(attempt);
           }
           if (!made.ok) return this.needsHelp(attempt, 'issuer refused new person');
-          issuerPasswordSet = true;
-        } else if (link) {
-          if (link.issuer !== config.issuer || link.subject !== found.userId) return this.needsHelp(attempt, 'link names another person');
-          if (!found.verified) {
-            // the issuer must hold the email as verified before PMC reports the setup done (PMC's code proved the mailbox);
-            // asked before the password is written, so a refusal leaves the person's issuer password as it was
+          issuerPerson = 'made';
+          madeId = made.userId;
+          passwordSet(issuerPerson);
+        } else {
+          if (link && (link.issuer !== config.issuer || link.subject !== found.userId)) return this.needsHelp(attempt, 'link names another person');
+          if (!link) {
+            // a person linked to another PMC account is that account's, reset from that account: left as it is here. Read
+            // under the person's lock, so a sign-in settling a link to it right now is seen (one that settles after the
+            // write is caught again at the settle, below)
+            const holder = await this.prisma.$transaction(async (tx) => {
+              await lockIssuerPerson(tx, config.issuer, found.userId);
+              return linkedAccount(tx, config.issuer, found.userId);
+            });
+            if (holder) return this.needsHelp(attempt, 'issuer person linked to another account');
+            // PMC resets only a person whose one way in is the password: one who also holds a passkey, a one-time code
+            // or a linked provider may have been registered by someone else (and verified meanwhile), and a reset would
+            // leave that way in. Asked of every unlinked person, verified or not, so no earlier failed try can skip it
+            const others = await client.otherSignInMethods(found.userId);
+            if (others === 'down') return this.unavailable(attempt);
+            if (others.length > 0) return this.needsHelp(attempt, 'unlinked issuer person holds other sign-in methods');
+            // a person whose email was never verified is someone's claim to the address, not yet proof of it: PMC takes
+            // it over only when nobody is signed in as it (a session could add a way in while the password is being
+            // set). Asked again after the write, below
+            if (!found.verified) await this.noSessions(client, found.userId, attempt, 'before');
+          } else if (!found.verified) {
+            // this account's own person: the issuer must hold the email as verified before PMC reports the setup done
+            // (PMC's code proved the mailbox); asked before the password is written, so a refusal leaves it as it was
             const marked = await client.markVerified(found.userId, email);
             if (marked === 'down') return this.unavailable(attempt);
             if (marked !== null) return this.needsHelp(attempt, 'issuer refused to mark the email verified');
@@ -331,32 +360,157 @@ export class IdentitySignInService {
             this.line('password', attempt, 'issuer refused password');
             throw refusedSetup(PASSWORD_REJECTED);
           }
-          issuerPasswordSet = true;
+          issuerPerson = 'existing';
+          passwordSet(issuerPerson);
+          if (!link) {
+            // the checks before the write were a snapshot (Codex 4464315055): a way in added meanwhile, by whoever held
+            // the old password or a session, would outlive the reset and sign in as the account this links. Asked again
+            // now the old password no longer works, before the person is marked verified or linked. For a person never
+            // verified, nobody may be signed in either: PMC has opened no session yet, so one now was opened with the
+            // old password, and could still add a way in. A refusal here leaves the person unlinked and unverified
+            // (the password changed, its notice went, its other sessions end below). Sessions first: a way in can only be
+            // added from a session, and none can be opened after the write (the old password no longer works), so a
+            // session found closed meanwhile has left its method for the methods answer that follows (Stage 1 S4)
+            if (!found.verified) await this.noSessions(client, found.userId, attempt, 'after', account.id);
+            const after = await client.otherSignInMethods(found.userId);
+            if (after === 'down') return this.unfinished(account.id, found.userId, attempt, 'other sign-in methods unreadable after the write');
+            if (after.length > 0) return this.contested(account.id, found.userId, attempt, 'other sign-in methods added during the reset');
+          }
+          if (!link && !found.verified) {
+            // a person not yet this account's is marked verified only once its password is set, so a try that fails
+            // before it leaves that person exactly as they were (no verified flag a later try could lean on)
+            const marked = await client.markVerified(found.userId, email);
+            if (marked === 'down') return this.unfinished(account.id, found.userId, attempt, 'email not marked verified after the write');
+            if (marked !== null) return this.contested(account.id, found.userId, attempt, 'issuer refused to mark the email verified');
+          }
         }
-        // an existing issuer person who is not linked is left exactly as they are: the typed password must already be theirs
 
         const signedIn = await client.login(email, password);
         if (!signedIn.ok && signedIn.failure === 'down') return this.unavailable(attempt);
+        // an unlinked person whose password PMC just set: a refusal from here on is recorded as contested (409); the
+        // password changed and its notice went, and its other issuer sessions end below
+        const unlinkedReset = found.found === 'one' && !link;
         if (!signedIn.ok) {
-          this.line('password', attempt, found.found === 'one' && !link ? 'issuer person exists' : 'issuer refused new password');
-          throw refusedSetup(found.found === 'one' && !link ? ISSUER_ACCOUNT_EXISTS : NEEDS_HELP);
+          if (unlinkedReset) return this.contested(account.id, found.userId, attempt, 'issuer refused the new password at sign-in');
+          this.line('password', attempt, 'issuer refused new password');
+          throw refusedSetup(NEEDS_HELP);
         }
         const claims = signedIn.claims;
-        return await this.prisma.$transaction(async (tx) => {
+        // the sign-in must name the person whose password was set (the one PMC just made, or the one it found),
+        // holding the email the code proved, verified at the issuer: an email changed meanwhile (the old address can
+        // stay the login name) never links (Codex 4464926712)
+        const wrongPerson = claims.sub !== (found.found === 'one' ? found.userId : madeId);
+        if (wrongPerson || claims.email !== email || !claims.emailVerified) {
+          if (unlinkedReset) return this.contested(account.id, found.userId, attempt, 'sign-in after the reset names another person or email');
+          return this.needsHelp(attempt, 'sign-in after the setup names another person or email');
+        }
+        const settled = await this.prisma.$transaction(async (tx) => {
           // the person's lock, then the account's credential lock: the order every Redbracket ID writer takes them in
           await lockIssuerPerson(tx, config.issuer, claims.sub);
+          // a sign-in that linked this person to another account while the password was being set: that account's
+          // sessions end here (whoever signed in there with the old password is shut out), and this setup is refused
+          const holder = await linkedAccount(tx, config.issuer, claims.sub);
+          if (holder && holder.id !== account.id) {
+            await lockUserCredential(tx, holder.id);
+            await tx.user.update({ where: { id: holder.id }, data: { credentialVersion: { increment: 1 } } });
+            // the trail: the issuer password changed, and this account's sessions ended, though the setup was refused
+            await tx.securityAuditEvent.create({
+              data: {
+                action: 'auth.password_reset_refused_linked',
+                targetUserId: holder.id,
+                actorUserId: account.id,
+                actorKind: 'self',
+                correlationId: attempt,
+                payload: { issuerPerson: claims.sub, codeSentTo: account.id },
+              },
+            });
+            return null;
+          }
           await lockUserCredential(tx, account.id);
-          const settled = await this.settlePassword(tx, config.issuer, account.id, email, claims, attempt);
-          await record(tx, settled, issuerPasswordSet);
-          return settled;
+          const landed = await this.settlePassword(tx, config.issuer, account.id, email, claims, attempt);
+          await record(tx, landed, issuerPerson!);
+          return landed;
         });
+        if (!settled) return this.needsHelp(attempt, 'issuer person linked to another account meanwhile');
+        return settled;
       })();
     } catch (err) {
       if (ended) await this.endSessions(account.id).catch(() => this.line('password', attempt, 'sessions not ended again after a failed step'));
       throw err;
+    } finally {
+      // the person's other issuer sessions (the rb login, a portal's sign-in in progress) end once the password changed,
+      // whatever PMC's own steps did after it; not awaited: the password is already set, and PMC's own sign-in is done
+      if (issuerPerson === 'existing' && found.found === 'one') {
+        const personId = found.userId;
+        void client.endPersonSessions(personId).then((result) => {
+          if (result === 'denied') this.line('password', attempt, 'issuer sessions not ended: session permission missing');
+          else if (result === 'cap') this.line('password', attempt, 'issuer sessions not all ended: cap reached');
+          else if (result === 'failed') this.line('password', attempt, 'issuer sessions not all ended');
+        });
+      }
     }
     this.line('password', attempt, outcome.fresh ? 'set, new account' : 'set');
     return outcome;
+  }
+
+  /**
+   * Refuses the setup unless the issuer person holds no session (see `setPassword`). `before` the password write nothing
+   * has changed and the refusal is plain; `after` it the refusal is recorded (`contested`). A missing session permission
+   * cannot tell, so it refuses too, with its own log line.
+   */
+  private async noSessions(client: IdentityClient, personId: string, attempt: string, when: 'before' | 'after', accountId?: string): Promise<void> {
+    const sessions = await client.hasSessions(personId);
+    if (sessions === 'none') return;
+    if (sessions === 'down') {
+      if (when === 'before') return this.unavailable(attempt);
+      return this.unfinished(accountId!, personId, attempt, 'issuer sessions unreadable after the write');
+    }
+    const why = sessions === 'denied' ? 'unverified issuer person: session permission missing' : 'unverified issuer person is signed in';
+    if (when === 'before') return this.needsHelp(attempt, why);
+    return this.contested(accountId!, personId, attempt, `${why} during the reset`);
+  }
+
+  /**
+   * A reset refused after the issuer took the password (the person stays unlinked): the trail names the issuer person and
+   * the account the code proved, never a secret, and the setup answers as any refused one.
+   */
+  private async contested(accountId: string, personId: string, attempt: string, why: string): Promise<never> {
+    await this.recordAfterWrite('auth.password_reset_refused_contested', accountId, personId, attempt, why);
+    return this.needsHelp(attempt, why);
+  }
+
+  /**
+   * A reset the issuer gave no usable answer for after it took the password (a re-check, or marking the email verified):
+   * the password changed and its notice went, so the trail records it (`auth.password_reset_unfinished`), and the setup
+   * answers "unavailable" (the person asks for a new code).
+   */
+  private async unfinished(accountId: string, personId: string, attempt: string, why: string): Promise<never> {
+    await this.recordAfterWrite('auth.password_reset_unfinished', accountId, personId, attempt, why);
+    return this.unavailable(attempt);
+  }
+
+  /**
+   * The trail of a reset that ended after the issuer took the password: the person and the reason, never a secret. A
+   * write that fails is not swallowed (Codex 4464926724): it is logged and the setup answers "unavailable", which the
+   * screen words as "your new password may already be set" (the password did change; its notice went). Nothing is tried twice.
+   */
+  private async recordAfterWrite(action: string, accountId: string, personId: string, attempt: string, why: string): Promise<void> {
+    const recorded = await this.prisma.securityAuditEvent
+      .create({
+        data: {
+          action,
+          targetUserId: accountId,
+          actorUserId: accountId,
+          actorKind: 'self',
+          correlationId: attempt,
+          payload: { issuerPerson: personId, reason: why },
+        },
+      })
+      .then(
+        () => true,
+        () => false,
+      );
+    if (!recorded) this.unavailable(attempt, `reset after the write not recorded (${why})`);
   }
 
   /**
@@ -402,8 +556,8 @@ export class IdentitySignInService {
     return this.landed('password', attempt, settled);
   }
 
-  private unavailable(attempt: string): never {
-    this.line('password', attempt, 'issuer unavailable');
+  private unavailable(attempt: string, why = 'issuer unavailable'): never {
+    this.line('password', attempt, why);
     throw new ServiceUnavailableException(UNAVAILABLE);
   }
 

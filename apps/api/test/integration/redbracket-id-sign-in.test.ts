@@ -12,13 +12,14 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as bcrypt from 'bcryptjs';
 import { JwtService } from '@nestjs/jwt';
-import { UnauthorizedException } from '@nestjs/common';
+import { Logger, UnauthorizedException } from '@nestjs/common';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, wipeMembershipTransitionsVia, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { startFakeIssuer, type FakeIssuer } from '../unit-support/fake-issuer';
 import { AuthService } from '../../src/auth/auth.service';
+import { EmailService } from '../../src/platform/email.service';
 import { IdentitySignInService } from '../../src/auth/identity/identity-sign-in.service';
 import { PHONE_SIGN_IN_PURPOSE } from '../../src/auth/phone-sign-in.service';
 import { PasswordCredentialsService } from '../../src/auth/password-credentials.service';
@@ -35,12 +36,15 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
   let f: TwoProjectFixture;
   let fake: FakeIssuer;
   const codes = new Map<string, string>();
+  /** each "your password was set/changed" email, as address and kind, in order */
+  const changedMail: string[] = [];
+  const mailOf = (email: string) => changedMail.filter((m) => m.startsWith(`${email} `));
   const saved: Partial<Record<(typeof ENV)[number], string | undefined>> = {};
   const made: string[] = [];
 
   beforeAll(async () => {
     for (const name of ENV) saved[name] = process.env[name];
-    t = await createTestApp({ capturePasswordCode: (email, code) => codes.set(email, code) });
+    t = await createTestApp({ capturePasswordCode: (email, code) => codes.set(email, code), capturePasswordChanged: (email, kind) => changedMail.push(`${email} ${kind}`) });
     f = await createTwoProjectFixture(t.prisma);
     fake = await startFakeIssuer({ redirectUri: 'http://127.0.0.1:1/cb' });
   });
@@ -88,6 +92,11 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     fake.oversize = null;
     fake.createAnswersNoId = false;
     fake.spoil = 'none';
+    fake.afterPasswordSet = null;
+    fake.afterMethodsListed = null;
+    fake.afterCreate = null;
+    fake.sessionsPageCap = null;
+    fake.sessionsTotalOmitted = false;
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -102,6 +111,8 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const code = codes.get(email);
     expect(code).toMatch(/^\d{6}$/);
     const verified = await http().post('/auth/password/verify').send({ requestId: requested.body.requestId, code }).expect(201);
+    // the switch is on: the screen is told the password chosen next is the one Redbracket ID password
+    expect(verified.body.sharedPassword).toBe(true);
     return http().post('/auth/password/complete').send({ setupToken: verified.body.setupToken, password }).expect(status);
   }
 
@@ -303,25 +314,342 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
   });
 
-  it('an invitation is not accepted by a plain sign-in, and an issuer person who already has the email is not taken over', async () => {
+  it('an invitation is not accepted by a plain sign-in, and the emailed code sets the Redbracket ID password of an issuer person who already has the email', async () => {
     const user = await invitee('hubuser');
     const person = fake.addPerson(user.email!, 'my existing hub passphrase');
     const pending = await login(user.email!, 'my existing hub passphrase').expect(401);
     expect(pending.body.message).toMatch(/invitation is waiting/);
     expect(pending.body.code).toBe('invite-pending');
 
-    const refused = await setPassword(user.email!, 'a different new passphrase', 400);
-    expect(refused.body.message).toMatch(/already has a Redbracket ID/);
-    expect(refused.body.code).toBe('issuer-account-exists');
-    expect(fake.people.get(person.userId)!.password).toBe('my existing hub passphrase');
-    expect(fake.requests.some((r) => r.path.includes('/password') || r.path === '/v2/users/human')).toBe(false);
-
-    const joined = await setPassword(user.email!, 'my existing hub passphrase', 201);
+    // Jagrut, 4 Nov 2026: the code proved the mailbox, so the typed password becomes the one Redbracket ID password
+    const joined = await setPassword(user.email!, 'a different new passphrase', 201);
     expect(sub(joined.body.token)).toBe(user.id);
+    expect(fake.people.get(person.userId)!.password).toBe('a different new passphrase');
+    expect(fake.requests.some((r) => r.path === '/v2/users/human')).toBe(false); // the same person, never a second one
     expect(await t.prisma.platformPersonLink.findUnique({ where: { userId: user.id } })).toMatchObject({ subject: person.userId, matchedOn: 'invite' });
-    // the trail says what happened: a join with the issuer password the person already had, never a reset or enrolment
+    expect(mailOf(user.email!)).toEqual([`${user.email} changed`]);
+    // the trail says what happened: a reset of a password Hub and rb use too, not an enrolment
     const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: { not: 'auth.password_requested' } }, select: { action: true } });
-    expect(trail.map((e) => e.action)).toEqual(['auth.identity_joined']);
+    expect(trail.map((e) => e.action)).toEqual(['auth.password_reset']);
+    // the old issuer password no longer works anywhere; the new one does
+    await login(user.email!, 'my existing hub passphrase').expect(401);
+    await login(user.email!, 'a different new passphrase').expect(201);
+  });
+
+  it('forgot password: an established account whose issuer person exists resets that password and joins fresh, as a sign-in would', async () => {
+    const old = await invitee('forgot');
+    await t.prisma.user.update({ where: { id: old.id }, data: { passwordHash: await bcrypt.hash('the old local passphrase', 4), emailVerifiedAt: new Date() } });
+    const person = fake.addPerson(old.email!, 'a forgotten redbracket passphrase');
+    const rbSession = fake.openSession(person.userId); // someone signed in on rb with the old password
+
+    // the new account holds no seat until the team re-seats the person (the RUNBOOK "Redbracket ID re-seat")
+    const reset = await setPassword(old.email!, 'the remembered new passphrase', 401);
+    expect(reset.body.code).toBe('no-project');
+    const fresh = await t.prisma.user.findUniqueOrThrow({ where: { email: old.email! }, include: { platformPersonLink: true } });
+    made.push(fresh.id);
+    expect(fresh.id).not.toBe(old.id);
+    expect(fresh.platformPersonLink).toMatchObject({ subject: person.userId });
+    // the issuer person now holds the new password, and the email the code proved is marked verified there
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'the remembered new passphrase', verified: true });
+    expect(await t.prisma.identityRetirement.count({ where: { userId: old.id } })).toBe(1);
+    expect(mailOf(old.email!)).toEqual([`${old.email} changed`]);
+    expect(await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: fresh.id, action: 'auth.password_reset' } })).toHaveLength(1);
+    // the person's issuer sessions end (not awaited by the setup): the rb sign-in with the old password is gone
+    await vi.waitFor(() => expect(fake.sessionsOf(person.userId)).toEqual([]));
+    expect(fake.sessionsOf(person.userId)).not.toContain(rbSession);
+  });
+
+  it('an unverified issuer person with only a password and nobody signed in is reset, asked before and after the write, then marked verified', async () => {
+    const user = await invitee('unverifiedreset');
+    const person = fake.addPerson(user.email!, 'a pre-registered passphrase', false);
+    fake.requests.length = 0;
+    await setPassword(user.email!, 'the owner new passphrase', 201);
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'the owner new passphrase', verified: true });
+    const at = (match: (path: string) => boolean) => fake.requests.map((r, i) => (match(r.path) ? i : -1)).filter((i) => i >= 0);
+    const methods = at((p) => p === '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes');
+    const sessions = at((p) => p === '/zitadel.session.v2.SessionService/ListSessions');
+    const [written] = at((p) => p.endsWith('/password'));
+    const [marked] = at((p) => p.includes('UpdateUser'));
+    // once before the write and once after it, both before the person is marked verified
+    expect(methods.filter((i) => i < written!)).toHaveLength(1);
+    expect(methods.filter((i) => i > written! && i < marked!)).toHaveLength(1);
+    expect(sessions.filter((i) => i < written!)).toHaveLength(1);
+    expect(sessions.filter((i) => i > written! && i < marked!)).toHaveLength(1);
+  });
+
+  it('an unverified issuer person someone is signed in as is left as it is: nothing written, no email', async () => {
+    const user = await invitee('unverifiedsignedin');
+    const person = fake.addPerson(user.email!, 'a pre-registered passphrase', false);
+    fake.openSession(person.userId);
+    const refused = await setPassword(user.email!, 'the owner new passphrase', 409);
+    expect(refused.body.code).toBe('needs-help');
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'a pre-registered passphrase', verified: false });
+    expect(fake.requests.some((r) => r.path.endsWith('/password') || r.path.includes('UpdateUser'))).toBe(false);
+    expect(mailOf(user.email!)).toEqual([]);
+  });
+
+  it('a way in added while the password is being set (Codex 4464315055): refused before the person is marked verified or linked, and recorded', async () => {
+    const kinds = ['passkey on a verified person', 'session on an unverified person', 'passkey on an unverified person'] as const;
+    for (const [n, kind] of kinds.entries()) {
+      const user = await invitee(`contested${n}`);
+      const person = fake.addPerson(user.email!, 'the old passphrase', kind === 'passkey on a verified person');
+      fake.afterPasswordSet = async () => {
+        // whoever held the old password, or a session, acts before the write lands: the checks before it saw nothing
+        if (kind.startsWith('passkey')) person.methods = ['AUTHENTICATION_METHOD_TYPE_PASSKEY'];
+        else fake.openSession(person.userId);
+      };
+      const refused = await setPassword(user.email!, 'the owner new passphrase', 409);
+      expect({ kind, code: refused.body.code }).toEqual({ kind, code: 'needs-help' });
+      // the password changed (the notice says so); the person is not linked, and not marked verified by PMC
+      expect(fake.people.get(person.userId)).toMatchObject({ password: 'the owner new passphrase', verified: kind === 'passkey on a verified person' });
+      expect(mailOf(user.email!)).toEqual([`${user.email} changed`]);
+      expect(fake.requests.some((r) => r.path.includes('UpdateUser'))).toBe(false);
+      expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
+      const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: 'auth.password_reset_refused_contested' } });
+      expect(trail.map((e) => (e.payload as { issuerPerson: string }).issuerPerson)).toEqual([person.userId]);
+      expect(JSON.stringify(trail)).not.toContain('passphrase');
+      // its other issuer sessions end, as after any reset
+      await vi.waitFor(() => expect(fake.sessionsOf(person.userId)).toEqual([]));
+      fake.requests.length = 0;
+    }
+  });
+
+  it('a session opened with the old password just before the write, that adds a way in and signs out after the methods answer, is still caught (Stage 1 S4)', async () => {
+    const user = await invitee('s4');
+    const person = fake.addPerson(user.email!, 'the old passphrase', false);
+    let session = '';
+    fake.afterPasswordSet = async () => {
+      session = fake.openSession(person.userId); // signed in with the old password before the write landed
+    };
+    let listed = 0;
+    fake.afterMethodsListed = (id) => {
+      listed += 1;
+      if (id !== person.userId || listed !== 2) return;
+      // after the re-check's answer: the session adds a passkey, then signs out
+      person.methods = ['AUTHENTICATION_METHOD_TYPE_PASSKEY'];
+      fake.closeSession(session);
+    };
+    const refused = await setPassword(user.email!, 'the owner new passphrase', 409);
+    expect(refused.body.code).toBe('needs-help');
+    expect(fake.people.get(person.userId)).toMatchObject({ verified: false });
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
+    expect(await t.prisma.securityAuditEvent.count({ where: { targetUserId: user.id, action: 'auth.password_reset_refused_contested' } })).toBe(1);
+  });
+
+  it('a re-check after the write that gets no answer is recorded: the password changed, the setup is unavailable', async () => {
+    const user = await invitee('unfinished');
+    const person = fake.addPerson(user.email!, 'the old passphrase', false);
+    fake.afterPasswordSet = async () => {
+      fake.force = { '/zitadel.session.v2.SessionService/ListSessions': 503 };
+    };
+    await setPassword(user.email!, 'the owner new passphrase', 503);
+    fake.force = {};
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'the owner new passphrase', verified: false });
+    expect(mailOf(user.email!)).toEqual([`${user.email} changed`]);
+    const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: 'auth.password_reset_unfinished' } });
+    expect(trail.map((e) => e.payload)).toEqual([{ issuerPerson: person.userId, reason: 'issuer sessions unreadable after the write' }]);
+  });
+
+  it('an unverified person whose only session has expired is reset (an expired session cannot sign in)', async () => {
+    const user = await invitee('expiredsession');
+    const person = fake.addPerson(user.email!, 'a pre-registered passphrase', false);
+    fake.openSession(person.userId, new Date(Date.now() - 60_000).toISOString());
+    await setPassword(user.email!, 'the owner new passphrase', 201);
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'the owner new passphrase', verified: true });
+  });
+
+  it('the sign-in after a reset must name the person reset and the email the code proved (Codex 4464926712)', async () => {
+    const user = await invitee('emailmoved');
+    const person = fake.addPerson(user.email!, 'the old passphrase');
+    fake.afterPasswordSet = async () => {
+      // the person's email changes at the issuer meanwhile; the old address still works as the login name
+      person.email = `moved-${user.email}`;
+      person.loginName = user.email!;
+    };
+    const refused = await setPassword(user.email!, 'the owner new passphrase', 409);
+    expect(refused.body.code).toBe('needs-help');
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
+    const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: 'auth.password_reset_refused_contested' } });
+    expect(trail.map((e) => (e.payload as { issuerPerson: string }).issuerPerson)).toEqual([person.userId]);
+  });
+
+  it('a contested reset whose audit row cannot be written answers unavailable, never a silent 409; the notice still went (Codex 4464926724)', async () => {
+    const user = await invitee('auditfail');
+    const person = fake.addPerson(user.email!, 'the old passphrase', false);
+    fake.afterPasswordSet = async () => {
+      fake.openSession(person.userId); // signed in with the old password before the write landed: contested
+    };
+    const create = t.prisma.securityAuditEvent.create.bind(t.prisma.securityAuditEvent);
+    const spy = vi.spyOn(t.prisma.securityAuditEvent, 'create').mockImplementation(((args: { data: { action: string } }) =>
+      args.data.action === 'auth.password_reset_refused_contested' ? Promise.reject(new Error('the database went away')) : create(args as never)) as never);
+    try {
+      await setPassword(user.email!, 'the owner new passphrase', 503);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mailOf(user.email!)).toEqual([`${user.email} changed`]);
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'the owner new passphrase', verified: false });
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
+  });
+
+  it('an unlinked reset whose sign-in is then refused is recorded as contested (409), never a bare 400 (C1c)', async () => {
+    const user = await invitee('c1c');
+    const person = fake.addPerson(user.email!, 'the old passphrase');
+    fake.afterPasswordSet = async () => {
+      fake.force = { '/v2/sessions': 400 }; // the issuer refuses the sign-in that proves the new password
+    };
+    const refused = await setPassword(user.email!, 'the owner new passphrase', 409);
+    fake.force = {};
+    expect(refused.body.code).toBe('needs-help');
+    expect(fake.people.get(person.userId)!.password).toBe('the owner new passphrase');
+    expect(mailOf(user.email!)).toEqual([`${user.email} changed`]);
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: person.userId } })).toBe(0);
+    const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: user.id, action: 'auth.password_reset_refused_contested' } });
+    expect(trail.map((e) => (e.payload as { reason: string }).reason)).toEqual(['issuer refused the new password at sign-in']);
+  });
+
+  it('a person PMC makes must be the one its sign-in names (V4)', async () => {
+    const user = await invitee('madeother');
+    const other = fake.addPerson(`other-${user.email}`, 'the owner new passphrase');
+    // the sign-in after the person is made answers as another person holding the same verified email and login name
+    fake.afterCreate = () => {
+      other.email = user.email!.toLowerCase();
+      other.loginName = user.email!.toLowerCase();
+    };
+    const refused = await setPassword(user.email!, 'the owner new passphrase', 409);
+    expect(refused.body.code).toBe('needs-help');
+    expect(await t.prisma.platformPersonLink.count({ where: { subject: other.userId } })).toBe(0);
+    expect(await t.prisma.platformPersonLink.findUnique({ where: { userId: user.id } })).toBeNull();
+  });
+
+  it('a setup token is bound to the password the screen named: switch changed between the code and the password, it is refused, nothing written', async () => {
+    const user = await invitee('scope');
+    fake.addPerson(user.email!, 'the old hub passphrase');
+    process.env.IDENTITY_OIDC = '0';
+    const requested = await http().post('/auth/password/request').send({ email: user.email }).expect(201);
+    const verified = await http().post('/auth/password/verify').send({ requestId: requested.body.requestId, code: codes.get(user.email!) }).expect(201);
+    expect(verified.body.sharedPassword).toBe(false);
+    process.env.IDENTITY_OIDC = '1';
+    fake.requests.length = 0;
+    await http().post('/auth/password/complete').send({ setupToken: verified.body.setupToken, password: 'a brand new passphrase' }).expect(400);
+    expect(fake.requests).toHaveLength(0);
+    expect(mailOf(user.email!)).toEqual([]);
+  });
+
+  it('an unverified issuer person who holds another way in (a passkey) is left as it is: nothing written, no email', async () => {
+    const user = await invitee('prehijack');
+    const person = fake.addPerson(user.email!, 'a pre-registered passphrase', false);
+    person.methods = ['AUTHENTICATION_METHOD_TYPE_PASSKEY'];
+    const refused = await setPassword(user.email!, 'the owner new passphrase', 409);
+    expect(refused.body.code).toBe('needs-help');
+    expect(fake.people.get(person.userId)).toMatchObject({ password: 'a pre-registered passphrase', verified: false });
+    expect(fake.requests.some((r) => r.path.endsWith('/password') || r.path.includes('UpdateUser'))).toBe(false);
+    expect(mailOf(user.email!)).toEqual([]);
+  });
+
+  it('the notice goes once the issuer took the password, even when a later step fails', async () => {
+    const user = await invitee('latefail');
+    const person = fake.addPerson(user.email!, 'the old hub passphrase');
+    fake.force = { '/v2/sessions': 503 }; // the sign-in that proves the new password cannot reach the issuer
+    await setPassword(user.email!, 'the new hub passphrase', 503);
+    expect(fake.people.get(person.userId)!.password).toBe('the new hub passphrase');
+    expect(mailOf(user.email!)).toEqual([`${user.email} changed`]);
+  });
+
+  it('a failed notice (even one rejected with nothing) never fails the setup or escapes as an unhandled rejection', async () => {
+    const user = await invitee('mailfail');
+    fake.addPerson(user.email!, 'the old hub passphrase');
+    const mail = t.app.get(EmailService);
+    const spy = vi.spyOn(mail, 'sendPasswordChanged').mockImplementation(() => Promise.reject(undefined));
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    await setPassword(user.email!, 'the new hub passphrase', 201);
+    expect(spy).toHaveBeenCalledWith(user.email, 'changed');
+    await vi.waitFor(() => expect(warn.mock.calls.some(([m]) => String(m).includes('password-changed email failed: undefined'))).toBe(true));
+  });
+
+  it('a sign-in that links the person to another account while the password is being set: that account is signed out, and this setup refused', async () => {
+    const user = await invitee('race');
+    const other = await invitee('racer');
+    const person = fake.addPerson(user.email!, 'the old hub passphrase');
+    const before = (await t.prisma.user.findUniqueOrThrow({ where: { id: other.id } })).credentialVersion;
+    fake.afterPasswordSet = async () => {
+      await t.prisma.platformPersonLink.create({ data: { userId: other.id, issuer: fake.issuer, subject: person.userId, matchedOn: 'invite' } });
+    };
+    const refused = await setPassword(user.email!, 'the racing new passphrase', 409);
+    expect(refused.body.code).toBe('needs-help');
+    // the password had already changed: the person is told, and the racing account's sessions end
+    expect(mailOf(user.email!)).toEqual([`${user.email} changed`]);
+    expect((await t.prisma.user.findUniqueOrThrow({ where: { id: other.id } })).credentialVersion).toBe(before + 1);
+    expect(await t.prisma.platformPersonLink.findUnique({ where: { userId: user.id } })).toBeNull();
+    // the trail keeps the refused-after-write case: on the account signed out, naming the person and where the code went
+    const trail = await t.prisma.securityAuditEvent.findMany({ where: { targetUserId: other.id, action: 'auth.password_reset_refused_linked' } });
+    expect(trail.map((e) => [e.actorUserId, e.payload])).toEqual([[user.id, { issuerPerson: person.userId, codeSentTo: user.id }]]);
+    expect(JSON.stringify(trail)).not.toContain('passphrase');
+  });
+
+  it('a first try that fails leaves an unverified person exactly as they were, and the retry is still asked about other ways in', async () => {
+    const user = await invitee('retrycheck');
+    const person = fake.addPerson(user.email!, 'the pre-registered passphrase', false);
+    fake.force = { [`/v2/users/${person.userId}/password`]: 400 }; // the issuer refuses the typed password (its policy)
+    const first = await setPassword(user.email!, 'a refused new passphrase', 400);
+    expect(first.body.code).toBe('password-rejected');
+    expect(fake.people.get(person.userId)).toMatchObject({ verified: false, password: 'the pre-registered passphrase' });
+    fake.force = {};
+    person.methods = ['AUTHENTICATION_METHOD_TYPE_PASSKEY']; // the pre-registrant adds a passkey meanwhile
+    const retry = await setPassword(user.email!, 'the owner second passphrase', 409);
+    expect(retry.body.code).toBe('needs-help');
+    expect(fake.people.get(person.userId)).toMatchObject({ verified: false, password: 'the pre-registered passphrase' });
+    // a verified unlinked person with another way in is asked too, and left as it is
+    person.verified = true;
+    await setPassword(user.email!, 'the owner third passphrase', 409);
+    expect(fake.people.get(person.userId)!.password).toBe('the pre-registered passphrase');
+  });
+
+  it('a sign-in that proved the OLD password before a reset and settles after it gets no session', async () => {
+    for (const kind of ['established', 'invitee'] as const) {
+      const a = await invitee(`oldpw${kind}`);
+      if (kind === 'established') {
+        await t.prisma.user.update({ where: { id: a.id }, data: { passwordHash: await bcrypt.hash('the old local passphrase', 4), emailVerifiedAt: new Date() } });
+      }
+      fake.addPerson(a.email!, 'the old shared passphrase');
+      // the racer's login is held after its issuer proof, before PMC's settle
+      let open!: () => void;
+      let proved!: () => void;
+      const gate = new Promise<void>((r) => (open = r));
+      const reached = new Promise<void>((r) => (proved = r));
+      const real = IdentityClient.prototype.login;
+      vi.spyOn(IdentityClient.prototype, 'login').mockImplementation(async function (this: IdentityClient, email: string, pw: string) {
+        const r = await real.call(this, email, pw);
+        if (pw === 'the old shared passphrase') { proved(); await gate; }
+        return r;
+      });
+      const racer = login(a.email!, 'the old shared passphrase');
+      const racing = racer.then((r) => r);
+      await reached;
+      await setPassword(a.email!, 'the requester new passphrase', kind === 'established' ? 401 : 201);
+      open();
+      const r = await racing;
+      // the settle reads the account and its credential version before the proof and refuses when either moved
+      expect(r.status).toBe(401);
+      expect(r.body.token).toBeUndefined();
+      expect(['needs-help', 'password-changed']).toContain(r.body.code);
+      const fresh = await t.prisma.user.findFirst({ where: { email: a.email! } });
+      if (fresh && fresh.id !== a.id) made.push(fresh.id);
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('an issuer person linked to another PMC account is left as it is: that account resets it', async () => {
+    const user = await invitee('linkedelsewhere');
+    const other = await invitee('holder');
+    const person = fake.addPerson(user.email!, 'the holder redbracket passphrase');
+    await t.prisma.platformPersonLink.create({ data: { userId: other.id, issuer: fake.issuer, subject: person.userId, matchedOn: 'invite' } });
+
+    const refused = await setPassword(user.email!, 'a takeover passphrase', 409);
+    expect(refused.body.code).toBe('needs-help');
+    expect(fake.people.get(person.userId)!.password).toBe('the holder redbracket passphrase');
+    expect(fake.requests.some((r) => r.path.includes('/password') || r.path === '/v2/users/human')).toBe(false);
+    expect(mailOf(user.email!)).toEqual([]);
   });
 
   it('a retired account never signs in again: a phone code sent before or after, any door, all refused', async () => {
@@ -515,7 +843,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     await setPassword(user.email!, 'the first issuer passphrase', 201);
     const person = [...fake.people.values()].find((p) => p.email === user.email)!;
     person.verified = false;
-    const done = ['auth.password_reset', 'auth.password_enrolled', 'auth.identity_joined'];
+    const done = ['auth.password_reset', 'auth.password_enrolled'];
     const successes = () => t.prisma.securityAuditEvent.count({ where: { targetUserId: user.id, action: { in: done } } });
     const before = await successes();
     fake.force = { '/zitadel.user.v2.UserService/UpdateUser': 400 };
@@ -546,7 +874,10 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
       return verified.body.setupToken as string;
     };
     const onToken = await codeFor();
+    // issued with the switch off, so its scope is PMC's own password and only the retirement refuses it below
+    process.env.IDENTITY_OIDC = '0';
     const offToken = await codeFor();
+    process.env.IDENTITY_OIDC = '1';
     await login(old.email!, 'my redbracket passphrase').expect(401); // joins fresh: the old row is retired
     made.push((await t.prisma.user.findUniqueOrThrow({ where: { email: old.email! } })).id);
 

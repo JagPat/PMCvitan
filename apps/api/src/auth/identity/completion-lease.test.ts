@@ -26,7 +26,16 @@ describe('password completion lease (A4a)', () => {
     const client = read('identity-client.ts');
     // every call site, awaited or not, however it is written: `this.send(` and nothing else reaches the network
     const sends = client.match(/\bthis\.send\(/g) ?? [];
-    expect(sends.length - 1).toBe(COMPLETION_ISSUER_CALLS);
+    // less the one of making or setting not made, and the ListSessions that ends the person's sessions, which (with its
+    // deletes) runs only after the password write and is not awaited (a late delete only ends a session); plus the two
+    // asked both before and after the write (other sign-in methods, and whether a never-verified person is signed in)
+    expect(client.match(/\bthis\.send\('POST', '\/zitadel\.session\.v2\.SessionService\/ListSessions'/g) ?? []).toHaveLength(2);
+    expect(sends.length - 2 + 2).toBe(COMPLETION_ISSUER_CALLS);
+    const signIn = read('identity-sign-in.service.ts');
+    const setPassword = signIn.slice(signIn.indexOf('  async setPassword('), signIn.indexOf('  private async noSessions('));
+    expect(setPassword.match(/\bclient\.otherSignInMethods\(/g) ?? []).toHaveLength(2);
+    expect(setPassword.match(/\bthis\.noSessions\(/g) ?? []).toHaveLength(2);
+    expect(signIn.match(/\bclient\.hasSessions\(/g) ?? []).toHaveLength(1);
     expect(client.match(/\bsend\b/g)?.length).toBe(sends.length + 1); // + its declaration: no alias, no wrapper
     // one plain fetch per send, in send itself: no retrying wrapper, no loop, no second request
     expect(client.match(/\bfetch\(/g) ?? []).toHaveLength(1);
@@ -47,13 +56,14 @@ describe('password completion lease (A4a)', () => {
     }
     expect(signIn).not.toMatch(/timeoutMs|maxWait|timeout:/);
     expect(read('../password-credentials.service.ts')).not.toMatch(/maxWait|timeout:/);
-    // the transactions after the claim: sessions ended before the issuer write (one call in each of the two branches,
-    // only one of which runs), again after a failed step, and the settle (the one transaction in setPassword itself)
+    // the transactions after the claim: the linked-elsewhere read under the person's lock, sessions ended before the
+    // issuer write (one call in each of the two branches, only one of which runs), again after a failed step, and the
+    // settle (the read and the settle are setPassword's own two transactions)
     const setPassword = signIn.slice(signIn.indexOf('  async setPassword('), signIn.indexOf('  private async endSessions('));
     const endSessions = signIn.slice(signIn.indexOf('  private async endSessions('));
     expect(setPassword.match(/\bthis\.endSessions\(/g) ?? []).toHaveLength(3);
-    expect(setPassword.match(/\$transaction\(/g) ?? []).toHaveLength(1);
+    expect(setPassword.match(/\$transaction\(/g) ?? []).toHaveLength(2);
     expect(endSessions.slice(0, endSessions.indexOf('\n  }\n')).match(/\$transaction\(/g) ?? []).toHaveLength(1);
-    expect(3 - 1 + 1).toBe(COMPLETION_TRANSACTIONS);
+    expect(2 + (3 - 1)).toBe(COMPLETION_TRANSACTIONS);
   });
 });

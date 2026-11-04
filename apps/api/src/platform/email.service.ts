@@ -220,6 +220,30 @@ export class EmailService {
   }
 
   /**
+   * Tell the person their Redbracket ID password was just set (a person PMC made) or changed (one that already existed)
+   * through PMC (Jagrut, 4 Nov 2026). It goes out as soon as the issuer took the password, so it never fails the setup:
+   * an unconfigured mailer returns `live: false` (logged in production) and a delivery error is the caller's to log. It
+   * carries no code, link or credential.
+   */
+  async sendPasswordChanged(email: string, kind: 'set' | 'changed'): Promise<{ live: boolean }> {
+    const to = email.trim().toLowerCase();
+    if (!this.configured) {
+      if (isProduction()) this.log.warn('Password-changed email not sent: no mail provider is configured.');
+      return { live: false };
+    }
+    const what = kind === 'changed' ? 'changed' : 'set';
+    const body = `Your Redbracket ID password was just ${what} from Vitan PMC. This is the one password you use on every Vitan portal (PMC, Hub and rb). If you did not do this, use "Set up or forgot password" on Vitan PMC now to choose a new one, and tell your PMC.`;
+    await this.tx().sendMail({
+      from: this.from,
+      to,
+      subject: `Your Redbracket ID password was ${what}`,
+      text: body,
+      html: `<p>${escapeHtml(body)}</p>`,
+    });
+    return { live: true };
+  }
+
+  /**
    * Tell a newly invited identity that an account exists for them and how to reach it.
    *
    * Unlike the two code senders this does NOT fail closed on a missing provider: it hangs off

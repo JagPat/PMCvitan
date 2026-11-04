@@ -7911,6 +7911,7 @@ export const useStore = create<Store>()(
         s.access.sending = false;
         s.access.passwordRequestId = null;
         s.access.passwordSetupToken = null;
+        s.access.passwordShared = false;
       }),
     login: (email, password) => {
       const em = email.trim().toLowerCase();
@@ -7950,6 +7951,7 @@ export const useStore = create<Store>()(
         s.access.sending = false;
         s.access.passwordRequestId = null;
         s.access.passwordSetupToken = null;
+        s.access.passwordShared = false;
       }),
     requestPasswordSetup: () => {
       const email = get().access.email.trim().toLowerCase();
@@ -7970,6 +7972,7 @@ export const useStore = create<Store>()(
         s.access.errorKey = null; s.access.error = null;
         s.access.passwordRequestId = null;
         s.access.passwordSetupToken = null;
+        s.access.passwordShared = false;
       });
       gateway.passwordCredentialRequest(email)
         .then((result) => {
@@ -8009,6 +8012,7 @@ export const useStore = create<Store>()(
             s.access.step = 'password-create';
             s.access.otp = '';
             s.access.passwordSetupToken = result.setupToken;
+            s.access.passwordShared = result.sharedPassword === true;
           });
         })
         .catch(() => {

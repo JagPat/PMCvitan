@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
-import { IdentityClient, readLookup, searchBody, challenge } from './identity-client';
+import { IdentityClient, readLookup, searchBody, challenge, SESSIONS_PAGE, SESSIONS_ROUNDS_MAX } from './identity-client';
 import { keyFromJwks, checkIdToken } from './id-token';
 import { readIdentityConfig, identitySwitchOn, REDBRACKET_ISSUER } from './identity-config';
 import { startFakeIssuer, type FakeIssuer } from '../../../test/unit-support/fake-issuer';
@@ -222,6 +222,86 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(await client.setPassword(p.userId, 'Other-pass-456')).toBe('down');
     expect(await client.markVerified(p.userId, 'r@example.in')).toBe('down');
     expect(await client.login('r@example.in', 'Right-pass-123')).toEqual({ ok: false, failure: 'down' });
+  });
+
+  it('after a reset, ends every issuer session of the person (and only theirs), page by page, and names why it could not', async () => {
+    const p = fake.addPerson('s@example.in', 'Right-pass-123');
+    const q = fake.addPerson('s2@example.in', 'Right-pass-123');
+    const mine = Array.from({ length: SESSIONS_PAGE + 5 }, () => fake.openSession(p.userId));
+    const theirs = fake.openSession(q.userId);
+    expect(await client.endPersonSessions(p.userId)).toBe('ended');
+    expect(fake.sessionsOf(p.userId)).toEqual([]);
+    expect(fake.sessionsOf(q.userId)).toEqual([theirs]);
+    // more than one page: listed again until none is left
+    expect(fake.requests.filter((r) => r.path.endsWith('/ListSessions'))).toHaveLength(3);
+    // the deletes carry no session token: the service account's own permission ends them
+    const deletes = fake.requests.filter((r) => r.path.endsWith('/DeleteSession')).map((r) => JSON.parse(r.body));
+    expect(deletes.map((d) => d.sessionId).sort()).toEqual([...mine].sort());
+    expect(deletes.every((d) => d.sessionToken === undefined)).toBe(true);
+    // nobody's sessions: nothing to end
+    expect(await client.endPersonSessions(p.userId)).toBe('ended');
+    // a missing permission is told apart from any other failure, and never thrown
+    fake.openSession(p.userId);
+    fake.force = { '/zitadel.session.v2.SessionService/DeleteSession': 403 };
+    expect(await client.endPersonSessions(p.userId)).toBe('denied');
+    fake.force = { '/zitadel.session.v2.SessionService/ListSessions': 403 };
+    expect(await client.endPersonSessions(p.userId)).toBe('denied');
+    fake.force = { '/zitadel.session.v2.SessionService/DeleteSession': 500 };
+    expect(await client.endPersonSessions(p.userId)).toBe('failed');
+    fake.force = {};
+  });
+
+  it('stops after its rounds and says so (cap), when sessions keep coming back', async () => {
+    const p = fake.addPerson('c@example.in', 'Right-pass-123');
+    for (let i = 0; i < SESSIONS_PAGE * SESSIONS_ROUNDS_MAX + 1; i += 1) fake.openSession(p.userId);
+    expect(await client.endPersonSessions(p.userId)).toBe('cap');
+    expect(fake.sessionsOf(p.userId)).toHaveLength(1);
+  });
+
+  it('names the ways besides a password a person can sign in, and is down on a refusal or an odd answer', async () => {
+    const p = fake.addPerson('m@example.in', 'Right-pass-123', false);
+    expect(await client.otherSignInMethods(p.userId)).toEqual([]);
+    p.methods = ['AUTHENTICATION_METHOD_TYPE_PASSKEY', 'AUTHENTICATION_METHOD_TYPE_IDP'];
+    expect(await client.otherSignInMethods(p.userId)).toEqual(['AUTHENTICATION_METHOD_TYPE_PASSKEY', 'AUTHENTICATION_METHOD_TYPE_IDP']);
+    fake.force = { '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes': 403 };
+    expect(await client.otherSignInMethods(p.userId)).toBe('down');
+    fake.force = {};
+    fake.oversize = '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes';
+    expect(await client.otherSignInMethods(p.userId)).toBe('down');
+  });
+
+  it('says whether a person holds any issuer session: none, some, denied on a 403, down otherwise', async () => {
+    const p = fake.addPerson('s@example.in', 'Right-pass-123', false);
+    expect(await client.hasSessions(p.userId)).toBe('none');
+    fake.openSession(p.userId);
+    fake.openSession(p.userId);
+    expect(await client.hasSessions(p.userId)).toBe('some');
+    const asked = fake.requests.filter((q) => q.path === '/zitadel.session.v2.SessionService/ListSessions').at(-1);
+    expect(JSON.parse(asked!.body).query.limit).toBe(100);
+    // an expired session (still listed until deleted) does not count; a live one among expired ones does
+    const q = fake.addPerson('x@example.in', 'Right-pass-123', false);
+    fake.openSession(q.userId, new Date(Date.now() - 60_000).toISOString());
+    expect(await client.hasSessions(q.userId)).toBe('none');
+    fake.openSession(q.userId, new Date(Date.now() + 60_000).toISOString());
+    expect(await client.hasSessions(q.userId)).toBe('some');
+    // all rows read expired, but the issuer counts more than it sent (its own page cap under PMC's limit): signed in
+    const r = fake.addPerson('y@example.in', 'Right-pass-123', false);
+    fake.openSession(r.userId, new Date(Date.now() - 60_000).toISOString());
+    fake.openSession(r.userId, new Date(Date.now() - 30_000).toISOString());
+    fake.sessionsPageCap = 1;
+    expect(await client.hasSessions(r.userId)).toBe('some');
+    fake.sessionsPageCap = null;
+    expect(await client.hasSessions(r.userId)).toBe('none'); // both read, both expired, the count agrees
+    fake.sessionsTotalOmitted = true; // a count PMC cannot read decides nothing
+    expect(await client.hasSessions(r.userId)).toBe('some');
+    fake.sessionsTotalOmitted = false;
+    fake.force = { '/zitadel.session.v2.SessionService/ListSessions': 403 };
+    expect(await client.hasSessions(p.userId)).toBe('denied');
+    fake.force = { '/zitadel.session.v2.SessionService/ListSessions': 503 };
+    expect(await client.hasSessions(p.userId)).toBe('down');
+    fake.force = {};
+    fake.oversize = '/zitadel.session.v2.SessionService/ListSessions';
+    expect(await client.hasSessions(p.userId)).toBe('down');
   });
 
   it('a signing key the issuer withdraws is not trusted again, even by a client that used it before', async () => {

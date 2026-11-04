@@ -124,6 +124,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
   const devCode = useStore((s) => s.access.devCode);
   const channel = useStore((s) => s.access.channel ?? null);
   const codeLength = useStore((s) => s.access.codeLength ?? 4);
+  const passwordShared = useStore((s) => s.access.passwordShared === true);
   const worker = useStore((s) => s.access.worker);
   const lang = useStore((s) => s.lang);
   const setLang = useStore((s) => s.setLang);
@@ -406,12 +407,14 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
           : null;
     const ready = newPassword.length >= 12 && newPassword.length <= 128 && confirmPassword.length > 0 && !confirmationMismatch && !sending;
     const submit = () => ready && completePasswordSetup(newPassword, confirmPassword);
+    // the server said this is the one Redbracket ID password (switch on); otherwise it is PMC's own
+    const shared = passwordShared;
     return (
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
         <BackBtn onClick={accGoPasswordSetup} label={signInLabels.startAgain[lang]} />
         <div style={{ marginTop: 14 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{signInLabels.createTitle[lang]}</h1>
-          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{signInLabels.createSub[lang]}</div>
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{(shared ? signInLabels.sharedCreateTitle : signInLabels.createTitle)[lang]}</h1>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{(shared ? signInLabels.sharedCreateSub : signInLabels.createSub)[lang]}</div>
         </div>
         <label style={{ fontSize: 12, fontWeight: 600, marginTop: 22 }}>
           {signInLabels.newPassword[lang]}

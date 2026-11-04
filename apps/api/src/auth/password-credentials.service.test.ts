@@ -2,7 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaService } from '../prisma.service';
-import { PasswordCredentialsService } from './password-credentials.service';
+import { PasswordCredentialsService, tokenScope } from './password-credentials.service';
 
 interface UserRow {
   id: string;
@@ -232,8 +232,8 @@ describe('PasswordCredentialsService', () => {
     const res = await service.request({ email: 'member@example.com' });
     expect(res).toEqual({ accepted: true, requestId: expect.any(String) });
     expect(logs).toEqual([expect.stringContaining(`delivery failed for challenge ${res.requestId}`)]);
-    await expect(service.verify({ requestId: res.requestId, code: delivered[0]!.code }))
-      .resolves.toEqual({ setupToken: expect.any(String), expiresInSeconds: 600 });
+    await expect(service.verify({ requestId: res.requestId, code: delivered[0]!.code }, false))
+      .resolves.toEqual({ setupToken: expect.any(String), expiresInSeconds: 600, sharedPassword: false });
   });
 
   it('limits wrong OTP attempts, expires challenges, and never returns an application session', async () => {
@@ -241,22 +241,22 @@ describe('PasswordCredentialsService', () => {
     const { requestId } = await service.request({ email: 'member@example.com' });
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      await expect(service.verify({ requestId, code: '000000' })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.verify({ requestId, code: '000000' }, false)).rejects.toBeInstanceOf(BadRequestException);
     }
-    await expect(service.verify({ requestId, code: delivered[0]!.code })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.verify({ requestId, code: delivered[0]!.code }, false)).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.challenges[0]?.consumedAt).toBeInstanceOf(Date);
 
     const second = await service.request({ email: 'member@example.com' });
     vi.advanceTimersByTime(10 * 60_000 + 1);
-    await expect(service.verify({ requestId: second.requestId, code: delivered[1]!.code })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.verify({ requestId: second.requestId, code: delivered[1]!.code }, false)).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('uses a one-time setup token to hash the password, increment the version, and write a secret-free audit', async () => {
     const { service, prisma, delivered } = make([activeUser()]);
     const { requestId } = await service.request({ email: 'member@example.com' });
-    const verified = await service.verify({ requestId, code: delivered[0]!.code });
+    const verified = await service.verify({ requestId, code: delivered[0]!.code }, false);
 
-    expect(verified).toEqual({ setupToken: expect.any(String), expiresInSeconds: 600 });
+    expect(verified).toEqual({ setupToken: expect.any(String), expiresInSeconds: 600, sharedPassword: false });
     expect(verified).not.toHaveProperty('token');
     expect(prisma.challenges[0]?.setupTokenHash).not.toBe(verified.setupToken);
 
@@ -285,10 +285,33 @@ describe('PasswordCredentialsService', () => {
     await expect(service.complete({ setupToken: verified.setupToken, password: 'another long passphrase' })).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it('binds the setup token to the password scope the screen was told: a completion under the other scope refuses it, spending nothing', async () => {
+    // Codex 4464315045: the switch changed (or another pod answered) between verify and complete
+    const shared = make([activeUser()]);
+    const first = await shared.service.request({ email: 'member@example.com' });
+    const toldShared = await shared.service.verify({ requestId: first.requestId, code: shared.delivered[0]!.code }, true);
+    expect(toldShared.sharedPassword).toBe(true);
+    await expect(shared.service.complete({ setupToken: toldShared.setupToken, password: 'a long internal passphrase' })).rejects.toBeInstanceOf(BadRequestException);
+    expect(shared.prisma.challenges[0]).toMatchObject({ consumedAt: null });
+    expect(shared.prisma.users[0]?.passwordHash).toBeNull();
+
+    const own = make([activeUser()]);
+    const second = await own.service.request({ email: 'member@example.com' });
+    const toldOwn = await own.service.verify({ requestId: second.requestId, code: own.delivered[0]!.code }, false);
+    // refused before the issuer is reached: the identity service is never touched
+    await expect(own.service.completeThroughIssuer({ setupToken: toldOwn.setupToken, password: 'a long internal passphrase' }, {} as never)).rejects.toBeInstanceOf(BadRequestException);
+    expect(own.prisma.challenges[0]).toMatchObject({ consumedAt: null });
+    // and an unscoped token (issued before this release, shown PMC-only wording) is taken only for PMC's own password
+    expect(tokenScope('a'.repeat(43))).toBe('pmc');
+    expect(tokenScope(toldShared.setupToken)).toBe('shared');
+    expect(tokenScope(toldOwn.setupToken)).toBe('pmc');
+    expect(tokenScope('x.' + 'a'.repeat(43))).toBe('other');
+  });
+
   it('rolls back token consumption when access is removed after verification', async () => {
     const { service, prisma, delivered } = make([activeUser()]);
     const { requestId } = await service.request({ email: 'member@example.com' });
-    const verified = await service.verify({ requestId, code: delivered[0]!.code });
+    const verified = await service.verify({ requestId, code: delivered[0]!.code }, false);
     prisma.users[0]!.memberships = [{ status: 'removed' }];
 
     await expect(service.complete({ setupToken: verified.setupToken, password: 'a long internal passphrase' })).rejects.toBeInstanceOf(BadRequestException);

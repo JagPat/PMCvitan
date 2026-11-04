@@ -3,17 +3,18 @@
  *
  * It answers the same paths the live issuer does (authorize, `/v2/sessions`, `/v2/oidc/auth_requests/{id}`, the token
  * exchange with PKCE, the key set, ListUsers with v4.16's "no user" shape, create, set password, UpdateUser,
- * DeleteSession), signs RS256 id tokens with its own key, and records every request it gets (method, path, headers,
- * body), so a test can prove what PMC sent and that it sent nothing at all. Like a Connect server that requires the
- * protocol header, it refuses a `/zitadel.*` call without `Connect-Protocol-Version: 1` (400). Knobs let a test make it
- * slow or hold every answer until close, fail a path, send an answer too large to read, lock a person, or spoil the token
- * (another issuer, another algorithm, another state, another nonce). Nothing it schedules outlives close().
+ * DeleteSession, ListSessions, ListAuthenticationMethodTypes), signs RS256 id tokens with its own key, and records
+ * every request it gets (method, path, headers, body), so a test can prove what PMC sent and that it sent nothing at
+ * all. Like a Connect server that requires the protocol header, it refuses a `/zitadel.*` call without
+ * `Connect-Protocol-Version: 1` (400). Knobs let a test make it slow or hold every answer until close, fail a path,
+ * send an answer too large to read, lock a person, or spoil the token (another issuer, another algorithm, another
+ * state, another nonce). Nothing it schedules outlives close().
  */
 import { createHash, generateKeyPairSync, randomUUID, sign, type KeyObject } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-export type FakePerson = { userId: string; email: string; password: string; verified: boolean; givenName: string; familyName: string; locked?: boolean };
+export type FakePerson = { userId: string; email: string; password: string; verified: boolean; givenName: string; familyName: string; locked?: boolean; methods?: string[]; loginName?: string };
 export type Recorded = { method: string; path: string; headers: IncomingMessage['headers']; body: string };
 export type Spoil = 'none' | 'issuer' | 'alg-none' | 'alg-hs256' | 'state' | 'nonce' | 'audience' | 'expired' | 'kid' | 'signature' | 'no-iat' | 'azp' | 'nbf-future';
 
@@ -41,9 +42,25 @@ export type FakeIssuer = {
   spoil: Spoil;
   /** how ListUsers answers "nobody": v4.16's details-only body by default */
   noneShape: 'details-only' | 'empty-result' | 'odd';
+  /** run once after the next password is set and before its answer goes (a barrier: what lands meanwhile) */
+  afterPasswordSet: (() => Promise<void>) | null;
+  /** run after each answer to a person's sign-in methods has gone (what lands between that answer and the next call) */
+  afterMethodsListed: ((userId: string) => void) | null;
+  /** the most sessions one ListSessions page holds, whatever PMC asks (an issuer's own cap); null: no cap */
+  sessionsPageCap: number | null;
+  /** run once after the next person is made, before its answer goes */
+  afterCreate: ((made: FakePerson) => void) | null;
+  /** ListSessions leaves out `details.totalResult` */
+  sessionsTotalOmitted: boolean;
+  /** ends an issuer session (as a sign-out on rb would) */
+  closeSession(id: string): void;
   addPerson(email: string, password: string, verified?: boolean): FakePerson;
   /** resolves with the first request recorded on `path` (already recorded or still to come), so a test waits on it */
   received(path: string): Promise<Recorded>;
+  /** opens an issuer session for a person (as rb's login would), returning its id */
+  openSession(userId: string, expiresAt?: string): string;
+  /** the issuer sessions a person holds now */
+  sessionsOf(userId: string): string[];
   close(): Promise<void>;
 };
 
@@ -56,7 +73,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
   const other = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const kid = 'k1';
   const authRequests = new Map<string, { redirectUri: string; state: string; nonce: string; challenge: string; clientId: string; sessionUser?: string }>();
-  const sessions = new Map<string, { token: string; userId: string }>();
+  const sessions = new Map<string, { token: string; userId: string; expiresAt?: string }>();
   const codes = new Map<string, { authRequest: string; used: boolean }>();
 
   const fake = {
@@ -74,6 +91,14 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     force: {} as Record<string, number>,
     spoil: 'none' as Spoil,
     noneShape: 'details-only' as FakeIssuer['noneShape'],
+    afterPasswordSet: null as (() => Promise<void>) | null,
+    afterMethodsListed: null as ((userId: string) => void) | null,
+    sessionsPageCap: null as number | null,
+    afterCreate: null as ((made: FakePerson) => void) | null,
+    sessionsTotalOmitted: false,
+    closeSession(id: string): void {
+      sessions.delete(id);
+    },
     addPerson(email: string, password: string, verified = true): FakePerson {
       const p = { userId: `3${Math.floor(Math.random() * 1e17)}`, email: email.toLowerCase(), password, verified, givenName: 'Test', familyName: 'Person' };
       fake.people.set(p.userId, p);
@@ -82,6 +107,14 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     received(path: string): Promise<Recorded> {
       const had = fake.requests.find((q) => q.path === path);
       return had ? Promise.resolve(had) : new Promise<Recorded>((resolve) => waiters.push({ path, resolve }));
+    },
+    openSession(userId: string, expiresAt?: string): string {
+      const id = randomUUID();
+      sessions.set(id, { token: randomUUID(), userId, expiresAt });
+      return id;
+    },
+    sessionsOf(userId: string): string[] {
+      return [...sessions.entries()].filter(([, v]) => v.userId === userId).map(([id]) => id);
     },
     close: async () => {},
   };
@@ -158,7 +191,8 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     if (!serviceOk(req)) return send(res, 401, { message: 'Errors.Token.Invalid' });
     if (req.method === 'POST' && path === '/v2/sessions') {
       const b = json();
-      const person = byEmail(String(b?.checks?.user?.loginName ?? ''));
+      const login = String(b?.checks?.user?.loginName ?? '').toLowerCase();
+      const person = [...fake.people.values()].find((p) => (p.loginName ?? p.email) === login) ?? byEmail(login);
       if (!person) return send(res, 404, { message: 'Errors.User.NotFound' });
       if (person.locked) return send(res, 412, { message: 'Errors.User.Locked' });
       if (b?.checks?.password?.password !== person.password) return send(res, 400, { message: 'Errors.User.Password.Invalid' });
@@ -180,8 +214,31 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       return send(res, 200, { callbackUrl: `${ar.redirectUri}?code=${code}&state=${state}` });
     }
     if (req.method === 'POST' && path === '/zitadel.session.v2.SessionService/DeleteSession') {
-      sessions.delete(String(json().sessionId ?? ''));
+      const id = String(json().sessionId ?? '');
+      if (!sessions.has(id)) return send(res, 404, { message: 'Errors.Session.NotFound' });
+      sessions.delete(id);
       return send(res, 200, {});
+    }
+    if (req.method === 'POST' && path === '/zitadel.session.v2.SessionService/ListSessions') {
+      const b = json();
+      const id = String(b?.queries?.[0]?.userIdQuery?.id ?? '');
+      const limit = Math.min(Number(b?.query?.limit ?? 100), fake.sessionsPageCap ?? Infinity);
+      const all = fake.sessionsOf(id);
+      const rows = all.slice(0, limit).map((sid) => {
+        const at = sessions.get(sid)?.expiresAt;
+        return at ? { id: sid, expirationDate: at } : { id: sid };
+      });
+      // Zitadel leaves out an empty list
+      const details = fake.sessionsTotalOmitted ? {} : { totalResult: String(all.length) };
+      return send(res, 200, rows.length ? { details, sessions: rows } : { details: {} });
+    }
+    if (req.method === 'POST' && path === '/zitadel.user.v2.UserService/ListAuthenticationMethodTypes') {
+      const p = fake.people.get(String(json().userId ?? ''));
+      if (!p) return send(res, 404, { message: 'Errors.User.NotFound' });
+      const types = ['AUTHENTICATION_METHOD_TYPE_PASSWORD', ...(p.methods ?? [])];
+      send(res, 200, { details: {}, authMethodTypes: types });
+      fake.afterMethodsListed?.(p.userId);
+      return;
     }
     if (req.method === 'POST' && path === '/v2/users') {
       const b = json();
@@ -202,6 +259,9 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       const p = fake.addPerson(String(b.email.email), String(b.password.password), b.email.isVerified === true);
       p.givenName = String(b?.profile?.givenName ?? '');
       p.familyName = String(b?.profile?.familyName ?? '');
+      const made = fake.afterCreate;
+      fake.afterCreate = null;
+      made?.(p);
       return send(res, 201, fake.createAnswersNoId ? { details: {} } : { userId: p.userId, details: {} });
     }
     const pw = /^\/v2\/users\/([^/]+)\/password$/.exec(path);
@@ -209,6 +269,12 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
       const p = fake.people.get(decodeURIComponent(pw[1]!));
       if (!p) return send(res, 404, { message: 'Errors.User.NotFound' });
       p.password = String(json()?.newPassword?.password ?? '');
+      const hook = fake.afterPasswordSet;
+      if (hook) {
+        fake.afterPasswordSet = null;
+        void hook().then(() => send(res, 200, { details: {} }), () => send(res, 500, { message: 'barrier failed' }));
+        return;
+      }
       return send(res, 200, { details: {} });
     }
     if (req.method === 'POST' && path === '/zitadel.user.v2.UserService/UpdateUser') {
