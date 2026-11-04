@@ -2787,10 +2787,11 @@ Anything but "none left" writes `auth.password_reset_unfinished` on the account,
 reason `issuer sessions not ended after the reset (<answer>)`:
 - `denied`: pmc-service may not read or delete sessions (the session permission is missing: a 403, or a list that
   names sessions in its count but shows none). Every linked reset writes this row until the permission is granted.
-- `failed`: no usable answer from the issuer. The rest of a full sweep has already run on after the setup answered;
-  the API log line `issuer sessions still not ended (...)` says whether it finished.
-- `capped`: sessions were still listed after the awaited rounds (someone kept signing in). The full sweep ran on as
-  for `failed`.
+- `failed`: no usable answer from the issuer (it was down or answered something unreadable).
+- `capped`: sessions were still listed after the awaited rounds (someone kept signing in).
+
+Nothing goes on after the setup answers (a sweep left running could end the session a later setup of the same account
+opens for its own sign-in), so for every answer the steps below are what ends the rest.
 
 The password did change, so the setup still answered as it would have (201, or 503 when the write's outcome was
 unclear). Zitadel v4.16's console has no screen that lists or ends another person's sessions, so the action is two

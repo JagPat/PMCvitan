@@ -40,15 +40,15 @@ describe('password completion lease (A4a)', () => {
     expect(SESSIONS_AWAITED_CALLS).toBe(SESSIONS_AWAITED_ROUNDS * 2 + 1);
     expect(sends.length - 1 - 1 - 1 + SESSIONS_AWAITED_CALLS).toBe(COMPLETION_ISSUER_CALLS);
     // the reset awaits exactly one bounded sweep per path (the write's 2xx and its `down` are one or the other), and
-    // the rest of a longer sweep runs on without being awaited
+    // nothing runs on after it answers (Codex 4470702899 on #1342: no sweep outlives the completion claim)
     const signIn = read('identity-sign-in.service.ts');
     const sweep = signIn.slice(signIn.indexOf('  private async endIssuerSessions('), signIn.indexOf('  private unavailable('));
     expect(sweep.match(/await client\.endPersonSessions\(personId, SESSIONS_AWAITED_ROUNDS\)/g) ?? []).toHaveLength(1);
-    expect(sweep.match(/void client\.endPersonSessions\(personId\)/g) ?? []).toHaveLength(1);
-    expect(signIn.match(/\bclient\.endPersonSessions\(/g) ?? []).toHaveLength(2);
+    expect(signIn.match(/\bclient\.endPersonSessions\(/g) ?? []).toHaveLength(1);
+    expect(signIn).not.toMatch(/\bvoid client\./);
     const setPassword = signIn.slice(signIn.indexOf('  async setPassword('), signIn.indexOf('  private async endSessions('));
-    expect(setPassword.match(/if \(await this\.endIssuerSessions\(client, account\.id, found\.userId, attempt\)\) sweepOn = found\.userId;/g) ?? []).toHaveLength(2);
-    expect(setPassword.match(/\bthis\.sweepOn\(/g) ?? []).toHaveLength(1);
+    expect(setPassword.match(/\bawait this\.endIssuerSessions\(client, account\.id, found\.userId, attempt\);/g) ?? []).toHaveLength(2);
+    expect(setPassword.match(/\bthis\.endIssuerSessions\(/g) ?? []).toHaveLength(2);
     expect(client.match(/\bsend\b/g)?.length).toBe(sends.length + 1); // + its declaration: no alias, no wrapper
     // one plain fetch per send, in send itself: no retrying wrapper, no loop, no second request
     expect(client.match(/\bfetch\(/g) ?? []).toHaveLength(1);

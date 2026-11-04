@@ -294,9 +294,6 @@ export class IdentitySignInService {
     // once the sessions were ended, a step that fails after it ends them again: a session the new password opened in
     // between (the issuer may already hold it) does not outlive a setup PMC reports as failed
     let ended = false;
-    // unit L: the person whose issuer sessions a full sweep goes on ending, not awaited, once this setup has answered
-    // (after PMC's own sign-in below, whose issuer session it would otherwise race)
-    let sweepOn: string | null = null;
     let outcome: IdentityOutcome;
     try {
       outcome = await (async () => {
@@ -329,7 +326,7 @@ export class IdentitySignInService {
             // the write may still land at the issuer (a timeout, a 5xx): see `unsettled`
             unsettled();
             // and if it landed, the old password's issuer sessions must not outlive it (unit L, R3-1)
-            if (await this.endIssuerSessions(client, account.id, found.userId, attempt)) sweepOn = found.userId;
+            await this.endIssuerSessions(client, account.id, found.userId, attempt);
             return this.unavailable(attempt);
           }
           if (set === 'rejected') {
@@ -339,7 +336,7 @@ export class IdentitySignInService {
           issuerPasswordSet = true;
           // unit L: whoever is signed in to Redbracket ID with the old password (rb, Hub, the console) is signed out
           // before the setup answers
-          if (await this.endIssuerSessions(client, account.id, found.userId, attempt)) sweepOn = found.userId;
+          await this.endIssuerSessions(client, account.id, found.userId, attempt);
         }
         // an existing issuer person who is not linked is left exactly as they are: the typed password must already be theirs
 
@@ -362,8 +359,6 @@ export class IdentitySignInService {
     } catch (err) {
       if (ended) await this.endSessions(account.id).catch(() => this.line('password', attempt, 'sessions not ended again after a failed step'));
       throw err;
-    } finally {
-      if (sweepOn) this.sweepOn(client, sweepOn, attempt);
     }
     this.line('password', attempt, outcome.fresh ? 'set, new account' : 'set');
     return outcome;
@@ -417,13 +412,15 @@ export class IdentitySignInService {
    * {@link SESSIONS_AWAITED_ROUNDS} delete rounds and a confirming list, each call under the issuer timeout (counted
    * in `COMPLETION_ISSUER_CALLS`). Anything but `ended` writes `auth.password_reset_unfinished` on the account (the
    * issuer person and the reason, never a secret), for the operator's action in RUNBOOK §RBL; the setup still answers
-   * as it would have, since the password did change and refusing would not help the person. True when sessions were
-   * still listed or the answer was unusable: the caller then has the rest of a full sweep run on ({@link sweepOn}). A
-   * row that cannot be written is logged, never swallowed silently. Never throws.
+   * as it would have, since the password did change and refusing would not help the person. Nothing goes on after the
+   * setup answers: a sweep left running past the account's completion claim could delete the issuer session a later
+   * completion of the same account opened for its own sign-in (Codex 4470702899 on #1342), so what this bounded sweep
+   * could not end is the row's to report, and the operator's to finish. A row that cannot be written is logged, never
+   * swallowed silently. Never throws.
    */
-  private async endIssuerSessions(client: IdentityClient, accountId: string, personId: string, attempt: string): Promise<boolean> {
+  private async endIssuerSessions(client: IdentityClient, accountId: string, personId: string, attempt: string): Promise<void> {
     const answer = await client.endPersonSessions(personId, SESSIONS_AWAITED_ROUNDS);
-    if (answer === 'ended') return false;
+    if (answer === 'ended') return;
     const why = `issuer sessions not ended after the reset (${answer})`;
     this.line('password', attempt, why);
     await this.prisma.securityAuditEvent
@@ -438,15 +435,6 @@ export class IdentitySignInService {
         },
       })
       .catch(() => this.line('password', attempt, `reset not recorded (${why}; issuer person ${personId})`));
-    // a missing permission is not helped by asking again
-    return answer === 'capped' || answer === 'failed';
-  }
-
-  /** The rest of a full sweep of the person's issuer sessions, not awaited (best effort: it only ends sessions). */
-  private sweepOn(client: IdentityClient, personId: string, attempt: string): void {
-    void client.endPersonSessions(personId).then((rest) => {
-      if (rest !== 'ended') this.line('password', attempt, `issuer sessions still not ended (${rest})`);
-    });
   }
 
   private unavailable(attempt: string): never {

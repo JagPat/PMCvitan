@@ -270,7 +270,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     const quota = () => t.prisma.signInAttempt.deleteMany({});
     const reasons = async () => (await unfinished(user.id)).map((e) => e.payload);
 
-    // the delete refused (403: the session permission is missing): 201, recorded; no sweep runs on
+    // the delete refused (403: the session permission is missing): 201, recorded, one list
     fake.openSession(person.userId);
     fake.force = { '/zitadel.session.v2.SessionService/DeleteSession': 403 };
     let from = fake.requests.length;
@@ -281,31 +281,36 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     await login(user.email!, 'the second issuer passphrase').expect(201);
     await quota();
 
-    // the list down (5xx): 201, recorded, and the rest of the sweep runs on after the answer (here it finds the issuer
-    // still down: one more list, then it stops, logged)
+    // the list down (5xx): 201, recorded, one list; nothing runs on after the answer (Codex 4470702899 on #1342)
     fake.openSession(person.userId);
     fake.force = { '/zitadel.session.v2.SessionService/ListSessions': 503 };
     from = fake.requests.length;
     await setPassword(user.email!, 'the third issuer passphrase', 201);
     expect((await reasons()).at(-1)).toEqual({ issuerPerson: person.userId, reason: 'issuer sessions not ended after the reset (failed)' });
-    await vi.waitFor(() => expect(listsSince(from)).toBe(2));
+    expect(listsSince(from)).toBe(1);
     fake.force = {};
     await quota();
 
-    // someone keeps signing in during the reset: past the awaited rounds the setup answers (201, recorded capped),
-    // its own sign-in still works, and the full sweep goes on afterwards
+    // someone keeps signing in during the reset: past the awaited rounds the setup answers (201, recorded capped) and
+    // its own sign-in still works; the session opened after the last list is left for the operator (RUNBOOK §RBL)
     // (a new session after each of the awaited lists)
     let lists = 0;
+    let confirmed: string | undefined;
+    let kept: string | undefined;
     fake.afterSessionsListed = (id) => {
-      if (id === person.userId && ++lists <= SESSIONS_AWAITED_ROUNDS + 1) fake.openSession(person.userId);
+      if (id !== person.userId || ++lists > SESSIONS_AWAITED_ROUNDS + 1) return;
+      const opened = fake.openSession(person.userId);
+      if (lists === SESSIONS_AWAITED_ROUNDS) confirmed = opened;
+      else if (lists === SESSIONS_AWAITED_ROUNDS + 1) kept = opened;
     };
     fake.openSession(person.userId);
     from = fake.requests.length;
     await setPassword(user.email!, 'the fourth issuer passphrase', 201);
     expect((await reasons()).at(-1)).toEqual({ issuerPerson: person.userId, reason: 'issuer sessions not ended after the reset (capped)' });
-    // the sweep that goes on deletes what was left, then lists none
-    await vi.waitFor(() => expect(listsSince(from)).toBe(SESSIONS_AWAITED_ROUNDS + 1 + 2));
-    expect(fake.sessionsOf(person.userId)).toEqual([]);
+    // the awaited lists only; what they could not end is still there, and nothing ended it later: the session the
+    // confirming list showed and the one opened after it
+    expect(listsSince(from)).toBe(SESSIONS_AWAITED_ROUNDS + 1);
+    expect(fake.sessionsOf(person.userId)).toEqual([confirmed, kept]);
     await login(user.email!, 'the fourth issuer passphrase').expect(201);
     // never a secret in the trail
     expect(JSON.stringify(await reasons())).not.toMatch(/passphrase/);
