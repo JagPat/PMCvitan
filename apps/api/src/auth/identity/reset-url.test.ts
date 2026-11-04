@@ -3,7 +3,8 @@
  * holding `{loginName}` exactly once and written exactly as it will be sent, is used; anything else is no link.
  */
 import { describe, expect, it } from 'vitest';
-import { RESET_URL_ENV, RESET_URL_HOSTS, readResetUrl, resetUrlFor } from './identity-config';
+import { isRedbracketResetUrl } from '@vitan/shared';
+import { RESET_URL_ENV, RESET_URL_HOSTS, RESET_URL_MAX, readResetUrl, resetUrlFor } from './identity-config';
 
 const env = (value?: string) => (value === undefined ? {} : { [RESET_URL_ENV]: value }) as NodeJS.ProcessEnv;
 const GOOD = 'https://rb.vitan.in/ui/v2/login/loginname?loginName={loginName}';
@@ -24,6 +25,21 @@ describe('IDENTITY_RESET_URL (unit H)', () => {
     expect(resetUrlFor('ana+site@vitan.in', env(GOOD))).toBe('https://rb.vitan.in/ui/v2/login/loginname?loginName=ana%2Bsite%40vitan.in');
     // an email cannot add a parameter or a fragment
     expect(resetUrlFor('x&requestId=1#y@z.in', env(GOOD))).toBe('https://rb.vitan.in/ui/v2/login/loginname?loginName=x%26requestId%3D1%23y%40z.in');
+    // the recommended value skips the login-name step
+    const submit = `${GOOD}&submit=true`;
+    expect(resetUrlFor('a@b.c', env(submit))).toBe('https://rb.vitan.in/ui/v2/login/loginname?loginName=a%40b.c&submit=true');
+  });
+
+  it('every link the server sends is one the web opens, even for the longest email', () => {
+    const longest = `${'%'.repeat(64)}@${'%'.repeat(189)}`; // 254 characters, each encoded to 3
+    const atCap = `${GOOD}&p=${'a'.repeat(RESET_URL_MAX - GOOD.length - 3)}`;
+    expect(atCap.length).toBe(RESET_URL_MAX);
+    const url = resetUrlFor(longest, env(atCap));
+    expect(url).not.toBeNull();
+    expect(isRedbracketResetUrl(url)).toBe(true);
+    expect(isRedbracketResetUrl(resetUrlFor('a@b.c', env(GOOD)))).toBe(true);
+    // one character over the cap is malformed
+    expect(readResetUrl(env(`${atCap}a`)).state).toBe('malformed');
   });
 
   it('anything else is malformed, and gives no link', () => {

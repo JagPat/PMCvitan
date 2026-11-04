@@ -85,6 +85,8 @@ describe('TeamAccessScreen password enrollment', () => {
     ['http://rb.vitan.in/ui/v2/login/loginname?loginName=a%40b.in', false],
     ['https://evil.example/reset', false],
     ['javascript:alert(1)', false],
+    ['https://rb.vitan.in/ui/v2/login/loginname?loginName=a%40b.in#top', false],
+    [`https://rb.vitan.in/ui/v2/login/loginname?loginName=a%40b.in&p=${'a'.repeat(2048)}`, false],
     [undefined, false],
   ])('a refused setup with resetUrl %s shows the reset link: %s', async (resetUrl, shown) => {
     const err = Object.assign(new Error('/auth/password/complete 400'), { status: 400, serverCode: 'issuer-account-exists', ...(resetUrl === undefined ? {} : { serverResetUrl: resetUrl }) });

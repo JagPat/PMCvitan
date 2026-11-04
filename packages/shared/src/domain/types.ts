@@ -707,7 +707,7 @@ export type IdentityRefusalCode = (typeof IDENTITY_REFUSAL_CODES)[keyof typeof I
  */
 export const REDBRACKET_RESET_HOSTS = ['rb.vitan.in'] as const;
 
-/** A Redbracket ID reset link the web may open: an `https://` URL on a `REDBRACKET_RESET_HOSTS` host, no user info or port. */
+/** A Redbracket ID reset link the web may open: an `https://` URL on a `REDBRACKET_RESET_HOSTS` host, no user info, port or fragment, at most 2,048 characters. */
 export function isRedbracketResetUrl(value: unknown): value is string {
   if (typeof value !== 'string' || value.length > 2048) return false;
   let url: URL;
@@ -716,7 +716,7 @@ export function isRedbracketResetUrl(value: unknown): value is string {
   } catch {
     return false;
   }
-  return url.protocol === 'https:' && !url.username && !url.password && !url.port
+  return url.protocol === 'https:' && !url.username && !url.password && !url.port && !url.hash
     && (REDBRACKET_RESET_HOSTS as readonly string[]).includes(url.hostname);
 }
 

@@ -22,7 +22,7 @@
  * sign-in): `readIdentityConfig` says which variables are at fault, by name only. A value never leaves this file: not
  * in the result, not in a log, not in an error. The environment is read on every call.
  */
-import { REDBRACKET_RESET_HOSTS } from '@vitan/shared';
+import { REDBRACKET_RESET_HOSTS, isRedbracketResetUrl } from '@vitan/shared';
 import { isProduction } from '../../config';
 
 export const REDBRACKET_ISSUER = 'https://id.vitan.in';
@@ -150,12 +150,15 @@ export const RESET_URL_ENV = 'IDENTITY_RESET_URL';
 /** The hosts Redbracket ID's login pages are served from (shared with the web, which opens only these). */
 export const RESET_URL_HOSTS = REDBRACKET_RESET_HOSTS;
 const LOGIN_NAME = '{loginName}';
+/** A template at most this long stays within the web's 2,048-character link limit for any email (254 characters, each encoded to at most 3). */
+export const RESET_URL_MAX = 1200;
 
 export type ResetUrlResult = { state: 'unset' } | { state: 'malformed' } | { state: 'ok'; template: string };
 
 export function readResetUrl(env: NodeJS.ProcessEnv = process.env): ResetUrlResult {
   const raw = env[RESET_URL_ENV] ?? '';
   if (!raw) return { state: 'unset' };
+  if (raw.length > RESET_URL_MAX) return { state: 'malformed' };
   if (raw.split(LOGIN_NAME).length !== 2) return { state: 'malformed' };
   // judged with a plain stand-in for the email, so the parse sees the URL as it will be sent
   const sample = raw.replace(LOGIN_NAME, 'x');
@@ -168,6 +171,8 @@ export function readResetUrl(env: NodeJS.ProcessEnv = process.env): ResetUrlResu
   if (sample !== url.href) return { state: 'malformed' };
   if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.port) return { state: 'malformed' };
   if (!(RESET_URL_HOSTS as readonly string[]).includes(url.hostname)) return { state: 'malformed' };
+  // the web opens only what the shared check accepts, so the server never sends a link the web would drop
+  if (!isRedbracketResetUrl(sample)) return { state: 'malformed' };
   return { state: 'ok', template: raw };
 }
 
