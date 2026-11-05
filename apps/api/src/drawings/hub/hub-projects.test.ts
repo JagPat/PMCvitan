@@ -17,7 +17,7 @@ type Seen = { url: string; method: string; headers: Record<string, string>; body
 /** A fake fetch: answers each call in turn and records what it was asked. */
 function fakeFetch(...answers: Array<Response | (() => Promise<Response>)>) {
   const seen: Seen[] = [];
-  const impl = (async (input: URL | RequestInfo, init?: RequestInit) => {
+  const impl = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     seen.push({
       url: String(input),
       method: init?.method ?? 'GET',
@@ -83,7 +83,7 @@ describe('#1118 U7a — Hub project calls (list, link, unlink)', () => {
   });
 
   it('times out a Hub that never answers', async () => {
-    const hang = (async (_input: URL | RequestInfo, init?: RequestInit) =>
+    const hang = (async (_input: Parameters<typeof fetch>[0], init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal!.reason)))) as typeof fetch;
     expect(await listHubProjects(config, { fetchImpl: hang, timeoutMs: 20 })).toEqual({ ok: false, failure: 'timeout' });
   });
