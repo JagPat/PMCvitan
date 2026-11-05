@@ -3380,6 +3380,9 @@ model Inspection {
   // delete; the composite FK forbids a cross-project filing at the database.
   node             ProjectNode?     @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   nodeId           String?
+  // Guided site inspections, step 1 (20280210000000): the kind of work checked ("RCC slab", "Waterproofing"), named as
+  // Hub's stages and BOQ groups name it. Optional; never blank, at most 64 characters (Inspection_work_type_text).
+  workType         String?
   items            InspectionItem[]
   media            Media[]
 
@@ -3404,6 +3407,15 @@ model InspectionItem {
   result       InspectionResult?
   swatch       String?
   rejected     Boolean           @default(false)
+  // Guided site inspections, step 1 (20280210000000): what the person on site is asked to look at, what good looks like,
+  // and what to record as proof. Written when the item is issued and never changed after (InspectionItem_guidance_fixed).
+  // The record spec is whole or absent (InspectionItem_record_spec): kind photo|video|voice, count 1-10, when always|fail.
+  lookAt       String?
+  passRule     String?
+  recordKind   String?
+  recordCount  Int?
+  recordWhen   String?
+  recordHint   String?
   media        Media[]
 
   @@unique([inspectionId, id]) // containment identity for the Media chain (Task 4)
