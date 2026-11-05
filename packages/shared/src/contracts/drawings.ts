@@ -19,9 +19,6 @@ export const DRAWINGS_COMMANDS = [
   'drawings.acknowledge',
   'drawings.setNode',
   'drawings.remove',
-  // #1118 U7a — an org owner/admin links the project to its Hub project, or unlinks it
-  'drawings.hubLink',
-  'drawings.hubUnlink',
 ] as const;
 export type DrawingsCommand = (typeof DRAWINGS_COMMANDS)[number];
 
