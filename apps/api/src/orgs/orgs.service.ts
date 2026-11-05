@@ -6,7 +6,7 @@ import { CLOCK, type Clock } from '../common/clock';
 import { addCivilDays, fromIsoCivilDate } from '../common/civil-date';
 import { nextSeqId } from '../domain/ids';
 import { ddMmmYyyy } from '../domain/dates';
-import { lockUserCredential } from '../common/credential-lock';
+import { lockUserCredential, PASSWORD_SETUP_PURPOSE } from '../common/credential-lock';
 import { resolveActor, type Actor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import { NodeInitParticipant } from '../nodes/node-init.participant';
@@ -21,15 +21,18 @@ import { InvitationsService } from './invitations.service';
 import { lockOrgStanding, lockProjectReadiness } from '../common/readiness-lock';
 import { assertOrgStandingSnapshotCurrent, holdsOrgStanding, lockOrgStandingWriters } from './org-standing';
 import { InspectionsQueryService } from '../inspections/inspections.query';
+import { itemRowFromSpec, payloadItemsFromSpecs, specsFromPayload } from '../inspections/guided-item';
 import type { AuthUser, Role } from '../common/auth';
 import type { DecisionsContract } from '../common/decisions-contract';
-import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
+import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type InspectionItemSpec, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { executeCommand, hashRequest } from '../platform/commands';
 import { projectsInReach } from './project-reach';
 import { closeProjectExchangeFence, PROJECT_ARCHIVE_TX_TIMEOUT_MS } from './project-exchange-fence';
 import { lockStandingAnchors } from '../common/standing-anchor';
+import { isRetired } from '../platform/identity-retirement.query';
+import { liveRoleStanding, RETIRED_ADD } from './live-standing';
 import {
   lockInitializationDisplayIds,
   runSerializableProjectInit,
@@ -117,7 +120,8 @@ interface PreparedInitSource {
     gateTeam: string;
     gateInspection: string;
   }>;
-  inspections: Array<{ title: string; zone: string; nodeKey?: string; items: string[] }>;
+  // Guided site inspections (step 2a): each item a plain name or a guided item, and the checklist's work type if any
+  inspections: Array<{ title: string; zone: string; nodeKey?: string; workType?: string; items: InspectionItemSpec[] }>;
 }
 
 interface InitWriteState {
@@ -211,6 +215,12 @@ export class OrgsService {
         where: { orgId_userId: { orgId, userId: targetUserId } },
         select: { role: true },
       });
+      // Redbracket ID A4b r1 (Codex 4451627324) — the last-live-owner refusal is judged HERE, under the org key every
+      // owner/admin writer takes first, on the role read under it: two owners stepping down at once are ordered, and the
+      // second sees the first's commit. (A later first sign-in can still retire the remaining owner; residual, End A4c.)
+      if (current?.role === 'owner' && nextRole !== 'owner' && (await this.otherLiveOwners(tx, orgId, targetUserId)) === 0) {
+        throw new BadRequestException('The org must keep at least one owner');
+      }
       if (!holdsOrgStanding(current?.role) && !holdsOrgStanding(nextRole)) return write(tx);
       const projects = await lockOrgStandingWriters(tx, orgId);
       // #1061 — the target's standing anchor, after the keys and before the write deletes or re-creates
@@ -236,7 +246,7 @@ export class OrgsService {
         if (explicit) continue;
         const { heldRoles } = await this.decisionHolders.holdsOpenDecisions(tx, { projectId: p.id });
         if (!heldRoles.includes('pmc')) continue;
-        if ((await this.orgsParticipant.effectiveRoleStanding(tx, p.id, 'pmc')) === 0) {
+        if ((await liveRoleStanding(tx, this.orgsParticipant, p.id, 'pmc')) === 0) {
           throw new ConflictException(
             'An open decision on a covered project is held by the pmc role and this change would leave it without an effective PMC — withdraw and reissue the decision first',
           );
@@ -252,9 +262,16 @@ export class OrgsService {
     return m?.role ?? null;
   }
 
-  /** How many owners the org currently has — used to protect the last one. */
-  private async ownerCount(orgId: string): Promise<number> {
-    return this.prisma.orgMembership.count({ where: { orgId, role: 'owner' } });
+  /**
+   * How many owners other than `userId` the org has that someone can act as — used to protect the last one. Redbracket
+   * ID A4b: an owner seat held by a retired account (nobody signs in as it again) does not count, so the last live owner
+   * cannot step down or be removed leaving the company to a retired row alone.
+   */
+  private async otherLiveOwners(tx: Prisma.TransactionClient, orgId: string, userId: string): Promise<number> {
+    const owners = await tx.orgMembership.findMany({ where: { orgId, role: 'owner', userId: { not: userId } }, select: { userId: true } });
+    let live = 0;
+    for (const o of owners) if (!(await isRetired(tx, o.userId))) live += 1;
+    return live;
   }
 
   /** Create a new org; the creator becomes its owner. */
@@ -313,7 +330,6 @@ export class OrgsService {
     });
     if (!org) throw new NotFoundException('Org not found');
     const homeProject = org.projects[0];
-    if (!homeProject) throw new BadRequestException('Create a project in this org first, so the new member has a home project');
 
     const email = input.email?.toLowerCase();
     const phone = input.phone;
@@ -321,6 +337,12 @@ export class OrgsService {
       (email && (await this.prisma.user.findUnique({ where: { email } }))) ||
       (phone && (await this.prisma.user.findUnique({ where: { phone } }))) ||
       null;
+    // Redbracket ID A4b — never seat a retired account: the person's new account holds their address
+    if (existing && (await isRetired(this.prisma, existing.id))) throw new ConflictException(RETIRED_ADD);
+    // A new identity needs a home project (the required `User.projectId`), and only a new one: an existing account is
+    // seated as it is, so a company with no live project still takes it (Redbracket ID A4b r3, Codex 4452559441: the
+    // re-seat adds the person's new account to every company the retired row holds, archived projects or not)
+    if (!existing && !homeProject) throw new BadRequestException('Create a project in this org first, so the new member has a home project');
     // #482: a new identity is provisioned inside the roster write's own transaction, so a refusal there (the QA
     // company lock's, or the holder guard's) rolls it back and a refused add leaves no User row behind
     const userId = existing?.id ?? randomUUID();
@@ -334,7 +356,7 @@ export class OrgsService {
     const { user, membership } = await this.guardedOrgStandingWrite(orgId, userId, input.role, async (tx) => {
       // Least-privilege home role: dormant now (access is membership + org-role only),
       // but if the field is ever consulted again it must not read as `pmc`.
-      const user = existing ?? (await tx.user.create({ data: { id: userId, projectId: homeProject.id, role: 'contractor', name: input.name, email, phone } })
+      const user = existing ?? (await tx.user.create({ data: { id: userId, projectId: homeProject!.id, role: 'contractor', name: input.name, email, phone } })
         .catch((e: unknown) => {
           if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') throw new ConflictException('This person was just registered by someone else; try adding them again');
           throw e;
@@ -373,9 +395,6 @@ export class OrgsService {
     if ((await this.orgRole(orgId, callerId)) !== 'owner') throw new ForbiddenException('Only an org owner can change roles');
     const existing = await this.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId } }, include: { user: true } });
     if (!existing) throw new NotFoundException(NOT_AN_ORG_MEMBER_MESSAGE);
-    if (existing.role === 'owner' && input.role !== 'owner' && (await this.ownerCount(orgId)) <= 1) {
-      throw new BadRequestException('The org must keep at least one owner');
-    }
     // Phase 6 task 4b (§A.1 round 11) — demoting an owner/admin below admin can strand a
     // covered project's pmc-held open decision; judged per project under its readiness key.
     const membership = await this.guardedOrgStandingWrite(orgId, userId, input.role, (tx) =>
@@ -412,6 +431,18 @@ export class OrgsService {
         if (!target) throw new NotFoundException(NOT_AN_ORG_MEMBER_MESSAGE);
         if (target.user.passwordHash || target.user.emailVerifiedAt) {
           throw new BadRequestException('This account has already established its sign-in credential');
+        }
+        // a password setup that claimed its code (under this same lock) proved the address, and may already have made
+        // the person at Redbracket ID with it: the address is no longer a typo to correct, even if that setup failed later
+        // (a redeemed phone code is consumed and verified with no expiry too, and proves nothing about the address)
+        const claimed = await tx.passwordCredentialChallenge.findFirst({
+          where: { userId, purpose: PASSWORD_SETUP_PURPOSE, verifiedAt: { not: null }, consumedAt: { not: null }, setupTokenExpiresAt: null },
+          select: { id: true },
+        });
+        if (claimed) {
+          throw new BadRequestException(
+            'This address was already confirmed by a password setup. Remove the person and invite the right address instead.',
+          );
         }
 
         const user = await tx.user.update({ where: { id: userId }, data: { email } }).catch(rethrowQaLock);
@@ -455,9 +486,6 @@ export class OrgsService {
     if (userId === callerId) throw new BadRequestException('You cannot remove yourself from the org');
     const existing = await this.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId } } });
     if (!existing) throw new NotFoundException(NOT_AN_ORG_MEMBER_MESSAGE);
-    if (existing.role === 'owner' && (await this.ownerCount(orgId)) <= 1) {
-      throw new BadRequestException('The org must keep at least one owner');
-    }
     // Phase 6 task 4b (§A.1 round 11) — removing an owner/admin can strand a covered project's
     // pmc-held open decision; judged per project under its readiness key.
     await this.guardedOrgStandingWrite(orgId, userId, null, (tx) =>
@@ -733,6 +761,7 @@ export class OrgsService {
         title: inspection.title,
         zone: inspection.zone,
         ...(inspection.nodeId ? { nodeKey: inspection.nodeId } : {}),
+        ...(inspection.workType !== null ? { workType: inspection.workType } : {}),
         items: inspection.items,
       })),
     };
@@ -785,7 +814,12 @@ export class OrgsService {
             gateTeam: 'wait',
             gateInspection: 'wait',
           })),
-          inspections: parsed.data.inspections.map((inspection) => ({ ...inspection, title: `${inspection.title}${suffix}` })),
+          // guided step 2a: a stored checklist's names and the guides beside them become the item specs it issues
+          inspections: parsed.data.inspections.map(({ guides: _guides, ...inspection }) => ({
+            ...inspection,
+            title: `${inspection.title}${suffix}`,
+            items: specsFromPayload({ items: inspection.items, guides: _guides }),
+          })),
         });
       }
     }
@@ -1047,7 +1081,8 @@ export class OrgsService {
         title: i.title,
         zone: i.zone,
         nodeKey: i.nodeId && nodeIds.has(i.nodeId) ? i.nodeId : undefined,
-        items: i.items,
+        workType: i.workType ?? undefined,
+        ...payloadItemsFromSpecs(i.items),
       })),
     });
   }
@@ -1241,7 +1276,10 @@ export class OrgsService {
             submitted: false,
             decided: false,
             nodeId: inspection.nodeKey ? required(nodeIdByKey, inspection.nodeKey, 'node key') : null,
-            items: { create: inspection.items.map((name, index) => ({ name, order: index })) },
+            // Guided site inspections (step 2a): the work type and each item's guidance go in this INSERT, since the
+            // database never lets an issued item's guidance be set afterwards (InspectionItem_guidance_fixed)
+            workType: inspection.workType ?? null,
+            items: { create: inspection.items.map((spec, index) => ({ ...itemRowFromSpec(spec), order: index })) },
           },
         },
         // Task 10 (Module 3) correction — append `inspection.created` in the init tx so the

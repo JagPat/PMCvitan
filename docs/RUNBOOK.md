@@ -2639,7 +2639,7 @@ capability. Run both from the deployed image, like every operator CLI (see the s
 ## §OPS. The operator door (`/ops`, behind `OPS_TOKEN`)
 
 The project list (id, name, switched-on capabilities, last activity), the people list (each company's owners and
-admins, and each live project's active members with role and discipline) and the `home-nav` switch (§HN) can
+admins, each live project's active members with role and discipline, and retired accounts still holding seats) and the `home-nav` switch (§HN) can
 also be run over HTTPS, so an operator, or Claude holding the token, does not need the Coolify terminal. The door is closed (every `/ops`
 route answers 404) unless the API's environment sets `OPS_TOKEN` to a random value of at least 32 characters.
 Generate one with `openssl rand -hex 32`, set it on the API in Coolify, and redeploy. To close the door,
@@ -2683,6 +2683,164 @@ a QA address with no account 404, and 409 while a sign-in or membership change f
 now (nothing is written; try again).
 Because the database keeps real people out of those companies, the session needs no re-check while it lasts.
 Each sign-in writes an `auth.qaSignIn` audit row with the operator and reason.
+
+**Redbracket ID re-seat** (Redbracket ID A4b, Stage 1 ruling 3 Nov 2026). With `IDENTITY_OIDC=1`, an established
+PMC account whose email first signs in through Redbracket ID is set aside (retired), and the person gets a new, linked
+account with no seats. Retirement moves no seat: the retired row keeps its project and company seats until someone
+with authority re-seats the person. `GET /ops/people` lists those rows under `retired` (oldest first: `userId`,
+`name` (the address, once it holds no seat), `email` it was retired from, `retiredAt`, the `projects` (each with its
+`role`, `status`, `approvalLimit` and consultant `discipline`) and `companies` it still holds, and `openWork`, step 2).
+Re-seat each
+person right after their first sign-in, and widen the pilot only when `retired` is empty:
+
+0. **When no owner of a company can act** (Redbracket ID A4c): every owner of the company appears in `retired` (each
+   one's `companies` lists it with `role: owner`), so no owner can sign in to re-seat anyone. Re-seat each owner right
+   after their first sign-in so this never happens; it is the fallback. A live call is an operator-door write: it
+   needs Jagrut's yes naming the company and the person first. Then, for ONE of those owners (the person who will
+   re-seat the rest; they must have signed in with Redbracket ID once, which made their new account):
+   `POST /ops/orgs/<orgId>/owner-reseat` with `{"operator": "<who>", "reason": "<why>", "retiredUserId": "<their
+   retired userId>"}`. It seats their new account as the company's owner and leaves the retired owner seat in place.
+   Answers: 200 `changed: true` (seated) or `changed: false` (already owner); 409 "has an owner who can sign in" (that
+   owner re-seats instead; nothing written); 409 "No account made at that retirement holds its address now" (the
+   person's new account moved off the address, or a later account holds it: repair the person's account first, then
+   call again); 400 for an account that is not retired or holds no owner seat in that company. Then that person
+   signs in and follows steps 1 to 4 for everyone (company seats are step 4), removing the retired owner seats last.
+1. On each project in the row's `projects`, the project's PMC (or a company owner/admin) adds the person with the
+   **email** shown, same `role` and, for a consultant, the seat's `discipline`. The address now belongs to the new account, so the add lands there.
+   Add by email, not phone: the retired row keeps its phone number, so an add by phone finds the retired row and is
+   refused (409 "This person now signs in with a new account. Add them by email."), seating nobody. If the seat shows
+   an `approvalLimit`, stop before the add: no team command sets a limit, and the new seat would have none (unlimited);
+   ask for an operator step to copy it.
+2. Before the removal, the project's PMC moves the person's open work from the retired row to the new seat, through
+   the normal commands: open inspections naming it responsible (`PUT .../inspections/<id>/responsible` with the new
+   seat), open activity requirements naming it responsible (revise the requirement), consultations asked of it and not
+   yet answered (ask the new seat), and drawing revisions issued to it (a revision's recipients are fixed at issue;
+   issue again to the new seat if it still needs one). No command moves an inspection's ASSIGNEE: once the retired
+   seat is removed (step 3) the assignment stops binding, and any eligible engineer can submit the checklist. The
+   `retired` entry's `openWork` counts what the retired row still blocks, per live project (A4b-2): `inspections`
+   (naming it responsible, lineage not yet approved; or assigned to it and not yet submitted), `requirements` (latest
+   revision open and naming it responsible, on an activity not yet done), `decisions` (published, open decisions naming
+   its membership as decider: step 3 handles them), `consultations` (asked of its ACTIVE seat, not answered, on an open
+   decision in the cycle it was asked in; once the seat is removed nobody can answer it, so it stops counting here and
+   is settled at the decision itself, when it is decided or withdrawn), `drawings` (governing revisions issued to it
+   that it has not acknowledged; a revision issued again to the new seat ends the wait once the old one is superseded)
+   and `siteVisits` (visits it started that are still open: only the visitor can end one, so the PMC closes it with a
+   reason). An archived project counts for neither: its seats (as since A4b) and its work are frozen with it, so after
+   a project is restored (`restoreProject`), check `GET /ops/people` `retired` again and re-seat anything it lists. A
+   row stays listed until it has neither seats nor open work, so a row with an empty `projects` list and some
+   `openWork` still needs this step.
+3. Then the PMC removes the retired row from that project's team (a company owner/admin with no seat on the project
+   cannot withdraw decisions, so this step is the project PMC's). If the row is the named decider of an open decision:
+   - a pending decision: the removal is refused ("withdraw and reissue it first"); withdraw it, remove the row, and
+     issue it again naming the person's new seat;
+   - a decision in `change` (approved, with a change request open): withdraw and forward are both refused; the PMC
+     withdraws the change request (`POST .../decisions/<id>/change/withdraw`), so the approved outcome stands, removes
+     the row, and asks the changed need as a new decision naming the new seat (a change cannot be raised again on a
+     decision whose named decider is gone);
+   - a decision awaiting countersign that names the row as holder: only the architect's countersign or rejection
+     clears it (forward and the stranded resolution are refused while an architect is active); remove the row after.
+     (The architect role is reserved today, so this does not arise yet.)
+   The other refusals (last holder of a role an open or awaiting decision is designated to) clear once step 1 has
+   added the new seat, which is why the add comes first. A retired row never counts as a holder for those guards: a
+   live holder cannot be removed or demoted leaving a role-held decision to the retired row alone.
+4. In each company in `companies`, an owner adds the person by the same email with the same role, then removes the
+   retired row. This works in a company whose projects are all archived too: only a brand-new identity needs a home
+   project, and the person's new account already exists. A retired owner seat never counts as an owner: the last live owner cannot step down or be removed while
+   only a retired row would be left holding the company. When every owner seat of a company is held by
+   retired rows, no owner can add anyone: use step 0 first (the operator puts back one owner), then this step.
+
+Until the re-seat, a role-held decision whose role only the retired row holds (published in the window, or left when
+the last live holder was removed before this unit) can be published but nobody can decide it: it waits for step 1,
+which adds the live holder. Each step is the normal team command, attributed to the person who does it. Check `GET /ops/people` afterwards: the
+row is gone from `retired` once it holds no seat.
+
+## §RBF. Redbracket ID reset — the issuer methods fence (leftover markers, new portal domains)
+
+Before a "Set up or forgot password" reset links a person who already has a Redbracket ID, PMC asks the issuer's
+write side whether that person has another way in (`IdentityClient.fenceOtherMethods`, unit F; the reset calls it
+once #1338 head 3 lands). To ask, it makes markers on that person one at a time, and removes each one with the very
+next call, before it asks anything else:
+- a pending TOTP secret;
+- email codes switched on, only when the person's email was ever verified (Zitadel keeps "verified" through a later
+  email change, so the codes go to the current address, which the reset has just proved with PMC's own code);
+- SMS codes switched on, only when a phone was ever verified;
+- a not-ready passkey and a not-ready security key on each rp id in `FENCE_RP_IDS`
+  (`apps/api/src/auth/identity/identity-config.ts`).
+
+Every session of the person has already been ended. So for one call the only possible effect is an extra code step
+on the person's own sign-in during their own reset. Two effects last:
+- A TOTP the person registers and verifies in that one call's window is removed with the marker.
+- Turning the email or SMS codes on and off clears the person's "MFA setup skipped" mark. While the login policy's
+  `MFAInitSkipLifetime` is above 0, a person who skipped MFA set-up is asked again at their next hosted-login sign-in
+  and can skip again. Zitadel v4.16 has no API call to restore the mark.
+
+1. **A new portal, or any new place that registers passkeys, goes into `FENCE_RP_IDS` before it launches.** The rp id
+   is the `domain` each login UI or app sends when it registers a passkey or security key (Hub, rb, the console,
+   PMC), and it can be any value, such as a parent domain. A key made under an rp id that is not in the list is
+   invisible to the fence (residual RP-COVERAGE). `FENCE_RP_IDS` is a constant in the code, so adding one is a code
+   change and a deploy, finished before that portal launches. Before #1338 deploys, the id.vitan.in pre-deploy check
+   lists every such `domain` value, and the list must hold all of them.
+2. **A marker that could not be removed.** The reset answers "unfinished", and its audit row names the leftover
+   (`otp-email`, `totp`, `passkey hub.vitan.in` and so on) with a reason. The person is not linked. A later reset of
+   that person is contested ("ask for help"), never treated as a wrong code. To end it, on Jagrut's yes naming the
+   person:
+   - **`cleanup failed`**: the fence made the marker and its removal failed. Whoever holds access to the id.vitan.in
+     console removes exactly that factor from the person: email or SMS codes, the not-ready TOTP, or the not-ready
+     passkey or key on the named domain. The console is reached through the SSH tunnel, because its admin paths are
+     IP-locked. Hub's admin can be used instead where it can remove that factor.
+   - **`outcome unknown`**: the issuer gave no answer, so the factor may be the person's own. First read the person's
+     history on id.vitan.in. Remove the factor only if it shows that factor added by pmc-service at the audit row's
+     time, with no earlier add. Otherwise leave it: it is theirs, and their next reset answers "some" (contested) on
+     its own.
+   - Never remove a factor the audit row does not name. Then the person runs "Set up or forgot password" again.
+
+## §RBL. Redbracket ID reset — a linked person's issuer sessions not ended (unit L)
+
+When "Set up or forgot password" sets the Redbracket ID password of the person an account is already linked to,
+PMC then ends that person's issuer sessions (rb, Hub, the console), so whoever was signed in with the old password is
+signed out of Redbracket ID itself. It does this also when the password write got no clear answer (it may have
+landed). The awaited part is three rounds (list the person's sessions, delete them) and one confirming list, and it
+stops early rather than run past the 19 s after the claim that the 87 s completion lease leaves it. Hub's
+and rb's own app sessions are theirs to end; PMC ends only its own and the issuer's.
+
+Anything but "none left" writes `auth.password_reset_unfinished` on the account, with the issuer person id and the
+reason `issuer sessions not ended after the reset (<answer>)`:
+- `denied`: pmc-service may not read or delete sessions (the session permission is missing: a 403, or a list that
+  names sessions in its count but shows none). Every linked reset writes this row until the permission is granted.
+- `failed`: no usable answer from the issuer (it was down or answered something unreadable).
+- `capped`: sessions were still listed after the awaited rounds (someone kept signing in), or the sweep reached its
+  deadline first (the issuer was slow), which can also mean it sent nothing at all.
+
+Nothing goes on after the setup answers (a sweep left running could end the session a later setup of the same account
+opens for its own sign-in), so for every answer the steps below are what ends the rest.
+
+The password did change, so the setup still answered as it would have (201, or 503 when the write's outcome was
+unclear). Zitadel v4.16's console has no screen that lists or ends another person's sessions, so the action is two
+API calls with pmc-service's own token, run from the pms-api terminal in Coolify, where the token is already in the
+environment. Never print the token. On Jagrut's yes naming the person (the row's `issuerPerson`):
+
+1. List, then end, the person's sessions (replace `PERSON_ID`):
+
+       cd /app && PERSON=PERSON_ID node -e '
+       const base = process.env.IDENTITY_ISSUER_ENDPOINT || process.env.IDENTITY_ISSUER || "https://id.vitan.in";
+       const headers = { Authorization: "Bearer " + process.env.IDENTITY_SERVICE_TOKEN, "Content-Type": "application/json", "Connect-Protocol-Version": "1" };
+       const call = (m, body) => fetch(base + "/zitadel.session.v2.SessionService/" + m, { method: "POST", headers, body: JSON.stringify(body) });
+       (async () => {
+         const r = await call("ListSessions", { query: { limit: 100 }, queries: [{ userIdQuery: { id: process.env.PERSON } }] });
+         const b = await r.json();
+         const ids = (b.sessions || []).map((s) => s.id);
+         console.log("list", r.status, "shown", ids.length, "counted", (b.details || {}).totalResult || 0);
+         if (process.env.LIST_ONLY) return;
+         for (const id of ids) console.log("end", id, (await call("DeleteSession", { sessionId: id })).status);
+       })();'
+
+   The issuer falls back to `https://id.vitan.in`, the default when both settings are unset; production accepts no
+   other issuer (`IDENTITY_ISSUER` unset or exactly that).
+   Pass: `list 200`, and every `end` line is `200`. A `list 403`, or `shown 0` with `counted` above 0, means the
+   session permission is missing: grant pmc-service session read and delete on id.vitan.in (as the pre-deploy check
+   describes), then run this step again. With more than 100 shown, run it again until fewer are shown.
+2. A minute later (the list can lag its deletes), run the same command with `LIST_ONLY=1` added before `node`.
+   Pass: `shown 0` and `counted 0`. Otherwise repeat step 1.
 
 ## §SSP. Seen-state pins — when the pins can be required, and rolling back (#482)
 

@@ -1929,6 +1929,22 @@ test('findings 4100230308 (#628) and 4103625675 (#630): a relabel to a candidate
   assert.equal(relabel.log.statuses.at(-1).sha, head);
   assert.match(relabel.log.statuses.at(-1).description, /^scope: .*head commit does not declare it/u);
 
+  // The refusal's writes, in order: the draft (which cancels a queued auto-merge), then the `scope:` failure on the
+  // exact head, then the scope notice. A draft GitHub refuses (FORBIDDEN, as under contents: read in run 41566154069)
+  // throws before any status: the job goes red and the edited CI run's `review-scope` and the controller's re-judge
+  // hold the merge (notes/gate-codex-silent/relabel-guard-perm.md (b)). contents: write is what keeps the draft working.
+  const ordered = [];
+  const tracked = harness(pull('codex'), 'fix\n\nCorrection-Owner: claude\n');
+  tracked.client.setDraft = async (pr, draft) => { ordered.push(['draft', draft]); return { ...pr, draft }; };
+  tracked.client.setStatus = async (sha, state, description) => { ordered.push(['status', state, description.split(':')[0]]); };
+  tracked.client.updateStickyComment = async () => { ordered.push(['sticky']); };
+  assert.equal(await reviewGate.guardCandidateRelabel(tracked.client, pull('codex'), head), 'refused');
+  assert.deepEqual(ordered, [['draft', true], ['status', 'failure', 'scope'], ['sticky']]);
+  const forbidden = harness(pull('codex'), 'fix\n\nCorrection-Owner: claude\n');
+  forbidden.client.setDraft = async () => { throw new Error('GitHub GraphQL failed: [{"type":"FORBIDDEN","path":["convertPullRequestToDraft"]}]'); };
+  await assert.rejects(reviewGate.guardCandidateRelabel(forbidden.client, pull('codex'), head), /FORBIDDEN/u);
+  assert.deepEqual(forbidden.log.statuses, [], 'a refused draft throws before any status: the job goes red');
+
   // A truthful candidate seed (the head declares codex) is untouched: no status, no draft.
   const seed = harness(pull('codex'), 'seed\n\nCorrection-Owner: codex\n');
   assert.equal(await reviewGate.guardCandidateRelabel(seed.client, pull('codex'), head), 'admitted');
@@ -1952,10 +1968,12 @@ test('findings 4100230308 (#628) and 4103625675 (#630): a relabel to a candidate
     reviewGate.contextForEvent('pull_request_target', { action: 'edited', pull_request: { number: 258, head: { sha: head } } }),
     { number: 258, expectedHead: head, ciConclusion: null, trigger: 'relabel' },
   );
-  assert.equal(reviewGate.contextForEvent('pull_request_target', { action: 'synchronize', pull_request: { number: 258 } }), null);
+  // 2A3b — a push is the event disarm's, never the relabel guard's
+  assert.equal(reviewGate.contextForEvent('pull_request_target', { action: 'synchronize', pull_request: { number: 258 } }).trigger, 'synchronize');
+  assert.equal(reviewGate.contextForEvent('pull_request_target', { action: 'labeled', pull_request: { number: 258 } }), null);
 });
 
-test('the relabel guard workflow runs trusted default-branch code with only the permissions it needs', async () => {
+test('the relabel guard workflow runs trusted default-branch code with the permissions its refusal needs', async () => {
   const workflow = await readFile(new URL('../.github/workflows/candidate-relabel-guard.yml', import.meta.url), 'utf8');
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const orchestrator = await readFile(workflowPath, 'utf8');
@@ -1971,11 +1989,11 @@ test('the relabel guard workflow runs trusted default-branch code with only the 
   assert.deepEqual([...workflow.matchAll(/^\s*ref:\s*(.+)$/gmu)].map(([, ref]) => ref.trim()),
     ['${{ github.event.repository.default_branch }}']);
   assert.doesNotMatch(workflow, /pnpm|npm (ci|install)/u);
-  const permissions = workflow.slice(workflow.indexOf('permissions:'), workflow.indexOf('jobs:'));
-  assert.deepEqual(
-    [...permissions.matchAll(/^\s+([a-z-]+):\s*(\w+)/gmu)].map(([, name, level]) => `${name}:${level}`).sort(),
-    ['contents:read', 'issues:write', 'pull-requests:write', 'statuses:write'],
-  );
+  // the whole permissions block, exactly, and the only one (no job-level override), so no scope changes silently
+  assert.equal([...workflow.matchAll(/^\s*permissions:/gmu)].length, 1, 'one permissions block, never a job-level override');
+  // contents: write — the refusal's draft (convertPullRequestToDraft) is FORBIDDEN under contents: read (run 41566154069),
+  // and that draft is what cancels a queued auto-merge
+  assert.match(workflow, /^permissions:\n {2}contents: write\n {2}issues: write\n {2}pull-requests: write\n {2}statuses: write\n\n/mu);
   // The controller's exact-head concurrency group, never cancelled: one writer per head at a time.
   assert.match(workflow, /group: autonomous-review-owner-\$\{\{ github\.event\.pull_request\.number \}\}-\$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
   assert.match(workflow, /cancel-in-progress:\s*false/u);
@@ -4128,6 +4146,83 @@ test('G3a — a recovered success disarms first and arms only after the merge au
   assert.equal(last[1], 'failure', 'the green it would have acted on is replaced');
 });
 
+// G3b (Stage 1 re-check, condition 2 for the watchdog caller) — end to end: the watchdog's re-arm of a ready, tokened,
+// unarmed green, the dispatch's authorization and its PR-scoped request, the orchestrate run's adoption of that request
+// and its re-judge inside the settlement. It arms only after `authorizeExactHeadMerge` reads Codex's record, the request
+// is consumed after the re-judge, and the watchdog then holds; another PR at the same commit is not held by it.
+test('G3b — a watchdog re-arm runs through request-recovery and recovery, and arms only after the merge authorization', async () => {
+  const { gateRearmStatus } = await import('./correction-lease.mjs');
+  const head = 'e'.repeat(40);
+  const statuses = [{ id: 6100, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head [wi:none]' }];
+  const pull = {
+    number: 260, state: 'open', draft: false, auto_merge: null,
+    body: '<!-- correction-owner: claude -->',
+    head: { sha: head, ref: 'claude/unit', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/260',
+  };
+  const log = [];
+  let nextId = 6200;
+  const client = {
+    ...automatedMergeEvidence(pull),
+    async pullRequest() { return { ...pull }; },
+    async openPullRequestsAt() { return [{ ...pull }]; },
+    async statuses() { return statuses; },
+    async setStatus(sha, state, description, url, context = 'codex-current-head') {
+      const status = { id: nextId += 1, context, state, description };
+      statuses.unshift(status);
+      log.push(['status', state, description, context]);
+      return status;
+    },
+    async issueComments() { log.push(['record']); return []; },
+    async reviewComments() { return []; },
+    async reviews() { return []; },
+    async markReplacementRequired() {},
+    async setDraft(current, draft) { log.push(['draft', draft]); return { ...current, draft }; },
+    async updateStickyComment(number, body) { log.push(['sticky', body.match(/`([a-z_]+)`/u)?.[1]]); },
+    async createIssueComment() { return { id: 1 }; },
+    async mergeExactHead() { log.push(['merge']); return { merged: false, message: 'Pull request is not mergeable yet' }; },
+    async enableAutoMerge(current, expected) { log.push(['arm', expected]); pull.auto_merge = { enabled_at: '2026-11-02T00:00:00Z' }; },
+    async disableAutoMerge() { log.push(['disable']); pull.auto_merge = null; },
+    async dispatchHandoff() {},
+  };
+  // the watchdog: a ready, tokened green with nothing queued, never asked about
+  const hint = gateRearmStatus({ statuses }, pull, '2026-11-02T00:00:00Z');
+  assert.equal(hint?.id, 6100);
+  // request-recovery: the hint authorizes only this head's newest tokened success, named exactly; the request names PR 260
+  const authorized = reviewGate.authorizeRecoveryDispatch(statuses, String(hint.id));
+  assert.equal(authorized?.id, 6100);
+  assert.equal(reviewGate.authorizeRecoveryDispatch(statuses, '6099'), null, 'a stale id is refused');
+  await reviewGate.persistRecoveryRequest(client, head, pull, authorized);
+  assert.deepEqual(log.at(-1), ['status', 'pending', 'recovery: requested terminal status 6100 for pull request #260', 'codex-recovery-request/6100/pr-260']);
+  assert.equal(gateRearmStatus({ statuses }, pull, '2026-11-02T00:00:00Z'), null, 'pending: the watchdog holds');
+  // orchestrate: the request is adopted as a re-arm (nothing written), and the success re-judged inside its settlement
+  const request = reviewGate.pendingRecoveryRequest([...statuses], pull.number);
+  assert.equal(request?.terminalStatusId, '6100');
+  assert.equal(reviewGate.recoveryRequestTerminal([...statuses], request), null);
+  const before = log.length;
+  assert.equal(await reviewGate.settleUnmatchedRecoveryRequest(client, pull, head, [...statuses], request), 'rearm');
+  assert.equal(log.length, before, 'nothing written on adoption');
+  const terminal = reviewGate.recoverableTerminalReviewStatus(statuses);
+  assert.equal(terminal?.id, 6100);
+  const outcome = {};
+  const recovered = await reviewGate.withRearmSettlement(client, pull, head, request,
+    () => reviewGate.ensureTerminalReviewState(client, pull, head, terminal, [...statuses], outcome), outcome);
+  assert.equal(recovered, true);
+  assert.equal(outcome.completion, 'queued');
+  const success = log.findIndex(([k, state, , context]) => k === 'status' && state === 'success' && context === 'codex-current-head');
+  const arm = log.findIndex(([k]) => k === 'arm');
+  assert.ok(success > before && arm > success, 'armed after the republished success');
+  assert.ok(log.slice(success, arm).some(([k]) => k === 'record'), 'and after the merge authorization read Codex\'s record');
+  assert.deepEqual(log.at(-1), ['status', 'success', 'recovery: consumed by recovered success re-authorization', 'codex-recovery-request/6100/pr-260'],
+    'the request is consumed last, after the re-judge');
+  // the watchdog now holds: armed, and even unarmed, the newest success is the re-judge's own
+  assert.equal(gateRearmStatus({ statuses }, pull, '2026-11-02T00:00:00Z'), null);
+  assert.equal(gateRearmStatus({ statuses }, { ...pull, auto_merge: null }, '2026-11-02T00:00:00Z'), null);
+  // Codex 4440445763: another open PR at the same commit is not held by PR 260's request or settlement
+  assert.equal(gateRearmStatus({ statuses }, { ...pull, number: 261, auto_merge: null }, '2026-11-02T00:00:00Z')?.context, 'codex-current-head');
+});
+
 // #1288 (Codex 4439305279) — recovery that finds completed security findings publishes them through the one finding
 // publisher: the marker, the failure, and the `changes_required` sticky with its correction notice, never a bare
 // failure that leaves the sticky on its earlier clean state.
@@ -4286,15 +4381,15 @@ test('#1287/#1288 audit — the retryable-hold writer: failure, draft, settle, t
   await assert.rejects(reviewGate.publishRetryableHold(client, pull, head, request, { detail: '1 current-head Codex finding', attempt: 0, next: 'n' }), /refused a non-retryable detail/u);
   assert.deepEqual(log, [], 'nothing written for a non-retryable detail');
   // every literal detail its callers pass is one recovery re-judges
-  const { isRetryableReviewFailureDescription, CODEX_RUN_HELD_DETAIL, CODEX_RECORD_UNREADABLE_DETAIL } = await import('./review-policy.mjs');
-  for (const detail of [CODEX_RUN_HELD_DETAIL, CODEX_RECORD_UNREADABLE_DETAIL, 'Codex evidence changed during final verification',
+  const { isRetryableReviewFailureDescription, CODEX_RUN_HELD_DETAIL, CODEX_RECORD_UNREADABLE_DETAIL, CODEX_SHARED_COMMIT_DETAIL, CODEX_SHARED_COMMIT_UNREADABLE } = await import('./review-policy.mjs');
+  for (const detail of [CODEX_RUN_HELD_DETAIL, CODEX_RECORD_UNREADABLE_DETAIL, CODEX_SHARED_COMMIT_DETAIL, CODEX_SHARED_COMMIT_UNREADABLE, 'Codex evidence changed during final verification',
     'Required CI changed during current-head Codex review', 'Codex review timed out after two attempts']) {
     assert.equal(isRetryableReviewFailureDescription(`review: ${detail}`), true, detail);
   }
   // and its call sites are exactly the audited ones, each passing one of those details or a retryable settlement
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const calls = [...gate.matchAll(/(?<!function )publishRetryableHold\(/gu)].map((m) => gate.slice(m.index, m.index + 400));
-  assert.equal(calls.length, 9, 'merge refusal, recovery, verification re-read, changed CI, unsettled settlement, timeout, and G3a\'s post-success settlement, unarmed-green tail (G3a′: every throw from the authorization to the arm) and disarm');
+  assert.equal(calls.length, 12, 'merge refusal, recovery, verification re-read, changed CI, unsettled settlement, timeout, and G3a\'s post-success settlement, unarmed-green tail (G3a′: every throw from the authorization to the arm) and disarm, G3b\'s disarm before a CI-triggered run, and 2A3a\'s shared-commit refusal and its unreadable list (#1311 Codex 4446635322); 2A3b-2 B\'s arm-tail refusal goes through the merge refusal');
   // Stage 1 gap-check F1 (mutant M5) — the literal details the call sites actually pass (inline, or the `const detail`
   // just above the call) are each retryable, so a renamed one fails here and not only at runtime
   const sites = [...gate.matchAll(/(?<!function )publishRetryableHold\(/gu)].map((m) => gate.slice(Math.max(0, m.index - 300), m.index + 300));

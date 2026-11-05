@@ -249,6 +249,51 @@ export const CODEX_AUTOMERGE_DISARM_FAILED = 'queued auto-merge could not be dis
  * again: the green it would have left unarmed is replaced, so the head is re-judged rather than stranded.
  */
 export const CODEX_AUTOMERGE_REARM_FAILED = 'auto-merge could not be re-armed after authorization';
+/**
+ * 2A3a (#1307 sibling audit S18; G3a′'s same-commit window) — the detail of a commit that more than one open pull request
+ * has as its head. A commit status is the commit's, so no pull request at it may be green: the verdict is true of the
+ * commit itself, never one pull request's body. Retryable: once only one open pull request has this head, the gate
+ * re-judges it.
+ */
+export const CODEX_SHARED_COMMIT_DETAIL = 'commit shared by more than one open pull request';
+/**
+ * 2A3a (#1311 Codex 4446635322) — the detail of a head whose open pull requests could not be listed, so whether another
+ * open pull request shares it is unknown. Fail closed: the previous verdict (a green included) is replaced and the pull
+ * request drafted, so no queued merge acts on it. Retryable: the gate re-judges this exact head.
+ */
+export const CODEX_SHARED_COMMIT_UNREADABLE = 'open pull requests at this commit could not be read';
+
+/**
+ * G3b — a re-arm request: the gate's recovery asked to re-judge a head's NEWEST tokened success (the watchdog's
+ * `gateRearmStatus`). Unlike a failure's request it names its pull request (#1289
+ * round 3, Codex 4440445763): a status belongs to the commit and `auto_merge` to the pull request, so two open pull
+ * requests at one commit each have their own request, and one never holds the other's watchdog.
+ */
+export function rearmRequestContext(terminalStatusId, pullNumber) {
+  return `codex-recovery-request/${terminalStatusId}/pr-${pullNumber}`;
+}
+export function rearmRequestDescription(terminalStatusId, pullNumber) {
+  return `recovery: requested terminal status ${terminalStatusId} for pull request #${pullNumber}`;
+}
+/** G3b — the gate's settlement of a re-arm request whose re-judge ended. */
+export const REARM_CONSUMED_OUTCOME = 'recovered success re-authorization';
+/** G3b (Stage 1 re-check G1) — a re-arm request superseded by a newer review status on the same head. */
+export const REARM_REQUEST_SUPERSEDED = 'recovery: re-arm request superseded by newer review state';
+/** G3b — the record that a re-arm's re-judge ended: newer than the newest success, it holds the watchdog's ask. */
+export const REARM_SETTLEMENTS = Object.freeze([`recovery: consumed by ${REARM_CONSUMED_OUTCOME}`]);
+/**
+ * G3b (#1289 round 1, Codex 4439713463; round 3, Codex 4440445746) — a re-arm whose re-judge did not end it: it
+ * threw, its merge validation raced a change, or the recovered success fell through to the ordinary review. Not a
+ * settlement, so the watchdog asks again for the newest success on its next pass.
+ */
+export const REARM_ATTEMPT_FAILED = 'recovery: re-arm attempt failed';
+/**
+ * G3b (#1289 round-2 audit) — a re-arm request still pending this long has no live run: the owner job's limit
+ * (`timeout-minutes: 105` in auto-merge.yml) twice over, for a run queued behind another in the same lane, plus margin.
+ * Its run died where even the owner job's `failure() || cancelled()` cleanup did not run (a lost runner), so the
+ * watchdog asks again. A structural row keeps this above twice the owner job's limit.
+ */
+export const REARM_REQUEST_ABANDONED_MS = 4 * 60 * 60 * 1000;
 
 const RETRYABLE_REVIEW_FAILURES = [
   FOLLOW_UP_RETRY,
@@ -266,6 +311,8 @@ const RETRYABLE_REVIEW_FAILURES = [
   CODEX_RECORD_UNREADABLE_DETAIL,
   CODEX_AUTOMERGE_DISARM_FAILED,
   CODEX_AUTOMERGE_REARM_FAILED,
+  CODEX_SHARED_COMMIT_DETAIL,
+  CODEX_SHARED_COMMIT_UNREADABLE,
 ];
 
 export function isRetryableReviewFailureDescription(description) {

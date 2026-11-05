@@ -351,6 +351,15 @@ export interface PortfolioProject {
   milestonePct: number;
 }
 
+/** Guided site inspections (step 2a) — what an issued item asks of the person on site: what to look at, what good
+ *  looks like, and what to record as proof (a kind, how many, and when: `always` means a pass needs it too, `fail` only
+ *  a fail). Each part may be null; the whole guide is null for an item issued by name only. Fixed once issued. */
+export interface ItemGuide {
+  lookAt: string | null;
+  passRule: string | null;
+  record: { kind: 'photo' | 'video' | 'voice'; count: number; when: 'always' | 'fail'; hint: string | null } | null;
+}
+
 export interface ChecklistItem {
   /** server row id — the capture flow links evidence uploads to THIS item (Task 4) */
   id?: string;
@@ -361,6 +370,9 @@ export interface ChecklistItem {
   note: string;
   /** the item's linked photo evidence as resolvable URLs (Task 4) */
   evidence?: string[];
+  /** Guided site inspections (step 2a) — the item's guidance, null for an item issued by name only. ABSENT only from an
+   *  API older than the field. */
+  guide?: ItemGuide | null;
 }
 
 export interface Checklist {
@@ -383,6 +395,9 @@ export interface Checklist {
   /** #771 read contract — when the work is due, as a civil date `YYYY-MM-DD` (no time, no zone). `null` =
    *  none stored; ABSENT = an API older than the field (unknown, never "no due date"). */
   dueDate?: string | null;
+  /** Guided site inspections (step 2a) — the kind of work it checks ("RCC slab"), or null. ABSENT only from an API
+   *  older than the field. */
+  workType?: string | null;
   items: ChecklistItem[];
 }
 
@@ -396,6 +411,9 @@ export interface ReviewItem {
   swatch: SwatchKey;
   note: string;
   rejected: boolean;
+  /** Guided site inspections (step 2a) — the item's guidance, null for an item issued by name only. ABSENT only from an
+   *  API older than the field. */
+  guide?: ItemGuide | null;
 }
 
 export interface Review {
@@ -416,6 +434,8 @@ export interface Review {
   assigneeId?: string | null;
   /** #771 read contract — as {@link Checklist.dueDate}: civil `YYYY-MM-DD`; `null` none, ABSENT unknown. */
   dueDate?: string | null;
+  /** Guided site inspections (step 2a) — as {@link Checklist.workType}: `null` none, ABSENT an older API. */
+  workType?: string | null;
   /** set when this review is a CLOSING sign-off (Task 5): approving it completes
    *  the named activity; rejecting it returns that activity to execution */
   closing?: boolean;
@@ -668,8 +688,57 @@ export interface Worker {
 export type SignInErrorKey =
   | 'enterEmailPassword' | 'demoEmails' | 'accessRemoved' | 'serverDown' | 'wrongPassword'
   | 'invalidInvitedEmail' | 'setupNeedsServer' | 'passwordMismatch' | 'codeSendFailed' | 'setupWrongCode' | 'passwordLength'
-  | 'setupExpired' | 'passwordSaveFailed' | 'invalidEmail' | 'emailSendFailed' | 'emailWrongCode' | 'enterMobile'
-  | 'tooManySignIns' | 'tooManyCodes';
+  | 'setupExpired' | 'passwordSaveFailed' | 'setupStillFinishing' | 'setupMayBeSet' | 'invalidEmail' | 'emailSendFailed' | 'emailWrongCode' | 'enterMobile'
+  | 'tooManySignIns' | 'tooManyCodes'
+  | 'identityNoProject' | 'identityInvitePending' | 'identityTestAccount' | 'identityEmailUnverified'
+  | 'identityPasswordChanged' | 'identityNeedsHelp' | 'identityIssuerAccountExists' | 'issuerAccountReset' | 'identityPasswordRejected' | 'identityRetired';
+
+/**
+ * Redbracket ID A4a: the machine-readable `code` on the 409 `/auth/password/complete` answers while another password
+ * setup for the same account is still finishing. The web matches this code, never the message: the same route also
+ * answers 409 for an email that cannot be set up (its code is spent; the person asks their PMC for help).
+ */
+export const SETUP_RUNNING_CODE = 'setup-running';
+
+/**
+ * Redbracket ID A5: the machine-readable `code` on each refusal of the switched-on email sign-in and password setup
+ * (`IdentitySignInService`). The status and the English `message` are unchanged; the web words the refusal from this
+ * code in the gate's language (`signInErrors`), matched together with its status, never from the message. A server
+ * that sends no code keeps today's words.
+ */
+export const IDENTITY_REFUSAL_CODES = {
+  noProject: 'no-project',
+  invitePending: 'invite-pending',
+  testAccount: 'test-account',
+  emailUnverified: 'email-unverified',
+  passwordChanged: 'password-changed',
+  needsHelp: 'needs-help',
+  issuerAccountExists: 'issuer-account-exists',
+  passwordRejected: 'password-rejected',
+  /** A3/A4: the account a first Redbracket ID sign-in replaced (any sign-in path that lands on it) */
+  retired: 'retired',
+} as const;
+export type IdentityRefusalCode = (typeof IDENTITY_REFUSAL_CODES)[keyof typeof IDENTITY_REFUSAL_CODES];
+
+/**
+ * Unit H: the hosts Redbracket ID's own login pages (its password reset among them) are served from. The API sends a
+ * reset link (`resetUrl`, with `issuer-account-exists`) only on one of these, and the web opens one only on one of
+ * these, over https. A new host is a code change.
+ */
+export const REDBRACKET_RESET_HOSTS = ['rb.vitan.in'] as const;
+
+/** A Redbracket ID reset link the web may open: an `https://` URL on a `REDBRACKET_RESET_HOSTS` host, no user info, port or fragment, at most 2,048 characters. */
+export function isRedbracketResetUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 2048) return false;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return url.protocol === 'https:' && !url.username && !url.password && !url.port && !url.hash
+    && (REDBRACKET_RESET_HOSTS as readonly string[]).includes(url.hostname);
+}
 
 /** #886: a phone sign-in failure as an `accessDict` key (plus the throttle wait), and the text it produced. */
 export type AccessErrorKey =
@@ -705,6 +774,10 @@ export interface AccessState {
   /** Public request id and one-time setup token; memory-only, never persisted. */
   passwordRequestId: string | null;
   passwordSetupToken: string | null;
+  /** the password being chosen is the one Redbracket ID password every Vitan portal uses (the server said so) */
+  passwordShared?: boolean;
+  /** unit H: Redbracket ID's own reset page for this email, shown with the `issuerAccountReset` refusal only */
+  issuerResetUrl?: string | null;
 }
 
 export interface AppNotification {

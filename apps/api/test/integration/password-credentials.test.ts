@@ -33,7 +33,8 @@ describe('password enrollment and reset (live PostgreSQL)', () => {
     const code = codes.get(email);
     expect(code).toMatch(/^\d{6}$/);
     const verified = await http.post('/auth/password/verify').send({ requestId: requested.body.requestId, code }).expect(201);
-    expect(verified.body).toEqual({ setupToken: expect.any(String), expiresInSeconds: 600 });
+    // the switch is off here: the password chosen next is PMC's own, and the screen must not say it is shared
+    expect(verified.body).toEqual({ setupToken: expect.any(String), expiresInSeconds: 600, sharedPassword: false });
     expect(verified.body.token).toBeUndefined();
     return { requestId: requested.body.requestId as string, setupToken: verified.body.setupToken as string };
   }

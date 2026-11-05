@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, type Mock } from 'vitest';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { MediaParticipant } from '../media/media.participant';
 import { InspectionsService } from './inspections.service';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
@@ -23,7 +24,8 @@ const NAMES: Record<string, string> = { u1: 'Ravi Iyer', 'u-pmc': 'Ar. Meghna', 
 
 /** In-memory Prisma stand-in. `evidence` = linked Media rows per inspectionItemId.
  *  Supports both $transaction forms; the interactive form passes the stub itself. */
-function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; activity?: Act } = {}) {
+function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; evidenceUnderLock?: string[]; activity?: Act } = {}) {
+  let evidenceReads = 0;
   const created: Array<Record<string, unknown>> = [];
   const audits: Array<{ action: string; entityId?: string; actor: string; actorId?: string; actorRole?: string; payload?: Record<string, unknown> }> = [];
   const members = opts.members ?? [{ projectId: insp.projectId, userId: 'u1', role: 'engineer', status: 'active' }];
@@ -68,9 +70,17 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; activ
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => Object.assign(opts.activity ?? {}, data)),
     },
     inspectionItem: { updateMany: vi.fn(async () => ({ count: 1 })) },
+    // the evidence rule reads the item links (`evidence` before the inspection's row lock, `evidenceUnderLock` when given at
+    // and after it, as when a removal commits while the submit waits for the lock), then each file's type (photos here)
+    inspectionEvidence: {
+      findMany: vi.fn(async () => {
+        evidenceReads += 1;
+        const ids = evidenceReads > 1 && opts.evidenceUnderLock ? opts.evidenceUnderLock : (opts.evidence ?? []);
+        return ids.map((id) => ({ inspectionItemId: id, mediaId: `m-${id}` }));
+      }),
+    },
     media: {
-      groupBy: vi.fn(async ({ where }: { where: { inspectionItemId: { in: string[] } } }) =>
-        (opts.evidence ?? []).filter((id) => where.inspectionItemId.in.includes(id)).map((id) => ({ inspectionItemId: id }))),
+      findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) => where.id.in.map((id) => ({ id, mime: 'image/png' }))),
     },
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
     $executeRaw: vi.fn(async () => 1),
@@ -94,7 +104,7 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; activ
   } as unknown as PrismaService;
   const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
   const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-  const svc = new InspectionsService(prisma, snapshot, dispatcher, { today: () => '2026-07-03' }, new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never));
+  const svc = new InspectionsService(prisma, snapshot, dispatcher, { today: () => '2026-07-03' }, new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never), undefined as never, new MediaParticipant());
   const user = { sub: 'u1', role: 'engineer', projectId: insp.projectId } as never;
   const pmc = { sub: 'u-pmc', role: 'pmc', projectId: insp.projectId } as never;
   return { svc, prisma, user, pmc, created, audits, insp };
@@ -159,7 +169,7 @@ describe('InspectionsService.create — location spine (nodeId)', () => {
     } as unknown as PrismaService;
     const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
     const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-    const svc = new InspectionsService(prisma, snapshot, dispatcher, { today: () => '2026-07-03' }, new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never));
+    const svc = new InspectionsService(prisma, snapshot, dispatcher, { today: () => '2026-07-03' }, new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never), undefined as never, new MediaParticipant());
     const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
     return { svc, user, created };
   }
@@ -212,6 +222,13 @@ describe('InspectionsService — evidence + linked reinspections (Phase 1 Task 4
     const { svc, user, insp } = make({ id: 'INSP-1', projectId: 'ambli', submitted: false, decided: false, items: [item('i1', 'Drain slope')] }, { evidence: ['i1'] });
     await svc.submit('ambli', 'INSP-1', failSubmit as never, user);
     expect(insp.submitted).toBe(true);
+  });
+
+  it('EVIDENCE RULE under the lock: evidence removed while the submit waited for the inspection row refuses it, writing nothing', async () => {
+    const { svc, user, insp, prisma } = make({ id: 'INSP-1', projectId: 'ambli', submitted: false, decided: false, items: [item('i1', 'Drain slope')] }, { evidence: ['i1'], evidenceUnderLock: [] });
+    await expect(svc.submit('ambli', 'INSP-1', failSubmit as never, user)).rejects.toThrow(/photo evidence/i);
+    expect(insp.submitted).toBe(false);
+    expect(prisma.inspectionItem.updateMany).not.toHaveBeenCalled();
   });
 
   it('REJECT creates the linked reinspection: fresh rejected items, inherited activityId, assignee + due date, attributed', async () => {

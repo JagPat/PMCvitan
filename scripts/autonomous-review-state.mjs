@@ -189,6 +189,69 @@ export function codexStateRecordVerdict(issueComments, expectedHead, readyAtMs) 
   return clears ? 'clear' : 'none';
 }
 
+/**
+ * 2A3b-2 B (#1318 Codex 4448897188) — what Codex's review-state records say about `expectedHead`, as one string: each
+ * Codex-authored record (REST login, marker and parseable JSON, as `codexStateRecordVerdict` reads them) whose code or
+ * security section names `expectedHead`, by id, last update and body, sorted. Two reads with the same fingerprint saw
+ * the same records for this head; a review that completed between them changes it, even one that ends with an
+ * identical body (its update time moves), and so does a record that comes to name this head or stops naming it.
+ * #1320 Codex 4450011604 — a record about another head only, edited late, is not evidence for this head and does not
+ * change it.
+ */
+export function codexRecordFingerprint(issueComments, expectedHead) {
+  return (issueComments ?? [])
+    .filter((comment) => codexRecordNamesHead(comment, expectedHead))
+    .map((comment) => `${String(comment.id)}\u0000${String(comment.updated_at ?? comment.created_at ?? '')}\u0000${String(comment.body)}`)
+    .sort()
+    .join('\u0001');
+}
+
+/**
+ * Is this comment a Codex review-state record about `expectedHead`: Codex's REST login, the marker, parseable JSON (as
+ * `codexStateRecordVerdict` reads them), and a code or security section naming the head? The one selection both
+ * `codexRecordFingerprint` (2A3b-2 B, #1320 Codex 4450011604) and `codexRecordLatestMs` (2A3b-2 C) make: a record about
+ * another head only is not evidence for this one.
+ */
+function codexRecordNamesHead(comment, expectedHead) {
+  if (!isCodexActor(comment)) return false;
+  const match = /<!--\s*codex-review-state:v1\s+([\s\S]*?)\s*-->/u.exec(String(comment?.body ?? ''));
+  if (!match) return false;
+  let record;
+  try { record = JSON.parse(match[1]); } catch { return false; }
+  return record?.code_review?.commit_sha === expectedHead || record?.security_review?.commit_sha === expectedHead;
+}
+
+/**
+ * #1324 r2 gap-check 4 — could this removed Codex record have been evidence for `expectedHead`? The shared selection
+ * (`codexRecordNamesHead`), except that a Codex record whose JSON cannot be read may have named it, so it counts (fail
+ * closed). Another login, or no marker, is no record.
+ */
+export function codexRecordMayNameHead(comment, expectedHead) {
+  if (!isCodexActor(comment)) return false;
+  const match = /<!--\s*codex-review-state:v1\s+([\s\S]*?)\s*-->/u.exec(String(comment?.body ?? ''));
+  if (!match) return false;
+  try { JSON.parse(match[1]); } catch { return true; }
+  return codexRecordNamesHead(comment, expectedHead);
+}
+
+/**
+ * 2A3b-2 C (#1318 Codex 4449402452) — when Codex's review-state records about `expectedHead` were last written: the
+ * latest update time over every Codex record naming the head (Gap C: every such record, not only the one an event
+ * names; the selection is `codexRecordFingerprint`'s), in ms; -Infinity with none, NaN when one is unreadable (a caller
+ * comparing with `!(latest < t)` treats NaN as newer, fail closed). A record about another head only, written late, is
+ * not news about this head (as #1320 Codex 4450011604 ruled for the fingerprint).
+ */
+export function codexRecordLatestMs(issueComments, expectedHead) {
+  let latest = -Infinity;
+  for (const comment of issueComments ?? []) {
+    if (!codexRecordNamesHead(comment, expectedHead)) continue;
+    const written = Date.parse(comment?.updated_at ?? comment?.created_at);
+    if (!Number.isFinite(written)) return Number.NaN;
+    if (written > latest) latest = written;
+  }
+  return latest;
+}
+
 export function codexStateRecordClears(issueComments, expectedHead, readyAtMs) {
   return codexStateRecordVerdict(issueComments, expectedHead, readyAtMs) === 'clear';
 }

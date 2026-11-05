@@ -310,6 +310,9 @@ describe('decision change-control (integration)', () => {
 
   it('GATE FINDING 6: events and audits snapshot the actor ROLE held at action time', async () => {
     const id = await issueDecision('Loft ladder');
+    // a decoy: another project's audit row naming the same decision id in another role (what a stale run leaves).
+    // The read below must never see it; project B's rows go with the fixture's cleanup.
+    await t.prisma.auditLog.create({ data: { projectId: f.projectB.id, actor: 'decoy', actorId: f.ownerUser.id, actorRole: 'engineer', action: 'decision.approve', entity: 'Decision', entityId: id } });
     expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);
     expect((await as(pmcToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'headroom', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
     expect((await as(pmcToken)(`/projects/${f.projectA.id}/decisions/${id}/change/withdraw`)).status).toBe(201);
@@ -321,7 +324,12 @@ describe('decision change-control (integration)', () => {
     expect(roleOf('change_requested')).toBe('pmc');
     expect(roleOf('change_withdrawn')).toBe('pmc');
 
-    const audits = await t.prisma.auditLog.findMany({ where: { entity: 'Decision', entityId: id } });
+    // scoped to the project: a decision id (DL-001, …) is a global sequence that teardown frees, so a later run (or
+    // another project) mints the same id again, and an audit row left by a run whose teardown never reached
+    // `f.cleanup` names it too. The AuditLog has no foreign key to the decision, so only the project tells them apart.
+    const audits = await t.prisma.auditLog.findMany({ where: { projectId: f.projectA.id, entity: 'Decision', entityId: id } });
+    // the decoy is never among them (by identity, not by which duplicate comes first)
+    expect(audits.filter((a) => a.projectId !== f.projectA.id || a.actor === 'decoy')).toEqual([]);
     expect(audits.find((a) => a.action === 'decision.approve')?.actorRole).toBe('client');
     expect(audits.find((a) => a.action === 'decision.change')?.actorRole).toBe('pmc');
     expect(audits.find((a) => a.action === 'decision.change_withdraw')?.actorRole).toBe('pmc');

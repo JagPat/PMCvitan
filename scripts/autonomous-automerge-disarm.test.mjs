@@ -13,6 +13,7 @@ import {
 import {
   CODEX_AUTOMERGE_DISARM_FAILED,
   CODEX_AUTOMERGE_REARM_FAILED,
+  CODEX_SHARED_COMMIT_DETAIL,
   isRetryableReviewFailureDescription,
 } from './review-policy.mjs';
 
@@ -58,8 +59,13 @@ test('G3a — a queued auto-merge is disabled, in the order check the head, disa
 });
 
 test('G3a — a disable that fails, or a re-read still armed, is the retryable failure: nothing green may follow', async () => {
-  const failing = fakeClient({ reads: [armed()], disable: async () => { throw new Error('GraphQL down'); } });
-  await assert.rejects(disarmQueuedAutoMerge(failing, 900, HEAD), AutoMergeDisarmFailed);
+  // 2A3b-2 A (#1318 Codex 4448897209) — a disable that fails is judged by the re-read: still queued is the retryable
+  // failure, carrying the refusal as its cause; no longer queued (another run disabled it first) is disarmed
+  const failing = fakeClient({ reads: [armed(), armed()], disable: async () => { throw new Error('GraphQL down'); } });
+  await assert.rejects(disarmQueuedAutoMerge(failing, 900, HEAD), (error) => error instanceof AutoMergeDisarmFailed && /GraphQL down/u.test(error.message));
+  const raced = fakeClient({ reads: [armed(), pr()], disable: async () => { throw new Error('Auto merge is not enabled for this pull request'); } });
+  assert.equal((await disarmQueuedAutoMerge(raced, 900, HEAD)).auto_merge, null);
+  assert.deepEqual(raced.calls.map(([k]) => k), ['read', 'list', 'disable', 'read']);
   const stuck = fakeClient({ reads: [armed(), armed()] });
   await assert.rejects(disarmQueuedAutoMerge(stuck, 900, HEAD), AutoMergeDisarmFailed);
   assert.equal(isRetryableReviewFailureDescription(`review: ${CODEX_AUTOMERGE_DISARM_FAILED}`), true);
@@ -189,7 +195,8 @@ test('G3a — structural: both writers take the one disarm-then-success step; on
   const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
   const step = gate.slice(gate.indexOf('export async function publishDisarmedSuccess('), gate.indexOf('const AUTOMERGE_RETRY_NEXT'));
   assert.ok(step.indexOf('disarmQueuedAutoMerge(client') > 0 && step.indexOf('disarmQueuedAutoMerge(client') < step.indexOf('await publishSettledSuccess('));
-  assert.match(step, /if \(!\(error instanceof AutoMergeDisarmFailed\)\) throw error;\s*await publishRetryableHold\(client, pullRequest, expectedHead, recoveryRequest, \{\s*detail: CODEX_AUTOMERGE_DISARM_FAILED,[^;]*;\s*throw error;/u);
+  // 2A3a — a shared commit takes the shared-commit refusal and stops; every other disarm failure the retryable hold
+  assert.match(step, /if \(!\(error instanceof AutoMergeDisarmFailed\)\) throw error;\s*(?:\/\/[^\n]*\n\s*)*if \(error instanceof SharedCommitRefused\) \{\s*await publishSharedCommitRefusal\(client, pullRequest, expectedHead, error\.others, recoveryRequest, \{ withheld: true \}\);\s*return null;\s*\}\s*await publishRetryableHold\(client, pullRequest, expectedHead, recoveryRequest, \{\s*detail: CODEX_AUTOMERGE_DISARM_FAILED,[^;]*;\s*throw error;/u);
   assert.equal([...gate.matchAll(/await publishSettledSuccess\(/gu)].length, 1, 'the success writer is called only by the shared step');
   assert.equal([...gate.matchAll(/await publishDisarmedSuccess\(/gu)].length, 2, 'the review path and the recovered success');
   const arms = [...gate.matchAll(/client\.enableAutoMerge\(/gu)].map((m) => m.index);
@@ -318,9 +325,30 @@ test('G3a (Codex 4440931056) — every open pull request at this commit with a m
   client.pullRequest = async (number) => { client.log.push(['read', number]); return number === 900 ? pr() : (siblingArmed ? queued() : sibling()); };
   client.openPullRequestsAt = async () => [pr(), siblingArmed ? queued() : sibling()];
   client.disableAutoMerge = async (pull) => { client.log.push(['disable', pull.number]); if (pull.number === 901) siblingArmed = false; };
-  await publishDisarmedSuccess(client, pr(), HEAD, 'review: clean');
+  // 2A3a — a sibling at this commit is disarmed, and no success is written at all: the shared-commit refusal instead
+  assert.equal(await publishDisarmedSuccess(client, pr(), HEAD, 'review: clean'), null);
   const kinds = client.log.map(([k, n, state]) => (k === 'status' ? `status:${state}` : k === 'disable' ? `disable:${n}` : k));
-  assert.ok(kinds.indexOf('disable:901') >= 0 && kinds.indexOf('disable:901') < kinds.indexOf('status:success'), kinds.join(','));
+  assert.ok(kinds.indexOf('disable:901') >= 0, kinds.join(','));
+  assert.equal(kinds.includes('status:success'), false, kinds.join(','));
+  assert.equal(client.log.filter(([k]) => k === 'status').at(-1)[3], `review: ${CODEX_SHARED_COMMIT_DETAIL}`);
+});
+
+// #1311 Codex 4446635304 (Stage 1's re-check of cc1f0412) — a sibling at the last list that is gone when the refusal lists
+// again: the success is still withheld on this run, by the same retryable shared-commit refusal saying the commit was
+// shared during the run (no misleading disarm wording, and no new retryable kind)
+test('#1311 Codex 4446635304 — a sibling gone between the last list and the refusal: the success is withheld by the shared refusal, worded for it', async () => {
+  const sibling = pr(HEAD, { number: 901, node_id: 'PR_901', head: { sha: HEAD, ref: 'claude/other', repo } });
+  const lists = [[pr()], [pr(), sibling], [pr()], [pr()]];
+  let reads = 0;
+  const client = gateClient({ live: () => pr() });
+  client.openPullRequestsAt = async () => lists[Math.min(reads++, lists.length - 1)];
+  assert.equal(await publishDisarmedSuccess(client, pr(), HEAD, 'review: clean'), null);
+  const written = client.log.filter(([k]) => k === 'status');
+  assert.equal(written.some(([, , state]) => state === 'success'), false, 'no success');
+  assert.equal(written.at(-1)[3], `review: ${CODEX_SHARED_COMMIT_DETAIL}`, 'the shared refusal, not the disarm wording');
+  assert.equal(written.some(([, , , description]) => description === `review: ${CODEX_AUTOMERGE_DISARM_FAILED}`), false);
+  const sticky = client.log.filter(([k]) => k === 'sticky').at(-1);
+  assert.match(String(sticky?.[2] ?? sticky?.[1] ?? ''), /was also the head of #901 during this run/u);
 });
 
 test('G3a (Codex 4440931056) — the open pull requests at a commit are those whose head is that commit', async () => {
@@ -372,15 +400,12 @@ test('G3a (Codex 4441198763) — a merge queued at this commit after the disarm 
     client.statuses = async (...args) => { client.log.push(['statuses']); return statuses(...args); };
     return client;
   };
-  // the disarm's list is clean; a sibling, this PR alone, or this PR beside a sibling is queued by the last list; or
-  // the last list cannot be read
+  // the disarm's list is clean; this PR alone is queued by the last list, or the last list cannot be read
   for (const [name, second] of [
-    ['sibling queued', () => [pr(), queued()]],
     ['this PR queued, alone', () => [armed()]],
-    ['this PR queued', () => [armed(), sibling()]],
     ['last list unreadable', () => { throw new Error('GitHub 502'); }],
   ]) {
-    const client = run([() => [pr(), sibling()], second]);
+    const client = run([() => [pr()], second]);
     await assert.rejects(publishDisarmedSuccess(client, pr(), HEAD, 'review: clean'), AutoMergeDisarmFailed, name);
     const statuses = client.log.filter(([k]) => k === 'status');
     assert.equal(statuses.some(([, , state]) => state === 'success'), false, `${name}: nothing green`);
@@ -388,9 +413,22 @@ test('G3a (Codex 4441198763) — a merge queued at this commit after the disarm 
     assert.match(client.log.filter(([k]) => k === 'sticky').at(-1)?.[1] ?? '', /review_retry/u, name);
     assert.equal(client.log.filter(([k]) => k === 'list').length, 2, `${name}: listed twice`);
   }
+  // 2A3a — a sibling at the last list, queued or not, or this PR queued beside one: the shared-commit refusal, no success
+  for (const [name, second] of [
+    ['sibling queued', () => [pr(), queued()]],
+    ['sibling not queued', () => [pr(), sibling()]],
+    ['this PR queued beside a sibling', () => [armed(), sibling()]],
+  ]) {
+    const client = run([() => [pr()], second]);
+    assert.equal(await publishDisarmedSuccess(client, pr(), HEAD, 'review: clean'), null, name);
+    const statuses = client.log.filter(([k]) => k === 'status');
+    assert.equal(statuses.some(([, , state]) => state === 'success'), false, `${name}: nothing green`);
+    assert.deepEqual(statuses.at(-1).slice(2), ['failure', `review: ${CODEX_SHARED_COMMIT_DETAIL}`], name);
+    assert.match(client.log.filter(([k]) => k === 'sticky').at(-1)?.[1] ?? '', /review_retry[\s\S]*#901/u, name);
+  }
   // a clean last list: it comes after the approval token's reads, and the one success follows it with nothing read or
   // written between them
-  const clean = run([() => [pr(), sibling()], () => [pr(), sibling()]]);
+  const clean = run([() => [pr()], () => [pr()]]);
   await publishDisarmedSuccess(clean, pr(), HEAD, 'review: clean');
   const kinds = clean.log.map(([k, , state]) => (k === 'status' ? `status:${state}` : k));
   const lastList = kinds.lastIndexOf('list');

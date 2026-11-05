@@ -37,6 +37,7 @@ describe('#482 F-C4.1 — an engineer-failed item is sent back without an explic
     await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     const scoped = { projectId: { startsWith: 'it-efsb-' } };
     await t.prisma.commandExecution.deleteMany({ where: scoped });
+    await t.prisma.inspectionEvidence.deleteMany({ where: scoped });
     await t.prisma.media.deleteMany({ where: scoped });
     await t.prisma.inspectionItem.deleteMany({ where: { inspection: scoped } });
     await t.prisma.inspection.deleteMany({ where: scoped });
@@ -69,6 +70,8 @@ describe('#482 F-C4.1 — an engineer-failed item is sent back without an explic
     const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'C4 QA' }, include: { items: { orderBy: { order: 'asc' } } } });
     const [a, b, failed] = insp.items;
     await t.prisma.media.create({ data: { id: `${p}-ev`, projectId: p, kind: 'inspection', mime: 'image/png', uploadedBy: eng, inspectionId: insp.id, inspectionItemId: failed!.id } });
+    // linked as an upload links it: the evidence rule reads the inspection's own links (guided step 2b)
+    await t.prisma.inspectionEvidence.create({ data: { projectId: p, inspectionId: insp.id, inspectionItemId: failed!.id, mediaId: `${p}-ev` } });
     await svc.submit(p, insp.id, {
       items: [
         { id: a!.id, state: 'pass' as const, photos: 0, note: '' },

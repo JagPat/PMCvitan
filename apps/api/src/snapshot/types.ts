@@ -1,6 +1,6 @@
 /** API response shapes — aligned with the frontend domain model so the client
  *  hydrates its store directly from a snapshot. */
-import type { Drawing, Checklist, Review, PlacedInspection, DecisionStatus, NoticeFacts } from '@vitan/shared';
+import type { Drawing, Checklist, Review, PlacedInspection, DecisionStatus, NoticeFacts, ItemGuide } from '@vitan/shared';
 import type { Phase6_4dRollout } from '../platform/phase6-4d-rollout';
 
 /** Phase 2 Task 9 — the project-shell summary (identity + projection counts), the light payload the
@@ -262,9 +262,12 @@ export interface ChecklistDto {
   assigneeId: string | null;
   /** #771 read contract — the stored due date as a civil `YYYY-MM-DD` (`null` = none). Always present. */
   dueDate: string | null;
+  /** Guided site inspections (step 2a) — the kind of work it checks ("RCC slab"), or null. Always present. */
+  workType: string | null;
   /** `id` links evidence uploads to the item; `evidence` = signed serve paths (Task 4).
-   *  `photos` is a DEPRECATED display counter — linked evidence rows are the proof. */
-  items: { id: string; name: string; state: string | null; photos: number; note: string; evidence: string[] }[];
+   *  `photos` is a DEPRECATED display counter — linked evidence rows are the proof.
+   *  `guide` (guided step 2a) = what to look at, what good looks like and what to record; null when issued by name. */
+  items: { id: string; name: string; guide: ItemGuide | null; state: string | null; photos: number; note: string; evidence: string[] }[];
 }
 
 export interface ReviewDto {
@@ -281,13 +284,15 @@ export interface ReviewDto {
   /** #771 read contract — the stored assignee and civil due date (`null` = none stored). Always present. */
   assigneeId: string | null;
   dueDate: string | null;
+  /** Guided site inspections (step 2a) — as {@link ChecklistDto.workType}. Always present. */
+  workType: string | null;
   /** set when this review is a CLOSING sign-off (Task 5): approving it completes
    *  the named activity; rejecting it returns that activity to execution */
   closing?: boolean;
   activityId?: string;
   activityName?: string;
-  /** `evidence` = the item's linked photo proof as signed serve paths (Task 4) */
-  items: { id: string; name: string; result: 'PASS' | 'FAIL'; swatch: string; note: string; rejected: boolean; evidence: string[] }[];
+  /** `evidence` = the item's linked photo proof as signed serve paths (Task 4); `guide` as {@link ChecklistDto.items} */
+  items: { id: string; name: string; guide: ItemGuide | null; result: 'PASS' | 'FAIL'; swatch: string; note: string; rejected: boolean; evidence: string[] }[];
 }
 
 /** A material delivery placed on the location spine — the Site Map's "materials here". */
@@ -380,6 +385,18 @@ export interface PhotoDto {
   deletableUntil?: string;
 }
 
+/** #482 proof photos, "Your open items" — one open inspection the viewer is named to fix. */
+export interface OpenItemDto {
+  inspectionId: string;
+  title: string;
+  zone: string;
+  nodeId: string | null;
+  /** `issued` (with the engineer), `in-review` (waiting on the PMC) or `reinspection` (rejected; re-inspection under way) */
+  status: 'issued' | 'in-review' | 'reinspection';
+  /** the failed items a proof photo goes on; `proofCount` is every member's proofs on the item (`PROOF_PHOTOS_PER_ITEM` caps it) */
+  failedItems: Array<{ itemId: string; name: string; proofCount: number }>;
+}
+
 /** #482 site photos unit 4 — a proof photo: a contractor or consultant shows a failed inspection item fixed. It is not
  *  evidence (the inspection is unchanged by it) and never a site photo. */
 export interface ProofPhotoDto {
@@ -436,6 +453,19 @@ export interface ProjectMetaDto {
   elapsedPct: number;
   todayDay: number;
   milestonePct: number;
+  /** #1118 U7a — the project's active Hub link: Hub's project id, the number and name Hub gave it when it was linked,
+   *  and where "Open in Hub" goes (Hub's address; null while PMC is not connected to Hub). Absent while the project is
+   *  not linked, so an unlinked project's snapshot is the previous release's, byte for byte */
+  hubLink?: ProjectHubLinkDto;
+}
+
+/** The drawings module's `drawings.hubLink` answer (`DrawingsHubLink` in @vitan/shared), carried as the project line. */
+export interface ProjectHubLinkDto {
+  hubProjectId: string;
+  number: string | null;
+  name: string | null;
+  linkedAt: string;
+  openUrl: string | null;
 }
 
 export interface CompanyDto {
@@ -501,6 +531,10 @@ export interface SnapshotDto {
   /** #482 proof photos, "Who fixes this?" — the contractor or consultant named to fix each inspection's failed work, for
    *  the PMC and the engineer; empty for everyone else. A member who no longer stands is left out. */
   responsibleMembers: Array<{ inspectionId: string; memberId: string }>;
+  /** #482 proof photos, "Your open items" — for a contractor or consultant, the open inspections they are named to fix
+   *  (only while the naming holds), each with its failed items and how many proof photos each item holds (everyone's,
+   *  the count the per-item cap counts); empty for every other role. */
+  openItems: OpenItemDto[];
   /** All material deliveries across the project, with their place — the Site Map's "materials here". */
   materials: MaterialDto[];
 }

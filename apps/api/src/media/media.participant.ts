@@ -22,4 +22,14 @@ export class MediaParticipant {
     const { projectId, dailyLogId } = params;
     return tx.media.count({ where: { projectId, dailyLogId, kind: 'progress' } });
   }
+
+  /** Guided site inspections, step 2b — the type of each of these files, read on the caller's transaction: an inspection
+   *  submit asks here, under the inspection row's lock, which of its items' linked evidence is a photo, a video or a voice
+   *  note. A file not in this project is left out. */
+  async mimesOf(tx: Prisma.TransactionClient, params: { projectId: string; mediaIds: readonly string[] }): Promise<Map<string, string>> {
+    const { projectId, mediaIds } = params;
+    if (mediaIds.length === 0) return new Map();
+    const rows = await tx.media.findMany({ where: { projectId, id: { in: [...mediaIds] } }, select: { id: true, mime: true } });
+    return new Map(rows.map((r) => [r.id, r.mime]));
+  }
 }

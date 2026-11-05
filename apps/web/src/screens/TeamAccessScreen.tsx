@@ -84,6 +84,30 @@ function BackBtn({ onClick, label }: { onClick: () => void; label: string }) {
   );
 }
 
+/** One id per recorded failure. `failAccess` stores a fresh key object for every failure, even a repeat of the
+ *  same reason, and a language switch keeps that object, so its identity is the failure's identity. An error
+ *  written without a key (its own words) is identified by those words. */
+const failureIds = new WeakMap<object, string>();
+let failureCount = 0;
+function failureId(errorKey: object | null | undefined, error: string | null | undefined): string {
+  if (!errorKey) return `text:${error ?? ''}`;
+  let id = failureIds.get(errorKey);
+  if (!id) { failureCount += 1; id = `failure:${failureCount}`; failureIds.set(errorKey, id); }
+  return id;
+}
+
+/** The sign-in error, announced to screen readers. The alert region (`role="alert"`) stays mounted, empty, on
+ *  every step, so it is in the page before any error is written into it (W3C ARIA19). Each failure is written as
+ *  a new child keyed by `failureId`, so each new failure (a different error, or the same one again) is a new
+ *  addition to the region and is announced, while a language switch re-words the same child in place. `inline`
+ *  keeps the code rows' in-line style; the block style applies only while there is an error, so an empty region
+ *  takes no space. */
+function AccessErrorText({ error, errorId, inline = false }: { error: string | null; errorId: string; inline?: boolean }) {
+  const words = error ? <span key={errorId}>{error}</span> : null;
+  if (inline) return <span role="alert" data-testid="access-error" style={{ color: 'var(--red-solid)' }}>{words}</span>;
+  return <div role="alert" data-testid="access-error" style={error ? { color: 'var(--red-solid)', fontSize: 13, marginTop: 12 } : undefined}>{words}</div>;
+}
+
 /** `atGate`: rendered by the sign-in gate (`AuthGate`), not as a screen inside a signed-in console. */
 export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
   const step = useStore((s) => s.access.step);
@@ -94,9 +118,15 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
   const sending = useStore((s) => s.access.sending);
   // #886: worded in the gate's current language, so a language switch after a failure re-translates it
   const error = useStore((s) => shownAccessError(s.access, s.lang));
+  // which failure this is, so each new one (a different error, or the same one again) is written into the alert as
+  // a new child, while a language switch re-words the same failure in place
+  const errorId = useStore((s) => failureId(s.access.errorKey, s.access.error));
   const devCode = useStore((s) => s.access.devCode);
   const channel = useStore((s) => s.access.channel ?? null);
   const codeLength = useStore((s) => s.access.codeLength ?? 4);
+  const passwordShared = useStore((s) => s.access.passwordShared === true);
+  // unit H: Redbracket ID's own reset page, shown only with the refusal that names it (the store checked the url)
+  const issuerResetUrl = useStore((s) => (s.access.errorKey?.key === 'issuerAccountReset' ? s.access.issuerResetUrl ?? null : null));
   const worker = useStore((s) => s.access.worker);
   const lang = useStore((s) => s.lang);
   const setLang = useStore((s) => s.setLang);
@@ -218,7 +248,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
             style={{ flex: 1, height: 56, padding: '0 16px', borderRadius: 13, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-mono)', fontSize: 20, fontWeight: 600, letterSpacing: '.06em', color: 'var(--ink)', outline: 'none' }}
           />
         </div>
-        {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        <AccessErrorText error={error} errorId={errorId} />
         <button
           onClick={requestOtp}
           disabled={!ready}
@@ -271,7 +301,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
           data-testid="login-password"
           style={{ ...loginField, marginTop: 12 }}
         />
-        {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        <AccessErrorText error={error} errorId={errorId} />
         <button
           onClick={submit}
           disabled={!ready}
@@ -311,7 +341,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
           data-testid="password-email"
           style={loginField}
         />
-        {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        <AccessErrorText error={error} errorId={errorId} />
         <button
           onClick={requestPasswordSetup}
           disabled={!ready}
@@ -350,7 +380,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
         />
         <div style={{ textAlign: 'center', minHeight: 20, fontSize: 13, marginTop: 8 }}>
           {sending && <span style={{ color: 'var(--muted)' }}>{t.verifying}</span>}
-          {error && !sending && <span style={{ color: 'var(--red-solid)' }}>{error}</span>}
+          <AccessErrorText error={sending ? null : error} errorId={errorId} inline />
         </div>
         <button onClick={requestPasswordSetup} disabled={sending} style={linkBtn}>{signInLabels.sendNewCode[lang]}</button>
         <button
@@ -379,13 +409,18 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
           : null;
     const ready = newPassword.length >= 12 && newPassword.length <= 128 && confirmPassword.length > 0 && !confirmationMismatch && !sending;
     const submit = () => ready && completePasswordSetup(newPassword, confirmPassword);
+    // the one Redbracket ID password unless the server said it is PMC's own (switch off; see verifyPasswordSetup)
+    const shared = passwordShared;
     return (
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
         <BackBtn onClick={accGoPasswordSetup} label={signInLabels.startAgain[lang]} />
         <div style={{ marginTop: 14 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{signInLabels.createTitle[lang]}</h1>
-          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{signInLabels.createSub[lang]}</div>
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{(shared ? signInLabels.sharedCreateTitle : signInLabels.createTitle)[lang]}</h1>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{(shared ? signInLabels.sharedCreateSub : signInLabels.createSub)[lang]}</div>
         </div>
+        {/* the refusal that offers the reset page spent this code (Codex 4470403461 on #1341): the form is gone, so only
+            the reset link, sign in and start again are left */}
+        {!issuerResetUrl && (<>
         <label style={{ fontSize: 12, fontWeight: 600, marginTop: 22 }}>
           {signInLabels.newPassword[lang]}
           <input
@@ -418,7 +453,17 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
         >
           {passwordGuidance}
         </div>
-        {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        </>)}
+        <AccessErrorText error={error} errorId={errorId} />
+        {issuerResetUrl && (
+          <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginTop: 10, fontSize: 14 }}>
+            <a href={issuerResetUrl} target="_blank" rel="noopener noreferrer" data-testid="issuer-reset-link" style={{ fontWeight: 700, color: 'var(--ink)' }}>
+              {signInLabels.resetOnRedbracket[lang]}
+            </a>
+            <button onClick={accGoLogin} style={linkBtn}>{signInLabels.signIn[lang]}</button>
+          </div>
+        )}
+        {!issuerResetUrl && (
         <button
           onClick={submit}
           disabled={!ready}
@@ -427,6 +472,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
         >
           {sending ? signInLabels.saving[lang] : signInLabels.saveAndSignIn[lang]}
         </button>
+        )}
       </div>
     );
   }
@@ -452,7 +498,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
           data-testid="email-input"
           style={loginField}
         />
-        {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        <AccessErrorText error={error} errorId={errorId} />
         <button
           onClick={requestEmailOtp}
           disabled={!ready}
@@ -492,7 +538,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
         />
         <div style={{ textAlign: 'center', minHeight: 20, fontSize: 13, marginTop: 8 }}>
           {sending && <span style={{ color: 'var(--muted)' }}>{t.verifying}</span>}
-          {error && !sending && <span style={{ color: 'var(--red-solid)' }}>{error}</span>}
+          <AccessErrorText error={sending ? null : error} errorId={errorId} inline />
         </div>
         <button onClick={requestEmailOtp} disabled={sending} style={linkBtn}>
           {t.resend}
@@ -534,7 +580,7 @@ export function TeamAccessScreen({ atGate = false }: { atGate?: boolean }) {
         </div>
         <div style={{ textAlign: 'center', minHeight: 20, fontSize: 13 }}>
           {sending && <span style={{ color: 'var(--muted)' }}>{t.verifying}</span>}
-          {error && !sending && <span style={{ color: 'var(--red-solid)' }}>{error}</span>}
+          <AccessErrorText error={sending ? null : error} errorId={errorId} inline />
         </div>
         {/* #886: a code that could not be checked is kept on screen; this checks it again */}
         {error && !sending && otp.length === codeLength && (

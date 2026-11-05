@@ -64,6 +64,13 @@ function isSiteVisitFile(input: CreateMediaInput): boolean {
 function isProofPhoto(input: CreateMediaInput): boolean {
   return input.kind === 'proof' && input.inspectionId !== undefined && input.inspectionItemId !== undefined;
 }
+/** Guided site inspections, step 2b — a recording filed as one inspection item's evidence: kind 'inspection', naming
+ *  the item and its inspection, and filed on nothing else. A voice note or a video may be one (a guided item can ask for
+ *  either); who may add it, and on which inspection, is asked as for any evidence photo. */
+function isItemRecording(input: CreateMediaInput): boolean {
+  return input.kind === 'inspection' && input.inspectionId !== undefined && input.inspectionItemId !== undefined
+    && !input.decisionId && !input.dailyLogId && !input.siteVisit && input.nodeId === undefined;
+}
 /** Who adds a proof photo: the members whose work an inspection checks. The PMC and the engineer add evidence. */
 const PROOF_ROLES: ReadonlySet<string> = new Set(['contractor', 'consultant']);
 /** A stored coordinate against the one a replay sends: none only for none, else equal to a billionth of a degree. A
@@ -312,16 +319,17 @@ export class MediaService {
         throw new BadRequestException('A marked-up copy keeps the camera time and location of the photo it was drawn on');
       }
     }
-    // Stage 1 voice notes, site visits first (Jagrut, 19 Oct 2026): a voice note is a file on a visit, never a copy
+    // Stage 1 voice notes, site visits first (Jagrut, 19 Oct 2026): a voice note is a file on a visit, never a copy.
+    // Guided site inspections, step 2b (Jagrut, 5 Nov 2026): it may also be the evidence an inspection item asks for.
     if (input.mime.startsWith('audio/')) {
-      if (!isSiteVisitFile(input) || input.sourceMediaId !== undefined) {
-        throw new BadRequestException('A voice note is added on a site visit');
+      if ((!isSiteVisitFile(input) && !isItemRecording(input)) || input.sourceMediaId !== undefined) {
+        throw new BadRequestException('A voice note is added on a site visit or as an inspection item\'s evidence');
       }
     }
     // #995 — so is a video clip, on the same terms
     if (input.mime.startsWith('video/')) {
-      if (!isSiteVisitFile(input) || input.sourceMediaId !== undefined) {
-        throw new BadRequestException('A video is added on a site visit');
+      if ((!isSiteVisitFile(input) && !isItemRecording(input)) || input.sourceMediaId !== undefined) {
+        throw new BadRequestException('A video is added on a site visit or as an inspection item\'s evidence');
       }
     }
     if (isProofPhoto(input) && !PROOF_ROLES.has(user.role)) {
@@ -567,6 +575,10 @@ export class MediaService {
     if (!row || row.projectId !== projectId) throw new NotFoundException('Media not found');
     // #482 site photos unit 4: a proof photo is filed on its inspection item only, never on a place (its kind never changes)
     if (row.kind === 'proof') throw new BadRequestException('A proof photo stays on its inspection item and is never filed on a place');
+    // guided site inspections, step 2b: so does a voice note or a video filed as an item's evidence
+    if (row.kind === 'inspection' && !row.mime.startsWith('image/')) {
+      throw new BadRequestException("A recording stays on its inspection item and is never filed on a place");
+    }
     const actor = await resolveActor(this.prisma, user);
     const ev = await this.prisma.$transaction(async (tx) => {
       // a photo on someone else's private draft (filed before #881) is answered as if it did not exist:

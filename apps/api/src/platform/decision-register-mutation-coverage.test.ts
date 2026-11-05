@@ -77,12 +77,14 @@ const COVERAGE: Record<string, Class> = {
   'test/integration/phase6-t2-modules.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
   'test/integration/top10-4b-notice-writers.test.ts': 'scoped notice teardown of the projects it creates; no DELETE seal on Notification',
   'test/integration/inspections-reinspection-metadata.test.ts': 'scoped notice teardown of the projects it creates; no DELETE seal on Notification',
+  'test/integration/guided-inspections-issue.test.ts': 'scoped notice teardown of the projects it creates; no DELETE seal on Notification',
   'test/integration/inspections-engineer-fail-sendback.test.ts': 'scoped notice teardown of the projects it creates; no DELETE seal on Notification',
   'test/integration/inspections-item-order.test.ts': 'scoped notice teardown of the projects it creates; no DELETE seal on Notification',
   'test/integration/top10-4b-notification-receipt.test.ts': 'scoped notice teardown of the projects it creates (receipts cascade with them); no DELETE seal on Notification',
   'test/integration/phase6-t4a-withdraw.test.ts': 'the withdrawal suite: its audit deletes go through wipeDecisionEvents; the notice deletes are scoped teardown',
   'test/integration/phase6-t4b-approval-attribution.test.ts': 'audit deletes through wipeDecisionEvents',
   'test/integration/phase6-t4b-decider.test.ts': 'audit deletes through wipeDecisionEvents; notice deletes scoped teardown',
+  'test/integration/redbracket-id-sign-in.test.ts': 'scoped request teardown of the change its A4b guards case opens; audit deletes through wipeDecisionEvents; swept by 4d-iii with the trailing ChangeRequest seals',
   // #582's review round 24. The seal-stripped harness disables `DecisionEvent` seals BY NAME
   // inside one psql transaction, on a SCRATCH database it builds and drops itself — never the
   // shared one. It is here because the claim this tripwire makes is the ENUMERATION: a file

@@ -11,7 +11,10 @@ import { INSPECTIONS_PROJECTION } from './inspections.projection';
 import { readServableGeneration } from '../platform/projections/generation';
 import { nextSeqId } from '../domain/ids';
 import { isFailedItem } from './failed-item';
+import { lineageApproval } from './inspection-lineage';
 import { AuditQuery } from '../platform/audit.query';
+import type { InspectionItemSpec } from '../contracts';
+import { specFromItemRow } from './guided-item';
 
 /** The CHECKLIST-definition structure a project-copy/module-extract reads from a source project through
  *  the inspections boundary: title + place + ordered item names (never results — reviews aren't structure). */
@@ -19,7 +22,10 @@ export interface InspectionChecklistStructure {
   title: string;
   zone: string;
   nodeId: string | null;
-  items: string[];
+  /** Guided site inspections (step 2a) — the kind of work it checks, or null. */
+  workType: string | null;
+  /** Each item as a template carries it: a plain name, or a guided item with its guidance. */
+  items: InspectionItemSpec[];
 }
 
 /**
@@ -35,18 +41,27 @@ export interface InspectionChecklistStructure {
  */
 /**
  * Is this stored projection base the shape THIS release's serializer produces? Every entry of a current
- * base carries `assigneeId` and `dueDate` (each a value or an explicit `null`); a v1 entry has neither key,
+ * base carries `assigneeId`, `dueDate` and `workType` (each a value or an explicit `null`); a v1 entry has neither key,
  * and an entry written before the #771 read contract has no `dueDate`. Checked by key presence rather than
  * truthiness, because `null` is a legitimate current value (unassigned / no due date). An older row is
  * refused and the read falls back to the canonical live slice, so a re-inspection that HAS a due date is
  * never served as having none; the row becomes servable again the next time an `inspection.*` event
  * refreshes it, or on a rebuild.
  */
-const CURRENT_BASE_KEYS = ['assigneeId', 'dueDate'] as const;
+const CURRENT_BASE_KEYS = ['assigneeId', 'dueDate', 'workType'] as const;
+/** Guided site inspections (step 2a) — each item of a current base carries `guide` (null for an item issued by name
+ *  only). A base written before it has no such key on its items, and is refused the same way, so a guided item is never
+ *  served as a plain one. */
+const CURRENT_ITEM_KEYS = ['guide'] as const;
 function isCurrentInspectionsBase(base: InspectionsBase): boolean {
   const entries = (base as unknown as { inspections?: unknown[] }).inspections;
   if (!Array.isArray(entries)) return false;
-  return entries.every((e) => e !== null && typeof e === 'object' && CURRENT_BASE_KEYS.every((k) => k in (e as object)));
+  const hasKeys = (v: unknown, keys: readonly string[]): boolean => v !== null && typeof v === 'object' && keys.every((k) => k in (v as object));
+  return entries.every((e) => {
+    if (!hasKeys(e, CURRENT_BASE_KEYS)) return false;
+    const items = (e as { items?: unknown }).items;
+    return Array.isArray(items) && items.every((it) => hasKeys(it, CURRENT_ITEM_KEYS));
+  });
 }
 
 /** The evidence photos the caller says this viewer may not see (#884). A photo filed on someone else's private
@@ -54,6 +69,16 @@ function isCurrentInspectionsBase(base: InspectionsBase): boolean {
  *  read side that serves the viewer composes it (`snapshot/hidden-media.ts`), so this module never reads the
  *  media-owned table. Both served reads pass it; the empty default is for the projection/parity tests. */
 const NONE_HIDDEN: ReadonlySet<string> = new Set();
+
+/** #482 proof photos, "Your open items" — one open inspection the viewer is named to fix (`openItems`). */
+export interface OpenItemsInspection {
+  inspectionId: string;
+  title: string;
+  zone: string;
+  nodeId: string | null;
+  status: 'issued' | 'in-review' | 'reinspection';
+  failedItems: Array<{ itemId: string; name: string }>;
+}
 
 @Injectable()
 export class InspectionsQueryService {
@@ -101,6 +126,60 @@ export class InspectionsQueryService {
     const held = await heldNamings(this.orgs, this.prisma, projectId,
       named.map((i) => ({ inspectionId: i.id, memberId: i.responsibleMemberId!, mark: i.responsibleStandingMark! })));
     return held.map(({ inspectionId, memberId }) => ({ inspectionId, memberId }));
+  }
+
+  /**
+   * #482 proof photos, "Your open items" — the inspections a contractor or consultant is named to fix, still open, each
+   * with its failed items (the items a proof photo goes on). Empty for every other role and for a viewer named nowhere.
+   * Read live from "Inspection" and "InspectionItem" (this module's own tables), never from the projection's stored base,
+   * which holds no responsible member (as `responsibleMembers`), so it is current on every read and the base is unchanged.
+   *
+   * A naming counts only while it HOLDS (`heldNamings`, the rule `responsibleMembers` serves to the PMC and engineer): a
+   * member who was removed, or re-roled out of contractor and consultant, is named nowhere until someone names them again
+   * (a move between those two roles keeps the naming, as RM-a's standing mark rules).
+   *
+   * OPEN: the inspection's lineage is not yet approved. Its latest inspection (following the one re-inspection a reject
+   * creates, `reinspectionOfId`) is decided with no re-inspection of its own only when it was approved; anything else is
+   * still being worked. `status` says where it stands: `issued` (with the engineer, not submitted), `in-review`
+   * (submitted, waiting on the PMC) or `reinspection` (rejected; its re-inspection is under way).
+   *
+   * Failed items are listed only once the inspection is submitted (`isFailedItem`, the proof target's own rule): an
+   * unsubmitted checklist's marks are the engineer's work in progress.
+   */
+  async openItems(projectId: string, role: string, viewerId?: string): Promise<OpenItemsInspection[]> {
+    if ((role !== 'contractor' && role !== 'consultant') || !viewerId) return [];
+    const named = await this.prisma.inspection.findMany({
+      where: { projectId, responsibleMemberId: viewerId },
+      orderBy: { id: 'asc' },
+      select: { id: true, responsibleMemberId: true, responsibleStandingMark: true },
+    });
+    const held = await heldNamings(this.orgs, this.prisma, projectId,
+      named.map((i) => ({ inspectionId: i.id, memberId: i.responsibleMemberId!, mark: i.responsibleStandingMark! })));
+    if (held.length === 0) return [];
+    // the project's lineage edges, to find each named inspection's latest re-inspection
+    const lineage = await this.prisma.inspection.findMany({
+      where: { projectId },
+      select: { id: true, reinspectionOfId: true, decided: true },
+    });
+    const { childOf, approved } = lineageApproval(lineage);
+    const open = held.map((h) => h.inspectionId).filter((id) => !approved(id));
+    if (open.length === 0) return [];
+    const rows = await this.prisma.inspection.findMany({
+      where: { projectId, id: { in: open } },
+      orderBy: { id: 'asc' },
+      select: {
+        id: true, title: true, zone: true, nodeId: true, submitted: true, decided: true,
+        items: { orderBy: [{ order: 'asc' }, { id: 'asc' }], select: { id: true, name: true, rejected: true, result: true, state: true } },
+      },
+    });
+    return rows.map((i) => ({
+      inspectionId: i.id,
+      title: i.title,
+      zone: i.zone,
+      nodeId: i.nodeId ?? null,
+      status: childOf.has(i.id) ? 'reinspection' : i.submitted ? 'in-review' : 'issued',
+      failedItems: i.submitted ? i.items.filter((it) => isFailedItem(it)).map((it) => ({ itemId: it.id, name: it.name })) : [],
+    }));
   }
 
   /**
@@ -249,7 +328,9 @@ export class InspectionsQueryService {
       where: { projectId, kind: 'checklist', ...(opts.nodeIds ? { nodeId: { in: [...opts.nodeIds] } } : {}) },
       include: { items: { orderBy: { order: 'asc' } } },
     });
-    return rows.map((i) => ({ title: i.title, zone: i.zone, nodeId: i.nodeId, items: i.items.map((it) => it.name) }));
+    // Guided site inspections (step 2a) — an item travels with its guidance (a plain name when it has none), and the
+    // checklist with its work type, so a project or module made from this one issues the same guided checklist.
+    return rows.map((i) => ({ title: i.title, zone: i.zone, nodeId: i.nodeId, workType: i.workType, items: i.items.map(specFromItemRow) }));
   }
 
   /**

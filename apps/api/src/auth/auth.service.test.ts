@@ -53,6 +53,8 @@ function fakePrisma(seed: FakeUser[] = [], membershipSeed: FakeMembership[] = []
     users,
     memberships,
     workerCreated: [] as unknown[],
+    // Redbracket ID A3: no account here was set aside by a first Redbracket ID sign-in
+    identityRetirement: { count: async () => 0 },
     user: {
       findUnique: async ({ where }: { where: { id?: string; email?: string; phone?: string } }) =>
         users.find((u) => (where.id && u.id === where.id) || (where.email && u.email === where.email) || (where.phone && u.phone === where.phone)) ?? null,
@@ -459,7 +461,7 @@ describe('AuthService — org-roster access resolution', () => {
     const prisma = fakePrisma(rosterUser(), [], [{ orgId: 'org1', userId: 'u1', role: 'member' }]);
     const { auth } = make(prisma);
     await expect(auth.login({ email: 'c@vitan.in', password: 'secret' })).rejects.toBeInstanceOf(UnauthorizedException);
-    await expect(auth.switchProject('u1', 'ambli')).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(auth.switchProject('u1', 'ambli', 0)).rejects.toBeInstanceOf(ForbiddenException);
     expect(await auth.listMemberships('u1')).toEqual([]); // can't even enumerate the project
   });
 
@@ -468,7 +470,7 @@ describe('AuthService — org-roster access resolution', () => {
     const { auth } = make(prisma);
     const res = await auth.login({ email: 'c@vitan.in', password: 'secret' });
     expect(res).toMatchObject({ projectId: 'ambli', role: 'pmc' });
-    expect(await auth.switchProject('u1', 'ambli')).toMatchObject({ role: 'pmc' });
+    expect(await auth.switchProject('u1', 'ambli', 0)).toMatchObject({ role: 'pmc' });
   });
 
   it('demoting that admin to member immediately removes PMC access (no phantom membership left behind)', async () => {
@@ -482,7 +484,7 @@ describe('AuthService — org-roster access resolution', () => {
     const prisma = fakePrisma(rosterUser(), [], []); // org membership deleted
     const { auth } = make(prisma);
     await expect(auth.login({ email: 'c@vitan.in', password: 'secret' })).rejects.toBeInstanceOf(UnauthorizedException);
-    await expect(auth.switchProject('u1', 'ambli')).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(auth.switchProject('u1', 'ambli', 0)).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('an admin who ALSO holds an explicit project membership keeps that project via the membership', async () => {
@@ -493,7 +495,7 @@ describe('AuthService — org-roster access resolution', () => {
     );
     const { auth } = make(prisma);
     // explicit membership wins over the org-admin PMC reach (documented precedence)
-    expect(await auth.switchProject('u1', 'ambli')).toMatchObject({ role: 'client' });
+    expect(await auth.switchProject('u1', 'ambli', 0)).toMatchObject({ role: 'client' });
   });
 });
 
@@ -531,12 +533,13 @@ describe('AuthService — phone sign-in code by email routing (#827 one-screen s
   });
 
   it('the eligibility rule handed to the code service is the sign-in access rule', async () => {
-    const { auth, phoneSignIn } = make(fakePrisma([{ ...priya }], [{ ...priyaMember }]));
+    const db = fakePrisma([{ ...priya }], [{ ...priyaMember }]);
+    const { auth, phoneSignIn } = make(db);
     const request = vi.spyOn(phoneSignIn, 'request').mockResolvedValue();
     await auth.requestOtp({ phone: '9876543210', projectId: 'ambli', acceptEmailCode: true });
     const eligible = request.mock.calls[0][1];
-    await expect(eligible('u1')).resolves.toBe(true);
-    await expect(eligible('nobody')).resolves.toBe(false);
+    await expect(eligible(db as never, 'u1')).resolves.toBe(true);
+    await expect(eligible(db as never, 'nobody')).resolves.toBe(false);
   });
 
   it('a redeemed code signs in exactly that account', async () => {
