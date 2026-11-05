@@ -112,6 +112,17 @@ describe('guided site inspections step 2c — the checklist library (live PG)', 
     expect(await refused({ inspections: [{ ...SLAB, nodeKey: 'n1' }], nodes: [{ key: 'n1', name: 'GF', kind: 'zone' }] })).toBe(400);
     expect(await refused({ inspections: [SLAB], phases: [{ name: 'Structure' }] })).toBe(400);
     expect((await addModule({ name: `Bad ${seq++}`, category: 'checklist', description: '', fromProject: f.projectA.id })).status).toBe(400);
+    // and only what the create takes, so every entry served can be issued: a title and items that are more than spaces,
+    // and at most 20 items (the zone is the PMC's to set at issue)
+    expect(await refused({ inspections: [{ ...SLAB, title: '   ' }] })).toBe(400);
+    expect(await refused({ inspections: [{ title: 'Blank item', items: ['Level', '  '] }] })).toBe(400);
+    const names = (n: number) => Array.from({ length: n }, (_, i) => `Point ${i + 1}`);
+    expect(await refused({ inspections: [{ title: 'Too long', items: names(21) }] })).toBe(400);
+    const full = await addChecklist(`Full ${seq++}`, { title: 'Twenty points', items: names(20) });
+    const entry = ((await library(pmcToken)).body as Array<{ id: string; title: string; items: unknown[] }>).find((e) => e.id === full)!;
+    expect(entry.items).toHaveLength(20);
+    expect((await http().post(`/projects/${f.projectA.id}/inspections`).set(as(pmcToken))
+      .send({ title: `${entry.title} ${seq++}`, zone: 'GF', items: entry.items })).status).toBe(201);
     // a project PMC who is not the org's owner or admin adds nothing to the library
     expect((await addModule({ name: `Bad ${seq++}`, category: 'checklist', description: '', payload: { inspections: [SLAB] } }, f.orgA.id, pmcToken)).status).toBe(403);
   });
@@ -136,6 +147,11 @@ describe('guided site inspections step 2c — the checklist library (live PG)', 
       modules: [{ moduleId: id, count: 1 }],
     } as never)).rejects.toThrow(words);
     expect(await t.prisma.project.count({ where: { orgId: f.orgA.id } })).toBe(before);
+
+    // a preset saved before (by a release that did not refuse it) names it as a library checklist, not as healthy
+    const legacy = await t.prisma.projectTemplate.create({ data: { orgId: f.orgA.id, name: `Legacy ${seq++}`, items: [{ moduleId: id, count: 1 }] } });
+    const listed = (await orgs.listTemplates(f.orgA.id, f.ownerUser.id)).find((p) => p.id === legacy.id)!;
+    expect(listed.moduleNames).toEqual([expect.stringMatching(/ \(library checklist\)$/)]);
   });
 
   it('a stored row that is not one library checklist is never served', async () => {

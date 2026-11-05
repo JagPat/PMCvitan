@@ -866,7 +866,7 @@ export class OrgsService {
     if (!(await this.orgRole(orgId, userId))) throw new ForbiddenException('Not a member of this org');
     const [rows, modules] = await Promise.all([
       this.prisma.projectTemplate.findMany({ where: { orgId, archivedAt: null }, orderBy: { name: 'asc' } }),
-      this.prisma.templateModule.findMany({ where: { orgId }, select: { id: true, name: true, archivedAt: true } }),
+      this.prisma.templateModule.findMany({ where: { orgId }, select: { id: true, name: true, archivedAt: true, category: true } }),
     ]);
     const moduleOf = new Map(modules.map((m) => [m.id, m]));
     return rows.map((t) => {
@@ -880,7 +880,8 @@ export class OrgsService {
         // an archived/missing module is surfaced honestly rather than listing as healthy (review F2)
         moduleNames: items.map((i) => {
           const m = moduleOf.get(i.moduleId);
-          const label = m ? `${m.name}${m.archivedAt ? ' (archived)' : ''}` : 'missing module';
+          // a library checklist is never placed (step 2c): a preset naming one, saved before, says so rather than listing as healthy
+          const label = m ? `${m.name}${m.archivedAt ? ' (archived)' : m.category === LIBRARY_CHECKLIST_CATEGORY ? ' (library checklist)' : ''}` : 'missing module';
           return `${label}${i.count > 1 ? ` ×${i.count}` : ''}`;
         }),
       };
