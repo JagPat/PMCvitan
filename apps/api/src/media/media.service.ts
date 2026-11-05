@@ -575,6 +575,10 @@ export class MediaService {
     if (!row || row.projectId !== projectId) throw new NotFoundException('Media not found');
     // #482 site photos unit 4: a proof photo is filed on its inspection item only, never on a place (its kind never changes)
     if (row.kind === 'proof') throw new BadRequestException('A proof photo stays on its inspection item and is never filed on a place');
+    // guided site inspections, step 2b: so does a voice note or a video filed as an item's evidence
+    if (row.kind === 'inspection' && !row.mime.startsWith('image/')) {
+      throw new BadRequestException("A recording stays on its inspection item and is never filed on a place");
+    }
     const actor = await resolveActor(this.prisma, user);
     const ev = await this.prisma.$transaction(async (tx) => {
       // a photo on someone else's private draft (filed before #881) is answered as if it did not exist:

@@ -555,7 +555,9 @@ export class InspectionsService {
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
-  /** The type of every file linked to each of this inspection's items as evidence (proof photos are not evidence). */
+  /** The type of every file linked to each of this inspection's items as evidence, read as the rule always read it
+   *  (Media rows naming the item). A proof photo is not evidence: one is added only on an item that already failed a
+   *  decided inspection, so none exists at a submit. */
   private async evidenceMimes(db: Prisma.TransactionClient, projectId: string, inspectionId: string): Promise<Map<string, string[]>> {
     const rows = await db.media.findMany({
       where: { projectId, inspectionId, inspectionItemId: { not: null }, kind: { not: 'proof' } },

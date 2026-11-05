@@ -27,6 +27,7 @@ describe('guided site inspections step 2b — required recordings on pass and fa
   let engToken: string;
   let clientToken: string;
   let seq = 0;
+  const placeId = `gi2b-place-${Date.now()}`;
 
   beforeAll(async () => {
     t = await createTestApp();
@@ -41,6 +42,7 @@ describe('guided site inspections step 2b — required recordings on pass and fa
       ],
       skipDuplicates: true,
     });
+    await t.prisma.projectNode.create({ data: { id: placeId, projectId: f.projectA.id, name: 'GF slab', kind: 'zone', publishedAt: new Date(), authorId: f.memberUser.id } });
   });
 
   afterAll(async () => {
@@ -53,6 +55,7 @@ describe('guided site inspections step 2b — required recordings on pass and fa
       await tx.$executeRawUnsafe('ALTER TABLE "InspectionItem" ENABLE TRIGGER "InspectionItem_guided_not_deleted"');
     });
     await t.prisma.inspection.deleteMany({ where: { projectId } });
+    await t.prisma.projectNode.deleteMany({ where: { id: placeId } });
     await t.prisma.membership.deleteMany({ where: { projectId, userId: { in: [f.ownerUser.id, f.strangerUser.id] } } });
     await f?.cleanup();
     await t?.close();
@@ -161,12 +164,50 @@ describe('guided site inspections step 2b — required recordings on pass and fa
     // no item named: not an item's evidence and not a visit file
     expect((await post(engToken, `/projects/${f.projectA.id}/media`, { kind: 'inspection', mime: 'audio/webm', data: voice, inspectionId: c.id, clientKey: `gi2b-${seq++}` })).status).toBe(400);
     expect((await post(engToken, `/projects/${f.projectA.id}/media`, { kind: 'progress', mime: 'video/webm', data: video, clientKey: `gi2b-${seq++}` })).status).toBe(400);
-    // filed on an item AND a place: an item's recording is filed on nothing else
-    expect((await file(c.id, c.item.C, 'audio/webm', voice, { nodeId: 'anywhere' })).status).toBe(400);
+    // filed on an item AND a place (a published one) or a decision: an item's recording is filed on nothing else
+    expect((await file(c.id, c.item.C, 'audio/webm', voice, { nodeId: placeId })).status).toBe(400);
+    expect((await file(c.id, c.item.B, 'video/webm', video, { decisionId: 'any' })).status).toBe(400);
     // a client adds no evidence
     expect((await file(c.id, c.item.C, 'audio/webm', voice, {}, clientToken)).status).toBe(403);
     // and the file must be what its type says
     expect((await file(c.id, c.item.C, 'audio/webm', px)).status).toBe(400);
     expect(await t.prisma.media.count({ where: { inspectionId: c.id } })).toBe(0);
+  });
+
+  it('an item recording is linked as the item\'s evidence; deleting it takes it off, and the submit is refused again', async () => {
+    const c = await guidedChecklist();
+    await photo(c.id, c.item.A); await photo(c.id, c.item.A);
+    const v = await voiceNote(c.id, c.item.C);
+    expect(await t.prisma.inspectionEvidence.count({ where: { inspectionItemId: c.item.C, mediaId: v.body.id as string } })).toBe(1);
+    const del = await http().delete(`/media/${v.body.id as string}`).set('Authorization', `Bearer ${pmcToken}`);
+    expect(del.status).toBe(200);
+    expect(await t.prisma.domainEvent.count({ where: { projectId: f.projectA.id, eventType: 'inspection.evidence_removed' } })).toBeGreaterThan(0);
+    expect((await submit(c, {})).body.message).toBe('These items need the recordings they ask for before you can submit: C (1 voice note)');
+  });
+
+  it('a proof photo is not evidence: only a linked recording counts', async () => {
+    const c = await guidedChecklist();
+    await photo(c.id, c.item.A); await photo(c.id, c.item.A); await voiceNote(c.id, c.item.C);
+    // no API path files a proof before a submit; seeded directly, as a proof row is stored
+    await t.prisma.media.create({ data: { projectId: f.projectA.id, kind: 'proof', mime: 'image/png', uploadedBy: f.ownerUser.id, inspectionId: c.id, inspectionItemId: c.item.D } });
+    expect((await submit(c, { D: 'fail' })).body.message).toBe('A failed item needs linked photo evidence before you can submit: D');
+  });
+
+  it('an item recording is not a site photo, and is never filed on a place afterwards', async () => {
+    const c = await guidedChecklist();
+    const v = await voiceNote(c.id, c.item.C);
+    const clip = await videoClip(c.id, c.item.B);
+    const p = await photo(c.id, c.item.A);
+    const snap = await http().get(`/projects/${f.projectA.id}/snapshot`).set('Authorization', `Bearer ${pmcToken}`);
+    expect(snap.status).toBe(200);
+    const photoIds = (snap.body.photos as Array<{ id: string }>).map((x) => x.id);
+    expect(photoIds).toContain(p.body.id);
+    expect(photoIds).not.toContain(v.body.id);
+    expect(photoIds).not.toContain(clip.body.id);
+    for (const id of [v.body.id as string, clip.body.id as string]) {
+      const refile = await http().patch(`/projects/${f.projectA.id}/media/${id}/node`).set('Authorization', `Bearer ${pmcToken}`).send({ nodeId: placeId });
+      expect(refile.status).toBe(400);
+      expect((await t.prisma.media.findUniqueOrThrow({ where: { id } })).nodeId).toBeNull();
+    }
   });
 });

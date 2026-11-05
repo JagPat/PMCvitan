@@ -23,7 +23,8 @@ const NAMES: Record<string, string> = { u1: 'Ravi Iyer', 'u-pmc': 'Ar. Meghna', 
 
 /** In-memory Prisma stand-in. `evidence` = linked Media rows per inspectionItemId.
  *  Supports both $transaction forms; the interactive form passes the stub itself. */
-function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; activity?: Act } = {}) {
+function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; evidenceUnderLock?: string[]; activity?: Act } = {}) {
+  let evidenceReads = 0;
   const created: Array<Record<string, unknown>> = [];
   const audits: Array<{ action: string; entityId?: string; actor: string; actorId?: string; actorRole?: string; payload?: Record<string, unknown> }> = [];
   const members = opts.members ?? [{ projectId: insp.projectId, userId: 'u1', role: 'engineer', status: 'active' }];
@@ -69,8 +70,14 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; activ
     },
     inspectionItem: { updateMany: vi.fn(async () => ({ count: 1 })) },
     media: {
-      // the evidence rule reads every item's linked recordings with their type (step 2b); the fixture's are photos
-      findMany: vi.fn(async () => (opts.evidence ?? []).map((id) => ({ inspectionItemId: id, mime: 'image/png' }))),
+      // the evidence rule reads every item's linked recordings with their type (step 2b); the fixture's are photos.
+      // `evidence` before the inspection's row lock, `evidenceUnderLock` (when given) at and after it, as when a
+      // removal commits while the submit waits for the lock
+      findMany: vi.fn(async () => {
+        evidenceReads += 1;
+        const ids = evidenceReads > 1 && opts.evidenceUnderLock ? opts.evidenceUnderLock : (opts.evidence ?? []);
+        return ids.map((id) => ({ inspectionItemId: id, mime: 'image/png' }));
+      }),
     },
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
     $executeRaw: vi.fn(async () => 1),
@@ -212,6 +219,13 @@ describe('InspectionsService — evidence + linked reinspections (Phase 1 Task 4
     const { svc, user, insp } = make({ id: 'INSP-1', projectId: 'ambli', submitted: false, decided: false, items: [item('i1', 'Drain slope')] }, { evidence: ['i1'] });
     await svc.submit('ambli', 'INSP-1', failSubmit as never, user);
     expect(insp.submitted).toBe(true);
+  });
+
+  it('EVIDENCE RULE under the lock: evidence removed while the submit waited for the inspection row refuses it, writing nothing', async () => {
+    const { svc, user, insp, prisma } = make({ id: 'INSP-1', projectId: 'ambli', submitted: false, decided: false, items: [item('i1', 'Drain slope')] }, { evidence: ['i1'], evidenceUnderLock: [] });
+    await expect(svc.submit('ambli', 'INSP-1', failSubmit as never, user)).rejects.toThrow(/photo evidence/i);
+    expect(insp.submitted).toBe(false);
+    expect(prisma.inspectionItem.updateMany).not.toHaveBeenCalled();
   });
 
   it('REJECT creates the linked reinspection: fresh rejected items, inherited activityId, assignee + due date, attributed', async () => {
