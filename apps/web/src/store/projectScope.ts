@@ -26,6 +26,7 @@ import type { LabourView } from './labour';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import type { AllocateLabourInput, Phase6_4dRollout } from '../data/apiGateway';
 import type { KeptSitePhoto } from '@/lib/queuedSitePhotos';
+import type { HubUnlinkPending } from '@/lib/hubLink';
 
 /** #704 — one unsettled location create: the `Idempotency-Key` every send of it carries, how many of
  *  those sends are still out, whether any of them failed (an unknown outcome, so a retry must replay
@@ -212,7 +213,7 @@ export interface ProjectDataState {
    *  until the snapshot lands). Project-owned: another project's Hub link must never label this one. */
   hubLink: DrawingsHubLink | null;
   /** #1118 U7a L2 — an unlink's key until it has settled, Hub's side included (AppState.hubUnlinkPending). */
-  hubUnlinkPending: string | null;
+  hubUnlinkPending: HubUnlinkPending | null;
 }
 
 /** Explicit absence — null, never a fabricated ''-id record actions could mutate. */

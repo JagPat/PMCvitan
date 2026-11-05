@@ -200,9 +200,9 @@ export class HubLinkService {
     return { link: view };
   }
 
-  async unlink(orgId: string, user: AuthUser, projectId: string, idempotencyKey?: string): Promise<HubUnlinkResult> {
+  async unlink(orgId: string, user: AuthUser, projectId: string, idempotencyKey?: string, expected?: string): Promise<HubUnlinkResult> {
     const scope = { scopeKind: 'project' as const, projectId };
-    const requestHash = hashRequest({ orgId, projectId });
+    const requestHash = hashRequest(expected === undefined ? { orgId, projectId } : { orgId, projectId, hubProjectId: expected });
     // a committed keyed unlink replays before any check that may have changed since
     const replay = await peekReplay(this.prisma, scope, user.sub, 'drawings.hubUnlink', idempotencyKey, requestHash);
     const config = replay ? null : this.client(orgId);
@@ -221,6 +221,14 @@ export class HubLinkService {
         await this.lockForWrite(tx, orgId, user.sub, projectId);
         const latest = await latestEvent(tx, projectId);
         if (!latest) throw new ConflictException({ code: 'hub_not_linked', message: 'This project is not linked to a Hub project' });
+        // the link the person saw and chose to unlink: still this project's, or the one its last unlink ended (a retry of
+        // Hub's side); another admin's change meanwhile is refused, never unlinked unseen (#1353 Codex 4480498892)
+        if (expected !== undefined) {
+          const shown = latest.kind === 'linked' ? latest.hubProjectId : await endedByUnlink(tx, projectId, latest.seq);
+          if (shown !== expected) {
+            throw new ConflictException({ code: 'hub_link_changed', message: "This project's Hub link has changed. Refresh and try again." });
+          }
+        }
         if (latest.kind !== 'linked') return { resultRef: String(latest.seq) };
         const seq = latest.seq + 1;
         await tx.drawingHubLinkEvent.create({ data: { projectId, seq, prevSeq: latest.seq, kind: 'unlinked', byUserId: user.sub } });

@@ -2,7 +2,7 @@ import { Body, Controller, Get, Headers, HttpCode, Param, Post, UseGuards } from
 import { CurrentUser, IdentityScoped, JwtGuard, type AuthUser } from '../../common/auth';
 import { AllowAnyRole, RolesGuard } from '../../common/roles';
 import { ZodPipe } from '../../common/zod.pipe';
-import { hubLinkSchema, type HubLinkInput } from '../../contracts';
+import { hubLinkSchema, hubUnlinkSchema, type HubLinkInput, type HubUnlinkInput } from '../../contracts';
 import { HubLinkService } from './hub-link.service';
 
 /** Company owner/admin authority is checked inside HubLinkService (an org role, not a project role). */
@@ -48,8 +48,9 @@ export class HubLinkController {
     @Param('orgId') orgId: string,
     @Param('pid') pid: string,
     @CurrentUser() user: AuthUser,
+    @Body(new ZodPipe(hubUnlinkSchema)) body: HubUnlinkInput,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.hubLink.unlink(orgId, user, pid, idempotencyKey);
+    return this.hubLink.unlink(orgId, user, pid, idempotencyKey, body.hubProjectId);
   }
 }

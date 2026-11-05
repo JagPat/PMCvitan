@@ -737,9 +737,12 @@ export class ApiGateway {
       method: 'POST', body: JSON.stringify({ hubProjectId }), headers: { 'Idempotency-Key': idempotencyKey },
     });
   }
-  /** `hubCleared` false: PMC's link has ended, but Hub may still show it; the same key again retries Hub's side. */
-  unlinkHubProject(orgId: string, projectId: string, idempotencyKey: string): Promise<{ hubCleared: boolean }> {
-    return this.req(`/orgs/${orgId}/projects/${projectId}/hub/unlink`, { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey } });
+  /** `hubCleared` false: PMC's link has ended, but Hub may still show it; the same key again retries Hub's side.
+   *  `hubProjectId` is the link the person saw: the server refuses (409 `hub_link_changed`) to end any other. */
+  unlinkHubProject(orgId: string, projectId: string, hubProjectId: string, idempotencyKey: string): Promise<{ hubCleared: boolean }> {
+    return this.req(`/orgs/${orgId}/projects/${projectId}/hub/unlink`, {
+      method: 'POST', body: JSON.stringify({ hubProjectId }), headers: { 'Idempotency-Key': idempotencyKey },
+    });
   }
   /** The org's reusable structure modules — the template menu (Templates Slice 2). */
   listModules(orgId: string): Promise<OrgTemplateModule[]> {

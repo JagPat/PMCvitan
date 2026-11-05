@@ -22,6 +22,7 @@ export type HubRefusal =
   | 'hub_drawings_elsewhere'
   | 'hub_not_linked'
   | 'hub_project_unavailable'
+  | 'hub_link_changed'
   | 'other';
 
 const REFUSALS: readonly HubRefusal[] = [
@@ -32,6 +33,7 @@ const REFUSALS: readonly HubRefusal[] = [
   'hub_drawings_elsewhere',
   'hub_not_linked',
   'hub_project_unavailable',
+  'hub_link_changed',
 ];
 
 export function hubFailureOf(err: unknown): HubFailure {
@@ -62,6 +64,7 @@ export function hubFailureText(f: HubFailure, lang: Lang): string {
     case 'hub_drawings_elsewhere': return L.drawingsElsewhere[lang];
     case 'hub_not_linked': return L.notLinkedNow[lang];
     case 'hub_project_unavailable': return L.projectUnavailable[lang];
+    case 'hub_link_changed': return L.linkChanged[lang];
     default: return L.failed[lang];
   }
 }
@@ -86,3 +89,9 @@ export type HubCallResult<T> =
   | { kind: 'unconfirmed'; value: T }
   | { kind: 'failed'; failure: HubFailure }
   | { kind: 'stale' };
+
+/** An unlink not yet settled: its key, and the Hub project it ends (the link the person saw and confirmed). */
+export type HubUnlinkPending = { key: string; hubProjectId: string };
+
+/** How long a link or unlink waits for a snapshot that shows it before it answers `unconfirmed`. */
+export const HUB_SHOWN_WAIT_MS = 10_000;

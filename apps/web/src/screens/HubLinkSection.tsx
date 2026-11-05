@@ -33,7 +33,8 @@ export function HubLinkSection({ orgId }: { orgId: string }) {
   const [attempt, setAttempt] = useState<LinkAttempt | null>(null);
   const [note, setNote] = useState<Note | null>(null);
   const [closed, setClosed] = useState(false);
-  const [confirmUnlink, setConfirmUnlink] = useState(false);
+  // the Hub project shown when Unlink was pressed: the unlink names it, so it never ends a link the person did not see
+  const [confirmUnlink, setConfirmUnlink] = useState<string | null>(null);
   // only the newest request of this row may change it: a reply to an older one (another project's, or one this row
   // has since moved past) changes nothing, not even `busy` (Codex 4479979980)
   const command = useRef(0);
@@ -49,7 +50,7 @@ export function HubLinkSection({ orgId }: { orgId: string }) {
     setAttempt(null);
     setNote(null);
     setClosed(false);
-    setConfirmUnlink(false);
+    setConfirmUnlink(null);
   }, [activeProjectId, orgId]);
 
   const load = async () => {
@@ -96,11 +97,11 @@ export function HubLinkSection({ orgId }: { orgId: string }) {
     if (r.failure.kind === 'refused') void load();
   };
 
-  const unlink = async () => {
+  const unlink = async (hubProjectId: string) => {
     const mine = ++command.current;
     setBusy('unlink');
     setNote(null);
-    const r = await unlinkHubProject(orgId);
+    const r = await unlinkHubProject(orgId, hubProjectId);
     if (mine !== command.current) return;
     setBusy(null);
     if (r.kind === 'stale') return;
@@ -116,12 +117,18 @@ export function HubLinkSection({ orgId }: { orgId: string }) {
     setNote(failNote(r.failure, 'unlink'));
   };
 
+  // while a link attempt may have landed (unconfirmed, or no answer), it is the only one offered: another choice would drop
+  // its key and could only be refused, leaving the row contradicting itself (Codex 4480498867)
   const link = (hubProjectId: string) => {
+    if (attempt && attempt.hubProjectId !== hubProjectId) return;
     const key = attempt?.hubProjectId === hubProjectId ? attempt.key : newIdempotencyKey();
     void runLink({ hubProjectId, key });
   };
   const retry = (what: 'link' | 'unlink') => {
-    if (what === 'unlink') void unlink();
+    if (what === 'unlink') {
+      const shown = unlinkPending?.hubProjectId ?? hubLink?.hubProjectId;
+      if (shown) void unlink(shown);
+    }
     else if (attempt) void runLink(attempt);
   };
   const openPicker = () => {
@@ -144,8 +151,8 @@ export function HubLinkSection({ orgId }: { orgId: string }) {
         <ConfirmDialog
           title={L.confirmUnlinkTitle[lang]}
           confirmLabel={L.unlink[lang]}
-          onConfirm={unlink}
-          onCancel={() => setConfirmUnlink(false)}
+          onConfirm={() => void unlink(confirmUnlink)}
+          onCancel={() => setConfirmUnlink(null)}
           testId="confirm-hub-unlink"
           lang={lang}
         >
@@ -167,7 +174,7 @@ export function HubLinkSection({ orgId }: { orgId: string }) {
                 {L.openInHub[lang]} <ArrowUpRight size={13} />
               </a>
             )}
-            <Button variant="dangerOutline" onClick={() => setConfirmUnlink(true)} disabled={!!busy} data-testid="hub-unlink" style={{ fontSize: 13, padding: '10px 14px' }}>
+            <Button variant="dangerOutline" onClick={() => setConfirmUnlink(hubLink.hubProjectId)} disabled={!!busy} data-testid="hub-unlink" style={{ fontSize: 13, padding: '10px 14px' }}>
               {busy === 'unlink' ? L.unlinking[lang] : L.unlink[lang]}
             </Button>
           </>
@@ -222,7 +229,7 @@ export function HubLinkSection({ orgId }: { orgId: string }) {
                   ) : p.linked === 'this' ? (
                     <span style={chip}>{L.thisSite[lang]}</span>
                   ) : (
-                    <Button variant="ink" onClick={() => link(p.id)} disabled={!!busy} data-testid={`hub-link-${p.id}`} style={{ fontSize: 13, padding: '9px 14px' }}>
+                    <Button variant="ink" onClick={() => link(p.id)} disabled={!!busy || (!!attempt && attempt.hubProjectId !== p.id)} data-testid={`hub-link-${p.id}`} style={{ fontSize: 13, padding: '9px 14px' }}>
                       {busy === 'link' && attempt?.hubProjectId === p.id ? L.linking[lang] : L.link[lang]}
                     </Button>
                   )}

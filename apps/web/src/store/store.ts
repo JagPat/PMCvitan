@@ -102,7 +102,7 @@ import { isDone } from '@/store/queueLedger';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
-import { hubFailureOf, type HubCallResult } from '@/lib/hubLink';
+import { hubFailureOf, HUB_SHOWN_WAIT_MS, type HubCallResult, type HubUnlinkPending } from '@/lib/hubLink';
 import { resolveMediaUrl, replayOutboxOp, uploadSitePhotoInput, PlaceCheckFailed, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, isGone, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
@@ -381,7 +381,7 @@ export interface AppState {
   /** #1118 U7a L2 — the key of an unlink not yet settled: sent and unanswered, or answered with Hub's side not cleared,
    *  or not yet shown by a snapshot. Retrying under it replays PMC's unlink and retries only Hub's side; while it is
    *  held the screen offers no new link, so Hub's old link is never left without its cleanup (project-owned). */
-  hubUnlinkPending: string | null;
+  hubUnlinkPending: HubUnlinkPending | null;
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   /** the Site Map's pending focus when it is entered from a location breadcrumb (project-owned) */
   placeFocus: string | null;
@@ -789,7 +789,8 @@ export interface AppActions {
    *  keeps while the attempt may be retried; unlink keeps its own in `hubUnlinkPending` (see there). */
   listHubProjects: (orgId: string) => Promise<HubCallResult<HubProjectChoice[]>>;
   linkHubProject: (orgId: string, hubProjectId: string, idempotencyKey: string) => Promise<HubCallResult<true>>;
-  unlinkHubProject: (orgId: string) => Promise<HubCallResult<{ hubCleared: boolean }>>;
+  /** `hubProjectId`: the link the person saw and confirmed; a held unlink keeps its own. */
+  unlinkHubProject: (orgId: string, hubProjectId: string) => Promise<HubCallResult<{ hubCleared: boolean }>>;
   restoreProject: (orgId: string, projectId: string) => void;
   loadArchivedProjects: (orgId: string) => void;
   // companies & consultants
@@ -1706,8 +1707,12 @@ export const useStore = create<Store>()(
       }
       if (!inScope()) return { kind: 'stale' };
       if (!shown) return { kind: 'ok', value };
-      // the screen reports the command only once the snapshot shows it (Codex 4479979966): a pull begun after it
-      await afterFreshPull(scope);
+      // the screen reports the command only once the snapshot shows it (Codex 4479979966): a pull begun after it, for
+      // at most HUB_SHOWN_WAIT_MS, so a stalled pull leaves the row free to retry (Codex 4480498904)
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, HUB_SHOWN_WAIT_MS);
+        void afterFreshPull(scope).finally(() => { clearTimeout(timer); resolve(); });
+      });
       if (!inScope()) return { kind: 'stale' };
       return shown(value, get().hubLink) ? { kind: 'ok', value } : { kind: 'unconfirmed', value };
     };
@@ -5819,14 +5824,19 @@ export const useStore = create<Store>()(
     listHubProjects: (orgId) => hubCall((gw, pid) => gw.listHubProjects(orgId, pid).then((r) => r.projects)),
     linkHubProject: (orgId, hubProjectId, key) =>
       hubCall((gw, pid) => gw.linkHubProject(orgId, pid, hubProjectId, key).then(() => true as const), (_v, link) => link?.hubProjectId === hubProjectId),
-    unlinkHubProject: async (orgId) => {
-      // one key until the unlink has settled, Hub's side included (Codex 4479979986)
-      const key = get().hubUnlinkPending ?? newIdempotencyKey();
+    unlinkHubProject: async (orgId, hubProjectId) => {
+      // one key, and the link it ends, until the unlink has settled, Hub's side included (Codex 4479979986)
+      const pending = get().hubUnlinkPending ?? { key: newIdempotencyKey(), hubProjectId };
       const scope = currentScope();
-      set((s) => { s.hubUnlinkPending = key; });
-      const r = await hubCall((gw, pid) => gw.unlinkHubProject(orgId, pid, key).then((x) => ({ hubCleared: x.hubCleared === true })), (_v, link) => link === null);
+      set((s) => { s.hubUnlinkPending = pending; });
+      const r = await hubCall(
+        (gw, pid) => gw.unlinkHubProject(orgId, pid, pending.hubProjectId, pending.key).then((x) => ({ hubCleared: x.hubCleared === true })),
+        (_v, link) => link === null,
+      );
       const settled = (r.kind === 'ok' && r.value.hubCleared) || (r.kind === 'failed' && r.failure.kind === 'refused');
-      if (settled && scopeStillCurrent(scope)) set((s) => { if (s.hubUnlinkPending === key) s.hubUnlinkPending = null; });
+      if (settled && scopeStillCurrent(scope)) set((s) => { if (s.hubUnlinkPending?.key === pending.key) s.hubUnlinkPending = null; });
+      // another admin changed the link meanwhile: show the screen what it is now (Codex 4480498892)
+      if (r.kind === 'failed' && r.failure.kind === 'refused' && r.failure.code === 'hub_link_changed') void requestFreshSnapshot(scope).catch(() => undefined);
       return r;
     },
     deleteProject: (orgId, projectId) => {

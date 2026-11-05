@@ -43,6 +43,11 @@ export const hubLabels = {
     hi: 'PMC में लिंक हट गया, पर Hub में अभी भी दिख सकता है। Hub में हटाने के लिए फिर कोशिश करें।',
     gu: 'PMCમાં લિંક હટી ગઈ, પણ Hubમાં હજી દેખાઈ શકે. Hubમાં હટાવવા ફરી પ્રયાસ કરો.',
   },
+  linkChanged: {
+    en: "This site's Hub link has just changed. Check it and try again.",
+    hi: 'इस साइट का Hub लिंक अभी बदला है। देखकर फिर कोशिश करें।',
+    gu: 'આ સાઇટની Hub લિંક હમણાં બદલાઈ છે. જોઈને ફરી પ્રયાસ કરો.',
+  },
   notShownYet: {
     en: "Done, but this screen hasn't caught up yet. Try again to refresh it.",
     hi: 'हो गया, पर यह स्क्रीन अभी अपडेट नहीं हुई। ताज़ा करने के लिए फिर कोशिश करें।',

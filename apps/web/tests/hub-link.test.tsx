@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import { hubLabels, type DrawingsHubLink, type Lang, type Role } from '@vitan/shared';
 import type { ApiGateway, ApiSnapshot, HubProjectChoice } from '@/data/apiGateway';
-import { hubFailureOf, safeHubUrl, type HubCallResult } from '@/lib/hubLink';
+import { hubFailureOf, safeHubUrl, HUB_SHOWN_WAIT_MS, type HubCallResult, type HubUnlinkPending } from '@/lib/hubLink';
 import { warmImports } from './warm-imports';
 
 /**
@@ -16,6 +16,7 @@ const LINK: DrawingsHubLink = { hubProjectId: '12', number: '24-017', name: 'Pat
 const PROJECTS: HubProjectChoice[] = [
   { id: '12', number: '24-017', name: 'Patel residence', linked: null },
   { id: '13', number: '24-018', name: 'Shah bungalow', linked: 'other' },
+  { id: '14', number: '24-019', name: 'Riverside', linked: null },
 ];
 const err = (status: number | undefined, serverCode?: string) => Object.assign(new Error('x'), { status, serverCode });
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -133,22 +134,59 @@ describe('the store keeps the snapshot\'s Hub link for its own project only', ()
       snapshot: vi.fn(async () => snapshot()),
     };
     useStore.getState()._setGateway(gw as unknown as ApiGateway);
-    expect(await useStore.getState().unlinkHubProject('org-1')).toEqual({ kind: 'ok', value: { hubCleared: false } });
-    const key = useStore.getState().hubUnlinkPending;
-    expect(key).toBeTruthy();
-    expect(await useStore.getState().unlinkHubProject('org-1')).toEqual({ kind: 'ok', value: { hubCleared: true } });
-    expect(gw.unlinkHubProject.mock.calls.map((c) => (c as unknown[])[2])).toEqual([key, key]);
+    expect(await useStore.getState().unlinkHubProject('org-1', '12')).toEqual({ kind: 'ok', value: { hubCleared: false } });
+    const held = useStore.getState().hubUnlinkPending;
+    expect(held?.hubProjectId).toBe('12');
+    // the retry ends the link the person confirmed, under the same key, whatever the caller names now
+    expect(await useStore.getState().unlinkHubProject('org-1', '99')).toEqual({ kind: 'ok', value: { hubCleared: true } });
+    expect(gw.unlinkHubProject.mock.calls.map((c) => (c as unknown[]).slice(2))).toEqual([['12', held!.key], ['12', held!.key]]);
     expect(useStore.getState().hubUnlinkPending).toBeNull();
+  });
+
+  it('an unlink names the link the person saw; a link another admin changed meanwhile is refused and re-read (Codex 4480498892)', async () => {
+    const useStore = await fresh();
+    useStore.setState({ activeProjectId: 'ambli' });
+    const gw = {
+      unlinkHubProject: vi.fn(async () => { throw err(409, 'hub_link_changed'); }),
+      snapshot: vi.fn(async () => snapshot({ ...LINK, hubProjectId: '14' })),
+    };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    const r = await useStore.getState().unlinkHubProject('org-1', '12');
+    expect(r).toEqual({ kind: 'failed', failure: { kind: 'refused', code: 'hub_link_changed' } });
+    expect(gw.unlinkHubProject.mock.calls[0]).toEqual(['org-1', 'ambli', '12', expect.any(String)]);
+    expect(useStore.getState().hubUnlinkPending).toBeNull();
+    await waitFor(() => expect(useStore.getState().hubLink?.hubProjectId).toBe('14'));
+  });
+
+  it('a stalled snapshot after a command answers unconfirmed, not never (Codex 4480498904)', async () => {
+    const useStore = await fresh();
+    useStore.setState({ activeProjectId: 'ambli' });
+    const gw = {
+      linkHubProject: vi.fn(async () => ({ link: LINK })),
+      snapshot: vi.fn(() => new Promise<ApiSnapshot>(() => undefined)),
+    };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let settled: HubCallResult<true> | null = null;
+      void useStore.getState().linkHubProject('org-1', '12', 'key-s').then((x) => { settled = x; });
+      await vi.advanceTimersByTimeAsync(HUB_SHOWN_WAIT_MS - 1);
+      expect(settled).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toEqual({ kind: 'unconfirmed', value: true });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
 type Calls = {
   list?: () => Promise<HubCallResult<HubProjectChoice[]>>;
   link?: (orgId: string, hubProjectId: string, key: string) => Promise<HubCallResult<true>>;
-  unlink?: (orgId: string) => Promise<HubCallResult<{ hubCleared: boolean }>>;
+  unlink?: (orgId: string, hubProjectId: string) => Promise<HubCallResult<{ hubCleared: boolean }>>;
 };
 
-async function team(orgRole: 'owner' | 'admin' | 'member', { hubLink = null as DrawingsHubLink | null, calls = {} as Calls, lang = 'en' as Lang, role = 'engineer' as Role, pending = null as string | null } = {}) {
+async function team(orgRole: 'owner' | 'admin' | 'member', { hubLink = null as DrawingsHubLink | null, calls = {} as Calls, lang = 'en' as Lang, role = 'engineer' as Role, pending = null as HubUnlinkPending | null } = {}) {
   vi.stubEnv('VITE_API_URL', 'http://api.test');
   vi.resetModules();
   const { useStore, getInitialState } = await import('@/store/store');
@@ -236,7 +274,7 @@ describe('the Team screen\'s Hub project row', () => {
     let store!: Awaited<ReturnType<typeof team>>['useStore'];
     const unlink = async () => {
       const a = answers.shift()!;
-      store.setState({ hubLink: null, hubUnlinkPending: a.kind === 'ok' && a.value.hubCleared ? null : 'k-1' } as never);
+      store.setState({ hubLink: null, hubUnlinkPending: a.kind === 'ok' && a.value.hubCleared ? null : { key: 'k-1', hubProjectId: '12' } } as never);
       return a;
     };
     const t = await team('owner', { hubLink: LINK, calls: { unlink } });
@@ -248,6 +286,8 @@ describe('the Team screen\'s Hub project row', () => {
     fireEvent.click(r.getByTestId('hub-unlink'));
     expect(unlinkHubProject).not.toHaveBeenCalled();
     fireEvent.click(r.getByTestId('confirm-hub-unlink-confirm'));
+    // the unlink names the Hub project the person saw and confirmed
+    expect(unlinkHubProject).toHaveBeenCalledWith('org-1', '12');
     await waitFor(() => expect(r.getByTestId('hub-note').textContent).toContain('Hub may still show the link'));
     // Codex 4479979986: no new link while Hub's old one waits for its cleanup
     expect(r.getByTestId('hub-not-linked')).toBeTruthy();
@@ -259,11 +299,11 @@ describe('the Team screen\'s Hub project row', () => {
   });
 
   it('an unlink left uncleared before leaving the screen is offered again on return, before any link', async () => {
-    const { r, unlinkHubProject } = await team('owner', { pending: 'k-1' });
+    const { r, unlinkHubProject } = await team('owner', { pending: { key: 'k-1', hubProjectId: '12' } });
     expect(r.getByTestId('hub-note').textContent).toContain('Hub may still show the link');
     expect(r.queryByTestId('hub-choose')).toBeNull();
     fireEvent.click(r.getByTestId('hub-retry'));
-    await waitFor(() => expect(unlinkHubProject).toHaveBeenCalledWith('org-1'));
+    await waitFor(() => expect(unlinkHubProject).toHaveBeenCalledWith('org-1', '12'));
   });
 
   it('a reply for a project the row has left never frees the next project\'s request (Codex 4479979980)', async () => {
@@ -291,6 +331,10 @@ describe('the Team screen\'s Hub project row', () => {
     await waitFor(() => expect(r.getByTestId('hub-link-12')).toBeTruthy());
     fireEvent.click(r.getByTestId('hub-link-12'));
     await waitFor(() => expect(r.getByTestId('hub-note').textContent).toContain("hasn't caught up"));
+    // it may have landed: no other Hub project is offered until it settles (Codex 4480498867)
+    expect((r.getByTestId('hub-link-14') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(r.getByTestId('hub-link-14'));
+    expect(linkHubProject).toHaveBeenCalledTimes(1);
     fireEvent.click(r.getByTestId('hub-retry'));
     await waitFor(() => expect(r.getByTestId('hub-note').textContent).toContain('Linked to Hub.'));
     expect(linkHubProject.mock.calls[1][2]).toBe(linkHubProject.mock.calls[0][2]);
