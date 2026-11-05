@@ -182,6 +182,34 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(await client.create({ email: 'n@example.in', password: 'New-pass-123', verified: true })).toEqual({ ok: false, taken: false, failure: 'down' });
   });
 
+  it('a create the password policy refuses names the rule; another refusal names its reason', async () => {
+    // Zitadel v4.16's REST gateway: google.rpc.Status with the translated message and the key in the error detail
+    fake.createRefusal = {
+      status: 400,
+      body: { code: 3, message: 'Password must contain upper case (COMMA-VoaRj)', details: [{ '@type': 'type.googleapis.com/zitadel.v1.ErrorDetail', id: 'COMMA-VoaRj', message: 'Errors.User.PasswordComplexityPolicy.HasUpper' }] },
+    };
+    expect(await client.create({ email: 'p@example.in', password: 'all lower case phrase', verified: true })).toEqual({
+      ok: false, taken: false, failure: 'rejected', reason: '400 Errors.User.PasswordComplexityPolicy.HasUpper', passwordPolicy: true,
+    });
+    // the Connect form: the key inside the message
+    fake.createRefusal = { status: 400, body: { code: 'invalid_argument', message: 'Errors.User.PasswordComplexityPolicy.MinLength (COMMA-HuJf6)' } };
+    expect(await client.create({ email: 'p@example.in', password: 'short', verified: true })).toMatchObject({ failure: 'rejected', passwordPolicy: true, reason: '400 Errors.User.PasswordComplexityPolicy.MinLength' });
+    fake.createRefusal = { status: 400, body: { code: 3, message: 'Errors.User.Invalid (USER-zz)' } };
+    expect(await client.create({ email: 'p@example.in', password: 'Right-pass-123', verified: true })).toEqual({
+      ok: false, taken: false, failure: 'rejected', reason: '400 Errors.User.Invalid', passwordPolicy: false,
+    });
+    fake.createRefusal = { status: 404, body: 'not json' };
+    expect(await client.create({ email: 'p@example.in', password: 'Right-pass-123', verified: true })).toMatchObject({ failure: 'rejected', reason: '404', passwordPolicy: false });
+    expect(fake.people.size).toBe(0);
+  });
+
+  it('the issuer reason keeps only key and sentence characters, at most 160 of them', async () => {
+    const { issuerReason } = await import('./identity-client');
+    const reason = issuerReason(400, JSON.stringify({ message: 'bad <b>"x"</b>\n' + 'y'.repeat(300) }));
+    expect(reason).toBe(`400 bad bxb${'y'.repeat(160 - 'bad bxb'.length)}`);
+    expect(issuerReason(400, '')).toBe('400');
+  });
+
   it('the default limit is 4 seconds', async () => {
     const { IDENTITY_TIMEOUT_MS } = await import('./identity-client');
     expect(IDENTITY_TIMEOUT_MS).toBe(4000);

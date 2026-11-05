@@ -60,7 +60,14 @@ export type Lookup =
   | { found: 'one'; userId: string; verified: boolean }
   | { found: 'unclear' }
   | { found: 'down' };
-export type Created = { ok: true; userId: string } | { ok: false; taken: true } | { ok: false; taken: false; failure: IdentityFailure };
+/**
+ * `reason` (a refused create only): the issuer's own reason, as {@link issuerReason} reads it; `passwordPolicy` is true when
+ * that reason is the issuer's password complexity policy, which the person answers by choosing another password.
+ */
+export type Created =
+  | { ok: true; userId: string }
+  | { ok: false; taken: true }
+  | { ok: false; taken: false; failure: IdentityFailure; reason?: string; passwordPolicy?: boolean };
 
 type Reply = { status: number; body: string; location: string | null };
 
@@ -299,7 +306,11 @@ export class IdentityClient {
         service: true,
       });
       if (r.status === 409) return { ok: false, taken: true };
-      if (r.status < 200 || r.status > 299) return { ok: false, taken: false, failure: serviceFailure(r.status) };
+      if (r.status < 200 || r.status > 299) {
+        const failure = serviceFailure(r.status);
+        if (failure === 'down') return { ok: false, taken: false, failure };
+        return { ok: false, taken: false, failure, reason: issuerReason(r.status, r.body), passwordPolicy: PASSWORD_POLICY_KEY.test(r.body) };
+      }
       const userId = str(json(r.body).userId);
       // a 2xx with no user id is a malformed answer: the issuer's fault, not the person's
       return userId ? { ok: true, userId } : { ok: false, taken: false, failure: 'down' };
@@ -485,6 +496,36 @@ const CONNECT_PATH = '/zitadel.';
  */
 function isOutage(status: number): boolean {
   return status >= 500 || status === 429 || status === 401 || status === 403;
+}
+
+/**
+ * Zitadel v4.16 names a password complexity refusal by its message key, `Errors.User.PasswordComplexityPolicy.<Rule>`:
+ * in the error detail of a REST answer and inside the message of a Connect one (`Key (ID)`). Any of them means the
+ * password broke the issuer's policy (internal/domain/policy_password_complexity.go).
+ */
+const PASSWORD_POLICY_KEY = /Errors\.User\.PasswordComplexityPolicy\.[A-Za-z]+/;
+
+/**
+ * The issuer's reason for a refusal, for PMC's own log line: its message key when the answer names one (REST
+ * `details[].message`, or a key in `message`), else its `message`, else the status alone. Only the characters a key or a
+ * plain sentence uses are kept, at most 160 of them; a refusal never echoes the password it was sent.
+ */
+export function issuerReason(status: number, body: string): string {
+  let o: Record<string, unknown> = {};
+  try {
+    const v: unknown = JSON.parse(body);
+    if (v && typeof v === 'object' && !Array.isArray(v)) o = v as Record<string, unknown>;
+  } catch {
+    // an unreadable body: the status is the reason
+  }
+  const details = Array.isArray(o.details) ? o.details : [];
+  const keyed = details
+    .map((d) => (d && typeof d === 'object' ? str((d as Record<string, unknown>).message) : ''))
+    .find((m) => /^Errors\.[A-Za-z.]+$/.test(m));
+  const message = str(o.message);
+  const key = keyed || /Errors\.[A-Za-z.]+/.exec(message)?.[0] || '';
+  const text = (key || message).replace(/[^A-Za-z0-9 .,:()_-]/g, '').slice(0, 160).trim();
+  return text ? `${status} ${text}` : String(status);
 }
 
 function serviceFailure(status: number): IdentityFailure {

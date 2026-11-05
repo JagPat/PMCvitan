@@ -88,6 +88,7 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     fake.hold = false;
     fake.oversize = null;
     fake.createAnswersNoId = false;
+    fake.createRefusal = null;
     fake.spoil = 'none';
     fake.sessionsPageCap = null;
     fake.sessionsListLag = false;
@@ -726,6 +727,31 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     fake.force = {};
     await setPassword(user.email!, 'the fourth issuer passphrase', 201);
     expect(person.verified).toBe(true);
+  });
+
+  it('a new person whose password the issuer\'s policy refuses is asked for another password, never sent to their PMC', async () => {
+    const user = await invitee('policy');
+    fake.createRefusal = {
+      status: 400,
+      body: { code: 3, message: 'Password must contain upper case (COMMA-VoaRj)', details: [{ '@type': 'type.googleapis.com/zitadel.v1.ErrorDetail', id: 'COMMA-VoaRj', message: 'Errors.User.PasswordComplexityPolicy.HasUpper' }] },
+    };
+    const refused = await setPassword(user.email!, 'an all lower case passphrase', 400);
+    expect(refused.body.token).toBeUndefined();
+    expect(refused.body.message).toBe('Redbracket ID did not accept this password. Choose another one.');
+    expect(refused.body.code).toBe('password-rejected');
+    expect([...fake.people.values()].some((p) => p.email === user.email)).toBe(false);
+    expect(await t.prisma.platformPersonLink.count({ where: { userId: user.id } })).toBe(0);
+
+    // any other refusal of the new person is still one their PMC helps with
+    fake.createRefusal = { status: 400, body: { code: 3, message: 'Errors.User.Invalid (USER-zz)' } };
+    const other = await setPassword(user.email!, 'An-Accepted-Passphrase-1', 409);
+    expect(other.body.code).toBe('needs-help');
+
+    // a password the policy takes, with a new code, sets the person up
+    fake.createRefusal = null;
+    const done = await setPassword(user.email!, 'An-Accepted-Passphrase-1', 201);
+    expect(sub(done.body.token)).toBe(user.id);
+    expect([...fake.people.values()].find((p) => p.email === user.email)).toMatchObject({ password: 'An-Accepted-Passphrase-1', verified: true });
   });
 
   it('a reset code sent before retirement is refused after it, switch on or off: nothing reaches the issuer, the old hash stays', async () => {
