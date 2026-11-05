@@ -211,6 +211,8 @@ export interface ProjectDataState {
   /** #1118 U7a L2 — the project's active Hub link, from the snapshot's project line (null while unlinked, or
    *  until the snapshot lands). Project-owned: another project's Hub link must never label this one. */
   hubLink: DrawingsHubLink | null;
+  /** #1118 U7a L2 — an unlink's key until it has settled, Hub's side included (AppState.hubUnlinkPending). */
+  hubUnlinkPending: string | null;
 }
 
 /** Explicit absence — null, never a fabricated ''-id record actions could mutate. */
@@ -269,6 +271,7 @@ export function emptyProjectData(): ProjectDataState {
     nodeCreatePending: {},
     labourBindPending: {},
     hubLink: null,
+    hubUnlinkPending: null,
   };
 }
 

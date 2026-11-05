@@ -43,6 +43,11 @@ export const hubLabels = {
     hi: 'PMC में लिंक हट गया, पर Hub में अभी भी दिख सकता है। Hub में हटाने के लिए फिर कोशिश करें।',
     gu: 'PMCમાં લિંક હટી ગઈ, પણ Hubમાં હજી દેખાઈ શકે. Hubમાં હટાવવા ફરી પ્રયાસ કરો.',
   },
+  notShownYet: {
+    en: "Done, but this screen hasn't caught up yet. Try again to refresh it.",
+    hi: 'हो गया, पर यह स्क्रीन अभी अपडेट नहीं हुई। ताज़ा करने के लिए फिर कोशिश करें।',
+    gu: 'થઈ ગયું, પણ આ સ્ક્રીન હજી અપડેટ નથી થઈ. તાજી કરવા ફરી પ્રયાસ કરો.',
+  },
   closed: {
     en: 'Hub is not connected for this company yet.',
     hi: 'इस कंपनी के लिए Hub अभी जुड़ा नहीं है।',

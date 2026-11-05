@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useStore } from '@/store/store';
 import { Button, ConfirmDialog } from '@/components';
 import { ArrowUpRight } from '@/lib/icons';
@@ -6,9 +6,10 @@ import { newIdempotencyKey, type HubProjectChoice } from '@/data/apiGateway';
 import { hubFailureText, safeHubUrl, type HubFailure } from '@/lib/hubLink';
 import { hubLabels as L, hubText as T } from '@vitan/shared';
 
-/** The attempt the row may still retry, under its own key: the server replays it if it had already landed. */
-type Attempt = { action: 'link'; hubProjectId: string; key: string } | { action: 'unlink'; key: string };
-type Note = { tone: 'ok' | 'err'; text: string; retry: boolean };
+/** A link attempt the row may still retry, under its own key: the server replays it if it had already landed. (An
+ *  unlink's key lives in the store, `hubUnlinkPending`, so leaving the screen does not lose its Hub cleanup.) */
+type LinkAttempt = { hubProjectId: string; key: string };
+type Note = { tone: 'ok' | 'err'; text: string; retry: 'link' | 'unlink' | null };
 type List = { state: 'idle' } | { state: 'loading' } | { state: 'ready'; projects: HubProjectChoice[] } | { state: 'failed'; failure: HubFailure };
 
 /**
@@ -21,96 +22,118 @@ export function HubLinkSection({ orgId }: { orgId: string }) {
   const lang = useStore((s) => s.lang);
   const activeProjectId = useStore((s) => s.activeProjectId);
   const hubLink = useStore((s) => s.hubLink);
+  const unlinkPending = useStore((s) => s.hubUnlinkPending);
   const listHubProjects = useStore((s) => s.listHubProjects);
   const linkHubProject = useStore((s) => s.linkHubProject);
   const unlinkHubProject = useStore((s) => s.unlinkHubProject);
 
   const [list, setList] = useState<List>({ state: 'idle' });
   const [picking, setPicking] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [attempt, setAttempt] = useState<Attempt | null>(null);
+  const [busy, setBusy] = useState<'link' | 'unlink' | null>(null);
+  const [attempt, setAttempt] = useState<LinkAttempt | null>(null);
   const [note, setNote] = useState<Note | null>(null);
   const [closed, setClosed] = useState(false);
   const [confirmUnlink, setConfirmUnlink] = useState(false);
+  // only the newest request of this row may change it: a reply to an older one (another project's, or one this row
+  // has since moved past) changes nothing, not even `busy` (Codex 4479979980)
+  const command = useRef(0);
+  const listing = useRef(0);
 
   // another project's row starts fresh: its attempts, notes and list are not this one's
   useEffect(() => {
+    command.current += 1;
+    listing.current += 1;
     setList({ state: 'idle' });
     setPicking(false);
-    setBusy(false);
+    setBusy(null);
     setAttempt(null);
     setNote(null);
     setClosed(false);
     setConfirmUnlink(false);
   }, [activeProjectId, orgId]);
 
-  const fail = (failure: HubFailure, keep: Attempt | null) => {
-    if (failure.kind === 'closed') setClosed(true);
-    setAttempt(failure.kind === 'retry' ? keep : null);
-    setNote({ tone: 'err', text: hubFailureText(failure, lang), retry: failure.kind === 'retry' && !!keep });
-  };
-
   const load = async () => {
+    const mine = ++listing.current;
     setList({ state: 'loading' });
     const r = await listHubProjects(orgId);
-    if (r.kind === 'stale') return;
-    if (r.kind === 'ok') setList({ state: 'ready', projects: r.value });
+    if (mine !== listing.current || r.kind === 'stale') return;
+    if (r.kind === 'ok' || r.kind === 'unconfirmed') setList({ state: 'ready', projects: r.value });
     else {
       if (r.failure.kind === 'closed') setClosed(true);
       setList({ state: 'failed', failure: r.failure });
     }
   };
 
-  const run = async (a: Attempt) => {
-    setBusy(true);
+  const failNote = (failure: HubFailure, retry: 'link' | 'unlink'): Note => {
+    if (failure.kind === 'closed') setClosed(true);
+    return { tone: 'err', text: hubFailureText(failure, lang), retry: failure.kind === 'retry' ? retry : null };
+  };
+
+  const runLink = async (a: LinkAttempt) => {
+    const mine = ++command.current;
+    setBusy('link');
     setAttempt(a);
     setNote(null);
-    if (a.action === 'link') {
-      const r = await linkHubProject(orgId, a.hubProjectId, a.key);
-      setBusy(false);
-      if (r.kind === 'stale') return;
-      if (r.kind === 'ok') {
-        setAttempt(null);
-        setPicking(false);
-        setList({ state: 'idle' });
-        setNote({ tone: 'ok', text: L.linked[lang], retry: false });
-        return;
-      }
-      fail(r.failure, a);
-      // the list may have moved under the picker (another site took the Hub project, or Hub archived it)
-      if (r.failure.kind === 'refused' && picking) void load();
-      return;
-    }
-    const r = await unlinkHubProject(orgId, a.key);
-    setBusy(false);
+    const r = await linkHubProject(orgId, a.hubProjectId, a.key);
+    if (mine !== command.current) return;
+    setBusy(null);
     if (r.kind === 'stale') return;
     if (r.kind === 'ok') {
-      if (r.value.hubCleared) {
-        setAttempt(null);
-        setNote({ tone: 'ok', text: L.unlinked[lang], retry: false });
-      } else {
-        // PMC's unlink has landed; the same key again retries only Hub's side
-        setAttempt(a);
-        setNote({ tone: 'err', text: L.hubNotCleared[lang], retry: true });
-      }
+      setAttempt(null);
+      setPicking(false);
+      setList({ state: 'idle' });
+      setNote({ tone: 'ok', text: L.linked[lang], retry: null });
       return;
     }
-    fail(r.failure, a);
+    if (r.kind === 'unconfirmed') {
+      // it landed, but the screen has not caught up: the same key again replays it and pulls again
+      setNote({ tone: 'err', text: L.notShownYet[lang], retry: 'link' });
+      return;
+    }
+    if (r.failure.kind !== 'retry') setAttempt(null);
+    setNote(failNote(r.failure, 'link'));
+    // the list may have moved under the picker (another site took the Hub project, or Hub archived it)
+    if (r.failure.kind === 'refused') void load();
+  };
+
+  const unlink = async () => {
+    const mine = ++command.current;
+    setBusy('unlink');
+    setNote(null);
+    const r = await unlinkHubProject(orgId);
+    if (mine !== command.current) return;
+    setBusy(null);
+    if (r.kind === 'stale') return;
+    if (r.kind === 'ok') {
+      // PMC's unlink has landed; Hub's side may not have: the store keeps the key, and the same key retries only it
+      setNote(r.value.hubCleared ? { tone: 'ok', text: L.unlinked[lang], retry: null } : { tone: 'err', text: L.hubNotCleared[lang], retry: 'unlink' });
+      return;
+    }
+    if (r.kind === 'unconfirmed') {
+      setNote({ tone: 'err', text: L.notShownYet[lang], retry: 'unlink' });
+      return;
+    }
+    setNote(failNote(r.failure, 'unlink'));
   };
 
   const link = (hubProjectId: string) => {
-    const key = attempt?.action === 'link' && attempt.hubProjectId === hubProjectId ? attempt.key : newIdempotencyKey();
-    void run({ action: 'link', hubProjectId, key });
+    const key = attempt?.hubProjectId === hubProjectId ? attempt.key : newIdempotencyKey();
+    void runLink({ hubProjectId, key });
   };
-  const unlink = () => {
-    const key = attempt?.action === 'unlink' ? attempt.key : newIdempotencyKey();
-    void run({ action: 'unlink', key });
+  const retry = (what: 'link' | 'unlink') => {
+    if (what === 'unlink') void unlink();
+    else if (attempt) void runLink(attempt);
   };
   const openPicker = () => {
     setPicking(true);
     setNote(null);
     void load();
   };
+
+  // an unlink not yet settled (this visit's, or one left before leaving the screen) is offered again before any new
+  // link: a new link would leave its Hub cleanup behind (Codex 4479979986)
+  const shownNote: Note | null = note ?? (unlinkPending && !busy ? { tone: 'err', text: L.hubNotCleared[lang], retry: 'unlink' } : null);
+  const canLink = !closed && !unlinkPending;
 
   const label = hubLink ? T.label(hubLink.number, hubLink.name) : '';
   const hubUrl = safeHubUrl(hubLink?.openUrl);
@@ -144,8 +167,8 @@ export function HubLinkSection({ orgId }: { orgId: string }) {
                 {L.openInHub[lang]} <ArrowUpRight size={13} />
               </a>
             )}
-            <Button variant="dangerOutline" onClick={() => setConfirmUnlink(true)} disabled={busy} data-testid="hub-unlink" style={{ fontSize: 13, padding: '10px 14px' }}>
-              {busy && attempt?.action === 'unlink' ? L.unlinking[lang] : L.unlink[lang]}
+            <Button variant="dangerOutline" onClick={() => setConfirmUnlink(true)} disabled={!!busy} data-testid="hub-unlink" style={{ fontSize: 13, padding: '10px 14px' }}>
+              {busy === 'unlink' ? L.unlinking[lang] : L.unlink[lang]}
             </Button>
           </>
         ) : (
@@ -153,8 +176,8 @@ export function HubLinkSection({ orgId }: { orgId: string }) {
             <div style={{ flex: 1, minWidth: 0, fontSize: 14, color: 'var(--muted)' }} data-testid="hub-not-linked">
               {closed ? L.closed[lang] : L.notLinked[lang]}
             </div>
-            {!closed && !picking && (
-              <Button variant="outline" onClick={openPicker} disabled={busy} data-testid="hub-choose" style={{ fontSize: 13, padding: '10px 14px' }}>
+            {canLink && !picking && (
+              <Button variant="outline" onClick={openPicker} disabled={!!busy} data-testid="hub-choose" style={{ fontSize: 13, padding: '10px 14px' }}>
                 {L.choose[lang]}
               </Button>
             )}
@@ -162,22 +185,22 @@ export function HubLinkSection({ orgId }: { orgId: string }) {
         )}
       </div>
 
-      {note && (
-        <div role="status" data-testid="hub-note" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginTop: 10, fontSize: 13, color: note.tone === 'ok' ? 'var(--green-solid)' : 'var(--red-solid)' }}>
-          <span>{note.text}</span>
-          {note.retry && attempt && (
-            <Button variant="outline" onClick={() => void run(attempt)} disabled={busy} data-testid="hub-retry" style={{ fontSize: 13, padding: '8px 12px' }}>
+      {shownNote && (
+        <div role="status" data-testid="hub-note" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginTop: 10, fontSize: 13, color: shownNote.tone === 'ok' ? 'var(--green-solid)' : 'var(--red-solid)' }}>
+          <span>{shownNote.text}</span>
+          {shownNote.retry && (shownNote.retry === 'unlink' || attempt) && (
+            <Button variant="outline" onClick={() => retry(shownNote.retry!)} disabled={!!busy} data-testid="hub-retry" style={{ fontSize: 13, padding: '8px 12px' }}>
               {L.retry[lang]}
             </Button>
           )}
         </div>
       )}
 
-      {picking && !hubLink && !closed && (
+      {picking && !hubLink && canLink && (
         <div style={{ marginTop: 12, padding: 14, background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 13 }} data-testid="hub-picker">
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
             <div style={{ fontWeight: 600, fontSize: 14 }}>{L.pickerTitle[lang]}</div>
-            <Button variant="outline" onClick={() => setPicking(false)} disabled={busy} style={{ fontSize: 12.5, padding: '8px 12px' }}>{L.close[lang]}</Button>
+            <Button variant="outline" onClick={() => setPicking(false)} disabled={!!busy} style={{ fontSize: 12.5, padding: '8px 12px' }}>{L.close[lang]}</Button>
           </div>
           {list.state === 'loading' && <div style={muted}>{L.loading[lang]}</div>}
           {list.state === 'failed' && (
@@ -199,8 +222,8 @@ export function HubLinkSection({ orgId }: { orgId: string }) {
                   ) : p.linked === 'this' ? (
                     <span style={chip}>{L.thisSite[lang]}</span>
                   ) : (
-                    <Button variant="ink" onClick={() => link(p.id)} disabled={busy} data-testid={`hub-link-${p.id}`} style={{ fontSize: 13, padding: '9px 14px' }}>
-                      {busy && attempt?.action === 'link' && attempt.hubProjectId === p.id ? L.linking[lang] : L.link[lang]}
+                    <Button variant="ink" onClick={() => link(p.id)} disabled={!!busy} data-testid={`hub-link-${p.id}`} style={{ fontSize: 13, padding: '9px 14px' }}>
+                      {busy === 'link' && attempt?.hubProjectId === p.id ? L.linking[lang] : L.link[lang]}
                     </Button>
                   )}
                 </div>

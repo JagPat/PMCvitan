@@ -41,12 +41,11 @@ export function hubFailureOf(err: unknown): HubFailure {
   if (status === null) return { kind: 'retry' }; // no answer: the call may have landed
   if (status === 404) return { kind: 'closed' };
   if (status === 403) return { kind: 'refused', code: 'forbidden' };
-  // an operator renews the key; until then, trying again cannot help
-  if (code === 'hub_key_refused') return { kind: 'refused', code };
-  if (status >= 500 && status !== 502) return { kind: 'retry' };
-  if (status === 408 || status === 429) return { kind: 'retry' };
+  // only the server's own code makes a 5xx final (an operator renews the key; Hub refused the call): a bare 5xx, a 502
+  // from a proxy among them, may come after the command landed (Codex 4479979974)
   if (code && (REFUSALS as readonly string[]).includes(code)) return { kind: 'refused', code: code as HubRefusal };
-  return { kind: 'refused', code: status === 502 ? 'hub_refused' : 'other' };
+  if (status >= 500 || status === 408 || status === 429) return { kind: 'retry' };
+  return { kind: 'refused', code: 'other' };
 }
 
 /** The words for a failure, in the screen's language. */
@@ -80,4 +79,10 @@ export function safeHubUrl(url: string | null | undefined): string | null {
 
 /** A Hub link call's answer to the screen. `stale`: the screen moved to another project or sign-in meanwhile, so the
  *  answer is not shown (what PMC did stands, and that project's next snapshot carries it). */
-export type HubCallResult<T> = { kind: 'ok'; value: T } | { kind: 'failed'; failure: HubFailure } | { kind: 'stale' };
+export type HubCallResult<T> =
+  | { kind: 'ok'; value: T }
+  /** the command landed, but the fresh snapshot does not show it yet: the screen keeps the attempt's key and offers
+   *  Try again, which replays the command and pulls again */
+  | { kind: 'unconfirmed'; value: T }
+  | { kind: 'failed'; failure: HubFailure }
+  | { kind: 'stale' };
