@@ -17,7 +17,8 @@ import { SitePhotoDelete } from '@/components/SitePhotoDelete';
 import { queuedSitePhotos } from '@/lib/queuedSitePhotos';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { stampText } from '@/lib/captureStamp';
-import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, inspectionTitle, sitePhotoDeletable, sitePhotoWho, type Lang, type WaitParty } from '@vitan/shared';
+import { safeHubUrl } from '@/lib/hubLink';
+import { swatch as swatchGradient, dashboardLabels as L, dashboardText as T, inspectionTitle, hubLabels, hubText, sitePhotoDeletable, sitePhotoWho, type Lang, type WaitParty } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 /** Top 10 #2 (#771) — a count whose slice has not settled is shown as unknown, never as 0. */
@@ -85,6 +86,9 @@ export function DashboardScreen() {
   const descriptor = useStore((s) => s.descriptor);
   const stage = useStore((s) => s.stage);
   const siteCode = useStore((s) => s.siteCode);
+  // #1118 U7a L2 — the site's Hub project beside its Site Code, and "Open in Hub" while PMC is connected to that Hub
+  const hubLink = useStore((s) => s.hubLink);
+  const hubUrl = safeHubUrl(hubLink?.openUrl);
   // B7 (F-12): derived from the activities, so it moves as work is accepted (see selectProjectProgress)
   const progressNow = useStore(useShallow(selectProjectProgress));
   const phases = useStore(useShallow((s) => s.phases));
@@ -210,6 +214,13 @@ export function DashboardScreen() {
             {stage && <span>{stage}</span>}
             {siteCode && <span>·</span>}
             {siteCode && <span>{T.siteCode(siteCode, lang)}</span>}
+            {hubLink && (siteCode || descriptor || stage) && <span>·</span>}
+            {hubLink && <span data-testid="dashboard-hub-label">{hubText.label(hubLink.number, hubLink.name)}</span>}
+            {hubLink && hubUrl && (
+              <a href={hubUrl} target="_blank" rel="noopener noreferrer" data-testid="dashboard-open-in-hub" style={{ color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                {hubLabels.openInHub[lang]} <ArrowUpRight size={12} />
+              </a>
+            )}
           </div>
         </div>
         {/* Top 10 #1 / live-bug 6 (#769) — no server export exists, so a live project shows no report action at

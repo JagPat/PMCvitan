@@ -17,6 +17,7 @@ import type {
   MeasurementRegisterDto,
   VendorAdvanceListDto,
   ScreenKey,
+  DrawingsHubLink,
 } from '@vitan/shared';
 import { emptyNotifSeen, type NotifSeenState } from '@/lib/notificationSeen';
 import type { DailyLogDraft } from './dailyLogDraft';
@@ -207,6 +208,9 @@ export interface ProjectDataState {
    *  binding that succeeded. Holding the key lets the command ledger replay the original
    *  success; keying by (device, worker) signature keeps concurrent forms independent. */
   labourBindPending: Record<string, string>;
+  /** #1118 U7a L2 — the project's active Hub link, from the snapshot's project line (null while unlinked, or
+   *  until the snapshot lands). Project-owned: another project's Hub link must never label this one. */
+  hubLink: DrawingsHubLink | null;
 }
 
 /** Explicit absence — null, never a fabricated ''-id record actions could mutate. */
@@ -264,6 +268,7 @@ export function emptyProjectData(): ProjectDataState {
     labourOnboardPending: {},
     nodeCreatePending: {},
     labourBindPending: {},
+    hubLink: null,
   };
 }
 

@@ -11,6 +11,7 @@ import { todayCivil } from '@/lib/civilDate';
 import { isDeviceBindPending } from '@/lib/labourKeys';
 import { API_BASE } from '@/data/apiGateway';
 import { useGuideState } from '@/guide/guideState';
+import { HubLinkSection } from './HubLinkSection';
 import styles from './responsive.module.css';
 
 // B2 — the member-role labels are the ONE shared `ROLE_LABEL` (so the architect's is the same everywhere),
@@ -197,6 +198,9 @@ export function TeamScreen() {
       <CompaniesSection canManage={canEditProject} />
 
       <LabourRosterSection canManage={canManage} />
+
+      {/* #1118 U7a L2 — the site's Hub project, for an owner or admin of its company (the server checks it too) */}
+      {canDeleteProject && activeOrgId && API_BASE && <HubLinkSection orgId={activeOrgId} />}
 
       {canViewOrgRoster && activeOrgId && (
         <OrgRoster orgId={activeOrgId} canManageRoles={canManageOrgRoster} canCorrectEmails />
