@@ -165,6 +165,7 @@ export const DOMAIN_EVENT_TYPES = [
   'inspection.evidence_removed', // item evidence unlinked by a media delete
   'inspection.relabeled', // the inspection-owned activity label updated when the linked activity is renamed
   'inspection.unfiled', // the inspection's location cleared when its placed node is deleted
+  'inspection.responsible_set', // #482 RM-e-c: who fixes this inspection was named or cleared (signal-only)
   // drawings
   'drawing.issued',
   'drawing.revised',

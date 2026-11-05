@@ -1622,6 +1622,25 @@ steps above. After that, U5m's `63679450…` is no longer "the compiled catalog 
 U5k must seed its own generation over the catalog it then finds (SV1-a's keys, RM-e's key and the
 two Hub keys) and compile that one instead.
 
+**"Who fixes this?" RM-e-c is that build** — `f9ebcd07…` → `e356309f…`: it compiles
+`inspection.responsible_set` (emitted when the PMC or an engineer names or clears who fixes an
+inspection) and adds nothing else to the catalog. The generation is already in the database
+(RM-e-m), so the deploy needs no migration, but a server running `OUTBOX_SENDER_MODE=outbox`
+refuses to start until the seal names `e356309f…`: take the three steps above with the RM-e-c build
+and `e356309f…` as the seal's version. In `legacy` or `shadow` the build starts as it is and the
+seal is taken when the cutover is. SV1-a's generation stays for the drain: a still-serving
+previous build keeps emitting under `f9ebcd07…`, and it can never name the new key. No consumer
+contract moves: `inspections.inbox` leaves the new type out of its rule (the stored base holds no
+responsible member), so its persisted rule is the one A6c wrote.
+
+Merge is deploy, so the order is: switch the API to `OUTBOX_SENDER_MODE=legacy` (or `shadow`) BEFORE
+the merge; after the RM-e-c build is serving, `outbox:status` clean, then `outbox:seal-external`
+(the seal then names `e356309f…`); then restart the same build with `OUTBOX_SENDER_MODE=outbox`.
+**Rollback:** the RM-a build (or any earlier one) compiles `f9ebcd07…`, so in `outbox` mode it
+refuses to start against an `e356309f…` seal. Recover with the same three steps on the rolled-back
+build, with `f9ebcd07…` as the seal's version. The `e356309f…` catalog rows stay (a rollback
+retires nothing), so `inspection.responsible_set` events already written remain resolvable.
+
 The seeded `ExternalEffectCatalog` rows are a DIFFERENT mechanism and do not
 substitute for this: two coverage generations keep a still-serving previous
 release's events resolvable through the drain, while the cutover seal is what

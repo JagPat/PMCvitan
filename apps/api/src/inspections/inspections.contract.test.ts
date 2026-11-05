@@ -137,6 +137,8 @@ describe('Task 10 — the inspections module implements its shared command/query
         'inspection.evidence_removed',
         'inspection.relabeled',
         'inspection.unfiled',
+        // #482 RM-e-c — who fixes this inspection was named or cleared; signal-only, and NOT in the projection's rule
+        'inspection.responsible_set',
         // the sign-off events are CAUSED by a closing inspection's decision (emitted here, same tx)
         'activity.signed_off',
         'activity.signoff_rejected',
