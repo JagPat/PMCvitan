@@ -18,7 +18,7 @@ export const drawingsManifest: ModuleManifest = {
     'hubDrawing', 'hubRevision', 'hubGoverningMark', 'hubWebhookReceipt', 'hubVersionTombstone'],
   dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
   // #1118 U7a — the Hub link asks whether the person is a company owner/admin and the project a live one of that
-  // company through OrgsParticipant (administersAnyOf / liveProjectOfOrg)
+  // company through OrgsParticipant (administersAnyOf / liveProjectOfOrg), under its own locks
   workflowParticipants: ['orgs'],
   producesEvents: [
     'drawing.issued',
@@ -46,6 +46,9 @@ export const drawingsManifest: ModuleManifest = {
     'DELETE /drawings/:id',
     // #1118 U3 — Hub's webhook deliveries (signed by Hub; no user)
     'POST /integrations/hub/:orgId/events',
+    // #1118 U7a — a company owner/admin links the project to its Hub project (Hub's list, link, unlink)
+    'POST /orgs/:orgId/projects/:pid/hub/link',
+    'POST /orgs/:orgId/projects/:pid/hub/unlink',
   ],
   permissions: ['pmc', 'engineer', 'contractor'],
 };

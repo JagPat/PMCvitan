@@ -2038,3 +2038,9 @@ export type ListSiteVisitsInput = z.infer<typeof listSiteVisitsSchema>;
 /** #1118 U7a — a Hub project id as Hub writes it: a positive decimal number, no padding. Kept here (no Node imports) so
  *  the web build, which type-checks this file, never reaches the Hub client. */
 export const HUB_PROJECT_ID = /^[1-9][0-9]{0,17}$/;
+
+/** #1118 U7a — `POST /orgs/:orgId/projects/:pid/hub/link`: the Hub project to link (Hub's id, a positive decimal). */
+export const hubLinkSchema = z.object({
+  hubProjectId: z.string().regex(HUB_PROJECT_ID),
+}).strict();
+export type HubLinkInput = z.infer<typeof hubLinkSchema>;
