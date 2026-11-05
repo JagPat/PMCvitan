@@ -506,9 +506,10 @@ function isOutage(status: number): boolean {
 const PASSWORD_POLICY_KEY = /Errors\.User\.PasswordComplexityPolicy\.[A-Za-z]+/;
 
 /**
- * The issuer's reason for a refusal, for PMC's own log line: its message key when the answer names one (REST
- * `details[].message`, or a key in `message`), else its `message`, else the status alone. Only the characters a key or a
- * plain sentence uses are kept, at most 160 of them; a refusal never echoes the password it was sent.
+ * The issuer's reason for a refusal, for PMC's own log line: only a message key the issuer names (`Errors.<Area>.<Rule>`,
+ * from a REST `details[].message` or inside a Connect `message`), else the status alone. The issuer's free prose is never
+ * logged: a gateway or validator could echo what it was sent (the email, the password), and a key cannot (Codex
+ * 4478003699 on #1350).
  */
 export function issuerReason(status: number, body: string): string {
   let o: Record<string, unknown> = {};
@@ -519,14 +520,17 @@ export function issuerReason(status: number, body: string): string {
     // an unreadable body: the status is the reason
   }
   const details = Array.isArray(o.details) ? o.details : [];
-  const keyed = details
-    .map((d) => (d && typeof d === 'object' ? str((d as Record<string, unknown>).message) : ''))
-    .find((m) => /^Errors\.[A-Za-z.]+$/.test(m));
-  const message = str(o.message);
-  const key = keyed || /Errors\.[A-Za-z.]+/.exec(message)?.[0] || '';
-  const text = (key || message).replace(/[^A-Za-z0-9 .,:()_-]/g, '').slice(0, 160).trim();
-  return text ? `${status} ${text}` : String(status);
+  // only a whole answer field that IS a key (REST detail) or a key and its id (Connect `Key (ID)`): never a key-like
+  // word inside other text, which could be what the issuer was sent
+  const keyed = details.map((d) => (d && typeof d === 'object' ? str((d as Record<string, unknown>).message) : '')).find((m) => DETAIL_KEY.test(m));
+  const key = keyed ?? CONNECT_KEY.exec(str(o.message))?.[1];
+  return key ? `${status} ${key}` : String(status);
 }
+
+/** A Zitadel message key: `Errors.` and up to four dot-separated words of letters only. */
+const DETAIL_KEY = /^Errors(?:\.[A-Za-z]{1,40}){1,4}$/;
+/** A Connect error message as Zitadel v4.16 sends it: the key, then its id in brackets, and nothing else. */
+const CONNECT_KEY = /^(Errors(?:\.[A-Za-z]{1,40}){1,4}) \([A-Za-z0-9-]{1,40}\)$/;
 
 function serviceFailure(status: number): IdentityFailure {
   return isOutage(status) ? 'down' : 'rejected';

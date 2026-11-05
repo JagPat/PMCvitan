@@ -203,11 +203,15 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(fake.people.size).toBe(0);
   });
 
-  it('the issuer reason keeps only key and sentence characters, at most 160 of them', async () => {
+  it('the issuer reason is only a message key or the status, never the issuer\'s prose (Codex 4478003699)', async () => {
     const { issuerReason } = await import('./identity-client');
-    const reason = issuerReason(400, JSON.stringify({ message: 'bad <b>"x"</b>\n' + 'y'.repeat(300) }));
-    expect(reason).toBe(`400 bad bxb${'y'.repeat(160 - 'bad bxb'.length)}`);
+    expect(issuerReason(400, JSON.stringify({ message: 'password Secret-123 rejected for a@b.in' }))).toBe('400');
+    expect(issuerReason(400, JSON.stringify({ message: 'Secret-123 a@b.in Errors.User.Invalid (USER-zz)' }))).toBe('400');
+    expect(issuerReason(400, JSON.stringify({ message: 'Errors.User.Invalid (USER-zz)' }))).toBe('400 Errors.User.Invalid');
+    expect(issuerReason(400, JSON.stringify({ details: [{ message: 'Errors.Secret-123' }, { message: 'a@b.in' }] }))).toBe('400');
+    expect(issuerReason(400, JSON.stringify({ message: 'Password must contain upper case', details: [{ message: 'Errors.User.PasswordComplexityPolicy.HasUpper' }] }))).toBe('400 Errors.User.PasswordComplexityPolicy.HasUpper');
     expect(issuerReason(400, '')).toBe('400');
+    expect(issuerReason(404, 'not json')).toBe('404');
   });
 
   it('the default limit is 4 seconds', async () => {
