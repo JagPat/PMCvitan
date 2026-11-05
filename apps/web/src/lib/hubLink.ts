@@ -90,8 +90,9 @@ export type HubCallResult<T> =
   | { kind: 'failed'; failure: HubFailure }
   | { kind: 'stale' };
 
-/** An unlink not yet settled: its key, and the Hub project it ends (the link the person saw and confirmed). */
-export type HubUnlinkPending = { key: string; hubProjectId: string };
+/** An unlink not yet settled: its key, the Hub project it ends (the link the person saw and confirmed), and when that
+ *  link was made (`linkedAt` from the snapshot), so a later link shown in its place reads as after the unlink. */
+export type HubUnlinkPending = { key: string; hubProjectId: string; linkedAt: string | null };
 
 /** How long a link or unlink waits for a snapshot that shows it before it answers `unconfirmed`. */
 export const HUB_SHOWN_WAIT_MS = 10_000;

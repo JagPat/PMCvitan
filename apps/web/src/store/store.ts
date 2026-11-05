@@ -5826,12 +5826,19 @@ export const useStore = create<Store>()(
       hubCall((gw, pid) => gw.linkHubProject(orgId, pid, hubProjectId, key).then(() => true as const), (_v, link) => link?.hubProjectId === hubProjectId),
     unlinkHubProject: async (orgId, hubProjectId) => {
       // one key, and the link it ends, until the unlink has settled, Hub's side included (Codex 4479979986)
-      const pending = get().hubUnlinkPending ?? { key: newIdempotencyKey(), hubProjectId };
+      const seen = get().hubLink;
+      const pending = get().hubUnlinkPending ?? {
+        key: newIdempotencyKey(),
+        hubProjectId,
+        linkedAt: seen?.hubProjectId === hubProjectId ? seen.linkedAt : null,
+      };
       const scope = currentScope();
       set((s) => { s.hubUnlinkPending = pending; });
       const r = await hubCall(
         (gw, pid) => gw.unlinkHubProject(orgId, pid, pending.hubProjectId, pending.key).then((x) => ({ hubCleared: x.hubCleared === true })),
-        (_v, link) => link === null,
+        // shown once the snapshot no longer holds the link this unlink ended: no link, or a later one another admin made
+        // after it (Codex 4481199120); the ended link itself still shown means the screen has not caught up
+        (_v, link) => link === null || (pending.linkedAt !== null && !(link.hubProjectId === pending.hubProjectId && link.linkedAt === pending.linkedAt)),
       );
       const settled = (r.kind === 'ok' && r.value.hubCleared) || (r.kind === 'failed' && r.failure.kind === 'refused');
       if (settled && scopeStillCurrent(scope)) set((s) => { if (s.hubUnlinkPending?.key === pending.key) s.hubUnlinkPending = null; });

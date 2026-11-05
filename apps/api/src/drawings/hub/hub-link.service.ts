@@ -202,7 +202,10 @@ export class HubLinkService {
 
   async unlink(orgId: string, user: AuthUser, projectId: string, idempotencyKey?: string, expected?: string): Promise<HubUnlinkResult> {
     const scope = { scopeKind: 'project' as const, projectId };
-    const requestHash = hashRequest(expected === undefined ? { orgId, projectId } : { orgId, projectId, hubProjectId: expected });
+    // the hash leaves out the link the person saw: the key names the attempt, and the previous release hashed an unlink as
+    // { orgId, projectId }, so a retry that lands on either release during a rolling deploy replays the same committed
+    // unlink instead of a same-key/different-request 409 (#1353 Codex 4481199107)
+    const requestHash = hashRequest({ orgId, projectId });
     // a committed keyed unlink replays before any check that may have changed since
     const replay = await peekReplay(this.prisma, scope, user.sub, 'drawings.hubUnlink', idempotencyKey, requestHash);
     const config = replay ? null : this.client(orgId);

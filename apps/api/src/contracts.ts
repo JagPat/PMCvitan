@@ -2048,7 +2048,8 @@ export type HubLinkInput = z.infer<typeof hubLinkSchema>;
 /** #1118 U7a — `POST /orgs/:orgId/projects/:pid/hub/unlink`: optionally, the Hub project the person saw linked and chose
  *  to unlink. Given, the unlink refuses (409 `hub_link_changed`) unless that is still the project's link, or the link the
  *  project's last unlink ended (a retry of Hub's side), so it never ends a link the person did not see. */
+/** The previous release's unlink took no body, so a request with none at all stays valid (#1353 Codex 4481199082). */
 export const hubUnlinkSchema = z.object({
   hubProjectId: z.string().regex(HUB_PROJECT_ID).optional(),
-}).strict();
+}).strict().optional();
 export type HubUnlinkInput = z.infer<typeof hubUnlinkSchema>;

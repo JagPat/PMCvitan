@@ -51,6 +51,6 @@ export class HubLinkController {
     @Body(new ZodPipe(hubUnlinkSchema)) body: HubUnlinkInput,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.hubLink.unlink(orgId, user, pid, idempotencyKey, body.hubProjectId);
+    return this.hubLink.unlink(orgId, user, pid, idempotencyKey, body?.hubProjectId);
   }
 }

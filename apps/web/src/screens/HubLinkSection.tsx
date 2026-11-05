@@ -174,7 +174,7 @@ export function HubLinkSection({ orgId }: { orgId: string }) {
                 {L.openInHub[lang]} <ArrowUpRight size={13} />
               </a>
             )}
-            <Button variant="dangerOutline" onClick={() => setConfirmUnlink(hubLink.hubProjectId)} disabled={!!busy} data-testid="hub-unlink" style={{ fontSize: 13, padding: '10px 14px' }}>
+            <Button variant="dangerOutline" onClick={() => setConfirmUnlink(hubLink.hubProjectId)} disabled={!!busy || !!unlinkPending} data-testid="hub-unlink" style={{ fontSize: 13, padding: '10px 14px' }}>
               {busy === 'unlink' ? L.unlinking[lang] : L.unlink[lang]}
             </Button>
           </>
