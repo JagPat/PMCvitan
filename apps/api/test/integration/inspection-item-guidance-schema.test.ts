@@ -124,6 +124,8 @@ describe('guided site inspections step 1 — item guidance and record spec (live
       { recordKind: 'video', recordCount: 10, recordWhen: 'fail' },
       { recordKind: 'voice', recordCount: 1, recordWhen: 'always', recordHint: 'h'.repeat(300) },
       { lookAt: 'l'.repeat(500), passRule: 'p'.repeat(500) },
+      // the bounds count characters, not bytes: Gujarati and Hindi text is three bytes a character
+      { lookAt: 'જ'.repeat(500), passRule: 'ज'.repeat(500), recordKind: 'photo', recordCount: 1, recordWhen: 'fail', recordHint: 'ટ'.repeat(300) },
     ];
     for (const g of cases) {
       const item = await guidedItem(i, g);
@@ -133,7 +135,10 @@ describe('guided site inspections step 1 — item guidance and record spec (live
 
   it('refuses blank or over-long guidance', async () => {
     const i = await inspection();
-    const bad: Guidance[] = [{ lookAt: '' }, { lookAt: WS }, { lookAt: 'l'.repeat(501) }, { passRule: '' }, { passRule: WS }, { passRule: 'p'.repeat(501) }];
+    const bad: Guidance[] = [
+      { lookAt: '' }, { lookAt: WS }, { lookAt: 'l'.repeat(501) }, { lookAt: 'જ'.repeat(501) },
+      { passRule: '' }, { passRule: WS }, { passRule: 'p'.repeat(501) }, { passRule: 'ज'.repeat(501) },
+    ];
     for (const g of bad) await expect(guidedItem(i, g), JSON.stringify(g)).rejects.toThrow(new RegExp(GUIDANCE));
   });
 
@@ -154,7 +159,7 @@ describe('guided site inspections step 1 — item guidance and record spec (live
   });
 
   it('a work type is optional, never blank and at most 64 characters', async () => {
-    for (const ok of [null, 'RCC slab', 'w'.repeat(64)]) {
+    for (const ok of [null, 'RCC slab', 'w'.repeat(64), 'સ'.repeat(64)]) {
       const i = await inspection(ok);
       expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: i }, select: { workType: true } })).workType).toBe(ok);
     }
