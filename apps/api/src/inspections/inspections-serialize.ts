@@ -1,9 +1,10 @@
 import { Prisma } from '@prisma/client';
 import type {
-  Checklist, ChecklistItem, InspectionResult, ItemState, PlacedInspection, Review, ReviewItem, SwatchKey,
+  Checklist, ChecklistItem, InspectionResult, ItemGuide, ItemState, PlacedInspection, Review, ReviewItem, SwatchKey,
 } from '@vitan/shared';
 import { toIsoCivilDate } from '../common/civil-date';
 import { isFailedItem } from './failed-item';
+import { guideOf } from './guided-item';
 
 /**
  * Phase 2 Task 10 (Module 3) — the ONE canonical inspections read serializer, shared by the live snapshot
@@ -48,9 +49,14 @@ export interface InspectionBaseEntry {
    *  is stored. A base written before this field existed has no such key, and the projection read refuses it
    *  (`isCurrentInspectionsBase`) rather than serve "no due date" for a re-inspection that has one. */
   dueDate: string | null;
+  /** Guided site inspections (step 2a) — the kind of work it checks, or null. A base written before this field has no
+   *  such key, and the projection read refuses it (`isCurrentInspectionsBase`), as for `dueDate`. */
+  workType: string | null;
   items: {
     id: string;
     name: string;
+    /** Guided site inspections (step 2a) — the item's guidance (null: issued by name only). Fixed once issued. */
+    guide: ItemGuide | null;
     order: number;
     state: string | null;
     photos: number;
@@ -130,9 +136,11 @@ export async function computeInspectionsBase(
       reinspectionOfId: i.reinspectionOfId,
       assigneeId: i.assigneeId,
       dueDate: toIsoCivilDate(i.dueDate),
+      workType: i.workType,
       items: i.items.map((it) => ({
         id: it.id,
         name: it.name,
+        guide: guideOf(it),
         order: it.order,
         state: it.state,
         photos: it.photos,
@@ -225,10 +233,12 @@ export function bakeInspections(
     // authority: whether the assignment still binds is `bindingAssignees`' question, answered at read time.
     assigneeId: row.assigneeId,
     dueDate: row.dueDate,
+    workType: row.workType,
     items: row.items.map(
       (it): ChecklistItem => ({
         id: it.id, // the capture flow links evidence uploads to THIS item (Task 4)
         name: it.name,
+        guide: it.guide,
         state: it.state as ItemState,
         photos: it.photos,
         note: it.note,
@@ -299,12 +309,14 @@ export function bakeInspections(
         // #771 read contract — the same stored facts as the field view's rows (`null` when none is stored).
         assigneeId: i.assigneeId,
         dueDate: i.dueDate,
+        workType: i.workType,
         // Task 5: a CLOSING inspection is labelled with the activity it signs off.
         ...(i.closing ? { closing: true, activityId: i.activityId ?? undefined, activityName: i.activityName ?? undefined } : {}),
         items: i.items.map(
           (it): ReviewItem => ({
             id: it.id, // gate finding 3: rejection addresses THIS row, labels are not unique
             name: it.name,
+            guide: it.guide,
             result: (it.result ?? (it.state === 'fail' ? 'FAIL' : 'PASS')) as InspectionResult,
             swatch: (it.swatch ?? 'concrete') as SwatchKey,
             note: it.note,

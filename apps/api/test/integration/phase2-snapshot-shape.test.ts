@@ -149,10 +149,11 @@ const EXPECT: Record<string, Spec> = {
     optional: [], nullable: ['plannedStartDate', 'plannedEndDate'].sort(),
   },
   // #771 read contract: the stored assignee and civil due date are always present (`null` = none stored).
-  ChecklistDto: { keys: ['id', 'title', 'zone', 'nodeId', 'date', 'submitted', 'reinspectionOfId', 'assigneeId', 'dueDate', 'items'].sort(), optional: ['nodeId'], nullable: ['reinspectionOfId', 'assigneeId', 'dueDate'].sort() },
+  // Guided site inspections step 2a: the work type, always present (`null` = none).
+  ChecklistDto: { keys: ['id', 'title', 'zone', 'nodeId', 'date', 'submitted', 'reinspectionOfId', 'assigneeId', 'dueDate', 'workType', 'items'].sort(), optional: ['nodeId'], nullable: ['reinspectionOfId', 'assigneeId', 'dueDate', 'workType'].sort() },
   ReviewDto: {
-    keys: ['id', 'title', 'zone', 'nodeId', 'by', 'date', 'decided', 'reinspectionOfId', 'assigneeId', 'dueDate', 'closing', 'activityId', 'activityName', 'items'].sort(),
-    optional: ['nodeId', 'reinspectionOfId', 'closing', 'activityId', 'activityName'].sort(), nullable: ['assigneeId', 'dueDate'].sort(),
+    keys: ['id', 'title', 'zone', 'nodeId', 'by', 'date', 'decided', 'reinspectionOfId', 'assigneeId', 'dueDate', 'workType', 'closing', 'activityId', 'activityName', 'items'].sort(),
+    optional: ['nodeId', 'reinspectionOfId', 'closing', 'activityId', 'activityName'].sort(), nullable: ['assigneeId', 'dueDate', 'workType'].sort(),
   },
   MaterialDto: { keys: ['id', 'name', 'qty', 'zone', 'matched', 'swatch', 'decisionId', 'nodeId'].sort(), optional: ['decisionId', 'nodeId'].sort(), nullable: [] },
   DrawingAckDto: { keys: ['userName', 'role', 'at'].sort(), optional: [], nullable: [] },
@@ -180,8 +181,9 @@ const EXPECT: Record<string, Spec> = {
 // Inline (non-interface) element shapes — pinned literally + verified at runtime.
 const INLINE = {
   notification: ['at', 'color', 'id', 'text', 'time', 'unread'], // Top 10 #4a (#778) — the row's identity and write instant; #4b unit C — `unread`
-  checklistItem: ['evidence', 'id', 'name', 'note', 'photos', 'state'],
-  reviewItem: ['evidence', 'id', 'name', 'note', 'rejected', 'result', 'swatch'],
+  // guided step 2a — `guide`, the item's guidance (null for an item issued by name only)
+  checklistItem: ['evidence', 'guide', 'id', 'name', 'note', 'photos', 'state'],
+  reviewItem: ['evidence', 'guide', 'id', 'name', 'note', 'rejected', 'result', 'swatch'],
   crew: ['count', 'trade'],
   dailyLogMaterial: ['decisionId', 'matched', 'name', 'photo', 'qty', 'swatch', 'zone'],
   dailyLogPhoto: ['id', 'takenAt', 'url'], // takenAt optional

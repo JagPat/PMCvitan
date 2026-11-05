@@ -1,6 +1,6 @@
 /** API response shapes — aligned with the frontend domain model so the client
  *  hydrates its store directly from a snapshot. */
-import type { Drawing, Checklist, Review, PlacedInspection, DecisionStatus, NoticeFacts } from '@vitan/shared';
+import type { Drawing, Checklist, Review, PlacedInspection, DecisionStatus, NoticeFacts, ItemGuide } from '@vitan/shared';
 import type { Phase6_4dRollout } from '../platform/phase6-4d-rollout';
 
 /** Phase 2 Task 9 — the project-shell summary (identity + projection counts), the light payload the
@@ -262,9 +262,12 @@ export interface ChecklistDto {
   assigneeId: string | null;
   /** #771 read contract — the stored due date as a civil `YYYY-MM-DD` (`null` = none). Always present. */
   dueDate: string | null;
+  /** Guided site inspections (step 2a) — the kind of work it checks ("RCC slab"), or null. Always present. */
+  workType: string | null;
   /** `id` links evidence uploads to the item; `evidence` = signed serve paths (Task 4).
-   *  `photos` is a DEPRECATED display counter — linked evidence rows are the proof. */
-  items: { id: string; name: string; state: string | null; photos: number; note: string; evidence: string[] }[];
+   *  `photos` is a DEPRECATED display counter — linked evidence rows are the proof.
+   *  `guide` (guided step 2a) = what to look at, what good looks like and what to record; null when issued by name. */
+  items: { id: string; name: string; guide: ItemGuide | null; state: string | null; photos: number; note: string; evidence: string[] }[];
 }
 
 export interface ReviewDto {
@@ -281,13 +284,15 @@ export interface ReviewDto {
   /** #771 read contract — the stored assignee and civil due date (`null` = none stored). Always present. */
   assigneeId: string | null;
   dueDate: string | null;
+  /** Guided site inspections (step 2a) — as {@link ChecklistDto.workType}. Always present. */
+  workType: string | null;
   /** set when this review is a CLOSING sign-off (Task 5): approving it completes
    *  the named activity; rejecting it returns that activity to execution */
   closing?: boolean;
   activityId?: string;
   activityName?: string;
-  /** `evidence` = the item's linked photo proof as signed serve paths (Task 4) */
-  items: { id: string; name: string; result: 'PASS' | 'FAIL'; swatch: string; note: string; rejected: boolean; evidence: string[] }[];
+  /** `evidence` = the item's linked photo proof as signed serve paths (Task 4); `guide` as {@link ChecklistDto.items} */
+  items: { id: string; name: string; guide: ItemGuide | null; result: 'PASS' | 'FAIL'; swatch: string; note: string; rejected: boolean; evidence: string[] }[];
 }
 
 /** A material delivery placed on the location spine — the Site Map's "materials here". */

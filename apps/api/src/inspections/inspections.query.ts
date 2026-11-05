@@ -13,6 +13,8 @@ import { nextSeqId } from '../domain/ids';
 import { isFailedItem } from './failed-item';
 import { lineageApproval } from './inspection-lineage';
 import { AuditQuery } from '../platform/audit.query';
+import type { InspectionItemSpec } from '../contracts';
+import { specFromItemRow } from './guided-item';
 
 /** The CHECKLIST-definition structure a project-copy/module-extract reads from a source project through
  *  the inspections boundary: title + place + ordered item names (never results — reviews aren't structure). */
@@ -20,7 +22,10 @@ export interface InspectionChecklistStructure {
   title: string;
   zone: string;
   nodeId: string | null;
-  items: string[];
+  /** Guided site inspections (step 2a) — the kind of work it checks, or null. */
+  workType: string | null;
+  /** Each item as a template carries it: a plain name, or a guided item with its guidance. */
+  items: InspectionItemSpec[];
 }
 
 /**
@@ -36,18 +41,27 @@ export interface InspectionChecklistStructure {
  */
 /**
  * Is this stored projection base the shape THIS release's serializer produces? Every entry of a current
- * base carries `assigneeId` and `dueDate` (each a value or an explicit `null`); a v1 entry has neither key,
+ * base carries `assigneeId`, `dueDate` and `workType` (each a value or an explicit `null`); a v1 entry has neither key,
  * and an entry written before the #771 read contract has no `dueDate`. Checked by key presence rather than
  * truthiness, because `null` is a legitimate current value (unassigned / no due date). An older row is
  * refused and the read falls back to the canonical live slice, so a re-inspection that HAS a due date is
  * never served as having none; the row becomes servable again the next time an `inspection.*` event
  * refreshes it, or on a rebuild.
  */
-const CURRENT_BASE_KEYS = ['assigneeId', 'dueDate'] as const;
+const CURRENT_BASE_KEYS = ['assigneeId', 'dueDate', 'workType'] as const;
+/** Guided site inspections (step 2a) — each item of a current base carries `guide` (null for an item issued by name
+ *  only). A base written before it has no such key on its items, and is refused the same way, so a guided item is never
+ *  served as a plain one. */
+const CURRENT_ITEM_KEYS = ['guide'] as const;
 function isCurrentInspectionsBase(base: InspectionsBase): boolean {
   const entries = (base as unknown as { inspections?: unknown[] }).inspections;
   if (!Array.isArray(entries)) return false;
-  return entries.every((e) => e !== null && typeof e === 'object' && CURRENT_BASE_KEYS.every((k) => k in (e as object)));
+  const hasKeys = (v: unknown, keys: readonly string[]): boolean => v !== null && typeof v === 'object' && keys.every((k) => k in (v as object));
+  return entries.every((e) => {
+    if (!hasKeys(e, CURRENT_BASE_KEYS)) return false;
+    const items = (e as { items?: unknown }).items;
+    return Array.isArray(items) && items.every((it) => hasKeys(it, CURRENT_ITEM_KEYS));
+  });
 }
 
 /** The evidence photos the caller says this viewer may not see (#884). A photo filed on someone else's private
@@ -314,7 +328,9 @@ export class InspectionsQueryService {
       where: { projectId, kind: 'checklist', ...(opts.nodeIds ? { nodeId: { in: [...opts.nodeIds] } } : {}) },
       include: { items: { orderBy: { order: 'asc' } } },
     });
-    return rows.map((i) => ({ title: i.title, zone: i.zone, nodeId: i.nodeId, items: i.items.map((it) => it.name) }));
+    // Guided site inspections (step 2a) — an item travels with its guidance (a plain name when it has none), and the
+    // checklist with its work type, so a project or module made from this one issues the same guided checklist.
+    return rows.map((i) => ({ title: i.title, zone: i.zone, nodeId: i.nodeId, workType: i.workType, items: i.items.map(specFromItemRow) }));
   }
 
   /**

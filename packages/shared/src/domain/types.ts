@@ -351,6 +351,15 @@ export interface PortfolioProject {
   milestonePct: number;
 }
 
+/** Guided site inspections (step 2a) — what an issued item asks of the person on site: what to look at, what good
+ *  looks like, and what to record as proof (a kind, how many, and when: `always` means a pass needs it too, `fail` only
+ *  a fail). Each part may be null; the whole guide is null for an item issued by name only. Fixed once issued. */
+export interface ItemGuide {
+  lookAt: string | null;
+  passRule: string | null;
+  record: { kind: 'photo' | 'video' | 'voice'; count: number; when: 'always' | 'fail'; hint: string | null } | null;
+}
+
 export interface ChecklistItem {
   /** server row id — the capture flow links evidence uploads to THIS item (Task 4) */
   id?: string;
@@ -361,6 +370,9 @@ export interface ChecklistItem {
   note: string;
   /** the item's linked photo evidence as resolvable URLs (Task 4) */
   evidence?: string[];
+  /** Guided site inspections (step 2a) — the item's guidance, null for an item issued by name only. ABSENT only from an
+   *  API older than the field. */
+  guide?: ItemGuide | null;
 }
 
 export interface Checklist {
@@ -383,6 +395,9 @@ export interface Checklist {
   /** #771 read contract — when the work is due, as a civil date `YYYY-MM-DD` (no time, no zone). `null` =
    *  none stored; ABSENT = an API older than the field (unknown, never "no due date"). */
   dueDate?: string | null;
+  /** Guided site inspections (step 2a) — the kind of work it checks ("RCC slab"), or null. ABSENT only from an API
+   *  older than the field. */
+  workType?: string | null;
   items: ChecklistItem[];
 }
 
@@ -396,6 +411,9 @@ export interface ReviewItem {
   swatch: SwatchKey;
   note: string;
   rejected: boolean;
+  /** Guided site inspections (step 2a) — the item's guidance, null for an item issued by name only. ABSENT only from an
+   *  API older than the field. */
+  guide?: ItemGuide | null;
 }
 
 export interface Review {
@@ -416,6 +434,8 @@ export interface Review {
   assigneeId?: string | null;
   /** #771 read contract — as {@link Checklist.dueDate}: civil `YYYY-MM-DD`; `null` none, ABSENT unknown. */
   dueDate?: string | null;
+  /** Guided site inspections (step 2a) — as {@link Checklist.workType}: `null` none, ABSENT an older API. */
+  workType?: string | null;
   /** set when this review is a CLOSING sign-off (Task 5): approving it completes
    *  the named activity; rejecting it returns that activity to execution */
   closing?: boolean;

@@ -8,12 +8,12 @@ import { bakeInspections, type InspectionBaseEntry, type InspectionsBase } from 
  */
 
 const item = (id: string, over: Partial<InspectionBaseEntry['items'][number]> = {}) => ({
-  id, name: 'Verify', order: 0, state: null, photos: 0, note: '', result: null, swatch: null, rejected: false, mediaIds: [], ...over,
+  id, name: 'Verify', order: 0, state: null, photos: 0, note: '', result: null, swatch: null, rejected: false, mediaIds: [], guide: null, ...over,
 });
 const entry = (over: Partial<InspectionBaseEntry> & { id: string }): InspectionBaseEntry => ({
   kind: 'checklist', title: over.id, zone: 'Kitchen', nodeId: 'n-kitchen', by: null, date: 'today',
   submitted: false, decided: false, closing: false, activityId: null, activityName: null,
-  reinspectionOfId: null, assigneeId: null, dueDate: null, items: [item(`${over.id}-i1`)], ...over,
+  reinspectionOfId: null, assigneeId: null, dueDate: null, workType: null, items: [item(`${over.id}-i1`)], ...over,
 });
 const placed = (inspections: InspectionBaseEntry[], role = 'pmc') =>
   bakeInspections({ inspections } as InspectionsBase, { role, evidencePath: (id) => id, bindingAssignees: new Set(), hiddenEvidence: new Set() }).placedInspections;
