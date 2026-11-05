@@ -38,6 +38,8 @@ function stubHub(token: string) {
   const links = new Map<string, HubLinkRow>();
   const faults: Array<{ when: (method: string, path: string) => boolean; fault: Fault }> = [];
   const calls: string[] = [];
+  // runs as a DELETE arrives, before Hub answers it
+  const hooks: { onDelete: null | (() => Promise<void>) } = { onDelete: null };
   const answer = (res: ServerResponse, status: number, body?: unknown) => {
     res.writeHead(status, body === undefined ? {} : { 'content-type': 'application/json' });
     res.end(body === undefined ? undefined : JSON.stringify(body));
@@ -45,7 +47,7 @@ function stubHub(token: string) {
   const server = http.createServer((req: IncomingMessage, res: ServerResponse) => {
     let raw = '';
     req.on('data', (c) => (raw += c));
-    req.on('end', () => {
+    req.on('end', async () => {
       const method = req.method ?? 'GET';
       const path = (req.url ?? '').split('?')[0]!;
       calls.push(`${method} ${path}`);
@@ -70,6 +72,7 @@ function stubHub(token: string) {
         return answer(res, 200, { app: 'pmc' });
       }
       if (method === 'DELETE' && m[2]) {
+        await hooks.onDelete?.();
         if (!links.has(id)) return answer(res, 400, { error: "That project isn't linked to that app." });
         links.delete(id);
         return answer(res, 204);
@@ -77,7 +80,7 @@ function stubHub(token: string) {
       answer(res, 405);
     });
   });
-  return { server, links, faults, calls };
+  return { server, links, faults, calls, hooks };
 }
 
 describe('#1118 U7a L1 — Hub project link (live PG + stub Hub)', () => {
@@ -100,6 +103,7 @@ describe('#1118 U7a L1 — Hub project link (live PG + stub Hub)', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     hub.faults.length = 0;
+    hub.hooks.onDelete = null;
   });
 
   afterAll(async () => {
@@ -214,6 +218,10 @@ describe('#1118 U7a L1 — Hub project link (live PG + stub Hub)', () => {
     expect(snap.project.hubLink).toEqual(view);
     vi.unstubAllEnvs();
     expect((await t.app.get(DrawingsQueryService).hubLink(p))?.openUrl).toBeNull();
+    // Hub connected for another company: this company's link does not point at it
+    open(f.orgB.id);
+    expect((await t.app.get(DrawingsQueryService).hubLink(p))?.openUrl).toBeNull();
+    vi.unstubAllEnvs();
     open();
 
     // linked elsewhere: unlink first; another PMC project may not take Hub project 12
@@ -284,7 +292,7 @@ describe('#1118 U7a L1 — Hub project link (live PG + stub Hub)', () => {
     // Hub already clear: its 400 is read as done
     expect((await unlink(p)).body).toEqual({ hubCleared: true });
     const audit = await t.prisma.auditLog.findMany({ where: { projectId: p, action: 'drawing.hub_unlinked' } });
-    expect(audit.map((a) => a.payload)).toEqual([{ hubProjectId: '14', hubCleared: false }]);
+    expect(audit.map((a) => a.payload)).toEqual([{ hubProjectId: '14' }]);
 
     // linked again later: the next event links, the chain goes on
     expect((await link(p, '14')).status).toBe(200);
@@ -306,6 +314,20 @@ describe('#1118 U7a L1 — Hub project link (live PG + stub Hub)', () => {
     expect(callsSince(n)).toEqual([]);
     expect(hub.links.get('16')?.externalId).toBe(second);
     expect((await unlink(second)).body).toEqual({ hubCleared: true });
+  });
+
+  it("removes Hub's link only after PMC's unlink has committed", async () => {
+    open();
+    const p = await project('commit-first');
+    expect((await link(p, '15')).status).toBe(200);
+    const seen: string[][] = [];
+    hub.hooks.onDelete = async () => {
+      // another connection: it sees only what has committed
+      seen.push((await events(p)).map((e) => e.kind));
+    };
+    expect((await unlink(p)).body).toEqual({ hubCleared: true });
+    expect(seen).toEqual([['linked', 'unlinked']]);
+    expect(hub.links.has('15')).toBe(false);
   });
 
   it('two projects racing for one Hub project: exactly one links, and Hub names that one', async () => {
@@ -332,7 +354,8 @@ describe('#1118 U7a L1 — Hub project link (live PG + stub Hub)', () => {
     const n = hub.calls.length;
     const relink = await link(p, '14', { key: `k-rl-${run}` });
     expect(relink.status).toBe(200);
-    expect(relink.body).toEqual({ link: null });
+    // the answer is the link that command committed, though the project has been unlinked since
+    expect(relink.body.link).toMatchObject({ hubProjectId: '14', number: '24-019', name: 'Riverside' });
     expect((await unlink(p, { key: `k-ru-${run}` })).body).toEqual({ hubCleared: false });
     // unkeyed, or a new key: closed again
     expect((await unlink(p, { key: `k-ru2-${run}` })).status).toBe(404);

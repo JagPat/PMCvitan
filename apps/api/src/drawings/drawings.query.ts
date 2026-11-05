@@ -43,13 +43,16 @@ export class DrawingsQueryService {
 
   /**
    * #1118 U7a — the project's active Hub link for the snapshot's project line, read from PMC's own link events, with
-   * where "Open in Hub" goes: Hub's address while PMC is connected to Hub, else null.
+   * where "Open in Hub" goes: Hub's address while PMC is connected to Hub for the company the link belongs to, else null
+   * (a link made for one company never points at a Hub connected later for another).
    */
   async hubLink(projectId: string): Promise<ProjectHubLinkDto | null> {
     const link = await readHubLink(this.prisma, projectId);
     if (!link) return null;
     const hub = readHubClientConfig();
-    return { ...link, openUrl: hub.open ? hub.config.baseUrl : null };
+    if (!hub.open) return { ...link, openUrl: null };
+    const row = await this.prisma.drawingHubLink.findUnique({ where: { projectId }, select: { orgId: true } });
+    return { ...link, openUrl: row?.orgId === hub.config.orgId ? hub.config.baseUrl : null };
   }
 
   /**

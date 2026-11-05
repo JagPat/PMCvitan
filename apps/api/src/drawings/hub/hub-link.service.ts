@@ -48,9 +48,12 @@ import {
  *   project (its number and name, and that the office token reaches it), then Hub links it (`POST …/links/pmc`, an
  *   upsert), and only then PMC writes the `linked` event with that number and name. Linked to it already: no new event,
  *   and Hub's link is written again, so a retry repairs a Hub that lost it.
- * - Unlink: Hub's link is removed first (unless another PMC project holds that Hub project now), then PMC writes the
- *   `unlinked` event whether Hub answered or not: PMC's side decides. The answer says whether Hub's link is gone. Already
- *   unlinked: only Hub's removal is tried again.
+ * - Unlink: PMC's side decides and commits first: the `unlinked` event and its audit row, under the locks, with no Hub
+ *   call. Only after that commit is Hub's link removed, in a second transaction that takes the company's standing key
+ *   and the link row again, so no link command runs meanwhile, and that writes nothing: it removes Hub's link only while
+ *   this project is still unlinked and no other PMC project holds that Hub project. So a failed PMC write never leaves
+ *   Hub cleared, and a failed Hub call never leaves PMC linked. The answer says whether Hub's link is gone. Already
+ *   unlinked (or a replayed key): only Hub's removal is tried again, so the screen's Retry clears Hub.
  *
  * A Hub link without its PMC twin is harmless: the receiver needs both. A Hub failure is a 503 the screen can retry
  * (Hub unreachable, slow or 5xx), a 503 that needs an operator (Hub refused the office token), or a 502 (Hub refused the
@@ -121,7 +124,7 @@ export class HubLinkService {
     };
   }
 
-  async link(orgId: string, user: AuthUser, projectId: string, hubProjectId: string, idempotencyKey?: string): Promise<{ link: HubLinkView | null }> {
+  async link(orgId: string, user: AuthUser, projectId: string, hubProjectId: string, idempotencyKey?: string): Promise<{ link: HubLinkView }> {
     const scope = { scopeKind: 'project' as const, projectId };
     const requestHash = hashRequest({ orgId, projectId, hubProjectId });
     // a committed keyed link replays before any check that may have changed since (Hub's config, the person's role)
@@ -130,7 +133,7 @@ export class HubLinkService {
     if (!replay) await this.authorize(this.prisma, orgId, user.sub, projectId);
     const actor = await resolveActor(this.prisma, user);
 
-    await executeCommand(this.prisma, {
+    const outcome = await executeCommand(this.prisma, {
       scope,
       actor,
       commandType: 'drawings.hubLink',
@@ -155,7 +158,8 @@ export class HubLinkService {
 
         // PMC's side, under the same locks
         const latest = await latestEvent(tx, projectId);
-        if (latest?.kind === 'linked') return { resultRef: hubProjectId };
+        // the receipt names the link event this command committed (or found), so its answer never depends on a later one
+        if (latest?.kind === 'linked') return { resultRef: String(latest.seq) };
         if (!latest) await tx.drawingHubLink.create({ data: { projectId, orgId } });
         const seq = (latest?.seq ?? 0) + 1;
         await tx.drawingHubLinkEvent.create({
@@ -178,61 +182,81 @@ export class HubLinkService {
           entityId: `${projectId}:${seq}`,
           payload: { hubProjectId, hubProjectNumber: hubProject.number, hubProjectName: hubProject.name },
         });
-        return { resultRef: hubProjectId };
+        return { resultRef: String(seq) };
       },
     });
-    return { link: await readHubLink(this.prisma, projectId) };
+    // events are insert-only, so the event this command committed reads the same however many commands came after it
+    const view = await readHubLinkEvent(this.prisma, projectId, Number(outcome.resultRef));
+    if (!view) throw new NotFoundException();
+    return { link: view };
   }
 
   async unlink(orgId: string, user: AuthUser, projectId: string, idempotencyKey?: string): Promise<HubUnlinkResult> {
     const scope = { scopeKind: 'project' as const, projectId };
     const requestHash = hashRequest({ orgId, projectId });
-    // a committed keyed unlink replays (with its answer) before any check that may have changed since
+    // a committed keyed unlink replays before any check that may have changed since
     const replay = await peekReplay(this.prisma, scope, user.sub, 'drawings.hubUnlink', idempotencyKey, requestHash);
     const config = replay ? null : this.client(orgId);
     if (!replay) await this.authorize(this.prisma, orgId, user.sub, projectId);
     const actor = await resolveActor(this.prisma, user);
 
-    const outcome = await executeCommand(this.prisma, {
+    // PMC's side first, committed with no Hub call: the unlink is decided here
+    await executeCommand(this.prisma, {
       scope,
       actor,
       commandType: 'drawings.hubUnlink',
       idempotencyKey,
       requestHash,
-      transact: (fn) => this.prisma.$transaction(fn, { timeout: HUB_LINK_TX_TIMEOUT_MS }),
       run: async (tx) => {
         if (!config) throw new NotFoundException();
-        // every lock first, so nothing Hub is told can be undone by a role change or an archive in the meantime
         await this.lockForWrite(tx, orgId, user.sub, projectId);
         const latest = await latestEvent(tx, projectId);
         if (!latest) throw new ConflictException({ code: 'hub_not_linked', message: 'This project is not linked to a Hub project' });
-        // the Hub project this project was last linked to: events alternate, so an unlink's previous event is that link
-        const target = latest.kind === 'linked'
-          ? latest.hubProjectId
-          : (await tx.drawingHubLinkEvent.findUnique({ where: { projectId_seq: { projectId, seq: latest.seq - 1 } }, select: { hubProjectId: true } }))?.hubProjectId;
-        if (!target) throw new ConflictException({ code: 'hub_not_linked', message: 'This project is not linked to a Hub project' });
-
-        // Hub's side first. Its one `pmc` link on that Hub project is another PMC project's once that project holds it,
-        // and then is not ours to remove
-        const holder = (await activeHolders(tx, [target])).get(target);
-        const hubCleared = holder !== undefined && holder !== projectId ? true : (await unlinkHubProject(config, target)).ok;
-
-        if (latest.kind === 'linked') {
-          const seq = latest.seq + 1;
-          await tx.drawingHubLinkEvent.create({ data: { projectId, seq, prevSeq: latest.seq, kind: 'unlinked', byUserId: user.sub } });
-          await recordAudit(tx, {
-            projectId,
-            actor,
-            action: 'drawing.hub_unlinked',
-            entity: 'DrawingHubLinkEvent',
-            entityId: `${projectId}:${seq}`,
-            payload: { hubProjectId: target, hubCleared },
-          });
-        }
-        return { resultRef: hubCleared ? 'hub-cleared' : 'hub-kept' };
+        if (latest.kind !== 'linked') return { resultRef: String(latest.seq) };
+        const seq = latest.seq + 1;
+        await tx.drawingHubLinkEvent.create({ data: { projectId, seq, prevSeq: latest.seq, kind: 'unlinked', byUserId: user.sub } });
+        await recordAudit(tx, {
+          projectId,
+          actor,
+          action: 'drawing.hub_unlinked',
+          entity: 'DrawingHubLinkEvent',
+          entityId: `${projectId}:${seq}`,
+          payload: { hubProjectId: latest.hubProjectId },
+        });
+        return { resultRef: String(seq) };
       },
     });
-    return { hubCleared: outcome.resultRef === 'hub-cleared' };
+    // then Hub's side, only after PMC's unlink has committed
+    return { hubCleared: await this.clearHubLink(orgId, user.sub, projectId) };
+  }
+
+  /**
+   * After an unlink has committed: removes Hub's `pmc` link from the Hub project this project was last linked to, and
+   * says whether Hub is left with no link of this project's. Its own transaction, which writes nothing: the company's
+   * standing key (so no link command of the company runs meanwhile, and the owner/admin answer holds) and the link row.
+   * Hub is called only while Hub is connected for this company, the person is still an owner or admin, the project is
+   * still unlinked, and no other PMC project holds that Hub project (then Hub's one `pmc` link is that project's, and
+   * not ours to remove). Otherwise there is nothing of ours to remove (true), or nothing it may do now (false: the screen
+   * offers Retry).
+   */
+  private async clearHubLink(orgId: string, userId: string, projectId: string): Promise<boolean> {
+    const hub = readHubClientConfig();
+    if (!hub.open || hub.config.orgId !== orgId) return false;
+    const config = hub.config;
+    return this.prisma.$transaction(async (tx) => {
+      await lockOrgStanding(tx, orgId);
+      if (!(await this.orgs.administersAnyOf(tx, userId, [orgId]))) return false;
+      await tx.$queryRaw(Prisma.sql`SELECT "projectId" FROM "DrawingHubLink" WHERE "projectId" = ${projectId} FOR UPDATE`);
+      const latest = await latestEvent(tx, projectId);
+      // linked again since: the link Hub holds is that one
+      if (!latest || latest.kind !== 'unlinked') return true;
+      // events alternate, so an unlink's previous event is the link it ended
+      const target = (await tx.drawingHubLinkEvent.findUnique({ where: { projectId_seq: { projectId, seq: latest.seq - 1 } }, select: { hubProjectId: true } }))?.hubProjectId;
+      if (!target) return true;
+      const holder = (await activeHolders(tx, [target])).get(target);
+      if (holder !== undefined && holder !== projectId) return true;
+      return (await unlinkHubProject(config, target)).ok;
+    }, { timeout: HUB_LINK_TX_TIMEOUT_MS });
   }
 
   /**
@@ -292,6 +316,17 @@ async function linkRefusal(db: Prisma.TransactionClient, projectId: string, hubP
 
 /** #1118 U7a — a project's active Hub link as screens show it: Hub's id, and the number and name kept at link time. */
 export type HubLinkView = { hubProjectId: string; number: string | null; name: string | null; linkedAt: string };
+
+/** Link event `seq` of the project as a {@link HubLinkView}, or null when it is not a link. */
+async function readHubLinkEvent(db: Prisma.TransactionClient, projectId: string, seq: number): Promise<HubLinkView | null> {
+  if (!Number.isSafeInteger(seq) || seq < 1) return null;
+  const ev = await db.drawingHubLinkEvent.findUnique({
+    where: { projectId_seq: { projectId, seq } },
+    select: { kind: true, hubProjectId: true, hubProjectNumber: true, hubProjectName: true, at: true },
+  });
+  if (ev?.kind !== 'linked' || !ev.hubProjectId) return null;
+  return { hubProjectId: ev.hubProjectId, number: ev.hubProjectNumber, name: ev.hubProjectName, linkedAt: ev.at.toISOString() };
+}
 
 /** The project's active Hub link (its latest event, when that is a link), or null. Reads PMC only, never Hub. */
 export async function readHubLink(db: Prisma.TransactionClient, projectId: string): Promise<HubLinkView | null> {
