@@ -12,7 +12,14 @@ import { guidanceColumnsOf, isGuidedRow, type ItemGuidanceColumns } from './guid
  *   when it fails, and also when it passes if the spec says `always`. Not applicable needs none.
  * - A failed GUIDED item also needs a reason, typed (its note) or spoken (a linked voice recording). A plain item is
  *   judged as before.
+ *
+ * A record spec is enforced only for the kinds the app can record ({@link ENFORCED_RECORD_KINDS}): today's checklist
+ * screen attaches photos only, so an item asking for a video or a voice note is not held to it until the web walk
+ * (guided step 4) ships their capture and adds both kinds here in the same change (Codex 4481441391).
  */
+
+/** The record kinds a submit is held to. Step 4 (the web walk, which records video and voice) adds 'video' and 'voice'. */
+export const ENFORCED_RECORD_KINDS: ReadonlySet<InspectionRecordKind> = new Set<InspectionRecordKind>(['photo']);
 
 /** The kind of recording a stored file is, by its type; null for anything else. */
 export function recordingKindOf(mime: string): InspectionRecordKind | null {
@@ -39,7 +46,11 @@ export interface SubmittedItem extends ItemGuidanceColumns {
 
 /** What the submit must refuse, as the sentences it says (empty: the evidence rule holds). `mimesByItem` holds the
  *  type of every file linked to each item as evidence. Items are judged in the order given (checklist order). */
-export function evidenceShortfalls(items: SubmittedItem[], mimesByItem: ReadonlyMap<string, readonly string[]>): string[] {
+export function evidenceShortfalls(
+  items: SubmittedItem[],
+  mimesByItem: ReadonlyMap<string, readonly string[]>,
+  enforced: ReadonlySet<InspectionRecordKind> = ENFORCED_RECORD_KINDS,
+): string[] {
   const noEvidence: string[] = [];
   const missingRecordings: string[] = [];
   const noReason: string[] = [];
@@ -48,8 +59,8 @@ export function evidenceShortfalls(items: SubmittedItem[], mimesByItem: Readonly
     const kinds = (mimesByItem.get(item.id) ?? []).map(recordingKindOf);
     const g = guidanceColumnsOf(item);
     if (item.state === 'fail' && kinds.length === 0) noEvidence.push(item.name);
-    if (g.recordKind !== null && g.recordCount !== null && (item.state === 'fail' || g.recordWhen === 'always')) {
-      const kind = g.recordKind as InspectionRecordKind;
+    const kind = g.recordKind as InspectionRecordKind | null;
+    if (kind !== null && enforced.has(kind) && g.recordCount !== null && (item.state === 'fail' || g.recordWhen === 'always')) {
       const have = kinds.filter((k) => k === kind).length;
       if (have < g.recordCount) missingRecordings.push(`${item.name} (${g.recordCount} ${KIND_WORDS[kind][g.recordCount === 1 ? 0 : 1]})`);
     }

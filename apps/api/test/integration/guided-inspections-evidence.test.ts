@@ -9,8 +9,10 @@ import { clipWebmTimed } from '../unit-support/video-files';
  * Guided site inspections, step 2b — THE EVIDENCE RULE for guided items (proposal decision 2, Jagrut 5 Nov 2026: "a pass
  * needs the recordings its item asks for"), and voice notes and videos as an inspection item's evidence.
  *
- * - An item that asks for recordings needs that many of that kind (photo, video, voice) linked to it when it fails, and
- *   when it passes too if it asks "always". Not applicable needs none.
+ * - An item that asks for recordings needs that many of that kind linked to it when it fails, and when it passes too if
+ *   it asks "always". Not applicable needs none. Today only a PHOTO ask is held: the checklist screen attaches photos
+ *   only, so video and voice asks are held from the web walk (step 4), which records them (Codex 4481441391; the full
+ *   rule, every kind, is pinned in `evidence-rule.test.ts`).
  * - A failed guided item needs a reason: its note, or a linked voice note.
  * - Any failed item needs at least one linked recording, as before; a plain checklist is refused with the same sentence.
  * - A voice note or a video uploads as item evidence (kind 'inspection', naming the item); anywhere else but a visit it
@@ -100,17 +102,17 @@ describe('guided site inspections step 2b — required recordings on pass and fa
     });
   const submitted = async (id: string) => (await t.prisma.inspection.findUniqueOrThrow({ where: { id } })).submitted;
 
-  it('reproduce: a pass needs the recordings its item asks for "always"; the refusal names each item and what it lacks', async () => {
+  it('reproduce: a pass needs the photos its item asks for "always"; the refusal names each item and what it lacks', async () => {
     const c = await guidedChecklist();
     const none = await submit(c, {});
     expect(none.status).toBe(400);
-    expect(none.body.message).toBe('These items need the recordings they ask for before you can submit: A (2 photos), C (1 voice note)');
+    expect(none.body.message).toBe('These items need the recordings they ask for before you can submit: A (2 photos)');
     expect(await submitted(c.id)).toBe(false);
 
-    // one photo is not two, and a photo is not a voice note
+    // one photo is not two, and a voice note is not a photo
     expect((await photo(c.id, c.item.A)).status).toBe(201);
-    expect((await photo(c.id, c.item.C)).status).toBe(201);
-    expect((await submit(c, {})).body.message).toBe('These items need the recordings they ask for before you can submit: A (2 photos), C (1 voice note)');
+    expect((await voiceNote(c.id, c.item.A)).status).toBe(201);
+    expect((await submit(c, {})).body.message).toBe('These items need the recordings they ask for before you can submit: A (2 photos)');
 
     expect((await photo(c.id, c.item.A)).status).toBe(201);
     const voiced = await voiceNote(c.id, c.item.C);
@@ -122,20 +124,22 @@ describe('guided site inspections step 2b — required recordings on pass and fa
     expect(stored).toMatchObject({ kind: 'inspection', mime: 'audio/webm', durationSec: 4, inspectionItemId: c.item.C });
   });
 
+  it('a video or voice ask is not held until the app can record one: today\'s screen, photos only, can still submit', async () => {
+    const c = await guidedChecklist();
+    await photo(c.id, c.item.A); await photo(c.id, c.item.A);
+    // C asks for a voice note always, and B for a video on a fail: neither is held yet (a photo and a typed reason do)
+    await photo(c.id, c.item.B);
+    expect((await submit(c, { B: 'fail' }, { B: 'Gap of 5 mm at the east edge' })).status).toBe(201);
+  });
+
   it('not applicable needs no recording, even on an item that asks "always"', async () => {
     const c = await guidedChecklist();
     expect((await submit(c, { A: 'na', C: 'na' })).status).toBe(201);
   });
 
-  it('a fail needs the recordings its item asks for on a fail, and a reason, typed or spoken', async () => {
+  it('a failed guided item needs a reason, typed (more than spaces) or spoken; a video files as its evidence', async () => {
     const c = await guidedChecklist();
-    await photo(c.id, c.item.A); await photo(c.id, c.item.A); await voiceNote(c.id, c.item.C);
-    // B fails with a photo only: it asked for a video, and no reason was given
-    await photo(c.id, c.item.B);
-    expect((await submit(c, { B: 'fail' })).body.message).toBe(
-      'These items need the recordings they ask for before you can submit: B (1 video) '
-      + 'A failed item needs a reason, typed or spoken, before you can submit: B',
-    );
+    await photo(c.id, c.item.A); await photo(c.id, c.item.A);
     expect((await videoClip(c.id, c.item.B)).status).toBe(201);
     expect((await submit(c, { B: 'fail' })).body.message).toBe('A failed item needs a reason, typed or spoken, before you can submit: B');
     // a typed reason of only spaces is none
@@ -145,7 +149,7 @@ describe('guided site inspections step 2b — required recordings on pass and fa
 
   it('a spoken reason counts: a failed guided item with a voice note and no note submits', async () => {
     const c = await guidedChecklist();
-    await photo(c.id, c.item.A); await photo(c.id, c.item.A); await voiceNote(c.id, c.item.C);
+    await photo(c.id, c.item.A); await photo(c.id, c.item.A);
     await photo(c.id, c.item.E);
     expect((await submit(c, { E: 'fail' })).body.message).toBe('A failed item needs a reason, typed or spoken, before you can submit: E');
     await voiceNote(c.id, c.item.E);
@@ -175,15 +179,15 @@ describe('guided site inspections step 2b — required recordings on pass and fa
     expect(await t.prisma.media.count({ where: { inspectionId: c.id } })).toBe(0);
   });
 
-  it('an item recording is linked as the item\'s evidence; deleting it takes it off, and the submit is refused again', async () => {
+  it('an item recording is linked as the item\'s evidence; deleting evidence takes it off, and the submit is refused again', async () => {
     const c = await guidedChecklist();
-    await photo(c.id, c.item.A); await photo(c.id, c.item.A);
+    const first = await photo(c.id, c.item.A); await photo(c.id, c.item.A);
     const v = await voiceNote(c.id, c.item.C);
     expect(await t.prisma.inspectionEvidence.count({ where: { inspectionItemId: c.item.C, mediaId: v.body.id as string } })).toBe(1);
-    const del = await http().delete(`/media/${v.body.id as string}`).set('Authorization', `Bearer ${pmcToken}`);
+    const del = await http().delete(`/media/${first.body.id as string}`).set('Authorization', `Bearer ${pmcToken}`);
     expect(del.status).toBe(200);
     expect(await t.prisma.domainEvent.count({ where: { projectId: f.projectA.id, eventType: 'inspection.evidence_removed' } })).toBeGreaterThan(0);
-    expect((await submit(c, {})).body.message).toBe('These items need the recordings they ask for before you can submit: C (1 voice note)');
+    expect((await submit(c, {})).body.message).toBe('These items need the recordings they ask for before you can submit: A (2 photos)');
   });
 
   it('a proof photo is not evidence: only a linked recording counts', async () => {
