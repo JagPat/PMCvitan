@@ -454,6 +454,7 @@ export interface ProjectMetaDto {
   hubLink?: ProjectHubLinkDto;
 }
 
+/** The drawings module's `drawings.hubLink` answer (`DrawingsHubLink` in @vitan/shared), carried as the project line. */
 export interface ProjectHubLinkDto {
   hubProjectId: string;
   number: string | null;

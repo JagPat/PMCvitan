@@ -107,9 +107,9 @@ describe('#1118 U7a L1a — Hub project list and the snapshot link (live PG + st
     return id;
   };
   /** A link and its event 1, written together (the schema refuses a link without its first event at commit). */
-  const seedLink = (projectId: string, hubProjectId: string, number: string, name: string) =>
+  const seedLink = (projectId: string, hubProjectId: string, number: string, name: string, orgId = f.orgA.id) =>
     t.prisma.$transaction(async (tx) => {
-      await tx.drawingHubLink.create({ data: { projectId, orgId: f.orgA.id } });
+      await tx.drawingHubLink.create({ data: { projectId, orgId } });
       await tx.drawingHubLinkEvent.create({ data: {
         projectId, seq: 1, prevSeq: null, kind: 'linked', hubProjectId, hubProjectNumber: number, hubProjectName: name, byUserId: f.ownerUser.id,
       } });
@@ -144,6 +144,9 @@ describe('#1118 U7a L1a — Hub project list and the snapshot link (live PG + st
     const p = await project('main');
     const other = await project('other');
     await seedLink(other, '14', '24-019', 'Riverside');
+    // another company's site holding Hub id 12 (a link kept from a Hub connected for that company) marks nothing here
+    const elsewhere = await project('elsewhere', f.orgB.id);
+    await seedLink(elsewhere, '12', '24-017', 'Vitan Farm', f.orgB.id);
 
     const n = hub.calls.length;
     const listed = await list(p);

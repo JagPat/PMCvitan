@@ -67,7 +67,7 @@ export class HubLinkService {
     await this.authorize(this.prisma, orgId, user.sub, projectId);
     const listed = await listHubProjects(config);
     if (!listed.ok) throw hubFailure(listed);
-    const holders = await activeHolders(this.prisma, listed.value.map((p) => p.id));
+    const holders = await activeHolders(this.prisma, orgId, listed.value.map((p) => p.id));
     return {
       projects: listed.value.map((p) => {
         const holder = holders.get(p.id);
@@ -77,11 +77,17 @@ export class HubLinkService {
   }
 }
 
-/** For each Hub project id, the PMC project whose latest link event links it (at most one: the link command keeps it so). */
-async function activeHolders(db: Prisma.TransactionClient, hubProjectIds: readonly string[]): Promise<Map<string, string>> {
+/**
+ * For each Hub project id, the project of `orgId` whose latest link event links it (at most one: the link command keeps
+ * it so). Only that company's links count: a Hub project id names a project in the Hub connected for the link's own
+ * company, so another company's links (kept from an earlier connection, or a Hub connected for it) never mark this
+ * company's list, nor say anything about that company.
+ */
+async function activeHolders(db: Prisma.TransactionClient, orgId: string, hubProjectIds: readonly string[]): Promise<Map<string, string>> {
   if (hubProjectIds.length === 0) return new Map();
   const rows = await db.$queryRaw<Array<{ projectId: string; hubProjectId: string }>>(Prisma.sql`
     SELECT e."projectId", e."hubProjectId" FROM "DrawingHubLinkEvent" e
+    JOIN "DrawingHubLink" l ON l."projectId" = e."projectId" AND l."orgId" = ${orgId}
     WHERE e."kind" = 'linked' AND e."hubProjectId" IN (${Prisma.join([...hubProjectIds])})
       AND NOT EXISTS (SELECT 1 FROM "DrawingHubLinkEvent" n WHERE n."projectId" = e."projectId" AND n."seq" > e."seq")
     ORDER BY e."projectId"`);
