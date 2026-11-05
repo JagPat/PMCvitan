@@ -76,6 +76,9 @@ const MODEL_OWNER: Record<string, string> = {
   hubWebhookReceipt: 'drawings',
   // #1118 U4 — the ledger of Hub blobs fetched into storage (U1a-3), written by the Hub blob fetcher
   hubFetchedBlob: 'drawings',
+  // #1118 U7a — the Hub link and its events
+  drawingHubLink: 'drawings',
+  drawingHubLinkEvent: 'drawings',
   dailyLog: 'daily-log', crewRow: 'daily-log', siteMaterial: 'daily-log',
   // Phase 3 Task 5 (§E) — the append-only mismatch resolution register, written only by
   // daily-log.resolveMismatch (one per observation; the observation row is never edited)
@@ -337,6 +340,9 @@ const NO_WRITE_SERVICES: Record<string, string> = {
   'common/project-access.service.ts': 'read-only project access checks',
   'media/signed-url.service.ts': 'signed serve-path minting (no DB write)',
   'media/storage.service.ts': 'blob storage (S3 / dev stub; no DB write)',
+  // #1118 U7a L1a — lists the Hub projects PMC's office token reaches for a company owner/admin (Hub read + PMC's own
+  // link events; authority and live project through OrgsParticipant). Writes nothing; the link command comes in L1b
+  'drawings/hub/hub-link.service.ts': 'Hub project list for the link screen (Hub read; no DB write)',
   'prisma.service.ts': 'the PrismaClient itself',
   'snapshot/snapshot.service.ts': 'the read-side snapshot builder (no write)',
   'orgs/brief.service.ts': 'U3a — the PMC\'s cross-project daily brief (`GET /me/brief`): reads through the daily-log, inspections, decisions and media query contracts (no write)',
@@ -581,6 +587,8 @@ const READ_ONLY_CONTROLLERS: Record<string, string> = {
   'health.controller.ts': 'liveness/readiness probes',
   'snapshot/project.controller.ts': 'GET the RBAC-filtered project snapshot',
   // #482 seen-state pins and Idempotency-Key 2a — counts behind OPS_TOKEN, door guard before the rate limit
+  // #1118 U7a L1a — GET the Hub projects a company owner/admin can link the project to
+  'drawings/hub/hub-link.controller.ts': 'GET /orgs/:orgId/projects/:pid/hub/projects: Hub projects for the link screen',
   'platform/ops/ops-compat.controller.ts': 'GET /ops/compat/state-pins and /ops/compat/client-keys: seen-state pin counts from AuditLog, key-sighting counts from CommandKeySighting',
 };
 

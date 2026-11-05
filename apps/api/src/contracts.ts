@@ -2034,3 +2034,7 @@ export const listSiteVisitsSchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
 }).strict();
 export type ListSiteVisitsInput = z.infer<typeof listSiteVisitsSchema>;
+
+/** #1118 U7a — a Hub project id as Hub writes it: a positive decimal number, no padding. Kept here (no Node imports) so
+ *  the web build, which type-checks this file, never reaches the Hub client. */
+export const HUB_PROJECT_ID = /^[1-9][0-9]{0,17}$/;

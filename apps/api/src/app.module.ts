@@ -113,6 +113,8 @@ import { DrawingsController } from './drawings/drawings.controller';
 import { HubReceiverController } from './drawings/hub/hub-receiver.controller';
 import { HubReceiverService } from './drawings/hub/hub-receiver.service';
 import { HubBlobService } from './drawings/hub/hub-blob.service';
+import { HubLinkController } from './drawings/hub/hub-link.controller';
+import { HubLinkService } from './drawings/hub/hub-link.service';
 import { PushService } from './push/push.service';
 import { PushController } from './push/push.controller';
 import { OrgsService } from './orgs/orgs.service';
@@ -176,6 +178,7 @@ import { MediaParticipant } from './media/media.participant';
     MediaController,
     DrawingsController,
     HubReceiverController,
+    HubLinkController,
     PushController,
     OrgsController,
     MembersController,
@@ -270,6 +273,7 @@ import { MediaParticipant } from './media/media.participant';
     DrawingsService,
     HubReceiverService,
     HubBlobService,
+    HubLinkService,
     DrawingsQueryService,
     PushService,
     OrgsService,
