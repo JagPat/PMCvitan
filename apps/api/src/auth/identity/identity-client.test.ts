@@ -204,7 +204,8 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
   });
 
   it('the issuer reason is only a message key or the status, never the issuer\'s prose (Codex 4478003699)', async () => {
-    const { issuerReason } = await import('./identity-client');
+    const { issuerKey } = await import('./identity-client');
+    const issuerReason = (status: number, body: string) => { const k = issuerKey(body); return k ? `${status} ${k}` : String(status); };
     expect(issuerReason(400, JSON.stringify({ message: 'password Secret-123 rejected for a@b.in' }))).toBe('400');
     expect(issuerReason(400, JSON.stringify({ message: 'Secret-123 a@b.in Errors.User.Invalid (USER-zz)' }))).toBe('400');
     expect(issuerReason(400, JSON.stringify({ message: 'Errors.User.Invalid (USER-zz)' }))).toBe('400 Errors.User.Invalid');
@@ -212,6 +213,15 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(issuerReason(400, JSON.stringify({ message: 'Password must contain upper case', details: [{ message: 'Errors.User.PasswordComplexityPolicy.HasUpper' }] }))).toBe('400 Errors.User.PasswordComplexityPolicy.HasUpper');
     expect(issuerReason(400, '')).toBe('400');
     expect(issuerReason(404, 'not json')).toBe('404');
+  });
+
+  it('a policy key echoed inside prose is not the policy: needs-help, not password-rejected (Codex 4478145492)', async () => {
+    fake.createRefusal = { status: 400, body: { code: 3, message: 'value Errors.User.PasswordComplexityPolicy.HasUpper is not allowed' } };
+    expect(await client.create({ email: 'p@example.in', password: 'Errors.User.PasswordComplexityPolicy.HasUpper', verified: true })).toEqual({
+      ok: false, taken: false, failure: 'rejected', reason: '400', passwordPolicy: false,
+    });
+    fake.createRefusal = { status: 400, body: { details: [{ message: 'Errors.User.PasswordComplexityPolicy.HasUpper x' }] } };
+    expect(await client.create({ email: 'p@example.in', password: 'x', verified: true })).toMatchObject({ reason: '400', passwordPolicy: false });
   });
 
   it('the default limit is 4 seconds', async () => {

@@ -61,7 +61,7 @@ export type Lookup =
   | { found: 'unclear' }
   | { found: 'down' };
 /**
- * `reason` (a refused create only): the issuer's own reason, as {@link issuerReason} reads it; `passwordPolicy` is true when
+ * `reason` (a refused create only): the issuer's own reason, the status and the key {@link issuerKey} read, if any; `passwordPolicy` is true when
  * that reason is the issuer's password complexity policy, which the person answers by choosing another password.
  */
 export type Created =
@@ -309,7 +309,8 @@ export class IdentityClient {
       if (r.status < 200 || r.status > 299) {
         const failure = serviceFailure(r.status);
         if (failure === 'down') return { ok: false, taken: false, failure };
-        return { ok: false, taken: false, failure, reason: issuerReason(r.status, r.body), passwordPolicy: PASSWORD_POLICY_KEY.test(r.body) };
+        const key = issuerKey(r.body);
+        return { ok: false, taken: false, failure, reason: key ? `${r.status} ${key}` : String(r.status), passwordPolicy: POLICY_KEY.test(key) };
       }
       const userId = str(json(r.body).userId);
       // a 2xx with no user id is a malformed answer: the issuer's fault, not the person's
@@ -499,19 +500,19 @@ function isOutage(status: number): boolean {
 }
 
 /**
- * Zitadel v4.16 names a password complexity refusal by its message key, `Errors.User.PasswordComplexityPolicy.<Rule>`:
- * in the error detail of a REST answer and inside the message of a Connect one (`Key (ID)`). Any of them means the
- * password broke the issuer's policy (internal/domain/policy_password_complexity.go).
+ * Zitadel v4.16 names a password complexity refusal by its message key, `Errors.User.PasswordComplexityPolicy.<Rule>`
+ * (internal/domain/policy_password_complexity.go). Tested against the key {@link issuerKey} read, never the raw body, so
+ * a key-like word echoed inside other text is not taken for the policy (Codex 4478145492 on #1350).
  */
-const PASSWORD_POLICY_KEY = /Errors\.User\.PasswordComplexityPolicy\.[A-Za-z]+/;
+const POLICY_KEY = /^Errors\.User\.PasswordComplexityPolicy\.[A-Za-z]{1,40}$/;
 
 /**
- * The issuer's reason for a refusal, for PMC's own log line: only a message key the issuer names (`Errors.<Area>.<Rule>`,
- * from a REST `details[].message` or inside a Connect `message`), else the status alone. The issuer's free prose is never
+ * The issuer's message key for a refusal, or '' when it names none: only a whole answer field that is a key (a REST
+ * `details[].message`, or a Connect `message` of a key and its id). The issuer's free prose is never read as a key nor
  * logged: a gateway or validator could echo what it was sent (the email, the password), and a key cannot (Codex
  * 4478003699 on #1350).
  */
-export function issuerReason(status: number, body: string): string {
+export function issuerKey(body: string): string {
   let o: Record<string, unknown> = {};
   try {
     const v: unknown = JSON.parse(body);
@@ -523,8 +524,7 @@ export function issuerReason(status: number, body: string): string {
   // only a whole answer field that IS a key (REST detail) or a key and its id (Connect `Key (ID)`): never a key-like
   // word inside other text, which could be what the issuer was sent
   const keyed = details.map((d) => (d && typeof d === 'object' ? str((d as Record<string, unknown>).message) : '')).find((m) => DETAIL_KEY.test(m));
-  const key = keyed ?? CONNECT_KEY.exec(str(o.message))?.[1];
-  return key ? `${status} ${key}` : String(status);
+  return keyed ?? CONNECT_KEY.exec(str(o.message))?.[1] ?? '';
 }
 
 /** A Zitadel message key: `Errors.` and up to four dot-separated words of letters only. */
