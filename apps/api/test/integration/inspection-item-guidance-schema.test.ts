@@ -8,9 +8,10 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 /**
  * Guided site inspections, step 1 — `20280210000000_inspection_item_guidance` adds the nullable guidance and record spec
  * to "InspectionItem" ("lookAt", "passRule", "recordKind", "recordCount", "recordWhen", "recordHint") and "workType" to
- * "Inspection", kept by three CHECKs and one trigger. This proves that rows written as the previous release writes them
+ * "Inspection", kept by three CHECKs and two triggers. This proves that rows written as the previous release writes them
  * (never naming the columns) still go in and read NULL, and its item updates still go through; that each CHECK holds
- * both ways at its bounds; that an issued item's guidance is never changed afterwards; and that the file re-runs,
+ * both ways at its bounds; that an issued item's guidance is never changed afterwards, nor the item deleted (#1351
+ * review round 1) except with the trigger switched off by name, as project removal does; and that the file re-runs,
  * restoring a loosened CHECK and refusing a same-named column of another type.
  *
  * Isolated automated-test fixtures only.
@@ -20,6 +21,9 @@ const GUIDANCE = 'InspectionItem_guidance_text';
 const SPEC = 'InspectionItem_record_spec';
 const WORK_TYPE = 'Inspection_work_type_text';
 const WS = ' \t\n\r\f\v ';
+const DELETE_TRIGGER_DEF = 'CREATE TRIGGER "InspectionItem_guided_not_deleted" BEFORE DELETE ON public."InspectionItem" FOR EACH ROW '
+  + 'WHEN (((old."lookAt" IS NOT NULL) OR (old."passRule" IS NOT NULL) OR (old."recordKind" IS NOT NULL) OR (old."recordCount" IS NOT NULL) '
+  + 'OR (old."recordWhen" IS NOT NULL) OR (old."recordHint" IS NOT NULL))) EXECUTE FUNCTION inspection_item_guided_not_deleted()';
 const TRIGGER_DEF = 'CREATE TRIGGER "InspectionItem_guidance_fixed" BEFORE UPDATE OF "lookAt", "passRule", "recordKind", "recordCount", "recordWhen", "recordHint" '
   + 'ON public."InspectionItem" FOR EACH ROW EXECUTE FUNCTION inspection_item_guidance_fixed()';
 
@@ -39,7 +43,13 @@ describe('guided site inspections step 1 — item guidance and record spec (live
     if (!t) return;
     try {
       if (inspections.length) {
-        await t.prisma.inspectionItem.deleteMany({ where: { inspectionId: { in: inspections } } });
+        // guided items are never deleted; this fixture's are removed the way project removal removes them, with the
+        // delete trigger switched off by name inside the deleting transaction
+        await t.prisma.$transaction([
+          t.prisma.$executeRawUnsafe(`ALTER TABLE "InspectionItem" DISABLE TRIGGER "InspectionItem_guided_not_deleted"`),
+          t.prisma.inspectionItem.deleteMany({ where: { inspectionId: { in: inspections } } }),
+          t.prisma.$executeRawUnsafe(`ALTER TABLE "InspectionItem" ENABLE TRIGGER "InspectionItem_guided_not_deleted"`),
+        ]);
         await t.prisma.inspection.deleteMany({ where: { id: { in: inspections } } });
       }
     } finally {
@@ -89,6 +99,8 @@ describe('guided site inspections step 1 — item guidance and record spec (live
   };
   const triggerDef = async () => (await t.prisma.$queryRawUnsafe<Array<{ def: string }>>(
     `SELECT pg_get_triggerdef(oid) AS def FROM pg_trigger WHERE tgrelid = '"InspectionItem"'::regclass AND tgname = 'InspectionItem_guidance_fixed'`))[0]?.def;
+  const deleteTriggerDef = async () => (await t.prisma.$queryRawUnsafe<Array<{ def: string }>>(
+    `SELECT pg_get_triggerdef(oid) AS def FROM pg_trigger WHERE tgrelid = '"InspectionItem"'::regclass AND tgname = 'InspectionItem_guided_not_deleted'`))[0]?.def;
   /** the SQLSTATE a statement fails with, read straight from PostgreSQL */
   const sqlstate = async (sql: string, ...values: unknown[]) => {
     try {
@@ -193,6 +205,30 @@ describe('guided site inspections step 1 — item guidance and record spec (live
     expect(await raw(`UPDATE "InspectionItem" SET "lookAt" = "lookAt", "note" = 'kept' WHERE "id" = $1`, guided)).toBe(1);
   });
 
+  it('a guided item is never deleted, so it cannot be deleted and issued again with other guidance; a plain one still can', async () => {
+    const i = await inspection();
+    const shapes: Guidance[] = [full, { lookAt: 'Look' }, { passRule: 'Rule' }, { recordKind: 'voice', recordCount: 1, recordWhen: 'fail' }];
+    for (const g of shapes) {
+      const item = await guidedItem(i, g);
+      expect(await sqlstate(`DELETE FROM "InspectionItem" WHERE "id" = $1`, item), JSON.stringify(g)).toBe('23514');
+      await expect(raw(`DELETE FROM "InspectionItem" WHERE "id" = $1`, item)).rejects.toThrow(/carries the guidance it was issued with; it is never deleted/);
+      expect(await guidanceOf(item)).toEqual({ lookAt: null, passRule: null, recordKind: null, recordCount: null, recordWhen: null, recordHint: null, ...g });
+    }
+    // the delete-then-reissue rewrite in one transaction is refused at its first step, and nothing changes
+    const kept = await guidedItem(i, full);
+    await expect(t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(`DELETE FROM "InspectionItem" WHERE "id" = $1`, kept),
+      t.prisma.$executeRawUnsafe(`INSERT INTO "InspectionItem" ("id", "inspectionId", "name", "order", "passRule") VALUES ($1, $2, 'Cover blocks', 0, 'Any gap')`, kept, i),
+    ])).rejects.toThrow(/it is never deleted/);
+    expect(await guidanceOf(kept)).toEqual(full);
+    // a bulk delete over the inspection is refused as a whole, plain items included
+    const plain = await plainItem(i);
+    await expect(raw(`DELETE FROM "InspectionItem" WHERE "inspectionId" = $1`, i)).rejects.toThrow(/it is never deleted/);
+    expect(await t.prisma.inspectionItem.count({ where: { id: plain } })).toBe(1);
+    // an item as the previous release writes it is deleted as before
+    expect(await raw(`DELETE FROM "InspectionItem" WHERE "id" = $1`, plain)).toBe(1);
+  });
+
   it('the file re-runs on a database that has it, keeping every row and the exact CHECKs and trigger', async () => {
     const i = await inspection('Tiling');
     const item = await guidedItem(i, full);
@@ -205,6 +241,7 @@ describe('guided site inspections step 1 — item guidance and record spec (live
     const triggers = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
       `SELECT count(*) AS n FROM pg_trigger WHERE tgrelid = '"InspectionItem"'::regclass AND tgname = 'InspectionItem_guidance_fixed' AND NOT tgisinternal`);
     expect(Number(triggers[0]!.n)).toBe(1);
+    expect(await deleteTriggerDef()).toBe(DELETE_TRIGGER_DEF);
     const fn = await t.prisma.$queryRawUnsafe<Array<{ cfg: string[] }>>(`SELECT proconfig AS cfg FROM pg_proc WHERE proname = 'inspection_item_guidance_fixed'`);
     expect(fn).toEqual([{ cfg: ['search_path=pg_catalog, public, pg_temp'] }]);
     expect(await triggerDef()).toBe(TRIGGER_DEF);
@@ -215,7 +252,9 @@ describe('guided site inspections step 1 — item guidance and record spec (live
     await raw(`ALTER TABLE "InspectionItem" DROP CONSTRAINT "${SPEC}"`);
     await raw(`ALTER TABLE "InspectionItem" ADD CONSTRAINT "${SPEC}" CHECK (true)`);
     await raw(`DROP TRIGGER "InspectionItem_guidance_fixed" ON "InspectionItem"`);
+    await raw(`DROP TRIGGER "InspectionItem_guided_not_deleted" ON "InspectionItem"`);
     runFile();
+    expect(await deleteTriggerDef()).toBe(DELETE_TRIGGER_DEF);
     expect(await checkDefs()).toEqual(exact);
     const i = await inspection();
     const guided = await guidedItem(i, full);

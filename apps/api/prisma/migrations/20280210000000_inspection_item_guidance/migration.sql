@@ -21,17 +21,24 @@
 --     or all three set (each named NOT NULL, since a NULL inside the second branch would let a partial spec pass) to
 --     allowed values; a hint, when given, holds more than whitespace and is at most 300 characters;
 --   "Inspection_work_type_text": "workType", when given, holds more than whitespace and is at most 64 characters.
--- One trigger, "InspectionItem_guidance_fixed": an issued item's guidance and record spec are what the checklist asked,
--- so once an item row exists no UPDATE changes them (setting a column to its own value passes). A pass is judged against
--- the rule it was issued with; changing the rule after the walk would rewrite what the pass meant. Library templates are
--- edited in the library, never on issued items. The trigger guards UPDATE only: nothing deletes an item today, and an item
--- with proof photos cannot be deleted (Media's NO ACTION key). Every writer that issues items (create, re-inspection,
--- project set-up from a template) must therefore write the guidance in the same INSERT; it can never be added later.
--- A trigger column list pins those columns' types: a later file that changes one drops and re-creates this trigger.
+-- Two triggers. An issued item's guidance and record spec are what the checklist asked, and a pass is judged against the
+-- rule it was issued with; rewriting the rule after the walk would rewrite what the pass meant. Library templates are
+-- edited in the library, never on issued items.
+--   "InspectionItem_guidance_fixed": once an item row exists no UPDATE changes them (setting a column to its own value
+--     passes). Every writer that issues items (create, re-inspection, project set-up from a template) must therefore write
+--     the guidance in the same INSERT; it can never be added later. Its column list pins those columns' types: a later
+--     file that changes one drops and re-creates this trigger.
+--   "InspectionItem_guided_not_deleted" (#1351 review round 1): an item that carries any guidance is never deleted, so a
+--     DELETE and a fresh INSERT under the same id cannot redefine it either (and the delete cannot cascade its evidence
+--     links away). An item with none, as every item the previous release writes, is untouched by it. The one sanctioned
+--     path that removes rows, project removal (src/platform/project-remove.ts), already switches off every DELETE trigger
+--     on the tables it empties, by name, and restores it, so it removes a guided item with its project. TRUNCATE (the
+--     sanctioned test and seed reset) is not a row DELETE and is not refused.
 --
 -- SAFE UNDER THE PREVIOUS RELEASE. The previous release never names any of these columns: its inserts leave them NULL,
 -- which every CHECK accepts, and its item updates (state, photos, note, result, swatch, rejected) set none of them, so the
--- trigger (BEFORE UPDATE OF the guarded columns only) never fires for them. No existing trigger on "Inspection" or
+-- update trigger (BEFORE UPDATE OF the guarded columns only) never fires for them; it deletes no item, and an item it
+-- wrote carries no guidance, so the delete trigger never refuses it. No existing trigger on "Inspection" or
 -- "InspectionItem" reads a whole row or these columns.
 --
 -- LOCKS WHILE IT RUNS. The file first takes ACCESS EXCLUSIVE on "Inspection" and then "InspectionItem", in one LOCK
@@ -43,8 +50,8 @@
 -- ONE TRANSACTION, RE-RUNNABLE. BEGIN ... COMMIT. The columns are added when missing; a column already standing under
 -- any of these names must be of this file's nullable type, or the file stops with an error rather than keep it. The
 -- CHECKs are dropped and added again on every run, so the tables end with exactly these definitions, validated against
--- every row. The trigger function is CREATE OR REPLACE and the trigger is dropped and created again. A db-push baseline
--- models the columns but not the CHECKs or the trigger, so the file is on `scripts/migrate.sh`'s ALWAYS_EXECUTE.
+-- every row. The trigger functions are CREATE OR REPLACE and the triggers are dropped and created again. A db-push baseline
+-- models the columns but not the CHECKs or the triggers, so the file is on `scripts/migrate.sh`'s ALWAYS_EXECUTE.
 
 BEGIN;
 
@@ -129,5 +136,23 @@ CREATE TRIGGER "InspectionItem_guidance_fixed"
   BEFORE UPDATE OF "lookAt", "passRule", "recordKind", "recordCount", "recordWhen", "recordHint"
   ON public."InspectionItem"
   FOR EACH ROW EXECUTE FUNCTION public.inspection_item_guidance_fixed();
+
+CREATE OR REPLACE FUNCTION public.inspection_item_guided_not_deleted() RETURNS TRIGGER
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, public, pg_temp
+AS $fn$
+BEGIN
+  RAISE EXCEPTION 'inspection item % carries the guidance it was issued with; it is never deleted', OLD."id"
+    USING ERRCODE = 'check_violation';
+END
+$fn$;
+
+DROP TRIGGER IF EXISTS "InspectionItem_guided_not_deleted" ON public."InspectionItem";
+CREATE TRIGGER "InspectionItem_guided_not_deleted"
+  BEFORE DELETE ON public."InspectionItem"
+  FOR EACH ROW
+  WHEN (OLD."lookAt" IS NOT NULL OR OLD."passRule" IS NOT NULL OR OLD."recordKind" IS NOT NULL
+        OR OLD."recordCount" IS NOT NULL OR OLD."recordWhen" IS NOT NULL OR OLD."recordHint" IS NOT NULL)
+  EXECUTE FUNCTION public.inspection_item_guided_not_deleted();
 
 COMMIT;
