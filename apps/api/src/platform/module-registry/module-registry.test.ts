@@ -202,6 +202,9 @@ describe('Phase 2 Task 7 — module registry', () => {
       // orgs.dependsOn includes decisions, so a decisions → orgs READ would close a cycle —
       // the participant channel does not.
       decisions: ['orgs'],
+      // #1118 U7a — the Hub link's authority (company owner/admin) and live-project questions are orgs answers, asked
+      // through OrgsParticipant under the link command's own locks. Cycle-exempt like the rows above.
+      drawings: ['orgs'],
       // Phase 6 unit 4b round 6 (Codex F6) — the push spine's TWO orgs-owned questions
       // (identity existence at subscribe-attribution; credential/session validity at
       // targeted-claim time) go through OrgsParticipant, so the platform → orgs interaction

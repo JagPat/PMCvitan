@@ -106,8 +106,13 @@ function assertRuntimeShape(obj: Record<string, unknown>, spec: Spec, label: str
 // ── The EXPECTED source shape of every DTO (a tripwire on types.ts) ──
 const EXPECT: Record<string, Spec> = {
   ProjectMetaDto: {
-    keys: ['id', 'name', 'short', 'descriptor', 'stage', 'siteCode', 'location', 'projStart', 'projEnd', 'scheduleStartDate', 'scheduleEndDate', 'timeZone', 'elapsedPct', 'todayDay', 'milestonePct'].sort(),
-    optional: [], nullable: ['scheduleStartDate', 'scheduleEndDate'].sort(),
+    // #1118 U7a — `hubLink` only while the project is linked to its Hub project (absent otherwise)
+    keys: ['id', 'name', 'short', 'descriptor', 'stage', 'siteCode', 'location', 'projStart', 'projEnd', 'scheduleStartDate', 'scheduleEndDate', 'timeZone', 'elapsedPct', 'todayDay', 'milestonePct', 'hubLink'].sort(),
+    optional: ['hubLink'], nullable: ['scheduleStartDate', 'scheduleEndDate'].sort(),
+  },
+  ProjectHubLinkDto: {
+    keys: ['hubProjectId', 'number', 'name', 'linkedAt', 'openUrl'].sort(),
+    optional: [], nullable: ['number', 'name', 'openUrl'].sort(),
   },
   DecisionDto: {
     // Phase 6 task 4a — the withdrawal evidence travels through the CONTRACT (pmc-audience only;

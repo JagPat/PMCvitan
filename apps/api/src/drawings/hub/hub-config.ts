@@ -84,10 +84,9 @@ function webhookSecrets(raw: string): Buffer[] | null {
   return keys;
 }
 
-/** Reads the five `HUB_*` variables from `env` (the process environment by default). */
-export function readHubConfig(env: NodeJS.ProcessEnv = process.env): HubConfigResult {
-  const faults: HubConfigFault[] = [];
-  const read = <T>(name: HubEnvName, parse: (raw: string) => T | null): T | null => {
+/** One variable's reader: its value, or null with the fault pushed onto `faults`. */
+function reader(env: NodeJS.ProcessEnv, faults: HubConfigFault[]) {
+  return <T>(name: HubEnvName, parse: (raw: string) => T | null): T | null => {
     const raw = env[name]?.trim();
     if (!raw) {
       faults.push({ name, problem: 'unset' });
@@ -97,13 +96,37 @@ export function readHubConfig(env: NodeJS.ProcessEnv = process.env): HubConfigRe
     if (value === null) faults.push({ name, problem: 'malformed' });
     return value;
   };
-  const config = {
-    baseUrl: read('HUB_BASE_URL', baseUrl),
-    officeToken: read('HUB_OFFICE_TOKEN', (raw) => (TOKEN.test(raw) ? raw : null)),
-    webhookSecrets: read('HUB_WEBHOOK_SECRET', webhookSecrets),
-    orgId: read('HUB_ORG_ID', (raw) => (TOKEN.test(raw) ? raw : null)),
-    officeId: read('HUB_OFFICE_ID', (raw) => (HUB_OFFICE.test(raw) ? raw : null)),
-  };
+}
+
+/** The variables in {@link HUB_ENV}'s order (faults are reported in it); the secret only when `withSecret`. */
+function readAll(read: ReturnType<typeof reader>, withSecret: boolean) {
+  const base = read('HUB_BASE_URL', baseUrl);
+  const officeToken = read('HUB_OFFICE_TOKEN', (raw) => (TOKEN.test(raw) ? raw : null));
+  const secrets = withSecret ? read('HUB_WEBHOOK_SECRET', webhookSecrets) : null;
+  const orgId = read('HUB_ORG_ID', (raw) => (TOKEN.test(raw) ? raw : null));
+  const officeId = read('HUB_OFFICE_ID', (raw) => (HUB_OFFICE.test(raw) ? raw : null));
+  return { client: { baseUrl: base, officeToken, orgId, officeId }, secrets };
+}
+
+/** Reads the five `HUB_*` variables from `env` (the process environment by default). */
+export function readHubConfig(env: NodeJS.ProcessEnv = process.env): HubConfigResult {
+  const faults: HubConfigFault[] = [];
+  const { client, secrets } = readAll(reader(env, faults), true);
   if (faults.length) return { open: false, faults };
-  return { open: true, config: config as HubConfig };
+  return { open: true, config: { ...client, webhookSecrets: secrets } as HubConfig };
+}
+
+/**
+ * #1118 U7a — what PMC needs to CALL Hub (list its projects, link and unlink one): the four variables other than
+ * `HUB_WEBHOOK_SECRET`, read and checked exactly as {@link readHubConfig} reads them. Linking works with these alone, so
+ * the receiver can stay closed (no secret, no Hub webhook) until PMC can apply Hub's events (notes/hub/u7a/plan.md §4).
+ */
+export type HubClientConfig = Omit<HubConfig, 'webhookSecrets'>;
+export type HubClientConfigResult = { open: true; config: HubClientConfig } | { open: false; faults: HubConfigFault[] };
+
+export function readHubClientConfig(env: NodeJS.ProcessEnv = process.env): HubClientConfigResult {
+  const faults: HubConfigFault[] = [];
+  const { client } = readAll(reader(env, faults), false);
+  if (faults.length) return { open: false, faults };
+  return { open: true, config: client as HubClientConfig };
 }
