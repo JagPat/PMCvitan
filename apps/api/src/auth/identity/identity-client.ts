@@ -60,7 +60,14 @@ export type Lookup =
   | { found: 'one'; userId: string; verified: boolean }
   | { found: 'unclear' }
   | { found: 'down' };
-export type Created = { ok: true; userId: string } | { ok: false; taken: true } | { ok: false; taken: false; failure: IdentityFailure };
+/**
+ * `reason` (a refused create only): the issuer's own reason, the status and the key {@link issuerKey} read, if any; `passwordPolicy` is true when
+ * that reason is the issuer's password complexity policy, which the person answers by choosing another password.
+ */
+export type Created =
+  | { ok: true; userId: string }
+  | { ok: false; taken: true }
+  | { ok: false; taken: false; failure: IdentityFailure; reason?: string; passwordPolicy?: boolean };
 
 type Reply = { status: number; body: string; location: string | null };
 
@@ -299,7 +306,12 @@ export class IdentityClient {
         service: true,
       });
       if (r.status === 409) return { ok: false, taken: true };
-      if (r.status < 200 || r.status > 299) return { ok: false, taken: false, failure: serviceFailure(r.status) };
+      if (r.status < 200 || r.status > 299) {
+        const failure = serviceFailure(r.status);
+        if (failure === 'down') return { ok: false, taken: false, failure };
+        const key = issuerKey(r.body);
+        return { ok: false, taken: false, failure, reason: key ? `${r.status} ${key}` : String(r.status), passwordPolicy: POLICY_KEY.test(key) };
+      }
       const userId = str(json(r.body).userId);
       // a 2xx with no user id is a malformed answer: the issuer's fault, not the person's
       return userId ? { ok: true, userId } : { ok: false, taken: false, failure: 'down' };
@@ -486,6 +498,39 @@ const CONNECT_PATH = '/zitadel.';
 function isOutage(status: number): boolean {
   return status >= 500 || status === 429 || status === 401 || status === 403;
 }
+
+/**
+ * Zitadel v4.16 names a password complexity refusal by its message key, `Errors.User.PasswordComplexityPolicy.<Rule>`
+ * (internal/domain/policy_password_complexity.go). Tested against the key {@link issuerKey} read, never the raw body, so
+ * a key-like word echoed inside other text is not taken for the policy (Codex 4478145492 on #1350).
+ */
+const POLICY_KEY = /^Errors\.User\.PasswordComplexityPolicy\.[A-Za-z]{1,40}$/;
+
+/**
+ * The issuer's message key for a refusal, or '' when it names none: only a whole answer field that is a key (a REST
+ * `details[].message`, or a Connect `message` of a key and its id). The issuer's free prose is never read as a key nor
+ * logged: a gateway or validator could echo what it was sent (the email, the password), and a key cannot (Codex
+ * 4478003699 on #1350).
+ */
+export function issuerKey(body: string): string {
+  let o: Record<string, unknown> = {};
+  try {
+    const v: unknown = JSON.parse(body);
+    if (v && typeof v === 'object' && !Array.isArray(v)) o = v as Record<string, unknown>;
+  } catch {
+    // an unreadable body: the status is the reason
+  }
+  const details = Array.isArray(o.details) ? o.details : [];
+  // only a whole answer field that IS a key (REST detail) or a key and its id (Connect `Key (ID)`): never a key-like
+  // word inside other text, which could be what the issuer was sent
+  const keyed = details.map((d) => (d && typeof d === 'object' ? str((d as Record<string, unknown>).message) : '')).find((m) => DETAIL_KEY.test(m));
+  return keyed ?? CONNECT_KEY.exec(str(o.message))?.[1] ?? '';
+}
+
+/** A Zitadel message key: `Errors.` and up to four dot-separated words of letters only. */
+const DETAIL_KEY = /^Errors(?:\.[A-Za-z]{1,40}){1,4}$/;
+/** A Connect error message as Zitadel v4.16 sends it: the key, then its id in brackets, and nothing else. */
+const CONNECT_KEY = /^(Errors(?:\.[A-Za-z]{1,40}){1,4}) \([A-Za-z0-9-]{1,40}\)$/;
 
 function serviceFailure(status: number): IdentityFailure {
   return isOutage(status) ? 'down' : 'rejected';
