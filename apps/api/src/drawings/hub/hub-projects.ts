@@ -1,4 +1,5 @@
 import type { HubClientConfig } from './hub-config';
+import { HUB_PROJECT_ID } from '../../contracts';
 
 /**
  * #1118 U7a — the Hub calls a project link needs (notes/hub/u7a/plan.md §4), against Hub's `/api/v2` with the office
@@ -23,8 +24,8 @@ export const HUB_CALL_MAX_BYTES = 1024 * 1024;
 export const HUB_PROJECT_NUMBER_MAX = 128;
 export const HUB_PROJECT_NAME_MAX = 256;
 
-/** A Hub project id as Hub writes it: a positive decimal number, no padding. */
-export const HUB_PROJECT_ID = /^[1-9][0-9]{0,17}$/;
+/** A Hub project id as Hub writes it (one definition, in the contracts the route validates with). */
+export { HUB_PROJECT_ID };
 
 export type HubProject = { id: string; number: string | null; name: string | null };
 

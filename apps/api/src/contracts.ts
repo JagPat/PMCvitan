@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { parseCivilDate } from './common/civil-date';
-import { HUB_PROJECT_ID } from './drawings/hub/hub-projects';
 import { DEDUCTION_TYPES, MONEY_STRING, QUANTITY_STRING, SITE_VISIT_REMOVAL_REASON_MAX, SOD_RULES, removalReasonShows } from '@vitan/shared';
 
 export const sessionSchema = z.object({
@@ -2035,6 +2034,10 @@ export const listSiteVisitsSchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
 }).strict();
 export type ListSiteVisitsInput = z.infer<typeof listSiteVisitsSchema>;
+
+/** #1118 U7a — a Hub project id as Hub writes it: a positive decimal number, no padding. Kept here (no Node imports) so
+ *  the web build, which type-checks this file, never reaches the Hub client. */
+export const HUB_PROJECT_ID = /^[1-9][0-9]{0,17}$/;
 
 /** #1118 U7a — `POST /orgs/:orgId/projects/:pid/hub/link`: the Hub project to link (Hub's id, a positive decimal). */
 export const hubLinkSchema = z.object({
