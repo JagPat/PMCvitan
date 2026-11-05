@@ -76,7 +76,7 @@ const MODEL_OWNER: Record<string, string> = {
   hubWebhookReceipt: 'drawings',
   // #1118 U4 — the ledger of Hub blobs fetched into storage (U1a-3), written by the Hub blob fetcher
   hubFetchedBlob: 'drawings',
-  // #1118 U7a — the Hub link and its events
+  // #1118 U7a — the Hub link and its events (written by the link command)
   drawingHubLink: 'drawings',
   drawingHubLinkEvent: 'drawings',
   dailyLog: 'daily-log', crewRow: 'daily-log', siteMaterial: 'daily-log',
@@ -224,6 +224,9 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // #1118 U4 — the Hub blob fetcher writes only the drawings-owned fetched-blob ledger (the bytes go to StorageService);
   // it emits no domain event, so it dispatches nothing
   'drawings/hub/hub-blob.service.ts': { domain: 'drawings', foreign: {}, dispatch: 0 },
+  // #1118 U7a — the Hub link writes only the drawings-owned link and its events (and audits through `recordAudit`); the
+  // company owner/admin and live-project questions go through OrgsParticipant. It emits no domain event
+  'drawings/hub/hub-link.service.ts': { domain: 'drawings', foreign: {}, dispatch: 0 },
   // edge 4 (material mismatch block) → activity.participant.blockForMaterialMismatch;
   // Phase 3 Task 5 adds resolveMismatch (the inverse edge → clearMaterialMismatchBlock)
   'daily-log/daily-log.service.ts': { domain: 'daily-log', foreign: {}, dispatch: 5 },
@@ -340,9 +343,6 @@ const NO_WRITE_SERVICES: Record<string, string> = {
   'common/project-access.service.ts': 'read-only project access checks',
   'media/signed-url.service.ts': 'signed serve-path minting (no DB write)',
   'media/storage.service.ts': 'blob storage (S3 / dev stub; no DB write)',
-  // #1118 U7a L1a — lists the Hub projects PMC's office token reaches for a company owner/admin (Hub read + PMC's own
-  // link events; authority and live project through OrgsParticipant). Writes nothing; the link command comes in L1b
-  'drawings/hub/hub-link.service.ts': 'Hub project list for the link screen (Hub read; no DB write)',
   'prisma.service.ts': 'the PrismaClient itself',
   'snapshot/snapshot.service.ts': 'the read-side snapshot builder (no write)',
   'orgs/brief.service.ts': 'U3a — the PMC\'s cross-project daily brief (`GET /me/brief`): reads through the daily-log, inspections, decisions and media query contracts (no write)',
@@ -580,6 +580,8 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   'platform/ops/ops-qa.controller.ts': ["Post('orgs/:orgId/qa-only')"],
   // #1118 U3 — Hub's signed webhook deliveries (no user; closed without HUB_*)
   'drawings/hub/hub-receiver.controller.ts': ["Post(':orgId/events')"],
+  // #1118 U7a — a company owner/admin links the project to its Hub project, or unlinks it
+  'drawings/hub/hub-link.controller.ts': ["Post('orgs/:orgId/projects/:pid/hub/link')", "Post('orgs/:orgId/projects/:pid/hub/unlink')"],
 };
 
 // Controllers with NO mutating route (read-only surfaces).
@@ -587,8 +589,6 @@ const READ_ONLY_CONTROLLERS: Record<string, string> = {
   'health.controller.ts': 'liveness/readiness probes',
   'snapshot/project.controller.ts': 'GET the RBAC-filtered project snapshot',
   // #482 seen-state pins and Idempotency-Key 2a — counts behind OPS_TOKEN, door guard before the rate limit
-  // #1118 U7a L1a — GET the Hub projects a company owner/admin can link the project to
-  'drawings/hub/hub-link.controller.ts': 'GET /orgs/:orgId/projects/:pid/hub/projects: Hub projects for the link screen',
   'platform/ops/ops-compat.controller.ts': 'GET /ops/compat/state-pins and /ops/compat/client-keys: seen-state pin counts from AuditLog, key-sighting counts from CommandKeySighting',
 };
 
@@ -661,12 +661,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('179 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only; +1 #995 V1b a video clip\'s still frame; +1 #1118 U3 Hub webhook deliveries; +1 #1179 R2 a file\'s removal from its site visit; +2 #1177 VT2-C1 a voice note\'s words retry/correct; +1 #482 who fixes an inspection\'s failed work; +1 Redbracket ID A4c operator owner re-seat)', () => {
+    it('179 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only; +1 #995 V1b a video clip\'s still frame; +1 #1118 U3 Hub webhook deliveries; +1 #1179 R2 a file\'s removal from its site visit; +2 #1177 VT2-C1 a voice note\'s words retry/correct; +1 #482 who fixes an inspection\'s failed work; +1 Redbracket ID A4c operator owner re-seat; +2 #1118 U7a Hub link/unlink)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(195);
+      expect(total).toBe(197);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(195);
+      expect(live).toBe(197);
     });
   });
 
