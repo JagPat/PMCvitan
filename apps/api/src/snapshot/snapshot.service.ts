@@ -143,7 +143,8 @@ export class SnapshotService {
         const visible = hidden.length > 0 ? { OR: [{ nodeId: null }, { nodeId: { notIn: hidden } }] } : {};
         const select = { id: true, kind: true, url: true, takenAt: true, nodeId: true, uploadedBy: true, clientKey: true, createdAt: true, dailyLogId: true, decisionId: true, inspectionId: true, inspectionItemId: true } as const;
         const readNewest = (db: Prisma.TransactionClient) => db.media.findMany({
-          where: { projectId, kind: { in: ['progress', 'inspection', 'material'] }, ...visible },
+          // photos only: a voice note or a video filed as an item's evidence (guided step 2b) is not a site photo
+          where: { projectId, kind: { in: ['progress', 'inspection', 'material'] }, mime: { startsWith: 'image/' }, ...visible },
           orderBy: { createdAt: 'desc' },
           take: SNAPSHOT_SITE_PHOTO_LIMIT,
           select,
@@ -161,7 +162,7 @@ export class SnapshotService {
           if (newest.length < SNAPSHOT_SITE_PHOTO_LIMIT) return { newest, own: [] };
           const own = await tx.media.findMany({
             where: {
-              projectId, kind: 'progress', uploadedBy: userId, decisionId: null, inspectionId: null, inspectionItemId: null,
+              projectId, kind: 'progress', mime: { startsWith: 'image/' }, uploadedBy: userId, decisionId: null, inspectionId: null, inspectionItemId: null,
               createdAt: { gt: new Date(Date.now() - SITE_PHOTO_DELETE_WINDOW_MS) }, id: { notIn: newest.map((m) => m.id) }, ...visible,
             },
             orderBy: { createdAt: 'desc' },

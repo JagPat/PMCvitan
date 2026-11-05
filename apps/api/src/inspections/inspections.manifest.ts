@@ -30,7 +30,10 @@ export const inspectionsManifest: ModuleManifest = {
   // guard). Cycle-exempt exactly as `labour → orgs` is: `orgs.dependsOn` reaches inspections
   // (project initialization reads `InspectionsQueryService.allIds`), so an inspections → orgs READ
   // edge would close a cycle; the participant channel does not, and `dependsOn` stays empty.
-  workflowParticipants: ['activities', 'orgs'],
+  // Guided site inspections, step 2b adds `media`: the submit's evidence rule asks the type of each linked evidence file
+  // (photo, video, voice) through `MediaParticipant.mimesOf`, on its own transaction under the inspection row's lock.
+  // Cycle-exempt as `orgs` is: `media.dependsOn` reaches inspections, so a READ edge would close a cycle.
+  workflowParticipants: ['activities', 'orgs', 'media'],
   producesEvents: [
     'inspection.created',
     'inspection.submitted',

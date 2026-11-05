@@ -40,6 +40,7 @@ describe('#482 — submit and decide read an inspection\'s items in checklist or
     await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     const scoped = { projectId: { startsWith: 'it-iord-' } };
     await t.prisma.commandExecution.deleteMany({ where: scoped });
+    await t.prisma.inspectionEvidence.deleteMany({ where: scoped });
     await t.prisma.media.deleteMany({ where: scoped });
     await t.prisma.inspectionItem.deleteMany({ where: { inspection: scoped } });
     await t.prisma.inspection.deleteMany({ where: scoped });
@@ -89,6 +90,8 @@ describe('#482 — submit and decide read an inspection\'s items in checklist or
     const insp = await reversedChecklist(p, pmc);
     for (const it of [insp.rebar, insp.drain]) {
       await t.prisma.media.create({ data: { id: `${it.id}-ev`, projectId: p, kind: 'inspection', mime: 'image/png', uploadedBy: eng, inspectionId: insp.id, inspectionItemId: it.id } });
+      // linked as an upload links it: the evidence rule reads the inspection's own links (guided step 2b)
+      await t.prisma.inspectionEvidence.create({ data: { projectId: p, inspectionId: insp.id, inspectionItemId: it.id, mediaId: `${it.id}-ev` } });
     }
     await svc.submit(p, insp.id, {
       items: [
