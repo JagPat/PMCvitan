@@ -61,6 +61,7 @@ describe('guided site inspections step 2a — items are issued with their guidan
     await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     const projects = await t.prisma.project.findMany({ where: { OR: [{ id: { startsWith: 'it-gi2a-' } }, { name: { startsWith: 'GI2A ' } }] }, select: { id: true } });
     const ids = projects.map((p) => p.id);
+    await t.prisma.media.deleteMany({ where: { projectId: { in: ids } } });
     // a guided item is never deleted; the sanctioned removal switches the refusal off by name, in one transaction
     await t.prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe('ALTER TABLE "InspectionItem" DISABLE TRIGGER "InspectionItem_guided_not_deleted"');
@@ -180,6 +181,8 @@ describe('guided site inspections step 2a — items are issued with their guidan
     const { p, pmc, eng } = await freshProject();
     await svc.create(p, { title: 'Slab', zone: 'GF', workType: 'RCC slab', items: [SLAB_COVER, 'Plain check', SLAB_SHUTTER] }, as(pmc, 'pmc', p));
     const original = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Slab' }, include: { items: { orderBy: { order: 'asc' } } } });
+    // the cover item asks for a photo on a pass too (step 2b's evidence rule)
+    await t.prisma.media.create({ data: { projectId: p, kind: 'inspection', mime: 'image/png', uploadedBy: eng, inspectionId: original.id, inspectionItemId: original.items[0]!.id } });
     await svc.submit(p, original.id, { items: original.items.map((it) => ({ id: it.id, name: it.name, state: 'pass' as const, photos: 0, note: '' })) }, as(eng, 'engineer', p));
 
     // the review queue shows each item's guide beside its result

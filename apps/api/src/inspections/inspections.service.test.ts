@@ -69,8 +69,8 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; activ
     },
     inspectionItem: { updateMany: vi.fn(async () => ({ count: 1 })) },
     media: {
-      groupBy: vi.fn(async ({ where }: { where: { inspectionItemId: { in: string[] } } }) =>
-        (opts.evidence ?? []).filter((id) => where.inspectionItemId.in.includes(id)).map((id) => ({ inspectionItemId: id }))),
+      // the evidence rule reads every item's linked recordings with their type (step 2b); the fixture's are photos
+      findMany: vi.fn(async () => (opts.evidence ?? []).map((id) => ({ inspectionItemId: id, mime: 'image/png' }))),
     },
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
     $executeRaw: vi.fn(async () => 1),
