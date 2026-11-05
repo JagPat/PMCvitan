@@ -20,6 +20,8 @@ const GUIDANCE = 'InspectionItem_guidance_text';
 const SPEC = 'InspectionItem_record_spec';
 const WORK_TYPE = 'Inspection_work_type_text';
 const WS = ' \t\n\r\f\v ';
+const TRIGGER_DEF = 'CREATE TRIGGER "InspectionItem_guidance_fixed" BEFORE UPDATE OF "lookAt", "passRule", "recordKind", "recordCount", "recordWhen", "recordHint" '
+  + 'ON public."InspectionItem" FOR EACH ROW EXECUTE FUNCTION inspection_item_guidance_fixed()';
 
 describe('guided site inspections step 1 — item guidance and record spec (live PG)', () => {
   let t: TestApp;
@@ -84,6 +86,18 @@ describe('guided site inspections step 1 — item guidance and record spec (live
     const url = (process.env.DATABASE_URL ?? '').split('?')[0]!;
     const host = new URLSearchParams((process.env.DATABASE_URL ?? '').split('?')[1] ?? '').get('host');
     execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', ...(host ? ['-h', host] : []), '-d', url, '-f', MIGRATION], { stdio: 'pipe' });
+  };
+  const triggerDef = async () => (await t.prisma.$queryRawUnsafe<Array<{ def: string }>>(
+    `SELECT pg_get_triggerdef(oid) AS def FROM pg_trigger WHERE tgrelid = '"InspectionItem"'::regclass AND tgname = 'InspectionItem_guidance_fixed'`))[0]?.def;
+  /** the SQLSTATE a statement fails with, read straight from PostgreSQL */
+  const sqlstate = async (sql: string, ...values: unknown[]) => {
+    try {
+      await raw(sql, ...values);
+    } catch (e) {
+      const meta = (e as { meta?: { code?: string } }).meta;
+      return meta?.code ?? String(e).match(/Code: `(\w+)`/)?.[1] ?? String(e);
+    }
+    return 'no error';
   };
   const full: Guidance = { lookAt: 'Lift the steel at three spots', passRule: 'A block under each, gap at least 25 mm', recordKind: 'photo', recordCount: 1, recordWhen: 'always', recordHint: 'Hold a tape against the steel' };
 
@@ -166,6 +180,10 @@ describe('guided site inspections step 1 — item guidance and record spec (live
       `UPDATE "InspectionItem" SET "recordKind" = NULL, "recordCount" = NULL, "recordWhen" = NULL, "recordHint" = NULL WHERE "id" = $1`,
     ]) await expect(raw(sql, guided), sql).rejects.toThrow(/keeps the guidance it was issued with/);
     expect(await guidanceOf(guided)).toEqual(full);
+    expect(await sqlstate(`UPDATE "InspectionItem" SET "passRule" = 'Any gap' WHERE "id" = $1`, guided)).toBe('23514');
+    // an upsert that would rewrite it is refused too
+    await expect(raw(`INSERT INTO "InspectionItem" ("id", "inspectionId", "name", "order") VALUES ($1, $2, 'Cover blocks', 0)
+                      ON CONFLICT ("id") DO UPDATE SET "lookAt" = 'Other'`, guided, i)).rejects.toThrow(/keeps the guidance it was issued with/);
     // a write that names a column but keeps its value is not a change
     expect(await raw(`UPDATE "InspectionItem" SET "lookAt" = "lookAt", "note" = 'kept' WHERE "id" = $1`, guided)).toBe(1);
   });
@@ -184,6 +202,7 @@ describe('guided site inspections step 1 — item guidance and record spec (live
     expect(Number(triggers[0]!.n)).toBe(1);
     const fn = await t.prisma.$queryRawUnsafe<Array<{ cfg: string[] }>>(`SELECT proconfig AS cfg FROM pg_proc WHERE proname = 'inspection_item_guidance_fixed'`);
     expect(fn).toEqual([{ cfg: ['search_path=pg_catalog, public, pg_temp'] }]);
+    expect(await triggerDef()).toBe(TRIGGER_DEF);
   });
 
   it('a re-run restores a loosened CHECK and a dropped trigger, and refuses a same-named column that is not of its type', async () => {
@@ -208,5 +227,29 @@ describe('guided site inspections step 1 — item guidance and record spec (live
       runFile();
     }
     expect(await checkDefs()).toEqual(exact);
+  });
+
+  it('a re-run refuses a same-named column that is NOT NULL or has a default, on either table', async () => {
+    const exact = await checkDefs();
+    const swaps: Array<[string, string, string, RegExp]> = [
+      ['InspectionItem', 'recordHint', `TEXT NOT NULL DEFAULT 'x'`, /InspectionItem\.recordHint already stands as text \(not null: t, default: t\)/],
+      ['Inspection', 'workType', `TEXT DEFAULT 'RCC slab'`, /Inspection\.workType already stands as text \(not null: f, default: t\)/],
+    ];
+    for (const [tbl, col, decl, err] of swaps) {
+      const checks = tbl === 'Inspection' ? [WORK_TYPE] : [GUIDANCE, SPEC];
+      for (const c of checks) await raw(`ALTER TABLE "${tbl}" DROP CONSTRAINT "${c}"`);
+      if (tbl === 'InspectionItem') await raw(`DROP TRIGGER "InspectionItem_guidance_fixed" ON "InspectionItem"`);
+      await raw(`ALTER TABLE "${tbl}" RENAME COLUMN "${col}" TO "${col}_kept"`);
+      await raw(`ALTER TABLE "${tbl}" ADD COLUMN "${col}" ${decl}`);
+      try {
+        expect(runFile, col).toThrow(err);
+      } finally {
+        await raw(`ALTER TABLE "${tbl}" DROP COLUMN "${col}"`);
+        await raw(`ALTER TABLE "${tbl}" RENAME COLUMN "${col}_kept" TO "${col}"`);
+        runFile();
+      }
+    }
+    expect(await checkDefs()).toEqual(exact);
+    expect(await triggerDef()).toBe(TRIGGER_DEF);
   });
 });

@@ -22,16 +22,22 @@
 --     allowed values; a hint, when given, holds more than whitespace and is at most 300 characters;
 --   "Inspection_work_type_text": "workType", when given, holds more than whitespace and is at most 64 characters.
 -- One trigger, "InspectionItem_guidance_fixed": an issued item's guidance and record spec are what the checklist asked,
--- so once an item row exists they never change. A pass is judged against the rule it was issued with; changing the rule
--- after the walk would rewrite what the pass meant. Library templates are edited in the library, never on issued items.
+-- so once an item row exists no UPDATE changes them (setting a column to its own value passes). A pass is judged against
+-- the rule it was issued with; changing the rule after the walk would rewrite what the pass meant. Library templates are
+-- edited in the library, never on issued items. The trigger guards UPDATE only: nothing deletes an item today, and an item
+-- with proof photos cannot be deleted (Media's NO ACTION key). Every writer that issues items (create, re-inspection,
+-- project set-up from a template) must therefore write the guidance in the same INSERT; it can never be added later.
+-- A trigger column list pins those columns' types: a later file that changes one drops and re-creates this trigger.
 --
 -- SAFE UNDER THE PREVIOUS RELEASE. The previous release never names any of these columns: its inserts leave them NULL,
 -- which every CHECK accepts, and its item updates (state, photos, note, result, swatch, rejected) set none of them, so the
 -- trigger (BEFORE UPDATE OF the guarded columns only) never fires for them. No existing trigger on "Inspection" or
 -- "InspectionItem" reads a whole row or these columns.
 --
--- LOCKS WHILE IT RUNS. ADD COLUMN and ADD CONSTRAINT take ACCESS EXCLUSIVE on "InspectionItem" and "Inspection" until
--- COMMIT, so inspection reads and writes wait for the whole file. Each CHECK validates in one pass where every row is
+-- LOCKS WHILE IT RUNS. The file first takes ACCESS EXCLUSIVE on "Inspection" and then "InspectionItem", in one LOCK
+-- TABLE, parent before child as the app writes them (an inspection, then its items), so a checklist being issued during
+-- the deploy waits instead of deadlocking with it (gap-check: child-first ADD COLUMN deadlocked against a live create).
+-- Both are held until COMMIT, so inspection reads and writes wait for the whole file. Each CHECK validates in one pass where every row is
 -- NULL; today's tables are small. No lock is waited for longer than 15 s (lock_timeout, this transaction only).
 --
 -- ONE TRANSACTION, RE-RUNNABLE. BEGIN ... COMMIT. The columns are added when missing; a column already standing under
@@ -45,13 +51,15 @@ BEGIN;
 SELECT pg_catalog.set_config('lock_timeout', '15s', true);
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, public', true);
 
+LOCK TABLE public."Inspection", public."InspectionItem" IN ACCESS EXCLUSIVE MODE;
+
+ALTER TABLE public."Inspection" ADD COLUMN IF NOT EXISTS "workType" TEXT;
 ALTER TABLE public."InspectionItem" ADD COLUMN IF NOT EXISTS "lookAt" TEXT;
 ALTER TABLE public."InspectionItem" ADD COLUMN IF NOT EXISTS "passRule" TEXT;
 ALTER TABLE public."InspectionItem" ADD COLUMN IF NOT EXISTS "recordKind" TEXT;
 ALTER TABLE public."InspectionItem" ADD COLUMN IF NOT EXISTS "recordCount" INTEGER;
 ALTER TABLE public."InspectionItem" ADD COLUMN IF NOT EXISTS "recordWhen" TEXT;
 ALTER TABLE public."InspectionItem" ADD COLUMN IF NOT EXISTS "recordHint" TEXT;
-ALTER TABLE public."Inspection" ADD COLUMN IF NOT EXISTS "workType" TEXT;
 
 DO $inspection_guidance$
 DECLARE
