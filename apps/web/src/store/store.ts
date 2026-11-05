@@ -38,6 +38,7 @@ import {
   type DailyLog,
   type Decision,
   type Drawing,
+  type DrawingsHubLink,
   type MembershipSummary,
   type OrgMember,
   type OrgRole,
@@ -91,7 +92,7 @@ import type { CommercialBillRow, CommercialClaimView, CommercialView } from './c
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
 import { unlinkPushOnSignOut } from '@/data/push';
-import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, UpdateDecisionDraftInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, HubProjectChoice, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, UpdateDecisionDraftInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
 import {
   beginCreateSend, createHoldScope, currentCreateHoldView, releaseCreate, reserveCreateRetry, reserveNewCreate, serverKeepsCreateReceipts,
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
@@ -101,6 +102,7 @@ import { isDone } from '@/store/queueLedger';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
+import { hubFailureOf, HUB_SHOWN_WAIT_MS, type HubCallResult, type HubUnlinkPending } from '@/lib/hubLink';
 import { resolveMediaUrl, replayOutboxOp, uploadSitePhotoInput, PlaceCheckFailed, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, isGone, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
@@ -374,6 +376,12 @@ export interface AppState {
   labourOnboardPending: Record<string, string>;
   labourBindPending: Record<string, string>;
   nodeCreatePending: Record<string, NodeCreatePending>;
+  /** #1118 U7a L2 — the project's active Hub link from its snapshot; null while unlinked (project-owned). */
+  hubLink: DrawingsHubLink | null;
+  /** #1118 U7a L2 — the key of an unlink not yet settled: sent and unanswered, or answered with Hub's side not cleared,
+   *  or not yet shown by a snapshot. Retrying under it replays PMC's unlink and retries only Hub's side; while it is
+   *  held the screen offers no new link, so Hub's old link is never left without its cleanup (project-owned). */
+  hubUnlinkPending: HubUnlinkPending | null;
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   /** the Site Map's pending focus when it is entered from a location breadcrumb (project-owned) */
   placeFocus: string | null;
@@ -775,6 +783,14 @@ export interface AppActions {
   syncProjectCreateHold: () => void;
   updateProjectDetails: (orgId: string, projectId: string, input: Partial<NewProjectInput>) => void;
   deleteProject: (orgId: string, projectId: string) => void;
+  /** #1118 U7a L2 — the ACTIVE project's Hub link, for a company owner or admin. Each answers `stale` when the project
+   *  or sign-in changed while it ran. A link or unlink that lands waits for a fresh snapshot (which carries `hubLink`)
+   *  and answers `unconfirmed` when that snapshot does not show it yet. Link takes the attempt's key, which the screen
+   *  keeps while the attempt may be retried; unlink keeps its own in `hubUnlinkPending` (see there). */
+  listHubProjects: (orgId: string) => Promise<HubCallResult<HubProjectChoice[]>>;
+  linkHubProject: (orgId: string, hubProjectId: string, idempotencyKey: string) => Promise<HubCallResult<true>>;
+  /** `hubProjectId`: the link the person saw and confirmed; a held unlink keeps its own. */
+  unlinkHubProject: (orgId: string, hubProjectId: string) => Promise<HubCallResult<{ hubCleared: boolean }>>;
   restoreProject: (orgId: string, projectId: string) => void;
   loadArchivedProjects: (orgId: string) => void;
   // companies & consultants
@@ -1508,6 +1524,8 @@ export function getInitialState(): AppState {
     labourOnboardPending: {},
     nodeCreatePending: {},
     labourBindPending: {},
+    hubLink: null,
+    hubUnlinkPending: null,
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     placeFocus: null,
     decisionFocus: null,
@@ -1667,6 +1685,37 @@ export const useStore = create<Store>()(
      *  through applySnapshot (companies, photo upload). Codex gate finding 3. */
     const scopeStillCurrent = (scope: ProjectScope): boolean =>
       isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope);
+
+    /** #1118 U7a L2 — one Hub link call for the ACTIVE project. Its answer is the screen's only while the scope it was
+     *  issued for (project + sign-in generation, and this gateway) still holds; a link or unlink that lands then asks
+     *  for a fresh snapshot, which is where `hubLink` comes from. */
+    const hubCall = async <T,>(
+      run: (gw: ApiGateway, projectId: string) => Promise<T>,
+      /** for a command: whether the store's `hubLink` shows what it did, checked after a fresh pull */
+      shown?: (value: T, link: DrawingsHubLink | null) => boolean,
+    ): Promise<HubCallResult<T>> => {
+      const gw = gateway;
+      if (!gw) return { kind: 'failed', failure: { kind: 'closed' } };
+      const scope = currentScope();
+      const inScope = () => gateway === gw && scopeStillCurrent(scope);
+      let value: T;
+      try {
+        value = await run(gw, scope.projectId);
+      } catch (err) {
+        if (!inScope()) return { kind: 'stale' };
+        return { kind: 'failed', failure: hubFailureOf(err) };
+      }
+      if (!inScope()) return { kind: 'stale' };
+      if (!shown) return { kind: 'ok', value };
+      // the screen reports the command only once the snapshot shows it (Codex 4479979966): a pull begun after it, for
+      // at most HUB_SHOWN_WAIT_MS, so a stalled pull leaves the row free to retry (Codex 4480498904)
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, HUB_SHOWN_WAIT_MS);
+        void afterFreshPull(scope).finally(() => { clearTimeout(timer); resolve(); });
+      });
+      if (!inScope()) return { kind: 'stale' };
+      return shown(value, get().hubLink) ? { kind: 'ok', value } : { kind: 'unconfirmed', value };
+    };
 
     /** Org roster loads: only the newest load may write `orgMembers`, so an older read
      *  (another org's, before a project switch) that finishes last never replaces it. */
@@ -2161,6 +2210,8 @@ export const useStore = create<Store>()(
         s.descriptor = snap.project.descriptor;
         s.stage = snap.project.stage;
         s.siteCode = snap.project.siteCode;
+        // #1118 U7a L2 — absent on a server older than the link, and while the project is not linked
+        s.hubLink = snap.project.hubLink ?? null;
         s.location = snap.project.location ?? '';
         s.timeZone = snap.project.timeZone ?? null;
         s.projStart = snap.project.projStart;
@@ -5769,6 +5820,31 @@ export const useStore = create<Store>()(
           get().loadPortfolio();
         })
         .catch(() => get().flash('Could not update the project — check your access.'));
+    },
+    listHubProjects: (orgId) => hubCall((gw, pid) => gw.listHubProjects(orgId, pid).then((r) => r.projects)),
+    linkHubProject: (orgId, hubProjectId, key) =>
+      hubCall((gw, pid) => gw.linkHubProject(orgId, pid, hubProjectId, key).then(() => true as const), (_v, link) => link?.hubProjectId === hubProjectId),
+    unlinkHubProject: async (orgId, hubProjectId) => {
+      // one key, and the link it ends, until the unlink has settled, Hub's side included (Codex 4479979986)
+      const seen = get().hubLink;
+      const pending = get().hubUnlinkPending ?? {
+        key: newIdempotencyKey(),
+        hubProjectId,
+        linkedAt: seen?.hubProjectId === hubProjectId ? seen.linkedAt : null,
+      };
+      const scope = currentScope();
+      set((s) => { s.hubUnlinkPending = pending; });
+      const r = await hubCall(
+        (gw, pid) => gw.unlinkHubProject(orgId, pid, pending.hubProjectId, pending.key).then((x) => ({ hubCleared: x.hubCleared === true })),
+        // shown once the snapshot no longer holds the link this unlink ended: no link, or a later one another admin made
+        // after it (Codex 4481199120); the ended link itself still shown means the screen has not caught up
+        (_v, link) => link === null || (pending.linkedAt !== null && !(link.hubProjectId === pending.hubProjectId && link.linkedAt === pending.linkedAt)),
+      );
+      const settled = (r.kind === 'ok' && r.value.hubCleared) || (r.kind === 'failed' && r.failure.kind === 'refused');
+      if (settled && scopeStillCurrent(scope)) set((s) => { if (s.hubUnlinkPending?.key === pending.key) s.hubUnlinkPending = null; });
+      // another admin changed the link meanwhile: show the screen what it is now (Codex 4480498892)
+      if (r.kind === 'failed' && r.failure.kind === 'refused' && r.failure.code === 'hub_link_changed') void requestFreshSnapshot(scope).catch(() => undefined);
+      return r;
     },
     deleteProject: (orgId, projectId) => {
       if (!gateway) {

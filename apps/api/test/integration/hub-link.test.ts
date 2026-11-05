@@ -37,6 +37,8 @@ function stubHub(token: string) {
     { id: 15, number: '24-020', name: 'Hill house', archived: false },
     { id: 16, number: '24-021', name: 'Lake view', archived: false },
     { id: 17, number: '24-022', name: 'Orchard', archived: false },
+    { id: 18, number: '24-023', name: 'Mango grove', archived: false },
+    { id: 19, number: '24-024', name: 'Canal side', archived: false },
   ];
   const links = new Map<string, HubLinkRow>();
   const faults: Array<{ when: (method: string, path: string) => boolean; fault: Fault }> = [];
@@ -145,10 +147,10 @@ describe('#1118 U7a L1 — Hub project link (live PG + stub Hub)', () => {
     if (opts.key) r.set('Idempotency-Key', opts.key);
     return r.send({ hubProjectId });
   };
-  const unlink = (pid: string, opts: { auth?: string; key?: string } = {}) => {
+  const unlink = (pid: string, opts: { auth?: string; key?: string; expected?: string } = {}) => {
     const r = request(server()).post(`/orgs/${f.orgA.id}/projects/${pid}/hub/unlink`).set('Authorization', opts.auth ?? owner());
     if (opts.key) r.set('Idempotency-Key', opts.key);
-    return r.send({});
+    return r.send(opts.expected === undefined ? {} : { hubProjectId: opts.expected });
   };
   /** A link and its event 1 written straight to PMC's link tables (the schema refuses a link without its first event). */
   const seedLink = (projectId: string, hubProjectId: string, orgId: string) =>
@@ -325,6 +327,50 @@ describe('#1118 U7a L1 — Hub project link (live PG + stub Hub)', () => {
     expect(callsSince(n)).toEqual([]);
     expect(hub.links.get('16')?.externalId).toBe(second);
     expect((await unlink(second)).body).toEqual({ hubCleared: true });
+  });
+
+  it('an unlink names the link the person saw: another admin\'s relink meanwhile is refused, not unlinked unseen', async () => {
+    open();
+    const p = await project('seen');
+    expect((await link(p, '18')).status).toBe(200);
+    // tab A shows Hub 21; meanwhile tab B unlinks it and links Hub 22
+    expect((await unlink(p, { expected: '18' })).body).toEqual({ hubCleared: true });
+    expect((await link(p, '19')).status).toBe(200);
+    const n = hub.calls.length;
+    const stale = await unlink(p, { expected: '18' });
+    expect([stale.status, stale.body.code]).toEqual([409, 'hub_link_changed']);
+    expect(callsSince(n)).toEqual([]);
+    expect((await events(p)).map((e) => [e.kind, e.hubProjectId])).toEqual([['linked', '18'], ['unlinked', null], ['linked', '19']]);
+    // the link shown is still the link: it unlinks; and a retry of Hub's side names the link that unlink ended
+    hub.faults.push({ when: (m) => m === 'DELETE', fault: 503 });
+    expect((await unlink(p, { expected: '19' })).body).toEqual({ hubCleared: false });
+    expect((await unlink(p, { expected: '19' })).body).toEqual({ hubCleared: true });
+    expect((await unlink(p, { expected: '18' })).status).toBe(409);
+    expect(hub.links.has('19')).toBe(false);
+    // the body is checked: a malformed id is a 400, nothing more is accepted
+    expect((await request(server()).post(`/orgs/${f.orgA.id}/projects/${p}/hub/unlink`).set('Authorization', owner()).send({ hubProjectId: 'x' })).status).toBe(400);
+    expect((await request(server()).post(`/orgs/${f.orgA.id}/projects/${p}/hub/unlink`).set('Authorization', owner()).send({ other: 1 })).status).toBe(400);
+  });
+
+  it('an unlink stays compatible with the previous release: no body at all is accepted, and one key replays with or without the link named', async () => {
+    open();
+    const p = await project('compat');
+    expect((await link(p, '18')).status).toBe(200);
+    // the previous web sends no body (#1353 Codex 4481199082)
+    const bare = await request(server()).post(`/orgs/${f.orgA.id}/projects/${p}/hub/unlink`).set('Authorization', owner());
+    expect([bare.status, bare.body]).toEqual([200, { hubCleared: true }]);
+    // a keyed attempt committed by the previous release (no link named) replays when its retry names the link, and the
+    // other way round, so a rolling deploy never turns a retry into a same-key 409 (#1353 Codex 4481199107)
+    expect((await link(p, '19')).status).toBe(200);
+    hub.faults.push({ when: (m) => m === 'DELETE', fault: 503 });
+    expect((await unlink(p, { key: `k-cu-${run}` })).body).toEqual({ hubCleared: false });
+    const retry = await unlink(p, { key: `k-cu-${run}`, expected: '19' });
+    expect([retry.status, retry.body]).toEqual([200, { hubCleared: true }]);
+    expect((await link(p, '18')).status).toBe(200);
+    hub.faults.push({ when: (m) => m === 'DELETE', fault: 503 });
+    expect((await unlink(p, { key: `k-cv-${run}`, expected: '18' })).body).toEqual({ hubCleared: false });
+    expect((await unlink(p, { key: `k-cv-${run}` })).body).toEqual({ hubCleared: true });
+    expect((await events(p)).map((e) => e.kind)).toEqual(['linked', 'unlinked', 'linked', 'unlinked', 'linked', 'unlinked']);
   });
 
   it("removes Hub's link only after PMC's unlink has committed", async () => {

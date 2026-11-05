@@ -68,7 +68,16 @@ import type {
   ForwardDecisionInput,
   DisagreeDecisionInput,
   ResolveStrandedCountersignInput,
+  DrawingsHubLink,
 } from '@vitan/shared';
+
+/** #1118 U7a — a Hub project PMC's Hub key reaches; `linked`: held by this project, by another of the company, or none. */
+export interface HubProjectChoice {
+  id: string;
+  number: string | null;
+  name: string | null;
+  linked: 'this' | 'other' | null;
+}
 
 export interface ApiSnapshot {
   project: {
@@ -88,6 +97,8 @@ export interface ApiSnapshot {
     elapsedPct: number;
     todayDay: number;
     milestonePct: number;
+    /** #1118 U7a — the project's active Hub link; absent while unlinked, and from a server older than the link. */
+    hubLink?: DrawingsHubLink;
   };
   decisions: Decision[];
   activities: Activity[];
@@ -713,6 +724,25 @@ export class ApiGateway {
   /** Archived (soft-deleted) projects in an org — owner/admin only, for the restore UI. */
   listArchivedProjects(orgId: string): Promise<ArchivedProject[]> {
     return this.req(`/orgs/${orgId}/projects/archived`);
+  }
+  // ── #1118 U7a L2 — a project's Hub link, for a company owner or admin. While Hub is not connected for the company,
+  //    every route answers 404. Link and unlink carry one key per attempt: a retry of the same attempt (after a 503,
+  //    or an unlink whose Hub side did not clear) replays it instead of acting twice. ──
+  /** The Hub projects PMC can link this project to, each marked when a project of the company holds it. */
+  listHubProjects(orgId: string, projectId: string): Promise<{ projects: HubProjectChoice[] }> {
+    return this.req(`/orgs/${orgId}/projects/${projectId}/hub/projects`);
+  }
+  linkHubProject(orgId: string, projectId: string, hubProjectId: string, idempotencyKey: string): Promise<{ link: { hubProjectId: string; number: string | null; name: string | null; linkedAt: string } }> {
+    return this.req(`/orgs/${orgId}/projects/${projectId}/hub/link`, {
+      method: 'POST', body: JSON.stringify({ hubProjectId }), headers: { 'Idempotency-Key': idempotencyKey },
+    });
+  }
+  /** `hubCleared` false: PMC's link has ended, but Hub may still show it; the same key again retries Hub's side.
+   *  `hubProjectId` is the link the person saw: the server refuses (409 `hub_link_changed`) to end any other. */
+  unlinkHubProject(orgId: string, projectId: string, hubProjectId: string, idempotencyKey: string): Promise<{ hubCleared: boolean }> {
+    return this.req(`/orgs/${orgId}/projects/${projectId}/hub/unlink`, {
+      method: 'POST', body: JSON.stringify({ hubProjectId }), headers: { 'Idempotency-Key': idempotencyKey },
+    });
   }
   /** The org's reusable structure modules — the template menu (Templates Slice 2). */
   listModules(orgId: string): Promise<OrgTemplateModule[]> {

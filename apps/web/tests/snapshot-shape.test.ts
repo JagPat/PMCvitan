@@ -49,11 +49,12 @@ const SNAPSHOT_KEYS = [
   'materials',
 ].sort();
 
-// The 16 sub-keys of the inline `project` object (ProjectMetaDto / ApiSnapshot.project).
+// The sub-keys of the inline `project` object (ProjectMetaDto / ApiSnapshot.project); #1118 U7a's optional `hubLink`
+// (absent while the project is unlinked) is the server's since L1a and the web's since L2.
 const PROJECT_KEYS = [
   'id', 'name', 'short', 'descriptor', 'scheduleStartDate', 'scheduleEndDate',
   'timeZone', 'stage', 'siteCode', 'location', 'projStart', 'projEnd',
-  'elapsedPct', 'todayDay', 'milestonePct',
+  'elapsedPct', 'todayDay', 'milestonePct', 'hubLink',
 ].sort();
 
 /** Strip line + block comments so identifiers inside them are not read as keys. */
