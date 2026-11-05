@@ -984,7 +984,8 @@ describe('OrgsService.createProject — structureFrom (Templates Slice 1)', () =
     expect(i.id).toBe('INSP-023');
     expect(i).toMatchObject({ kind: 'checklist', title: 'Waterproofing QA', submitted: false, decided: false, by: null });
     const items = (i.items as { create: { name: string; order: number; state?: unknown }[] }).create;
-    expect(items).toEqual([{ name: 'Ponding test', order: 0 }]); // names only — no state/photos/notes travel
+    // names only — no state/photos/notes travel; an item issued by name carries no guidance (guided step 2a)
+    expect(items).toEqual([{ name: 'Ponding test', order: 0, lookAt: null, passRule: null, recordKind: null, recordCount: null, recordWhen: null, recordHint: null }]);
   });
 
   it('rejects a source outside the org (or archived) BEFORE the project exists — no orphan (review F1)', async () => {

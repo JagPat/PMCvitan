@@ -163,7 +163,13 @@ async function main(): Promise<void> {
   await prisma.notification.deleteMany();
   await prisma.changeRequest.deleteMany();
   await prisma.media.deleteMany();
-  await prisma.inspectionItem.deleteMany();
+  // guided inspections (20280210000000) — a guided item refuses row DELETE; the reseed switches that refusal off by name
+  // for its own wipe, inside one transaction, as project removal does
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe('ALTER TABLE "InspectionItem" DISABLE TRIGGER "InspectionItem_guided_not_deleted"');
+    await tx.inspectionItem.deleteMany();
+    await tx.$executeRawUnsafe('ALTER TABLE "InspectionItem" ENABLE TRIGGER "InspectionItem_guided_not_deleted"');
+  });
   await prisma.inspection.deleteMany();
   await prisma.crewRow.deleteMany();
   await prisma.siteMaterial.deleteMany();

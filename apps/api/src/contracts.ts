@@ -447,6 +447,50 @@ export type PresignDrawingInput = z.infer<typeof presignDrawingSchema>;
 export const createOrgSchema = z.object({ name: z.string().min(1) });
 export type CreateOrgInput = z.infer<typeof createOrgSchema>;
 
+// ── Guided site inspections, step 2a (proposal https://claude.ai/artifact/XgdBmLn211SuJpMoTT5cUv) ──────────────
+// A checklist item is either a plain name, as every checklist before this was, or a GUIDED item: its name plus what to
+// look at, what good looks like, and what to record as proof. The bounds are the database's (20280210000000): text holds
+// more than whitespace, a NUL is refused (PostgreSQL cannot store it), and lengths count characters, not UTF-16 units.
+// The record spec is whole: a kind, how many (1 to 10) and when (always: a pass needs it too; fail: only a fail does),
+// with an optional hint. A guided item's guidance is written when it is issued and never changed after.
+export const INSPECTION_RECORD_KINDS = ['photo', 'video', 'voice'] as const;
+export type InspectionRecordKind = (typeof INSPECTION_RECORD_KINDS)[number];
+export const INSPECTION_RECORD_WHEN = ['always', 'fail'] as const;
+export type InspectionRecordWhen = (typeof INSPECTION_RECORD_WHEN)[number];
+export const INSPECTION_GUIDANCE_MAX = 500;
+export const INSPECTION_RECORD_HINT_MAX = 300;
+export const INSPECTION_WORK_TYPE_MAX = 64;
+const guidanceText = (max: number) => z.string().trim().min(1)
+  .refine((s) => !s.includes('\u0000'), 'This text cannot contain that character')
+  .refine((s) => [...s].length <= max, `Keep this to ${max} characters`);
+const itemGuideFields = {
+  lookAt: guidanceText(INSPECTION_GUIDANCE_MAX).optional(),
+  passRule: guidanceText(INSPECTION_GUIDANCE_MAX).optional(),
+  record: z.object({
+    kind: z.enum(INSPECTION_RECORD_KINDS),
+    count: z.number().int().min(1).max(10),
+    when: z.enum(INSPECTION_RECORD_WHEN),
+    hint: guidanceText(INSPECTION_RECORD_HINT_MAX).optional(),
+  }).strict().optional(),
+};
+/** A guided item says at least one thing beyond its name; one that says nothing is a plain name, sent as a string. */
+const saysSomething = (g: { lookAt?: string; passRule?: string; record?: object }): boolean =>
+  g.lookAt !== undefined || g.passRule !== undefined || g.record !== undefined;
+const GUIDE_REQUIRED = 'A guided item says what to look at, what good looks like, or what to record';
+export const guidedItemSchema = z.object({
+  name: z.string().trim().min(1).refine((s) => !s.includes('\u0000'), 'This text cannot contain that character'),
+  ...itemGuideFields,
+}).strict().refine(saysSomething, GUIDE_REQUIRED);
+/** A guided item's guidance without its name: how a template payload stores it, beside the item names (see below). */
+export const itemGuideSpecSchema = z.object(itemGuideFields).strict().refine(saysSomething, GUIDE_REQUIRED);
+export type ItemGuideSpec = z.infer<typeof itemGuideSpecSchema>;
+export type GuidedItemInput = z.infer<typeof guidedItemSchema>;
+/** One checklist item as issued: a plain name, or a guided item. */
+export const inspectionItemSpecSchema = z.union([z.string().trim().min(1), guidedItemSchema]);
+export type InspectionItemSpec = z.infer<typeof inspectionItemSpecSchema>;
+/** The kind of work a checklist checks ("RCC slab", "Waterproofing"), named as Hub's stages and BOQ groups name it. */
+export const inspectionWorkTypeSchema = guidanceText(INSPECTION_WORK_TYPE_MAX);
+
 // ── Templates (docs/TEMPLATES.md) ─────────────────────────────────────────────
 
 /** A module's self-contained structure payload. Node `key`s are payload-internal —
@@ -481,7 +525,20 @@ export const modulePayloadSchema = z.object({
     .max(500)
     .default([]),
   inspections: z
-    .array(z.object({ title: z.string().min(1), zone: z.string().default(''), nodeKey: z.string().optional(), items: z.array(z.string().min(1)).min(1).max(50) }))
+    .array(z.object({
+      title: z.string().min(1),
+      zone: z.string().default(''),
+      nodeKey: z.string().optional(),
+      items: z.array(z.string().min(1)).min(1).max(50),
+      // Guided site inspections (step 2a): each item's guidance BESIDE the names, position for position (null: a plain
+      // item), and the checklist's work type. Kept out of `items` on purpose: the previous release's schema strips keys
+      // it does not know, so it still lists, and builds projects from, a module saved with guidance (as plain items)
+      // rather than refusing it, during a deploy or after a rollback. A payload stored before has neither key.
+      guides: z.array(itemGuideSpecSchema.nullable()).max(50).optional(),
+      workType: inspectionWorkTypeSchema.optional(),
+    }).refine((c) => c.guides === undefined || c.guides.length === c.items.length, {
+      message: 'guides holds one entry per item', path: ['guides'],
+    }))
     .max(100)
     .default([]),
 });
@@ -854,7 +911,9 @@ export type CreatePhaseInput = z.infer<typeof createPhaseSchema>;
 export const createInspectionSchema = z.object({
   title: z.string().trim().min(1),
   zone: z.string().trim().min(1),
-  items: z.array(z.string().trim().min(1)).min(1).max(20),
+  // each a plain name, or a guided item carrying what to look at, what good looks like and what to record (step 2a)
+  items: z.array(inspectionItemSpecSchema).min(1).max(20),
+  workType: inspectionWorkTypeSchema.optional(),
   // Location spine: the place this quality check happens (a location-tree node).
   nodeId: z.string().trim().min(1).optional(),
   // The REQUIREMENT EDGE (Phase 1 Task 4): the Activity this inspection accepts.
