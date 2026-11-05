@@ -119,7 +119,7 @@ export class SnapshotService {
       const myPhotoKeys = filed.flatMap((m) => (m.uploadedBy === userId && m.clientKey ? [m.clientKey] : []));
       return { photoCount: Math.max(log.progress, filed.length), myPhotoKeys };
     });
-    const [decisionSlice, activitySlices, inspectionSlices, dailyLogSlice, viewerFeed, { newest: siteMedia, own: ownOverflow }, drawingDtos, companies, nodes, logPhotos] = await Promise.all([
+    const [decisionSlice, activitySlices, inspectionSlices, dailyLogSlice, viewerFeed, { newest: siteMedia, own: ownOverflow }, drawingDtos, companies, nodes, logPhotos, hubLink] = await Promise.all([
       decisionSlicePromise,
       // Task 10 (Module 4) — the activity spine (`activities` + `phases`) comes from the activities
       // module's query, never a direct `prisma.activity`/`gateOverride`/`prisma.phase` read. It bakes
@@ -177,6 +177,8 @@ export class SnapshotService {
       this.prisma.projectCompany.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.projectNode.findMany({ where: { projectId }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] }),
       photoCountOfLog,
+      // #1118 U7a — the project's active Hub link (kept by PMC at link time; Hub is never called here)
+      this.drawingsQuery.hubLink(projectId),
     ]);
 
     // Private delivery: a short-lived signed serve path (never a public bucket URL). Only
@@ -309,6 +311,7 @@ export class SnapshotService {
         elapsedPct: project.elapsedPct,
         todayDay: project.todayDay,
         milestonePct: project.milestonePct,
+        ...(hubLink ? { hubLink } : {}),
       },
       decisions: decisionDtos,
       activities: activitySlices.activities,

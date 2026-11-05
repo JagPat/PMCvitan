@@ -371,6 +371,27 @@ export class OrgsParticipant {
     return row !== null;
   }
 
+  /**
+   * #1118 U7a — the live project `projectId` of company `orgId`, with what the Hub link names it by; null when it is
+   * missing, archived or in another company. With `hold`, the project row is locked `FOR NO KEY UPDATE` (as
+   * {@link isProjectOperable} takes it), so an archive waits for the caller's transaction and the answer holds until it
+   * commits.
+   */
+  async liveProjectOfOrg(
+    db: Prisma.TransactionClient,
+    orgId: string,
+    projectId: string,
+    hold: boolean,
+  ): Promise<{ name: string; siteCode: string } | null> {
+    const rows = await (db as unknown as OrgsParticipantClient).$queryRawUnsafe<Array<{ name: string; siteCode: string; archived: boolean }>>(
+      `SELECT "name", "siteCode", ("archivedAt" IS NOT NULL) AS archived FROM "Project" WHERE "id" = $1 AND "orgId" = $2${hold ? ' FOR NO KEY UPDATE' : ''}`,
+      projectId,
+      orgId,
+    );
+    const row = rows[0];
+    return row && !row.archived ? { name: row.name, siteCode: row.siteCode } : null;
+  }
+
   /** The account a sign-in or a redeemed code names, by id; null when it no longer exists. */
   async accountById(db: Prisma.TransactionClient, userId: string): Promise<User | null> {
     return db.user.findUnique({ where: { id: userId } });

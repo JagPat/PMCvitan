@@ -6,6 +6,9 @@ import { SignedUrlService } from '../media/signed-url.service';
 import { bakeDrawings, computeDrawingsBase, type DrawingsBase } from './drawings-serialize';
 import { DRAWINGS_PROJECTION } from './drawings.projection';
 import { readServableGeneration } from '../platform/projections/generation';
+import { readHubLink } from './hub/hub-link.service';
+import { readHubClientConfig } from './hub/hub-config';
+import type { ProjectHubLinkDto } from '../snapshot/types';
 
 /**
  * Phase 2 Task 10 — the DRAWINGS module's PUBLIC READ boundary (its query contract).
@@ -36,6 +39,17 @@ export class DrawingsQueryService {
   async snapshotSlice(projectId: string, userId?: string): Promise<Drawing[]> {
     const base = await computeDrawingsBase(this.prisma, projectId);
     return bakeDrawings(base, { userId, drawingUrl: this.drawingUrl });
+  }
+
+  /**
+   * #1118 U7a — the project's active Hub link for the snapshot's project line, read from PMC's own link events, with
+   * where "Open in Hub" goes: Hub's address while PMC is connected to Hub, else null.
+   */
+  async hubLink(projectId: string): Promise<ProjectHubLinkDto | null> {
+    const link = await readHubLink(this.prisma, projectId);
+    if (!link) return null;
+    const hub = readHubClientConfig();
+    return { ...link, openUrl: hub.open ? hub.config.baseUrl : null };
   }
 
   /**

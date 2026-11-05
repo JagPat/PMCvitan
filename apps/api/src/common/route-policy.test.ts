@@ -25,6 +25,7 @@ import { SiteVisitsController } from '../site-visits/site-visits.controller';
 import { DecisionsController } from '../decisions/decisions.controller';
 import { DrawingsController } from '../drawings/drawings.controller';
 import { HubReceiverController } from '../drawings/hub/hub-receiver.controller';
+import { HubLinkController } from '../drawings/hub/hub-link.controller';
 import { InspectionsController } from '../inspections/inspections.controller';
 import { MediaController } from '../media/media.controller';
 import { MembersController } from '../orgs/members.controller';
@@ -73,6 +74,8 @@ const CONTROLLERS = [
   DrawingsController,
   // #1118 U3 — Hub's webhooks (@Public; Hub signs each delivery)
   HubReceiverController,
+  // #1118 U7a — a project's Hub link (company owner/admin, checked in HubLinkService)
+  HubLinkController,
   InspectionsController,
   MediaController,
   MembersController,

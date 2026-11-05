@@ -448,6 +448,18 @@ export interface ProjectMetaDto {
   elapsedPct: number;
   todayDay: number;
   milestonePct: number;
+  /** #1118 U7a — the project's active Hub link: Hub's project id, the number and name Hub gave it when it was linked,
+   *  and where "Open in Hub" goes (Hub's address; null while PMC is not connected to Hub). Absent while the project is
+   *  not linked, so an unlinked project's snapshot is the previous release's, byte for byte */
+  hubLink?: ProjectHubLinkDto;
+}
+
+export interface ProjectHubLinkDto {
+  hubProjectId: string;
+  number: string | null;
+  name: string | null;
+  linkedAt: string;
+  openUrl: string | null;
 }
 
 export interface CompanyDto {
