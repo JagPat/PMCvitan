@@ -26,6 +26,7 @@ import {
   CORRECTIVE_ROLES, CORRECTIVE_ROLES_PHRASE, assignmentStillBinds, holdsCorrectiveRole,
 } from './assignment-eligibility';
 import { OrgsParticipant } from '../orgs/orgs.participant';
+import { MediaParticipant } from '../media/media.participant';
 import { checklistPath } from '../platform/record-paths';
 import { isFailedItem } from './failed-item';
 import { guidanceColumnsOf, itemRowFromSpec } from './guided-item';
@@ -62,6 +63,8 @@ export class InspectionsService {
     // still bind?" is asked of its OWNER through the cycle-exempt participant channel, never of the
     // table. The manifest declares the `orgs` workflow-participant edge for exactly this.
     private readonly orgs: OrgsParticipant,
+    // Guided site inspections, step 2b — the evidence rule asks the media module each linked file's type (manifest edge)
+    private readonly media: MediaParticipant,
   ) {}
 
   /** PMC issues a stage checklist — becomes the engineer's current field checklist.
@@ -555,19 +558,20 @@ export class InspectionsService {
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
-  /** The type of every file linked to each of this inspection's items as evidence, read as the rule always read it
-   *  (Media rows naming the item). A proof photo is not evidence: one is added only on an item that already failed a
-   *  decided inspection, so none exists at a submit. */
+  /** The type of every file linked to each of this inspection's items as evidence. The links are this module's own
+   *  (`InspectionEvidence`, the set whose removal locks this inspection's row first, `assertEvidenceDisposable`); each
+   *  file's type is the media module's answer (`MediaParticipant.mimesOf`), on the same transaction. A proof photo is
+   *  never linked as evidence. */
   private async evidenceMimes(db: Prisma.TransactionClient, projectId: string, inspectionId: string): Promise<Map<string, string[]>> {
-    const rows = await db.media.findMany({
-      where: { projectId, inspectionId, inspectionItemId: { not: null }, kind: { not: 'proof' } },
-      select: { inspectionItemId: true, mime: true },
-    });
+    const links = await db.inspectionEvidence.findMany({ where: { projectId, inspectionId }, select: { inspectionItemId: true, mediaId: true } });
+    const mimeOf = await this.media.mimesOf(db, { projectId, mediaIds: [...new Set(links.map((l) => l.mediaId))] });
     const byItem = new Map<string, string[]>();
-    for (const r of rows) {
-      const list = byItem.get(r.inspectionItemId!);
-      if (list) list.push(r.mime);
-      else byItem.set(r.inspectionItemId!, [r.mime]);
+    for (const l of links) {
+      const mime = mimeOf.get(l.mediaId);
+      if (mime === undefined) continue;
+      const list = byItem.get(l.inspectionItemId);
+      if (list) list.push(mime);
+      else byItem.set(l.inspectionItemId, [mime]);
     }
     return byItem;
   }

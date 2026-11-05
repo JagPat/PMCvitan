@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, type Mock } from 'vitest';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { MediaParticipant } from '../media/media.participant';
 import { InspectionsService } from './inspections.service';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
@@ -69,15 +70,17 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; evide
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => Object.assign(opts.activity ?? {}, data)),
     },
     inspectionItem: { updateMany: vi.fn(async () => ({ count: 1 })) },
-    media: {
-      // the evidence rule reads every item's linked recordings with their type (step 2b); the fixture's are photos.
-      // `evidence` before the inspection's row lock, `evidenceUnderLock` (when given) at and after it, as when a
-      // removal commits while the submit waits for the lock
+    // the evidence rule reads the item links (`evidence` before the inspection's row lock, `evidenceUnderLock` when given at
+    // and after it, as when a removal commits while the submit waits for the lock), then each file's type (photos here)
+    inspectionEvidence: {
       findMany: vi.fn(async () => {
         evidenceReads += 1;
         const ids = evidenceReads > 1 && opts.evidenceUnderLock ? opts.evidenceUnderLock : (opts.evidence ?? []);
-        return ids.map((id) => ({ inspectionItemId: id, mime: 'image/png' }));
+        return ids.map((id) => ({ inspectionItemId: id, mediaId: `m-${id}` }));
       }),
+    },
+    media: {
+      findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) => where.id.in.map((id) => ({ id, mime: 'image/png' }))),
     },
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
     $executeRaw: vi.fn(async () => 1),
@@ -101,7 +104,7 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; evide
   } as unknown as PrismaService;
   const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
   const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-  const svc = new InspectionsService(prisma, snapshot, dispatcher, { today: () => '2026-07-03' }, new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never));
+  const svc = new InspectionsService(prisma, snapshot, dispatcher, { today: () => '2026-07-03' }, new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never), undefined as never, new MediaParticipant());
   const user = { sub: 'u1', role: 'engineer', projectId: insp.projectId } as never;
   const pmc = { sub: 'u-pmc', role: 'pmc', projectId: insp.projectId } as never;
   return { svc, prisma, user, pmc, created, audits, insp };
@@ -166,7 +169,7 @@ describe('InspectionsService.create — location spine (nodeId)', () => {
     } as unknown as PrismaService;
     const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
     const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-    const svc = new InspectionsService(prisma, snapshot, dispatcher, { today: () => '2026-07-03' }, new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never));
+    const svc = new InspectionsService(prisma, snapshot, dispatcher, { today: () => '2026-07-03' }, new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never), undefined as never, new MediaParticipant());
     const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
     return { svc, user, created };
   }

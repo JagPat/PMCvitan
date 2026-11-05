@@ -47,6 +47,7 @@ describe('guided site inspections step 2b — required recordings on pass and fa
 
   afterAll(async () => {
     const projectId = f.projectA.id;
+    await t.prisma.inspectionEvidence.deleteMany({ where: { projectId } });
     await t.prisma.media.deleteMany({ where: { projectId } });
     // a guided item is never deleted; the sanctioned removal switches the refusal off by name, in one transaction
     await t.prisma.$transaction(async (tx) => {
@@ -209,5 +210,48 @@ describe('guided site inspections step 2b — required recordings on pass and fa
       expect(refile.status).toBe(400);
       expect((await t.prisma.media.findUniqueOrThrow({ where: { id } })).nodeId).toBeNull();
     }
+  });
+
+  it('a removal holding the inspection row while a submit waits on it: the submit is judged on what the removal left', async () => {
+    const c = await guidedChecklist();
+    await photo(c.id, c.item.A); await photo(c.id, c.item.A); await voiceNote(c.id, c.item.C);
+    const only = await photo(c.id, c.item.D);
+    expect(only.status).toBe(201);
+    // signals, not clocks: how many sessions on this database are waiting for a lock
+    const waiting = async () => Number((await t.prisma.$queryRaw<Array<{ n: bigint }>>`
+      SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`)[0]!.n);
+    const until = async (n: number, settled: () => boolean, what: string) => {
+      while ((await waiting()) < n) {
+        expect(settled(), what).toBe(false);
+        await new Promise((r) => setImmediate(r));
+      }
+    };
+    const { PrismaClient } = await import('@prisma/client');
+    const holder = new PrismaClient();
+    let removalDone = false;
+    let submitDone = false;
+    let removal: Promise<request.Response> | undefined;
+    let submission: Promise<request.Response> | undefined;
+    try {
+      // the barrier: this session holds the inspection row, so the removal (the real delete route) stops at the lock it
+      // takes first, and the submit (the real route) passes its early check, the photo still there, and stops behind it
+      await holder.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT 1 FROM "Inspection" WHERE "id" = ${c.id} FOR UPDATE`;
+        removal = Promise.resolve(http().delete(`/media/${only.body.id as string}`).set('Authorization', `Bearer ${pmcToken}`))
+          .finally(() => { removalDone = true; });
+        await until(1, () => removalDone, 'the removal waits on the inspection row');
+        submission = Promise.resolve(submit(c, { D: 'fail' })).finally(() => { submitDone = true; });
+        await until(2, () => submitDone, 'the submit waits behind the removal');
+      }, { maxWait: 10_000, timeout: 30_000 });
+    } finally {
+      await holder.$disconnect();
+    }
+    // the removal took the row first and committed; the submit then read, under the same row's lock, what it left
+    expect((await removal!).status).toBe(200);
+    const refused = await submission!;
+    expect(refused.status).toBe(400);
+    expect(refused.body.message).toBe('A failed item needs linked photo evidence before you can submit: D');
+    expect(await submitted(c.id)).toBe(false);
+    expect(await t.prisma.inspectionItem.count({ where: { inspectionId: c.id, state: { not: null } } })).toBe(0);
   });
 });
