@@ -330,7 +330,12 @@ export class IdentitySignInService implements OnModuleInit {
             unsettled();
             return this.unavailable(attempt);
           }
-          if (!made.ok) return this.needsHelp(attempt, 'issuer refused new person');
+          if (!made.ok && made.passwordPolicy) {
+            // the issuer's password policy refused it: the person chooses another password (as `setPassword` refused)
+            this.line('password', attempt, `issuer refused password for new person (${made.reason})`);
+            throw refusedSetup(PASSWORD_REJECTED);
+          }
+          if (!made.ok) return this.needsHelp(attempt, `issuer refused new person (${made.reason ?? 'no reason'})`);
           issuerPasswordSet = true;
         } else if (link) {
           if (link.issuer !== config.issuer || link.subject !== found.userId) return this.needsHelp(attempt, 'link names another person');

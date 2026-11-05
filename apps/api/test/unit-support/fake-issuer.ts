@@ -53,6 +53,8 @@ export type FakeIssuer = {
   keysWithdrawn: boolean;
   /** create answers 201 with no userId (a malformed answer) */
   createAnswersNoId: boolean;
+  /** create refused with this status and body, as Zitadel v4.16's REST gateway answers one (null: create works) */
+  createRefusal: { status: number; body: unknown } | null;
   /** a status forced on a path prefix, e.g. { '/v2/sessions': 503 } */
   force: Record<string, number>;
   spoil: Spoil;
@@ -113,6 +115,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     hold: false,
     oversize: null as string | null,
     createAnswersNoId: false,
+    createRefusal: null as { status: number; body: unknown } | null,
     keysWithdrawn: false,
     force: {} as Record<string, number>,
     spoil: 'none' as Spoil,
@@ -291,6 +294,7 @@ export async function startFakeIssuer(opts: { clientId?: string; serviceToken?: 
     if (req.method === 'POST' && path === '/v2/users/human') {
       const b = json();
       if (byEmail(String(b?.email?.email ?? ''))) return send(res, 409, { message: 'Errors.User.AlreadyExists' });
+      if (fake.createRefusal) return send(res, fake.createRefusal.status, fake.createRefusal.body);
       const p = fake.addPerson(String(b.email.email), String(b.password.password), b.email.isVerified === true);
       p.givenName = String(b?.profile?.givenName ?? '');
       p.familyName = String(b?.profile?.familyName ?? '');

@@ -182,6 +182,48 @@ describe('Redbracket ID A2: the issuer client (fake Zitadel)', () => {
     expect(await client.create({ email: 'n@example.in', password: 'New-pass-123', verified: true })).toEqual({ ok: false, taken: false, failure: 'down' });
   });
 
+  it('a create the password policy refuses names the rule; another refusal names its reason', async () => {
+    // Zitadel v4.16's REST gateway: google.rpc.Status with the translated message and the key in the error detail
+    fake.createRefusal = {
+      status: 400,
+      body: { code: 3, message: 'Password must contain upper case (COMMA-VoaRj)', details: [{ '@type': 'type.googleapis.com/zitadel.v1.ErrorDetail', id: 'COMMA-VoaRj', message: 'Errors.User.PasswordComplexityPolicy.HasUpper' }] },
+    };
+    expect(await client.create({ email: 'p@example.in', password: 'all lower case phrase', verified: true })).toEqual({
+      ok: false, taken: false, failure: 'rejected', reason: '400 Errors.User.PasswordComplexityPolicy.HasUpper', passwordPolicy: true,
+    });
+    // the Connect form: the key inside the message
+    fake.createRefusal = { status: 400, body: { code: 'invalid_argument', message: 'Errors.User.PasswordComplexityPolicy.MinLength (COMMA-HuJf6)' } };
+    expect(await client.create({ email: 'p@example.in', password: 'short', verified: true })).toMatchObject({ failure: 'rejected', passwordPolicy: true, reason: '400 Errors.User.PasswordComplexityPolicy.MinLength' });
+    fake.createRefusal = { status: 400, body: { code: 3, message: 'Errors.User.Invalid (USER-zz)' } };
+    expect(await client.create({ email: 'p@example.in', password: 'Right-pass-123', verified: true })).toEqual({
+      ok: false, taken: false, failure: 'rejected', reason: '400 Errors.User.Invalid', passwordPolicy: false,
+    });
+    fake.createRefusal = { status: 404, body: 'not json' };
+    expect(await client.create({ email: 'p@example.in', password: 'Right-pass-123', verified: true })).toMatchObject({ failure: 'rejected', reason: '404', passwordPolicy: false });
+    expect(fake.people.size).toBe(0);
+  });
+
+  it('the issuer reason is only a message key or the status, never the issuer\'s prose (Codex 4478003699)', async () => {
+    const { issuerKey } = await import('./identity-client');
+    const issuerReason = (status: number, body: string) => { const k = issuerKey(body); return k ? `${status} ${k}` : String(status); };
+    expect(issuerReason(400, JSON.stringify({ message: 'password Secret-123 rejected for a@b.in' }))).toBe('400');
+    expect(issuerReason(400, JSON.stringify({ message: 'Secret-123 a@b.in Errors.User.Invalid (USER-zz)' }))).toBe('400');
+    expect(issuerReason(400, JSON.stringify({ message: 'Errors.User.Invalid (USER-zz)' }))).toBe('400 Errors.User.Invalid');
+    expect(issuerReason(400, JSON.stringify({ details: [{ message: 'Errors.Secret-123' }, { message: 'a@b.in' }] }))).toBe('400');
+    expect(issuerReason(400, JSON.stringify({ message: 'Password must contain upper case', details: [{ message: 'Errors.User.PasswordComplexityPolicy.HasUpper' }] }))).toBe('400 Errors.User.PasswordComplexityPolicy.HasUpper');
+    expect(issuerReason(400, '')).toBe('400');
+    expect(issuerReason(404, 'not json')).toBe('404');
+  });
+
+  it('a policy key echoed inside prose is not the policy: needs-help, not password-rejected (Codex 4478145492)', async () => {
+    fake.createRefusal = { status: 400, body: { code: 3, message: 'value Errors.User.PasswordComplexityPolicy.HasUpper is not allowed' } };
+    expect(await client.create({ email: 'p@example.in', password: 'Errors.User.PasswordComplexityPolicy.HasUpper', verified: true })).toEqual({
+      ok: false, taken: false, failure: 'rejected', reason: '400', passwordPolicy: false,
+    });
+    fake.createRefusal = { status: 400, body: { details: [{ message: 'Errors.User.PasswordComplexityPolicy.HasUpper x' }] } };
+    expect(await client.create({ email: 'p@example.in', password: 'x', verified: true })).toMatchObject({ reason: '400', passwordPolicy: false });
+  });
+
   it('the default limit is 4 seconds', async () => {
     const { IDENTITY_TIMEOUT_MS } = await import('./identity-client');
     expect(IDENTITY_TIMEOUT_MS).toBe(4000);
