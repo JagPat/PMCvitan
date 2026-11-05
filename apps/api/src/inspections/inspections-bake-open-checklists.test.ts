@@ -29,7 +29,8 @@ const entry = (over: Partial<InspectionBaseEntry> & { id: string }): InspectionB
   reinspectionOfId: null,
   assigneeId: null,
   dueDate: null,
-  items: [{ id: `${over.id}-i1`, name: 'Verify', order: 0, state: null, photos: 0, note: '', result: null, swatch: null, rejected: false, mediaIds: [] }],
+  workType: null,
+  items: [{ id: `${over.id}-i1`, name: 'Verify', guide: null, order: 0, state: null, photos: 0, note: '', result: null, swatch: null, rejected: false, mediaIds: [] }],
   ...over,
 });
 

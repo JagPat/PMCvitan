@@ -21,9 +21,10 @@ import { InvitationsService } from './invitations.service';
 import { lockOrgStanding, lockProjectReadiness } from '../common/readiness-lock';
 import { assertOrgStandingSnapshotCurrent, holdsOrgStanding, lockOrgStandingWriters } from './org-standing';
 import { InspectionsQueryService } from '../inspections/inspections.query';
+import { itemRowFromSpec, payloadItemsFromSpecs, specsFromPayload } from '../inspections/guided-item';
 import type { AuthUser, Role } from '../common/auth';
 import type { DecisionsContract } from '../common/decisions-contract';
-import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
+import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type InspectionItemSpec, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { executeCommand, hashRequest } from '../platform/commands';
@@ -119,7 +120,8 @@ interface PreparedInitSource {
     gateTeam: string;
     gateInspection: string;
   }>;
-  inspections: Array<{ title: string; zone: string; nodeKey?: string; items: string[] }>;
+  // Guided site inspections (step 2a): each item a plain name or a guided item, and the checklist's work type if any
+  inspections: Array<{ title: string; zone: string; nodeKey?: string; workType?: string; items: InspectionItemSpec[] }>;
 }
 
 interface InitWriteState {
@@ -759,6 +761,7 @@ export class OrgsService {
         title: inspection.title,
         zone: inspection.zone,
         ...(inspection.nodeId ? { nodeKey: inspection.nodeId } : {}),
+        ...(inspection.workType !== null ? { workType: inspection.workType } : {}),
         items: inspection.items,
       })),
     };
@@ -811,7 +814,12 @@ export class OrgsService {
             gateTeam: 'wait',
             gateInspection: 'wait',
           })),
-          inspections: parsed.data.inspections.map((inspection) => ({ ...inspection, title: `${inspection.title}${suffix}` })),
+          // guided step 2a: a stored checklist's names and the guides beside them become the item specs it issues
+          inspections: parsed.data.inspections.map(({ guides: _guides, ...inspection }) => ({
+            ...inspection,
+            title: `${inspection.title}${suffix}`,
+            items: specsFromPayload({ items: inspection.items, guides: _guides }),
+          })),
         });
       }
     }
@@ -1073,7 +1081,8 @@ export class OrgsService {
         title: i.title,
         zone: i.zone,
         nodeKey: i.nodeId && nodeIds.has(i.nodeId) ? i.nodeId : undefined,
-        items: i.items,
+        workType: i.workType ?? undefined,
+        ...payloadItemsFromSpecs(i.items),
       })),
     });
   }
@@ -1267,7 +1276,10 @@ export class OrgsService {
             submitted: false,
             decided: false,
             nodeId: inspection.nodeKey ? required(nodeIdByKey, inspection.nodeKey, 'node key') : null,
-            items: { create: inspection.items.map((name, index) => ({ name, order: index })) },
+            // Guided site inspections (step 2a): the work type and each item's guidance go in this INSERT, since the
+            // database never lets an issued item's guidance be set afterwards (InspectionItem_guidance_fixed)
+            workType: inspection.workType ?? null,
+            items: { create: inspection.items.map((spec, index) => ({ ...itemRowFromSpec(spec), order: index })) },
           },
         },
         // Task 10 (Module 3) correction — append `inspection.created` in the init tx so the
