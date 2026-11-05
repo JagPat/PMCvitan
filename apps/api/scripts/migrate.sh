@@ -630,6 +630,9 @@ if echo "$out" | grep -q "P3005"; then
   #
   # The live holder seals (Redbracket ID A4b-m, 20280208000000) are here because of their triggers, which a db-push
   # baseline does not have. CREATE OR REPLACE and DROP TRIGGER IF EXISTS, re-runnable; they replace nothing delivered.
+  #
+  # The Hub project label (#1118 U7a L0, 20280209000000) is here because of its CHECK, which a db-push baseline does not
+  # have. IF NOT EXISTS, a guarded column type and a re-issued CHECK, re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -690,7 +693,8 @@ if echo "$out" | grep -q "P3005"; then
 20280204000000_media_upload_source
 20280206000000_inspection_responsible_member
 20280207000000_inspection_responsible_catalog
-20280208000000_redbracket_id_live_holder_seals"
+20280208000000_redbracket_id_live_holder_seals
+20280209000000_hub_link_project_label"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
