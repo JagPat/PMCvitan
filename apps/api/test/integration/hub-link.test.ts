@@ -321,4 +321,55 @@ describe('#1118 U7a L1 — Hub project link (live PG + stub Hub)', () => {
     expect(await events(loser)).toEqual([]);
     expect((await unlink(winner)).body).toEqual({ hubCleared: true });
   });
+
+  it('a committed keyed link or unlink replays, with its answer, after Hub is disconnected', async () => {
+    open();
+    const p = await project('replay');
+    expect((await link(p, '14', { key: `k-rl-${run}` })).status).toBe(200);
+    hub.faults.push({ when: (m) => m === 'DELETE', fault: 500 });
+    expect((await unlink(p, { key: `k-ru-${run}` })).body).toEqual({ hubCleared: false });
+    vi.unstubAllEnvs();
+    const n = hub.calls.length;
+    const relink = await link(p, '14', { key: `k-rl-${run}` });
+    expect(relink.status).toBe(200);
+    expect(relink.body).toEqual({ link: null });
+    expect((await unlink(p, { key: `k-ru-${run}` })).body).toEqual({ hubCleared: false });
+    // unkeyed, or a new key: closed again
+    expect((await unlink(p, { key: `k-ru2-${run}` })).status).toBe(404);
+    expect(callsSince(n)).toEqual([]);
+    open();
+    expect((await unlink(p)).body).toEqual({ hubCleared: true });
+  });
+
+  it('takes its locks before Hub hears of anything: an archive in flight is waited for, and then nothing reaches Hub', async () => {
+    open();
+    const p = await project('archive');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let locked!: () => void;
+    const held = new Promise<void>((resolve) => (locked = resolve));
+    const archiving = t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`UPDATE "Project" SET "archivedAt" = now() WHERE "id" = $1`, p);
+      locked();
+      await gate;
+    }, { timeout: 60_000 });
+    await held;
+    const n = hub.calls.length;
+    const pending = link(p, '15').then((r) => r);
+    // wait until the link is blocked on the project row (a lock wait, not a clock)
+    for (;;) {
+      const [row] = await t.prisma.$queryRawUnsafe<Array<{ waiting: bigint }>>(
+        `SELECT count(*) AS waiting FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE '%FOR NO KEY UPDATE%'`);
+      if (Number(row!.waiting) > 0) break;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(callsSince(n)).toEqual([]);
+    release();
+    await archiving;
+    const r = await pending;
+    expect(r.status).toBe(404);
+    expect(callsSince(n)).toEqual([]);
+    expect(hub.links.has('15')).toBe(false);
+    expect(await events(p)).toEqual([]);
+  });
 });

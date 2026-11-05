@@ -15,7 +15,7 @@ import { resolveActor } from '../../common/actor';
 import type { AuthUser } from '../../common/auth';
 import { lockOrgStanding, lockProjectReadiness } from '../../common/readiness-lock';
 import { recordAudit } from '../../platform/audit';
-import { executeCommand, hashRequest, type CommandTx } from '../../platform/commands';
+import { executeCommand, hashRequest, peekReplay, type CommandTx } from '../../platform/commands';
 import { resolveWebAppUrl } from '../../config';
 import { readHubClientConfig, type HubClientConfig } from './hub-config';
 import {
@@ -33,13 +33,15 @@ import {
  *
  * Who: an owner or admin of `HUB_ORG_ID`'s company only, for a live project of that company. Closed (any of the four
  * client variables unset or malformed) or another company: 404, as if the routes did not exist. A member who is not an
- * owner or admin: 403. Both are checked before Hub hears of anything, and again under the locks before PMC writes.
+ * owner or admin: 403. Both are checked before the transaction (a cheap refusal), and authoritatively under the locks.
+ * A keyed request that already committed replays before any of these checks, so a lost answer can always be recovered.
  *
- * One at a time: every link and unlink of the company takes the Hub-link key ({@link lockHubLinks}) first, and holds it
- * through its Hub calls and its PMC write, so Hub's one `pmc` link per Hub project and PMC's link events change
- * together, never interleaved with another project's. Only these two commands take that key, and they take it before
- * the company's standing key and the project's readiness key, so no lock order is crossed. No row is locked during a Hub
- * call: the PMC write takes its locks after Hub has answered.
+ * Locks before Hub: every link and unlink takes, first, the company's standing key (so the owner/admin answer holds),
+ * then the project's readiness key, the live project row (`FOR NO KEY UPDATE`, so an archive waits) and the link row
+ * (`FOR UPDATE`, the lock the receiver reads), in the order every writer takes them. Only then is Hub called, so nothing
+ * Hub is told can be undone by a role change or an archive in between, and since every link command of the company
+ * holds the standing key, Hub's one `pmc` link per Hub project and PMC's link events change together, one command at a
+ * time. The cost: the company's standing writers (membership and project creation) wait for at most the Hub calls.
  *
  * - Link: refused (409) when the project is linked to another Hub project (unlink first), when another PMC project holds
  *   that Hub project, or when the project already has Hub drawings from another Hub project. Then Hub is asked for the
@@ -55,7 +57,7 @@ import {
  * call). Nothing here logs; no answer carries the token, a Hub URL, or Hub's words.
  */
 
-/** The transaction holds a pooled connection through up to three Hub calls of {@link HUB_CALL_TIMEOUT_MS} each. */
+/** The transaction holds a pooled connection (and the locks) through at most two Hub calls of {@link HUB_CALL_TIMEOUT_MS} each. */
 export const HUB_LINK_TX_TIMEOUT_MS = 30_000;
 /** What Hub keeps of a link's label (Hub clips it there). */
 export const HUB_LINK_LABEL_MAX = 64;
@@ -63,12 +65,6 @@ export const HUB_LINK_LABEL_MAX = 64;
 export type HubProjectChoice = HubProject & { linked: 'this' | 'other' | null };
 export type HubUnlinkResult = { hubCleared: boolean };
 
-const HUB_LINK_KEY_PREFIX = 'hub-link:';
-
-/** The company's Hub-link key: taken first by every link and unlink of its projects, held to commit. */
-export async function lockHubLinks(tx: CommandTx | Prisma.TransactionClient, orgId: string): Promise<void> {
-  await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${HUB_LINK_KEY_PREFIX + orgId}, 0))`);
-}
 
 function hubFailure(f: { failure: HubCallFailure; status?: number }): HttpException {
   if (f.failure === 'refused') {
@@ -101,11 +97,11 @@ export class HubLinkService {
   }
 
   /** Owner or admin of `orgId` (else 403), and `projectId` a live project of it (else 404). */
-  private async authorize(db: Prisma.TransactionClient, orgId: string, userId: string, projectId: string, hold: boolean) {
+  private async authorize(db: Prisma.TransactionClient, orgId: string, userId: string, projectId: string) {
     if (!(await this.orgs.administersAnyOf(db, userId, [orgId]))) {
       throw new ForbiddenException('Only a company owner or admin can link a project to Hub');
     }
-    const project = await this.orgs.liveProjectOfOrg(db, orgId, projectId, hold);
+    const project = await this.orgs.liveProjectOfOrg(db, orgId, projectId, false);
     if (!project) throw new NotFoundException('Project not found in this company');
     return project;
   }
@@ -113,7 +109,7 @@ export class HubLinkService {
   /** The Hub projects PMC's office token reaches, each marked when a PMC project holds it. */
   async listProjects(orgId: string, user: AuthUser, projectId: string): Promise<{ projects: HubProjectChoice[] }> {
     const config = this.client(orgId);
-    await this.authorize(this.prisma, orgId, user.sub, projectId, false);
+    await this.authorize(this.prisma, orgId, user.sub, projectId);
     const listed = await listHubProjects(config);
     if (!listed.ok) throw hubFailure(listed);
     const holders = await activeHolders(this.prisma, listed.value.map((p) => p.id));
@@ -126,20 +122,25 @@ export class HubLinkService {
   }
 
   async link(orgId: string, user: AuthUser, projectId: string, hubProjectId: string, idempotencyKey?: string): Promise<{ link: HubLinkView | null }> {
-    const config = this.client(orgId);
-    const project = await this.authorize(this.prisma, orgId, user.sub, projectId, false);
+    const scope = { scopeKind: 'project' as const, projectId };
+    const requestHash = hashRequest({ orgId, projectId, hubProjectId });
+    // a committed keyed link replays before any check that may have changed since (Hub's config, the person's role)
+    const replay = await peekReplay(this.prisma, scope, user.sub, 'drawings.hubLink', idempotencyKey, requestHash);
+    const config = replay ? null : this.client(orgId);
+    if (!replay) await this.authorize(this.prisma, orgId, user.sub, projectId);
     const actor = await resolveActor(this.prisma, user);
 
     await executeCommand(this.prisma, {
-      scope: { scopeKind: 'project', projectId },
+      scope,
       actor,
       commandType: 'drawings.hubLink',
       idempotencyKey,
-      requestHash: hashRequest({ orgId, projectId, hubProjectId }),
+      requestHash,
       transact: (fn) => this.prisma.$transaction(fn, { timeout: HUB_LINK_TX_TIMEOUT_MS }),
       run: async (tx) => {
-        await lockHubLinks(tx, orgId);
-        // refuse before Hub hears of it; only holders of the key write link events, so this still holds below
+        if (!config) throw new NotFoundException();
+        // every lock first, so nothing Hub is told can be undone by a role change or an archive in the meantime
+        const project = await this.lockForWrite(tx, orgId, user.sub, projectId);
         await linkRefusal(tx, projectId, hubProjectId);
 
         const listed = await listHubProjects(config);
@@ -152,9 +153,8 @@ export class HubLinkService {
         const linked = await linkHubProject(config, hubProjectId, { externalId: projectId, url: pmcAddress(), label });
         if (!linked.ok) throw hubFailure(linked);
 
-        // PMC's side, under the company's standing key, the project's readiness key, the live project and the link row
-        await this.lockForWrite(tx, orgId, user.sub, projectId);
-        const latest = await linkRefusal(tx, projectId, hubProjectId);
+        // PMC's side, under the same locks
+        const latest = await latestEvent(tx, projectId);
         if (latest?.kind === 'linked') return { resultRef: hubProjectId };
         if (!latest) await tx.drawingHubLink.create({ data: { projectId, orgId } });
         const seq = (latest?.seq ?? 0) + 1;
@@ -185,19 +185,25 @@ export class HubLinkService {
   }
 
   async unlink(orgId: string, user: AuthUser, projectId: string, idempotencyKey?: string): Promise<HubUnlinkResult> {
-    const config = this.client(orgId);
-    await this.authorize(this.prisma, orgId, user.sub, projectId, false);
+    const scope = { scopeKind: 'project' as const, projectId };
+    const requestHash = hashRequest({ orgId, projectId });
+    // a committed keyed unlink replays (with its answer) before any check that may have changed since
+    const replay = await peekReplay(this.prisma, scope, user.sub, 'drawings.hubUnlink', idempotencyKey, requestHash);
+    const config = replay ? null : this.client(orgId);
+    if (!replay) await this.authorize(this.prisma, orgId, user.sub, projectId);
     const actor = await resolveActor(this.prisma, user);
 
     const outcome = await executeCommand(this.prisma, {
-      scope: { scopeKind: 'project', projectId },
+      scope,
       actor,
       commandType: 'drawings.hubUnlink',
       idempotencyKey,
-      requestHash: hashRequest({ orgId, projectId }),
+      requestHash,
       transact: (fn) => this.prisma.$transaction(fn, { timeout: HUB_LINK_TX_TIMEOUT_MS }),
       run: async (tx) => {
-        await lockHubLinks(tx, orgId);
+        if (!config) throw new NotFoundException();
+        // every lock first, so nothing Hub is told can be undone by a role change or an archive in the meantime
+        await this.lockForWrite(tx, orgId, user.sub, projectId);
         const latest = await latestEvent(tx, projectId);
         if (!latest) throw new ConflictException({ code: 'hub_not_linked', message: 'This project is not linked to a Hub project' });
         // the Hub project this project was last linked to: events alternate, so an unlink's previous event is that link
@@ -212,7 +218,6 @@ export class HubLinkService {
         const hubCleared = holder !== undefined && holder !== projectId ? true : (await unlinkHubProject(config, target)).ok;
 
         if (latest.kind === 'linked') {
-          await this.lockForWrite(tx, orgId, user.sub, projectId);
           const seq = latest.seq + 1;
           await tx.drawingHubLinkEvent.create({ data: { projectId, seq, prevSeq: latest.seq, kind: 'unlinked', byUserId: user.sub } });
           await recordAudit(tx, {
@@ -231,18 +236,20 @@ export class HubLinkService {
   }
 
   /**
-   * The locks a PMC link write holds, after the Hub-link key and in the order every writer takes them: the company's
+   * The locks every link and unlink takes before calling Hub, in the order every writer takes them: the company's
    * standing key (so the owner/admin answer holds), the project's readiness key, the live project row, the link row.
    */
-  private async lockForWrite(tx: CommandTx, orgId: string, userId: string, projectId: string): Promise<void> {
+  private async lockForWrite(tx: CommandTx, orgId: string, userId: string, projectId: string): Promise<{ name: string; siteCode: string }> {
     await lockOrgStanding(tx, orgId);
     if (!(await this.orgs.administersAnyOf(tx, userId, [orgId]))) {
       throw new ForbiddenException('Only a company owner or admin can link a project to Hub');
     }
     await lockProjectReadiness(tx, projectId);
-    if (!(await this.orgs.liveProjectOfOrg(tx, orgId, projectId, true))) throw new NotFoundException('Project not found in this company');
+    const project = await this.orgs.liveProjectOfOrg(tx, orgId, projectId, true);
+    if (!project) throw new NotFoundException('Project not found in this company');
     // the receiver reads this row FOR UPDATE; a link event's insert takes KEY SHARE on it, so this is the same lock it waits on
     await tx.$queryRaw(Prisma.sql`SELECT "projectId" FROM "DrawingHubLink" WHERE "projectId" = ${projectId} FOR UPDATE`);
+    return project;
   }
 }
 
