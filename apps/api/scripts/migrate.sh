@@ -633,6 +633,9 @@ if echo "$out" | grep -q "P3005"; then
   #
   # The Hub project label (#1118 U7a L0, 20280209000000) is here because of its CHECK, which a db-push baseline does not
   # have. IF NOT EXISTS, a guarded column type and a re-issued CHECK, re-runnable.
+  #
+  # The inspection item guidance (guided site inspections step 1, 20280210000000) is here because of its CHECKs and
+  # trigger, which a db-push baseline does not have. IF NOT EXISTS, guarded column types, re-issued CHECKs and trigger.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -694,7 +697,8 @@ if echo "$out" | grep -q "P3005"; then
 20280206000000_inspection_responsible_member
 20280207000000_inspection_responsible_catalog
 20280208000000_redbracket_id_live_holder_seals
-20280209000000_hub_link_project_label"
+20280209000000_hub_link_project_label
+20280210000000_inspection_item_guidance"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
