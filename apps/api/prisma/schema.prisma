@@ -1437,6 +1437,10 @@ model DrawingHubLinkEvent {
   next         DrawingHubLinkEvent[] @relation("hubLinkEventChain")
   kind         String // linked | unlinked
   hubProjectId String? // the Hub project, on a link only
+  // #1118 U7a L0 (20280209000000): what Hub called the project when it was linked, kept so a screen never calls Hub.
+  // On a link only, each optional; "DrawingHubLinkEvent_hubProject_label" (raw SQL) bounds them
+  hubProjectNumber String?
+  hubProjectName   String?
   at           DateTime              @default(now())
   // the user who linked or unlinked (NO ACTION, as every actor key); whether they may is the linking command's check
   by           User                  @relation("hubLinkEventsBy", fields: [byUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)

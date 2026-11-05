@@ -274,7 +274,8 @@ describe('#1118 U1a-2 — the Hub link and its history (live PG)', () => {
       'DrawingHubLinkEvent_no_truncate', 'DrawingHubLinkEvent_sealed', 'DrawingHubLink_first_event', 'DrawingHubLink_no_truncate', 'DrawingHubLink_sealed',
     ].sort());
     expect(before.find((r) => r.name === 'DrawingHubLink_first_event' && r.kind === 'trigger')?.def).toMatch(/CONSTRAINT TRIGGER .* AFTER INSERT .* DEFERRABLE INITIALLY DEFERRED/);
-    expect(before.filter((r) => r.kind === 'constraint' && r.def.startsWith('CHECK'))).toHaveLength(3);
+    // this file's three checks; 20280209000000 (U7a L0) adds a fourth, the label check, which its own test covers
+    expect(before.filter((r) => r.kind === 'constraint' && r.def.startsWith('CHECK') && r.name !== 'DrawingHubLinkEvent_hubProject_label')).toHaveLength(3);
     expect(before.filter((r) => r.kind === 'constraint' && r.def.startsWith('FOREIGN KEY'))).toHaveLength(4);
     expect(before.filter((r) => r.kind === 'function').map((r) => r.def)).toEqual(Array(3).fill('search_path=pg_catalog, public, pg_temp'));
     replay();
