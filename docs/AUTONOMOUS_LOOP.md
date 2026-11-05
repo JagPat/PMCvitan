@@ -70,11 +70,26 @@ input name is retained for workflow-dispatch compatibility. Pending recovery
 replaces the abandoned owner through the same concurrency lane; it cannot create a
 second owner. Timeout, changed-CI, changed provider evidence, and the documented
 bootstrap marker are retryable. A current-head Codex finding or review is not:
-Claude must fix it and push a new SHA. Successful, finding-bearing, superseded, or
-non-current pending status IDs fail closed. The gate disarms a queued native
-auto-merge before every success it writes and re-arms it only after the merge's
-own authorization has read Codex's record; a disarm or re-arm it cannot confirm
-replaces the success with a retryable failure, which this recovery re-judges.
+Claude must fix it and push a new SHA. Finding-bearing, superseded, or
+non-current pending status IDs fail closed, and so does a success unless it is the
+head's newest status, carries an approval token and is named exactly. The gate
+disarms a queued native auto-merge before every success it writes, and a run
+started by CI disarms its own pull request's queued merge first; it re-arms only
+after the merge's own authorization has read Codex's record. A disarm or re-arm
+it cannot confirm replaces the success with a retryable failure, which this
+recovery re-judges. A ready green left unarmed (the watchdog re-arm) is dispatched
+by the watchdog once per re-judged success and per pull request: its request is
+`codex-recovery-request/<success-id>/pr-<number>`, so another pull request at
+the same commit never holds it. The re-judge republishes the success and then
+consumes the request, so a consumed request newer than the head's newest success
+holds the ask for at most four hours; a success any later run writes is asked
+about once more, and a run that disarms the head again lifts that consumption so
+the next pass asks, for every pull request at the commit whose merge it disabled. A re-judge that threw, whose merge was held by a base, head
+or readiness race or a draft, or that fell through to the ordinary review, marks
+its request failed and is asked again; the owner job's `failure() || cancelled()`
+step marks a request its timed-out or cancelled run left pending, and a request
+still pending past twice the owner job's limit lost its runner and is asked
+again. A retryable failure under a newer success is not asked about.
 The dispatch job only writes a durable `codex-recovery-request/<terminal-id>`
 marker; it never
 changes draft state, invokes Codex, publishes `codex-current-head`, or queues a
@@ -86,6 +101,29 @@ request, including after an interrupted owner, but cannot create a concurrent
 reviewer. Per-terminal contexts prevent an older owner from consuming a newer
 request. A request is consumed only after a terminal review outcome; CI failure
 leaves it pending for the next green owner.
+A failure's request names no pull request: the failure is the commit's, so the
+request holds the ask for every open pull request at that commit. One still
+pending past the same four-hour limit lost its run (a lost runner, or a pull
+request that moved or closed before its run read it) and is asked again. The
+watchdog reads every page of the combined status.
+One open pull request per commit: while more than one open pull request into the
+default branch from this repository has the same head, none of them is green. The
+gate disarms every queued merge at that commit (whatever its base or repository)
+and writes the retryable `review: commit shared by more than one open pull
+request`, which is true of the commit itself. Each pull request's sticky names the
+others. A fork's pull request, or one into another base, is not counted: the gate
+never judges it, so counting it would let anyone who can fork hold a pull request.
+Nobody owes a correction, and the watchdog neither routes one nor asks the gate
+again while a fresh list still shows another such pull request at the head. The
+watchdog also runs when a pull request closes, so closing all but one is asked
+about at once (once per close), and that re-judge goes on to the remaining pull
+request's own verdict. Pushing a distinct commit clears it too. When the open
+pull requests at a head cannot be listed, the gate fails closed with the retryable
+`review: open pull requests at this commit could not be read` and drafts the pull
+request. A body verdict written for another pull request (its status target names
+that pull request) is still routed, never silenced, and its notice says which pull
+request's body it read and that an edit or push has the gate judge this one's.
+Codex and CI verdicts are the commit's and are routed as this pull request's own.
 Before publishing a new pending status or changing readiness, the owner checks live
 current-head Codex reviews and inline comments. A finding that arrived after a
 timeout is republished as the required failure and requires a new SHA; recovery

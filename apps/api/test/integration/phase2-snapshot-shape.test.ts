@@ -106,8 +106,13 @@ function assertRuntimeShape(obj: Record<string, unknown>, spec: Spec, label: str
 // ── The EXPECTED source shape of every DTO (a tripwire on types.ts) ──
 const EXPECT: Record<string, Spec> = {
   ProjectMetaDto: {
-    keys: ['id', 'name', 'short', 'descriptor', 'stage', 'siteCode', 'location', 'projStart', 'projEnd', 'scheduleStartDate', 'scheduleEndDate', 'timeZone', 'elapsedPct', 'todayDay', 'milestonePct'].sort(),
-    optional: [], nullable: ['scheduleStartDate', 'scheduleEndDate'].sort(),
+    // #1118 U7a — `hubLink` only while the project is linked to its Hub project (absent otherwise)
+    keys: ['id', 'name', 'short', 'descriptor', 'stage', 'siteCode', 'location', 'projStart', 'projEnd', 'scheduleStartDate', 'scheduleEndDate', 'timeZone', 'elapsedPct', 'todayDay', 'milestonePct', 'hubLink'].sort(),
+    optional: ['hubLink'], nullable: ['scheduleStartDate', 'scheduleEndDate'].sort(),
+  },
+  ProjectHubLinkDto: {
+    keys: ['hubProjectId', 'number', 'name', 'linkedAt', 'openUrl'].sort(),
+    optional: [], nullable: ['number', 'name', 'openUrl'].sort(),
   },
   DecisionDto: {
     // Phase 6 task 4a — the withdrawal evidence travels through the CONTRACT (pmc-audience only;
@@ -144,10 +149,11 @@ const EXPECT: Record<string, Spec> = {
     optional: [], nullable: ['plannedStartDate', 'plannedEndDate'].sort(),
   },
   // #771 read contract: the stored assignee and civil due date are always present (`null` = none stored).
-  ChecklistDto: { keys: ['id', 'title', 'zone', 'nodeId', 'date', 'submitted', 'reinspectionOfId', 'assigneeId', 'dueDate', 'items'].sort(), optional: ['nodeId'], nullable: ['reinspectionOfId', 'assigneeId', 'dueDate'].sort() },
+  // Guided site inspections step 2a: the work type, always present (`null` = none).
+  ChecklistDto: { keys: ['id', 'title', 'zone', 'nodeId', 'date', 'submitted', 'reinspectionOfId', 'assigneeId', 'dueDate', 'workType', 'items'].sort(), optional: ['nodeId'], nullable: ['reinspectionOfId', 'assigneeId', 'dueDate', 'workType'].sort() },
   ReviewDto: {
-    keys: ['id', 'title', 'zone', 'nodeId', 'by', 'date', 'decided', 'reinspectionOfId', 'assigneeId', 'dueDate', 'closing', 'activityId', 'activityName', 'items'].sort(),
-    optional: ['nodeId', 'reinspectionOfId', 'closing', 'activityId', 'activityName'].sort(), nullable: ['assigneeId', 'dueDate'].sort(),
+    keys: ['id', 'title', 'zone', 'nodeId', 'by', 'date', 'decided', 'reinspectionOfId', 'assigneeId', 'dueDate', 'workType', 'closing', 'activityId', 'activityName', 'items'].sort(),
+    optional: ['nodeId', 'reinspectionOfId', 'closing', 'activityId', 'activityName'].sort(), nullable: ['assigneeId', 'dueDate', 'workType'].sort(),
   },
   MaterialDto: { keys: ['id', 'name', 'qty', 'zone', 'matched', 'swatch', 'decisionId', 'nodeId'].sort(), optional: ['decisionId', 'nodeId'].sort(), nullable: [] },
   DrawingAckDto: { keys: ['userName', 'role', 'at'].sort(), optional: [], nullable: [] },
@@ -160,13 +166,14 @@ const EXPECT: Record<string, Spec> = {
     keys: ['id', 'number', 'title', 'discipline', 'zone', 'activityId', 'decisionId', 'nodeId', 'draft', 'current', 'ackedByMe', 'recipientOfCurrent', 'revisions'].sort(),
     optional: ['nodeId', 'draft', 'recipientOfCurrent'].sort(), nullable: ['zone', 'activityId', 'decisionId', 'current'].sort(),
   },
+  OpenItemDto: { keys: ['inspectionId', 'title', 'zone', 'nodeId', 'status', 'failedItems'].sort(), optional: [], nullable: ['nodeId'] },
   ProofPhotoDto: { keys: ['id', 'url', 'inspectionId', 'inspectionItemId', 'by', 'byRole', 'at'].sort(), optional: ['by', 'byRole'].sort(), nullable: [] },
   PhotoDto: { keys: ['id', 'url', 'takenAt', 'nodeId', 'kind', 'by', 'byRole', 'at', 'clientKey', 'deletable', 'deletableUntil'].sort(), optional: ['takenAt', 'nodeId', 'by', 'byRole', 'clientKey', 'deletable', 'deletableUntil'].sort(), nullable: [] },
   DailyLogDto: { keys: ['id', 'date', 'logDate', 'checkedIn', 'checkinTime', 'submitted', 'crew', 'previous', 'materials', 'progress', 'photos', 'photoCount', 'myPhotoKeys'].sort(), optional: ['id', 'previous'].sort(), nullable: ['logDate', 'checkinTime', 'previous'].sort() },
   CompanyDto: { keys: ['id', 'name', 'kind', 'contactName', 'contactEmail', 'contactPhone', 'notes'].sort(), optional: [], nullable: [] },
   NodeDto: { keys: ['id', 'parentId', 'name', 'kind', 'order', 'draft'].sort(), optional: ['draft'], nullable: ['parentId'] },
   SnapshotDto: {
-    keys: ['project', 'decisions', 'activities', 'placedInspections', 'checklist', 'openChecklists', 'reviews', 'review', 'reinspectionCreated', 'drawings', 'phases', 'dailyLog', 'notifications', 'companies', 'nodes', 'photos', 'myDeletablePhotos', 'proofs', 'responsibleMembers', 'materials'].sort(),
+    keys: ['project', 'decisions', 'activities', 'placedInspections', 'checklist', 'openChecklists', 'reviews', 'review', 'reinspectionCreated', 'drawings', 'phases', 'dailyLog', 'notifications', 'companies', 'nodes', 'photos', 'myDeletablePhotos', 'proofs', 'responsibleMembers', 'openItems', 'materials'].sort(),
     optional: [], nullable: ['checklist', 'review', 'dailyLog'].sort(),
   },
 };
@@ -174,8 +181,9 @@ const EXPECT: Record<string, Spec> = {
 // Inline (non-interface) element shapes — pinned literally + verified at runtime.
 const INLINE = {
   notification: ['at', 'color', 'id', 'text', 'time', 'unread'], // Top 10 #4a (#778) — the row's identity and write instant; #4b unit C — `unread`
-  checklistItem: ['evidence', 'id', 'name', 'note', 'photos', 'state'],
-  reviewItem: ['evidence', 'id', 'name', 'note', 'rejected', 'result', 'swatch'],
+  // guided step 2a — `guide`, the item's guidance (null for an item issued by name only)
+  checklistItem: ['evidence', 'guide', 'id', 'name', 'note', 'photos', 'state'],
+  reviewItem: ['evidence', 'guide', 'id', 'name', 'note', 'rejected', 'result', 'swatch'],
   crew: ['count', 'trade'],
   dailyLogMaterial: ['decisionId', 'matched', 'name', 'photo', 'qty', 'swatch', 'zone'],
   dailyLogPhoto: ['id', 'takenAt', 'url'], // takenAt optional

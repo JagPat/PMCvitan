@@ -17,6 +17,7 @@ import type {
   MeasurementRegisterDto,
   VendorAdvanceListDto,
   ScreenKey,
+  DrawingsHubLink,
 } from '@vitan/shared';
 import { emptyNotifSeen, type NotifSeenState } from '@/lib/notificationSeen';
 import type { DailyLogDraft } from './dailyLogDraft';
@@ -25,6 +26,7 @@ import type { LabourView } from './labour';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import type { AllocateLabourInput, Phase6_4dRollout } from '../data/apiGateway';
 import type { KeptSitePhoto } from '@/lib/queuedSitePhotos';
+import type { HubUnlinkPending } from '@/lib/hubLink';
 
 /** #704 — one unsettled location create: the `Idempotency-Key` every send of it carries, how many of
  *  those sends are still out, whether any of them failed (an unknown outcome, so a retry must replay
@@ -209,6 +211,11 @@ export interface ProjectDataState {
    *  binding that succeeded. Holding the key lets the command ledger replay the original
    *  success; keying by (device, worker) signature keeps concurrent forms independent. */
   labourBindPending: Record<string, string>;
+  /** #1118 U7a L2 — the project's active Hub link, from the snapshot's project line (null while unlinked, or
+   *  until the snapshot lands). Project-owned: another project's Hub link must never label this one. */
+  hubLink: DrawingsHubLink | null;
+  /** #1118 U7a L2 — an unlink's key until it has settled, Hub's side included (AppState.hubUnlinkPending). */
+  hubUnlinkPending: HubUnlinkPending | null;
 }
 
 /** Explicit absence — null, never a fabricated ''-id record actions could mutate. */
@@ -267,6 +274,8 @@ export function emptyProjectData(): ProjectDataState {
     labourOnboardPending: {},
     nodeCreatePending: {},
     labourBindPending: {},
+    hubLink: null,
+    hubUnlinkPending: null,
   };
 }
 

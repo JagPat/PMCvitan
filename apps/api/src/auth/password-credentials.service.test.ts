@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto';
 import { BadRequestException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaService } from '../prisma.service';
-import { PasswordCredentialsService } from './password-credentials.service';
+import { PasswordCredentialsService, tokenScope } from './password-credentials.service';
 
 interface UserRow {
   id: string;
@@ -34,10 +35,14 @@ function fakePrisma(seed: UserRow[]) {
   const events: Array<Record<string, unknown>> = [];
 
   const matches = (row: ChallengeRow, where: Record<string, unknown>): boolean => {
-    if (where.id !== undefined && row.id !== where.id) return false;
+    if (typeof where.id === 'string' && row.id !== where.id) return false;
+    if (typeof where.id === 'object' && where.id !== null && 'not' in where.id && row.id === (where.id as { not: string }).not) return false;
+    if (typeof where.consumedAt === 'object' && where.consumedAt !== null && 'gt' in where.consumedAt && (!row.consumedAt || row.consumedAt <= (where.consumedAt as { gt: Date }).gt)) return false;
+    if (where.setupTokenExpiresAt === null && row.setupTokenExpiresAt !== null) return false;
+    if (typeof where.setupTokenHash === 'object' && where.setupTokenHash !== null && 'not' in where.setupTokenHash && row.setupTokenHash === null) return false;
     if (where.userId !== undefined && row.userId !== where.userId) return false;
     if (where.purpose !== undefined && row.purpose !== where.purpose) return false;
-    if (where.setupTokenHash !== undefined && row.setupTokenHash !== where.setupTokenHash) return false;
+    if (typeof where.setupTokenHash === 'string' && row.setupTokenHash !== where.setupTokenHash) return false;
     if (where.attempts !== undefined && typeof where.attempts === 'number' && row.attempts !== where.attempts) return false;
     if (where.consumedAt === null && row.consumedAt !== null) return false;
     if (where.verifiedAt === null && row.verifiedAt !== null) return false;
@@ -65,6 +70,8 @@ function fakePrisma(seed: UserRow[]) {
         return { ...user };
       }),
     },
+    // Redbracket ID A3: no account here was set aside by a first Redbracket ID sign-in
+    identityRetirement: { count: vi.fn(async () => 0) },
     passwordCredentialChallenge: {
       create: vi.fn(async ({ data }: { data: ChallengeRow }) => {
         const row = { ...data };
@@ -76,13 +83,23 @@ function fakePrisma(seed: UserRow[]) {
         if (!row) return null;
         return { ...row, user: { ...users.find((user) => user.id === row.userId)! } };
       }),
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const row = challenges.find((candidate) => matches(candidate, where));
+        return row ? { id: row.id } : null;
+      }),
+      update: vi.fn(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+        const row = challenges.find((candidate) => candidate.id === where.id);
+        if (!row) throw new Error('missing challenge');
+        if (data.setupTokenHash === null) row.setupTokenHash = null;
+        return { ...row };
+      }),
       updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
         const selected = challenges.filter((row) => matches(row, where));
         for (const row of selected) {
           if (data.consumedAt instanceof Date) row.consumedAt = data.consumedAt;
           if (data.verifiedAt instanceof Date) row.verifiedAt = data.verifiedAt;
-          if (typeof data.setupTokenHash === 'string') row.setupTokenHash = data.setupTokenHash;
-          if (data.setupTokenExpiresAt instanceof Date) row.setupTokenExpiresAt = data.setupTokenExpiresAt;
+          if (typeof data.setupTokenHash === 'string' || data.setupTokenHash === null) row.setupTokenHash = data.setupTokenHash;
+          if (data.setupTokenExpiresAt instanceof Date || data.setupTokenExpiresAt === null) row.setupTokenExpiresAt = data.setupTokenExpiresAt;
           if (typeof data.attempts === 'object' && data.attempts && 'increment' in data.attempts) {
             row.attempts += Number((data.attempts as { increment: number }).increment);
           }
@@ -97,6 +114,8 @@ function fakePrisma(seed: UserRow[]) {
       }),
     },
     $executeRaw: vi.fn(async () => 1),
+    // the claim reads the lease start from the database clock (A4a)
+    $queryRaw: vi.fn(async () => [{ at: new Date() }]),
     $transaction: vi.fn(async (work: (tx: unknown) => Promise<unknown>) => {
       const beforeUsers = structuredClone(users);
       const beforeChallenges = structuredClone(challenges);
@@ -214,8 +233,8 @@ describe('PasswordCredentialsService', () => {
     const res = await service.request({ email: 'member@example.com' });
     expect(res).toEqual({ accepted: true, requestId: expect.any(String) });
     expect(logs).toEqual([expect.stringContaining(`delivery failed for challenge ${res.requestId}`)]);
-    await expect(service.verify({ requestId: res.requestId, code: delivered[0]!.code }))
-      .resolves.toEqual({ setupToken: expect.any(String), expiresInSeconds: 600 });
+    await expect(service.verify({ requestId: res.requestId, code: delivered[0]!.code }, false))
+      .resolves.toEqual({ setupToken: expect.any(String), expiresInSeconds: 600, sharedPassword: false });
   });
 
   it('limits wrong OTP attempts, expires challenges, and never returns an application session', async () => {
@@ -223,22 +242,22 @@ describe('PasswordCredentialsService', () => {
     const { requestId } = await service.request({ email: 'member@example.com' });
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      await expect(service.verify({ requestId, code: '000000' })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.verify({ requestId, code: '000000' }, false)).rejects.toBeInstanceOf(BadRequestException);
     }
-    await expect(service.verify({ requestId, code: delivered[0]!.code })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.verify({ requestId, code: delivered[0]!.code }, false)).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.challenges[0]?.consumedAt).toBeInstanceOf(Date);
 
     const second = await service.request({ email: 'member@example.com' });
     vi.advanceTimersByTime(10 * 60_000 + 1);
-    await expect(service.verify({ requestId: second.requestId, code: delivered[1]!.code })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.verify({ requestId: second.requestId, code: delivered[1]!.code }, false)).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('uses a one-time setup token to hash the password, increment the version, and write a secret-free audit', async () => {
     const { service, prisma, delivered } = make([activeUser()]);
     const { requestId } = await service.request({ email: 'member@example.com' });
-    const verified = await service.verify({ requestId, code: delivered[0]!.code });
+    const verified = await service.verify({ requestId, code: delivered[0]!.code }, false);
 
-    expect(verified).toEqual({ setupToken: expect.any(String), expiresInSeconds: 600 });
+    expect(verified).toEqual({ setupToken: expect.any(String), expiresInSeconds: 600, sharedPassword: false });
     expect(verified).not.toHaveProperty('token');
     expect(prisma.challenges[0]?.setupTokenHash).not.toBe(verified.setupToken);
 
@@ -250,6 +269,8 @@ describe('PasswordCredentialsService', () => {
     expect(await bcrypt.compare('a long internal passphrase', updated.passwordHash!)).toBe(true);
     expect(updated.emailVerifiedAt).toEqual(new Date('2026-07-15T10:00:00.000Z'));
     expect(updated.credentialVersion).toBe(1);
+    // the claim spends the code and clears its expiry: the durable mark an invitation-email correction refuses on
+    expect(prisma.challenges[0]).toMatchObject({ consumedAt: expect.any(Date), verifiedAt: expect.any(Date), setupTokenExpiresAt: null, setupTokenHash: null });
     expect(prisma.events).toEqual([
       expect.objectContaining({ action: 'auth.password_requested', targetUserId: 'u-active' }),
       expect.objectContaining({
@@ -265,10 +286,75 @@ describe('PasswordCredentialsService', () => {
     await expect(service.complete({ setupToken: verified.setupToken, password: 'another long passphrase' })).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it('binds the setup token to the password scope the screen was told: a completion under the other scope refuses it, spending nothing', async () => {
+    // Codex 4464315045: the switch changed (or another pod answered) between verify and complete
+    const shared = make([activeUser()]);
+    const first = await shared.service.request({ email: 'member@example.com' });
+    const toldShared = await shared.service.verify({ requestId: first.requestId, code: shared.delivered[0]!.code }, true);
+    expect(toldShared.sharedPassword).toBe(true);
+    await expect(shared.service.complete({ setupToken: toldShared.setupToken, password: 'a long internal passphrase' })).rejects.toBeInstanceOf(BadRequestException);
+    expect(shared.prisma.challenges[0]).toMatchObject({ consumedAt: null });
+    expect(shared.prisma.users[0]?.passwordHash).toBeNull();
+
+    const own = make([activeUser()]);
+    const second = await own.service.request({ email: 'member@example.com' });
+    const toldOwn = await own.service.verify({ requestId: second.requestId, code: own.delivered[0]!.code }, false);
+    // refused before the issuer is reached: the identity service is never touched
+    await expect(own.service.completeThroughIssuer({ setupToken: toldOwn.setupToken, password: 'a long internal passphrase' }, {} as never)).rejects.toBeInstanceOf(BadRequestException);
+    expect(own.prisma.challenges[0]).toMatchObject({ consumedAt: null });
+    expect(tokenScope('a'.repeat(43))).toBe('unscoped');
+    expect(tokenScope(toldShared.setupToken)).toBe('shared');
+    expect(tokenScope(toldOwn.setupToken)).toBe('pmc');
+    expect(tokenScope('x.' + 'a'.repeat(43))).toBe('other');
+  });
+
+  it('stores a scoped token under a hash the release before scopes cannot look up, so an old pod cannot complete it', async () => {
+    // Codex 4471261534 on #1341: an old pod finds a setup token by sha256(token) and completes it under its own switch
+    const plain = (token: string) => createHash('sha256').update(token).digest('hex');
+    for (const shared of [true, false]) {
+      const { service, prisma, delivered } = make([activeUser()]);
+      const { requestId } = await service.request({ email: 'member@example.com' });
+      const verified = await service.verify({ requestId, code: delivered[0]!.code }, shared);
+      expect(tokenScope(verified.setupToken)).toBe(shared ? 'shared' : 'pmc');
+      expect(prisma.challenges[0]?.setupTokenHash).not.toBe(plain(verified.setupToken));
+      // the old release's lookup finds nothing: its generic refusal, the code unspent
+      expect(prisma.challenges.find((row) => row.setupTokenHash === plain(verified.setupToken))).toBeUndefined();
+      // while this release still completes it under its own scope
+      if (!shared) {
+        const updated = await service.complete({ setupToken: verified.setupToken, password: 'a long internal passphrase' });
+        expect(await bcrypt.compare('a long internal passphrase', updated.passwordHash!)).toBe(true);
+      }
+    }
+    // an unscoped token keeps the plain hash both releases read
+    const { service } = make([activeUser()]);
+    expect((service as unknown as { tokenHash(t: string): string }).tokenHash('a'.repeat(43))).toBe(plain('a'.repeat(43)));
+  });
+
+  it('takes a token with no scope (issued by the release before scopes) under either switch, as that release did', async () => {
+    // Codex 4470403440 on #1341: a person who verified on the old release just before the rollout is not refused mid-setup
+    const unscoped = 'a'.repeat(43);
+    const own = make([activeUser()]);
+    const first = await own.service.request({ email: 'member@example.com' });
+    await own.service.verify({ requestId: first.requestId, code: own.delivered[0]!.code }, false);
+    own.prisma.challenges[0]!.setupTokenHash = (own.service as unknown as { tokenHash(t: string): string }).tokenHash(unscoped);
+    const updated = await own.service.complete({ setupToken: unscoped, password: 'a long internal passphrase' });
+    expect(await bcrypt.compare('a long internal passphrase', updated.passwordHash!)).toBe(true);
+
+    const shared = make([activeUser()]);
+    const second = await shared.service.request({ email: 'member@example.com' });
+    await shared.service.verify({ requestId: second.requestId, code: shared.delivered[0]!.code }, true);
+    shared.prisma.challenges[0]!.setupTokenHash = (shared.service as unknown as { tokenHash(t: string): string }).tokenHash(unscoped);
+    // past the scope check and the challenge read: the completion reaches the issuer write
+    const reached = new Error('reached the issuer');
+    const identity = { setPassword: vi.fn(async () => { throw reached; }) };
+    await expect(shared.service.completeThroughIssuer({ setupToken: unscoped, password: 'a long internal passphrase' }, identity as never)).rejects.toBe(reached);
+    expect(identity.setPassword).toHaveBeenCalledTimes(1);
+  });
+
   it('rolls back token consumption when access is removed after verification', async () => {
     const { service, prisma, delivered } = make([activeUser()]);
     const { requestId } = await service.request({ email: 'member@example.com' });
-    const verified = await service.verify({ requestId, code: delivered[0]!.code });
+    const verified = await service.verify({ requestId, code: delivered[0]!.code }, false);
     prisma.users[0]!.memberships = [{ status: 'removed' }];
 
     await expect(service.complete({ setupToken: verified.setupToken, password: 'a long internal passphrase' })).rejects.toBeInstanceOf(BadRequestException);

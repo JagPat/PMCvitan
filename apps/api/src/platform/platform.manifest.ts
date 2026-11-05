@@ -81,7 +81,10 @@ export const platformManifest: ModuleManifest = {
   // every other cycle-exempt participant edge: module validation sees the real graph and a
   // later cycle involving it is detectable. `dependsOn` stays empty — the kernel still owns no
   // domain logic and the participant channel is the one crossing.
-  workflowParticipants: ['orgs'],
+  // Redbracket ID A4b-2 — the operator door's list of retired accounts asks each owning module for the open work still
+  // named on them (`openWorkOf`, reads only) through its participant: inspections, activities, decisions, drawings,
+  // site-visits.
+  workflowParticipants: ['orgs', 'inspections', 'activities', 'decisions', 'drawings', 'site-visits'],
   producesEvents: [],
   consumesEvents: [],
   // Phase 6 task 4b (§A.3 round 13) — `push.unlink` severs a browser subscription's user
@@ -95,6 +98,8 @@ export const platformManifest: ModuleManifest = {
     'POST /ops/projects/:projectId/capabilities/:capability/enable', 'POST /ops/projects/:projectId/capabilities/:capability/disable',
     // #482 QA door rebuild — mark a company QA-only (the orgs participant writes the mark; the database guards it)
     'POST /ops/orgs/:orgId/qa-only',
+    // Redbracket ID A4c — put back one owner of a company whose every owner seat is retired (the orgs participant writes it)
+    'POST /ops/orgs/:orgId/owner-reseat',
   ],
   permissions: [],
 };

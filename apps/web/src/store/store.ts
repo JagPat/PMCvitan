@@ -38,6 +38,7 @@ import {
   type DailyLog,
   type Decision,
   type Drawing,
+  type DrawingsHubLink,
   type MembershipSummary,
   type OrgMember,
   type OrgRole,
@@ -69,6 +70,10 @@ import {
   type DisagreeDecisionInput,
   type ResolveStrandedCountersignInput,
   ROLE_POLICY,
+  SETUP_RUNNING_CODE,
+  isRedbracketResetUrl,
+  IDENTITY_REFUSAL_CODES,
+  type IdentityRefusalCode,
 } from '@vitan/shared';
 import { routableScreensFor, screensFor } from '@/lib/screens';
 import { deleteWaitsForUpload, uploadQueued, type KeptSitePhoto } from '@/lib/queuedSitePhotos';
@@ -87,7 +92,7 @@ import type { CommercialBillRow, CommercialClaimView, CommercialView } from './c
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
 import { unlinkPushOnSignOut } from '@/data/push';
-import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, UpdateDecisionDraftInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, HubProjectChoice, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, UpdateDecisionDraftInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
 import {
   beginCreateSend, createHoldScope, currentCreateHoldView, releaseCreate, reserveCreateRetry, reserveNewCreate, serverKeepsCreateReceipts,
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
@@ -97,6 +102,7 @@ import { isDone } from '@/store/queueLedger';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
+import { hubFailureOf, HUB_SHOWN_WAIT_MS, type HubCallResult, type HubUnlinkPending } from '@/lib/hubLink';
 import { resolveMediaUrl, replayOutboxOp, uploadSitePhotoInput, PlaceCheckFailed, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, isGone, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
@@ -370,6 +376,12 @@ export interface AppState {
   labourOnboardPending: Record<string, string>;
   labourBindPending: Record<string, string>;
   nodeCreatePending: Record<string, NodeCreatePending>;
+  /** #1118 U7a L2 — the project's active Hub link from its snapshot; null while unlinked (project-owned). */
+  hubLink: DrawingsHubLink | null;
+  /** #1118 U7a L2 — the key of an unlink not yet settled: sent and unanswered, or answered with Hub's side not cleared,
+   *  or not yet shown by a snapshot. Retrying under it replays PMC's unlink and retries only Hub's side; while it is
+   *  held the screen offers no new link, so Hub's old link is never left without its cleanup (project-owned). */
+  hubUnlinkPending: HubUnlinkPending | null;
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   /** the Site Map's pending focus when it is entered from a location breadcrumb (project-owned) */
   placeFocus: string | null;
@@ -773,6 +785,14 @@ export interface AppActions {
   syncProjectCreateHold: () => void;
   updateProjectDetails: (orgId: string, projectId: string, input: Partial<NewProjectInput>) => void;
   deleteProject: (orgId: string, projectId: string) => void;
+  /** #1118 U7a L2 — the ACTIVE project's Hub link, for a company owner or admin. Each answers `stale` when the project
+   *  or sign-in changed while it ran. A link or unlink that lands waits for a fresh snapshot (which carries `hubLink`)
+   *  and answers `unconfirmed` when that snapshot does not show it yet. Link takes the attempt's key, which the screen
+   *  keeps while the attempt may be retried; unlink keeps its own in `hubUnlinkPending` (see there). */
+  listHubProjects: (orgId: string) => Promise<HubCallResult<HubProjectChoice[]>>;
+  linkHubProject: (orgId: string, hubProjectId: string, idempotencyKey: string) => Promise<HubCallResult<true>>;
+  /** `hubProjectId`: the link the person saw and confirmed; a held unlink keeps its own. */
+  unlinkHubProject: (orgId: string, hubProjectId: string) => Promise<HubCallResult<{ hubCleared: boolean }>>;
   restoreProject: (orgId: string, projectId: string) => void;
   loadArchivedProjects: (orgId: string) => void;
   // companies & consultants
@@ -994,6 +1014,9 @@ function otpRequestFailure(err: unknown): AccessErrorWhy {
 function otpVerifyFailure(err: unknown, retry: boolean): AccessErrorWhy {
   const status = httpStatusOf(err);
   if (status === 429) return otpThrottle(err);
+  // Redbracket ID A5: a right code for an account that moved to Redbracket ID is not a wrong code
+  const refused = identityRefusal(err);
+  if (refused) return { key: refused };
   // 408: the check timed out on the way (a server or proxy), so the code was never judged
   if (status === undefined || status === 408 || status >= 500) return { key: 'checkFailed' };
   return { key: retry ? 'retryRefused' : 'wrongCode' };
@@ -1070,11 +1093,40 @@ function signInFailure(err: unknown): AccessErrorWhy {
   const status = httpStatusOf(err);
   const serverMessage = (err as { serverMessage?: unknown } | null)?.serverMessage;
   if (status === 429) return { key: 'tooManySignIns', seconds: throttleSeconds(err) };
+  // Redbracket ID A5: a refusal that names itself (not on a project, invitation waiting, ...) in the gate's language
+  const refused = identityRefusal(err);
+  if (refused) return { key: refused };
   // the server's own words for a removed access, in the gate's language (V-1018-6)
   if (status === 401 && typeof serverMessage === 'string' && /access has been removed/i.test(serverMessage)) return { key: 'accessRemoved' };
   if (status === undefined) return { key: 'noServer' };
   if (status >= 500) return { key: 'serverDown' };
   return { key: 'wrongPassword' };
+}
+
+/**
+ * Redbracket ID A5: the sign-in words for each machine `code` the switched-on email sign-in and password setup send
+ * (`IdentitySignInService`), and the statuses the server sends that code with. A code is matched only together with
+ * one of its own statuses, never from the English message, so a code on any other status, an unknown code or no code
+ * at all keeps today's words (a server from before A5 sends none).
+ */
+const IDENTITY_REFUSALS: Record<IdentityRefusalCode, { key: SignInErrorKey & `identity${string}`; statuses: readonly number[] }> = {
+  [IDENTITY_REFUSAL_CODES.noProject]: { key: 'identityNoProject', statuses: [401] },
+  [IDENTITY_REFUSAL_CODES.invitePending]: { key: 'identityInvitePending', statuses: [401] },
+  [IDENTITY_REFUSAL_CODES.testAccount]: { key: 'identityTestAccount', statuses: [400, 401] },
+  [IDENTITY_REFUSAL_CODES.emailUnverified]: { key: 'identityEmailUnverified', statuses: [401] },
+  [IDENTITY_REFUSAL_CODES.passwordChanged]: { key: 'identityPasswordChanged', statuses: [401] },
+  [IDENTITY_REFUSAL_CODES.needsHelp]: { key: 'identityNeedsHelp', statuses: [400, 401, 409] },
+  [IDENTITY_REFUSAL_CODES.issuerAccountExists]: { key: 'identityIssuerAccountExists', statuses: [400] },
+  [IDENTITY_REFUSAL_CODES.passwordRejected]: { key: 'identityPasswordRejected', statuses: [400] },
+  [IDENTITY_REFUSAL_CODES.retired]: { key: 'identityRetired', statuses: [401] },
+};
+
+function identityRefusal(err: unknown): (SignInErrorKey & `identity${string}`) | null {
+  const status = httpStatusOf(err);
+  const code = (err as { serverCode?: unknown } | null)?.serverCode;
+  if (status === undefined || typeof code !== 'string' || !Object.hasOwn(IDENTITY_REFUSALS, code)) return null;
+  const known = IDENTITY_REFUSALS[code as IdentityRefusalCode];
+  return known.statuses.includes(status) ? known.key : null;
 }
 
 /** A pristine access-flow state (used to init and to reset after sign-out). */
@@ -1480,6 +1532,8 @@ export function getInitialState(): AppState {
     labourOnboardPending: {},
     nodeCreatePending: {},
     labourBindPending: {},
+    hubLink: null,
+    hubUnlinkPending: null,
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     placeFocus: null,
     decisionFocus: null,
@@ -1642,6 +1696,37 @@ export const useStore = create<Store>()(
      *  through applySnapshot (companies, photo upload). Codex gate finding 3. */
     const scopeStillCurrent = (scope: ProjectScope): boolean =>
       isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope);
+
+    /** #1118 U7a L2 — one Hub link call for the ACTIVE project. Its answer is the screen's only while the scope it was
+     *  issued for (project + sign-in generation, and this gateway) still holds; a link or unlink that lands then asks
+     *  for a fresh snapshot, which is where `hubLink` comes from. */
+    const hubCall = async <T,>(
+      run: (gw: ApiGateway, projectId: string) => Promise<T>,
+      /** for a command: whether the store's `hubLink` shows what it did, checked after a fresh pull */
+      shown?: (value: T, link: DrawingsHubLink | null) => boolean,
+    ): Promise<HubCallResult<T>> => {
+      const gw = gateway;
+      if (!gw) return { kind: 'failed', failure: { kind: 'closed' } };
+      const scope = currentScope();
+      const inScope = () => gateway === gw && scopeStillCurrent(scope);
+      let value: T;
+      try {
+        value = await run(gw, scope.projectId);
+      } catch (err) {
+        if (!inScope()) return { kind: 'stale' };
+        return { kind: 'failed', failure: hubFailureOf(err) };
+      }
+      if (!inScope()) return { kind: 'stale' };
+      if (!shown) return { kind: 'ok', value };
+      // the screen reports the command only once the snapshot shows it (Codex 4479979966): a pull begun after it, for
+      // at most HUB_SHOWN_WAIT_MS, so a stalled pull leaves the row free to retry (Codex 4480498904)
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, HUB_SHOWN_WAIT_MS);
+        void afterFreshPull(scope).finally(() => { clearTimeout(timer); resolve(); });
+      });
+      if (!inScope()) return { kind: 'stale' };
+      return shown(value, get().hubLink) ? { kind: 'ok', value } : { kind: 'unconfirmed', value };
+    };
 
     /** Org roster loads: only the newest load may write `orgMembers`, so an older read
      *  (another org's, before a project switch) that finishes last never replaces it. */
@@ -2138,6 +2223,8 @@ export const useStore = create<Store>()(
         s.descriptor = snap.project.descriptor;
         s.stage = snap.project.stage;
         s.siteCode = snap.project.siteCode;
+        // #1118 U7a L2 — absent on a server older than the link, and while the project is not linked
+        s.hubLink = snap.project.hubLink ?? null;
         s.location = snap.project.location ?? '';
         s.timeZone = snap.project.timeZone ?? null;
         s.projStart = snap.project.projStart;
@@ -5747,6 +5834,31 @@ export const useStore = create<Store>()(
         })
         .catch(() => get().flash('Could not update the project — check your access.'));
     },
+    listHubProjects: (orgId) => hubCall((gw, pid) => gw.listHubProjects(orgId, pid).then((r) => r.projects)),
+    linkHubProject: (orgId, hubProjectId, key) =>
+      hubCall((gw, pid) => gw.linkHubProject(orgId, pid, hubProjectId, key).then(() => true as const), (_v, link) => link?.hubProjectId === hubProjectId),
+    unlinkHubProject: async (orgId, hubProjectId) => {
+      // one key, and the link it ends, until the unlink has settled, Hub's side included (Codex 4479979986)
+      const seen = get().hubLink;
+      const pending = get().hubUnlinkPending ?? {
+        key: newIdempotencyKey(),
+        hubProjectId,
+        linkedAt: seen?.hubProjectId === hubProjectId ? seen.linkedAt : null,
+      };
+      const scope = currentScope();
+      set((s) => { s.hubUnlinkPending = pending; });
+      const r = await hubCall(
+        (gw, pid) => gw.unlinkHubProject(orgId, pid, pending.hubProjectId, pending.key).then((x) => ({ hubCleared: x.hubCleared === true })),
+        // shown once the snapshot no longer holds the link this unlink ended: no link, or a later one another admin made
+        // after it (Codex 4481199120); the ended link itself still shown means the screen has not caught up
+        (_v, link) => link === null || (pending.linkedAt !== null && !(link.hubProjectId === pending.hubProjectId && link.linkedAt === pending.linkedAt)),
+      );
+      const settled = (r.kind === 'ok' && r.value.hubCleared) || (r.kind === 'failed' && r.failure.kind === 'refused');
+      if (settled && scopeStillCurrent(scope)) set((s) => { if (s.hubUnlinkPending?.key === pending.key) s.hubUnlinkPending = null; });
+      // another admin changed the link meanwhile: show the screen what it is now (Codex 4480498892)
+      if (r.kind === 'failed' && r.failure.kind === 'refused' && r.failure.code === 'hub_link_changed') void requestFreshSnapshot(scope).catch(() => undefined);
+      return r;
+    },
     deleteProject: (orgId, projectId) => {
       if (!gateway) {
         get().flash('Deleting projects needs the server.');
@@ -7925,6 +8037,8 @@ export const useStore = create<Store>()(
         s.access.sending = false;
         s.access.passwordRequestId = null;
         s.access.passwordSetupToken = null;
+        s.access.passwordShared = false;
+        s.access.issuerResetUrl = null;
       }),
     login: (email, password) => {
       const em = email.trim().toLowerCase();
@@ -7964,6 +8078,8 @@ export const useStore = create<Store>()(
         s.access.sending = false;
         s.access.passwordRequestId = null;
         s.access.passwordSetupToken = null;
+        s.access.passwordShared = false;
+        s.access.issuerResetUrl = null;
       }),
     requestPasswordSetup: () => {
       const email = get().access.email.trim().toLowerCase();
@@ -7984,6 +8100,8 @@ export const useStore = create<Store>()(
         s.access.errorKey = null; s.access.error = null;
         s.access.passwordRequestId = null;
         s.access.passwordSetupToken = null;
+        s.access.passwordShared = false;
+        s.access.issuerResetUrl = null;
       });
       gateway.passwordCredentialRequest(email)
         .then((result) => {
@@ -8023,6 +8141,10 @@ export const useStore = create<Store>()(
             s.access.step = 'password-create';
             s.access.otp = '';
             s.access.passwordSetupToken = result.setupToken;
+            // only an explicit false is PMC's own password: an answer without the field comes from the release before it,
+            // which sets the one Redbracket ID password whenever the switch is on, so the screen warns as for the shared one
+            // (Codex 4472065772 on #1341: a rolling deploy must never hide that warning)
+            s.access.passwordShared = result.sharedPassword !== false;
           });
         })
         .catch(() => {
@@ -8032,7 +8154,8 @@ export const useStore = create<Store>()(
     },
     completePasswordSetup: (password, confirmation) => {
       const access = get().access;
-      if (access.sending) return;
+      // unit H: the refusal that offered Redbracket ID's reset page spent this code; only a new code may be saved again
+      if (access.sending || access.errorKey?.key === 'issuerAccountReset') return;
       if (password !== confirmation) {
         set((s) => { failAccess(s, { key: 'passwordMismatch' }); });
         return;
@@ -8052,15 +8175,34 @@ export const useStore = create<Store>()(
         generation = s.access.generation;
         s.access.sending = true;
         s.access.errorKey = null; s.access.error = null;
+        s.access.issuerResetUrl = null;
       });
       gateway.passwordCredentialComplete(setupToken, password)
         .then((result) => {
           if (get().access.generation !== generation) return;
           applyAuthResult(result, { msg: signInText.passwordSaved(get().lang) });
         })
-        .catch(() => {
+        .catch((err: unknown) => {
           if (get().access.generation !== generation) return;
-          set((s) => { s.access.sending = false; failAccess(s, { key: 'passwordSaveFailed' }); });
+          // Redbracket ID A4a: another setup for this account is still finishing (409 carrying SETUP_RUNNING_CODE). The
+          // code stays valid, so the person tries again in a minute; requesting a new code would cancel it. Matched by
+          // the code, never the status alone: the same route's other 409 (an email that cannot be set up, its code
+          // spent) keeps the save-failed words
+          const running = httpStatusOf(err) === 409 && (err as { serverCode?: unknown } | null)?.serverCode === SETUP_RUNNING_CODE;
+          // Redbracket ID A5: a refusal that names itself is worded from its code. A server fault (5xx), a timeout (408)
+          // or no answer at all (the request may have reached the server and committed, its answer lost) cannot tell
+          // the web whether or where setup stopped, and the emailed code is claimed before any issuer step, so the
+          // password may already be set: the words say to sign in with it, else request a new code. Any other refusal
+          // keeps the save-failed words
+          const status = httpStatusOf(err);
+          const refused = running ? null : identityRefusal(err);
+          const unknownOutcome = status === undefined || status === 408 || status >= 500;
+          // unit H: an email that already has a Redbracket ID, whose password this was not, is pointed at Redbracket ID's
+          // own reset page when the server sent one on a Redbracket ID host (https); otherwise today's words
+          const resetUrl = (err as { serverResetUrl?: unknown } | null)?.serverResetUrl;
+          const reset = refused === 'identityIssuerAccountExists' && isRedbracketResetUrl(resetUrl) ? resetUrl : null;
+          const key = running ? 'setupStillFinishing' : reset ? 'issuerAccountReset' : refused ?? (unknownOutcome ? 'setupMayBeSet' : 'passwordSaveFailed');
+          set((s) => { s.access.sending = false; s.access.issuerResetUrl = reset; failAccess(s, { key }); });
         });
     },
     accGoEmailOtp: () =>
@@ -8109,7 +8251,8 @@ export const useStore = create<Store>()(
       gateway
         .emailOtpVerify(email.trim().toLowerCase(), otp)
         .then((res) => applyAuthResult(res))
-        .catch(() => set((s) => { s.access.sending = false; s.access.otp = ''; failAccess(s, { key: 'emailWrongCode' }); }));
+        // Redbracket ID A5: a right code for an account that moved to Redbracket ID is not a wrong code
+        .catch((err: unknown) => set((s) => { s.access.sending = false; s.access.otp = ''; failAccess(s, { key: identityRefusal(err) ?? 'emailWrongCode' }); }));
     },
     requestOtp: () => {
       const { phone, sending } = get().access;

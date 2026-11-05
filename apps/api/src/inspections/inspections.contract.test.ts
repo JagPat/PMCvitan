@@ -145,7 +145,7 @@ describe('Task 10 — the inspections module implements its shared command/query
       ].sort(),
     );
     // the atomic activity↔inspection edges stay WORKFLOW contracts (participant), not cross-module reads.
-    expect(inspectionsManifest.workflowParticipants).toEqual(['activities', 'orgs']);
+    expect(inspectionsManifest.workflowParticipants).toEqual(['activities', 'orgs', 'media']);
     // no cross-module read dependency: every consumer reads inspection through THIS module's query.
     expect(inspectionsManifest.dependsOn).toEqual([]);
   });
@@ -166,6 +166,7 @@ describe('Task 10 — the inspections module implements its shared command/query
       'resolveRefInProject',
       'assertProofTarget',
       'responsibleMembers',
+      'openItems',
     ] as const) {
       expect(typeof InspectionsQueryService.prototype[method]).toBe('function');
     }

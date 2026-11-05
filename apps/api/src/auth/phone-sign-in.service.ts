@@ -34,7 +34,9 @@ const MAX_LIVE = 3;
 const RESEND_MESSAGE = 'Please wait a moment before requesting another code.';
 
 /** May this account sign in now? `AuthService`'s sign-in access rule, the same one a token is issued under. */
-export type SignInEligible = (userId: string) => Promise<boolean>;
+/** Whether the account may sign in now, read through `db`: the caller's transaction when it holds one, so the check
+ *  never needs a second connection while that transaction holds the first. */
+export type SignInEligible = (db: Prisma.TransactionClient, userId: string) => Promise<boolean>;
 
 type Db = PrismaService | Prisma.TransactionClient;
 
@@ -106,7 +108,7 @@ export class PhoneSignInService {
     }
     try {
       const owner = await this.owner(this.prisma, phone);
-      if (!owner || !(await eligible(owner.id))) {
+      if (!owner || !(await eligible(this.prisma, owner.id))) {
         this.log.log('Phone sign-in request: no account that can sign in with an established email for this number; nothing sent');
         return;
       }
@@ -176,7 +178,7 @@ export class PhoneSignInService {
         where: { userId: owner.id, purpose: PHONE_SIGN_IN_PURPOSE, consumedAt: null, expiresAt: { gt: now }, attempts: { lt: MAX_ATTEMPTS } },
         orderBy: { createdAt: 'desc' },
       });
-      if (!live.length || !(await eligible(owner.id))) return { kind: 'none' as const };
+      if (!live.length || !(await eligible(tx, owner.id))) return { kind: 'none' as const };
       const hit = live.find((row) => this.sameHash(row.otpHash, this.otpHash(row.id, owner.email, code)));
       if (!hit) {
         for (const row of live) {

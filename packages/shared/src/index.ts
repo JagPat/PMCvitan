@@ -55,3 +55,4 @@ export * from './i18n/inspectionReview';
 export * from './i18n/responsibleMember';
 export * from './i18n/signIn';
 export * from './i18n/sitePhoto';
+export * from './i18n/hub';

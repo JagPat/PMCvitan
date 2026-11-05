@@ -219,6 +219,7 @@ describe('the countersign-v1 completeness tripwire (4d-ii-a / A5e)', () => {
       'src/auth/auth.controller.ts session': 'refuse: a minted architect token (the dev session)',
       'src/auth/auth.controller.ts login': 'refuse: a minted architect token (sign-in)',
       'src/auth/auth.controller.ts signInUser': 'refuse: a minted architect token (/auth/password/complete)',
+      'src/auth/auth.controller.ts signInIdentity': 'refuse: a minted architect token (Redbracket ID sign-in and /auth/password/complete, switch on)',
       'src/auth/auth.controller.ts verifyOtp': 'refuse: a minted architect token (sign-in)',
       'src/auth/auth.controller.ts verifyEmailOtp': 'refuse: a minted architect token (sign-in)',
       'src/auth/auth.controller.ts googleSignIn': 'refuse: a minted architect token (sign-in)',

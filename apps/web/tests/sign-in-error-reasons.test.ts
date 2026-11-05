@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { useStore, getInitialState } from '@/store/store';
+import { useStore, getInitialState, shownAccessError } from '@/store/store';
+import { IDENTITY_REFUSAL_CODES, signInErrors, type Lang } from '@vitan/shared';
 import { ApiGateway } from '@/data/apiGateway';
 
 /**
@@ -87,8 +88,56 @@ describe('password setup says why a code request failed', () => {
   });
 });
 
+describe('password setup says why saving the password failed (Redbracket ID A4a)', () => {
+  const failingCompletion = async (err: unknown) => {
+    const complete = vi.fn().mockRejectedValue(err);
+    s()._setGateway({ passwordCredentialComplete: complete } as unknown as ApiGateway);
+    useStore.setState({ access: { ...s().access, step: 'password-create', passwordSetupToken: 'setup-token' } });
+    s().completePasswordSetup('a long new passphrase', 'a long new passphrase');
+    await flush();
+    expect(s().access.sending).toBe(false);
+    return complete;
+  };
+
+  it('another setup still finishing (409 with its code) says to try again in a minute, keeps the code, and a retry sends it again', async () => {
+    const complete = await failingCompletion(Object.assign(new Error('409'), { status: 409, serverCode: 'setup-running', serverMessage: 'Another password setup for this account is still finishing. Try again in a minute.' }));
+    expect(s().access.error).toBe('Another password setup for this account is still finishing. Try again in a minute.');
+    expect(s().access.error).not.toMatch(/new code/);
+    expect(s().access.passwordSetupToken).toBe('setup-token');
+    s().completePasswordSetup('a long new passphrase', 'a long new passphrase');
+    await flush();
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(complete).toHaveBeenLastCalledWith('setup-token', 'a long new passphrase');
+  });
+
+  it('the other 409 (an email that cannot be set up; its code is spent) is not told to try again in a minute', async () => {
+    await failingCompletion(Object.assign(new Error('409'), { status: 409, serverMessage: 'This email cannot be set up here. Ask your PMC for help.' }));
+    expect(s().access.error).toBe('Could not save the password. Request a new code and try again.');
+    expect(s().access.error).not.toMatch(/still finishing|in a minute/);
+  });
+
+  it('a 409 is matched by its code, never its words: the setup-running words without the code are the other 409', async () => {
+    await failingCompletion(Object.assign(new Error('409'), { status: 409, serverMessage: 'Another password setup for this account is still finishing. Try again in a minute.' }));
+    expect(s().access.error).toBe('Could not save the password. Request a new code and try again.');
+  });
+
+  it('any other failure keeps the request-a-new-code message', async () => {
+    await failingCompletion(Object.assign(new Error('400'), { status: 400 }));
+    expect(s().access.error).toBe('Could not save the password. Request a new code and try again.');
+  });
+});
+
 describe('the gateway carries the throttle window the server reports', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('a refusal body\'s code (Redbracket ID A4a) reaches the caller as serverCode', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ statusCode: 409, message: 'Another password setup for this account is still finishing. Try again in a minute.', code: 'setup-running' }),
+      { status: 409, headers: { 'Content-Type': 'application/json' } },
+    )));
+    const err = await new ApiGateway('http://api.test', 'ambli').passwordCredentialComplete('setup-token', 'a long new passphrase').catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 409, serverCode: 'setup-running' });
+  });
 
   it('a 429 body\'s retryAfter (seconds) reaches the caller with the status and message', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(
@@ -97,5 +146,170 @@ describe('the gateway carries the throttle window the server reports', () => {
     )));
     const err = await new ApiGateway('http://api.test', 'ambli').login('owner@example.com', 'x').catch((e: unknown) => e);
     expect(err).toMatchObject({ status: 429, retryAfter: 42 });
+  });
+});
+
+/**
+ * Redbracket ID A5: with the switch on, the server refuses with a machine `code` beside its status and English
+ * message. Each code is worded in the gate's language, only on a status the server sends it with; no code, an
+ * unknown code, or a code on another status keeps today's words.
+ */
+describe('Redbracket ID refusals are worded from their code (A5)', () => {
+  const C = IDENTITY_REFUSAL_CODES;
+  const refusal = (status: number, code: string | undefined, serverMessage = 'any English words') =>
+    Object.assign(new Error(`${status}`), { status, serverMessage, ...(code ? { serverCode: code } : {}) });
+  const failingCompletion = async (err: unknown) => {
+    s()._setGateway({ passwordCredentialComplete: vi.fn().mockRejectedValue(err) } as unknown as ApiGateway);
+    useStore.setState({ access: { ...s().access, step: 'password-create', passwordSetupToken: 'setup-token' } });
+    s().completePasswordSetup('a long new passphrase', 'a long new passphrase');
+    await flush();
+    expect(s().access.sending).toBe(false);
+    return s().access.error;
+  };
+
+  const loginRows: Array<[string, keyof (typeof signInErrors)['en']]> = [
+    [C.noProject, 'identityNoProject'],
+    [C.invitePending, 'identityInvitePending'],
+    [C.testAccount, 'identityTestAccount'],
+    [C.emailUnverified, 'identityEmailUnverified'],
+    [C.passwordChanged, 'identityPasswordChanged'],
+    [C.needsHelp, 'identityNeedsHelp'],
+    [C.retired, 'identityRetired'],
+  ];
+  for (const [code, key] of loginRows) {
+    it(`sign-in: a 401 with ${code} says ${key}, never "wrong password"`, async () => {
+      const msg = await signInFailingWith(refusal(401, code));
+      expect(msg).toBe(signInErrors.en[key]);
+      expect(msg).not.toMatch(/Wrong email or password/);
+    });
+  }
+
+  const setupRows: Array<[number, string, keyof (typeof signInErrors)['en']]> = [
+    [400, C.testAccount, 'identityTestAccount'],
+    [400, C.needsHelp, 'identityNeedsHelp'],
+    [400, C.issuerAccountExists, 'identityIssuerAccountExists'],
+    [400, C.passwordRejected, 'identityPasswordRejected'],
+    [409, C.needsHelp, 'identityNeedsHelp'],
+    [401, C.noProject, 'identityNoProject'],
+    [401, C.invitePending, 'identityInvitePending'],
+    [401, C.testAccount, 'identityTestAccount'],
+    [401, C.emailUnverified, 'identityEmailUnverified'],
+  ];
+  for (const [status, code, key] of setupRows) {
+    it(`password setup: a ${status} with ${code} says ${key}`, async () => {
+      expect(await failingCompletion(refusal(status, code))).toBe(signInErrors.en[key]);
+    });
+  }
+
+  it('password setup: a server fault (5xx) says the new password may already be set, then to request a new code', async () => {
+    expect(await failingCompletion(refusal(503, undefined))).toBe(signInErrors.en.setupMayBeSet);
+    expect(await failingCompletion(refusal(500, undefined))).toBe(signInErrors.en.setupMayBeSet);
+  });
+
+  it('password setup: a lost answer (no status) or a timeout (408) may also have set the password, so it says the same', async () => {
+    expect(await failingCompletion(new TypeError('Failed to fetch'))).toBe(signInErrors.en.setupMayBeSet);
+    expect(await failingCompletion(refusal(408, undefined))).toBe(signInErrors.en.setupMayBeSet);
+    expect(await failingCompletion(refusal(400, undefined))).toBe(signInErrors.en.passwordSaveFailed);
+  });
+
+  it('no code keeps today\'s words, whatever the message says (a server from before A5)', async () => {
+    expect(await signInFailingWith(refusal(401, undefined, 'You are signed in, but you are not on any PMC project yet. Ask your PMC to add you.')))
+      .toBe(signInErrors.en.wrongPassword);
+    expect(await failingCompletion(refusal(400, undefined, 'This email already has a Redbracket ID. Enter that password here to join with it.')))
+      .toBe(signInErrors.en.passwordSaveFailed);
+  });
+
+  it('a code is matched only with one of its own statuses, and an unknown code is ignored', async () => {
+    expect(await signInFailingWith(refusal(403, C.noProject))).toBe(signInErrors.en.wrongPassword);
+    expect(await signInFailingWith(refusal(401, C.issuerAccountExists))).toBe(signInErrors.en.wrongPassword);
+    expect(await signInFailingWith(refusal(401, 'toString'))).toBe(signInErrors.en.wrongPassword);
+    expect(await failingCompletion(refusal(409, C.passwordRejected))).toBe(signInErrors.en.passwordSaveFailed);
+    expect(await failingCompletion(refusal(400, 'not-a-code'))).toBe(signInErrors.en.passwordSaveFailed);
+  });
+
+  it('the setup-running 409 still wins over any other reading', async () => {
+    expect(await failingCompletion(refusal(409, 'setup-running'))).toBe(signInErrors.en.setupStillFinishing);
+  });
+
+  it('is worded in the gate\'s language, and re-worded when the person switches language', async () => {
+    const langs: Lang[] = ['hi', 'gu'];
+    for (const lang of langs) {
+      s().setLang(lang);
+      expect(await signInFailingWith(refusal(401, C.invitePending))).toBe(signInErrors[lang].identityInvitePending);
+    }
+    s().setLang('en');
+    expect(shownAccessError(s().access, 'en')).toBe(signInErrors.en.identityInvitePending);
+  });
+
+  it('phone sign-in: a right code for an account that moved to Redbracket ID says so, not "wrong code"', async () => {
+    const gw = {
+      requestOtp: vi.fn().mockResolvedValue({ sent: true, live: true }),
+      verifyOtp: vi.fn().mockRejectedValue(refusal(401, C.retired)),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().accWho('team');
+    s().accSetPhone('9876543210');
+    s().requestOtp();
+    await flush();
+    useStore.setState((st) => { st.access.otp = '0000'; });
+    s().otpVerify();
+    await flush();
+    expect(s().sessionToken).toBeNull();
+    expect(s().access.error).toBe(signInErrors.en.identityRetired);
+  });
+
+  it('phone sign-in: a 401 without a code is still a wrong code', async () => {
+    const gw = {
+      requestOtp: vi.fn().mockResolvedValue({ sent: true, live: true }),
+      verifyOtp: vi.fn().mockRejectedValue(refusal(401, undefined)),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().accWho('team');
+    s().accSetPhone('9876543210');
+    s().requestOtp();
+    await flush();
+    useStore.setState((st) => { st.access.otp = '0000'; });
+    s().otpVerify();
+    await flush();
+    expect(s().access.errorKey?.key).toBe('wrongCode');
+    expect(s().access.otp).toBe('');
+  });
+
+  const failingEmailCode = async (err: unknown) => {
+    s()._setGateway({ emailOtpVerify: vi.fn().mockRejectedValue(err) } as unknown as ApiGateway);
+    useStore.setState({ access: { ...s().access, step: 'emailcode', email: 'owner@example.com', otp: '123456' } });
+    s().emailOtpVerify();
+    await flush();
+    expect(s().sessionToken).toBeNull();
+    expect(s().access.sending).toBe(false);
+    expect(s().access.otp).toBe('');
+    return s().access.errorKey?.key;
+  };
+
+  it('email code sign-in: a right code for an account that moved to Redbracket ID says so, not "wrong code"', async () => {
+    expect(await failingEmailCode(refusal(401, C.retired))).toBe('identityRetired');
+  });
+
+  it('email code sign-in: a 401 without a code, or a code on another status, is still a wrong code', async () => {
+    expect(await failingEmailCode(refusal(401, undefined))).toBe('emailWrongCode');
+    expect(await failingEmailCode(refusal(403, C.retired))).toBe('emailWrongCode');
+  });
+
+  it('every refusal key has words in English, Hindi and Gujarati', () => {
+    const keys = Object.keys(signInErrors.en).filter((k) => k.startsWith('identity'));
+    expect(keys).toHaveLength(Object.keys(C).length);
+    for (const lang of ['en', 'hi', 'gu'] as const) {
+      for (const k of keys) expect((signInErrors[lang] as Record<string, string>)[k]?.trim()).toBeTruthy();
+    }
+  });
+
+  it('the refusals that come after the emailed code is spent tell the person to request a new code, in every language', () => {
+    // the setup claims the code before Redbracket ID is asked, so these refusals (and any 5xx on that step) leave it spent
+    const newCode = { en: /request a new code/i, hi: /नया कोड मँगा/, gu: /નવો કોડ મંગાવ/ } as const;
+    for (const lang of ['en', 'hi', 'gu'] as const) {
+      for (const k of ['identityIssuerAccountExists', 'identityPasswordRejected', 'setupMayBeSet'] as const) {
+        expect(signInErrors[lang][k]).toMatch(newCode[lang]);
+      }
+    }
   });
 });

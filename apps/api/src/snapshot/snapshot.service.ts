@@ -12,7 +12,7 @@ import { SITE_PHOTO_DELETE_WINDOW_MS, SNAPSHOT_SITE_PHOTO_LIMIT, can } from '@vi
 import { ddMmmYyyy } from '../domain/dates';
 import type { Role } from '../common/auth';
 import type { DecisionsContract } from '../common/decisions-contract';
-import type { ProjectShellCounts, ProofPhotoDto, SnapshotDto } from './types';
+import type { OpenItemDto, ProjectShellCounts, ProofPhotoDto, SnapshotDto } from './types';
 import { readViewerFeed, servedNotifications } from './served-notifications';
 import { hiddenDraftNodeIds } from '../nodes/node-scope';
 import { hiddenMediaIds, mediaOnNodes } from './hidden-media';
@@ -119,7 +119,7 @@ export class SnapshotService {
       const myPhotoKeys = filed.flatMap((m) => (m.uploadedBy === userId && m.clientKey ? [m.clientKey] : []));
       return { photoCount: Math.max(log.progress, filed.length), myPhotoKeys };
     });
-    const [decisionSlice, activitySlices, inspectionSlices, dailyLogSlice, viewerFeed, { newest: siteMedia, own: ownOverflow }, drawingDtos, companies, nodes, logPhotos] = await Promise.all([
+    const [decisionSlice, activitySlices, inspectionSlices, dailyLogSlice, viewerFeed, { newest: siteMedia, own: ownOverflow }, drawingDtos, companies, nodes, logPhotos, hubLink] = await Promise.all([
       decisionSlicePromise,
       // Task 10 (Module 4) — the activity spine (`activities` + `phases`) comes from the activities
       // module's query, never a direct `prisma.activity`/`gateOverride`/`prisma.phase` read. It bakes
@@ -143,7 +143,8 @@ export class SnapshotService {
         const visible = hidden.length > 0 ? { OR: [{ nodeId: null }, { nodeId: { notIn: hidden } }] } : {};
         const select = { id: true, kind: true, url: true, takenAt: true, nodeId: true, uploadedBy: true, clientKey: true, createdAt: true, dailyLogId: true, decisionId: true, inspectionId: true, inspectionItemId: true } as const;
         const readNewest = (db: Prisma.TransactionClient) => db.media.findMany({
-          where: { projectId, kind: { in: ['progress', 'inspection', 'material'] }, ...visible },
+          // photos only: a voice note or a video filed as an item's evidence (guided step 2b) is not a site photo
+          where: { projectId, kind: { in: ['progress', 'inspection', 'material'] }, mime: { startsWith: 'image/' }, ...visible },
           orderBy: { createdAt: 'desc' },
           take: SNAPSHOT_SITE_PHOTO_LIMIT,
           select,
@@ -161,7 +162,7 @@ export class SnapshotService {
           if (newest.length < SNAPSHOT_SITE_PHOTO_LIMIT) return { newest, own: [] };
           const own = await tx.media.findMany({
             where: {
-              projectId, kind: 'progress', uploadedBy: userId, decisionId: null, inspectionId: null, inspectionItemId: null,
+              projectId, kind: 'progress', mime: { startsWith: 'image/' }, uploadedBy: userId, decisionId: null, inspectionId: null, inspectionItemId: null,
               createdAt: { gt: new Date(Date.now() - SITE_PHOTO_DELETE_WINDOW_MS) }, id: { notIn: newest.map((m) => m.id) }, ...visible,
             },
             orderBy: { createdAt: 'desc' },
@@ -177,6 +178,8 @@ export class SnapshotService {
       this.prisma.projectCompany.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.projectNode.findMany({ where: { projectId }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] }),
       photoCountOfLog,
+      // #1118 U7a — the project's active Hub link (kept by PMC at link time; Hub is never called here)
+      this.drawingsQuery.hubLink(projectId),
     ]);
 
     // Private delivery: a short-lived signed serve path (never a public bucket URL). Only
@@ -252,6 +255,23 @@ export class SnapshotService {
       byRole: prover.get(m.uploadedBy)?.role,
       at: m.createdAt.toISOString(),
     }));
+    // #482 proof photos, "Your open items" — the inspections module answers which open inspections and failed items the
+    // viewer is named to fix; each item's proof count is composed here from media (every member's proofs, the count the
+    // upload's per-item cap counts), so the web can stop offering "Add proof" where the server would refuse it
+    const openInspections = await this.inspectionsQuery.openItems(projectId, role, userId);
+    const openItemIds = openInspections.flatMap((i) => i.failedItems.map((it) => it.itemId));
+    const proofCounts = openItemIds.length
+      ? await this.prisma.media.groupBy({
+          by: ['inspectionItemId'],
+          where: { projectId, kind: 'proof', inspectionItemId: { in: openItemIds } },
+          _count: { _all: true },
+        })
+      : [];
+    const proofCountOf = new Map(proofCounts.map((c) => [c.inspectionItemId, c._count._all] as const));
+    const openItems: OpenItemDto[] = openInspections.map((i) => ({
+      ...i,
+      failedItems: i.failedItems.map((it) => ({ ...it, proofCount: proofCountOf.get(it.itemId) ?? 0 })),
+    }));
     // only what the viewer may still delete: the list exists for that Delete alone
     const myDeletablePhotos = ownOverflow.filter((m) => disposable.has(m.id)).map(photoDto);
 
@@ -292,6 +312,7 @@ export class SnapshotService {
         elapsedPct: project.elapsedPct,
         todayDay: project.todayDay,
         milestonePct: project.milestonePct,
+        ...(hubLink ? { hubLink } : {}),
       },
       decisions: decisionDtos,
       activities: activitySlices.activities,
@@ -331,6 +352,7 @@ export class SnapshotService {
       photos: photoDtos,
       proofs: proofDtos,
       responsibleMembers: await this.inspectionsQuery.responsibleMembers(projectId, role),
+      openItems,
       // #482 site photos — the viewer's own site photos still in their delete hour that the window above left out
       myDeletablePhotos,
       // All materials delivered across the project, with their place — the Site Map's "materials

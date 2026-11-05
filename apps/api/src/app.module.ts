@@ -19,6 +19,7 @@ import { EmailService } from './platform/email.service';
 import { InvitationsService } from './orgs/invitations.service';
 import { GoogleAuthService } from './auth/google.service';
 import { PasswordCredentialsService } from './auth/password-credentials.service';
+import { IdentitySignInService } from './auth/identity/identity-sign-in.service';
 import { PhoneSignInService } from './auth/phone-sign-in.service';
 import { SnapshotService } from './snapshot/snapshot.service';
 import { ProjectController } from './snapshot/project.controller';
@@ -90,6 +91,7 @@ import { DailyLogController } from './daily-log/daily-log.controller';
 import { SiteVisitsService } from './site-visits/site-visits.service';
 import { SiteVisitsQueryService } from './site-visits/site-visits.query';
 import { SiteVisitFilesParticipant } from './site-visits/site-visit-files.participant';
+import { SiteVisitsParticipant } from './site-visits/site-visits.participant';
 import { SiteVisitsController } from './site-visits/site-visits.controller';
 import { RealtimeGateway } from './realtime/realtime.gateway';
 import { StorageService } from './media/storage.service';
@@ -111,6 +113,8 @@ import { DrawingsController } from './drawings/drawings.controller';
 import { HubReceiverController } from './drawings/hub/hub-receiver.controller';
 import { HubReceiverService } from './drawings/hub/hub-receiver.service';
 import { HubBlobService } from './drawings/hub/hub-blob.service';
+import { HubLinkController } from './drawings/hub/hub-link.controller';
+import { HubLinkService } from './drawings/hub/hub-link.service';
 import { PushService } from './push/push.service';
 import { PushController } from './push/push.controller';
 import { OrgsService } from './orgs/orgs.service';
@@ -174,6 +178,7 @@ import { MediaParticipant } from './media/media.participant';
     MediaController,
     DrawingsController,
     HubReceiverController,
+    HubLinkController,
     PushController,
     OrgsController,
     MembersController,
@@ -229,6 +234,7 @@ import { MediaParticipant } from './media/media.participant';
     EmailService,
     GoogleAuthService,
     PasswordCredentialsService,
+    IdentitySignInService,
     PhoneSignInService,
     SnapshotService,
     NotificationsSeenService,
@@ -251,6 +257,7 @@ import { MediaParticipant } from './media/media.participant';
     SiteVisitsService,
     SiteVisitsQueryService,
     SiteVisitFilesParticipant,
+    SiteVisitsParticipant,
     // Task 10 — the daily-log module's public READ boundary (snapshot slice + tenant-ref check).
     DailyLogQueryService,
     RealtimeGateway,
@@ -266,6 +273,7 @@ import { MediaParticipant } from './media/media.participant';
     DrawingsService,
     HubReceiverService,
     HubBlobService,
+    HubLinkService,
     DrawingsQueryService,
     PushService,
     OrgsService,

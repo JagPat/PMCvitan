@@ -1,11 +1,13 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import type { Drawing, DrawingsModuleResult, ReadinessDrawing } from '@vitan/shared';
+import type { Drawing, DrawingsHubLink, DrawingsModuleResult, ReadinessDrawing } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { SignedUrlService } from '../media/signed-url.service';
 import { bakeDrawings, computeDrawingsBase, type DrawingsBase } from './drawings-serialize';
 import { DRAWINGS_PROJECTION } from './drawings.projection';
 import { readServableGeneration } from '../platform/projections/generation';
+import { readHubLink } from './hub/hub-link.service';
+import { readHubClientConfig } from './hub/hub-config';
 
 /**
  * Phase 2 Task 10 — the DRAWINGS module's PUBLIC READ boundary (its query contract).
@@ -36,6 +38,20 @@ export class DrawingsQueryService {
   async snapshotSlice(projectId: string, userId?: string): Promise<Drawing[]> {
     const base = await computeDrawingsBase(this.prisma, projectId);
     return bakeDrawings(base, { userId, drawingUrl: this.drawingUrl });
+  }
+
+  /**
+   * #1118 U7a — the project's active Hub link for the snapshot's project line, read from PMC's own link events, with
+   * where "Open in Hub" goes: Hub's address while PMC is connected to Hub for the company the link belongs to, else null
+   * (a link made for one company never points at a Hub connected later for another).
+   */
+  async hubLink(projectId: string): Promise<DrawingsHubLink | null> {
+    const link = await readHubLink(this.prisma, projectId);
+    if (!link) return null;
+    const hub = readHubClientConfig();
+    if (!hub.open) return { ...link, openUrl: null };
+    const row = await this.prisma.drawingHubLink.findUnique({ where: { projectId }, select: { orgId: true } });
+    return { ...link, openUrl: row?.orgId === hub.config.orgId ? hub.config.baseUrl : null };
   }
 
   /**

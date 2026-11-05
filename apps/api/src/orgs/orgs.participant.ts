@@ -5,6 +5,9 @@ import { readinessLockKey } from '../common/readiness-lock';
 import { readPhase6_4dRollout } from '../platform/phase6-4d-rollout';
 import { RoleStandingQuery } from '../platform/role-standing.query';
 import { holdProjectExchangeFence } from './project-exchange-fence';
+import { liveArchitectStanding, liveRoleStanding } from './live-standing';
+import { isRetired } from '../platform/identity-retirement.query';
+import { operatorOwnerReseat, type OwnerReseat } from './operator-owner-reseat';
 
 /** #482 — the address pattern the Board fixed for the QA accounts (`qa.<lowercase letters>@vitan.in`), matched as stored. */
 export const QA_ACCOUNT_EMAIL = /^qa\.[a-z]+@vitan\.in$/;
@@ -349,6 +352,46 @@ export class OrgsParticipant {
     return null;
   }
 
+  /** Redbracket ID A3 — whether an account is an owner or admin of any company (the issuer-outage break-glass rule). */
+  async administersCompany(db: Prisma.TransactionClient, userId: string): Promise<boolean> {
+    const row = await db.orgMembership.findFirst({ where: { userId, role: { in: ['owner', 'admin'] } }, select: { orgId: true } });
+    return row !== null;
+  }
+
+  /** The companies this account is owner or admin of, by id ascending (the order their standing keys are taken in). */
+  async administeredCompanyIds(db: Prisma.TransactionClient, userId: string): Promise<string[]> {
+    const rows = await db.orgMembership.findMany({ where: { userId, role: { in: ['owner', 'admin'] } }, select: { orgId: true }, orderBy: { orgId: 'asc' } });
+    return rows.map((row) => row.orgId);
+  }
+
+  /** Whether this account is owner or admin of one of `orgIds` (read under those companies' standing keys to be authoritative). */
+  async administersAnyOf(db: Prisma.TransactionClient, userId: string, orgIds: readonly string[]): Promise<boolean> {
+    if (orgIds.length === 0) return false;
+    const row = await db.orgMembership.findFirst({ where: { userId, orgId: { in: [...orgIds] }, role: { in: ['owner', 'admin'] } }, select: { orgId: true } });
+    return row !== null;
+  }
+
+  /**
+   * #1118 U7a — the live project `projectId` of company `orgId`, with what the Hub link names it by; null when it is
+   * missing, archived or in another company. With `hold`, the project row is locked `FOR NO KEY UPDATE` (as
+   * {@link isProjectOperable} takes it), so an archive waits for the caller's transaction and the answer holds until it
+   * commits.
+   */
+  async liveProjectOfOrg(
+    db: Prisma.TransactionClient,
+    orgId: string,
+    projectId: string,
+    hold: boolean,
+  ): Promise<{ name: string; siteCode: string } | null> {
+    const rows = await (db as unknown as OrgsParticipantClient).$queryRawUnsafe<Array<{ name: string; siteCode: string; archived: boolean }>>(
+      `SELECT "name", "siteCode", ("archivedAt" IS NOT NULL) AS archived FROM "Project" WHERE "id" = $1 AND "orgId" = $2${hold ? ' FOR NO KEY UPDATE' : ''}`,
+      projectId,
+      orgId,
+    );
+    const row = rows[0];
+    return row && !row.archived ? { name: row.name, siteCode: row.siteCode } : null;
+  }
+
   /** The account a sign-in or a redeemed code names, by id; null when it no longer exists. */
   async accountById(db: Prisma.TransactionClient, userId: string): Promise<User | null> {
     return db.user.findUnique({ where: { id: userId } });
@@ -442,6 +485,14 @@ export class OrgsParticipant {
       where: { phone },
       select: { id: true, email: true, passwordHash: true, emailVerifiedAt: true },
     });
+  }
+
+  /**
+   * Redbracket ID A4c — the operator door's company owner re-seat, for a company whose every owner seat is held by a
+   * retired account ({@link operatorOwnerReseat}). Runs in the caller's transaction.
+   */
+  async operatorOwnerReseat(tx: Prisma.TransactionClient, orgId: string, retiredUserId: string): Promise<OwnerReseat> {
+    return operatorOwnerReseat(tx, orgId, retiredUserId, rethrowQaLock);
   }
 
   /**
@@ -545,6 +596,50 @@ export class OrgsParticipant {
       projects.set(r.projectId, pr);
     }
     return { companies: [...companies.values()], projects: [...projects.values()] };
+  }
+
+  /**
+   * Redbracket ID A4b — the seats each named account still holds, for the operator door's list of retired accounts
+   * not yet re-seated (`GET /ops/people`, `retired`). A seat is a project membership that is not `removed`, on a live
+   * project (an archived project is off the roster too, and nobody can re-seat on it), or any company membership.
+   * Keyed by account; an account holding no seat is absent. Each project seat carries its `approvalLimit` (null:
+   * unlimited), which the re-seat copies onto the new seat, and its consultant `discipline` (null for other roles), which
+   * the re-seat's add must name again (A4b r2, Codex 4452016258). A plain read: it lists, it authorises nothing.
+   */
+  async seatsOf(tx: OrgsParticipantClient | Prisma.TransactionClient, userIds: string[]): Promise<Map<string, {
+    name: string;
+    projects: Array<{ id: string; name: string; role: string; status: string; approvalLimit: string | null; discipline: string | null }>;
+    companies: Array<{ id: string; name: string; role: string }>;
+  }>> {
+    const seats = new Map<string, { name: string; projects: Array<{ id: string; name: string; role: string; status: string; approvalLimit: string | null; discipline: string | null }>; companies: Array<{ id: string; name: string; role: string }> }>();
+    if (userIds.length === 0) return seats;
+    const client = tx as OrgsParticipantClient;
+    const project = await client.$queryRawUnsafe<Array<{ userId: string; userName: string; id: string; name: string; role: string; status: string; approvalLimit: string | null; discipline: string | null }>>(
+      `SELECT m."userId", u."name" AS "userName", p."id", p."name", m."role", m."status", m."approvalLimit"::text AS "approvalLimit", m."discipline"
+         FROM "Membership" m
+         JOIN "Project" p ON p."id" = m."projectId"
+         JOIN "User" u ON u."id" = m."userId"
+        WHERE m."userId" = ANY($1::text[]) AND m."status" <> 'removed' AND p."archivedAt" IS NULL
+        ORDER BY m."userId" ASC, p."id" ASC`,
+      userIds,
+    );
+    const company = await client.$queryRawUnsafe<Array<{ userId: string; userName: string; id: string; name: string; role: string }>>(
+      `SELECT om."userId", u."name" AS "userName", o."id", o."name", om."role"
+         FROM "OrgMembership" om
+         JOIN "Org" o ON o."id" = om."orgId"
+         JOIN "User" u ON u."id" = om."userId"
+        WHERE om."userId" = ANY($1::text[])
+        ORDER BY om."userId" ASC, o."id" ASC`,
+      userIds,
+    );
+    const of = (userId: string, name: string) => {
+      const s = seats.get(userId) ?? { name, projects: [], companies: [] };
+      seats.set(userId, s);
+      return s;
+    };
+    for (const r of project) of(r.userId, r.userName).projects.push({ id: r.id, name: r.name, role: r.role, status: r.status, approvalLimit: r.approvalLimit, discipline: r.discipline });
+    for (const r of company) of(r.userId, r.userName).companies.push({ id: r.id, name: r.name, role: r.role });
+    return seats;
   }
 
   /**
@@ -811,6 +906,35 @@ export class OrgsParticipant {
       projectId, role,
     );
     return Number(rows[0]?.n ?? 0);
+  }
+
+  /**
+   * Redbracket ID A4b-s — the role's standing that someone can still act on: {@link effectiveRoleStanding} less any
+   * account a first Redbracket ID sign-in retired (`liveRoleStanding`, the rule the team commands already count with).
+   * The decisions commands judge publication, a published birth, a reopen and a forward with it, so they refuse with a
+   * clear 409 the state the database seal `Decision_x_live_holder_standing` (A4b-m) would otherwise refuse as a 500.
+   */
+  /** Redbracket ID A4b-s r1 — the project's LIVE architect standing (retired accounts excluded), the count the team
+   *  commands use since #1326; asked by the decisions forward doors. */
+  async liveArchitectStanding(tx: Prisma.TransactionClient, projectId: string): Promise<number> {
+    return liveArchitectStanding(tx, projectId);
+  }
+
+  async liveRoleStanding(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    role: string,
+  ): Promise<number> {
+    return liveRoleStanding(tx, this, projectId, role);
+  }
+
+  /**
+   * Redbracket ID A4b-s — was this account retired by a first Redbracket ID sign-in (nobody signs in as it again)? The
+   * platform's one predicate, asked for the decisions commands through this declared edge, so a named decider (or a
+   * forward's named target) who is a retired row is refused with a clear 409.
+   */
+  async accountRetired(tx: Prisma.TransactionClient, userId: string): Promise<boolean> {
+    return isRetired(tx, userId);
   }
 
   /**

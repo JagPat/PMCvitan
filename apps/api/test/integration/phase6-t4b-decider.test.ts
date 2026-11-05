@@ -387,6 +387,18 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     const removeAdmin = await http().delete(`/orgs/${orgBId}/members/${users.orgAdmin}`).set('Authorization', `Bearer ${ownerToken}`);
     expect(removeAdmin.status).toBe(409);
 
+    // Redbracket ID A4b: a second org admin whose account a first Redbracket ID sign-in retired still counts at the DB
+    // seal, but nobody can act as it, so the command layer counts live holders only and still refuses the demotion
+    const retiredAdmin = `${users.orgAdmin}-retired`;
+    await t.prisma.user.create({ data: { id: retiredAdmin, projectId, role: 'pmc', name: 'U retired admin', email: `${retiredAdmin}@t.local#retired` } });
+    await t.prisma.orgMembership.create({ data: { orgId: orgBId, userId: retiredAdmin, role: 'admin' } });
+    await t.prisma.identityRetirement.create({ data: { userId: retiredAdmin, email: `${retiredAdmin}@t.local` } });
+    const demoteBesideRetired = await patch(ownerToken)(`/orgs/${orgBId}/members/${users.orgAdmin}`, { role: 'member' });
+    expect(demoteBesideRetired.status, JSON.stringify(demoteBesideRetired.body)).toBe(409);
+    expect((await t.prisma.orgMembership.findUniqueOrThrow({ where: { orgId_userId: { orgId: orgBId, userId: users.orgAdmin } } })).role).toBe('admin');
+    await t.prisma.orgMembership.delete({ where: { orgId_userId: { orgId: orgBId, userId: retiredAdmin } } });
+    await t.prisma.user.delete({ where: { id: retiredAdmin } });
+
     // DB layer: the hostile DIRECT demotion is refused by the org-membership seal
     await expect(
       t.prisma.$executeRawUnsafe(`UPDATE "OrgMembership" SET "role" = 'member' WHERE "orgId" = '${orgBId}' AND "userId" = '${users.orgAdmin}'`),

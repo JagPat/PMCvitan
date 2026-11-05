@@ -20,6 +20,7 @@ import {
 import {
   assessCorrectionLease,
   correctionReasonFor,
+  gateRearmStatus,
   gateRecoveryStatus,
   owedCorrectionStatus,
 } from './correction-lease.mjs';
@@ -54,6 +55,23 @@ function requiredEnvironment(name) {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+
+// #1307 (Codex 4445107604 on #1304) — the combined status is paged (thirty contexts a page unless asked for more), and
+// one commit can carry many contexts (the PR-scoped re-arm requests of every open PR at it). Every page is read, so this
+// head's `codex-current-head` status, a recovery request or a re-arm settlement on a later page is never missed by the
+// watchdog's decisions (`owedCorrectionStatus`, `gateRecoveryStatus`, `gateRearmStatus`). The other fields come from
+// the first page.
+export async function readCombinedStatus(request, repository, head) {
+  let combined = null;
+  const statuses = [];
+  for (let page = 1; ; page += 1) {
+    const batch = await request(`/repos/${repository}/commits/${head}/status?per_page=100&page=${page}`);
+    combined ??= batch;
+    const pageStatuses = batch?.statuses ?? [];
+    statuses.push(...pageStatuses);
+    if (pageStatuses.length < 100) return { ...combined, statuses };
+  }
 }
 
 class GitHubClient {
@@ -183,7 +201,7 @@ class GitHubClient {
   }
 
   combinedStatus(head) {
-    return this.request(`/repos/${this.repository}/commits/${head}/status`);
+    return readCombinedStatus((path) => this.request(path), this.repository, head);
   }
 
   async comments(number) {
@@ -537,6 +555,41 @@ export async function handOffStatusDrift(
   await client.comment(primary.number, [marker, body].join('\n'));
 }
 
+/** 2A3a — whether an open pull request other than `number` has `head` as its head. */
+export function otherOpenPullRequestAt(open, head, number) {
+  return (open ?? []).some((pull) => pull?.number !== number && pull?.head?.sha === head);
+}
+
+/**
+ * 2A3a (#1311 Codex 4446635318; Stage 1's re-check of cc1f0412) — the other pull request a BODY verdict was written for,
+ * or null. The gate writes every `codex-current-head` status with the pull request it judged as its target (`html_url`).
+ * A body verdict (the `scope` reason: a scope refusal, an ownership inconsistency, the PR-side review-scope check; or an
+ * ownership `validation:` hold) whose target names another pull request read that pull request's body, not this one's,
+ * so its notice says so and how to have this body judged. A commit-level verdict (Codex findings, CI) is the commit's
+ * and is routed as this pull request's own, as is any status with no pull request target. Never silence: every owed
+ * verdict is still routed.
+ */
+export function inheritedBodyVerdictFrom(status, pullRequest) {
+  const match = /\/pull\/([0-9]+)\/?$/u.exec(String(status?.target_url ?? ''));
+  if (!match || Number(match[1]) === Number(pullRequest?.number)) return null;
+  const bodyVerdict = correctionReasonFor(status) === 'scope' || /^\s*validation:/u.test(String(status?.description ?? ''));
+  return bodyVerdict ? Number(match[1]) : null;
+}
+
+/**
+ * 2A3a — the watchdog loop's shared-head check: from the open-PR snapshot, or with `fresh`, from a new list read now
+ * (gap-check F3). Only the pull requests the gate judges count (same repository, the default-branch base), as in the
+ * gate's own refusal (Stage 1's ruling on gap-check F2).
+ */
+export function sharedHeadCheck(client, openSnapshot, repository, defaultBranch) {
+  return async (head, number, { fresh = false } = {}) => {
+    const open = fresh ? await client.openPullRequests() : openSnapshot;
+    return otherOpenPullRequestAt(
+      (open ?? []).filter((pull) => isCorrectionEligiblePullRequest(pull, repository, defaultBranch)), head, number,
+    );
+  };
+}
+
 // The correction WATCHDOG.
 //
 // Until now this job drained conflicts, merge continuation and status drift, and
@@ -555,7 +608,7 @@ export async function handOffCorrectionLease(
   pullRequest,
   repository,
   defaultBranch,
-  { now = new Date().toISOString() } = {},
+  { now = new Date().toISOString(), sharesHead = null } = {},
 ) {
   if (!isCorrectionEligiblePullRequest(pullRequest, repository, defaultBranch)) return null;
   const head = pullRequest.head?.sha;
@@ -576,7 +629,14 @@ export async function handOffCorrectionLease(
   // itself, so the watchdog asks for the recovery rather than describing it.
   // `gateRecoveryStatus` holds the ask while the gate's own accepted request is
   // still pending.
-  const recoverable = gateRecoveryStatus(combined);
+  const recoverable = gateRecoveryStatus(combined, now);
+  // 2A3a (gap-check F1) — while another open pull request still has this head on a fresh list, a re-judge could only
+  // write the shared-commit refusal again (a new status on the commit, and this pull request drafted again even after
+  // a person marked it ready), so nothing is dispatched. The sibling's close runs this watchdog (`pull_request_target:
+  // closed`), and that pass, or the next one, dispatches once the head is this pull request's alone
+  if (recoverable && sharesHead && await sharesHead(head, pullRequest.number, { fresh: true })) {
+    return { state: 'shared_commit', head, body: null, reason: 'another open pull request still has this exact head' };
+  }
   if (recoverable) {
     await client.dispatchRecovery(defaultBranch, {
       pr_number: String(pullRequest.number),
@@ -590,9 +650,45 @@ export async function handOffCorrectionLease(
     return { state: 'dispatched', head, terminalStatusId: recoverable.id ?? null };
   }
 
+  // G3b — a green no auto-merge is queued behind: a re-arm lost after the gate's disarm (G3a′'s residual). The gate is
+  // asked once per re-judged success to re-judge it; it re-arms only through its own authorization (`gateRearmStatus`).
+  // The open-PR snapshot names the pull request and the head whose statuses were read, nothing more: whenever this
+  // head's newest status is a tokened success not yet asked about, the live pull request alone decides, so an arming,
+  // a draft turned ready or a queued merge disabled since the snapshot is seen (Codex 4443441242). A live head that is
+  // no longer this head is not asked about on this head's statuses; that head's own run or the next pass judges it
+  // (Codex 4443441231).
+  const candidate = gateRearmStatus(combined, { number: pullRequest.number, state: 'open', draft: false, auto_merge: null }, now);
+  let unarmed = null;
+  if (candidate) {
+    const live = await client.pullRequest(pullRequest.number);
+    if (live?.head?.sha === head) unarmed = gateRearmStatus(combined, live, now);
+  }
+  // 2A3a (#1311 Codex 4446635311) — and no re-arm is asked about while another open pull request has this head on a fresh
+  // list: the re-judge could only write the shared-commit refusal. The sibling's close runs this watchdog, which asks then
+  if (unarmed && sharesHead && await sharesHead(head, pullRequest.number, { fresh: true })) {
+    return { state: 'shared_commit', head, body: null, reason: 'another open pull request still has this exact head' };
+  }
+  if (unarmed) {
+    await client.dispatchRecovery(defaultBranch, {
+      pr_number: String(pullRequest.number),
+      head_sha: head,
+      terminal_status_id: String(unarmed.id),
+    });
+    console.log(
+      `Dispatched gate re-arm for PR #${pullRequest.number} head ${head} `
+        + `success status ${unarmed.id}.`,
+    );
+    return { state: 'rearm_dispatched', head, terminalStatusId: unarmed.id ?? null };
+  }
+
   const owed = owedCorrectionStatus(combined);
   if (!owed) return null;
-
+  // 2A3a (#1307 sibling audit S18) — a commit status is the commit's: while another open pull request has this head, a
+  // verdict on it may be the other pull request's (its body, its owner), so no correction is routed to this one. The
+  // gate writes the commit's own shared-commit refusal, which is retryable and asks nobody for a correction
+  if (sharesHead && await sharesHead(head, pullRequest.number)) {
+    return { state: 'shared_commit', head, body: null, reason: 'another open pull request has this exact head' };
+  }
   const [comments, reviewComments, reviews] = await Promise.all([
     client.comments(pullRequest.number),
     client.reviewComments(pullRequest.number),
@@ -622,6 +718,8 @@ export async function handOffCorrectionLease(
     occurrence: owed.id ?? null,
     now,
     comments,
+    // 2A3a (#1311 Codex 4446635318) — a body verdict written for another pull request is named as such
+    writtenFor: inheritedBodyVerdictFrom(owed, pullRequest),
   });
 
   if (assessment.state === 'notify') {
@@ -670,13 +768,18 @@ export async function handOffCorrectionLease(
         occurrence: freshOwed.id ?? null,
         now,
         comments,
+        writtenFor: inheritedBodyVerdictFrom(freshOwed, pullRequest),
       })
       : null;
     // The RAW BODY too, not only the notice it renders. A checklist item ticked
     // while the watchdog reads can clear a scope verdict the status has not
     // caught up with, leaving the rendered text identical — and a lease key is
     // claimed forever, so publishing then is a permanent stale wake-up.
-    if (fresh?.state !== 'notify' || fresh.body !== assessment.body || live.body !== assessed.body) {
+    // 2A3a — and the head is still this pull request's alone, on a fresh list
+    if (
+      fresh?.state !== 'notify' || fresh.body !== assessment.body || live.body !== assessed.body
+      || (sharesHead && await sharesHead(head, pullRequest.number, { fresh: true }))
+    ) {
       return {
         ...assessment,
         state: 'superseded',
@@ -762,7 +865,10 @@ export async function run() {
   let retryNeeded = false;
   const watchdogFailures = [];
   const lastBaseMergeAt = await client.lastCommitAt(defaultBranch);
-  for (const pullRequest of await client.openPullRequests()) {
+  const openSnapshot = await client.openPullRequests();
+  // 2A3a — another open pull request at a head: from the snapshot, then on a fresh list just before a notice is posted
+  const sharesHead = sharedHeadCheck(client, openSnapshot, repository, defaultBranch);
+  for (const pullRequest of openSnapshot) {
     try {
       await handOffConflict(client, pullRequest, repository, defaultBranch, { lastBaseMergeAt });
     } catch (error) {
@@ -771,7 +877,7 @@ export async function run() {
       console.warn(error.message);
     }
     try {
-      await handOffCorrectionLease(client, pullRequest, repository, defaultBranch);
+      await handOffCorrectionLease(client, pullRequest, repository, defaultBranch, { sharesHead });
     } catch (error) {
       // Collected rather than thrown here, so one unreadable pull request cannot
       // stop the others from being watched — and rethrown below, so a watchdog

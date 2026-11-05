@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import { systemActor } from '../../common/actor';
+import { lockProjectReadiness } from '../../common/readiness-lock';
 import { recordAudit } from '../../platform/audit';
 import { readHubConfig } from './hub-config';
 import { verifyHubSignature } from './hub-signature';
@@ -50,7 +51,9 @@ export type HubDelivery = {
  *     the Hub org, whose latest event is `linked` to the Hub project the event is about. The link row is read FOR UPDATE:
  *     a link event's insert takes KEY SHARE on that row through its foreign key, which only FOR UPDATE conflicts with, so
  *     a link or unlink in flight finishes first and the judgement sees it, and none can be added until the judgement
- *     commits, whether or not its writer locked the link row first. Nothing else is locked, so no lock order is crossed.
+ *     commits, whether or not its writer locked the link row first. Before it, the project's readiness key: a first
+ *     link has no row to lock until it commits, but holds that key through its Hub calls, so a delivery sent during the
+ *     link waits for it (#1118 U7a L1b). The key, then the row: the order every writer takes them.
  *  6. Resolved: `accepted`, written by U5. Until then it answers 503 and writes nothing.
  *
  * A refused delivery is recorded with no project and audited; an ignored one is recorded only. Neither the audit row nor
@@ -103,6 +106,11 @@ export class HubReceiverService {
       if (event.pmcProjectIds.length !== 1) return record('refused', event.type, event.versionId, 'not_linked');
 
       const projectId = event.pmcProjectIds[0]!;
+      // #1118 U7a L1b — the project's readiness key first: a link holds it through its Hub calls, before its first link
+      // row exists (the row and its event 1 commit together), so a delivery Hub sends during that link waits here and
+      // then judges what the link committed, instead of finding no row. Plain reads only so far, so the key is still the
+      // first lock this transaction takes, as every writer takes it.
+      await lockProjectReadiness(tx, projectId);
       const link = await tx.$queryRaw<Array<{ projectId: string }>>`
         SELECT "projectId" FROM "DrawingHubLink" WHERE "projectId" = ${projectId} AND "orgId" = ${orgId} FOR UPDATE`;
       if (link.length === 0) return record('refused', event.type, event.versionId, 'not_linked');

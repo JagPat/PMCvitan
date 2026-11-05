@@ -19,6 +19,9 @@ export const DRAWINGS_COMMANDS = [
   'drawings.acknowledge',
   'drawings.setNode',
   'drawings.remove',
+  // #1118 U7a — an org owner/admin links the project to its Hub project, or unlinks it
+  'drawings.hubLink',
+  'drawings.hubUnlink',
 ] as const;
 export type DrawingsCommand = (typeof DRAWINGS_COMMANDS)[number];
 
@@ -29,6 +32,8 @@ export const DRAWINGS_QUERIES = [
   'drawings.projectionSlice',
   'drawings.existsInProject',
   'drawings.resolveRef',
+  // #1118 U7a — the project's active Hub link, for the snapshot's project line
+  'drawings.hubLink',
 ] as const;
 export type DrawingsQuery = (typeof DRAWINGS_QUERIES)[number];
 
@@ -46,6 +51,20 @@ export interface DrawingsModuleResult {
   readonly drawings: readonly Drawing[];
   readonly source: 'projection' | 'live';
   readonly generation: number | null;
+}
+
+/**
+ * `drawings.hubLink` — #1118 U7a: the project's active Hub link, from the drawings module's own link events: Hub's
+ * project id, the number and name Hub gave it when it was linked, when, and where "Open in Hub" goes (Hub's address
+ * while PMC is connected to Hub for the company the link belongs to, else null). Defined here, with the module's
+ * contract, so a consumer (the snapshot's project line) depends on the module and never the other way round.
+ */
+export interface DrawingsHubLink {
+  readonly hubProjectId: string;
+  readonly number: string | null;
+  readonly name: string | null;
+  readonly linkedAt: string;
+  readonly openUrl: string | null;
 }
 
 /** `drawings.existsInProject` / `drawings.resolveRef` — validate a drawing reference belongs to a project. */

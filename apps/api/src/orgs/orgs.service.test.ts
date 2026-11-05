@@ -472,6 +472,8 @@ describe('OrgsService.addOrgMember', () => {
         }),
       },
       org: { findUnique: vi.fn(async () => ({ id: 'org1', name: 'Vitan Architects', projects })) },
+      // Redbracket ID A4b — the add asks whether the account it found was retired; none here is
+      identityRetirement: { count: vi.fn(async () => 0) },
       user: {
         findUnique: vi.fn(async () => existingUser),
         create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -547,7 +549,7 @@ describe('OrgsService.addOrgMember', () => {
 
 describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
   // rows model the org's memberships; findUnique/count/update/delete key off userId.
-  function makeManage(rows: Array<{ userId: string; role: string; name?: string }>) {
+  function makeManage(rows: Array<{ userId: string; role: string; name?: string }>, retired: string[] = []) {
     const state = rows.map((r) => ({ ...r, name: r.name ?? r.userId }));
     const prisma = {
       orgMembership: {
@@ -555,7 +557,9 @@ describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
           const r = state.find((x) => x.userId === where.orgId_userId.userId);
           return r ? { role: r.role, user: { name: r.name, email: null, phone: null } } : null;
         }),
-        count: vi.fn(async () => state.filter((r) => r.role === 'owner').length),
+        // the other owners (Redbracket ID A4b: the guard then drops any retired one)
+        findMany: vi.fn(async ({ where }: { where: { role: string; userId: { not: string } } }) =>
+          state.filter((r) => r.role === where.role && r.userId !== where.userId.not).map((r) => ({ userId: r.userId }))),
         update: vi.fn(async ({ where, data }: { where: { orgId_userId: { userId: string } }; data: { role: string } }) => {
           const r = state.find((x) => x.userId === where.orgId_userId.userId)!;
           r.role = data.role;
@@ -571,6 +575,7 @@ describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
       // over every covered project (none in this fixture, so the guard finds nothing to judge).
       project: { findMany: vi.fn(async () => []) },
       membership: { findFirst: vi.fn(async () => null) },
+      identityRetirement: { count: vi.fn(async ({ where }: { where: { userId: string } }) => (retired.includes(where.userId) ? 1 : 0)) },
       $executeRaw: vi.fn(async () => 0),
       $transaction: vi.fn(async (arg: unknown) =>
         typeof arg === 'function' ? (arg as (tx: unknown) => Promise<unknown>)(prisma) : Promise.all(arg as Promise<unknown>[])),
@@ -593,6 +598,13 @@ describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
   it('refuses to demote the last owner', async () => {
     const { svc } = makeManage([{ userId: 'owner1', role: 'owner' }]);
     await expect(svc.updateOrgMemberRole('org1', 'owner1', 'owner1', { role: 'admin' })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('Redbracket ID A4b: an owner seat held by a retired account does not count, so the last live owner keeps it', async () => {
+    const { svc } = makeManage([{ userId: 'owner1', role: 'owner' }, { userId: 'retired', role: 'owner' }], ['retired']);
+    await expect(svc.updateOrgMemberRole('org1', 'owner1', 'owner1', { role: 'admin' })).rejects.toBeInstanceOf(BadRequestException);
+    // the retired row's own owner seat can still be removed by the live owner (the re-seat)
+    await expect(svc.removeOrgMember('org1', 'owner1', 'retired')).resolves.toEqual({ ok: true });
   });
 
   it('demoting one of two owners is allowed', async () => {
@@ -654,6 +666,7 @@ describe('OrgsService invitation-email correction', () => {
     passwordHash?: string | null;
     emailVerifiedAt?: Date | null;
     duplicateEmail?: boolean;
+    claimedBySetup?: boolean;
   } = {}) {
     const target = {
       id: 'target1',
@@ -685,6 +698,7 @@ describe('OrgsService invitation-email correction', () => {
         }),
       },
       passwordCredentialChallenge: {
+        findFirst: vi.fn(async () => (options.claimedBySetup ? { id: 'claimed1' } : null)),
         updateMany: vi.fn(async ({ where, data }: { where: { userId: string; consumedAt: null }; data: { consumedAt: Date } }) => {
           let count = 0;
           for (const challenge of challenges) {
@@ -737,6 +751,19 @@ describe('OrgsService invitation-email correction', () => {
     const { svc } = makeEmailCorrection(state);
     await expect(svc.correctInvitationEmail('org1', 'caller1', 'target1', { email: 'new@vitan.in' }))
       .rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('refuses correction once a password setup claimed its code, and changes nothing', async () => {
+    const { svc, prisma, target, challenges, audits } = makeEmailCorrection({ claimedBySetup: true });
+    await expect(svc.correctInvitationEmail('org1', 'caller1', 'target1', { email: 'new@vitan.in' }))
+      .rejects.toThrow(/already confirmed by a password setup/);
+    expect(prisma.passwordCredentialChallenge.findFirst).toHaveBeenCalledWith({
+      where: { userId: 'target1', purpose: 'password_setup_or_reset', verifiedAt: { not: null }, consumedAt: { not: null }, setupTokenExpiresAt: null },
+      select: { id: true },
+    });
+    expect(target.email).toBe('wrong@vitan.in');
+    expect(challenges[0]!.consumedAt).toBeNull();
+    expect(audits).toEqual([]);
   });
 
   it('returns a generic conflict when the corrected email is already used', async () => {
@@ -957,7 +984,8 @@ describe('OrgsService.createProject — structureFrom (Templates Slice 1)', () =
     expect(i.id).toBe('INSP-023');
     expect(i).toMatchObject({ kind: 'checklist', title: 'Waterproofing QA', submitted: false, decided: false, by: null });
     const items = (i.items as { create: { name: string; order: number; state?: unknown }[] }).create;
-    expect(items).toEqual([{ name: 'Ponding test', order: 0 }]); // names only — no state/photos/notes travel
+    // names only — no state/photos/notes travel; an item issued by name carries no guidance (guided step 2a)
+    expect(items).toEqual([{ name: 'Ponding test', order: 0, lookAt: null, passRule: null, recordKind: null, recordCount: null, recordWhen: null, recordHint: null }]);
   });
 
   it('rejects a source outside the org (or archived) BEFORE the project exists — no orphan (review F1)', async () => {
@@ -1267,6 +1295,7 @@ describe('OrgsService.addOrgMember — invite notice', () => {
         upsert: vi.fn(async ({ create }: { create: { role: string } }) => { orgMemberships.push(create); return create; }),
       },
       org: { findUnique: vi.fn(async () => ({ id: 'org1', name: 'Vitan Architects', projects: [{ id: 'ambli' }] })) },
+      identityRetirement: { count: vi.fn(async () => 0) },
       user: {
         findUnique: vi.fn(async () => existingUser),
         create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'newuser', passwordHash: null, emailVerifiedAt: null, ...data })),

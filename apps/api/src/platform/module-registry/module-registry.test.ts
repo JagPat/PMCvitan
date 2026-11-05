@@ -164,7 +164,7 @@ describe('Phase 2 Task 7 — module registry', () => {
       // reason as every row here: orgs.dependsOn reaches inspections (project initialization reads
       // `InspectionsQueryService.allIds`), so an inspections → orgs READ edge would close a cycle
       // and the participant channel does not.
-      inspections: ['activities', 'orgs'],
+      inspections: ['activities', 'orgs', 'media'],
       // Phase 4 Task 2 — the labour commercial chain validates the reused procurement Vendor/
       // ProjectVendor binding through ProcurementParticipant.assertVendorBound (+ resolveOrgVendor):
       // a CYCLE-EXEMPT labour → procurement workflow edge, not a dependsOn read, so labour stays a
@@ -202,12 +202,16 @@ describe('Phase 2 Task 7 — module registry', () => {
       // orgs.dependsOn includes decisions, so a decisions → orgs READ would close a cycle —
       // the participant channel does not.
       decisions: ['orgs'],
+      // #1118 U7a — the Hub link's authority (company owner/admin) and live-project questions are orgs answers, asked
+      // through OrgsParticipant under the link command's own locks. Cycle-exempt like the rows above.
+      drawings: ['orgs'],
       // Phase 6 unit 4b round 6 (Codex F6) — the push spine's TWO orgs-owned questions
       // (identity existence at subscribe-attribution; credential/session validity at
       // targeted-claim time) go through OrgsParticipant, so the platform → orgs interaction
       // is a DECLARED participant edge the graph validation can see. `platform.dependsOn`
       // stays empty (the kernel owns no domain logic).
-      platform: ['orgs'],
+      // Redbracket ID A4b-2 — the operator door's retired list asks five owners for open work (`openWorkOf`, reads only).
+      platform: ['orgs', 'inspections', 'activities', 'decisions', 'drawings', 'site-visits'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.workflowParticipants, `${m.id} workflowParticipants`).toEqual(expectedParticipants[m.id] ?? []);
