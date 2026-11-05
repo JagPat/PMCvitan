@@ -22,6 +22,7 @@ import { lockOrgStanding, lockProjectReadiness } from '../common/readiness-lock'
 import { assertOrgStandingSnapshotCurrent, holdsOrgStanding, lockOrgStandingWriters } from './org-standing';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import { itemRowFromSpec, payloadItemsFromSpecs, specsFromPayload } from '../inspections/guided-item';
+import { LIBRARY_CHECKLIST_CATEGORY } from './checklist-library';
 import type { AuthUser, Role } from '../common/auth';
 import type { DecisionsContract } from '../common/decisions-contract';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type InspectionItemSpec, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
@@ -688,9 +689,18 @@ export class OrgsService {
     for (const s of selections) {
       const m = byId.get(s.moduleId);
       if (!m || m.orgId !== orgId || m.archivedAt) throw new NotFoundException('Module not found in this org');
+      this.assertNotLibraryChecklist(m);
       this.assertSelectionTarget(m, s);
     }
     return byId;
+  }
+
+  /** Guided site inspections, step 2c — a library checklist is issued from a project by its PMC, never placed by a
+   *  template: project creation and preset save refuse it with the same words. */
+  private assertNotLibraryChecklist(m: { name: string; category: string }): void {
+    if (m.category === LIBRARY_CHECKLIST_CATEGORY) {
+      throw new BadRequestException(`"${m.name}" is a library checklist: a PMC issues it from a project's inspections, a template does not place it`);
+    }
   }
 
   /** The anchor-specific graft target rule, shared by project creation AND preset save
@@ -891,12 +901,13 @@ export class OrgsService {
     if (input.items) {
       const modules = await this.prisma.templateModule.findMany({
         where: { id: { in: input.items.map((i) => i.moduleId) } },
-        select: { id: true, orgId: true, archivedAt: true, anchorKind: true, name: true },
+        select: { id: true, orgId: true, archivedAt: true, anchorKind: true, name: true, category: true },
       });
       const ok = new Map(modules.map((m) => [m.id, m]));
       for (const i of input.items) {
         const m = ok.get(i.moduleId);
         if (!m || m.orgId !== orgId || m.archivedAt) throw new NotFoundException('Module not found in this org');
+        this.assertNotLibraryChecklist(m);
         // a preset exists only to be expanded at create-project — so saving applies the SAME
         // graft-target rule expansion applies (review F3's principle, now that element modules
         // ARE placeable): a room-anchored item must carry its explicit target, or the preset
@@ -975,7 +986,11 @@ export class OrgsService {
   /** The org's module menu (any org member; archived modules hidden). */
   async listModules(orgId: string, userId: string) {
     if (!(await this.orgRole(orgId, userId))) throw new ForbiddenException('Not a member of this org');
-    const rows = await this.prisma.templateModule.findMany({ where: { orgId, archivedAt: null }, orderBy: [{ category: 'asc' }, { name: 'asc' }] });
+    // the Create Project menu: a library checklist is not placed by a project template (step 2c), so it is not listed
+    const rows = await this.prisma.templateModule.findMany({
+      where: { orgId, archivedAt: null, category: { not: LIBRARY_CHECKLIST_CATEGORY } },
+      orderBy: [{ category: 'asc' }, { name: 'asc' }],
+    });
     return rows.map((m) => this.moduleSummary(m));
   }
 

@@ -544,19 +544,31 @@ export const modulePayloadSchema = z.object({
 });
 export type ModulePayload = z.infer<typeof modulePayloadSchema>;
 
+/** Guided site inspections, step 2c — a library checklist's payload: exactly one checklist, filed on no place, and no
+ *  locations, phases or activities (it is issued into a project as a checklist, never grafted into one). */
+export function isLibraryChecklistPayload(p: ModulePayload): boolean {
+  return p.inspections.length === 1 && p.inspections[0]!.nodeKey === undefined
+    && p.nodes.length === 0 && p.phases.length === 0 && p.activities.length === 0;
+}
+
 /** Create a module: either with an explicit payload, or extracted server-side from a
  *  same-org project (`fromProject`, optionally one node's subtree via `fromNodeId`). */
 export const createModuleSchema = z
   .object({
     name: z.string().trim().min(1),
-    category: z.enum(['space', 'zone', 'element', 'discipline', 'schedule']),
+    // Guided site inspections, step 2c: 'checklist' is a Vitan library checklist — one checklist and its guidance, issued
+    // from a project by its PMC (`GET /projects/:projectId/inspections/library`), never placed by a project template
+    category: z.enum(['space', 'zone', 'element', 'discipline', 'schedule', 'checklist']),
     description: z.string().default(''),
     payload: modulePayloadSchema.optional(),
     fromProject: z.string().trim().min(1).optional(),
     fromNodeId: z.string().trim().min(1).optional(),
   })
   .refine((v) => Boolean(v.payload) !== Boolean(v.fromProject), { message: 'Provide exactly one of payload or fromProject' })
-  .refine((v) => !v.fromNodeId || v.fromProject, { message: 'fromNodeId requires fromProject' });
+  .refine((v) => !v.fromNodeId || v.fromProject, { message: 'fromNodeId requires fromProject' })
+  .refine((v) => v.category !== 'checklist' || (v.payload !== undefined && isLibraryChecklistPayload(v.payload)), {
+    message: 'A library checklist holds exactly one checklist and nothing else', path: ['payload'],
+  });
 export type CreateModuleInput = z.infer<typeof createModuleSchema>;
 
 /** One menu pick at Create Project: which module, how many, and where it grafts.

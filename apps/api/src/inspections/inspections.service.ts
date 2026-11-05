@@ -27,6 +27,7 @@ import {
 } from './assignment-eligibility';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { MediaParticipant } from '../media/media.participant';
+import type { LibraryChecklist } from '../orgs/checklist-library';
 import { checklistPath } from '../platform/record-paths';
 import { isFailedItem } from './failed-item';
 import { guidanceColumnsOf, itemRowFromSpec } from './guided-item';
@@ -66,6 +67,13 @@ export class InspectionsService {
     // Guided site inspections, step 2b — the evidence rule asks the media module each linked file's type (manifest edge)
     private readonly media: MediaParticipant,
   ) {}
+
+  /** Guided site inspections, step 2c — the Vitan checklist library this project's PMC picks from (its company's library
+   *  checklists, asked of the orgs module). A pick is issued through {@link create} with the entry's title, work type and
+   *  items, so the copy is the project's and the library entry stays as it is. */
+  async library(projectId: string): Promise<LibraryChecklist[]> {
+    return this.orgs.checklistLibrary(this.prisma as unknown as Prisma.TransactionClient, projectId);
+  }
 
   /** PMC issues a stage checklist — becomes the engineer's current field checklist.
    *  Task 4: may carry the explicit Activity REQUIREMENT EDGE it accepts.
