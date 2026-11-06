@@ -131,3 +131,11 @@ export function listEvidence(userScope: string, projectId: string): Promise<Evid
       }),
   );
 }
+
+/** #1388: the projects whose rows this phone keeps for `userScope`, from the rows' keys alone (no row is read, so no
+ *  bytes are loaded). Read only. */
+export function evidenceProjectsOf(userScope: string): Promise<Set<string>> {
+  const prefix = `${userScope}::`;
+  return tx<IDBValidKey[]>('readonly', (s) => s.getAllKeys(IDBKeyRange.bound(prefix, `${prefix}\uffff`)))
+    .then((keys) => new Set((keys ?? []).map((k) => String(k).slice(prefix.length)).map((r) => r.slice(0, r.indexOf('::'))).filter((p) => p.length > 0)));
+}

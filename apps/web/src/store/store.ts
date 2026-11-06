@@ -99,6 +99,7 @@ import {
 } from './projectCreateHold';
 import { createQueueKeyGuard, queueActIdent, type QueueWrite } from '@/store/queueKeyGuard';
 import { isDone } from '@/store/queueLedger';
+import { readKeptElsewhere, rememberProjectName, type KeptProject } from '@/store/keptElsewhere';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW, qwFill } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
@@ -447,6 +448,8 @@ export interface AppState {
   // multi-project (Orgs Slice 2)
   activeProjectId: string; // the project the session is scoped to
   memberships: MembershipSummary[]; // projects the user can switch between
+  /** #1388: the projects this device keeps the person's unsent changes for that they no longer hold (read only) */
+  keptElsewhere: KeptProject[];
   myOrgs: OrgSummary[]; // orgs the user administers/belongs to
   orgMembers: OrgMember[]; // the active org's admin roster (owner/admin/member)
   orgModules: OrgTemplateModule[]; // the org's reusable structure modules (Templates Slice 2)
@@ -670,6 +673,8 @@ export interface AppActions {
   filePhoto: (photoId: string, nodeId: string | null) => void;
   // multi-project + team
   loadOrgData: () => void;
+  /** #1388: read again which projects the person no longer holds this device keeps changes for */
+  loadKeptElsewhere: () => Promise<void>;
   loadPortfolio: () => void;
   /** U3b — load the PMC's daily brief (session-scoped, like the portfolio) */
   loadBrief: () => void;
@@ -1582,6 +1587,7 @@ export function getInitialState(): AppState {
     phases: structuredClone(SEED_PHASES),
     activeProjectId: initialProjectId(),
     memberships: [],
+    keptElsewhere: [],
     myOrgs: [],
     orgMembers: [],
     orgModules: [],
@@ -2053,6 +2059,14 @@ export const useStore = create<Store>()(
       recordDailyLogDraft(s, (d) => { d.photosAdded = (d.photosAdded ?? 0) + 1; });
 
     const applySnapshotCore = (snap: ApiSnapshot, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null, drawingsResult?: ModuleDrawings | null, inspectionsResult?: ModuleInspections | null, activitiesResult?: ModuleActivities | null): void => {
+      // #1388: the name this device keeps for the project, so a list of changes kept for it still names it once the
+      // person no longer holds it (no read of it is served then); set where the project's name is
+      const named = evidenceScope();
+      if (named !== 'anon') {
+        let names: Storage | null = null;
+        try { names = globalThis.localStorage; } catch { names = null; }
+        rememberProjectName(names, named, snap.project.id, snap.project.name);
+      }
       set((s) => {
         s.projectLoadState = 'ready'; // the active project's data has landed
         s.projectLoadError = null;
@@ -2431,6 +2445,7 @@ export const useStore = create<Store>()(
         if (switching()) { leavingFor = null; return; }
       }
       set((s) => { s.memberships = read; });
+      void get().loadKeptElsewhere();
       // the same pick on every device and every read: by name, then id (the server's list has no order of its own)
       const next = same ?? [...ms].sort((a, b) => cmp(a.name, b.name) || cmp(a.projectId, b.projectId))[0];
       // only acts a write has stored are kept: one this tab could not store leaves with the scope's memory, as on any
@@ -4147,6 +4162,7 @@ export const useStore = create<Store>()(
         // scope key and resumes on their next sign-in; the next user never replays it.
         s.outbox = [];
         s.syncQueue = [];
+        s.keptElsewhere = [];
         s.pendingEvidenceKeys = null;
         s.pendingEvidenceRows = null;
         // Ending the session ends the scope (Codex gate finding 6): the signed-out
@@ -5285,12 +5301,27 @@ export const useStore = create<Store>()(
     },
 
     // ---- multi-project + team (Orgs Slice 2) ----
+    loadKeptElsewhere: async () => {
+      const tok = get().sessionToken;
+      const ms = get().memberships;
+      // a signed-in person always holds a project: an empty list is one not read yet, never "none held"
+      if (!tok || ms.length === 0) return;
+      let storage: Storage | undefined;
+      try { storage = globalThis.localStorage; } catch { storage = undefined; }
+      const sub = evidenceScope();
+      if (!storage || sub === 'anon') return;
+      const kept = await readKeptElsewhere(storage, sub, new Set(ms.map((m) => m.projectId))).catch(() => null);
+      // adopted only for the session and the memberships it was read for: a newer read of either reads again
+      if (kept === null || get().sessionToken !== tok || get().memberships !== ms) return;
+      set((s) => { s.keptElsewhere = kept; });
+    },
     loadOrgData: () => {
       if (!gateway) return;
       // session-scoped (not project-scoped): ignore replies after sign-out / re-auth
       const tok = get().sessionToken;
       gateway.listMemberships().then((ms) => {
         set((s) => { if (s.sessionToken === tok) s.memberships = ms; });
+        void get().loadKeptElsewhere();
         // #948 Codex 4300725705 / 4300786709 — a restored session opened on a link to ANOTHER project switches
         // there only once its memberships confirm the person belongs to it; a stale, mistyped or foreign link
         // is dropped, and the session stays on its own project, which is already loading

@@ -3,6 +3,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore, type CreateProjectOutcome } from '@/store/store';
 import { isCreateHoldStorageKey } from '@/store/projectCreateHold';
 import { useProjectSwitch } from './useProjectSwitch';
+import { KeptElsewhereModal } from './KeptElsewhere';
+import { keptElsewhereLine } from '@/lib/queueWords';
 import { Modal } from '@/components';
 import { ChevronRight, Plus, Check } from '@/lib/icons';
 import type { ModuleSelection, NewProjectInput } from '@/data/apiGateway';
@@ -13,11 +15,12 @@ import { forYouRole, shellChromeLabels as SL, shellChromeText as ST } from '@vit
 export function ProjectSwitcher() {
   // the SHARED switch data — the same hook the mobile top bar reads, so neither surface
   // owns project state and a switch from either takes the identical store path
-  const { memberships, activeProjectId, label, adminOrg, canSwitch, switchProject } = useProjectSwitch();
+  const { memberships, activeProjectId, label, adminOrg, canSwitch, switchProject, keptElsewhere } = useProjectSwitch();
   const setScreen = useStore((s) => s.setScreen);
   const lang = useStore((s) => s.lang);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [keptOpen, setKeptOpen] = useState(false);
   // Wave 0 / F-1a: the switcher is a NON-MODAL disclosure popup, not a dialog
   // and not a menu — no focus trap, no aria-modal, no aria-haspopup claim
   // (its rows are plain Tab-driven buttons; aria-expanded on the trigger is
@@ -107,10 +110,16 @@ export function ProjectSwitcher() {
           <button onClick={() => { closeToTrigger(); setScreen('team'); }} style={row(false)}>
             {SL.manageTeam[lang]}
           </button>
+          {keptElsewhere > 0 && (
+            <button data-testid="kept-elsewhere-line" onClick={() => { closeToTrigger(); setKeptOpen(true); }} style={{ ...row(false), whiteSpace: 'normal' }}>
+              {keptElsewhereLine(keptElsewhere, lang)}
+            </button>
+          )}
         </div>
       )}
 
       {creating && adminOrg && <CreateProjectModal orgId={adminOrg.id} onClose={() => setCreating(false)} />}
+      {keptOpen && <KeptElsewhereModal onClose={() => setKeptOpen(false)} />}
     </div>
   );
 }

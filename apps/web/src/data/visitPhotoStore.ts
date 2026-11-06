@@ -500,3 +500,13 @@ export function failVisitPhotosOn(userScope: string, projectId: string, visitId:
     }, () => done(undefined));
   }).then(() => { letGoOf(userScope, projectId, failed); return failed; });
 }
+
+/** #1388: the projects whose rows this phone keeps for `userScope`, from the rows' keys alone (no row is read, so no
+ *  bytes are loaded). Read only. */
+export function visitPhotoProjectsOf(userScope: string): Promise<Set<string>> {
+  const prefix = `${userScope}::`;
+  return tx<IDBValidKey[]>('readonly', (s, done) => {
+    const req = s.getAllKeys(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
+    req.onsuccess = () => done(req.result ?? []);
+  }).then((keys) => new Set((keys ?? []).map((k) => String(k).slice(prefix.length)).map((r) => r.slice(0, r.indexOf('::'))).filter((p) => p.length > 0)));
+}

@@ -2,7 +2,7 @@ import type { OutboxOp } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { queueActIdent } from '@/store/queueActIdent';
 import {
-  decodeSidecar, doneName, donePrefixes, doneToPrune, encodeSidecar, evidenceOf, frameOf, ledgerTag, markName, owedOf, planWrite,
+  decodeSidecar, doneName, donePrefixes, doneToPrune, encodeSidecar, evidenceOf, frameOf, isDone, ledgerTag, markName, owedOf, planWrite,
   readDone, readMarkName, recordBytes, recordName, recordOid, sidecarName, tokenOf,
   type Memory, type Occ, type Snapshot, type WritePlan,
 } from '@/store/queueLedger';
@@ -197,6 +197,21 @@ const sameRead = (a: Read, b: Read): boolean => {
   const same = (x: Set<string>, y: Set<string>) => x.size === y.size && [...x].every((v) => y.has(v));
   return a.raw === b.raw && JSON.stringify(a.sidecar) === JSON.stringify(b.sidecar) && same(a.marks.ids, b.marks.ids) && same(a.marks.legacy, b.marks.legacy);
 };
+
+/** #1388: what `key` still owes, read only, for a scope this tab does not load (a project the person no longer holds):
+ *  the occurrences the ledger owes (the key's, its made records', less its marks), less each one a done fact says the
+ *  server has, as a load would take them. Nothing is written, named or held; a key this release cannot read owes none
+ *  it can name, and says why. A read that throws reads as nothing owed and is reported as `null`. */
+export function readOwedActs(storage: Store, key: string, scopes: QueueScopes): { read: KeyRead; acts: OutboxOp[] } | null {
+  try {
+    const s = snapshotOf(storage, key, scopes);
+    const read = readOf(s.raw, scopes);
+    if (read !== 'ok') return { read, acts: [] };
+    return { read, acts: owedOf(s).owed.map((o) => o.act).filter((a) => !isDone(storage, key, a)) };
+  } catch {
+    return null;
+  }
+}
 
 export type QueueKeyGuard = ReturnType<typeof createQueueKeyGuard>;
 /** one queue key's write from memory: this tab's acts for it, and which stored entries memory takes (`write`) */

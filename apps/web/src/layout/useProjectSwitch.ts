@@ -15,6 +15,8 @@ export function useProjectSwitch() {
   const switchProject = useStore((s) => s.switchProject);
   // live project identity from the snapshot; the membership short is the fast label during a switch
   const liveShort = useStore((s) => s.short);
+  // #1388: projects the person no longer holds that this device keeps changes for; the switcher lists them at its foot
+  const keptElsewhere = useStore((s) => s.keptElsewhere.length);
 
   const active = memberships.find((m) => m.projectId === activeProjectId);
   const label = active?.short ?? liveShort;
@@ -22,7 +24,7 @@ export function useProjectSwitch() {
   // multi-org admins; fall back to the first org they administer.
   const adminOrgs = myOrgs.filter((o) => o.role === 'owner' || o.role === 'admin');
   const adminOrg = adminOrgs.find((o) => o.id === active?.orgId) ?? adminOrgs[0];
-  const canSwitch = memberships.length > 1 || Boolean(adminOrg);
+  const canSwitch = memberships.length > 1 || Boolean(adminOrg) || keptElsewhere > 0;
 
-  return { memberships, activeProjectId, active, label, adminOrg, canSwitch, switchProject };
+  return { memberships, activeProjectId, active, label, adminOrg, canSwitch, switchProject, keptElsewhere };
 }
