@@ -98,6 +98,15 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   // after a failure, hold the picker busy; later ones refresh in the background under the same shared read.
   // An opening's reads START after it (Codex #1365 r1): a read already in flight may have been answered before a change
   // made elsewhere, so one more is chained behind it (shared by every opening until it is sent), never only joined.
+  // One gesture is one opening (Codex #1365 r2): a tap on a select that is not focused fires pointerdown and then focus,
+  // so the focus that follows a pointerdown is the same opening and is skipped. Blur clears the mark, so a later keyboard
+  // focus still opens (a pointerdown on a select already focused fires no focus).
+  const pointerOpened = useRef(false);
+  const onPointerOpen = () => { pointerOpened.current = true; onOpen(); };
+  const onFocusOpen = () => {
+    if (pointerOpened.current) { pointerOpened.current = false; return; }
+    onOpen();
+  };
   const onOpen = () => {
     if (readFor === undefined || failedFor !== undefined) readTeam({ after: true });
     else if (allowed && online) {
@@ -114,7 +123,10 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   // The server serves only a member who still stands. Once the list is read, one it does not offer reads as nobody, as
   // it does there.
   const value = known || pending ? (named as string) : '';
-  const disabled = saving || !online || reading;
+  // An opening's read never disables the select (Codex #1365 r2): disabling it on the tap that opens it would stop the
+  // native list from opening. The list fills in when the read lands, and a choice from a list that is out of date is
+  // checked by the server (a 400 re-reads it). Only a held name ("…") being read for keeps it disabled, as before.
+  const disabled = saving || !online || (reading && pending);
 
   const choose = (next: string) => {
     const memberId = next === '' ? null : next;
@@ -132,8 +144,9 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
         aria-busy={reading}
         aria-describedby={`${id}-hint`}
         onChange={(e) => choose(e.target.value)}
-        onFocus={onOpen}
-        onPointerDown={onOpen}
+        onFocus={onFocusOpen}
+        onPointerDown={onPointerOpen}
+        onBlur={() => { pointerOpened.current = false; }}
         data-testid={`${testId}-select`}
         style={{ ...field, opacity: disabled ? 0.6 : 1 }}
       >

@@ -1709,6 +1709,12 @@ export const useStore = create<Store>()(
     const currentScope = (): ProjectScope => projectScopeOf(get());
     // RM-w1: the pickers' shared team read in flight, by scope key (readTeamShared)
     let sharedTeamRead: { key: string; read: Promise<boolean>; after: boolean; sent: boolean } | null = null;
+    // RM-w1 (Codex #1365 r2): every team read (loadTeam, from any caller) takes the next number when it starts; an answer
+    // is written only if no read started after it has already been written, so an older roster that answers late never
+    // overwrites a newer one. An older answer that lands first is still written (it is newer than what the store holds),
+    // and the newer answer then replaces it.
+    let teamReadStarted = 0;
+    let teamReadWritten = 0;
     // RM-w1 (Codex #1361 r1, #1365 r1): the key of a naming whose answer never arrived, by project, actor and inspection
     // (never the scope generation, which a failed switch moves while the same person stays on the same project). The same choice
     // made again re-sends the SAME key, so a PUT that committed but lost its answer is replayed by the server, never run
@@ -6399,10 +6405,13 @@ export const useStore = create<Store>()(
       // capture the SCOPE this request is FOR — an id-only pin would wrongly apply
       // an A-scoped reply after switching A→B→A; the generation catches that too
       const scope = currentScope();
+      const seq = ++teamReadStarted;
       return gateway
         .listMembers()
         .then((m) => { set((s) => {
           if (!isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) return;
+          if (seq < teamReadWritten) return;
+          teamReadWritten = seq;
           s.members = m;
         }); return true; })
         .catch(() => false);

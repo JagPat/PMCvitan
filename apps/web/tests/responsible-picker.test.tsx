@@ -400,6 +400,90 @@ describe('"Who fixes this?" on the PMC review card (#482 RM-w1)', () => {
     expect(keyOf(1)).toBe(keyOf(0));
   });
 
+  it('one tap is one opening: pointerdown and the focus it brings make one read, and the first tap does not disable the select (Codex #1365 r2)', async () => {
+    const answers: Array<(m: ProjectMember[]) => void> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answers.push(r); }));
+    const snapshotRead = vi.fn(() => new Promise(() => {}));
+    const { select } = await openReview({ listMembers, snapshot: snapshotRead });
+    // the first tap: the select stays usable while the list is read, so the native list can open on that same tap
+    act(() => { fireEvent.pointerDown(select()); fireEvent.focus(select()); });
+    expect(select().disabled).toBe(false);
+    expect(select().getAttribute('aria-busy')).toBe('true');
+    expect(listMembers).toHaveBeenCalledTimes(1);
+    await act(async () => { answers[0]!(TEAM); });
+    await waitFor(() => expect(optionTexts(select())).toEqual(['Nobody yet', 'Amy Consultant', 'Zed Contractor']));
+    // a later tap: exactly one more team read and one more project read, not two of each
+    const snapshotsBefore = snapshotRead.mock.calls.length;
+    act(() => { fireEvent.blur(select()); fireEvent.pointerDown(select()); fireEvent.focus(select()); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    await act(async () => { answers[1]!(TEAM); });
+    await act(async () => { await Promise.resolve(); });
+    expect(listMembers).toHaveBeenCalledTimes(2);
+    expect(snapshotRead.mock.calls.length).toBe(snapshotsBefore + 1);
+    // a keyboard focus after the tap's blur is its own opening
+    act(() => { fireEvent.blur(select()); fireEvent.focus(select()); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(3));
+  });
+
+  it('an older team read that answers after a newer one never overwrites the newer roster (Codex #1365 r2)', async () => {
+    const answers: Array<(m: ProjectMember[]) => void> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answers.push(r); }));
+    const { useStore, select } = await openReview({ listMembers });
+    // a direct read (the Team screen, a member command) starts first, then the picker's opening starts a newer one
+    void useStore.getState().loadTeam();
+    act(() => { fireEvent.focus(select()); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    const newer = [...TEAM, member('u-new', 'Neha New', 'contractor')];
+    await act(async () => { answers[1]!(newer); });
+    await waitFor(() => expect(optionTexts(select())).toEqual(['Nobody yet', 'Amy Consultant', 'Neha New', 'Zed Contractor']));
+    // the older read answers last, with the roster from before the member was added: it is not written
+    await act(async () => { answers[0]!(TEAM); });
+    await act(async () => { await Promise.resolve(); });
+    expect(useStore.getState().members).toEqual(newer);
+    expect(optionTexts(select())).toEqual(['Nobody yet', 'Amy Consultant', 'Neha New', 'Zed Contractor']);
+  });
+
+  it('a later team read that FAILS does not block an older answer that lands after it (Codex #1365 r2)', async () => {
+    const settle: Array<{ ok: (m: ProjectMember[]) => void; fail: (e: unknown) => void }> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((ok, fail) => { settle.push({ ok, fail }); }));
+    const { useStore } = await openReview({ listMembers });
+    const older = useStore.getState().loadTeam();
+    const newer = useStore.getState().loadTeam();
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    await act(async () => { settle[1]!.fail(Object.assign(new Error('Failed to fetch'), { status: 0 })); });
+    await expect(newer).resolves.toBe(false);
+    // only a later read that was WRITTEN wins over an older one: this one failed, so the older answer is written
+    await act(async () => { settle[0]!.ok(TEAM); });
+    await expect(older).resolves.toBe(true);
+    expect(useStore.getState().members).toEqual(TEAM);
+  });
+
+  it('a choice from a list gone stale is refused by the server, and the list is read again after the read in flight (Codex #1365 r2)', async () => {
+    const answers: Array<(m: ProjectMember[]) => void> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answers.push(r); }));
+    const setResponsibleMember = vi.fn(async () => { throw Object.assign(new Error('member no longer stands'), { status: 400 }); });
+    const { useStore, select } = await openReview({ listMembers, setResponsibleMember });
+    act(() => { fireEvent.focus(select()); });
+    await act(async () => { answers[0]!(TEAM); });
+    await waitFor(() => expect(optionTexts(select())).toEqual(['Nobody yet', 'Amy Consultant', 'Zed Contractor']));
+    // a later opening reads in the background and leaves the select usable: Zed (removed elsewhere) is still offered
+    act(() => { fireEvent.blur(select()); fireEvent.focus(select()); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    expect(select().disabled).toBe(false);
+    act(() => { fireEvent.change(select(), { target: { value: 'u-zed' } }); });
+    await waitFor(() => expect(useStore.getState().toast).toBe('Could not save who fixes this. Try again.'));
+    expect(setResponsibleMember).toHaveBeenCalledTimes(1);
+    expect(select().value).toBe('');
+    // the refusal chains one read after the one in flight (which may predate the removal), and that read drops Zed
+    const withoutZed = TEAM.filter((m) => m.userId !== 'u-zed');
+    await act(async () => { answers[1]!(TEAM); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(3));
+    await act(async () => { answers[2]!(withoutZed); });
+    await waitFor(() => expect(optionTexts(select())).toEqual(['Nobody yet', 'Amy Consultant']));
+    expect(listMembers).toHaveBeenCalledTimes(3);
+    expect(setResponsibleMember).toHaveBeenCalledTimes(1);
+  });
+
   it('several rows naming a member the list does not hold share one team read', async () => {
     let answer!: (m: ProjectMember[]) => void;
     const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answer = r; }));
