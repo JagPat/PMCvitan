@@ -219,9 +219,13 @@ export function bakeInspections(
      *  `MediaParticipant.mimesOf`), served beside the field view's `evidence` so the phone's submit guard counts as the
      *  server's evidence rule does. REQUIRED like the two above; a file the map does not name is served as null. */
     evidenceKinds: ReadonlyMap<string, RecordingKind | null>;
+    /** Guided step 4a unit 3a — the offline replay key of each evidence file THIS viewer uploaded (never another
+     *  person's), served beside `evidence` so the phone counts a capture once whether it is still waiting in its durable
+     *  store or already served. REQUIRED like the maps above; a file the map does not name is served as null. */
+    evidenceOwnKeys: ReadonlyMap<string, string>;
   },
 ): InspectionsSlices {
-  const { role, viewerId, bindingAssignees, hiddenEvidence, evidenceKinds } = opts;
+  const { role, viewerId, bindingAssignees, hiddenEvidence, evidenceKinds, evidenceOwnKeys } = opts;
   // no signed path is ever minted for a hidden photo; the evidence list simply omits it
   const visible = (mediaIds: string[]): string[] => mediaIds.filter((m) => !hiddenEvidence.has(m));
   const evidencePath = (mediaIds: string[]): string[] => visible(mediaIds).map(opts.evidencePath);
@@ -229,6 +233,8 @@ export function bakeInspections(
   const kindsOf = (mediaIds: string[]): Array<RecordingKind | null> => visible(mediaIds).map((m) => evidenceKinds.get(m) ?? null);
   // Codex 4490791994 — the server's rule counts every linked recording, seen or not: a file this viewer gets no path for
   // is served by its kind alone, so the phone counts it too (no path is minted; the `photos` counter already counts it)
+  // by position with `evidence` too; a hidden file is served by its kind alone, never its key
+  const ownKeysOf = (mediaIds: string[]): Array<string | null> => visible(mediaIds).map((m) => evidenceOwnKeys.get(m) ?? null);
   const hiddenKindsOf = (mediaIds: string[]): Array<RecordingKind | null> => mediaIds.filter((m) => hiddenEvidence.has(m)).map((m) => evidenceKinds.get(m) ?? null);
   const isPmc = role === 'pmc';
   const canSeeInspections = INSPECTION_READER_ROLES.includes(role);
@@ -268,6 +274,7 @@ export function bakeInspections(
         note: it.note,
         evidence: evidencePath(it.mediaIds),
         evidenceKinds: kindsOf(it.mediaIds),
+        evidenceClientKeys: ownKeysOf(it.mediaIds),
         hiddenEvidenceKinds: hiddenKindsOf(it.mediaIds),
       }),
     ),

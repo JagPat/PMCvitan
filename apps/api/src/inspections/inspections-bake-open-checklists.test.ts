@@ -51,6 +51,7 @@ const bake = (
       ?? new Set(inspections.map((i) => i.assigneeId).filter((id): id is string => typeof id === 'string')),
     hiddenEvidence: new Set(),
     evidenceKinds: new Map(),
+    evidenceOwnKeys: new Map(),
   });
 
 describe('bakeInspections — issued checklists are visible', () => {
@@ -283,11 +284,14 @@ describe('bakeInspections — guided step 4a, evidence kinds (Codex 4490791994)'
       bindingAssignees: new Set(),
       hiddenEvidence: new Set(['h1']),
       evidenceKinds: new Map([['m1', 'photo'], ['h1', 'photo'], ['m2', 'video']]),
+      evidenceOwnKeys: new Map([['m2', 'ck-m2'], ['h1', 'ck-h1']]),
     });
     const it0 = slices.openChecklists[0].items[0];
     expect(it0.evidence).toEqual(['/evidence/m1', '/evidence/m2']);
     expect(it0.evidenceKinds).toEqual(['photo', 'video']);
     expect(it0.hiddenEvidenceKinds).toEqual(['photo']);
+    // unit 3a: the viewer's own replay key by position with `evidence`; a hidden file's key is never served
+    expect(it0.evidenceClientKeys).toEqual([null, 'ck-m2']);
     expect(JSON.stringify(it0)).not.toContain('h1');
   });
 
@@ -302,7 +306,7 @@ describe('bakeInspections — guided step 4a, evidence kinds (Codex 4490791994)'
     // with no open checklist the fallback is the one the field view shows, so its kinds are served
     const only = bakeInspections({ inspections: [older, fallback] } as InspectionsBase, {
       role: 'engineer', evidencePath: (id) => id, bindingAssignees: new Set(), hiddenEvidence: new Set(),
-      evidenceKinds: new Map([['f1', 'voice']]),
+      evidenceKinds: new Map([['f1', 'voice']]), evidenceOwnKeys: new Map(),
     });
     expect(only.checklist?.id).toBe('INSP-1');
     expect(only.checklist?.items[0].evidenceKinds).toEqual(['voice']);

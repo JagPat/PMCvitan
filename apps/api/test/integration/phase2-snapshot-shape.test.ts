@@ -183,8 +183,9 @@ const INLINE = {
   notification: ['at', 'color', 'id', 'text', 'time', 'unread'], // Top 10 #4a (#778) — the row's identity and write instant; #4b unit C — `unread`
   // guided step 2a — `guide`, the item's guidance (null for an item issued by name only)
   // guided step 4a — `evidenceKinds`, the recording kind of each `evidence` entry (same filter and order), and
-  // `hiddenEvidenceKinds`, the kinds of linked files this viewer is served no path for (Codex 4490791994)
-  checklistItem: ['evidence', 'evidenceKinds', 'guide', 'hiddenEvidenceKinds', 'id', 'name', 'note', 'photos', 'state'],
+  // `hiddenEvidenceKinds`, the kinds of linked files this viewer is served no path for (Codex 4490791994); unit 3a:
+  // `evidenceClientKeys`, the replay key of each entry this viewer uploaded (null otherwise)
+  checklistItem: ['evidence', 'evidenceClientKeys', 'evidenceKinds', 'guide', 'hiddenEvidenceKinds', 'id', 'name', 'note', 'photos', 'state'],
   reviewItem: ['evidence', 'guide', 'id', 'name', 'note', 'rejected', 'result', 'swatch'],
   crew: ['count', 'trade'],
   dailyLogMaterial: ['decisionId', 'matched', 'name', 'photo', 'qty', 'swatch', 'zone'],

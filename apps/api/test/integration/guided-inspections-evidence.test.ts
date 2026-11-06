@@ -229,6 +229,38 @@ describe('guided site inspections step 2b — required recordings on pass and fa
     }
   });
 
+  it('guided step 4a unit 3a: each entry\'s replay key is served to the person who uploaded it, and to nobody else', async () => {
+    const c = await guidedChecklist();
+    const a1 = await photo(c.id, c.item.A);
+    const a2 = await videoClip(c.id, c.item.A);
+    expect([a1.status, a2.status]).toEqual([201, 201]);
+    const keys = (await t.prisma.media.findMany({ where: { projectId: f.projectA.id, inspectionItemId: c.item.A }, select: { id: true, clientKey: true } }));
+    type Item = { id: string; evidence?: string[]; evidenceClientKeys?: Array<string | null> };
+    const itemOf = (body: unknown): Item | undefined => {
+      let hit: Item | undefined;
+      const walk = (v: unknown): void => {
+        if (Array.isArray(v)) v.forEach(walk);
+        else if (v && typeof v === 'object') {
+          const o = v as Record<string, unknown>;
+          if (o.id === c.item.A && Array.isArray(o.evidence) && 'evidenceClientKeys' in o) hit = o as unknown as Item;
+          Object.values(o).forEach(walk);
+        }
+      };
+      walk(body);
+      return hit;
+    };
+    for (const path of [`/projects/${f.projectA.id}/snapshot`, `/projects/${f.projectA.id}/inspections`]) {
+      const mine = itemOf((await http().get(path).set('Authorization', `Bearer ${engToken}`)).body);
+      expect(mine?.evidence).toHaveLength(2);
+      // by position with `evidence`: the path names its file, and that file's own key sits beside it
+      const byPath = (mine?.evidence ?? []).map((url, k) => [keys.find((m) => url.includes(m.id))?.clientKey, mine?.evidenceClientKeys?.[k]]);
+      for (const [stored, served] of byPath) expect(served).toBe(stored);
+      expect(mine?.evidenceClientKeys?.every((k) => typeof k === 'string')).toBe(true);
+      const theirs = itemOf((await http().get(path).set('Authorization', `Bearer ${pmcToken}`)).body);
+      expect(theirs?.evidenceClientKeys).toEqual([null, null]);
+    }
+  });
+
   it('an item recording is not a site photo, and is never filed on a place afterwards', async () => {
     const c = await guidedChecklist();
     const v = await voiceNote(c.id, c.item.C);
