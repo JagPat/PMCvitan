@@ -175,6 +175,26 @@ describe('replay lifecycle', () => {
     expect(await getEvidence('anon', 'ambli', key)).toBeNull(); // second attempt confirmed → cleaned up
   });
 
+  it('#1373: a 403 saying the project was lost keeps the op and its bytes pending, never failed (Stage 1 re-check T3)', async () => {
+    const lostProject = Object.assign(new Error('HTTP 403'), { status: 403, serverMessage: 'Project access has been removed', serverCode: 'project-access-removed' });
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn().mockRejectedValue(lostProject),
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot()),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    seedChecklist();
+    await s().addChecklistEvidence(0, PX);
+    const key = (s().outbox[0] as { clientKey: string }).clientKey;
+    useStore.setState((st) => { st.online = true; });
+    await s().flushOutbox();
+    expect(gw.uploadMedia).toHaveBeenCalledTimes(1);
+    expect(s().outbox.map((o) => (o as { clientKey?: string }).clientKey)).toEqual([key]);
+    expect((await getEvidence('anon', 'ambli', key))?.status).toBe('pending');
+    expect(s().failedEvidence.map((f) => f.clientKey)).not.toContain(key);
+  });
+
   it('RECONSTRUCTS the replay op from the durable bytes when localStorage persistence failed (gate finding 2)', async () => {
     const gw = {
       project: 'ambli',

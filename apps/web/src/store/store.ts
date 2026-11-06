@@ -100,10 +100,10 @@ import {
 import { createQueueKeyGuard, queueActIdent, type QueueWrite } from '@/store/queueKeyGuard';
 import { isDone } from '@/store/queueLedger';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
-import { QW } from '@/lib/queueWords';
+import { QW, qwFill } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
 import { hubFailureOf, HUB_SHOWN_WAIT_MS, type HubCallResult, type HubUnlinkPending } from '@/lib/hubLink';
-import { resolveMediaUrl, replayOutboxOp, uploadSitePhotoInput, PlaceCheckFailed, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, isGone, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, timeoutSignal, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
+import { resolveMediaUrl, sessionRefusal, dropsQueuedAct, type SessionRefused, replayOutboxOp, uploadSitePhotoInput, PlaceCheckFailed, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, isGone, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, timeoutSignal, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence, type EvidenceEntry } from '@/data/evidenceStore';
 import { evidenceShortfall, judgeChecklist, type PendingCapture } from '@/lib/checklistRecordings';
@@ -986,6 +986,23 @@ let toastTimer: ReturnType<typeof setTimeout> | undefined;
  *  poll and focus reads overlap, and an older reply may carry a project whose access was since removed). */
 let briefRequestSeq = 0;
 
+/** #1373: the line for the changes this device keeps for a lost project */
+const keptLine = (lang: Lang, project: string, n: number): string =>
+  qwFill(n === 1 ? QW.keptForLostOne : QW.keptForLost, lang, { project, n });
+/** Code-unit order, the same in every locale (#1373: the project a move lands on is picked the same way everywhere). */
+const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+/** #1373 (Codex 4496207113): how long the move off a lost project waits on each of its two requests (the memberships
+ *  read, the switch) before it lets go and leaves the person where they are, so the next refusal can try again. Both
+ *  may be stopped: the read changes nothing, and the switch only mints a token and records a landing preference
+ *  (`auth.service.ts` `switchProject` / `rememberLastProject`) */
+export const LOST_PROJECT_MOVE_WAIT_MS = 15_000;
+/** an abort signal that fires after `ms`, and a way to stop its timer once the request has settled */
+const boundedSignal = (ms: number): { signal: AbortSignal; done: () => void } => {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(new DOMException('The operation timed out.', 'TimeoutError')), ms);
+  return { signal: c.signal, done: () => clearTimeout(t) };
+};
+
 /** The HTTP status the gateway attached to a failed request (`req` sets `status`); undefined for a
  *  failure with no response at all (offline, DNS, CORS). */
 function httpStatusOf(err: unknown): number | undefined {
@@ -1653,6 +1670,17 @@ export const useStore = create<Store>()(
     let gateway: ApiGateway | null = null;
     /** the token a reload adopted from this tab's saved session (#482 6227430525), until another replaces it */
     let restoredToken: string | null = null;
+    /** #1373: the token whose end (`endedFor`) or lost project (`leavingFor`) is being acted on, so the many requests a
+     *  refused token has in flight end the session or move the person once */
+    let endedFor: string | null = null;
+    let leavingFor: string | null = null;
+    /** #1373 (Codex 4496946117): the rebuild of the row-backed queues (evidence, visit photos, site photos) that the last
+     *  `hydrateOutbox` started, and the scope it started for: the kept count waits for this scope's, never another's */
+    let rowsRebuilt: { scope: ProjectScope; done: Promise<void> } | null = null;
+    /** #1373: the sign-in screen's words a sign-out ends on (no project left), shown once the teardown completes */
+    let signOutWhy: AccessErrorWhy | null = null;
+    /** #1373: the changes this device keeps for the project a no-project sign-out left, said on the sign-in screen */
+    let signOutKept: { project: string; n: number } | null = null;
     /** the project a restored session's URL named when it is not the saved session's own (switched to on install) */
     let restoreSwitchTarget: { projectId: string; screen: ScreenKey } | null = null;
     // #482 — decision publishes still on their way, per project scope (project + generation, which a
@@ -2336,6 +2364,93 @@ export const useStore = create<Store>()(
       const sub = get().submission;
       return sub.status === 'submitting' && sub.inspectionId === ob.inspectionId && sub.attempt === ob.attempt;
     };
+    /**
+     * #1373: what a refused token-bearing request means for the session, decided once for every caller (`req()` tells
+     * it, through the hook `_setGateway` installs). Only a refusal of the token the session holds now counts: an answer
+     * for a token a sign-in, switch or sign-out has replaced does nothing.
+     * - `session-ended` (401): today's sign-out, once per token.
+     * - `project-lost` (a coded 403): the person leaves the project (`leaveLostProject`), once per token.
+     * - `refused` (any other 403): the caller says what the server said, as before; a refused write to the project then
+     *   re-reads it, so the screen shows the project as it is now. A refused read re-reads nothing, so it never loops.
+     */
+    const handleSessionRefusal = (r: SessionRefused): void => {
+      if (r.token !== get().sessionToken) return;
+      if (r.kind === 'refused') {
+        // never while a switch is out (Codex 4496207115): the re-read would run under the switch's new generation as the
+        // old project's, and the switch's own load reads the project it lands on
+        if (r.projectWrite && get().pendingProjectId === null) void requestFreshSnapshot().catch(() => undefined);
+        return;
+      }
+      if (endedFor === r.token) return;
+      if (r.kind === 'session-ended') {
+        endedFor = r.token;
+        get().signOut();
+        return;
+      }
+      if (leavingFor === r.token) return;
+      leavingFor = r.token;
+      void leaveLostProject(r.token);
+    };
+    /**
+     * #1373: the person no longer has the token's project (archived, re-roled, removed; which one is never asked). Their
+     * projects are read again, then:
+     * - the same project still listed (a new role): switched back into it, in that role;
+     * - else another project: switched there, saying the project was lost, and how many changes this device keeps for
+     *   it (stored under its own scope's keys, as after any switch; the flush sends them if access returns, #1388 adds
+     *   a discard);
+     * - else none: signed out, with the sign-in screen's own "access removed" words, and the kept line in the toast.
+     * A read or switch that fails leaves the person where they are, and the next refusal tries again.
+     */
+    const leaveLostProject = async (token: string): Promise<void> => {
+      // a switch already under way (the person's own pick, or a restored deep link's) decides where they go: the move
+      // stands aside, and the next refusal, if any, tries again (G2)
+      const switching = () => get().pendingProjectId !== null;
+      if (switching()) { leavingFor = null; return; }
+      const gw = gateway;
+      const from = get().activeProjectId;
+      const fromName = get().memberships.find((m) => m.projectId === from)?.name || get().name || 'this project';
+      let ms: MembershipSummary[] | null = null;
+      if (gw && gw.authToken === token) {
+        // bounded (Codex 4496207113): a read that never answers lets go of the move, as a failed one does
+        const bound = boundedSignal(LOST_PROJECT_MOVE_WAIT_MS);
+        ms = await gw.listMemberships(bound.signal).catch(() => null).finally(bound.done);
+      }
+      if (get().sessionToken !== token || leavingFor !== token) return; // a sign-in, switch or sign-out came first
+      if (!ms || switching()) { leavingFor = null; return; }
+      const read = ms;
+      const same = ms.find((m) => m.projectId === from);
+      // the acts a row holds are rebuilt into memory after a load (`hydrateOutbox`): the count waits for this scope's
+      // rebuild, bounded on its own (Codex 4496946117). Past the bound it counts what memory holds; a row not yet
+      // rebuilt still stays queued for the lost project (#1388 lists them)
+      const rebuilt = rowsRebuilt;
+      if (!same && rebuilt && scopeStillCurrent(rebuilt.scope)) {
+        const bound = boundedSignal(LOST_PROJECT_MOVE_WAIT_MS);
+        const passed = new Promise<void>((done) => { bound.signal.addEventListener('abort', () => done(), { once: true }); });
+        await Promise.race([rebuilt.done, passed]).finally(bound.done);
+        if (get().sessionToken !== token || leavingFor !== token) return; // a sign-in, switch or sign-out came first
+        if (switching()) { leavingFor = null; return; }
+      }
+      set((s) => { s.memberships = read; });
+      // the same pick on every device and every read: by name, then id (the server's list has no order of its own)
+      const next = same ?? [...ms].sort((a, b) => cmp(a.name, b.name) || cmp(a.projectId, b.projectId))[0];
+      // only acts a write has stored are kept: one this tab could not store leaves with the scope's memory, as on any
+      // switch or sign-out (it was already said "not saved on this phone yet")
+      const kept = same ? 0 : keptHere();
+      if (!next) {
+        signOutWhy = { key: 'accessRemoved' };
+        signOutKept = kept > 0 ? { project: fromName, n: kept } : null;
+        endedFor = token;
+        get().signOut();
+        return;
+      }
+      const lang = get().lang;
+      const msg = same
+        ? qwFill(QW.roleChanged, lang, { project: same.name || fromName })
+        : qwFill(QW.accessLost, lang, { project: fromName })
+          + (kept > 0 ? ' ' + keptLine(lang, fromName, kept) : '');
+      const moved = await switchProjectTo(next.projectId, undefined, undefined, { sameProject: true, msg, move: token });
+      if (!moved && leavingFor === token) leavingFor = null;
+    };
     /** #482 — settles once a pull of this scope that began after this call has settled (applied or failed): one now, or,
      *  while one is already on its way (it may predate what the caller needs it to show), the rerun queued after it */
     const afterFreshPull = (scope: ProjectScope): Promise<void> => new Promise((resolve) => {
@@ -2428,13 +2543,22 @@ export const useStore = create<Store>()(
         // cannot load. A 401 ends any session; a 403 ends a RESTORED one (its project or role is no longer
         // the person's: removed, archived, role changed), which a fresh sign-in would have refused. Only the
         // token this pull carried; a sign-in that replaced it meanwhile is kept.
-        const refusal = (err as { status?: number } | null)?.status;
-        if (
-          tokenAtStart !== null && get().sessionToken === tokenAtStart
-          && (refusal === 401 || (refusal === 403 && tokenAtStart === restoredToken))
-        ) {
-          get().signOut();
-          return;
+        // #1373: the pull's refusal is judged by the one rule (`handleSessionRefusal`), which `req()` has already told
+        // of it; told again here so a gateway that does not tell (a test double) is judged the same, and once either way.
+        // A 401 ends the session. A coded 403 moves the person off the lost project, and the error boundary below stands
+        // until the move lands. An UNCODED 403 is a server from before the codes: a restored session is signed out, as
+        // before them; a session signed in on this page shows the error boundary, as before them
+        const refusal = sessionRefusal(err);
+        if (tokenAtStart !== null && get().sessionToken === tokenAtStart) {
+          if (refusal === 'session-ended') {
+            handleSessionRefusal({ kind: refusal, token: tokenAtStart, projectWrite: false });
+            return;
+          }
+          if (refusal === 'project-lost') handleSessionRefusal({ kind: refusal, token: tokenAtStart, projectWrite: false });
+          else if (httpStatusOf(err) === 403 && tokenAtStart === restoredToken) {
+            get().signOut();
+            return;
+          }
         }
         // The pull failed. Surface the recoverable error/Retry boundary when the user is
         // waiting on THIS scope's data — an initial load / switch, or the MANDATORY
@@ -2762,18 +2886,20 @@ export const useStore = create<Store>()(
       }, wait);
       sitePhotoRetry = { timer, mine };
     };
-    const reconcileSitePhotos = (): void => {
-      if (!gateway || !sitePhotoStorageAvailable()) return;
+    const reconcileSitePhotos = (): Promise<void> => {
+      if (!gateway || !sitePhotoStorageAvailable()) return Promise.resolve();
       const readScope = currentScope();
       const readKey = outboxKey();
       const rowScope = visitPhotoScope(get().sessionToken, get().sessionUserId);
       const project = gateway.project;
       const settles = sitePhotoSettles;
       void dropSentMarkers(Date.now() - SITE_PHOTO_SENT_KEEP_MS).catch(() => {});
-      void Promise.all([listSitePhotoRows(rowScope, project), sitePhotosLocked(rowScope, project)]).then(([rows, locked]) => {
+      // settles once its rows are on the queue (or the read failed); the read again it may start is its own
+      return Promise.all([listSitePhotoRows(rowScope, project), sitePhotosLocked(rowScope, project)]).then(([rows, locked]) => {
         if (!scopeStillCurrent(readScope) || outboxKey() !== readKey) return;
         // a row settled while this read was out: read again, so a sent photo is never queued again (Codex 4393007605)
-        if (settles !== sitePhotoSettles) { reconcileSitePhotos(); return; }
+        // and this read settles with that one, so a load's rebuild is done only once its rows are queued (Codex 4497383930)
+        if (settles !== sitePhotoSettles) return reconcileSitePhotos();
         const full = rows.filter((r): r is SitePhotoRow => !isSitePhotoSent(r));
         // a row a tab is sending now gets no op here; one this tab already queues stays on show while another tab sends it
         const missing = full.filter((r) => !sitePhotoSendsDirect.has(r.clientKey) && !locked.has(r.clientKey) && !uploadQueued(get().outbox, r.clientKey));
@@ -2806,7 +2932,7 @@ export const useStore = create<Store>()(
       }, () => {
         // not read: a photo may be kept whether or not any act is queued, so this is tried again (Codex 4389428598)
         if (scopeStillCurrent(readScope) && outboxKey() === readKey) retrySitePhotos();
-      });
+      }).catch(() => undefined); // never rejects: its callers do not wait on it, and the load's wait only needs it settled
     };
     const siteVisitKeyOf = (key: string): string => key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
     /** SV2 (#792): a visit photo's act is never stored here. Its one record is its `visitPhotoStore` row (act, bytes,
@@ -2883,6 +3009,16 @@ export const useStore = create<Store>()(
     /** whether `acts` are on this phone: their own key's write held them, or a kept photo's row does, whatever the other
      *  key's write did (#1113 r1, Codex 4367242052) */
     const storedNow = (acts: OutboxOp[]): boolean => acts.every((o) => !aheadUnsaved.has(aheadId(o)));
+    /** #1373: how many of memory's acts a write has stored on this device (they stay under this scope's keys) */
+    // never one the ledger marks done: a flush still running keeps an accepted act in memory until it ends (Codex
+    // 4496207121). The mark is only read here
+    const keptHere = (): number => {
+      let storage: Storage | undefined;
+      try { storage = globalThis.localStorage; } catch { storage = undefined; }
+      const key = outboxKey();
+      const lane = (o: OutboxOp): string => (isSiteVisitOp(o) ? siteVisitKeyOf(key) : key);
+      return get().outbox.filter((o) => !aheadUnsaved.has(aheadId(o)) && !(storage && isDone(storage, lane(o), o))).length;
+    };
     /** an offline act is said saved only once the locked write of its own key holds it (Codex 4344812898, 4344270659,
      *  4367242052); its write is tracked as a write-ahead's is, so no flush sends it first (Codex 4367242045). The line
      *  is shown only while the scope, person and key it was made in still hold (#1099 r3, Codex 4360928308) */
@@ -3770,6 +3906,90 @@ export const useStore = create<Store>()(
       return pending >= 0 ? pending : 0;
     };
 
+    /** Switch to another project the person holds (`switchProject`). #1373: the move off a lost project may switch back
+     *  into the SAME project (`sameProject`: a re-roled person's new role) and says its own line (`msg`). */
+    const switchProjectTo = (
+      projectId: string, targetScreen?: ScreenKey, targetItem?: string, opts?: { sameProject?: boolean; msg?: string; move?: string },
+    ): Promise<boolean> => {
+      if (!gateway || (projectId === get().activeProjectId && !opts?.sameProject)) return Promise.resolve(false);
+      const membership = get().memberships.find((m) => m.projectId === projectId);
+      const short = membership?.short ?? 'project';
+      // the OLD project's identity, restored if the switch fails (we keep its auth scope)
+      const prev = (({ name, short: sh, descriptor, stage, siteCode }) => ({ name, short: sh, descriptor, stage, siteCode }))(get());
+      // #824 — the old project's module set, restored with its identity if the switch fails: the entry below
+      // empties it, and an empty set means "no module filter", so a failed switch would otherwise reopen
+      // modules the old project switched off (its shell is not reloaded, since the active project never changed)
+      const prevModules = get().enabledModules;
+      // ATOMIC ENTRY — before the auth request goes out: bump the scope generation
+      // (in-flight replies for the old scope will be dropped), mark the transition,
+      // and EMPTY every project-owned field. Old records can neither render nor
+      // arrive while authorization is pending.
+      set((s) => {
+        s.projectScopeGeneration += 1;
+        // SV2: a held visit, and a person's Send anyway, belong to the scope they were made in
+        s.siteVisitsHeld = null;
+        s.siteVisitsSentAnyway = [];
+        dropVisitPhotoRetry(); // and the retry armed for it: the scope's own load arms its own
+        // Codex 4210609591 — a new scope owes nothing of the old one's commands (its coordinator is abandoned)
+        s.commandReconcilePending = false;
+        s.commandReconcileOwed = noReconcileOwed();
+        s.pendingProjectId = projectId;
+        s.projectLoadState = 'switching';
+        s.projectLoadError = null;
+        // optimistic label from the membership; the snapshot supplies the rest
+        s.name = membership?.name ?? short;
+        s.short = short;
+        s.descriptor = '';
+        s.stage = '';
+        s.siteCode = '';
+        s.timeZone = null; // the target project's zone is unknown until its snapshot lands
+        Object.assign(s, emptyProjectData());
+        Object.assign(s, emptyModuleReadState()); // finding 4: the target project's reads are not loaded yet
+      });
+      const switchGeneration = get().projectScopeGeneration;
+      const switchToken = get().sessionToken;
+      /** #1373 (G1, G2): this switch's reply still answers what the person is doing: the same session, no newer switch,
+       *  sign-in or sign-out since it began, and, for the move off a lost project, that move still its token's own. A
+       *  late reply after any of those changes nothing (a sign-out stays signed out; the person's own pick stands) */
+      const stillOurs = () => get().sessionToken === switchToken && get().projectScopeGeneration === switchGeneration
+        && (opts?.move === undefined || leavingFor === opts.move);
+      // the move's switch is bounded (Codex 4496207113): one that never answers fails as any failed switch does, which
+      // clears the pending switch and lets go of the move together; the person's own switch is not
+      const bound = opts?.move !== undefined ? boundedSignal(LOST_PROJECT_MOVE_WAIT_MS) : null;
+      return (bound ? gateway.switchProject(projectId, bound.signal) : gateway.switchProject(projectId))
+        .finally(() => bound?.done())
+        .then((res) => {
+          if (!stillOurs()) return false;
+          // adopt the SERVER-returned project/role/token (never the requested id);
+          // useApiSync re-inits the gateway for the new scope and refetches.
+          applyAuthResult(res, { msg: opts?.msg ?? 'Switched to ' + short + '.', targetScreen, targetItem });
+          return true;
+        })
+        .catch(() => {
+          if (!stillOurs()) return false;
+          // authorization failed: keep the OLD authenticated identity (token/project
+          // unchanged), keep project data empty (never resurface half-cleared records),
+          // and surface a recoverable error.
+          set((s) => {
+            s.pendingProjectId = null;
+            s.projectLoadState = 'error';
+            s.projectLoadError = 'Could not switch to ' + short + ' — check your access and try again.';
+            s.name = prev.name;
+            s.short = prev.short;
+            s.descriptor = prev.descriptor;
+            s.stage = prev.stage;
+            s.siteCode = prev.siteCode;
+            // only into the scope this switch left: a sign-out or re-auth meanwhile owns the state now
+            if (s.projectScopeGeneration === switchGeneration) s.enabledModules = prevModules;
+          });
+          // #1201: the site photo retry armed before the switch was let go with the scope it was made in, and the old
+          // project's queue is still here: armed again for the scope it is back in, so a queued photo is not left unsent
+          if (get().projectScopeGeneration === switchGeneration) retrySitePhotos();
+          get().flash('Could not switch project — please try again.');
+          return false;
+        });
+    };
+
     return {
     ...getInitialState(),
     captureProjectScope: currentScope,
@@ -3783,6 +4003,8 @@ export const useStore = create<Store>()(
     },
     _setGateway: (g) => {
       gateway = g;
+      // #1373: every refused token-bearing request this gateway makes is judged by the one rule
+      if (g) g.onSessionRefused = handleSessionRefusal;
     },
     _outboxFlushing: () => outboxFlushing,
     _queueReleased: () => releaseDrains,
@@ -3945,6 +4167,13 @@ export const useStore = create<Store>()(
         s.projectLoadError = null;
         s.pendingProjectId = null;
       });
+      // #1373: a sign-out because no project is left says so on the sign-in screen, in the sign-in's own words
+      const why = signOutWhy;
+      const kept = signOutKept;
+      signOutWhy = null;
+      signOutKept = null;
+      if (why) set((s) => failAccess(s, why));
+      if (kept) get().flash(keptLine(get().lang, kept.project, kept.n));
       get().syncProjectCreateHold(); // the departed user's attempt stays theirs, in their own record
     },
     setScreen: (k) =>
@@ -5822,74 +6051,7 @@ export const useStore = create<Store>()(
           },
         );
     },
-    switchProject: (projectId, targetScreen, targetItem) => {
-      if (!gateway || projectId === get().activeProjectId) return Promise.resolve(false);
-      const membership = get().memberships.find((m) => m.projectId === projectId);
-      const short = membership?.short ?? 'project';
-      // the OLD project's identity, restored if the switch fails (we keep its auth scope)
-      const prev = (({ name, short: sh, descriptor, stage, siteCode }) => ({ name, short: sh, descriptor, stage, siteCode }))(get());
-      // #824 — the old project's module set, restored with its identity if the switch fails: the entry below
-      // empties it, and an empty set means "no module filter", so a failed switch would otherwise reopen
-      // modules the old project switched off (its shell is not reloaded, since the active project never changed)
-      const prevModules = get().enabledModules;
-      // ATOMIC ENTRY — before the auth request goes out: bump the scope generation
-      // (in-flight replies for the old scope will be dropped), mark the transition,
-      // and EMPTY every project-owned field. Old records can neither render nor
-      // arrive while authorization is pending.
-      set((s) => {
-        s.projectScopeGeneration += 1;
-        // SV2: a held visit, and a person's Send anyway, belong to the scope they were made in
-        s.siteVisitsHeld = null;
-        s.siteVisitsSentAnyway = [];
-        dropVisitPhotoRetry(); // and the retry armed for it: the scope's own load arms its own
-        // Codex 4210609591 — a new scope owes nothing of the old one's commands (its coordinator is abandoned)
-        s.commandReconcilePending = false;
-        s.commandReconcileOwed = noReconcileOwed();
-        s.pendingProjectId = projectId;
-        s.projectLoadState = 'switching';
-        s.projectLoadError = null;
-        // optimistic label from the membership; the snapshot supplies the rest
-        s.name = membership?.name ?? short;
-        s.short = short;
-        s.descriptor = '';
-        s.stage = '';
-        s.siteCode = '';
-        s.timeZone = null; // the target project's zone is unknown until its snapshot lands
-        Object.assign(s, emptyProjectData());
-        Object.assign(s, emptyModuleReadState()); // finding 4: the target project's reads are not loaded yet
-      });
-      const switchGeneration = get().projectScopeGeneration;
-      return gateway
-        .switchProject(projectId)
-        .then((res) => {
-          // adopt the SERVER-returned project/role/token (never the requested id);
-          // useApiSync re-inits the gateway for the new scope and refetches.
-          applyAuthResult(res, { msg: 'Switched to ' + short + '.', targetScreen, targetItem });
-          return true;
-        })
-        .catch(() => {
-          // authorization failed: keep the OLD authenticated identity (token/project
-          // unchanged), keep project data empty (never resurface half-cleared records),
-          // and surface a recoverable error.
-          set((s) => {
-            s.pendingProjectId = null;
-            s.projectLoadState = 'error';
-            s.projectLoadError = 'Could not switch to ' + short + ' — check your access and try again.';
-            s.name = prev.name;
-            s.short = prev.short;
-            s.descriptor = prev.descriptor;
-            s.stage = prev.stage;
-            s.siteCode = prev.siteCode;
-            // only into the scope this switch left: a sign-out or re-auth meanwhile owns the state now
-            if (s.projectScopeGeneration === switchGeneration) s.enabledModules = prevModules;
-          });
-          // #1201: the site photo retry armed before the switch was let go with the scope it was made in, and the old
-          // project's queue is still here: armed again for the scope it is back in, so a queued photo is not left unsent
-          if (get().projectScopeGeneration === switchGeneration) retrySitePhotos();
-          get().flash('Could not switch project — please try again.');
-          return false;
-        });
-    },
+    switchProject: (projectId, targetScreen, targetItem) => switchProjectTo(projectId, targetScreen, targetItem),
     createProject: async (orgId, input) => {
       if (!gateway) return { kind: 'refused', message: 'Creating projects needs the server.' };
       const gw = gateway;
@@ -6961,7 +7123,8 @@ export const useStore = create<Store>()(
               // #917: no answer, and the photo is kept on this phone: it is queued by its key, shown and counted from the
               // phone as an offline pick is, and sent again from its row. For a project no longer on screen the row stays,
               // and that project's next flush gives it its op; the person is told it is kept all the same
-              if (saved && !isTerminalOutboxError(err)) {
+              // a lost project's refusal keeps the saved row too, as the queue keeps its act (#1373, Codex 4496207104)
+              if (saved && !dropsQueuedAct(err)) {
                 if (!scopeStillCurrent(scope)) {
                   set((s) => settle(s, false));
                   get().flash(DLT.photoOffline[get().lang]);
@@ -7569,7 +7732,8 @@ export const useStore = create<Store>()(
             }
             continue;
           }
-          if (isTerminalOutboxError(err)) {
+          // #1373 (G4): a lost project's refusal keeps the act, as a 401 does (`dropsQueuedAct`)
+          if (dropsQueuedAct(err)) {
             const op = ops[i];
             if (isCountersignChainOp(op)) {
               chainRefusals.push(`${chainActLabel(op)} refused — ${refusalMessage(err) ?? 'the server did not say why'}.`);
@@ -8065,11 +8229,17 @@ export const useStore = create<Store>()(
       // evidence rows are canonical. Merge every pending row back into replay
       // (reconstructing ops a failed/absent setItem lost) and refresh the UI
       // mirrors — this runs even when localStorage is unavailable entirely.
-      void reconcileEvidence();
-      // and the same for queued visit photos (SV2)
-      void reconcileVisitPhotos();
-      // and for site photos whose answer was lost (#917): their ops are never stored, so they come back from their rows
-      reconcileSitePhotos();
+      // (#1373: the rebuild is kept with its scope, so a lost project's kept count can wait for it)
+      rowsRebuilt = {
+        scope: currentScope(),
+        done: Promise.allSettled([
+          reconcileEvidence(),
+          // and the same for queued visit photos (SV2)
+          reconcileVisitPhotos(),
+          // and for site photos whose answer was lost (#917): their ops are never stored, so they come back from their rows
+          reconcileSitePhotos(),
+        ]).then(() => undefined),
+      };
     },
 
     // ---- team access / login ----
