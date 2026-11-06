@@ -116,9 +116,33 @@ describe('video V2g-0: a clip\'s full-video link (live PG)', () => {
     expect(await current(clip)).toBe(0);
   });
 
+  it('every one of the 94 printable ASCII characters is kept, one at a time; nothing outside them is', async () => {
+    // Proves the listed class is complete and closed (Codex 4497215256). It does not reproduce a collation under which
+    // the old '\x21-\x7E' range let more through: the class is now a list, which no collation reorders.
+    const clip = await onVisit();
+    const printable = Array.from({ length: 0x7e - 0x21 + 1 }, (_, i) => String.fromCharCode(0x21 + i));
+    expect(printable).toHaveLength(94);
+    for (const c of printable) {
+      const id = await add(clip, `https://drive.google.com/x${c}`).catch((e: unknown) => {
+        throw new Error(`refused ${JSON.stringify(c)} (0x${c.charCodeAt(0).toString(16)}): ${String(e)}`);
+      });
+      await end(id, f.memberUser.id, 'pmc', null);
+    }
+    const outside = { e_acute: '\u00E9', fullwidth_one: '\uFF11', nbsp: '\u00A0', zwsp: '\u200B', c1_0x80: '\u0080',
+      space: ' ', tab: '\t', del: '\u007F' };
+    for (const [name, c] of Object.entries(outside)) {
+      await expect(add(clip, `https://drive.google.com/x${c}`), name).rejects.toThrow(/SiteVisitMediaLink_shape_check/);
+    }
+    expect(await current(clip)).toBe(0);
+  });
+
   it('a file that is not a video, not on a visit, or of another project takes no link', async () => {
     await expect(add(await onVisit('audio/webm'))).rejects.toThrow(/is not a video/);
     await expect(add(await onVisit('image/jpeg'))).rejects.toThrow(/is not a video/);
+    // "a video" is the media module's exact, case-sensitive prefix, never a lower-cased one: lower() follows the locale
+    // (U+0130 lowers to "i" under glibc), so neither of these is a video to the database or to media.service.ts:113
+    await expect(add(await onVisit('VIDEO/webm'))).rejects.toThrow(/is not a video/);
+    await expect(add(await onVisit('v\u0130deo/webm'))).rejects.toThrow(/is not a video/);
     const loose = await t.prisma.media.create({
       data: { projectId: f.projectA.id, kind: 'visit', mime: 'video/webm', data: Buffer.from([0x00]), sizeBytes: 1, uploadedBy: f.memberUser.id },
     });
@@ -136,6 +160,9 @@ describe('video V2g-0: a clip\'s full-video link (live PG)', () => {
     const id = await add(clip);
     await expect(setMime(clip, 'audio/webm')).rejects.toThrow(keptVideo);
     await expect(setMime(clip, 'image/jpeg')).rejects.toThrow(keptVideo);
+    // leaving the exact "video/" prefix is leaving video, whatever lower() would make of it
+    await expect(setMime(clip, 'VIDEO/webm')).rejects.toThrow(keptVideo);
+    await expect(setMime(clip, 'v\u0130deo/webm')).rejects.toThrow(keptVideo);
     await setMime(clip, 'video/mp4');
     expect(await mimeOf(clip)).toBe('video/mp4');
     // an ended link is history of a video: it still holds the type

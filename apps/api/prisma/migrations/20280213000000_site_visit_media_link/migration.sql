@@ -16,8 +16,9 @@
 --
 -- THE ROW IS A RECORD. What the database guarantees for every writer, raw SQL included:
 --   K1  Drive or Zoho only. "url" is https, on one of the allowed hosts, with nothing between "https://" and the host
---       (no userinfo) and a "/" right after it (no port), printable ASCII only (no space of any kind, no control or
---       other character, whatever the database's character settings), at most 2,000 characters. "host" is set from the
+--       (no userinfo) and a "/" right after it (no port), printable ASCII only, each of its 94 characters listed
+--       rather than given as a range (no space of any kind, no control or other character, whatever the database's
+--       character settings or collation), at most 2,000 characters. "host" is set from the
 --       url ('drive' or 'zoho'), whatever the writer sent. The allowed hosts: drive.google.com (a Drive file or folder
 --       share is always there; docs.google.com is left out, it also serves Forms and /url redirects),
 --       workdrive.zoho.{com,in,eu} and workdrive.zohopublic.{com,in,eu}. Lowercase only: the web and the server send
@@ -148,7 +149,9 @@ ALTER TABLE public."SiteVisitMediaLink"
   DROP CONSTRAINT IF EXISTS "SiteVisitMediaLink_shape_check",
   ADD CONSTRAINT "SiteVisitMediaLink_shape_check" CHECK (
     "url" ~ '^https://(drive\.google\.com|workdrive\.zoho\.(com|in|eu)|workdrive\.zohopublic\.(com|in|eu))/'
-    AND "url" ~ '^[\x21-\x7E]+$'
+    -- printable ASCII, every character listed rather than given as a range (a bracket range can follow the database's
+    -- collation; Codex 4497215256): the class of 20280203000000_redbracket_id_tables/migration.sql:103, copied
+    AND "url" ~ '^[]ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!"#$%&''()*+,./:;<=>?@[\\^_`{|}~-]+$'
     AND "host" = CASE WHEN "url" ~ '^https://drive\.google\.com/' THEN 'drive' ELSE 'zoho' END
     AND ("label" IS NULL OR btrim("label", E' \t\n\x0B\f\r') <> '')
     AND btrim("addedByRole", E' \t\n\x0B\f\r') <> ''
@@ -237,7 +240,10 @@ BEGIN
     PERFORM 1 FROM public."SiteVisit" WHERE "projectId" = NEW."projectId" AND "id" = v_visit FOR KEY SHARE;
   END IF;
   -- the file's type under a share lock on its row, so a change of type waits for this insert and then sees its link
-  v_mime := lower(coalesce(public.media_mime_of_locked(NEW."projectId", NEW."mediaId"), ''));
+  -- no lower(): it follows the database's locale for some letters (U+0130 lowers to "i" under glibc), and the media
+  -- module calls a file a video only on an exact, case-sensitive "video/" prefix (media.service.ts:113, and
+  -- "Media_av_shape_check"'s LIKE 'video/%'); a plain LIKE with no wildcard but the tail matches byte for byte
+  v_mime := coalesce(public.media_mime_of_locked(NEW."projectId", NEW."mediaId"), '');
   PERFORM 1 FROM public."SiteVisitMedia" WHERE "projectId" = NEW."projectId" AND "mediaId" = NEW."mediaId" FOR SHARE;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'site-visits: the file % is not on a site visit of project %, so it takes no full-video link', NEW."mediaId", NEW."projectId"
@@ -325,7 +331,8 @@ CREATE OR REPLACE FUNCTION public.media_site_visit_link_video_kept() RETURNS TRI
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
   -- only a video can hold a full-video link (K2), and only its leaving video matters
-  IF OLD."mime" IS NULL OR lower(OLD."mime") NOT LIKE 'video/%' OR lower(coalesce(NEW."mime", '')) LIKE 'video/%' THEN
+  -- "a video" is the exact, case-sensitive "video/" prefix, as at the insert above (no lower(), which follows the locale)
+  IF OLD."mime" IS NULL OR OLD."mime" NOT LIKE 'video/%' OR coalesce(NEW."mime", '') LIKE 'video/%' THEN
     RETURN NEW;
   END IF;
   -- the lookup below must see a link committed while this write waited for the row; only READ COMMITTED reads
