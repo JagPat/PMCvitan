@@ -32,6 +32,7 @@ import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { readVoiceRecording } from './voice-container';
 import { readVideoClip } from './video-container';
 import { readJpegStill } from './jpeg-still';
+import { projectRoleChanged, projectUnavailable } from '../common/lost-project';
 
 export interface UploadedMedia {
   id: string;
@@ -656,8 +657,8 @@ export class MediaService {
         assertMayAddPoster(row, projectId, user);
         await lockActorStanding(tx, projectId, user.sub);
         const [state] = await tx.$queryRaw<Array<{ operable: boolean }>>(Prisma.sql`SELECT phase6_project_operable(${projectId}) AS "operable"`);
-        if (state?.operable !== true) throw new ForbiddenException('Project is unavailable');
-        if (!(await resolveActorEnvelope(tx, projectId, actor))) throw new ForbiddenException('Your role on this project has changed; sign in again');
+        if (state?.operable !== true) throw projectUnavailable();
+        if (!(await resolveActorEnvelope(tx, projectId, actor))) throw projectRoleChanged('envelope');
         if (row.posterStorageKey !== null) return row.posterStorageKey;
         await tx.media.update({ where: { id: mediaId }, data: { posterStorageKey: key } });
         return key;

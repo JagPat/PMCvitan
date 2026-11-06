@@ -15,7 +15,7 @@ import { EXTERNAL_EFFECTS, type PushRole } from '../platform/external-effects';
 import type { ApproveInput, ChangeInput, CreateDecisionInput, DisagreeDecisionInput, ForwardDecisionInput, RequestConsultationInput, ResolveStrandedCountersignInput, RespondToConsultationInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
-import { requireActorEnvelope, resolveActorEnvelope, STALE_ROLE_MESSAGE } from '../platform/actor-envelope';
+import { requireActorEnvelope, resolveActorEnvelope } from '../platform/actor-envelope';
 import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
@@ -26,6 +26,7 @@ import { assertCountersignClient } from '../platform/countersign-contract';
 import { RoleStandingQuery } from '../platform/role-standing.query';
 import { lockStandingAnchors } from '../common/standing-anchor';
 import { decisionPath } from '../platform/record-paths';
+import { projectRoleChanged } from '../common/lost-project';
 
 /**
  * Redbracket ID A4b-s — the refusals for a holder nobody can sign in as: an account a first Redbracket ID sign-in
@@ -549,9 +550,7 @@ export class DecisionsService {
         if (!isNamedDecider) {
           const live = await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, user.sub, [user.role], { forUpdate: true });
           if (!live) {
-            throw new ForbiddenException(
-              'Your project standing changed while approving — the role that authorized this approval is no longer yours',
-            );
+            throw projectRoleChanged('approving');
           }
         }
         // CAS: commit only if the decision is STILL in the state we read — a concurrent
@@ -579,7 +578,7 @@ export class DecisionsService {
           if (chainActive) {
             throw new ConflictException('Your project standing could not be frozen for a provisional approval — reload and retry');
           }
-          throw new ForbiddenException(STALE_ROLE_MESSAGE);
+          throw projectRoleChanged('stale');
         }
         // THE ONE LOCK ORDER (§A.4 (i)): the subject's queued push deliveries FOR UPDATE ascending, THEN the
         // decision row — the decider and forward demands this act outdates and, when the approval leaves
@@ -836,7 +835,7 @@ export class DecisionsService {
         // holder through the delivered standing read, the architect through the kernel register), then
         // pmc, then the architect.
         const liveRole = await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, user.sub, [user.role], { forUpdate: true });
-        if (!liveRole) throw new ForbiddenException('Your project standing changed while forwarding — the role that authorized this forward is no longer yours');
+        if (!liveRole) throw projectRoleChanged('forwarding');
         let isHolder = false;
         if (fromKind === 'member') {
           const from = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, fromMembershipId!);
@@ -1002,7 +1001,7 @@ export class DecisionsService {
         // transaction, so the authority to ASK is re-validated inside it, under the row lock.
         const standing = await consultationRequesterStanding(this.orgsParticipant, tx, projectId, user.sub);
         if (!standing) {
-          throw new ForbiddenException('Your project standing changed — asking for advice on this decision is a PMC or architect authority');
+          throw projectRoleChanged('consulting');
         }
         // (4) `Decision`, last, under its own row lock, so a withdrawal committing concurrently
         // either waits or is seen.

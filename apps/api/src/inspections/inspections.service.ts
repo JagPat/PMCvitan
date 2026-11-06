@@ -33,6 +33,7 @@ import { checklistPath } from '../platform/record-paths';
 import { isFailedItem } from './failed-item';
 import { guidanceColumnsOf, itemRowFromSpec } from './guided-item';
 import { evidenceShortfalls, type SubmittedItem } from './evidence-rule';
+import { projectRoleChanged, projectUnavailable } from '../common/lost-project';
 
 /** The corrective-assignment rule lives in ONE module ({@link assignment-eligibility}) and every site
  *  that asks about a named assignee calls it. Re-exported here because `inspections.contract.test.ts`
@@ -313,12 +314,12 @@ export class InspectionsService {
         // Codex #1297 r4 — the PROJECT is re-read too, under its row lock (the owner's `FOR NO KEY UPDATE`): an archive
         // takes no readiness key, so one that commits after the guard's unlocked read would otherwise leave this naming
         // free to write on an archived project. The archive either commits first (refused here) or waits for this commit.
-        if (!(await this.orgs.isProjectOperable(tx, projectId))) throw new ForbiddenException('Project is unavailable');
+        if (!(await this.orgs.isProjectOperable(tx, projectId))) throw projectUnavailable();
         // Codex #1297 r2 — the CALLER's authority is re-read here, under the readiness key and with their standing rows
         // locked, as decide does: a PMC or engineer re-roled or removed after the guard read their token must not name
         // anyone. Locked after Inspection, so Membership still follows Inspection on every path.
         if (!(await this.orgs.hasProjectRoleStanding(tx, projectId, user.sub, [user.role], { forUpdate: true }))) {
-          throw new ForbiddenException('Your project standing changed — the role that allowed naming who fixes this is no longer yours');
+          throw projectRoleChanged('naming');
         }
         if (memberId !== null && !(await standsAsResponsible(this.orgs, tx, projectId, memberId, { forUpdate: true }))) {
           throw new BadRequestException(`Only an active ${RESPONSIBLE_ROLES.join(' or ')} on this project can be named to fix this.`);

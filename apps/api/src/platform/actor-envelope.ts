@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { ForbiddenException } from '@nestjs/common';
 import { AUTOMATION_IDENTITIES, type AutomationIdentity, type EventActor } from '../common/actor';
 import { lockStandingAnchors } from '../common/standing-anchor';
+import { ROLE_CHANGED_MESSAGES, projectRoleChanged } from '../common/lost-project';
 
 /**
  * Phase 6 task 4d unit 4d-ii-a / A1 — the actor ENVELOPE a human event records.
@@ -170,7 +171,7 @@ export async function lockStandingForWrite(tx: Prisma.TransactionClient, project
  * attribution. One message for every writer that owes the pair, so the client can treat it as one
  * condition.
  */
-export const STALE_ROLE_MESSAGE = 'Your role on this project changed — sign in again';
+export const STALE_ROLE_MESSAGE = ROLE_CHANGED_MESSAGES.stale;
 
 /** {@link resolveActorEnvelope}, refusing (403) when the pair does not resolve. */
 export async function requireActorEnvelope(
@@ -179,6 +180,6 @@ export async function requireActorEnvelope(
   actor: EventActor,
 ): Promise<ActorEnvelope> {
   const envelope = await resolveActorEnvelope(tx, projectId, actor);
-  if (!envelope) throw new ForbiddenException(STALE_ROLE_MESSAGE);
+  if (!envelope) throw projectRoleChanged('stale');
   return envelope;
 }

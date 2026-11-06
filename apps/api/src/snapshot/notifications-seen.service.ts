@@ -5,6 +5,7 @@ import { DecisionsQueryService } from '../decisions/decisions.query';
 import type { AuthUser } from '../common/auth';
 import { readViewerFeed, servedNotifications } from './served-notifications';
 import { lockStandingAnchors } from '../common/standing-anchor';
+import { projectAccessRemoved, projectUnavailable } from '../common/lost-project';
 
 /**
  * Top 10 #4b unit C (#778) — the bell's "seen" mark: `POST /projects/:projectId/notifications/seen`.
@@ -88,8 +89,8 @@ export class NotificationsSeenService {
     const [state] = await tx.$queryRaw<Array<{ operable: boolean; holds: boolean }>>(Prisma.sql`
       SELECT phase6_project_operable(${projectId}) AS "operable",
              platform_user_holds_role_windowed(${projectId}, ${user.sub}, ${user.role}) AS "holds"`);
-    if (state?.operable !== true) throw new ForbiddenException('Project is unavailable');
-    if (state?.holds !== true) throw new ForbiddenException('Project access has been removed');
+    if (state?.operable !== true) throw projectUnavailable();
+    if (state?.holds !== true) throw projectAccessRemoved();
     if (eligible.length === 0) return [];
 
     // the notices that still exist, held against a concurrent delete until this commits
