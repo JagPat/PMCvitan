@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { INSPECTION_READER_ROLES } from '@vitan/shared';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SignedUrlService } from '../media/signed-url.service';
@@ -44,7 +45,8 @@ export interface SiteVisitDto {
   removals: SiteVisitRemovalDto[];
   /** Guided site inspections, step 3c — the checklists walked on the visit, by when the server took each (by inspection
    *  id within a millisecond). A line never changes and stays as long as the visit. The checklist itself (its title,
-   *  results and decision) is read from the inspections read, by its id. */
+   *  results and decision) is read from the inspections read, by its id. Served only to `INSPECTION_READER_ROLES`
+   *  (empty for any other viewer), as the inspections read serves checklists. */
   inspections: SiteVisitInspectionDto[];
 }
 
@@ -217,7 +219,8 @@ export function toSiteVisitDto(
       addedAt: r.addedAt.toISOString(), removedById: r.removedById, removedByName: r.removedByName, removedByRole: r.removedByRole,
       reason: r.reason, removedAt: r.removedAt.toISOString(),
     })),
-    inspections: v.inspections.map((w) => ({
+    // only to the roles the inspections read serves checklists to; any other viewer (or none named) sees none (gap-check)
+    inspections: (viewer && INSPECTION_READER_ROLES.includes(viewer.role) ? v.inspections : []).map((w) => ({
       inspectionId: w.inspectionId, linkedById: w.linkedById, linkedByName: w.linkedByName, linkedByRole: w.linkedByRole,
       linkedAt: w.linkedAt.toISOString(),
     })),

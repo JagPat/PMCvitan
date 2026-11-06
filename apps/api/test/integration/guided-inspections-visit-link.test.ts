@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { SiteVisitInspectionsParticipant } from '../../src/site-visits/site-visit-inspections.participant';
 
 /**
  * Guided site inspections, step 3c — a checklist walked on a site visit is recorded on the visit. A submit or a finish
@@ -23,6 +24,7 @@ describe('guided site inspections step 3c — a walk recorded on its site visit 
   let consVisit: string;
   let consultant: string;
   let seq = 0;
+  let engAttendee: string;
   const run = randomUUID().slice(0, 8);
   const HEADER = 'x-vitan-site-visit';
 
@@ -96,6 +98,17 @@ describe('guided site inspections step 3c — a walk recorded on its site visit 
   const submit = (token: string, c: { id: string; A: string; B: string }, opts: { key?: string; visit?: string } = {}) =>
     post(token, `/projects/${f.projectA.id}/inspections/${c.id}/submit`, walk(c), opts);
   const lineOf = (inspectionId: string) => t.prisma.siteVisitInspection.findUnique({ where: { inspectionId } });
+  type VisitRead = { id: string; inspections: Array<{ inspectionId: string; linkedByRole: string; linkedByName: string }> };
+  const readVisit = async (token: string, visitId: string): Promise<VisitRead> => {
+    const read = await http().get(`/projects/${f.projectA.id}/site-visits`).set('Authorization', `Bearer ${token}`);
+    expect(read.status).toBe(200);
+    return ((Array.isArray(read.body) ? read.body : read.body.visits) as VisitRead[]).find((v) => v.id === visitId)!;
+  };
+  /** nothing of a refused request stays: no receipt, no audit line, no event for the checklist */
+  const traces = async (inspectionId: string) => ({
+    receipts: await t.prisma.commandExecution.count({ where: { resultRef: inspectionId } }),
+    events: await t.prisma.domainEvent.count({ where: { entityId: inspectionId, eventType: { not: 'inspection.created' } } }),
+  });
   const stateOf = (id: string) => t.prisma.inspection.findUniqueOrThrow({ where: { id }, select: { submitted: true, decided: true } });
 
   it('reproduce: a PMC\'s walk finished on their visit is recorded on it, and the visit lists it', async () => {
@@ -104,11 +117,11 @@ describe('guided site inspections step 3c — a walk recorded on its site visit 
     expect(res.status).toBe(201);
     expect(await stateOf(c.id)).toEqual({ submitted: true, decided: true });
     expect(await lineOf(c.id)).toMatchObject({ visitId: visitA, linkedById: f.memberUser.id, linkedByRole: 'pmc' });
-    const read = await http().get(`/projects/${f.projectA.id}/site-visits`).set('Authorization', `Bearer ${engToken}`);
-    expect(read.status).toBe(200);
-    const visits = (Array.isArray(read.body) ? read.body : read.body.visits) as Array<{ id: string; inspections: Array<{ inspectionId: string; linkedByRole: string; linkedByName: string }> }>;
-    const visit = visits.find((v) => v.id === visitA)!;
+    const visit = await readVisit(engToken, visitA);
     expect(visit.inspections).toEqual([expect.objectContaining({ inspectionId: c.id, linkedByRole: 'pmc', linkedByName: expect.any(String) })]);
+    // a role the inspections read serves no checklists to sees none on the visit either (gap-check)
+    const client = await readVisit(t.issueProjectToken(f.clientUser.id, f.projectA.id, 'client'), visitA);
+    expect(client.inspections).toEqual([]);
   });
 
   it('a walk without the header is recorded on no visit, as before', async () => {
@@ -124,8 +137,10 @@ describe('guided site inspections step 3c — a walk recorded on its site visit 
     expect(refused.body.message).toMatch(/Only the visitor and the people recorded on this visit/);
     expect(await stateOf(c.id)).toEqual({ submitted: false, decided: false });
     expect(await lineOf(c.id)).toBeNull();
+    expect(await traces(c.id)).toEqual({ receipts: 0, events: 0 });
+    engAttendee = randomUUID();
     const added = await http().post(`/projects/${f.projectA.id}/site-visits/${visitA}/attendees`).set('Authorization', `Bearer ${pmcToken}`)
-      .send({ id: randomUUID(), userId: f.otherUser.id, role: 'engineer' });
+      .send({ id: engAttendee, userId: f.otherUser.id, role: 'engineer' });
     expect(added.status).toBe(201);
     const res = await submit(engToken, c, { visit: visitA });
     expect(res.status).toBe(201);
@@ -156,6 +171,36 @@ describe('guided site inspections step 3c — a walk recorded on its site visit 
     expect(await lineOf(c.id)).toMatchObject({ visitId: visitA });
   });
 
+  it('the check is taken again under the visit\'s lock: with the early answer skipped, the transaction refuses and writes nothing', async () => {
+    const visits = t.app.get(SiteVisitInspectionsParticipant);
+    const early = visits.assertMayLink;
+    visits.assertMayLink = async () => {};
+    try {
+      // the consultant's visit, with nobody else on it, and a visit that does not exist
+      const a = await checklist();
+      const off = await submit(engToken, a, { visit: consVisit });
+      expect(off.status).toBe(403);
+      const b = await checklist();
+      expect((await finish(pmcToken, b, { visit: randomUUID() })).status).toBe(404);
+      for (const c of [a, b]) {
+        expect(await stateOf(c.id)).toEqual({ submitted: false, decided: false });
+        expect(await lineOf(c.id)).toBeNull();
+        expect(await traces(c.id)).toEqual({ receipts: 0, events: 0 });
+      }
+    } finally {
+      visits.assertMayLink = early;
+    }
+  });
+
+  it('a retired attendee may no longer record a walk on the visit', async () => {
+    const retired = await http().post(`/projects/${f.projectA.id}/site-visits/${visitA}/attendees/${engAttendee}/retire`)
+      .set('Authorization', `Bearer ${pmcToken}`).send({});
+    expect(retired.status).toBe(201);
+    const c = await checklist();
+    expect((await submit(engToken, c, { visit: visitA })).status).toBe(403);
+    expect(await lineOf(c.id)).toBeNull();
+  });
+
   it('a closed visit takes no walk, and nothing is written', async () => {
     const c = await checklist();
     // the consultant's visit, with the PMC on it, closed by the PMC
@@ -169,5 +214,25 @@ describe('guided site inspections step 3c — a walk recorded on its site visit 
     expect(res.body.message).toMatch(/closed by the PMC/);
     expect(await stateOf(c.id)).toEqual({ submitted: false, decided: false });
     expect(await lineOf(c.id)).toBeNull();
+    expect(await traces(c.id)).toEqual({ receipts: 0, events: 0 });
+    // under the transaction's lock too
+    const visits = t.app.get(SiteVisitInspectionsParticipant);
+    const early = visits.assertMayLink;
+    visits.assertMayLink = async () => {};
+    try {
+      expect((await finish(pmcToken, c, { visit: consVisit })).status).toBe(409);
+    } finally {
+      visits.assertMayLink = early;
+    }
+    expect(await lineOf(c.id)).toBeNull();
+  });
+
+  it('an ended visit still takes a walk (a checklist finished offline lands when the phone finds signal)', async () => {
+    const ended = await http().post(`/projects/${f.projectA.id}/site-visits/${visitA}/end`).set('Authorization', `Bearer ${pmcToken}`)
+      .send({ claimedAt: new Date().toISOString() });
+    expect(ended.status).toBe(201);
+    const c = await checklist();
+    expect((await finish(pmcToken, c, { visit: visitA })).status).toBe(201);
+    expect(await lineOf(c.id)).toMatchObject({ visitId: visitA, linkedByRole: 'pmc' });
   });
 });

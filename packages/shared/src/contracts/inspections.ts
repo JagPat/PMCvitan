@@ -28,6 +28,11 @@ export const INSPECTIONS_COMMANDS = [
 ] as const;
 export type InspectionsCommand = (typeof INSPECTIONS_COMMANDS)[number];
 
+/** The roles the inspections read serves issued checklists and placed inspections to. Guided site inspections step 3c:
+ *  the site-visit read lists a visit's walked checklists only to these roles, so a visit never shows another role a
+ *  checklist its inspections read hides. */
+export const INSPECTION_READER_ROLES: readonly string[] = ['pmc', 'engineer'];
+
 /** The inspections module's read queries (must equal the manifest `queries`). */
 export const INSPECTIONS_QUERIES = [
   'inspections.snapshotSlice',
