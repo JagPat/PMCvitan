@@ -258,7 +258,7 @@ describe('#995 V2e: the frame from the camera’s picture', () => {
       return real(fn, ms);
     });
     let clockMs = 0;
-    vi.spyOn(performance, 'now').mockImplementation(() => clockMs);
+    vi.spyOn(Date, 'now').mockImplementation(() => clockMs);
     // a camera frame that never comes: the whole bound passes waiting on it, so no frame is drawn from the clip after it
     const late = clipPoster(clipBlob, new Promise(() => {}));
     await Promise.resolve();
@@ -276,5 +276,25 @@ describe('#995 V2e: the frame from the camera’s picture', () => {
     none(null);
     expect(await early).toBe('/9j/2Q==');
     expect(at).toEqual([POSTER_DRAW_WAIT_MS, POSTER_DRAW_WAIT_MS - 1000]);
+    // the bound ran out while the clock it is read by seems to have hardly moved (a phone that slept): still no second
+    // wait and no drawing from the clip (Codex 4491803356)
+    at.length = 0;
+    clockMs = 0;
+    const slept = clipPoster(clipBlob, new Promise(() => {}));
+    await Promise.resolve();
+    expect(at).toEqual([POSTER_DRAW_WAIT_MS]);
+    const opened = vi.mocked(URL.createObjectURL).mock.calls.length;
+    fire!();
+    expect(await slept).toBeNull();
+    expect(vi.mocked(URL.createObjectURL).mock.calls.length).toBe(opened);
+    // a clock set back while the camera was asked never gives the drawing more than the whole bound
+    at.length = 0;
+    clockMs = 5000;
+    let back: (v: string | null) => void = () => {};
+    const setBack = clipPoster(clipBlob, new Promise((done) => { back = done; }));
+    clockMs = 2000;
+    back(null);
+    expect(await setBack).toBe('/9j/2Q==');
+    expect(at).toEqual([POSTER_DRAW_WAIT_MS, POSTER_DRAW_WAIT_MS]);
   });
 });

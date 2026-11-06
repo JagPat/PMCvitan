@@ -57,22 +57,24 @@ export function stillFrom(video: HTMLVideoElement): Promise<string | null> {
  * so the camera's own picture comes first.
  */
 export async function clipPoster(blob: Blob, still?: Promise<string | null>, waitMs = POSTER_DRAW_WAIT_MS): Promise<string | null> {
-  // one bound for both: a camera frame that comes too late leaves the clip only the rest of it to be drawn from
-  const began = clock();
+  // one bound for both: a camera frame that comes too late leaves the clip only the rest of it to be drawn from. The
+  // rest is reckoned on the wall clock the bound's own timer keeps (`setClampedTimeout`), and a bound that ran out
+  // ends the wait outright: a phone that slept while it waited is not given a second full wait (Codex 4491803356)
+  const began = Date.now();
   if (still) {
     let timer: ClampedTimer | undefined;
-    const late = new Promise<null>((resolve) => { timer = setClampedTimeout(() => resolve(null), waitMs); });
+    let ranOut = false;
+    const late = new Promise<null>((resolve) => {
+      timer = setClampedTimeout(() => { ranOut = true; resolve(null); }, waitMs);
+    });
     const taken = await Promise.race([still.catch(() => null), late]);
     timer?.clear();
     if (taken) return taken;
+    if (ranOut) return null;
   }
-  const rest = waitMs - (clock() - began);
+  // a clock set back never lends the drawing more than the whole bound
+  const rest = Math.min(waitMs, waitMs - (Date.now() - began));
   return rest > 0 ? drawPoster(blob, rest).catch(() => null) : null;
-}
-
-/** A clock that only runs forward, for the frame's bound. */
-function clock(): number {
-  return typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
 }
 
 /**
