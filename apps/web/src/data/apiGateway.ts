@@ -13,7 +13,7 @@
  */
 import { clearVisitPoster, deleteVisitPhoto, failVisitPhoto, fileVisitPhoto, forgetRemovedVisitPhoto, getVisitPhoto, posterWaits, removedVisitPhotos, VisitPhotoUnreadable, withinWait, type CommittedPhoto } from './visitPhotoStore';
 import { deleteEvidence, getEvidence, markEvidenceFailed } from './evidenceStore';
-import { MEDIA_NOT_FOUND_MESSAGE, NOT_A_VISIT_FILE_MESSAGE, SITE_PHOTO_DELETED_MESSAGE, VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
+import { MEDIA_NOT_FOUND_MESSAGE, NOT_A_VISIT_FILE_MESSAGE, PROJECT_ACCESS_CODES, SITE_PHOTO_DELETED_MESSAGE, VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
 import { deleteSitePhotoRow, getSitePhotoRow, ifSitePhotoUnlocked, isSitePhotoSent, markSitePhotoRefused, markSitePhotoSent, SitePhotoBusy, SitePhotoUnreadable } from './sitePhotoStore';
 import type {
   Activity,
@@ -587,6 +587,9 @@ export class ApiGateway {
   }
 
   private token: string | null = null;
+  /** #1373: told of every refusal of a request that carried this gateway's token, before the caller hears it, with the
+   *  token that was refused. The store installs it (`_setGateway`); public sign-in and setup calls never reach it. */
+  onSessionRefused: ((refused: SessionRefused) => void) | null = null;
   private readonly base: string;
   private readonly projectId: string;
 
@@ -624,7 +627,9 @@ export class ApiGateway {
 
   /** POST to a public (no-auth) auth endpoint. */
   private pub<T>(path: string, body: unknown): Promise<T> {
-    return this.req<T>(path, { method: 'POST', body: JSON.stringify(body) });
+    // public: a refusal here is the sign-in's own answer (a wrong code, a wrong password), never a session's end, even
+    // when a token from an earlier session is still set on this gateway
+    return this.req<T>(path, { method: 'POST', body: JSON.stringify(body) }, true);
   }
 
   /** Email + password sign-in (PMC / client / contractor). */
@@ -911,7 +916,9 @@ export class ApiGateway {
     return this.p('/daily-log/materials', input, idempotencyKey);
   }
 
-  private async req<T>(path: string, init?: RequestInit): Promise<T> {
+  private async req<T>(path: string, init?: RequestInit, publicCall = false): Promise<T> {
+    // #1373: the token THIS request carries, so a refusal is judged against it and not one adopted while it was out
+    const sent = this.token;
     const res = await fetch(`${this.base}${path}`, {
       ...init,
       headers: {
@@ -920,7 +927,7 @@ export class ApiGateway {
         // the server serve a shape to the bundle that understands it while stripping it for a
         // still-cached PREVIOUS bundle; 4d-ii-b / B1 moves it to `countersign-v1` (see the constant).
         [DECISIONS_CONTRACT_HEADER]: DECISIONS_CONTRACT,
-        ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+        ...(sent ? { Authorization: `Bearer ${sent}` } : {}),
         ...(init?.headers ?? {}),
       },
     });
@@ -944,6 +951,19 @@ export class ApiGateway {
         if (typeof m === 'string' && m.trim()) err.serverMessage = m;
         else if (Array.isArray(m) && m.length) err.serverMessage = m.filter((x): x is string => typeof x === 'string').join('; ');
       } catch { /* no readable body — the status alone is the fact */ }
+      // #1373: a refusal of a token-bearing request is told once, here, for every caller: the session ended (401), the
+      // project was lost (a coded 403), or this one act was refused (any other 403). The caller still hears the error
+      if (sent && !publicCall && (res.status === 401 || res.status === 403)) {
+        try {
+          this.onSessionRefused?.({
+            kind: sessionRefusal(err) ?? 'refused',
+            token: sent,
+            // a write to this gateway's own project, the one kind of refusal that re-reads the project (never a read, so a
+            // refused read can never start another)
+            projectWrite: (init?.method ?? 'GET').toUpperCase() !== 'GET' && path.startsWith(`/projects/${this.projectId}/`),
+          });
+        } catch { /* the hook's own fault never replaces the server's answer */ }
+      }
       throw err;
     }
     return res.json() as Promise<T>;
@@ -2137,10 +2157,28 @@ export class SitePhotoRefusedElsewhere extends Error {
   constructor() { super('the server refused this site photo when another tab sent it'); }
 }
 
+/** #1373: how a refusal bears on the session, never from the server's words. A 401 ends the session; a 403 carrying one
+ *  of the three `PROJECT_ACCESS_CODES` means the person no longer has the token's project (which one is never branched
+ *  on). Anything else is a refusal of that one request (`null`). A server from before the codes sends none, so each of
+ *  its 403s is `null`, exactly as before. */
+export type SessionRefusal = 'session-ended' | 'project-lost';
+/** What `req()` tells the store of a refused token-bearing request (#1373). */
+export interface SessionRefused { kind: SessionRefusal | 'refused'; token: string; projectWrite: boolean }
+const LOST_PROJECT_CODES: readonly string[] = Object.values(PROJECT_ACCESS_CODES);
+export function sessionRefusal(err: unknown): SessionRefusal | null {
+  const e = err as { status?: unknown; serverCode?: unknown } | null;
+  if (e?.status === 401) return 'session-ended';
+  if (e?.status === 403 && typeof e.serverCode === 'string' && LOST_PROJECT_CODES.includes(e.serverCode)) return 'project-lost';
+  return null;
+}
+
 export function isTerminalOutboxError(err: unknown): boolean {
   const status = (err as { status?: number } | null)?.status;
   if (typeof status !== 'number') return false; // network / unknown → transient, retry later
   if (status === 401 || status === 408 || status === 429) return false; // recoverable
+  // #1373: refused because the person lost the project, not on the act's merits: kept, as a 401 keeps it. It is sent if
+  // the project is theirs again (a re-roled person's new token), and the move away says how many were not sent
+  if (sessionRefusal(err) === 'project-lost') return false;
   return status >= 400 && status < 500; // other 4xx → permanent client error, drop it
 }
 
