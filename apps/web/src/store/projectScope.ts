@@ -116,6 +116,8 @@ export interface ProjectDataState {
   photosWindowShort: boolean;
   /** #482 site photos — the viewer's own photos still in their delete hour past the newest window (the snapshot's list) */
   myDeletablePhotos: Photo[];
+  /** #482 "Who fixes this?" — the snapshot's responsible members (PMC and engineer; [] for others) */
+  responsibleMembers: Array<{ inspectionId: string; memberId: string }>;
   /** #917 — this project's site photos whose online send lost its answer, read from their rows on this phone (their
    *  outbox ops carry the key only), so the Dashboard shows them as queued; rebuilt from the rows at each flush */
   sitePhotosKept: KeptSitePhoto[];
@@ -236,6 +238,7 @@ export function emptyProjectData(): ProjectDataState {
     photos: [],
     photosWindowShort: false,
     myDeletablePhotos: [],
+    responsibleMembers: [],
     sitePhotosKept: [],
     materials: [],
     placedInspections: [],
