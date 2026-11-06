@@ -148,6 +148,8 @@ describe('Phase 6 unit 4c-0 — sanctioned resets route through the shared helpe
       'redbracket-id-schema.test.ts': 1,
       // #1179 R1: the visit file removal line's no-truncate seal asserted to REFUSE the statement.
       'site-visit-file-removal-schema.test.ts': 1,
+      // Guided site inspections step 3b: a visit's walked inspections' no-truncate seal asserted to REFUSE the statement.
+      'site-visit-inspections-schema.test.ts': 1,
       // #1177 VT1: the voice-note transcript's no-truncate seal asserted to REFUSE the statement.
       'voice-transcript-schema.test.ts': 1,
       // #1177 VT1b: the corrections table's no-truncate seal asserted to REFUSE the statement.

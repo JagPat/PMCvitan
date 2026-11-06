@@ -16,13 +16,17 @@ import { type ModuleManifest } from '@vitan/shared';
  *
  * #1179 R1 adds `siteVisitFileRemoval`: the frozen line a visit keeps for a file taken off it (who added it, who removed
  * it, when, and the reason), required by the database whenever a file's delete takes its link.
+ *
+ * Guided site inspections, step 3b adds `siteVisitInspection`: an inspection walked during a visit. Like a visit's file,
+ * the link is this module's row, written (step 3c) as the inspection submit's participant, so the inspections module
+ * never writes a site-visit table.
  */
 export const siteVisitsManifest: ModuleManifest = {
   id: 'site-visits',
   title: 'Site Visits',
   kind: 'domain',
-  ownsModels: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace', 'siteVisitMedia', 'siteVisitFileRemoval'],
-  readEncapsulated: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace', 'siteVisitMedia', 'siteVisitFileRemoval'],
+  ownsModels: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace', 'siteVisitMedia', 'siteVisitFileRemoval', 'siteVisitInspection'],
+  readEncapsulated: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace', 'siteVisitMedia', 'siteVisitFileRemoval', 'siteVisitInspection'],
   // A visit freezes the label of a published node through the nodes module's database contract
   // (`nodes_published_name_locked`, and SV2's `nodes_published_name_or_null_locked`), and a visit file's place
   // through the media module's (`media_filed_node`, and R1's `media_mime_of` for a removed file's kind), never by reading either table; a visit file's type and taken

@@ -116,6 +116,9 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   { table: 'SiteVisitMedia', trigger: 'SiteVisitMedia_no_truncate' },
   // #1179 R1 — a visit's removal lines reference the visit, so the same CASCADE reaches them.
   { table: 'SiteVisitFileRemoval', trigger: 'SiteVisitFileRemoval_no_truncate' },
+  // Guided site inspections, step 3b — an inspection walked on a visit references the visit and the inspection, so a
+  // CASCADE from `Project` reaches it the same way.
+  { table: 'SiteVisitInspection', trigger: 'SiteVisitInspection_no_truncate' },
   // #1177 VT1 — a voice note's transcript references its "Media" row, which a CASCADE from `Project` reaches.
   { table: 'VoiceTranscript', trigger: 'VoiceTranscript_no_truncate' },
   // #1177 VT1b — its corrections reference the transcript (and their person a `User`), so the same CASCADE reaches them.
