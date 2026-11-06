@@ -16,7 +16,10 @@
  *   Membership and an operator or the company's PMC seats it. A token claim is never a role.
  * - a retired account never signs in again by any door (phone, emailed code, Google, password, a code already sent):
  *   `AuthService.signInAccess` refuses it (`isRetired`), so nothing it held comes back through the old row.
- * - a test account address (`qa.*@vitan.in`) is never retired or linked: test accounts sign in through the operator door.
+ * - a test account address (`qa.*@vitan.in`) is never retired or linked. Its Redbracket ID password signs it in to the
+ *   SAME account (Jagrut, 6 Nov 2026: one shared password for every QA account, on Hub and PMC), only while every
+ *   company it reaches is QA-only (`OrgsParticipant.qaSignInAllowed`, the operator door's rule), so a test password
+ *   never reaches a real company. Anything else is refused as a test account. The operator door stays as it was.
  * - no PMC account holds the email: nothing is made (PMC sign-up stays by invitation).
  *
  * Every write runs in the caller's transaction under the person's lock, then the account's credential lock, in that
@@ -89,7 +92,18 @@ export async function settleSignIn(tx: Prisma.TransactionClient, issuer: string,
   if (!claims.email || !claims.emailVerified) return { kind: 'email-unverified' };
   const holder = await orgs.accountByAddress(tx, { email: claims.email });
   if (!holder) return { kind: 'no-account' };
-  if (QA_ACCOUNT_EMAIL.test(holder.email ?? '')) return { kind: 'test-account' };
+  if (QA_ACCOUNT_EMAIL.test(holder.email ?? '')) {
+    // never linked or retired: the issuer proved this QA address, and the QA company lock (migration 20280116) keeps
+    // the account in QA-only companies once this answer is given, so the same account signs in each time. The
+    // credential lock comes first and the address is re-read under it, then the QA rule's row locks: the order an
+    // address correction takes (credential lock, then the User row), so the two never wait on each other (Codex
+    // 4489142011 on #1367). `login` takes the same advisory lock again, which a transaction already holding it passes.
+    await lockUserCredential(tx, holder.id);
+    const qa = await orgs.accountById(tx, holder.id);
+    if (!qa || qa.email !== claims.email) return { kind: 'no-account' };
+    if (!(await orgs.qaSignInAllowed(tx, qa.id))) return { kind: 'test-account' };
+    return { kind: 'account', user: qa, fresh: false };
+  }
   await lockUserCredential(tx, holder.id);
   // re-read under the account's lock: an invitation accepted meanwhile is now linked (and is this person's only if
   // the link says so, which the person's lock above already decided)
