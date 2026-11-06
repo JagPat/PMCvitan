@@ -4531,7 +4531,8 @@ export const useStore = create<Store>()(
       get().flash(CHT.deleted[get().lang]);
     },
     hydrateEvidence: async () => { await reconcileEvidence(); },
-    refreshPendingEvidence: async () => { await reconcileEvidence(); },
+    // demo (no server) keeps no durable rows and counts none: the screen's read is a server-backed phone's alone
+    refreshPendingEvidence: async () => { if (gateway) await reconcileEvidence(); },
     setNote: (idx, txt) => set((s) => { const c = s.checklist; const it = c?.items[idx]; if (c && it) { if (checklistFrozen(s)) return; it.note = txt; recordChecklistMark(s, c.id, it.id, 'note', txt); } }),
     submitInspection: async () => {
       // THE EVIDENCE RULE, asked before anything is sent or queued (a refusal is final for a queued act). Guided step 4a
