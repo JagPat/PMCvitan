@@ -72,6 +72,34 @@ describe('guided step 4a — the pending mirror follows the durable rows', () =>
     expect(s().judgeChecklistItem(s().checklist!.items[0]).recordings).toEqual(['photo']);
   });
 
+  it('an accepted upload whose refresh fails keeps counting until a read holding it lands (Codex 4491442658)', async () => {
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' }),
+      snapshot: vi.fn().mockRejectedValue(httpError(503)),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    seedChecklist();
+    await s().addChecklistEvidence(0, PX);
+    const key = s().pendingChecklistEvidence[0].clientKey;
+
+    const counts: number[] = [];
+    const stop = useStore.subscribe((st) => {
+      const item = st.checklist?.items.find((x) => x.id === 'item-1');
+      if (item) counts.push(st.judgeChecklistItem(item).recordings.length);
+    });
+    s().toggleOnline();
+    await settles(() => s().outbox.length === 0 && gw.uploadMedia.mock.calls.length === 1);
+    // the reconciliation after the flush has read the rows (the accepted one is gone from them)
+    await settles(() => s().pendingChecklistEvidence.every((p) => p.settled));
+    stop();
+    // the server holds the photo: the item never counted zero, and still counts it with no read applied yet
+    expect(Math.min(...counts)).toBe(1);
+    expect(s().pendingChecklistEvidence.map((p) => p.clientKey)).toEqual([key]);
+    expect(s().judgeChecklistItem(s().checklist!.items[0]).recordings).toEqual(['photo']);
+  });
+
   it('a refused upload leaves the mirror; Retry offline puts it back at once, with its item and type', async () => {
     const gw = {
       project: 'ambli',

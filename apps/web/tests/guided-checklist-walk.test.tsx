@@ -194,3 +194,13 @@ describe('guided step 4a — a linked file this viewer is served no path for sti
     expect(judgeEvidence([m.useStore.getState().judgeChecklistItem(m.useStore.getState().checklist!.items[0])]).missingRecordings).toEqual([]);
   });
 });
+
+describe('guided step 4a — an API older than evidenceKinds (Codex 4491442650)', () => {
+  it('counts its served entries as photos, the only kind it could link', async () => {
+    const m = await mount(checklist([
+      { id: 'a', name: 'Cover blocks', state: 'pass', photos: 2, note: '', evidence: ['/media/m1?t=1', '/media/m2?t=1'], guide: photos2Always },
+    ]));
+    m.useStore.getState()._setGateway({} as never);
+    expect(m.useStore.getState().judgeChecklistItem(m.useStore.getState().checklist!.items[0]).recordings).toEqual(['photo', 'photo']);
+  });
+});

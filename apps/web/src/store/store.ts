@@ -490,7 +490,7 @@ export interface AppState {
   /** Guided site inspections step 4a — this scope's checklist evidence still waiting to upload (the durable rows'
    *  `pending` set, by item), for the submit guard: a capture counts while it is pending, and stops counting once its
    *  upload is refused or it is deleted. Empty until the rows are read (the guard then counts too few, never too many). */
-  pendingChecklistEvidence: Array<{ clientKey: string; inspectionItemId: string; mime: string }>;
+  pendingChecklistEvidence: Array<{ clientKey: string; inspectionItemId: string; mime: string; settled?: boolean; after?: number; lease?: number }>;
   access: AccessState;
   activities: Activity[];
   dailyLog: DailyLog | null; // null = no daily log started for this project
@@ -2253,6 +2253,13 @@ export const useStore = create<Store>()(
       // rode the SAME lease as the snapshot, so they pass the identical scope/newest-owner ordering checks:
       // a stale module response is dropped with its snapshot, never applied over a newer scope's data.
       const prevTimeZone = st.timeZone;
+      // guided step 4a (Codex 4491442658) — an answered checklist capture stops counting as pending in the step before the
+      // read that holds its file is applied (a read begun after its answer, or the flush's own), only when this apply
+      // carries the inspection slices: never counted twice, and not zero for longer than this apply
+      const evidenceAnswered = (p: AppState['pendingChecklistEvidence'][number]): boolean => !!p.settled && ((p.after !== undefined && lease.sequence > p.after) || p.lease === lease.sequence);
+      if ((inspectionsReadMode() === 'snapshot' || inspectionsResult != null) && st.pendingChecklistEvidence.some(evidenceAnswered)) {
+        set((s) => { s.pendingChecklistEvidence = s.pendingChecklistEvidence.filter((p) => !evidenceAnswered(p)); });
+      }
       applySnapshotCore(snap, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult, activitiesResult);
       // COMMAND and SUBMIT obligations clear INDEPENDENTLY (gate round 14). Only a pull that BEGAN AFTER
       // an obligation's threshold can satisfy it (round 13, semantic 2) — a stale in-flight refresh can't
@@ -2951,7 +2958,12 @@ export const useStore = create<Store>()(
           s.failedEvidence = failed;
           s.pendingEvidenceCount = pending.length;
           s.pendingEvidenceKeys = pending.map((e) => e.clientKey);
-          s.pendingChecklistEvidence = pending.map((e) => ({ clientKey: e.clientKey, inspectionItemId: e.inspectionItemId, mime: e.mime }));
+          // an answered capture's row is gone, but it counts until a read holding its file is applied (Codex 4491442658)
+          const rows = new Set(pending.map((e) => e.clientKey));
+          s.pendingChecklistEvidence = [
+            ...pending.map((e) => ({ clientKey: e.clientKey, inspectionItemId: e.inspectionItemId, mime: e.mime })),
+            ...s.pendingChecklistEvidence.filter((p) => p.settled && !rows.has(p.clientKey)),
+          ];
           const queued = new Set(s.outbox.filter((o) => o.t === 'uploadEvidence').map((o) => o.clientKey));
           for (const e of pending) {
             if (queued.has(e.clientKey)) continue;
@@ -4349,9 +4361,11 @@ export const useStore = create<Store>()(
         recordings = (it.evidence ?? []).map((url) => recordingKindOf(/^data:([^;,]+)/.exec(url)?.[1] ?? ''));
         if (recordings.length === 0 && it.photos > 0) recordings = ['photo'];
       } else {
-        const kinds = it.evidenceKinds ?? [];
+        // Codex 4491442650 — an API older than the field serves no kinds: everything it could link to a checklist item
+        // was an image, so a served entry from it counts as a photo (that API's own rule counts it so)
+        const kinds = it.evidenceKinds;
         recordings = [];
-        (it.evidence ?? []).forEach((url, k) => { if (!url.startsWith('data:')) recordings.push(kinds[k] ?? null); });
+        (it.evidence ?? []).forEach((url, k) => { if (!url.startsWith('data:')) recordings.push(kinds ? (kinds[k] ?? null) : 'photo'); });
         // a linked file this viewer is served no path for still counts on the server (Codex 4490791994)
         recordings.push(...(it.hiddenEvidenceKinds ?? []));
         if (it.id) for (const p of get().pendingChecklistEvidence) if (p.inspectionItemId === it.id) recordings.push(recordingKindOf(p.mime));
@@ -7334,6 +7348,17 @@ export const useStore = create<Store>()(
         const key = o.clientKey;
         set((s) => { s.pendingChecklistEvidence = s.pendingChecklistEvidence.filter((p) => p.clientKey !== key); });
       };
+      // Codex 4491442658 — an ACCEPTED one keeps counting until a pull that holds its file is applied: it is marked
+      // answered (as a site photo's `photoUploadsInFlight` entry is), and `acceptSnapshot` lets it go in the same step that
+      // applies a read begun after this answer, or this flush's own read. Never zero between, never twice
+      const answerPendingEvidence = (o: OutboxOp, snap: ApiSnapshot | null): void => {
+        if (o.t !== 'uploadEvidence' || !scopeStillCurrent(flushScope) || get().sessionToken !== flushToken) return;
+        const key = o.clientKey;
+        set((s) => {
+          const p = s.pendingChecklistEvidence.find((x) => x.clientKey === key);
+          if (p) Object.assign(p, { settled: true, after: snapshotSeq, ...(snap && flushLease ? { lease: flushLease.sequence } : {}) });
+        });
+      };
       /** An act the server accepted, by this flush's send or, with no snapshot, by another tab's (its done fact): every
        *  effect of the success that does not read the server's answer, one function for both (xtab-drain U2 r1 root
        *  cause: a copy of these effects drifted, 4384591499/4384591507/4384591508). The 410 of an upload is read only by
@@ -7342,7 +7367,9 @@ export const useStore = create<Store>()(
       // out of the queue after this (Codex 4410673603)
       const afterSent = (o: OutboxOp, snap: ApiSnapshot | null, gone = false): Promise<unknown> | null => {
         settle(o);
-        leavePendingEvidence(o);
+        // a 410 says the server does not hold it: it stops counting at once; a 2xx keeps it counted until its read lands
+        if (gone) leavePendingEvidence(o);
+        else answerPendingEvidence(o, snap);
         if (snap) { lastSnap = snap; lastSnapStale = false; } else if (lastSnap && isSiteVisitOp(o)) lastSnapStale = true;
         // an evidence send settled with its refresh failed (its bytes are gone, so it is never sent again): the pull it
         // owes is asked for once the flush is done, as a 410's is (#482)
