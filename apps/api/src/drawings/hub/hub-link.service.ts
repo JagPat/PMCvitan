@@ -153,7 +153,8 @@ export class HubLinkService {
         if (!config) throw new NotFoundException();
         // every lock first, so nothing Hub is told can be undone by a role change or an archive in the meantime
         const project = await this.lockForWrite(tx, orgId, user.sub, projectId);
-        await linkRefusal(tx, orgId, projectId, hubProjectId);
+        const before = await linkRefusal(tx, orgId, projectId, hubProjectId);
+        await this.clearLeftBehind(tx, config, orgId, projectId, before, hubProjectId);
 
         const listed = await listHubProjects(config);
         if (!listed.ok) throw hubFailure(listed);
@@ -274,6 +275,32 @@ export class HubLinkService {
       if ((await activeHolders(tx, orgId, [target])).has(target)) return true;
       return (await unlinkHubProject(config, target)).ok;
     }, { timeout: HUB_LINK_TX_TIMEOUT_MS });
+  }
+
+  /**
+   * Before a project links again: the Hub link its last unlink ended, when that unlink could not clear it in Hub (Hub
+   * was down, or the person left before Try again), is removed now, so a relink never leaves the old Hub project
+   * showing a link to this project (#1354). Called under the link command's locks, after its refusals and before Hub
+   * is told of the new link. The same rule as `clearHubLink`: nothing while a project of the company holds that Hub
+   * project (Hub's one `pmc` link is that holder's), and nothing when the new link is to that same Hub project (Hub's
+   * link is replaced by it). A Hub that may not have done it (no answer, a 5xx, a throttle) or refused PMC's key fails
+   * the link before anything is written, so trying again tries the clear again; a final refusal (the old Hub project
+   * is archived or out of the key's reach) leaves nothing PMC can clear there, and the link goes ahead.
+   */
+  private async clearLeftBehind(
+    tx: Prisma.TransactionClient,
+    config: HubClientConfig,
+    orgId: string,
+    projectId: string,
+    latest: LatestEvent | null,
+    hubProjectId: string,
+  ): Promise<void> {
+    if (latest?.kind !== 'unlinked') return;
+    const ended = await endedByUnlink(tx, projectId, latest.seq);
+    if (!ended || ended === hubProjectId) return;
+    if ((await activeHolders(tx, orgId, [ended])).has(ended)) return;
+    const cleared = await unlinkHubProject(config, ended);
+    if (!cleared.ok && (cleared.failure === 'refused' || hubCallRetryable(cleared.failure, cleared.status))) throw hubFailure(cleared);
   }
 
   /**

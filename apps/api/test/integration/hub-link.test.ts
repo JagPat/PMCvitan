@@ -373,6 +373,57 @@ describe('#1118 U7a L1 — Hub project link (live PG + stub Hub)', () => {
     expect((await events(p)).map((e) => e.kind)).toEqual(['linked', 'unlinked', 'linked', 'unlinked', 'linked', 'unlinked']);
   });
 
+  it('a new link first clears the Hub link its last unlink left behind, unless another project holds it (#1354)', async () => {
+    open();
+    const p = await project('left-behind');
+    expect((await link(p, '16')).status).toBe(200);
+    hub.faults.push({ when: (m) => m === 'DELETE', fault: 503 });
+    expect((await unlink(p)).body).toEqual({ hubCleared: false });
+    expect(hub.links.get('16')?.externalId).toBe(p);
+
+    // Hub does not answer the clear: the link is refused before anything is written, and nothing new reaches Hub
+    hub.faults.push({ when: (m) => m === 'DELETE', fault: 503 });
+    const down = await link(p, '17');
+    expect([down.status, down.body.code]).toEqual([503, 'hub_unavailable']);
+    expect(hub.links.has('17')).toBe(false);
+    expect((await events(p)).map((e) => e.kind)).toEqual(['linked', 'unlinked']);
+
+    // trying again clears the old Hub project, then links the new one
+    const n = hub.calls.length;
+    expect((await link(p, '17')).status).toBe(200);
+    expect(callsSince(n).filter((c) => !c.startsWith('GET'))).toEqual(['DELETE /api/v2/projects/16/links/pmc', 'POST /api/v2/projects/17/links/pmc']);
+    expect(hub.links.has('16')).toBe(false);
+    expect(hub.links.get('17')?.externalId).toBe(p);
+
+    // the Hub project the unlink ended is another project's now: its link is that project's, and stays
+    const q = await project('left-behind-other');
+    hub.faults.push({ when: (m) => m === 'DELETE', fault: 503 });
+    expect((await unlink(p)).body).toEqual({ hubCleared: false });
+    expect((await link(q, '17')).status).toBe(200);
+    const m = hub.calls.length;
+    expect((await link(p, '18')).status).toBe(200);
+    expect(callsSince(m).filter((c) => c.startsWith('DELETE'))).toEqual([]);
+    expect(hub.links.get('17')?.externalId).toBe(q);
+
+    // a relink to the Hub project the unlink ended replaces Hub's link: nothing to clear first
+    hub.faults.push({ when: (m) => m === 'DELETE', fault: 503 });
+    expect((await unlink(p)).body).toEqual({ hubCleared: false });
+    const k = hub.calls.length;
+    expect((await link(p, '18')).status).toBe(200);
+    expect(callsSince(k).filter((c) => c.startsWith('DELETE'))).toEqual([]);
+    expect(hub.links.get('18')?.externalId).toBe(p);
+
+    // a final refusal of the clear (the old Hub project is out of reach) leaves nothing PMC can clear: the link goes ahead
+    hub.faults.push({ when: (m) => m === 'DELETE', fault: 503 });
+    expect((await unlink(p)).body).toEqual({ hubCleared: false });
+    hub.faults.push({ when: (m) => m === 'DELETE', fault: 404 });
+    expect((await link(p, '19')).status).toBe(200);
+    expect(hub.links.get('19')?.externalId).toBe(p);
+    // left as found: no project of this company holds a Hub project after this case
+    expect((await unlink(p)).body).toEqual({ hubCleared: true });
+    expect((await unlink(q)).body).toEqual({ hubCleared: true });
+  });
+
   it("removes Hub's link only after PMC's unlink has committed", async () => {
     open();
     const p = await project('commit-first');
