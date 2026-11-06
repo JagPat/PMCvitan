@@ -1,9 +1,9 @@
 import { useEffect, useRef, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useStore, checklistFrozen } from '@/store/store';
+import { useStore, checklistFrozen, judgedChecklistItem } from '@/store/store';
 import { EmptyState, Eyebrow, StatTile, Button, LocationContext, EditState, ItemNotFound } from '@/components';
 import { Camera } from '@/lib/icons';
-import { checklistLabels as L, checklistText as T, inspectionTitle, servedDayIn, type ItemState } from '@vitan/shared';
+import { checklistLabels as L, checklistText as T, inspectionTitle, recordingsAsked, servedDayIn, type ItemState } from '@vitan/shared';
 import { inspectionsReadMode, resolveMediaUrl } from '@/data/apiGateway';
 import { inspectionsSliceSettled } from '@/lib/notifications';
 import { useUrlItem } from '@/lib/useUrlItem';
@@ -307,6 +307,26 @@ export function EngineerChecklistScreen() {
             return (
               <div key={it.name} style={{ background: '#fff', border: `1px solid ${border}`, borderRadius: 14, padding: '13px 14px' }}>
                 <div style={{ fontWeight: 600, fontSize: 14.5, lineHeight: 1.3 }}>{it.name}</div>
+                {/* Guided site inspections step 4a — what to look at, when it passes, and what to record, on the card
+                    the verdict is pressed on. A record ask shows its progress in the state that holds it (a pass held
+                    only when the guidance says `always`), from the same judge the submit guard asks. */}
+                {it.guide && (
+                  <div data-testid={`guide-${i}`} style={{ display: 'grid', gap: 3, marginTop: 6, fontSize: 13, lineHeight: 1.4, color: 'var(--ink)' }}>
+                    {it.guide.lookAt && <div data-testid={`guide-look-${i}`}>{T.lookAt(it.guide.lookAt, lang)}</div>}
+                    {it.guide.passRule && <div data-testid={`guide-pass-${i}`} style={{ color: 'var(--muted)' }}>{T.passRule(it.guide.passRule, lang)}</div>}
+                    {it.guide.record && (() => {
+                      const rec = it.guide.record;
+                      const asked = recordingsAsked(judgedChecklistItem(it));
+                      const short = asked !== null && asked.have < asked.count;
+                      return (
+                        <div data-testid={`guide-record-${i}`} data-short={short ? 'true' : undefined} style={{ fontWeight: 600, color: short ? 'var(--amber-text)' : 'var(--ink)' }}>
+                          {T.recordAsk(rec.kind, rec.count, rec.when, rec.hint, lang)}
+                          {asked !== null && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, marginLeft: 6 }} data-testid={`guide-have-${i}`}>{T.recordHave(Math.min(asked.have, asked.count), asked.count, lang)}</span>}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
                 <div style={{ display: 'flex', gap: 7, marginTop: 11, opacity: frozen ? 0.55 : 1 }}>
                   <button onClick={set(i, 'pass')} disabled={frozen} style={toggleStyle(it.state === 'pass', 'var(--green-solid)', 'var(--green-solid)')}>{L.pass[lang]}</button>
                   <button onClick={set(i, 'fail')} disabled={frozen} data-guide={it.state === 'fail' ? undefined : 'mark-fail'} data-guide-key={`${checklist.id}:${i}`} style={toggleStyle(it.state === 'fail', 'var(--red-solid)', 'var(--red-solid)')}>{L.fail[lang]}</button>
@@ -353,7 +373,7 @@ export function EngineerChecklistScreen() {
                     {/* #584 review round 1, finding 3 — the fail-evidence REQUIREMENT is what the engineer must
                         do before this checklist can be submitted, so it leaves metadata type for F-1b's 13px
                         floor with real weight. The letter-spacing goes with the mono face. */}
-                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red-solid)' }}>{L.failNeeds[lang]}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red-solid)' }}>{it.guide ? T.failNeedsReason[lang] : L.failNeeds[lang]}</div>
                     {/* #482 QA item 4 — a one-line input cut a long note off (and a frozen one could not even be
                         scrolled), so the note wraps and grows with what was written. A frozen note is read-only,
                         not disabled, so it stays focusable and selectable (Codex 4278142781); `setNote` refuses

@@ -86,7 +86,8 @@ import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectS
 import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, planSeenChunks, reconcileSeen, type NotifSeenState } from '@/lib/notificationSeen';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
-import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
+import type { SodRule, VendorAdvanceListDto, ChecklistItem, JudgedItem } from '@vitan/shared';
+import { judgeEvidence } from '@vitan/shared';
 import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoDeletable, sitePhotoLabels as SPL, PHASE_NOT_FOUND_MESSAGE, activityNotFoundMessage, overrideNotFoundMessage, COMPANY_NOT_FOUND_MESSAGE, NOT_AN_ORG_MEMBER_MESSAGE } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
@@ -1312,6 +1313,14 @@ function ownerOfEditSlot(
  *  is pending in the current scope (submitting / queued). Every checklist mutation
  *  (state, note, photo, evidence) consults this so nothing changes the payload once
  *  it has been dispatched. */
+/** Guided site inspections step 4a — a checklist item as the shared evidence rule judges it. This phone records photos
+ *  only (step 4b adds video and voice), so each linked or captured file counts as a photo; `photos` is the demo's
+ *  counter, kept as the larger of the two as the screen counts them. */
+export function judgedChecklistItem(it: ChecklistItem): JudgedItem {
+  const n = Math.max(it.photos, it.evidence?.length ?? 0);
+  return { name: it.name, state: it.state, note: it.note, guide: it.guide ?? null, recordings: Array.from({ length: n }, () => 'photo' as const) };
+}
+
 export function checklistFrozen(
   s: Pick<AppState, 'checklist' | 'submission' | 'projectScopeGeneration' | 'outbox'>,
 ): boolean {
@@ -4333,13 +4342,23 @@ export const useStore = create<Store>()(
       // a fail needs EVIDENCE: a linked photo (the server's proof, Task 4) or the
       // legacy counter (demo). The deprecated counter alone must not block a fail
       // whose photo is a real linked Media row (Task 7 acceptance finding).
-      const failNoPhoto = c.items.filter((it) => it.state === 'fail' && it.photos === 0 && (it.evidence?.length ?? 0) === 0).length;
+      // Guided site inspections step 4a — the server's evidence rule, asked here first (the shared judge), so a submit
+      // this phone sends or queues is never refused by a rule it did not know: a refusal is final for a queued act.
+      const shortfalls = judgeEvidence(c.items.map(judgedChecklistItem));
       if (undone > 0) {
         get().flash(CHX.markAll(c.items.length, get().lang));
         return;
       }
-      if (failNoPhoto > 0) {
+      if (shortfalls.noEvidence.length > 0) {
         get().flash(CHT.failNeedsPhoto[get().lang]);
+        return;
+      }
+      if (shortfalls.missingRecordings.length > 0) {
+        get().flash(CHX.needsRecordings(shortfalls.missingRecordings.map((m) => m.name), get().lang));
+        return;
+      }
+      if (shortfalls.noReason.length > 0) {
+        get().flash(CHX.needsReason(shortfalls.noReason, get().lang));
         return;
       }
       if (gateway) {
