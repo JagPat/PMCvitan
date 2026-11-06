@@ -544,19 +544,42 @@ export const modulePayloadSchema = z.object({
 });
 export type ModulePayload = z.infer<typeof modulePayloadSchema>;
 
+/** The most items one checklist is issued with. */
+export const INSPECTION_ITEMS_MAX = 20;
+
+/** Guided site inspections, step 2c — a library checklist's payload: exactly one checklist, filed on no place, and no
+ *  locations, phases or activities (it is issued into a project as a checklist, never grafted into one). Its title and
+ *  items must also be ones the create takes (`createInspectionSchema`: a title that is more than spaces, 1 to 20 items,
+ *  each a valid spec), so every entry the PMC is served can be issued; the zone is the PMC's to set at issue. */
+export function isLibraryChecklistPayload(p: ModulePayload): boolean {
+  if (p.inspections.length !== 1 || p.nodes.length > 0 || p.phases.length > 0 || p.activities.length > 0) return false;
+  const c = p.inspections[0]!;
+  if (c.nodeKey !== undefined || c.title.trim() === '') return false;
+  const specs = c.items.map((name, i) => {
+    const guide = c.guides?.[i];
+    return guide ? { name, ...guide } : name;
+  });
+  return z.array(inspectionItemSpecSchema).min(1).max(INSPECTION_ITEMS_MAX).safeParse(specs).success;
+}
+
 /** Create a module: either with an explicit payload, or extracted server-side from a
  *  same-org project (`fromProject`, optionally one node's subtree via `fromNodeId`). */
 export const createModuleSchema = z
   .object({
     name: z.string().trim().min(1),
-    category: z.enum(['space', 'zone', 'element', 'discipline', 'schedule']),
+    // Guided site inspections, step 2c: 'checklist' is a Vitan library checklist — one checklist and its guidance, issued
+    // from a project by its PMC (`GET /projects/:projectId/inspections/library`), never placed by a project template
+    category: z.enum(['space', 'zone', 'element', 'discipline', 'schedule', 'checklist']),
     description: z.string().default(''),
     payload: modulePayloadSchema.optional(),
     fromProject: z.string().trim().min(1).optional(),
     fromNodeId: z.string().trim().min(1).optional(),
   })
   .refine((v) => Boolean(v.payload) !== Boolean(v.fromProject), { message: 'Provide exactly one of payload or fromProject' })
-  .refine((v) => !v.fromNodeId || v.fromProject, { message: 'fromNodeId requires fromProject' });
+  .refine((v) => !v.fromNodeId || v.fromProject, { message: 'fromNodeId requires fromProject' })
+  .refine((v) => v.category !== 'checklist' || (v.payload !== undefined && isLibraryChecklistPayload(v.payload)), {
+    message: 'A library checklist holds exactly one checklist and nothing else', path: ['payload'],
+  });
 export type CreateModuleInput = z.infer<typeof createModuleSchema>;
 
 /** One menu pick at Create Project: which module, how many, and where it grafts.
@@ -912,7 +935,7 @@ export const createInspectionSchema = z.object({
   title: z.string().trim().min(1),
   zone: z.string().trim().min(1),
   // each a plain name, or a guided item carrying what to look at, what good looks like and what to record (step 2a)
-  items: z.array(inspectionItemSpecSchema).min(1).max(20),
+  items: z.array(inspectionItemSpecSchema).min(1).max(INSPECTION_ITEMS_MAX),
   workType: inspectionWorkTypeSchema.optional(),
   // Location spine: the place this quality check happens (a location-tree node).
   nodeId: z.string().trim().min(1).optional(),

@@ -8,6 +8,7 @@ import { holdProjectExchangeFence } from './project-exchange-fence';
 import { liveArchitectStanding, liveRoleStanding } from './live-standing';
 import { isRetired } from '../platform/identity-retirement.query';
 import { operatorOwnerReseat, type OwnerReseat } from './operator-owner-reseat';
+import { LIBRARY_CHECKLIST_CATEGORY, libraryChecklistOf, type LibraryChecklist } from './checklist-library';
 
 /** #482 — the address pattern the Board fixed for the QA accounts (`qa.<lowercase letters>@vitan.in`), matched as stored. */
 export const QA_ACCOUNT_EMAIL = /^qa\.[a-z]+@vitan\.in$/;
@@ -411,6 +412,19 @@ export class OrgsParticipant {
     const project = await db.project.findUnique({ where: { id: projectId }, select: { archivedAt: true } });
     if (!project) return 'missing';
     return project.archivedAt ? 'archived' : 'live';
+  }
+
+  /** Guided site inspections, step 2c — the Vitan checklist library a project's PMC picks from: its company's library
+   *  checklists, unarchived, by name. A project with no company, or a company with none, has an empty library. */
+  async checklistLibrary(db: Prisma.TransactionClient, projectId: string): Promise<LibraryChecklist[]> {
+    const project = await db.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
+    if (!project?.orgId) return [];
+    const rows = await db.templateModule.findMany({
+      where: { orgId: project.orgId, category: LIBRARY_CHECKLIST_CATEGORY, archivedAt: null },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+      select: { id: true, name: true, description: true, payload: true },
+    });
+    return rows.map(libraryChecklistOf).filter((c): c is LibraryChecklist => c !== null);
   }
 
   /**

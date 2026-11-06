@@ -36,6 +36,13 @@ export class InspectionsController {
     return this.inspectionsQuery.moduleInspections(projectId, user.role, user.sub, await this.snapshot.hiddenMediaFor(projectId, user.sub));
   }
 
+  /** Guided site inspections, step 2c — the Vitan checklist library, for whoever issues checklists here to pick from. */
+  @Get('library')
+  @RolesFor('inspection.create')
+  library(@Param('projectId') projectId: string) {
+    return this.inspections.library(projectId);
+  }
+
   /** Issue a stage checklist — the PMC/architect defines what gets inspected. */
   @Post()
   @RolesFor('inspection.create')
