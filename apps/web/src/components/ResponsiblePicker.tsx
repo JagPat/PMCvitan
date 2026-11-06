@@ -51,6 +51,17 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   // member stays held as "…", never shown as nobody, and opening the picker asks again.
   const [readFor, setReadFor] = useState<string | null | undefined>(undefined);
   const [failedFor, setFailedFor] = useState<string | null | undefined>(undefined);
+  // The caches say how fresh a READ is, so they belong to one naming in one project scope (Codex #1365 r1): a change of
+  // the naming is new server state (a member named, cleared and named again must be read for again), and a read made in
+  // an earlier scope (generation) answers nothing in this one. Both are dropped in the same render either changes.
+  const generation = useStore((s) => s.projectScopeGeneration);
+  const seenNow = `${generation}|${named ?? ''}`;
+  const [seen, setSeen] = useState(seenNow);
+  if (seen !== seenNow) {
+    setSeen(seenNow);
+    setReadFor(undefined);
+    setFailedFor(undefined);
+  }
   const [reading, setReading] = useState(false);
   const live = useRef(true);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
@@ -65,11 +76,11 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   const pending = named !== null && !known && readFor !== named;
 
   // never read while offline (it can only fail); the shown name is the server's either way
-  const readTeam = () => {
+  const readTeam = (opts?: { after?: boolean }) => {
     if (!allowed || !online || reading) return;
     const asked = named;
     setReading(true);
-    void readTeamShared().then((ok) => {
+    void readTeamShared(opts).then((ok) => {
       if (!live.current) return;
       setReading(false);
       if (ok) { setReadFor(asked); setFailedFor(undefined); } else setFailedFor(asked);
@@ -85,13 +96,15 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   // Every opening reads the list again (Codex #1361 r1): a member added, removed or re-roled in another tab after an
   // earlier read sends no snapshot event, so only a fresh read offers them as they stand now. The first read, and a read
   // after a failure, hold the picker busy; later ones refresh in the background under the same shared read.
+  // An opening's reads START after it (Codex #1365 r1): a read already in flight may have been answered before a change
+  // made elsewhere, so one more is chained behind it (shared by every opening until it is sent), never only joined.
   const onOpen = () => {
-    if (readFor === undefined || failedFor !== undefined) readTeam();
+    if (readFor === undefined || failedFor !== undefined) readTeam({ after: true });
     else if (allowed && online) {
-      void readTeamShared();
+      void readTeamShared({ after: true });
       // a member's standing change sends no snapshot event, so the shown name (the server's) is read again too: a
-      // member re-roled away and back is no longer the one named (Codex #1361 r2). It joins a project read already in
-      // flight or queued, so opening many pickers makes one read, not one each.
+      // member re-roled away and back is no longer the one named (Codex #1361 r2). A read in flight gets one rerun queued
+      // behind it, shared by every opening until it starts, so opening many pickers makes one more read, not one each.
       joinSnapshotRead();
     }
   };

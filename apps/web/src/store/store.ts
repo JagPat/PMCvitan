@@ -842,8 +842,8 @@ export interface AppActions {
   /** RM-w1: the "Who fixes this?" pickers' team read. One read per project scope in flight, shared by every picker
    *  on the screen; true only when the list was read. */
   readTeamShared: (opts?: { after?: boolean }) => Promise<boolean>;
-  /** RM-w1 (Codex #1361 r2): read the project again, joining a read already in flight or queued for this scope
-   *  instead of adding one, so many pickers opened in a row make one read. */
+  /** RM-w1 (Codex #1361 r2, #1365 r1): read the project again with a read that starts after this call: one queued behind
+   *  a read in flight, shared by every caller until it starts, so many pickers opened in a row make one more read. */
   joinSnapshotRead: () => void;
   addMember: (input: AddMemberInput) => void;
   updateMemberRole: (userId: string, role: Role, discipline?: string) => void;
@@ -1709,7 +1709,8 @@ export const useStore = create<Store>()(
     const currentScope = (): ProjectScope => projectScopeOf(get());
     // RM-w1: the pickers' shared team read in flight, by scope key (readTeamShared)
     let sharedTeamRead: { key: string; read: Promise<boolean>; after: boolean; sent: boolean } | null = null;
-    // RM-w1 (Codex #1361 r1): the key of a naming whose answer never arrived, by scope and inspection. The same choice
+    // RM-w1 (Codex #1361 r1, #1365 r1): the key of a naming whose answer never arrived, by project, actor and inspection
+    // (never the scope generation, which a failed switch moves while the same person stays on the same project). The same choice
     // made again re-sends the SAME key, so a PUT that committed but lost its answer is replayed by the server, never run
     // twice. Cleared on a confirmed answer or a final refusal; a different choice gets a fresh key.
     const responsibleRetryKeys = new Map<string, { memberId: string | null; key: string }>();
@@ -3639,11 +3640,10 @@ export const useStore = create<Store>()(
     applySnapshot: (snap, capturedScope) =>
       acceptSnapshot(snap, beginSnapshotLease(capturedScope ?? currentScope())) === 'applied',
     requestFreshSnapshot: () => { void requestFreshSnapshot(); },
-    joinSnapshotRead: () => {
-      const c = coordinatorFor(currentScope());
-      if (c.refreshInFlight || c.refreshQueued) return;
-      void requestFreshSnapshot();
-    },
+    // a read that STARTS after the opening (Codex #1365 r1): one already in flight may have been answered before it, so
+    // one rerun is queued behind it, and every opening until that rerun starts shares it (requestFreshSnapshot's own
+    // in-flight + one-queued coalescing): many openings make at most one read in flight and one queued
+    joinSnapshotRead: () => { void requestFreshSnapshot(); },
 
     // ---- shell ----
     setRole: (role) => {
@@ -6319,7 +6319,7 @@ export const useStore = create<Store>()(
       set((s) => { s.responsibleSaving.push(savingAt); });
       const done = () => set((s) => { s.responsibleSaving = s.responsibleSaving.filter((k) => k !== savingAt); });
       const lease = beginSnapshotLease(currentScope());
-      const retryAt = `${scopeKey(lease.scope)}|${inspectionId}`;
+      const retryAt = `${get().activeProjectId}|${get().sessionUserId ?? `role:${get().role}`}|${inspectionId}`;
       const held = responsibleRetryKeys.get(retryAt);
       const key = held && held.memberId === memberId ? held.key : newIdempotencyKey();
       responsibleRetryKeys.set(retryAt, { memberId, key });

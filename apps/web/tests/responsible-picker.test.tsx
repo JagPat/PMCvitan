@@ -315,16 +315,89 @@ describe('"Who fixes this?" on the PMC review card (#482 RM-w1)', () => {
     act(() => { fireEvent.blur(select()); fireEvent.focus(select()); });
     await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(snapshotRead.mock.calls.length).toBe(before + 1));
-    // opening again and again while that read runs joins it: one project read, not one per opening
+    // opening again and again while that read runs: it may have been answered before the openings, so ONE read is
+    // queued behind it (Codex #1365 r1), shared by every opening, not one per opening
     for (let i = 0; i < 5; i += 1) act(() => { fireEvent.blur(select()); fireEvent.focus(select()); });
     await waitFor(() => expect(listMembers.mock.calls.length).toBeGreaterThanOrEqual(2));
     expect(snapshotRead.mock.calls.length).toBe(before + 1);
-    // nor is one queued behind it: when it settles, no further read follows
+    // when the read in flight settles, the one queued read starts after it, and nothing more
+    await act(async () => { fails[fails.length - 1]!(); });
+    await waitFor(() => expect(snapshotRead.mock.calls.length).toBe(before + 2));
     await act(async () => { fails[fails.length - 1]!(); });
     const { useStore } = await import('@/store/store');
     await waitFor(() => expect(useStore.getState().projectLoadState).not.toBe('loading'));
     await act(async () => { await Promise.resolve(); });
-    expect(snapshotRead.mock.calls.length).toBe(before + 1);
+    expect(snapshotRead.mock.calls.length).toBe(before + 2);
+  });
+
+  it('an opening while a team read is already in flight reads again after it, so a member added meanwhile is offered (Codex #1365 r1)', async () => {
+    const answers: Array<(m: ProjectMember[]) => void> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answers.push(r); }));
+    const { useStore, select } = await openReview({ listMembers });
+    act(() => { fireEvent.focus(select()); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    await act(async () => { answers[0]!(TEAM); });
+    await waitFor(() => expect(optionTexts(select())).toEqual(['Nobody yet', 'Amy Consultant', 'Zed Contractor']));
+    // a team read starts (another picker, the Team screen) and is answered from before a member was added
+    void useStore.getState().readTeamShared();
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    // the opening does not just join it: one more read is chained behind it, shared by repeated openings
+    act(() => { fireEvent.blur(select()); fireEvent.focus(select()); });
+    act(() => { fireEvent.blur(select()); fireEvent.focus(select()); });
+    expect(listMembers).toHaveBeenCalledTimes(2);
+    await act(async () => { answers[1]!(TEAM); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(3));
+    await act(async () => { answers[2]!([...TEAM, member('u-new', 'Neha New', 'contractor')]); });
+    await waitFor(() => expect(optionTexts(select())).toEqual(['Nobody yet', 'Amy Consultant', 'Neha New', 'Zed Contractor']));
+    expect(listMembers).toHaveBeenCalledTimes(3);
+  });
+
+  it('a member named, cleared and named again is read for again: never "Nobody yet" from an old read (Codex #1365 r1)', async () => {
+    let team = TEAM;
+    const listMembers = vi.fn(async () => team);
+    const { useStore, id, select } = await openReview({ listMembers });
+    // u-new is named but not on the list: one read, which does not offer them (removed), so it reads "Nobody yet"
+    act(() => { useStore.setState({ responsibleMembers: [{ inspectionId: id, memberId: 'u-new' }] }); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(select().selectedOptions[0]!.textContent).toBe('Nobody yet'));
+    // the server clears the naming; later u-new is re-added and named again from another tab
+    act(() => { useStore.setState({ responsibleMembers: [] }); });
+    team = [...TEAM, member('u-new', 'Neha New', 'contractor')];
+    act(() => { useStore.setState({ responsibleMembers: [{ inspectionId: id, memberId: 'u-new' }] }); });
+    // held as "…" and read for again, then shown by name
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(select().selectedOptions[0]!.textContent).toBe('Neha New'));
+  });
+
+  it('a read made in an earlier project scope answers nothing in the next: the named member is read for again (Codex #1365 r1 sweep)', async () => {
+    const listMembers = vi.fn(async () => TEAM);
+    const { useStore, id, select } = await openReview({ listMembers });
+    act(() => { useStore.setState({ responsibleMembers: [{ inspectionId: id, memberId: 'u-new' }] }); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(select().selectedOptions[0]!.textContent).toBe('Nobody yet'));
+    // the scope generation moves (a failed switch, a re-authentication) with the same naming on screen
+    act(() => { useStore.setState((s) => ({ projectScopeGeneration: s.projectScopeGeneration + 1 }) as never); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+  });
+
+  it('a lost answer, then a failed project switch: the same choice again re-sends the SAME key (Codex #1365 r1)', async () => {
+    let call = 0;
+    const setResponsibleMember = vi.fn(async (inspectionId: string, memberId: string | null) => {
+      call += 1;
+      if (call === 1) throw Object.assign(new Error('Failed to fetch'), {});
+      return answerKeepingQueue(memberId ? [{ inspectionId, memberId }] : []);
+    });
+    const switchProject = vi.fn(async () => { throw Object.assign(new Error('Bad gateway'), { status: 502 }); });
+    const { useStore, id } = await openReview({ listMembers: vi.fn(async () => TEAM), setResponsibleMember, switchProject }, { members: TEAM });
+    await expect(useStore.getState().setResponsibleMember(id, 'u-zed')).resolves.toBe(false);
+    await act(async () => { await Promise.resolve(useStore.getState().switchProject('other')).catch(() => {}); });
+    await waitFor(() => expect(switchProject).toHaveBeenCalledTimes(1));
+    expect(useStore.getState().activeProjectId).toBe('qa');
+    expect(useStore.getState().projectScopeGeneration).toBeGreaterThan(1);
+    await useStore.getState().setResponsibleMember(id, 'u-zed');
+    const keyOf = (n: number) => (setResponsibleMember.mock.calls[n] as unknown as [string, string | null, string])[2];
+    expect(setResponsibleMember).toHaveBeenCalledTimes(2);
+    expect(keyOf(1)).toBe(keyOf(0));
   });
 
   it('several rows naming a member the list does not hold share one team read', async () => {
