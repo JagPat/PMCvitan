@@ -8,9 +8,11 @@ import { RolesFor, RolesGuard } from '../common/roles';
 import {
   createInspectionSchema,
   decideReviewSchema,
+  finishInspectionSchema,
   submitInspectionSchema,
   type CreateInspectionInput,
   type DecideReviewInput,
+  type FinishInspectionInput,
   type SubmitInspectionInput,
   setResponsibleMemberSchema,
   type SetResponsibleMemberInput,
@@ -79,6 +81,19 @@ export class InspectionsController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.inspections.decide(projectId, inspectionId, body, user, idempotencyKey);
+  }
+
+  /** Guided site inspections step 3a — a PMC checks and decides in one walk: the walk is submitted and decided at once. */
+  @Post(':inspectionId/finish')
+  @RolesFor('inspection.decide')
+  finish(
+    @Param('projectId') projectId: string,
+    @Param('inspectionId') inspectionId: string,
+    @Body(new ZodPipe(finishInspectionSchema)) body: FinishInspectionInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.inspections.finish(projectId, inspectionId, body, user, idempotencyKey);
   }
 
   /** #482 proof photos, "Who fixes this?" — the PMC or the engineer names the contractor or consultant who fixes this

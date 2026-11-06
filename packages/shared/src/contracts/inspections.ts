@@ -23,6 +23,8 @@ export const INSPECTIONS_COMMANDS = [
   'inspections.decide',
   // #482 proof photos — who fixes this inspection's failed work (PMC or engineer; an active contractor or consultant)
   'inspections.setResponsible',
+  // guided site inspections step 3a — a PMC's walk, submitted and decided in one command
+  'inspections.finish',
 ] as const;
 export type InspectionsCommand = (typeof INSPECTIONS_COMMANDS)[number];
 

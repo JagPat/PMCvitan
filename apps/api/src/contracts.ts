@@ -184,6 +184,15 @@ export const decideReviewSchema = z.object({
 });
 export type DecideReviewInput = z.infer<typeof decideReviewSchema>;
 
+// Guided site inspections step 3a — a PMC's walk, submitted and decided in one command: the submit's items, and for a
+// rejection who re-checks (default: the PMC who walked it) and when it is due, as decide takes them.
+export const finishInspectionSchema = z.object({
+  items: submitInspectionSchema.shape.items,
+  assigneeId: z.string().trim().min(1).optional(),
+  dueInDays: z.number().int().min(1).max(60).optional(),
+}).strict();
+export type FinishInspectionInput = z.infer<typeof finishInspectionSchema>;
+
 // #482 proof photos, "Who fixes this?": the contractor or consultant member who fixes an inspection's failed work, or
 // null for nobody. Its own route, so no queued command's body changes shape.
 export const setResponsibleMemberSchema = z.object({

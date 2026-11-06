@@ -216,7 +216,7 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // cycle-exempt channel), each dispatching once post-commit (13 total).
   'inventory/inventory.service.ts': { domain: 'inventory', foreign: {}, dispatch: 13 },
   // edges 2/3 (sign-off done/revert) → activity.participant.applySignOff/revertSignOff
-  'inspections/inspections.service.ts': { domain: 'inspections', foreign: {}, dispatch: 4 },
+  'inspections/inspections.service.ts': { domain: 'inspections', foreign: {}, dispatch: 5 },
   'drawings/drawings.service.ts': { domain: 'drawings', foreign: {}, dispatch: 5 },
   // #1118 U3 — Hub's webhook receiver records refused and ignored deliveries in the drawings-owned receipt ledger (and
   // audits a refusal through `recordAudit`); it emits no domain event, so it dispatches nothing
@@ -446,7 +446,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   // Phase 4 Task 3 (§H) — the orgs-owned WorkerDevice binding route
   'orgs/worker-devices.controller.ts': ["Post('worker-devices/:deviceId/bind')"],
   'media/media.controller.ts': ["Post('projects/:projectId/media')", "Patch('projects/:projectId/media/:mediaId/node')", "Post('projects/:projectId/media/:mediaId/poster')", "Post('projects/:projectId/media/:mediaId/transcript/retry')", "Post('projects/:projectId/media/:mediaId/transcript/correction')", "Post('projects/:projectId/media/:mediaId/visit-removal')", "Delete('media/:id')"],
-  'inspections/inspections.controller.ts': ['Post()', "Post(':inspectionId/submit')", "Post(':inspectionId/decide')", "Put(':inspectionId/responsible')"],
+  'inspections/inspections.controller.ts': ['Post()', "Post(':inspectionId/submit')", "Post(':inspectionId/decide')", "Post(':inspectionId/finish')", "Put(':inspectionId/responsible')"],
   'activities/phases.controller.ts': ['Post()', "Delete(':phaseId')"],
   'activities/requirements.controller.ts': ['Post()', "Post(':requirementId/revise')", "Post(':requirementId/cancel')"],
   // Phase 3 Task 6 — substitution approve (per requirement) + revoke (per substitution)
@@ -650,7 +650,7 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
     it('84 external-effect dispatch sites total across the pillar services (82 + Phase-6 unit 4c-ii request/respond consultation)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(94); // +3: Site Visits SV1-b start, end, close; +1: SV1-b unit 2's one shared site for the visitor's edits; +1: #1179 R2 a file's removal from its visit; +1: #482 RM-e-c naming who fixes an inspection
+      expect(total).toBe(95); // +3: Site Visits SV1-b start, end, close; +1: SV1-b unit 2's one shared site for the visitor's edits; +1: #1179 R2 a file's removal from its visit; +1: #482 RM-e-c naming who fixes an inspection; +1: guided step 3a finish in one walk
     });
   });
 
@@ -661,12 +661,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('179 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only; +1 #995 V1b a video clip\'s still frame; +1 #1118 U3 Hub webhook deliveries; +1 #1179 R2 a file\'s removal from its site visit; +2 #1177 VT2-C1 a voice note\'s words retry/correct; +1 #482 who fixes an inspection\'s failed work; +1 Redbracket ID A4c operator owner re-seat; +2 #1118 U7a Hub link/unlink)', () => {
+    it('179 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only; +1 #995 V1b a video clip\'s still frame; +1 #1118 U3 Hub webhook deliveries; +1 #1179 R2 a file\'s removal from its site visit; +2 #1177 VT2-C1 a voice note\'s words retry/correct; +1 #482 who fixes an inspection\'s failed work; +1 Redbracket ID A4c operator owner re-seat; +2 #1118 U7a Hub link/unlink; +1 guided step 3a finish in one walk)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(197);
+      expect(total).toBe(198);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(197);
+      expect(live).toBe(198);
     });
   });
 
