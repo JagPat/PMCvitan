@@ -214,6 +214,9 @@ export function bakeInspections(
   const evidencePath = (mediaIds: string[]): string[] => visible(mediaIds).map(opts.evidencePath);
   // by position with `evidence` (the same filter, the same order)
   const kindsOf = (mediaIds: string[]): Array<RecordingKind | null> => visible(mediaIds).map((m) => evidenceKinds.get(m) ?? null);
+  // Codex 4490791994 — the server's rule counts every linked recording, seen or not: a file this viewer gets no path for
+  // is served by its kind alone, so the phone counts it too (no path is minted; the `photos` counter already counts it)
+  const hiddenKindsOf = (mediaIds: string[]): Array<RecordingKind | null> => mediaIds.filter((m) => hiddenEvidence.has(m)).map((m) => evidenceKinds.get(m) ?? null);
   const isPmc = role === 'pmc';
   const canSeeInspections = INSPECTION_READER_ROLES.includes(role);
   const all = base.inspections;
@@ -252,6 +255,7 @@ export function bakeInspections(
         note: it.note,
         evidence: evidencePath(it.mediaIds),
         evidenceKinds: kindsOf(it.mediaIds),
+        hiddenEvidenceKinds: hiddenKindsOf(it.mediaIds),
       }),
     ),
   });

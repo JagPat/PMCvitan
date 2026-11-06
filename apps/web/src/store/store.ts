@@ -4303,6 +4303,11 @@ export const useStore = create<Store>()(
       // gate round-3: moved mid-revive — the now-pending row reconstructs in its own scope
       if (!evidenceContextStillCurrent(ctx)) return;
       set((s) => {
+        // guided step 4a (Codex 4490791983): the revived row is pending again, so the submit guard counts it again now,
+        // offline too, not only after the next reconciliation (the stored row knows its item and type)
+        if (!s.pendingChecklistEvidence.some((p) => p.clientKey === clientKey)) {
+          s.pendingChecklistEvidence.push({ clientKey, inspectionItemId: revived.inspectionItemId, mime: revived.mime });
+        }
         s.failedEvidence = s.failedEvidence.filter((f) => f.clientKey !== clientKey);
         s.outbox.push({ t: 'uploadEvidence', scope: ctx.scope, clientKey }); // SAME key — the server dedupes
         s.syncQueue.push('Evidence photo (retry)');
@@ -4347,6 +4352,8 @@ export const useStore = create<Store>()(
         const kinds = it.evidenceKinds ?? [];
         recordings = [];
         (it.evidence ?? []).forEach((url, k) => { if (!url.startsWith('data:')) recordings.push(kinds[k] ?? null); });
+        // a linked file this viewer is served no path for still counts on the server (Codex 4490791994)
+        recordings.push(...(it.hiddenEvidenceKinds ?? []));
         if (it.id) for (const p of get().pendingChecklistEvidence) if (p.inspectionItemId === it.id) recordings.push(recordingKindOf(p.mime));
       }
       return { name: it.name, state: it.state, note: it.note, guide: it.guide ?? null, recordings };
@@ -7319,6 +7326,14 @@ export const useStore = create<Store>()(
       // a site photo's op is in no key: its row's marker is its record, so it leaves no settled mark here (a mark named
       // for an act no key holds would outlive a tab closed before the end write tidies it, #917 gap-check)
       const settle = (o: OutboxOp, refused = false): void => { if (o.t !== 'uploadSitePhoto') queueKeys.settled(markStore, laneOf(o), o, refused); };
+      // guided step 4a (Codex 4490791983): an evidence send the server has answered, accepted or refused, leaves the submit
+      // guard's pending mirror at once, before this flush applies any snapshot that holds its file: one capture is never
+      // counted both as pending and as served. Only in the scope it was sent from
+      const leavePendingEvidence = (o: OutboxOp): void => {
+        if (o.t !== 'uploadEvidence' || !scopeStillCurrent(flushScope) || get().sessionToken !== flushToken) return;
+        const key = o.clientKey;
+        set((s) => { s.pendingChecklistEvidence = s.pendingChecklistEvidence.filter((p) => p.clientKey !== key); });
+      };
       /** An act the server accepted, by this flush's send or, with no snapshot, by another tab's (its done fact): every
        *  effect of the success that does not read the server's answer, one function for both (xtab-drain U2 r1 root
        *  cause: a copy of these effects drifted, 4384591499/4384591507/4384591508). The 410 of an upload is read only by
@@ -7327,6 +7342,7 @@ export const useStore = create<Store>()(
       // out of the queue after this (Codex 4410673603)
       const afterSent = (o: OutboxOp, snap: ApiSnapshot | null, gone = false): Promise<unknown> | null => {
         settle(o);
+        leavePendingEvidence(o);
         if (snap) { lastSnap = snap; lastSnapStale = false; } else if (lastSnap && isSiteVisitOp(o)) lastSnapStale = true;
         // an evidence send settled with its refresh failed (its bytes are gone, so it is never sent again): the pull it
         // owes is asked for once the flush is done, as a 410's is (#482)
@@ -7562,6 +7578,7 @@ export const useStore = create<Store>()(
               }
             }
             settle(ops[i], true);
+            leavePendingEvidence(ops[i]);
             const k = keyOf(ops[i]); if (k) droppedKeys.push(k);
             if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
             if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }

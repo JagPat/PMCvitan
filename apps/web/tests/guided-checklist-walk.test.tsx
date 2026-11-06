@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import type { Checklist, ItemGuide } from '@vitan/shared';
+import { judgeEvidence } from '@vitan/shared';
 import { warmImports } from './warm-imports';
 
 /**
@@ -180,5 +181,16 @@ describe('guided step 4a — only an image type the upload takes is attached (Co
       expect(useStore.getState().toast).toBe('Only a photo can be attached here — choose an image.');
     }
     expect(useStore.getState().checklist?.items[0].evidence ?? []).toEqual([]);
+  });
+});
+
+describe('guided step 4a — a linked file this viewer is served no path for still counts (Codex 4490791994)', () => {
+  it('counts the served hidden kinds, as the server rule counts every linked recording', async () => {
+    const m = await mount(checklist([
+      { id: 'a', name: 'Cover blocks', state: 'pass', photos: 2, note: '', evidence: ['/media/m1?t=1'], evidenceKinds: ['photo'], hiddenEvidenceKinds: ['photo'], guide: photos2Always },
+    ]));
+    m.useStore.getState()._setGateway({} as never);
+    expect(m.useStore.getState().judgeChecklistItem(m.useStore.getState().checklist!.items[0]).recordings).toEqual(['photo', 'photo']);
+    expect(judgeEvidence([m.useStore.getState().judgeChecklistItem(m.useStore.getState().checklist!.items[0])]).missingRecordings).toEqual([]);
   });
 });
