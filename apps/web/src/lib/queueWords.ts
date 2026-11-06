@@ -37,4 +37,30 @@ export const QW = {
     hi: 'अभी इस फ़ोन पर सहेजा नहीं गया। भेजे जाने तक Vitan खुला रखें।',
     gu: 'હજુ આ ફોન પર સાચવાયું નથી. મોકલાય ત્યાં સુધી Vitan ખુલ્લું રાખો.',
   },
+  /** #1373: the person lost the project they were in. `{project}` is its name; `{n}` the changes this device keeps for it
+   *  (in its own queue keys, under its own scope), sent by the flush if their access returns (#1388 tracks a discard) */
+  roleChanged: {
+    en: 'Your role on {project} changed.',
+    hi: '{project} पर आपकी भूमिका बदल गई है।',
+    gu: '{project} પર તમારી ભૂમિકા બદલાઈ ગઈ છે.',
+  },
+  accessLost: {
+    en: 'You no longer have access to {project}.',
+    hi: 'अब आपके पास {project} की पहुँच नहीं है।',
+    gu: 'હવે તમારી પાસે {project}નો પ્રવેશ નથી.',
+  },
+  keptForLost: {
+    en: '{n} changes for {project} are kept on this device and will be sent if your access returns.',
+    hi: '{project} के लिए {n} बदलाव इस डिवाइस पर रखे गए हैं और आपकी पहुँच वापस मिलने पर भेजे जाएँगे।',
+    gu: '{project} માટેના {n} ફેરફારો આ ઉપકરણ પર રાખેલા છે અને તમારો પ્રવેશ પાછો મળશે ત્યારે મોકલાશે.',
+  },
+  keptForLostOne: {
+    en: '1 change for {project} is kept on this device and will be sent if your access returns.',
+    hi: '{project} के लिए 1 बदलाव इस डिवाइस पर रखा गया है और आपकी पहुँच वापस मिलने पर भेजा जाएगा।',
+    gu: '{project} માટેનો 1 ફેરફાર આ ઉપકરણ પર રાખેલો છે અને તમારો પ્રવેશ પાછો મળશે ત્યારે મોકલાશે.',
+  },
 } satisfies Record<string, Words>;
+
+/** a QW line in `lang`, each `{name}` filled from `vars` */
+export const qwFill = (w: Words, lang: Lang, vars: Record<string, string | number>): string =>
+  w[lang].replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? String(vars[k]) : m));

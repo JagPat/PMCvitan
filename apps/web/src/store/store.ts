@@ -100,10 +100,10 @@ import {
 import { createQueueKeyGuard, queueActIdent, type QueueWrite } from '@/store/queueKeyGuard';
 import { isDone } from '@/store/queueLedger';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
-import { QW } from '@/lib/queueWords';
+import { QW, qwFill } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
 import { hubFailureOf, HUB_SHOWN_WAIT_MS, type HubCallResult, type HubUnlinkPending } from '@/lib/hubLink';
-import { resolveMediaUrl, sessionRefusal, type SessionRefused, replayOutboxOp, uploadSitePhotoInput, PlaceCheckFailed, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, isGone, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, timeoutSignal, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
+import { resolveMediaUrl, sessionRefusal, dropsQueuedAct, type SessionRefused, replayOutboxOp, uploadSitePhotoInput, PlaceCheckFailed, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, isGone, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, timeoutSignal, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { clearVisitPhotoStart, clearVisitPoster, deleteVisitPhoto, failVisitPhotosOn, forgetRemovedVisitPhoto, listVisitPhotos, moveVisitPhotos, posterLapsed, posterWaits, removedVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
@@ -977,6 +977,12 @@ let briefRequestSeq = 0;
 
 /** The HTTP status the gateway attached to a failed request (`req` sets `status`); undefined for a
  *  failure with no response at all (offline, DNS, CORS). */
+/** Code-unit order, the same in every locale (#1373: the project a move lands on is picked the same way everywhere). */
+/** #1373: the line for the changes this device keeps for a lost project */
+const keptLine = (lang: Lang, project: string, n: number): string =>
+  qwFill(n === 1 ? QW.keptForLostOne : QW.keptForLost, lang, { project, n });
+const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
 function httpStatusOf(err: unknown): number | undefined {
   const status = (err as { status?: unknown } | null)?.status;
   return typeof status === 'number' ? status : undefined;
@@ -1647,6 +1653,8 @@ export const useStore = create<Store>()(
     let leavingFor: string | null = null;
     /** #1373: the sign-in screen's words a sign-out ends on (no project left), shown once the teardown completes */
     let signOutWhy: AccessErrorWhy | null = null;
+    /** #1373: the changes this device keeps for the project a no-project sign-out left, said on the sign-in screen */
+    let signOutKept: { project: string; n: number } | null = null;
     /** the project a restored session's URL named when it is not the saved session's own (switched to on install) */
     let restoreSwitchTarget: { projectId: string; screen: ScreenKey } | null = null;
     // #482 — decision publishes still on their way, per project scope (project + generation, which a
@@ -2359,34 +2367,45 @@ export const useStore = create<Store>()(
      * #1373: the person no longer has the token's project (archived, re-roled, removed; which one is never asked). Their
      * projects are read again, then:
      * - the same project still listed (a new role): switched back into it, in that role;
-     * - else another project: switched there, saying the project was lost, and how many changes queued for it were not
-     *   sent (they stay kept for it, under its own scope, as after any switch);
-     * - else none: signed out, with the sign-in screen's own "access removed" words.
+     * - else another project: switched there, saying the project was lost, and how many changes this device keeps for
+     *   it (stored under its own scope's keys, as after any switch; the flush sends them if access returns, #1388 adds
+     *   a discard);
+     * - else none: signed out, with the sign-in screen's own "access removed" words, and the kept line in the toast.
      * A read or switch that fails leaves the person where they are, and the next refusal tries again.
      */
     const leaveLostProject = async (token: string): Promise<void> => {
+      // a switch already under way (the person's own pick, or a restored deep link's) decides where they go: the move
+      // stands aside, and the next refusal, if any, tries again (G2)
+      const switching = () => get().pendingProjectId !== null;
+      if (switching()) { leavingFor = null; return; }
       const gw = gateway;
       const from = get().activeProjectId;
       const fromName = get().memberships.find((m) => m.projectId === from)?.name || get().name || 'this project';
       let ms: MembershipSummary[] | null = null;
       if (gw && gw.authToken === token) ms = await gw.listMemberships().catch(() => null);
       if (get().sessionToken !== token || leavingFor !== token) return; // a sign-in, switch or sign-out came first
-      if (!ms) { leavingFor = null; return; }
+      if (!ms || switching()) { leavingFor = null; return; }
       const read = ms;
       set((s) => { s.memberships = read; });
       const same = ms.find((m) => m.projectId === from);
-      const next = same ?? ms[0];
+      // the same pick on every device and every read: by name, then id (the server's list has no order of its own)
+      const next = same ?? [...ms].sort((a, b) => cmp(a.name, b.name) || cmp(a.projectId, b.projectId))[0];
+      // only acts a write has stored are kept: one this tab could not store leaves with the scope's memory, as on any
+      // switch or sign-out (it was already said "not saved on this phone yet")
+      const kept = same ? 0 : keptHere();
       if (!next) {
         signOutWhy = { key: 'accessRemoved' };
+        signOutKept = kept > 0 ? { project: fromName, n: kept } : null;
         endedFor = token;
         get().signOut();
         return;
       }
-      const unsent = same ? 0 : get().outbox.length;
+      const lang = get().lang;
       const msg = same
-        ? `Your role on ${same.name || fromName} changed.`
-        : `You no longer have access to ${fromName}.` + (unsent > 0 ? ` ${unsent} change${unsent > 1 ? 's' : ''} for ${fromName} ${unsent > 1 ? 'were' : 'was'} not sent.` : '');
-      const moved = await switchProjectTo(next.projectId, undefined, undefined, { sameProject: true, msg });
+        ? qwFill(QW.roleChanged, lang, { project: same.name || fromName })
+        : qwFill(QW.accessLost, lang, { project: fromName })
+          + (kept > 0 ? ' ' + keptLine(lang, fromName, kept) : '');
+      const moved = await switchProjectTo(next.projectId, undefined, undefined, { sameProject: true, msg, move: token });
       if (!moved && leavingFor === token) leavingFor = null;
     };
     /** #482 — settles once a pull of this scope that began after this call has settled (applied or failed): one now, or,
@@ -2688,8 +2707,7 @@ export const useStore = create<Store>()(
           }
           // a terminal refusal is never reported as a network failure, even when its body carried no
           // readable reason (a proxy's error page): retrying it would fail the same way (#699 shadow review)
-          // #1373: a lost project is a refusal too, in the server's words, though the act is kept: the move follows
-          if (refused && (isTerminalOutboxError(err) || sessionRefusal(err) === 'project-lost')) get().flash(refused(refusalMessage(err) ?? 'the server refused it'));
+          if (refused && isTerminalOutboxError(err)) get().flash(refused(refusalMessage(err) ?? 'the server refused it'));
           else get().flash(unreachable ? unreachable() : 'Could not reach the server — please try again.');
           return false;
         });
@@ -2946,6 +2964,8 @@ export const useStore = create<Store>()(
     /** whether `acts` are on this phone: their own key's write held them, or a kept photo's row does, whatever the other
      *  key's write did (#1113 r1, Codex 4367242052) */
     const storedNow = (acts: OutboxOp[]): boolean => acts.every((o) => !aheadUnsaved.has(aheadId(o)));
+    /** #1373: how many of memory's acts a write has stored on this device (they stay under this scope's keys) */
+    const keptHere = (): number => get().outbox.filter((o) => !aheadUnsaved.has(aheadId(o))).length;
     /** an offline act is said saved only once the locked write of its own key holds it (Codex 4344812898, 4344270659,
      *  4367242052); its write is tracked as a write-ahead's is, so no flush sends it first (Codex 4367242045). The line
      *  is shown only while the scope, person and key it was made in still hold (#1099 r3, Codex 4360928308) */
@@ -3647,7 +3667,7 @@ export const useStore = create<Store>()(
     /** Switch to another project the person holds (`switchProject`). #1373: the move off a lost project may switch back
      *  into the SAME project (`sameProject`: a re-roled person's new role) and says its own line (`msg`). */
     const switchProjectTo = (
-      projectId: string, targetScreen?: ScreenKey, targetItem?: string, opts?: { sameProject?: boolean; msg?: string },
+      projectId: string, targetScreen?: ScreenKey, targetItem?: string, opts?: { sameProject?: boolean; msg?: string; move?: string },
     ): Promise<boolean> => {
       if (!gateway || (projectId === get().activeProjectId && !opts?.sameProject)) return Promise.resolve(false);
       const membership = get().memberships.find((m) => m.projectId === projectId);
@@ -3685,15 +3705,23 @@ export const useStore = create<Store>()(
         Object.assign(s, emptyModuleReadState()); // finding 4: the target project's reads are not loaded yet
       });
       const switchGeneration = get().projectScopeGeneration;
+      const switchToken = get().sessionToken;
+      /** #1373 (G1, G2): this switch's reply still answers what the person is doing: the same session, no newer switch,
+       *  sign-in or sign-out since it began, and, for the move off a lost project, that move still its token's own. A
+       *  late reply after any of those changes nothing (a sign-out stays signed out; the person's own pick stands) */
+      const stillOurs = () => get().sessionToken === switchToken && get().projectScopeGeneration === switchGeneration
+        && (opts?.move === undefined || leavingFor === opts.move);
       return gateway
         .switchProject(projectId)
         .then((res) => {
+          if (!stillOurs()) return false;
           // adopt the SERVER-returned project/role/token (never the requested id);
           // useApiSync re-inits the gateway for the new scope and refetches.
           applyAuthResult(res, { msg: opts?.msg ?? 'Switched to ' + short + '.', targetScreen, targetItem });
           return true;
         })
         .catch(() => {
+          if (!stillOurs()) return false;
           // authorization failed: keep the OLD authenticated identity (token/project
           // unchanged), keep project data empty (never resurface half-cleared records),
           // and surface a recoverable error.
@@ -3895,8 +3923,11 @@ export const useStore = create<Store>()(
       });
       // #1373: a sign-out because no project is left says so on the sign-in screen, in the sign-in's own words
       const why = signOutWhy;
+      const kept = signOutKept;
       signOutWhy = null;
+      signOutKept = null;
       if (why) set((s) => failAccess(s, why));
+      if (kept) get().flash(keptLine(get().lang, kept.project, kept.n));
       get().syncProjectCreateHold(); // the departed user's attempt stays theirs, in their own record
     },
     setScreen: (k) =>
@@ -7552,7 +7583,8 @@ export const useStore = create<Store>()(
             }
             continue;
           }
-          if (isTerminalOutboxError(err)) {
+          // #1373 (G4): a lost project's refusal keeps the act, as a 401 does (`dropsQueuedAct`)
+          if (dropsQueuedAct(err)) {
             const op = ops[i];
             if (isCountersignChainOp(op)) {
               chainRefusals.push(`${chainActLabel(op)} refused — ${refusalMessage(err) ?? 'the server did not say why'}.`);

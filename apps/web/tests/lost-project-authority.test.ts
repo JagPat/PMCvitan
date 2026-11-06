@@ -26,9 +26,28 @@ const REMOVED = { message: 'Project access has been removed', error: 'Forbidden'
 const ROLE_CHANGED = { message: 'Project role changed; sign in again', error: 'Forbidden', statusCode: 403, code: PROJECT_ACCESS_CODES.roleChanged };
 const UNAVAILABLE = { message: 'Project is unavailable', error: 'Forbidden', statusCode: 403, code: PROJECT_ACCESS_CODES.unavailable };
 const PER_ACTION = { message: 'Only the PMC can remove a location', error: 'Forbidden', statusCode: 403 };
+const GAMMA = { projectId: 'p-c', name: 'Gamma', short: 'GAM', role: 'client', orgId: null, orgName: null };
+const tokC = jwt({ sub: 'u-1', role: 'client', projectId: 'p-c', exp });
+
+/** Alpha as the server answers a command on it */
+const ALPHA_SNAPSHOT = {
+  project: { id: 'p-a', name: 'Alpha', short: 'ALP', descriptor: '', stage: '', siteCode: '', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+  decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+  drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+};
+
+/** A reply the test lets go of when it chooses: the signal a test waits on, never a clock. `asked` settles once the
+ *  request has reached the server */
+function held() {
+  let release!: (a: Answer) => void;
+  let seen!: () => void;
+  const answer = new Promise<Answer>((r) => { release = r; });
+  const asked = new Promise<void>((r) => { seen = r; });
+  return { reply: (): Promise<Answer> => { seen(); return answer; }, release, asked };
+}
 
 type Answer = { status: number; body: unknown };
-type Route = (method: string, path: string, body: string) => Answer | undefined;
+type Route = (method: string, path: string, body: string) => Answer | Promise<Answer> | undefined;
 const calls: Array<{ method: string; path: string; auth: string | null }> = [];
 const hits = (method: string, path: string) => calls.filter((c) => c.method === method && c.path === path).length;
 
@@ -38,7 +57,7 @@ function stubFetch(route: Route) {
     const method = (init?.method ?? 'GET').toUpperCase();
     const headers = (init?.headers ?? {}) as Record<string, string>;
     calls.push({ method, path, auth: headers.Authorization ?? null });
-    const a = route(method, path, typeof init?.body === 'string' ? init.body : '') ?? { status: 599, body: { message: `unrouted ${method} ${path}` } };
+    const a = (await route(method, path, typeof init?.body === 'string' ? init.body : '')) ?? { status: 599, body: { message: `unrouted ${method} ${path}` } };
     return new Response(JSON.stringify(a.body), { status: a.status, headers: { 'Content-Type': 'application/json' } });
   }));
 }
@@ -53,7 +72,7 @@ async function freshStore() {
 }
 type Loaded = Awaited<ReturnType<typeof freshStore>>;
 
-await warmImports(() => import('@/store/store'), () => import('@/data/apiGateway'));
+await warmImports(() => import('@/store/store'), () => import('@/data/apiGateway'), () => import('@/lib/queueWords'));
 
 /** A session on Alpha holding `tokA`, adopted the way the app adopts one: a fresh sign-in on this page, or a reload
  *  restoring the tab's saved session. The gateway carries the token, as `useApiSync` sets it. */
@@ -114,13 +133,15 @@ afterEach(() => {
 
 describe('#1373 sessionRefusal: the one rule, from status and code alone', () => {
   it('401 ends the session; a 403 with any of the three codes is a lost project; everything else is the act\'s own', async () => {
-    const { sessionRefusal, isTerminalOutboxError } = await import('@/data/apiGateway');
+    const { sessionRefusal, isTerminalOutboxError, isKeptQueuedRefusal, dropsQueuedAct } = await import('@/data/apiGateway');
     const err = (status: number, serverCode?: string, serverMessage?: string) => Object.assign(new Error('x'), { status, serverCode, serverMessage });
     expect(sessionRefusal(err(401))).toBe('session-ended');
     for (const code of Object.values(PROJECT_ACCESS_CODES)) {
       expect(sessionRefusal(err(403, code))).toBe('project-lost');
-      // kept, as a 401 is: never judged on its merits
-      expect(isTerminalOutboxError(err(403, code))).toBe(false);
+      // a final refusal for every direct command, as before; only a QUEUED act is kept through it, as through a 401
+      expect(isTerminalOutboxError(err(403, code))).toBe(true);
+      expect(isKeptQueuedRefusal(err(403, code))).toBe(true);
+      expect(dropsQueuedAct(err(403, code))).toBe(false);
     }
     // never from the words: an uncoded 403 saying the same thing is the act's own refusal (a server from before the codes)
     expect(sessionRefusal(err(403, undefined, 'Project access has been removed'))).toBeNull();
@@ -130,6 +151,8 @@ describe('#1373 sessionRefusal: the one rule, from status and code alone', () =>
     expect(sessionRefusal(null)).toBeNull();
     // and an uncoded 403 is dropped from the queue, as before
     expect(isTerminalOutboxError(err(403))).toBe(true);
+    expect(dropsQueuedAct(err(403))).toBe(true);
+    expect(dropsQueuedAct(err(401))).toBe(false);
   });
 });
 
@@ -265,7 +288,7 @@ describe('#1373 a coded 403 moves the person off the lost project', () => {
     expect(hits('POST', '/auth/switch')).toBe(1);
   });
 
-  it('on a queued act (the flush): the act is kept, never dropped, and the move says it was not sent', async () => {
+  it('on a queued act (the flush): the act is kept, never dropped, and the move says it is kept on this device', async () => {
     const { useStore } = await signedIn('fresh');
     let release!: () => void;
     const held = new Promise<void>((r) => { release = r; });
@@ -285,7 +308,100 @@ describe('#1373 a coded 403 moves the person off the lost project', () => {
     expect(useStore.getState().outbox).toHaveLength(1);
     release();
     await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe('p-b'));
-    expect(useStore.getState().toast).toBe('You no longer have access to Alpha. 1 change for Alpha was not sent.');
+    expect(useStore.getState().toast).toBe('You no longer have access to Alpha. 1 change for Alpha is kept on this device and will be sent if your access returns.');
+  });
+
+  it('an act stored on this device stays in the lost project\'s key, and is sent once, under its own key, when access returns', async () => {
+    const { useStore, gw } = await signedIn('fresh');
+    let access = false;
+    const approves: Array<{ auth: string | null; key: string | null }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.replace('http://api.test', '');
+      const method = (init?.method ?? 'GET').toUpperCase();
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      calls.push({ method, path, auth: headers.Authorization ?? null });
+      const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (method === 'POST' && path === '/projects/p-a/decisions/DEC-1/approve') {
+        approves.push({ auth: headers.Authorization ?? null, key: headers['Idempotency-Key'] ?? null });
+        return access ? json(201, ALPHA_SNAPSHOT) : json(403, REMOVED);
+      }
+      if (method === 'GET' && path === '/me/memberships') return json(200, access ? [ALPHA, BETA] : [BETA]);
+      if (method === 'POST' && path === '/auth/switch') {
+        const to = (JSON.parse(String(init?.body)) as { projectId: string }).projectId;
+        if (to === 'p-b') return json(201, { token: tokB, role: 'client', projectId: 'p-b', name: 'Pat' });
+        if (to === 'p-a' && access) return json(201, { token: tokA2, role: 'engineer', projectId: 'p-a', name: 'Pat' });
+        return json(403, { message: 'Not a member of this project', error: 'Forbidden', statusCode: 403 });
+      }
+      return json(599, { message: `unrouted ${method} ${path}` });
+    }));
+    // made offline, the way the app queues it: written to this device before anything is sent
+    useStore.setState({ online: false, modal: { type: 'approve', decId: 'DEC-1', optIdx: 0 } as never });
+    useStore.getState().confirmApprove();
+    await vi.waitFor(() => expect(globalThis.localStorage.getItem('vitan.outbox.u-1.p-a')).toContain('DEC-1'));
+    const key = (useStore.getState().outbox[0] as { idempotencyKey: string }).idempotencyKey;
+    useStore.setState({ online: true });
+    await useStore.getState().flushOutbox();
+    await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe('p-b'));
+    expect(useStore.getState().toast).toBe('You no longer have access to Alpha. 1 change for Alpha is kept on this device and will be sent if your access returns.');
+    // the move leaves it where it was stored: the lost project's own key, under this person
+    expect(globalThis.localStorage.getItem('vitan.outbox.u-1.p-a')).toContain(key);
+    expect(approves).toHaveLength(1);
+    // access returns; they open Alpha again on this device, with a new token, and the flush sends it once
+    access = true;
+    await useStore.getState().switchProject('p-a');
+    await vi.waitFor(() => expect(useStore.getState().sessionToken).toBe(tokA2));
+    // what useApiSync does on the new session: the gateway carries its token, and the scope's queue is loaded
+    gw.setToken(tokA2);
+    useStore.getState().hydrateOutbox();
+    expect(useStore.getState().outbox).toHaveLength(1);
+    await useStore.getState().flushOutbox();
+    await vi.waitFor(() => expect(useStore.getState().outbox).toHaveLength(0));
+    expect(approves).toHaveLength(2);
+    expect(approves[1]).toEqual({ auth: `Bearer ${tokA2}`, key });
+    expect(globalThis.localStorage.getItem('vitan.outbox.u-1.p-a') ?? '').not.toContain(key);
+  });
+
+  it('an act no write could store on this device is not counted as kept', async () => {
+    const { useStore } = await signedIn('fresh');
+    stubFetch(server({ status: 403, body: REMOVED }, [BETA], switchTo('p-b')));
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+    onTestFinished(() => setItem.mockRestore());
+    useStore.setState({ online: false, modal: { type: 'approve', decId: 'DEC-1', optIdx: 0 } as never });
+    useStore.getState().confirmApprove();
+    await vi.waitFor(() => expect(useStore.getState().toast).toMatch(/Not saved on this phone yet/));
+    expect(useStore.getState().outbox).toHaveLength(1);
+    useStore.setState({ online: true });
+    await useStore.getState().flushOutbox();
+    await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe('p-b'));
+    expect(useStore.getState().toast).toBe('You no longer have access to Alpha.');
+  });
+
+  it('no project left: the sign-in screen says how many changes this device keeps for the lost project', async () => {
+    const { useStore } = await signedIn('fresh');
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.replace('http://api.test', '');
+      const method = (init?.method ?? 'GET').toUpperCase();
+      calls.push({ method, path, auth: null });
+      const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (method === 'POST' && path.startsWith('/projects/p-a/decisions/')) return json(403, REMOVED);
+      if (method === 'GET' && path === '/me/memberships') return json(200, []);
+      return json(599, { message: `unrouted ${method} ${path}` });
+    }));
+    useStore.setState({ online: false });
+    for (const decId of ['DEC-1', 'DEC-2']) {
+      useStore.setState({ modal: { type: 'approve', decId, optIdx: 0 } as never });
+      useStore.getState().confirmApprove();
+    }
+    await vi.waitFor(() => expect(globalThis.localStorage.getItem('vitan.outbox.u-1.p-a')).toContain('DEC-2'));
+    const stored = globalThis.localStorage.getItem('vitan.outbox.u-1.p-a');
+    useStore.setState({ online: true });
+    await useStore.getState().flushOutbox();
+    await vi.waitFor(() => expect(useStore.getState().sessionToken).toBeNull());
+    const st = useStore.getState();
+    expect(st.access.errorKey).toMatchObject({ key: 'accessRemoved' });
+    expect(st.toast).toBe('2 changes for Alpha are kept on this device and will be sent if your access returns.');
+    expect(globalThis.localStorage.getItem('vitan.outbox.u-1.p-a')).toBe(stored);
+    expect(st.outbox).toEqual([]);
   });
 
   it('many refusals in flight move the person once', async () => {
@@ -303,13 +419,16 @@ describe('#1373 a coded 403 moves the person off the lost project', () => {
     stubFetch(server({ status: 403, body: REMOVED }, [BETA], (m, p, b) => (m === 'GET' && p === '/me/memberships' ? listed : switchTo('p-b')(m, p, b))));
     await gw.snapshot().catch(() => undefined);
     await vi.waitFor(() => expect(hits('GET', '/me/memberships')).toBe(1));
-    await new Promise((r) => setTimeout(r, 20));
     expect(useStore.getState().sessionToken).toBe(tokA);
     expect(hits('POST', '/auth/switch')).toBe(0);
     listed = { status: 200, body: [BETA] };
-    await gw.snapshot().catch(() => undefined);
-    await vi.waitFor(() => expect(useStore.getState().sessionToken).toBe(tokB));
-    expect(hits('GET', '/me/memberships')).toBe(2);
+    // each later refusal reads again once the failed read has let go of the move: refused until it does
+    await vi.waitFor(async () => {
+      await gw.snapshot().catch(() => undefined);
+      expect(useStore.getState().sessionToken).toBe(tokB);
+    });
+    expect(hits('GET', '/me/memberships')).toBeGreaterThanOrEqual(2);
+    expect(hits('POST', '/auth/switch')).toBe(1);
   });
 
   it('a move that fails leaves the person where they are, and the next refusal tries again', async () => {
@@ -327,6 +446,135 @@ describe('#1373 a coded 403 moves the person off the lost project', () => {
   });
 });
 
+describe('#1373 the move never overrides what the person did meanwhile (Stage 1 G1, G2)', () => {
+  it('P1: the person signs out while the move\'s switch is out; its late reply does not sign them back in', async () => {
+    const { useStore, gw } = await signedIn('fresh');
+    const sw = held();
+    stubFetch(server({ status: 403, body: REMOVED }, [BETA], (m, p) => (m === 'POST' && p === '/auth/switch' ? sw.reply() : undefined)));
+    // the store's own handler is attached to this promise first, so it has run once the test's await of it returns
+    const switches = vi.spyOn(gw, 'switchProject');
+    await gw.snapshot().catch(() => undefined);
+    await sw.asked;
+    useStore.getState().signOut();
+    expect(useStore.getState().sessionToken).toBeNull();
+    sw.release({ status: 201, body: { token: tokB, role: 'client', projectId: 'p-b', name: 'Pat' } });
+    await switches.mock.results[0]?.value;
+    expect(useStore.getState().sessionToken).toBeNull();
+    expect(useStore.getState().activeProjectId).not.toBe('p-b');
+    expect(globalThis.sessionStorage.getItem('vitan.session.v1')).toBeNull();
+  });
+
+  it('P2: the person picks another project while the move is out; the move\'s late reply does not take them elsewhere', async () => {
+    const { useStore, gw } = await signedIn('fresh');
+    useStore.setState({ memberships: [ALPHA, BETA, GAMMA] as never });
+    const toBeta = held();
+    const switches = vi.spyOn(gw, 'switchProject');
+    stubFetch(server({ status: 403, body: REMOVED }, [BETA, GAMMA], (m, p, b) => {
+      if (m !== 'POST' || p !== '/auth/switch') return undefined;
+      return (JSON.parse(b) as { projectId: string }).projectId === 'p-b'
+        ? toBeta.reply()
+        : { status: 201, body: { token: tokC, role: 'client', projectId: 'p-c', name: 'Pat' } };
+    }));
+    await gw.snapshot().catch(() => undefined);
+    await toBeta.asked;
+    // the person's own pick, while the move to Beta is still out
+    expect(await useStore.getState().switchProject('p-c')).toBe(true);
+    expect(useStore.getState().activeProjectId).toBe('p-c');
+    toBeta.release({ status: 201, body: { token: tokB, role: 'client', projectId: 'p-b', name: 'Pat' } });
+    // the move's switch was the first asked; the store has judged its reply once this await returns
+    expect(switches.mock.calls[0]?.[0]).toBe('p-b');
+    await switches.mock.results[0]?.value;
+    expect(useStore.getState().activeProjectId).toBe('p-c');
+    expect(useStore.getState().sessionToken).toBe(tokC);
+  });
+
+  it('a refusal arriving after the person\'s own switch has started leaves that switch to decide', async () => {
+    const { useStore, gw } = await signedIn('fresh');
+    const toBeta = held();
+    stubFetch(server({ status: 403, body: REMOVED }, [GAMMA], (m, p) => (m === 'POST' && p === '/auth/switch' ? toBeta.reply() : undefined)));
+    const picked = useStore.getState().switchProject('p-b');
+    await toBeta.asked;
+    await gw.snapshot().catch(() => undefined);
+    toBeta.release({ status: 201, body: { token: tokB, role: 'client', projectId: 'p-b', name: 'Pat' } });
+    expect(await picked).toBe(true);
+    expect(useStore.getState().activeProjectId).toBe('p-b');
+    expect(hits('GET', '/me/memberships')).toBe(0);
+    expect(hits('POST', '/auth/switch')).toBe(1);
+  });
+
+  it('the person\'s own switch starting while the move reads their projects: the move stands aside', async () => {
+    const { useStore, gw } = await signedIn('fresh');
+    const listed = held();
+    const toGamma = held();
+    stubFetch(server({ status: 403, body: REMOVED }, [], (m, p) => (
+      m === 'GET' && p === '/me/memberships' ? listed.reply() : m === 'POST' && p === '/auth/switch' ? toGamma.reply() : undefined
+    )));
+    useStore.setState({ memberships: [ALPHA, BETA, GAMMA] as never });
+    await gw.snapshot().catch(() => undefined);
+    await listed.asked;
+    const picked = useStore.getState().switchProject('p-c');
+    await toGamma.asked;
+    const reads = vi.spyOn(gw, 'switchProject');
+    listed.release({ status: 200, body: [BETA, GAMMA] });
+    toGamma.release({ status: 201, body: { token: tokC, role: 'client', projectId: 'p-c', name: 'Pat' } });
+    expect(await picked).toBe(true);
+    expect(useStore.getState().activeProjectId).toBe('p-c');
+    // the move asked for no switch of its own
+    expect(reads).not.toHaveBeenCalled();
+    expect(hits('POST', '/auth/switch')).toBe(1);
+  });
+
+  it('a 401 on the move\'s own switch signs out, and nothing is adopted', async () => {
+    const { useStore, gw } = await signedIn('fresh');
+    stubFetch(server({ status: 403, body: REMOVED }, [BETA], (m, p) => (m === 'POST' && p === '/auth/switch' ? { status: 401, body: { message: 'Session expired', statusCode: 401 } } : undefined)));
+    await gw.snapshot().catch(() => undefined);
+    await vi.waitFor(() => expect(useStore.getState().sessionToken).toBeNull());
+    expect(useStore.getState().activeProjectId).not.toBe('p-b');
+    expect(hits('POST', '/auth/switch')).toBe(1);
+  });
+
+  it('the project moved to is picked by name, then id, whatever order the server lists them in', async () => {
+    const ZETA = { projectId: 'p-0', name: 'Zeta', short: 'ZET', role: 'client', orgId: null, orgName: null };
+    const AARDVARK = { projectId: 'p-c', name: 'Aardvark', short: 'AAR', role: 'client', orgId: null, orgName: null };
+    const { useStore, gw } = await signedIn('fresh');
+    stubFetch(server({ status: 403, body: REMOVED }, [ZETA, BETA, AARDVARK], (m, p, b) => (
+      m === 'POST' && p === '/auth/switch'
+        ? { status: 201, body: { token: jwt({ sub: 'u-1', role: 'client', projectId: (JSON.parse(b) as { projectId: string }).projectId, exp }), role: 'client', projectId: (JSON.parse(b) as { projectId: string }).projectId, name: 'Pat' } }
+        : undefined
+    )));
+    await gw.snapshot().catch(() => undefined);
+    await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe('p-c'));
+    const asked = calls.find((c) => c.path === '/auth/switch');
+    expect(asked).toBeTruthy();
+  });
+
+  it('another tab\'s stored acts for the lost project are left as they are', async () => {
+    const { useStore, gw } = await signedIn('fresh');
+    const stored = 'another tab\'s bytes';
+    globalThis.localStorage.setItem('vitan.outbox.u-1.p-a', stored);
+    globalThis.localStorage.setItem('vitan.siteVisitQueue.u-1.p-a', stored);
+    stubFetch(server({ status: 403, body: REMOVED }, [BETA], switchTo('p-b')));
+    await gw.snapshot().catch(() => undefined);
+    await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe('p-b'));
+    expect(globalThis.localStorage.getItem('vitan.outbox.u-1.p-a')).toBe(stored);
+    expect(globalThis.localStorage.getItem('vitan.siteVisitQueue.u-1.p-a')).toBe(stored);
+  });
+});
+
+describe('#1373 a direct command takes a coded 403 as the final refusal it is (Stage 1 G4)', () => {
+  it('a drawing issue refused for a lost project is not sent again', async () => {
+    const { useStore, gw } = await signedIn('fresh');
+    stubFetch(server({ status: 403, body: REMOVED }, [BETA], (m, p) => (
+      m === 'POST' && p === '/projects/p-a/drawings/prepare' ? { status: 201, body: {} } : switchTo('p-b')(m, p, '{"projectId":"p-b"}')
+    )));
+    const submit = vi.spyOn(gw, 'submitIssue');
+    vi.spyOn(gw, 'prepareIssue').mockImplementation(async (i) => ({ ...i, contentSha256: 'digest' }) as never);
+    useStore.getState().issueDrawing({ number: 'A-9', title: 'New', discipline: 'architectural', rev: 'A', mime: 'application/pdf', data: 'x', publish: true } as never);
+    await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe('p-b'));
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('#1373 a 401 on a token-bearing request signs out, once', () => {
   it('on a command, on a read and on a queued act alike; many in flight sign out once', async () => {
     const { useStore, gw } = await signedIn('fresh');
@@ -338,16 +586,20 @@ describe('#1373 a 401 on a token-bearing request signs out, once', () => {
       delete (navigator as { serviceWorker?: unknown }).serviceWorker;
       delete (window as { PushManager?: unknown }).PushManager;
     });
-    const generation = useStore.getState().access.generation;
+    // every sign-out the rule asks for is counted as it is asked: the signal, never a wait
+    let signOuts = 0;
+    const realSignOut = useStore.getState().signOut;
+    useStore.setState({ signOut: () => { signOuts += 1; realSignOut(); } });
     stubFetch(() => ({ status: 401, body: { message: 'Session expired', statusCode: 401 } }));
     useStore.setState({ outbox: [{ t: 'approve', decisionId: 'DEC-1', optionIndex: 0, idempotencyKey: 'k-1' }] as never, syncQueue: ['Approve DEC-1'] });
-    useStore.getState().deleteNode('n-1');
-    void useStore.getState().flushOutbox();
-    await Promise.all([gw.snapshot(), gw.listMemberships()].map((p) => p.catch(() => undefined)));
+    const flushed = useStore.getState().flushOutbox();
+    await Promise.all([gw.snapshot(), gw.listMemberships(), gw.deleteNode('n-1'), gw.decisions()].map((p) => p.catch(() => undefined)));
+    await flushed;
+    // all refused while the first sign-out still holds the session (its push unlink waits): one sign-out
+    expect(useStore.getState().sessionToken).toBe(tokA);
+    expect(signOuts).toBe(1);
     await vi.waitFor(() => expect(useStore.getState().sessionToken).toBeNull(), { timeout: 4000 });
-    await new Promise((r) => setTimeout(r, 1700)); // any second teardown would have completed by now
-    // one teardown: completeSignOut moves the sign-in generation exactly once
-    expect(useStore.getState().access.generation).toBe(generation + 1);
+    expect(signOuts).toBe(1);
     expect(globalThis.sessionStorage.getItem('vitan.session.v1')).toBeNull();
     expect(hits('POST', '/auth/switch')).toBe(0);
   });
@@ -362,7 +614,7 @@ describe('#1373 a 401 on a token-bearing request signs out, once', () => {
     stubFetch((_m, p) => (p === '/projects/p-a/snapshot' ? { status: 401, body: {} } : { status: 403, body: REMOVED }));
     await old.snapshot().catch(() => undefined);
     await old.deleteNode('n-1').catch(() => undefined);
-    await new Promise((r) => setTimeout(r, 20));
+    // the hook answers before each refusal is thrown, so by now anything it would start has started
     expect(useStore.getState().sessionToken).toBe(tokB);
     expect(hits('GET', '/me/memberships')).toBe(0);
     expect(hits('POST', '/auth/switch')).toBe(0);
@@ -419,5 +671,29 @@ describe('#1373 any other refusal is the act\'s own, as before', () => {
     expect(fresh.useStore.getState().sessionToken).toBe(tokA);
     expect(hits('GET', '/me/memberships')).toBe(0);
     expect(hits('POST', '/auth/switch')).toBe(0);
+  });
+});
+
+describe('#1373 the lost-project lines exist in every language, with the same placeholders (Stage 1 G7)', () => {
+  it('each QW entry has en, hi and gu, none empty, each with the same {placeholders}', async () => {
+    const { QW } = await import('@/lib/queueWords');
+    const marks = (t: string) => [...t.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(',');
+    for (const key of ['roleChanged', 'accessLost', 'keptForLost', 'keptForLostOne'] as const) expect(QW).toHaveProperty(key);
+    for (const [key, w] of Object.entries(QW) as Array<[string, Record<string, string>]>) {
+      expect(Object.keys(w).sort(), key).toEqual(['en', 'gu', 'hi']);
+      for (const lang of ['hi', 'gu']) {
+        expect(w[lang].trim().length, `${key}.${lang}`).toBeGreaterThan(0);
+        expect(marks(w[lang]), `${key}.${lang}`).toBe(marks(w.en));
+      }
+    }
+  });
+
+  it('a lost project\'s line is said in the person\'s language', async () => {
+    const { useStore, gw } = await signedIn('fresh');
+    useStore.setState({ lang: 'gu' });
+    stubFetch(server({ status: 403, body: REMOVED }, [BETA], switchTo('p-b')));
+    await gw.snapshot().catch(() => undefined);
+    await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe('p-b'));
+    expect(useStore.getState().toast).toBe('હવે તમારી પાસે Alphaનો પ્રવેશ નથી.');
   });
 });

@@ -2172,13 +2172,21 @@ export function sessionRefusal(err: unknown): SessionRefusal | null {
   return null;
 }
 
+/** #1373: a QUEUED act refused because the person lost the project, never on its own merits. Only the outbox flush and
+ *  the queued replays (site photo, visit photo and poster, evidence, the place check) keep such an act, as they keep one
+ *  refused by a 401; every direct command takes it as the final refusal `isTerminalOutboxError` says it is. */
+export function isKeptQueuedRefusal(err: unknown): boolean {
+  return sessionRefusal(err) === 'project-lost';
+}
+/** A replay's refusal that ends its queued act: final (`isTerminalOutboxError`), and not one the act is kept through. */
+export function dropsQueuedAct(err: unknown): boolean {
+  return isTerminalOutboxError(err) && !isKeptQueuedRefusal(err);
+}
+
 export function isTerminalOutboxError(err: unknown): boolean {
   const status = (err as { status?: number } | null)?.status;
   if (typeof status !== 'number') return false; // network / unknown → transient, retry later
   if (status === 401 || status === 408 || status === 429) return false; // recoverable
-  // #1373: refused because the person lost the project, not on the act's merits: kept, as a 401 keeps it. It is sent if
-  // the project is theirs again (a re-roled person's new token), and the move away says how many were not sent
-  if (sessionRefusal(err) === 'project-lost') return false;
   return status >= 400 && status < 500; // other 4xx → permanent client error, drop it
 }
 
@@ -2256,7 +2264,7 @@ export class PlaceCheckFailed extends Error {
  *  ends rather than asking again forever (Stage 1, Codex 4438007023). */
 async function placeStandsNow(gw: Pick<ApiGateway, 'snapshot'>, nodeId: string, answer: PlaceCheckFailed['answer']): Promise<boolean> {
   const now = await gw.snapshot().catch((err: unknown) => {
-    if (isTerminalOutboxError(err)) return null;
+    if (dropsQueuedAct(err)) return null;
     throw new PlaceCheckFailed(answer);
   });
   return !now || now.nodes.some((n) => n.id === nodeId && !n.draft);
@@ -2393,7 +2401,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
             tellSiteVisits({ kind: 'retry', project: gw.project, generation });
             return 'gone';
           }
-          if (!isTerminalOutboxError(err)) return;
+          if (!dropsQueuedAct(err)) return;
         }
         await withinWait(() => clearVisitPoster(op.scope, gw.project, id)).catch(() => {});
       };
@@ -2437,7 +2445,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
           // refused for good: the flush drops the act, and the row stays with the server's words, so the screen can
           // say which photo was not sent and why whenever it is next opened. The act goes only once the row says so:
           // a row the phone could not mark keeps its act, to be sent and marked again (Codex 4320122168)
-          if (isTerminalOutboxError(err)) tell(await withinWait(() => failVisitPhoto(op.scope, gw.project, id, refusalMessage(err))));
+          if (dropsQueuedAct(err)) tell(await withinWait(() => failVisitPhoto(op.scope, gw.project, id, refusalMessage(err))));
           throw err;
         }
         // and a sent photo's act goes only once its row says so: a row left queued would be rebuilt and sent again. The
@@ -2613,7 +2621,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
             onPhotoGone?.({ url: `data:${entry.mime};base64,${entry.data}`, inspectionId: entry.inspectionId, inspectionItemId: entry.inspectionItemId });
             return gw.snapshot().catch(() => null);
           }
-          if (isTerminalOutboxError(err)) {
+          if (dropsQueuedAct(err)) {
             try {
               await markEvidenceFailed(op.scope, gw.project, op.clientKey, `upload rejected (${(err as { status?: number }).status ?? 'error'})`);
             } catch {
@@ -2654,7 +2662,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
         } catch (err) {
           // answered for good (the photo was deleted after an earlier send of this key landed, or refused): the row goes
           // with the op. A row the phone could not remove keeps its op (no status: sent and answered again)
-          if (isDeletedPhoto(err) || isTerminalOutboxError(err)) {
+          if (isDeletedPhoto(err) || dropsQueuedAct(err)) {
             await (isDeletedPhoto(err) ? deleteSitePhotoRow : markSitePhotoRefused)(op.scope, gw.project, op.clientKey).catch(() => { throw new SitePhotoUnreadable(); });
             // settled by the 410 alone, as an `uploadMedia` replay's is (#482)
             if (isDeletedPhoto(err)) return true;
