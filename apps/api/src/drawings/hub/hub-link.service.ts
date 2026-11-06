@@ -287,6 +287,8 @@ export class HubLinkService {
    * the link before anything is written, so trying again tries the clear again. So does any other answer that leaves the
    * old link possibly showing (Hub still lists it after refusing the removal): a relink never goes ahead over it. Only a
    * 404 (the old Hub project is gone or out of the key's reach) leaves nothing PMC can clear there: the link goes ahead.
+   * Releases before this one never ran this clear, so it needs no release before it to have run one: Hub link stays
+   * closed in production (no HUB_* client variables) until this release is live, so no link or unlink event predates it.
    */
   private async clearLeftBehind(
     tx: Prisma.TransactionClient,
