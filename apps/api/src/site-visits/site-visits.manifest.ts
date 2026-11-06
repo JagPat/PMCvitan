@@ -21,13 +21,16 @@ import { type ModuleManifest } from '@vitan/shared';
  * the link is this module's row, written (step 3c, `SiteVisitInspectionsParticipant`) as the inspection submit's
  * participant, so the inspections module never writes a site-visit table. The visit's read serves each line by the
  * inspection's id only; the checklist itself is read from the inspections read.
+ *
+ * Video V2g-0 adds `siteVisitMediaLink`: a clip's share link to its full-quality video in Drive or Zoho, current and
+ * past, written (V2g-1) by this module.
  */
 export const siteVisitsManifest: ModuleManifest = {
   id: 'site-visits',
   title: 'Site Visits',
   kind: 'domain',
-  ownsModels: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace', 'siteVisitMedia', 'siteVisitFileRemoval', 'siteVisitInspection'],
-  readEncapsulated: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace', 'siteVisitMedia', 'siteVisitFileRemoval', 'siteVisitInspection'],
+  ownsModels: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace', 'siteVisitMedia', 'siteVisitFileRemoval', 'siteVisitInspection', 'siteVisitMediaLink'],
+  readEncapsulated: ['siteVisit', 'siteVisitAttendee', 'siteVisitPlace', 'siteVisitMedia', 'siteVisitFileRemoval', 'siteVisitInspection', 'siteVisitMediaLink'],
   // A visit freezes the label of a published node through the nodes module's database contract
   // (`nodes_published_name_locked`, and SV2's `nodes_published_name_or_null_locked`), and a visit file's place
   // through the media module's (`media_filed_node`, and R1's `media_mime_of` for a removed file's kind), never by reading either table; a visit file's type and taken

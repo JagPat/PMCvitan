@@ -257,7 +257,10 @@ describe('Site Visits SV2 — files on a visit (live PG)', () => {
     const record = /part of the visit record/;
     await expect(t.prisma.$executeRaw`DELETE FROM "SiteVisitMedia" WHERE "mediaId" = ${m.id}`).rejects.toThrow(record);
     await expect(t.prisma.siteVisitMedia.delete({ where: { mediaId: m.id } })).rejects.toThrow(record);
-    await expect(t.prisma.$executeRawUnsafe('TRUNCATE "SiteVisitMedia"')).rejects.toThrow(/never truncated/);
+    // V2g-0's full-video links reference this table, so a plain TRUNCATE is refused by PostgreSQL for that key first;
+    // with CASCADE the statement reaches this table's own seal.
+    await expect(t.prisma.$executeRawUnsafe('TRUNCATE "SiteVisitMedia"')).rejects.toThrow(/referenced in a foreign key constraint|never truncated/);
+    await expect(t.prisma.$executeRawUnsafe('TRUNCATE "SiteVisitMedia" CASCADE')).rejects.toThrow(/SiteVisitMedia is part of the visit record and is never truncated/);
     expect(await t.prisma.siteVisitMedia.findUnique({ where: { mediaId: m.id }, select: { visitId: true } })).toEqual({ visitId: visitA });
   });
 
