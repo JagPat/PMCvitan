@@ -6,6 +6,7 @@ import { lockProjectTree } from '../common/tree-lock';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { lockActorStanding, resolveActorEnvelope } from '../platform/actor-envelope';
 import type { Actor } from '../common/actor';
+import { projectRoleChanged, projectUnavailable } from '../common/lost-project';
 
 /** What the adder said about the file, as the upload carries it. */
 export interface SiteVisitFileInput {
@@ -65,9 +66,9 @@ export class SiteVisitFilesParticipant {
   ): Promise<void> {
     await lockActorStanding(tx, input.projectId, input.userId);
     const [state] = await tx.$queryRaw<Array<{ operable: boolean }>>(Prisma.sql`SELECT phase6_project_operable(${input.projectId}) AS "operable"`);
-    if (state?.operable !== true) throw new ForbiddenException('Project is unavailable');
+    if (state?.operable !== true) throw projectUnavailable();
     const envelope = await resolveActorEnvelope(tx, input.projectId, input.actor);
-    if (!envelope) throw new ForbiddenException('Your role on this project has changed; sign in again');
+    if (!envelope) throw projectRoleChanged('envelope');
     try {
       await tx.siteVisitMedia.create({
         data: {
@@ -152,9 +153,9 @@ export class SiteVisitFilesParticipant {
     if (!link) throw new NotFoundException(VISIT_FILE_GONE_MESSAGE);
     await lockActorStanding(tx, projectId, userId);
     const [state] = await tx.$queryRaw<Array<{ operable: boolean }>>(Prisma.sql`SELECT phase6_project_operable(${projectId}) AS "operable"`);
-    if (state?.operable !== true) throw new ForbiddenException('Project is unavailable');
+    if (state?.operable !== true) throw projectUnavailable();
     const envelope = await resolveActorEnvelope(tx, projectId, input.actor);
-    if (!envelope) throw new ForbiddenException('Your role on this project has changed; sign in again');
+    if (!envelope) throw projectRoleChanged('envelope');
     const ownInHour = link.addedById === userId && link.inHour === true;
     if (envelope.actorRole === 'pmc') {
       if (!ownInHour && input.reason === null) throw new BadRequestException('Say why you are removing this file');

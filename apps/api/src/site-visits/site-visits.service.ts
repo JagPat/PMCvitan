@@ -16,6 +16,7 @@ import type {
 } from '../contracts';
 import { SiteVisitsQueryService, type SiteVisitDto } from './site-visits.query';
 import { SITE_VISIT_NOTICE_COLOR, siteVisitClosedNotice, siteVisitEndedNotice, siteVisitStartedNotice } from './site-visit-notice';
+import { projectRoleChanged, projectUnavailable } from '../common/lost-project';
 
 /** The visit row a later act reads, locked. */
 interface LockedVisit {
@@ -345,10 +346,10 @@ export class SiteVisitsService {
     await lockActorStanding(tx, projectId, user.sub);
     if (attendeeId !== undefined && attendeeId !== user.sub) await lockActorStanding(tx, projectId, attendeeId);
     const [state] = await tx.$queryRaw<Array<{ operable: boolean }>>(Prisma.sql`SELECT phase6_project_operable(${projectId}) AS "operable"`);
-    if (state?.operable !== true) throw new ForbiddenException('Project is unavailable');
+    if (state?.operable !== true) throw projectUnavailable();
     if (attendeeId !== undefined) await lockIdentities(tx, [user.sub, attendeeId]);
     const envelope = await resolveActorEnvelope(tx, projectId, actor);
-    if (!envelope) throw new ForbiddenException('Your role on this project has changed; sign in again');
+    if (!envelope) throw projectRoleChanged('envelope');
     return envelope;
   }
 

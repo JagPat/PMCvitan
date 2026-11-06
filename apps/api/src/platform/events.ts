@@ -1,10 +1,11 @@
 import { Prisma } from '@prisma/client';
 import { ForbiddenException } from '@nestjs/common';
 import type { EventActor } from '../common/actor';
-import { isSystemEnvelope, resolveActorEnvelope, STALE_ROLE_MESSAGE, type ActorEnvelope } from './actor-envelope';
+import { isSystemEnvelope, resolveActorEnvelope, type ActorEnvelope } from './actor-envelope';
 import type { DomainEventType } from '@vitan/shared';
 import { materializeDeliveries, type DispatchIntent as PersistedDispatchIntent, type EmittedEventMeta } from './outbox/registry';
 import { buildDispatchIntent, type ExternalEffectKey, type DispatchInput } from './external-effects';
+import { projectRoleChanged } from '../common/lost-project';
 
 /**
  * Phase 2 Task 4 — the platform event kernel.
@@ -158,7 +159,7 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<EmittedE
   // rolls back; the act is never recorded with an empty attribution. (A `system` actor carries the
   // system pair when it names its automation — R0b admits it, R0c writes it — and no pair otherwise.)
   if (input.actor.actorKind === 'human' && envelope === null) {
-    throw new ForbiddenException(STALE_ROLE_MESSAGE);
+    throw projectRoleChanged('stale');
   }
   // Lock + increment the per-project counter INSIDE this transaction: two concurrent commits on
   // one project serialize here, so positions are distinct, ordered and never skipped.

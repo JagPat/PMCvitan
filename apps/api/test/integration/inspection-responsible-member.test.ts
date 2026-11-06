@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
-import { ROLE_POLICY, type Role } from '@vitan/shared';
+import { PROJECT_ACCESS_CODES, ROLE_POLICY, type Role } from '@vitan/shared';
+import { ROLE_CHANGED_MESSAGES } from '../../src/common/lost-project';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -288,6 +289,8 @@ describe('the PMC or engineer names who fixes an inspection\'s failed work (live
     await rerole;
     const res = await naming;
     expect(res.status).toBe(403);
+    // #1373: a lost project's 403, coded like the guard's
+    expect(res.body).toEqual({ message: ROLE_CHANGED_MESSAGES.naming, error: 'Forbidden', statusCode: 403, code: PROJECT_ACCESS_CODES.roleChanged });
     expect(await stored()).toBeNull();
   });
 
@@ -321,6 +324,7 @@ describe('the PMC or engineer names who fixes an inspection\'s failed work (live
     await archive;
     const res = await naming;
     expect(res.status).toBe(403);
+    expect(res.body).toEqual({ message: 'Project is unavailable', error: 'Forbidden', statusCode: 403, code: PROJECT_ACCESS_CODES.unavailable });
     expect(await stored()).toBeNull();
     expect(await audits()).toBe(before);
   });
