@@ -198,6 +198,37 @@ describe('guided site inspections step 2b — required recordings on pass and fa
     expect((await submit(c, { D: 'fail' })).body.message).toBe('A failed item needs linked photo evidence before you can submit: D');
   });
 
+  it('guided step 4a: the field view serves each evidence entry\'s recording kind beside it, in both reads', async () => {
+    const c = await guidedChecklist();
+    await photo(c.id, c.item.A);
+    await videoClip(c.id, c.item.A);
+    await voiceNote(c.id, c.item.C);
+    type Item = { id: string; evidence?: string[]; evidenceKinds?: Array<string | null> };
+    const itemsIn = (body: unknown): Item[] => {
+      const out: Item[] = [];
+      const walk = (v: unknown): void => {
+        if (Array.isArray(v)) v.forEach(walk);
+        else if (v && typeof v === 'object') {
+          const o = v as Record<string, unknown>;
+          if (typeof o.id === 'string' && Array.isArray(o.evidence) && 'evidenceKinds' in o) out.push(o as unknown as Item);
+          Object.values(o).forEach(walk);
+        }
+      };
+      walk(body);
+      return out;
+    };
+    for (const path of [`/projects/${f.projectA.id}/snapshot`, `/projects/${f.projectA.id}/inspections`]) {
+      const res = await http().get(path).set('Authorization', `Bearer ${engToken}`);
+      expect(res.status).toBe(200);
+      const items = itemsIn(res.body);
+      const a = items.find((i) => i.id === c.item.A);
+      const cc = items.find((i) => i.id === c.item.C);
+      expect(a?.evidence).toHaveLength(2);
+      expect(a?.evidenceKinds).toEqual(['photo', 'video']);
+      expect(cc?.evidenceKinds).toEqual(['voice']);
+    }
+  });
+
   it('an item recording is not a site photo, and is never filed on a place afterwards', async () => {
     const c = await guidedChecklist();
     const v = await voiceNote(c.id, c.item.C);

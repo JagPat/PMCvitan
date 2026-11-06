@@ -2,7 +2,7 @@ import { Prisma } from '@prisma/client';
 import type {
   Checklist, ChecklistItem, InspectionResult, ItemGuide, ItemState, PlacedInspection, Review, ReviewItem, SwatchKey,
 } from '@vitan/shared';
-import { INSPECTION_READER_ROLES } from '@vitan/shared';
+import { INSPECTION_READER_ROLES, type RecordingKind } from '@vitan/shared';
 import { toIsoCivilDate } from '../common/civil-date';
 import { isFailedItem } from './failed-item';
 import { guideOf } from './guided-item';
@@ -180,6 +180,19 @@ export function compareInspectionIds(a: string, b: string): number {
 }
 
 /**
+ * Guided site inspections step 4a (Codex 4491442666, #1374) — the evidence files whose recording kind the field view
+ * serves: those of every OPEN checklist, and of the submitted checklist the field view falls back to when no open one
+ * is shown (the lowest id, as {@link bakeInspections} picks it). Viewer-independent, so it covers every viewer's field
+ * view; the review queue and placed inspections serve no kinds, so their files are never looked up.
+ */
+export function fieldViewMediaIds(base: InspectionsBase): string[] {
+  const checklists = base.inspections.filter((i) => i.kind === 'checklist');
+  const fallback = checklists.filter((i) => i.submitted).sort((a, b) => compareInspectionIds(a.id, b.id))[0];
+  const rows = checklists.filter((i) => !i.submitted || i === fallback);
+  return [...new Set(rows.flatMap((i) => i.items.flatMap((it) => it.mediaIds)))];
+}
+
+/**
  * Bake the stored base into the five per-viewer/role slices the snapshot and the module read both emit.
  * A pure function of (base, viewer role, signer), so projection-served and live-served slices are
  * identical whenever the base is. `evidencePath` mints each item's fresh signed serve paths.
@@ -202,11 +215,21 @@ export function bakeInspections(
      *  from the media module's `mediaHiddenFrom`. REQUIRED for the same reason as `bindingAssignees`: a
      *  live, per-viewer fact a caller must not forget, or a private photo gets a signed path. */
     hiddenEvidence: ReadonlySet<string>;
+    /** Guided site inspections step 4a — the recording kind of each evidence file (by its type, from the media module's
+     *  `MediaParticipant.mimesOf`), served beside the field view's `evidence` so the phone's submit guard counts as the
+     *  server's evidence rule does. REQUIRED like the two above; a file the map does not name is served as null. */
+    evidenceKinds: ReadonlyMap<string, RecordingKind | null>;
   },
 ): InspectionsSlices {
-  const { role, viewerId, bindingAssignees, hiddenEvidence } = opts;
+  const { role, viewerId, bindingAssignees, hiddenEvidence, evidenceKinds } = opts;
   // no signed path is ever minted for a hidden photo; the evidence list simply omits it
-  const evidencePath = (mediaIds: string[]): string[] => mediaIds.filter((m) => !hiddenEvidence.has(m)).map(opts.evidencePath);
+  const visible = (mediaIds: string[]): string[] => mediaIds.filter((m) => !hiddenEvidence.has(m));
+  const evidencePath = (mediaIds: string[]): string[] => visible(mediaIds).map(opts.evidencePath);
+  // by position with `evidence` (the same filter, the same order)
+  const kindsOf = (mediaIds: string[]): Array<RecordingKind | null> => visible(mediaIds).map((m) => evidenceKinds.get(m) ?? null);
+  // Codex 4490791994 — the server's rule counts every linked recording, seen or not: a file this viewer gets no path for
+  // is served by its kind alone, so the phone counts it too (no path is minted; the `photos` counter already counts it)
+  const hiddenKindsOf = (mediaIds: string[]): Array<RecordingKind | null> => mediaIds.filter((m) => hiddenEvidence.has(m)).map((m) => evidenceKinds.get(m) ?? null);
   const isPmc = role === 'pmc';
   const canSeeInspections = INSPECTION_READER_ROLES.includes(role);
   const all = base.inspections;
@@ -244,6 +267,8 @@ export function bakeInspections(
         photos: it.photos,
         note: it.note,
         evidence: evidencePath(it.mediaIds),
+        evidenceKinds: kindsOf(it.mediaIds),
+        hiddenEvidenceKinds: hiddenKindsOf(it.mediaIds),
       }),
     ),
   });

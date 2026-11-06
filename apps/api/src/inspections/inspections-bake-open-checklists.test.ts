@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bakeInspections, compareInspectionIds, type InspectionBaseEntry, type InspectionsBase } from './inspections-serialize';
+import { bakeInspections, compareInspectionIds, fieldViewMediaIds, type InspectionBaseEntry, type InspectionsBase } from './inspections-serialize';
 
 /**
  * A PMC issues field checklists to the site. Each one is work someone is expected to do.
@@ -50,6 +50,7 @@ const bake = (
     bindingAssignees: bindingAssignees
       ?? new Set(inspections.map((i) => i.assigneeId).filter((id): id is string => typeof id === 'string')),
     hiddenEvidence: new Set(),
+    evidenceKinds: new Map(),
   });
 
 describe('bakeInspections — issued checklists are visible', () => {
@@ -270,5 +271,40 @@ describe('#771 read contract — the stored due date and assignee ride the rows 
     const reached = bake([reinspection], 'engineer', 'u-other', new Set()).openChecklists;
     expect(reached).toHaveLength(1);
     expect(reached[0]).toMatchObject({ assigneeId: 'u-eng', dueDate: '2026-10-15' }); // historical fact, not authority
+  });
+});
+
+describe('bakeInspections — guided step 4a, evidence kinds (Codex 4490791994)', () => {
+  it('serves a hidden linked file by its kind alone, so the phone counts what the server rule counts', () => {
+    const row = entry({ id: 'INSP-1', items: [{ id: 'i1', name: 'Verify', guide: null, order: 0, state: 'pass', photos: 3, note: '', result: null, swatch: null, rejected: false, mediaIds: ['m1', 'h1', 'm2'] }] });
+    const slices = bakeInspections({ inspections: [row] } as InspectionsBase, {
+      role: 'engineer',
+      evidencePath: (id) => `/evidence/${id}`,
+      bindingAssignees: new Set(),
+      hiddenEvidence: new Set(['h1']),
+      evidenceKinds: new Map([['m1', 'photo'], ['h1', 'photo'], ['m2', 'video']]),
+    });
+    const it0 = slices.openChecklists[0].items[0];
+    expect(it0.evidence).toEqual(['/evidence/m1', '/evidence/m2']);
+    expect(it0.evidenceKinds).toEqual(['photo', 'video']);
+    expect(it0.hiddenEvidenceKinds).toEqual(['photo']);
+    expect(JSON.stringify(it0)).not.toContain('h1');
+  });
+
+  it('looks up only the field view\'s files: open checklists and the submitted fallback, never other history (#1374)', () => {
+    const files = (id: string, mediaIds: string[]) => [{ id: `${id}-i1`, name: 'Verify', guide: null, order: 0, state: null, photos: 0, note: '', result: null, swatch: null, rejected: false, mediaIds }];
+    const open = entry({ id: 'INSP-3', items: files('INSP-3', ['o1', 'o2']) });
+    const fallback = entry({ id: 'INSP-1', submitted: true, items: files('INSP-1', ['f1']) });
+    const older = entry({ id: 'INSP-2', submitted: true, items: files('INSP-2', ['x1']) });
+    const review = entry({ id: 'INSP-4', kind: 'review', items: files('INSP-4', ['p1']) });
+    const ids = fieldViewMediaIds({ inspections: [open, older, review, fallback] } as InspectionsBase);
+    expect(new Set(ids)).toEqual(new Set(['o1', 'o2', 'f1']));
+    // with no open checklist the fallback is the one the field view shows, so its kinds are served
+    const only = bakeInspections({ inspections: [older, fallback] } as InspectionsBase, {
+      role: 'engineer', evidencePath: (id) => id, bindingAssignees: new Set(), hiddenEvidence: new Set(),
+      evidenceKinds: new Map([['f1', 'voice']]),
+    });
+    expect(only.checklist?.id).toBe('INSP-1');
+    expect(only.checklist?.items[0].evidenceKinds).toEqual(['voice']);
   });
 });
