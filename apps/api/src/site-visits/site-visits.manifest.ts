@@ -23,7 +23,9 @@ import { type ModuleManifest } from '@vitan/shared';
  * inspection's id only; the checklist itself is read from the inspections read.
  *
  * Video V2g-0 adds `siteVisitMediaLink`: a clip's share link to its full-quality video in Drive or Zoho, current and
- * past, written (V2g-1) by this module.
+ * past. V2g-1 writes it (`site-visits.set-file-link`, `site-visits.end-file-link`) and serves a video file's current
+ * link on the visit read. Those two commands emit no event: the frozen link rows are their record, and other viewers see
+ * a change on their next read (Stage 1, 6 Nov 2026).
  */
 export const siteVisitsManifest: ModuleManifest = {
   id: 'site-visits',
@@ -51,6 +53,7 @@ export const siteVisitsManifest: ModuleManifest = {
   commands: [
     'site-visits.start', 'site-visits.end', 'site-visits.close',
     'site-visits.add-place', 'site-visits.retire-place', 'site-visits.add-attendee', 'site-visits.retire-attendee',
+    'site-visits.set-file-link', 'site-visits.end-file-link',
   ],
   queries: ['site-visits.list'],
   routes: [
@@ -61,6 +64,8 @@ export const siteVisitsManifest: ModuleManifest = {
     'POST /projects/:projectId/site-visits/:visitId/places/:placeId/retire',
     'POST /projects/:projectId/site-visits/:visitId/attendees',
     'POST /projects/:projectId/site-visits/:visitId/attendees/:attendeeId/retire',
+    'PUT /projects/:projectId/site-visits/:visitId/files/:mediaId/link',
+    'DELETE /projects/:projectId/site-visits/:visitId/files/:mediaId/link',
   ],
   permissions: ['pmc', 'consultant', 'architect'],
 };

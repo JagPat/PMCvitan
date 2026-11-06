@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { parseCivilDate } from './common/civil-date';
-import { DEDUCTION_TYPES, MONEY_STRING, QUANTITY_STRING, SITE_VISIT_REMOVAL_REASON_MAX, SOD_RULES, removalReasonShows } from '@vitan/shared';
+import {
+  DEDUCTION_TYPES, MONEY_STRING, QUANTITY_STRING, SITE_VISIT_REMOVAL_REASON_MAX, SOD_RULES, VIDEO_LINK_LABEL_MAX, VIDEO_LINK_REFUSED_MESSAGE,
+  isAllowedVideoLink, removalReasonShows,
+} from '@vitan/shared';
 
 export const sessionSchema = z.object({
   // `architect` (Phase 6 task 4d): admitted here so the SERVICE can refuse it 409 with the drain
@@ -2128,6 +2131,37 @@ export const listSiteVisitsSchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
 }).strict();
 export type ListSiteVisitsInput = z.infer<typeof listSiteVisitsSchema>;
+// Video V2g-1 (#995) — a video clip's link to its full-quality video in Google Drive or Zoho WorkDrive. `id` is the new
+// link's, minted by the device as a visit row's is. `replaces` names the link the person saw on the clip (null when it
+// showed none): a link someone else changed since is refused (409), never silently ended. The url is trimmed and then
+// checked with the shared allow-list, the database's K1 CHECK exactly. A label is optional, at most 120 characters and
+// shows something. The reason is the PMC's, kept when they end a link that is not their own within the hour (K7); it
+// follows the visit file removal's rule and bounds (`removeVisitFileSchema`).
+const videoLinkReason = z.string().trim()
+  .refine((s) => !s.includes('\u0000'), 'A reason cannot contain that character')
+  .refine(removalReasonShows, 'Say why you are changing this link')
+  .refine((s) => [...s].length <= SITE_VISIT_REMOVAL_REASON_MAX, `Keep the reason to ${SITE_VISIT_REMOVAL_REASON_MAX} characters`)
+  .nullish()
+  .transform((s) => s ?? undefined);
+export const setSiteVisitFileLinkSchema = z.object({
+  id: siteVisitIdSchema,
+  url: z.string().trim().refine(isAllowedVideoLink, VIDEO_LINK_REFUSED_MESSAGE),
+  label: z.string().trim()
+    .refine((s) => !s.includes('\u0000'), 'A label cannot contain that character')
+    .refine((s) => s === '' || removalReasonShows(s), 'A label needs some words')
+    .refine((s) => [...s].length <= VIDEO_LINK_LABEL_MAX, `Keep the label to ${VIDEO_LINK_LABEL_MAX} characters`)
+    .nullish()
+    .transform((s) => (s ? s : undefined)),
+  replaces: siteVisitIdSchema.nullable(),
+  reason: videoLinkReason,
+}).strict();
+export type SetSiteVisitFileLinkInput = z.infer<typeof setSiteVisitFileLinkSchema>;
+// taking a link off with no successor: the link the person saw, and the PMC's reason as for a replace
+export const endSiteVisitFileLinkSchema = z.object({
+  linkId: siteVisitIdSchema,
+  reason: videoLinkReason,
+}).strict();
+export type EndSiteVisitFileLinkInput = z.infer<typeof endSiteVisitFileLinkSchema>;
 
 /** #1118 U7a — a Hub project id as Hub writes it: a positive decimal number, no padding. Kept here (no Node imports) so
  *  the web build, which type-checks this file, never reaches the Hub client. */

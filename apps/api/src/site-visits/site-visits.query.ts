@@ -107,6 +107,27 @@ export interface SiteVisitFileDto {
    *  `remainingMs` (#1239) is how long from this read until `until`, on the same clock, so a phone whose own clock is
    *  off still ends the offer when the server would; null when `until` is. */
   removable: { reasonRequired: boolean; until: string | null; remainingMs: number | null } | null;
+  /** Video V2g-1 (#995) — a video clip's current link to its full-quality video in Google Drive or Zoho WorkDrive, with
+   *  who put it there (their name and role then) and when; null when the clip has none, and always null for a file that
+   *  is not a video. The same for every viewer: whether they can open it is Drive's or Zoho's to decide. */
+  fullVideoLink: SiteVisitFileLinkDto | null;
+  /** Whether the viewer may add a link (the clip has none) or replace or take off its link now, as the server's rule
+   *  reads at this read, with `removable`'s shape: `reasonRequired` when the change ends a link that is not the viewer's
+   *  own within the hour, and `until`/`remainingMs` while it is. Null when the viewer may not, or the file is not a
+   *  video. The change asks again and is the authority. */
+  fullVideoLinkOffer: { reasonRequired: boolean; until: string | null; remainingMs: number | null } | null;
+}
+
+/** Video V2g-1 — a clip's current full-video link. `id` is the link's, which a replace or a removal names. */
+export interface SiteVisitFileLinkDto {
+  id: string;
+  url: string;
+  host: 'drive' | 'zoho';
+  label: string | null;
+  addedById: string;
+  addedByName: string;
+  addedByRole: string;
+  addedAt: string;
 }
 
 export interface SiteVisitPlaceDto {
@@ -136,7 +157,8 @@ export interface SiteVisitAttendeeDto {
 const withChildren = {
   places: { orderBy: [{ addedReceivedAt: 'asc' }, { id: 'asc' }] },
   attendees: { orderBy: [{ addedAt: 'asc' }, { id: 'asc' }] },
-  media: { orderBy: [{ addedAt: 'asc' }, { mediaId: 'asc' }] },
+  // a file's CURRENT full-video link only (at most one, V2g-0 K5); ended links stay in the table as history
+  media: { orderBy: [{ addedAt: 'asc' }, { mediaId: 'asc' }], include: { links: { where: { endedAt: null } } } },
   removals: { orderBy: [{ removedAt: 'asc' }, { mediaId: 'asc' }] },
   inspections: { orderBy: [{ linkedAt: 'asc' }, { inspectionId: 'asc' }] },
 } satisfies Prisma.SiteVisitInclude;
@@ -170,6 +192,27 @@ function removableBy(
   if (viewer.role === 'pmc') return { reasonRequired: !ownInHour, ...(ownInHour ? ends : { until: null, remainingMs: null }) };
   if (ownInHour && status === 'open') return { reasonRequired: false, ...ends };
   return null;
+}
+
+/** Video V2g-1 — whether the viewer may add, replace or take off a video clip's full-video link now (the service's
+ *  `judgeFileLink`, read at this read): the PMC always (a reason needed to end a link that is not their own within the
+ *  hour); anyone else while the visit is not closed, when they added the clip or are on the visit, to add a link where
+ *  there is none or to change their own within the hour. */
+function linkOfferBy(
+  viewer: SiteVisitViewer | undefined, v: Pick<Row, 'status' | 'visitorId' | 'attendees'>, fileAddedById: string,
+  link: { addedById: string; addedAt: Date } | null, now: number,
+): SiteVisitFileDto['fullVideoLinkOffer'] {
+  if (!viewer) return null;
+  const until = link ? link.addedAt.getTime() + SITE_VISIT_OWN_REMOVAL_MS : null;
+  // inclusive at the hour, as the database judges it (`addedAt + 1 hour >= now` on its clock)
+  const ownInHour = link !== null && until !== null && link.addedById === viewer.id && now <= until;
+  const ends = ownInHour && until !== null ? { until: new Date(until).toISOString(), remainingMs: until - now } : { until: null, remainingMs: null };
+  if (viewer.role === 'pmc') return { reasonRequired: link !== null && !ownInHour, ...ends };
+  if (v.status === 'closed') return null;
+  const onVisit = v.visitorId === viewer.id || v.attendees.some((a) => a.userId === viewer.id && a.retiredAt === null);
+  if (!onVisit && fileAddedById !== viewer.id) return null;
+  if (link === null) return { reasonRequired: false, until: null, remainingMs: null };
+  return ownInHour ? { reasonRequired: false, ...ends } : null;
 }
 
 export function toSiteVisitDto(
@@ -213,6 +256,7 @@ export function toSiteVisitDto(
       note: f.note, rating: f.rating, place: f.placeName !== '' ? { nodeId: f.nodeId, name: f.placeName } : null,
       addedById: f.addedById, addedByName: f.addedByName, addedByRole: f.addedByRole, addedAt: f.addedAt.toISOString(),
       removable: removableBy(viewer, v.status, f.addedById, f.addedAt, now, facts.get(f.mediaId)?.cited ?? false),
+      ...fileLinkOf(v, f, isVideo(facts.get(f.mediaId)?.mime), viewer, now),
     })),
     removals: v.removals.map((r) => ({
       mediaId: r.mediaId, kind: r.fileKind as SiteVisitRemovalDto['kind'], addedByName: r.addedByName, addedByRole: r.addedByRole,
@@ -224,6 +268,26 @@ export function toSiteVisitDto(
       inspectionId: w.inspectionId, linkedById: w.linkedById, linkedByName: w.linkedByName, linkedByRole: w.linkedByRole,
       linkedAt: w.linkedAt.toISOString(),
     })),
+  };
+}
+/** A video file's mime, as the media module reports it: the exact, case-sensitive "video/" prefix the database's insert trigger uses (V2g-0, K2; no lowercasing). */
+/** A video file's mime, as the media module reports it; the database's insert trigger reads the same (V2g-0, K2). */
+const isVideo = (mime: string | undefined): boolean => (mime ?? '').startsWith('video/');
+
+/** Video V2g-1 — a file's current full-video link and the viewer's offer; both null for a file that is not a video. */
+function fileLinkOf(
+  v: Row, f: Row['media'][number], video: boolean, viewer: SiteVisitViewer | undefined, now: number,
+): Pick<SiteVisitFileDto, 'fullVideoLink' | 'fullVideoLinkOffer'> {
+  if (!video) return { fullVideoLink: null, fullVideoLinkOffer: null };
+  const link = f.links[0] ?? null;
+  return {
+    fullVideoLink: link
+      ? {
+          id: link.id, url: link.url, host: link.host as SiteVisitFileLinkDto['host'], label: link.label,
+          addedById: link.addedById, addedByName: link.addedByName, addedByRole: link.addedByRole, addedAt: link.addedAt.toISOString(),
+        }
+      : null,
+    fullVideoLinkOffer: linkOfferBy(viewer, v, f.addedById, link, now),
   };
 }
 

@@ -11,12 +11,22 @@ import { resolveActor, type Actor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import { lockActorStanding, lockIdentities, resolveActorEnvelope, type ActorEnvelope } from '../platform/actor-envelope';
 import { executeCommand, hashRequest, peekReplay, type CommandScope, type CommandTx } from '../platform/commands';
+import { VISIT_FILE_GONE_MESSAGE, VIDEO_LINK_GONE_MESSAGE } from '@vitan/shared';
 import type {
-  AddSiteVisitAttendeeInput, AddSiteVisitPlaceInput, CloseSiteVisitInput, EndSiteVisitInput, StartSiteVisitInput,
+  AddSiteVisitAttendeeInput, AddSiteVisitPlaceInput, CloseSiteVisitInput, EndSiteVisitFileLinkInput, EndSiteVisitInput,
+  SetSiteVisitFileLinkInput, StartSiteVisitInput,
 } from '../contracts';
 import { SiteVisitsQueryService, type SiteVisitDto } from './site-visits.query';
 import { SITE_VISIT_NOTICE_COLOR, siteVisitClosedNotice, siteVisitEndedNotice, siteVisitStartedNotice } from './site-visit-notice';
 import { projectRoleChanged, projectUnavailable } from '../common/lost-project';
+
+/** A clip's current full-video link, locked: its id, its adder and whether it is still in its adder's own hour, read
+ *  on the database's clock (V2g-0, K7). */
+interface FileLinkRow {
+  id: string;
+  addedById: string;
+  inHour: boolean;
+}
 
 /** The visit row a later act reads, locked. */
 interface LockedVisit {
@@ -249,6 +259,139 @@ export class SiteVisitsService {
       await tx.siteVisitAttendee.update({ where: { id: attendeeId }, data: { retiredById: user.sub } });
       return this.announceRow(tx, projectId, actor, envelope, visitId, 'sitevisit.attendee_retired', { rowId: attendeeId });
     });
+  }
+
+  // ── a video clip's full-video link (Video V2g-1, #995) ─────────────────────────────────────────
+
+  /**
+   * Put a share link to a clip's full-quality video (Google Drive or Zoho WorkDrive) beside the clip, or replace the one
+   * it has. `replaces` is the link the person saw (null when none): a link changed by someone else since is refused, so
+   * nobody's link is ended unseen. A replace ends the current link and adds the new one in one transaction; the ended
+   * link stays as the clip's history (V2g-0, K5/K6).
+   *
+   * Who (Jagrut's plan, Stage 1 6 Nov 2026): adding a link where there is none, the person who added the clip or anyone
+   * who may add files to the visit (its visitor and the people recorded on it), while the visit is not closed, and the
+   * PMC at any time. Replacing or taking off a link follows a visit file's removal rule (#1179, V2g-0 K7): the person who
+   * added it, within the hour and while the visit is not closed, needs no reason; the PMC may at any time, saying why
+   * unless it is their own within the hour. The database judges the hour again at its own stamp.
+   */
+  async setFileLink(
+    projectId: string, visitId: string, mediaId: string, dto: SetSiteVisitFileLinkInput, user: AuthUser, idempotencyKey?: string,
+  ): Promise<SiteVisitDto> {
+    return this.visitorEdit(projectId, visitId, 'site-visits.set-file-link', { visitId, mediaId, ...dto }, user, idempotencyKey, async (tx, actor) => {
+      const { visit, file, current, envelope } = await this.lockFileLink(tx, projectId, visitId, mediaId, actor, user);
+      if ((current?.id ?? null) !== dto.replaces) {
+        throw new ConflictException(current
+          ? 'Someone else changed this video\'s full video link; look at it again'
+          : 'This video\'s full video link was taken off by someone else; look at it again');
+      }
+      if (await tx.siteVisitMediaLink.findUnique({ where: { id: dto.id }, select: { id: true } })) {
+        throw new ConflictException('This link has already been added');
+      }
+      this.judgeFileLink(visit, file, current, envelope.actorRole, user.sub, dto.reason, current ? 'replacing' : null);
+      if (current) await this.endLink(tx, current.id, user.sub, envelope.actorRole, dto.reason);
+      try {
+        // the database sets the host from the url, copies the adder's name as they stand and stamps the time (V2g-0)
+        await tx.siteVisitMediaLink.create({
+          data: {
+            id: dto.id, projectId, mediaId, url: dto.url, host: dto.url.startsWith('https://drive.google.com/') ? 'drive' : 'zoho',
+            label: dto.label ?? null, addedById: user.sub, addedByRole: envelope.actorRole,
+          },
+        });
+      } catch (error) {
+        // the partial unique index (K5) is the backstop behind the locks above: a second current link is someone else's
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+          throw new ConflictException('Someone else changed this video\'s full video link; look at it again');
+        }
+        throw error;
+      }
+      return { resultRef: dto.id, events: [] };
+    });
+  }
+
+  /** Take a clip's full-video link off with no successor, under {@link setFileLink}'s rule. The link stays as history. */
+  async endFileLink(
+    projectId: string, visitId: string, mediaId: string, dto: EndSiteVisitFileLinkInput, user: AuthUser, idempotencyKey?: string,
+  ): Promise<SiteVisitDto> {
+    return this.visitorEdit(projectId, visitId, 'site-visits.end-file-link', { visitId, mediaId, ...dto }, user, idempotencyKey, async (tx, actor) => {
+      const { visit, file, current, envelope } = await this.lockFileLink(tx, projectId, visitId, mediaId, actor, user);
+      if (current?.id !== dto.linkId) {
+        const known = await tx.siteVisitMediaLink.findFirst({ where: { projectId, mediaId, id: dto.linkId }, select: { id: true } });
+        if (!known) throw new NotFoundException(VIDEO_LINK_GONE_MESSAGE);
+        throw new ConflictException('This full video link was already taken off or replaced');
+      }
+      this.judgeFileLink(visit, file, current, envelope.actorRole, user.sub, dto.reason, 'removing');
+      await this.endLink(tx, current.id, user.sub, envelope.actorRole, dto.reason);
+      return { resultRef: current.id, events: [] };
+    });
+  }
+
+  /**
+   * The link writer's locks after the readiness key, in V2g-0's order: the tree and the visit row FOR UPDATE (every visit
+   * act's), the file's "Media" row FOR SHARE (the media module's `media_mime_of_locked`), the file's visit link
+   * ("SiteVisitMedia") FOR UPDATE, the file's current full-video link FOR UPDATE, then the
+   * actor's standing (registers, project row, identity). The database's triggers take the visit, the "Media" row, the
+   * file's visit link and the standing in the same order, as a file's removal does, so a raw writer waits behind this one. A file taken off the visit is not found.
+   */
+  private async lockFileLink(tx: CommandTx, projectId: string, visitId: string, mediaId: string, actor: Actor, user: AuthUser) {
+    const visit = await this.lockVisit(tx, projectId, visitId);
+    // the file's type through the media module's contract, under a share lock on its row, as the database's insert
+    // trigger reads it (K2): a change of type waits for this transaction and then sees its link
+    const [media] = await tx.$queryRaw<Array<{ mime: string | null }>>(Prisma.sql`SELECT media_mime_of_locked(${projectId}, ${mediaId}) AS "mime"`);
+    const [file] = await tx.$queryRaw<Array<{ addedById: string }>>(Prisma.sql`
+      SELECT "addedById" FROM "SiteVisitMedia" WHERE "projectId" = ${projectId} AND "visitId" = ${visitId} AND "mediaId" = ${mediaId}
+         FOR UPDATE`);
+    if (!file) throw new NotFoundException(VISIT_FILE_GONE_MESSAGE);
+    if (!(media?.mime ?? '').startsWith('video/')) throw new BadRequestException('Only a video takes a full video link');
+    const [current] = await tx.$queryRaw<FileLinkRow[]>(Prisma.sql`
+      SELECT "id", "addedById", ("addedAt" + interval '1 hour' >= site_visits_now()) AS "inHour"
+        FROM "SiteVisitMediaLink" WHERE "projectId" = ${projectId} AND "mediaId" = ${mediaId} AND "endedAt" IS NULL
+         FOR UPDATE`);
+    const envelope = await this.standing(tx, projectId, actor, user);
+    const present = visit.visitorId === user.sub
+      || (await tx.siteVisitAttendee.findFirst({ where: { projectId, visitId, userId: user.sub, retiredAt: null }, select: { id: true } })) !== null;
+    return { visit, file: { addedById: file.addedById, present }, current: current ?? null, envelope };
+  }
+
+  /** Who may add, replace or take off a clip's link (see {@link setFileLink}); `changing` is null when nothing ends. */
+  private judgeFileLink(
+    visit: LockedVisit, file: { addedById: string; present: boolean }, current: FileLinkRow | null, role: string, userId: string,
+    reason: string | undefined, changing: 'replacing' | 'removing' | null,
+  ): void {
+    const ownInHour = current !== null && current.addedById === userId && current.inHour === true;
+    if (role === 'pmc') {
+      if (changing && !ownInHour && reason === undefined) throw new BadRequestException(`Say why you are ${changing} this link`);
+      return;
+    }
+    if (visit.status === 'closed') throw new ConflictException('This site visit was closed by the PMC; ask the PMC to change the link');
+    if (!file.present && file.addedById !== userId) {
+      throw new ForbiddenException('Only the person who added this video, the people on this visit, or the PMC may add its full video link');
+    }
+    if (current === null) return;
+    if (current.addedById !== userId) throw new ForbiddenException('Only the person who added this link, or the PMC, may change it');
+    if (!ownInHour) throw new ForbiddenException('A link can be changed only within an hour of adding it; ask the PMC');
+  }
+
+  /**
+   * End a current link: the database stamps the time and copies the ender's name (K6). Only the PMC's reason is kept, as
+   * on a visit file's removal line: anyone else ends only their own link within the hour, which needs none, so a link
+   * ended with no reason leaves the database's CHECK (K7) to judge the hour at the end's own stamp.
+   */
+  private async endLink(tx: CommandTx, linkId: string, userId: string, role: string, reason: string | undefined): Promise<void> {
+    try {
+      await tx.siteVisitMediaLink.update({
+        where: { id: linkId },
+        data: { endedById: userId, endedByRole: role, reason: role === 'pmc' ? reason ?? null : null },
+      });
+    } catch (error) {
+      // the hour ran out between the check and the end's own stamp
+      const refused = error instanceof Prisma.PrismaClientUnknownRequestError || error instanceof Prisma.PrismaClientKnownRequestError;
+      if (refused && /SiteVisitMediaLink_shape_check/.test(error.message)) {
+        if (role === 'pmc') throw new BadRequestException('Say why you are changing this link');
+        throw new ForbiddenException('A link can be changed only within an hour of adding it; ask the PMC');
+      }
+      throw error;
+    }
   }
 
   // ── the visitor's edits ───────────────────────────────────────────────────────────────────────

@@ -1,12 +1,12 @@
-import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
 import {
-  addSiteVisitAttendeeSchema, addSiteVisitPlaceSchema, closeSiteVisitSchema, endSiteVisitSchema, listSiteVisitsSchema,
-  startSiteVisitSchema,
-  type AddSiteVisitAttendeeInput, type AddSiteVisitPlaceInput, type CloseSiteVisitInput, type EndSiteVisitInput,
-  type ListSiteVisitsInput, type StartSiteVisitInput,
+  addSiteVisitAttendeeSchema, addSiteVisitPlaceSchema, closeSiteVisitSchema, endSiteVisitFileLinkSchema, endSiteVisitSchema,
+  listSiteVisitsSchema, setSiteVisitFileLinkSchema, startSiteVisitSchema,
+  type AddSiteVisitAttendeeInput, type AddSiteVisitPlaceInput, type CloseSiteVisitInput, type EndSiteVisitFileLinkInput,
+  type EndSiteVisitInput, type ListSiteVisitsInput, type SetSiteVisitFileLinkInput, type StartSiteVisitInput,
 } from '../contracts';
 import { SiteVisitsService } from './site-visits.service';
 import { SiteVisitsQueryService } from './site-visits.query';
@@ -110,5 +110,34 @@ export class SiteVisitsController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.visits.retireAttendee(projectId, visitId.toLowerCase(), attendeeId.toLowerCase(), user, idempotencyKey);
+  }
+
+  // ── a video clip's full-video link (Video V2g-1, #995): every member who may add a file reaches it; the service
+  //    narrows it to the clip's adder, the people on the visit and the PMC ──
+
+  @Put(':visitId/files/:mediaId/link')
+  @RolesFor('media.upload')
+  setFileLink(
+    @Param('projectId') projectId: string,
+    @Param('visitId') visitId: string,
+    @Param('mediaId') mediaId: string,
+    @Body(new ZodPipe(setSiteVisitFileLinkSchema)) body: SetSiteVisitFileLinkInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.visits.setFileLink(projectId, visitId.toLowerCase(), mediaId, body, user, idempotencyKey);
+  }
+
+  @Delete(':visitId/files/:mediaId/link')
+  @RolesFor('media.upload')
+  endFileLink(
+    @Param('projectId') projectId: string,
+    @Param('visitId') visitId: string,
+    @Param('mediaId') mediaId: string,
+    @Body(new ZodPipe(endSiteVisitFileLinkSchema)) body: EndSiteVisitFileLinkInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.visits.endFileLink(projectId, visitId.toLowerCase(), mediaId, body, user, idempotencyKey);
   }
 }
