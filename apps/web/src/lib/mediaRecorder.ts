@@ -65,6 +65,8 @@ export interface Recorded {
   mime: string;
   type: string;
   ms: number;
+  /** a video clip's still frame, taken from the camera's picture while it recorded (#995 V2e), when the screen took one */
+  still?: Promise<string | null>;
 }
 
 /** Why a recording could not start: the person (or the browser for the site) said no to the microphone or camera; this

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { POSTER_AT_SEC, POSTER_DRAW_WAIT_MS, POSTER_MAX_WIDTH, POSTER_QUALITY, drawPoster } from '@/lib/videoPoster';
+import { POSTER_AT_SEC, POSTER_DRAW_WAIT_MS, POSTER_MAX_WIDTH, POSTER_QUALITY, clipPoster, drawPoster, stillFrom } from '@/lib/videoPoster';
 import * as timers from '@/lib/clampedTimer';
 import { POSTER_MAX_BASE64 } from '@/data/queueContracts';
 
@@ -202,5 +202,79 @@ describe('#995 V2b-2: drawPoster', () => {
     expect(await drawPoster(clipBlob)).toBeNull();
     writes = new Blob([new Uint8Array((POSTER_MAX_BASE64 / 4) * 3)], { type: 'image/jpeg' });
     expect(await drawPoster(clipBlob)).not.toBeNull();
+  });
+});
+
+/**
+ * #995 V2e: on Jagrut's iPhone (6 Nov), a clip saved on the phone still gave no frame after V2c, so the screen takes the
+ * frame from the camera's own picture while it records (`stillFrom` on its live preview), and `clipPoster` prefers that.
+ */
+describe('#995 V2e: the frame from the camera’s picture', () => {
+  it('draws the frame a video shows now, at once, at most 640 wide in its own shape, as JPEG 0.8, and none from a video with no picture', async () => {
+    video.currentTime = 0.4;
+    const taken = stillFrom(video as unknown as HTMLVideoElement);
+    // drawn before this returns, so the camera may be let go straight after
+    expect(canvas.drawn).toEqual([video, 0, 0, 640, 360]);
+    expect(await taken).toBe('/9j/2Q==');
+    expect([canvas.type, canvas.quality]).toEqual(['image/jpeg', POSTER_QUALITY]);
+    // nothing is played, put in the page or let go: the video is the screen's
+    expect(document.body.appendChild).not.toHaveBeenCalled();
+    expect(pauses).toBe(0);
+    expect(removed).toBe(false);
+    video.videoWidth = 720;
+    video.videoHeight = 1280;
+    expect(await stillFrom(video as unknown as HTMLVideoElement)).toBe('/9j/2Q==');
+    expect([canvas.width, canvas.height]).toEqual([640, 1138]);
+    canvas.drawn = null;
+    video.videoWidth = 0;
+    expect(await stillFrom(video as unknown as HTMLVideoElement)).toBeNull();
+    expect(canvas.drawn).toBeNull();
+    // a browser that writes no JPEG, or a frame over the contract's size, is no frame
+    video.videoWidth = 1280;
+    writes = new Blob([new Uint8Array([1])], { type: 'image/png' });
+    expect(await stillFrom(video as unknown as HTMLVideoElement)).toBeNull();
+    writes = new Blob([new Uint8Array((POSTER_MAX_BASE64 / 4) * 3 + 3)], { type: 'image/jpeg' });
+    expect(await stillFrom(video as unknown as HTMLVideoElement)).toBeNull();
+  });
+
+  it('keeps the camera’s frame first, and draws one from the clip only when the camera gave none in time', async () => {
+    // the camera's frame: the clip is never opened
+    expect(await clipPoster(clipBlob, Promise.resolve('CAMERA'))).toBe('CAMERA');
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    // none from the camera, a failed take, or no take at all: drawn from the clip
+    expect(await clipPoster(clipBlob, Promise.resolve(null))).toBe('/9j/2Q==');
+    expect(await clipPoster(clipBlob, Promise.reject(new Error('no')))).toBe('/9j/2Q==');
+    expect(await clipPoster(clipBlob)).toBe('/9j/2Q==');
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(3);
+  });
+
+  it('waits on the camera’s frame and the clip’s together for one bound only, never longer than before', async () => {
+    const at: number[] = [];
+    const real = timers.setClampedTimeout;
+    let fire: (() => void) | null = null;
+    vi.spyOn(timers, 'setClampedTimeout').mockImplementation((fn, ms) => {
+      at.push(ms);
+      if (at.length === 1) { fire = fn; return { clear: () => {} }; }
+      return real(fn, ms);
+    });
+    let clockMs = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => clockMs);
+    // a camera frame that never comes: the whole bound passes waiting on it, so no frame is drawn from the clip after it
+    const late = clipPoster(clipBlob, new Promise(() => {}));
+    await Promise.resolve();
+    expect(at).toEqual([POSTER_DRAW_WAIT_MS]);
+    clockMs = POSTER_DRAW_WAIT_MS;
+    fire!();
+    expect(await late).toBeNull();
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    // a camera that gave none a second in: the clip is drawn from in what is left of the bound
+    at.length = 0;
+    clockMs = 0;
+    let none: (v: string | null) => void = () => {};
+    const early = clipPoster(clipBlob, new Promise((done) => { none = done; }));
+    clockMs = 1000;
+    none(null);
+    expect(await early).toBe('/9j/2Q==');
+    expect(at).toEqual([POSTER_DRAW_WAIT_MS, POSTER_DRAW_WAIT_MS - 1000]);
   });
 });

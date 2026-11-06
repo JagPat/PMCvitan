@@ -10,11 +10,18 @@ import type { ApiGateway, OutboxOp, SiteVisit } from '@/data/apiGateway';
 import { POSTER_WAIT_MS, fileVisitPhoto, getVisitPhoto, listVisitPhotos, putVisitPhoto, visitPhotoScope, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
 import { tellSiteVisits } from '@/data/apiGateway';
 import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
+import { STILL_AT_MS, stillFrom } from '@/lib/videoPoster';
 
 // #995 V2b-2: drawing a clip's still frame needs a browser that decodes video (jsdom has none); `video-poster.test.ts`
 // tests the drawing itself. Here each recording is given the frame the test says, none by default
-const still = vi.hoisted(() => ({ frame: null as string | null }));
-vi.mock('@/lib/videoPoster', () => ({ drawPoster: vi.fn(async () => still.frame) }));
+// `frame`: what is drawn from a saved clip; `live`: what is taken from the camera's picture while it records (V2e)
+const still = vi.hoisted(() => ({ frame: null as string | null, live: null as string | null, taken: 0 }));
+vi.mock('@/lib/videoPoster', async (actual) => ({
+  ...(await actual<typeof import('@/lib/videoPoster')>()),
+  stillFrom: vi.fn(async () => { still.taken += 1; return still.live; }),
+  // the camera's still when there is one, else the frame drawn from the clip (clipPoster's own order: video-poster.test.ts)
+  clipPoster: vi.fn(async (_blob: Blob, taken?: Promise<string | null>) => (taken ? await taken : null) ?? still.frame),
+}));
 
 /**
  * #995 V2b, video clips on a visit: the visitor and anyone present record a clip of up to a minute in the app, with the
@@ -109,6 +116,8 @@ beforeEach(() => {
   bytes = new Uint8Array([1, 2, 3]);
   FakeRecorder.last = null;
   still.frame = null;
+  still.live = null;
+  still.taken = 0;
   vi.spyOn(Date, 'now').mockImplementation(() => now);
   vi.spyOn(performance, 'now').mockImplementation(() => now);
   tracks = [{ stop: vi.fn() }];
@@ -451,6 +460,50 @@ describe('#995 V2b-2: a clip’s still frame', () => {
     await flushAgain();
     expect(uploadMedia).toHaveBeenCalledTimes(1);
     expect(addVisitPoster).toHaveBeenCalledTimes(1);
+  });
+
+  it('V2e: sends the frame taken from the camera’s picture as it records, where the phone draws none from the saved clip', async () => {
+    withRecorder();
+    // the camera's preview shows a picture; the saved clip gives no frame (Jagrut's iPhone, 6 Nov)
+    vi.spyOn(HTMLVideoElement.prototype, 'videoWidth', 'get').mockReturnValue(1280);
+    still.live = '/9j/LIVE';
+    const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
+    const addVisitPoster = vi.fn(async (id: string) => ({ id, posterUrl: `/media/${id}/poster?t=x` }));
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia, addVisitPoster }));
+    const card = screen.getByTestId('sv-visit-v-1');
+    // the screen's own second-in timer, run by the test when it says (no clock is waited on)
+    const timer = vi.spyOn(globalThis, 'setTimeout');
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Record video' })); });
+    const second = timer.mock.calls.find(([, ms]) => ms === STILL_AT_MS);
+    expect(second).toBeDefined();
+    // nothing taken before that second
+    expect(still.taken).toBe(0);
+    timer.mockRestore();
+    // taken once, from the preview, when it comes
+    await act(async () => { (second![0] as () => void)(); });
+    expect(still.taken).toBe(1);
+    const shown = within(card).getByTestId('sv-recording-video-v-1').querySelector('video');
+    expect(vi.mocked(stillFrom).mock.calls[0][0]).toBe(shown);
+    now += 3_000;
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Stop and add' })); });
+    await settled();
+    // not taken again at Stop
+    expect(still.taken).toBe(1);
+    expect(addVisitPoster).toHaveBeenCalledWith('m-9', '/9j/LIVE');
+    // a clip stopped before that second is taken at Stop, while the camera still shows its picture
+    still.live = '/9j/STOP';
+    uploadMedia.mockImplementation(async () => ({ id: 'm-10', url: '/media/m-10' }));
+    await record(card, 1_500);
+    await settled();
+    expect(still.taken).toBe(2);
+    expect(addVisitPoster).toHaveBeenLastCalledWith('m-10', '/9j/STOP');
+    // nothing is taken for a voice note, nor kept from a discarded clip for the next one
+    still.live = null;
+    uploadMedia.mockImplementation(async () => ({ id: 'm-11', url: '/media/m-11' }));
+    await record(card, 3_000, { record: 'Record voice note', stop: 'Stop and add' });
+    await settled();
+    expect(still.taken).toBe(2);
+    expect(addVisitPoster).toHaveBeenCalledTimes(2);
   });
 
   it('sends a clip this phone drew no frame from alone, and a voice note never draws one', async () => {

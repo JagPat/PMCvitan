@@ -15,7 +15,7 @@ import { captureStamp } from './captureStamp';
 import { photoDecodes } from './photoDecodes';
 import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto';
 import { acceptedType, blobBase64, type Recorded, type RecordKind } from './mediaRecorder';
-import { drawPoster } from './videoPoster';
+import { clipPoster } from './videoPoster';
 import { VIDEO_CLIP_MIMES, VOICE_NOTE_MIMES } from '@/data/queueContracts';
 import { refusalWords, removalRefusalWords, SV } from './siteVisitWords';
 import { emitGuideOutcome, guideRunToken, recordGuidedPhotoPick } from '@/guide/outcomes';
@@ -1008,8 +1008,9 @@ export function useSiteVisits() {
         const data = await blobBase64(rec.blob).catch(() => null);
         if (!data) { say(rule.words.unreadable); return false; }
         if (data.length > MAX_PHOTO_BASE64) { say(rule.words.tooBig); return false; }
-        // V2b-2: a clip's still frame, drawn here and kept with it; a clip this phone cannot draw one from is kept without
-        const poster = kind === 'video' ? await drawPoster(rec.blob).catch(() => null) : null;
+        // V2b-2: a clip's still frame, kept with it; V2e: the one taken from the camera while it recorded, else one drawn
+        // from the clip here; a clip with neither is kept without
+        const poster = kind === 'video' ? await clipPoster(rec.blob, rec.still).catch(() => null) : null;
         if (!live(scope)) return false;
         // the place is checked as the visit is now shown, as a photo's is
         const v = shownRef.current.find((x) => x.id === visitId);
