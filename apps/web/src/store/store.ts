@@ -2931,7 +2931,7 @@ export const useStore = create<Store>()(
       }, () => {
         // not read: a photo may be kept whether or not any act is queued, so this is tried again (Codex 4389428598)
         if (scopeStillCurrent(readScope) && outboxKey() === readKey) retrySitePhotos();
-      });
+      }).catch(() => undefined); // never rejects: its callers do not wait on it, and the load's wait only needs it settled
     };
     const siteVisitKeyOf = (key: string): string => key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
     /** SV2 (#792): a visit photo's act is never stored here. Its one record is its `visitPhotoStore` row (act, bytes,

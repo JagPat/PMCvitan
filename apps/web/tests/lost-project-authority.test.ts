@@ -783,6 +783,31 @@ describe('#1373 the kept count waits for the rows a load rebuilds (Codex 4496946
     expect(useStore.getState().toast).toBe(KEPT_ONE);
   });
 
+  it('a rebuild another project\'s load started is never waited on', async () => {
+    keptPhotoRow(new Promise<unknown[]>(() => undefined));
+    const { useStore, ApiGateway } = await signedIn('fresh');
+    // Alpha's load starts its rebuild, which never settles
+    useStore.setState({ online: false });
+    useStore.getState().hydrateOutbox();
+    // the person switches to Beta (its own load not begun yet)
+    stubFetch(switchTo('p-b'));
+    expect(await useStore.getState().switchProject('p-b')).toBe(true);
+    const gwB = new ApiGateway('http://api.test', 'p-b');
+    gwB.setToken(tokB);
+    useStore.getState()._setGateway(gwB);
+    // Beta is lost: the move goes on at once, never waiting on Alpha's rebuild
+    stubFetch((m, p, b) => {
+      if (p.startsWith('/projects/p-b/')) return { status: 403, body: REMOVED };
+      if (m === 'GET' && p === '/me/memberships') return { status: 200, body: [ALPHA] };
+      return switchTo('p-a')(m, p, b);
+    });
+    calls.length = 0;
+    await gwB.snapshot().catch(() => undefined);
+    await vi.waitFor(() => expect(hits('GET', '/me/memberships')).toBe(1));
+    await drain();
+    expect(hits('POST', '/auth/switch')).toBe(1);
+  });
+
   it('a rebuild that never settles still moves the person once its bound has passed', async () => {
     keptPhotoRow(new Promise<unknown[]>(() => undefined));
     const { useStore, gw } = await signedIn('fresh');
