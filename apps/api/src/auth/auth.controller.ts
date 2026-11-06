@@ -3,7 +3,7 @@ import type { Request } from 'express';
 import { AuthService } from './auth.service';
 import { PasswordCredentialsService } from './password-credentials.service';
 import { ZodPipe } from '../common/zod.pipe';
-import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
+import { CurrentUser, IdentityScoped, JwtGuard, type AuthUser } from '../common/auth';
 import { AllowAnyRole, Public } from '../common/roles';
 import { Throttle, ThrottleGuard } from '../common/throttle';
 import { isProduction } from '../config';
@@ -53,11 +53,21 @@ export class AuthController {
     private readonly identity: IdentitySignInService,
   ) {}
 
-  /** Re-scope the session to another project the user belongs to (project switch). */
+  /**
+   * Re-scope the session to another project the user belongs to (project switch).
+   *
+   * #1373: identity-scoped, as `/me/*` is. The guard still checks the token's signature and credential version, but not
+   * the token's own project, so a person who lost that project (archived, re-roled, removed) can still move to one they
+   * hold. The target is the only project this mints for, and `switchProject` checks it live (archived, then membership
+   * or org-admin reach), so no project the person does not hold can be reached. A worker device token names a device,
+   * not a person, and is refused as before.
+   */
   @Post('switch')
   @UseGuards(JwtGuard)
+  @IdentityScoped()
   @AllowAnyRole('AuthService.switchProject verifies the caller is a member of the target project')
   switch(@CurrentUser() user: AuthUser, @Body(new ZodPipe(switchProjectSchema)) body: SwitchProjectInput) {
+    if (user.worker) throw new ForbiddenException('A worker device cannot switch projects');
     return this.auth.switchProject(user.sub, body.projectId, user.credentialVersion ?? 0);
   }
 
