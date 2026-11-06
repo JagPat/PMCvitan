@@ -91,6 +91,7 @@ import { DailyLogController } from './daily-log/daily-log.controller';
 import { SiteVisitsService } from './site-visits/site-visits.service';
 import { SiteVisitsQueryService } from './site-visits/site-visits.query';
 import { SiteVisitFilesParticipant } from './site-visits/site-visit-files.participant';
+import { SiteVisitInspectionsParticipant } from './site-visits/site-visit-inspections.participant';
 import { SiteVisitsParticipant } from './site-visits/site-visits.participant';
 import { SiteVisitsController } from './site-visits/site-visits.controller';
 import { RealtimeGateway } from './realtime/realtime.gateway';
@@ -257,6 +258,7 @@ import { MediaParticipant } from './media/media.participant';
     SiteVisitsService,
     SiteVisitsQueryService,
     SiteVisitFilesParticipant,
+    SiteVisitInspectionsParticipant,
     SiteVisitsParticipant,
     // Task 10 — the daily-log module's public READ boundary (snapshot slice + tenant-ref check).
     DailyLogQueryService,

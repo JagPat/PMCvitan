@@ -104,7 +104,7 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; evide
   } as unknown as PrismaService;
   const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
   const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-  const svc = new InspectionsService(prisma, snapshot, dispatcher, { today: () => '2026-07-03' }, new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never), undefined as never, new MediaParticipant());
+  const svc = new InspectionsService(prisma, snapshot, dispatcher, { today: () => '2026-07-03' }, new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never), undefined as never, new MediaParticipant(), undefined as never);
   const user = { sub: 'u1', role: 'engineer', projectId: insp.projectId } as never;
   const pmc = { sub: 'u-pmc', role: 'pmc', projectId: insp.projectId } as never;
   return { svc, prisma, user, pmc, created, audits, insp };
@@ -169,7 +169,7 @@ describe('InspectionsService.create — location spine (nodeId)', () => {
     } as unknown as PrismaService;
     const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
     const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-    const svc = new InspectionsService(prisma, snapshot, dispatcher, { today: () => '2026-07-03' }, new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never), undefined as never, new MediaParticipant());
+    const svc = new InspectionsService(prisma, snapshot, dispatcher, { today: () => '2026-07-03' }, new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never), undefined as never, new MediaParticipant(), undefined as never);
     const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
     return { svc, user, created };
   }

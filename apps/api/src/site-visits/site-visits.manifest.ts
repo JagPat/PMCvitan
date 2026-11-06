@@ -18,8 +18,9 @@ import { type ModuleManifest } from '@vitan/shared';
  * it, when, and the reason), required by the database whenever a file's delete takes its link.
  *
  * Guided site inspections, step 3b adds `siteVisitInspection`: an inspection walked during a visit. Like a visit's file,
- * the link is this module's row, written (step 3c) as the inspection submit's participant, so the inspections module
- * never writes a site-visit table.
+ * the link is this module's row, written (step 3c, `SiteVisitInspectionsParticipant`) as the inspection submit's
+ * participant, so the inspections module never writes a site-visit table. The visit's read serves each line by the
+ * inspection's id only; the checklist itself is read from the inspections read.
  */
 export const siteVisitsManifest: ModuleManifest = {
   id: 'site-visits',

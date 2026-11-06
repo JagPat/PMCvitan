@@ -33,7 +33,10 @@ export const inspectionsManifest: ModuleManifest = {
   // Guided site inspections, step 2b adds `media`: the submit's evidence rule asks the type of each linked evidence file
   // (photo, video, voice) through `MediaParticipant.mimesOf`, on its own transaction under the inspection row's lock.
   // Cycle-exempt as `orgs` is: `media.dependsOn` reaches inspections, so a READ edge would close a cycle.
-  workflowParticipants: ['activities', 'orgs', 'media'],
+  // Guided site inspections, step 3c adds `site-visits`: a walk done on a site visit is recorded on the visit by
+  // `SiteVisitInspectionsParticipant`, in the submit's own transaction. Cycle-exempt as `media` is: `site-visits.dependsOn`
+  // reaches inspections through media, so a READ edge would close a cycle.
+  workflowParticipants: ['activities', 'orgs', 'media', 'site-visits'],
   producesEvents: [
     'inspection.created',
     'inspection.submitted',

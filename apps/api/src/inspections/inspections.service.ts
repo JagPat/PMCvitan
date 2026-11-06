@@ -27,6 +27,7 @@ import {
 } from './assignment-eligibility';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { MediaParticipant } from '../media/media.participant';
+import { SiteVisitInspectionsParticipant } from '../site-visits/site-visit-inspections.participant';
 import type { LibraryChecklist } from '../orgs/checklist-library';
 import { checklistPath } from '../platform/record-paths';
 import { isFailedItem } from './failed-item';
@@ -88,6 +89,8 @@ export class InspectionsService {
     private readonly orgs: OrgsParticipant,
     // Guided site inspections, step 2b — the evidence rule asks the media module each linked file's type (manifest edge)
     private readonly media: MediaParticipant,
+    // Guided site inspections, step 3c — a walk done on a site visit is recorded on the visit by its owner (manifest edge)
+    private readonly visits: SiteVisitInspectionsParticipant,
   ) {}
 
   /** Guided site inspections, step 2c — the Vitan checklist library this project's PMC picks from (its company's library
@@ -156,19 +159,26 @@ export class InspectionsService {
   /** Engineer submits the checklist. Task 4: every FAILED item must carry at least one
    *  LINKED Media evidence row — the photos counter is a display derivative, never proof.
    *  The submit itself is a CAS (one winner) and stamps the submitter's real identity. */
-  async submit(projectId: string, inspectionId: string, input: SubmitInspectionInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+  async submit(
+    projectId: string, inspectionId: string, input: SubmitInspectionInput, user: AuthUser, idempotencyKey?: string, visitId?: string,
+  ): Promise<SnapshotDto> {
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
-    const requestHash = hashRequest({ inspectionId, items: input.items });
+    // the visit joins the hash only when named, so a request without one hashes as before (guided step 3c)
+    const requestHash = hashRequest({ inspectionId, items: input.items, ...(visitId ? { visitId } : {}) });
     // A keyed replay returns the current snapshot without re-running the state-machine guards — so a
     // retry of an already-committed submit replays cleanly instead of hitting "already submitted".
     if (await peekReplay(this.prisma, scope, actor.actorId, 'inspections.submit', idempotencyKey, requestHash)) {
       return this.snapshot.build(projectId, user.role, user.sub);
     }
     const prep = await this.prepareSubmit(projectId, inspectionId, input, user);
+    if (visitId) await this.visits.assertMayLink(projectId, visitId, user.sub);
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'inspections.submit', idempotencyKey, requestHash,
-      run: async (tx) => ({ resultRef: inspectionId, events: [await this.applySubmit(tx, prep, actor, user)] }),
+      run: async (tx) => {
+        if (visitId) await this.visits.lockForLink(tx, projectId, visitId, user.sub);
+        return { resultRef: inspectionId, events: [await this.applySubmit(tx, prep, actor, user, visitId)] };
+      },
     });
     await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -226,11 +236,14 @@ export class InspectionsService {
    * so the rules cannot drift; the decision's first event is caused by the walk's `inspection.submitted`. Lock order is
    * the submit's then the decide's, which is the order each already takes: readiness key, inspection row, membership.
    */
-  async finish(projectId: string, inspectionId: string, input: FinishInspectionInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+  async finish(
+    projectId: string, inspectionId: string, input: FinishInspectionInput, user: AuthUser, idempotencyKey?: string, visitId?: string,
+  ): Promise<SnapshotDto> {
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const requestHash = hashRequest({
       inspectionId, items: input.items, assigneeId: input.assigneeId ?? null, dueInDays: input.dueInDays ?? null,
+      ...(visitId ? { visitId } : {}),
     });
     if (await peekReplay(this.prisma, scope, actor.actorId, 'inspections.finish', idempotencyKey, requestHash)) {
       return this.snapshot.build(projectId, user.role, user.sub);
@@ -249,10 +262,12 @@ export class InspectionsService {
       dueInDays: input.dueInDays,
     };
     const plan = await this.prepareDecide(projectId, walked, decision);
+    if (visitId) await this.visits.assertMayLink(projectId, visitId, user.sub);
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'inspections.finish', idempotencyKey, requestHash,
       run: async (tx) => {
-        const submittedEv = await this.applySubmit(tx, prep, actor, user);
+        if (visitId) await this.visits.lockForLink(tx, projectId, visitId, user.sub);
+        const submittedEv = await this.applySubmit(tx, prep, actor, user, visitId);
         const decided = await this.applyDecide(tx, plan, actor, user, decision, submittedEv.eventId);
         return { resultRef: inspectionId, events: [submittedEv, ...decided] };
       },
@@ -407,8 +422,11 @@ export class InspectionsService {
 
   /** The submit's writes, inside the command's transaction (guided step 3a: shared with {@link finish}). Takes the
    *  readiness key, then the inspection row, then re-asks the assignment and the evidence rule under them, writes each
-   *  item, moves the inspection to submitted (CAS) and emits `inspection.submitted`. */
-  private async applySubmit(tx: Prisma.TransactionClient, prep: SubmitPrep, actor: Actor, user: AuthUser): Promise<EmittedEventMeta> {
+   *  item, moves the inspection to submitted (CAS) and emits `inspection.submitted`. A walk done on a site visit (guided
+   *  step 3c) is recorded on the visit after the CAS and before the event; the caller took the visit's locks first. */
+  private async applySubmit(
+    tx: Prisma.TransactionClient, prep: SubmitPrep, actor: Actor, user: AuthUser, visitId?: string,
+  ): Promise<EmittedEventMeta> {
     const { projectId, inspectionId, insp, submitted, refuseShortfalls } = prep;
     // submission moves the linked chain's tip state — a readiness write (finding 1)
     await lockProjectReadiness(tx, projectId);
@@ -464,6 +482,7 @@ export class InspectionsService {
       data: { submitted: true, by: actor.actorName, submittedById: actor.actorId, submittedByName: actor.actorName },
     });
     if (count === 0) throw new ConflictException('The inspection changed while submitting — reload and retry');
+    if (visitId) await this.visits.link(tx, { projectId, visitId, inspectionId, userId: user.sub, actor });
     await recordAudit(tx, { projectId, actor, action: 'inspection.submit', entity: 'Inspection', entityId: inspectionId });
     const ev = await emitEvent(tx, { projectId, actor, eventType: 'inspection.submitted', entityType: 'Inspection', entityId: inspectionId, effectKey: 'inspection.submitted', dispatch: {} });
     return ev;
