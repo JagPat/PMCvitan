@@ -502,11 +502,20 @@ export function failVisitPhotosOn(userScope: string, projectId: string, visitId:
 }
 
 /** #1388: the projects whose rows this phone keeps for `userScope`, from the rows' keys alone (no row is read, so no
- *  bytes are loaded). Read only. */
+ *  bytes are loaded). Read only, and bounded (`withinWait`). */
 export function visitPhotoProjectsOf(userScope: string): Promise<Set<string>> {
   const prefix = `${userScope}::`;
-  return tx<IDBValidKey[]>('readonly', (s, done) => {
+  return withinWait(() => tx<IDBValidKey[]>('readonly', (s, done) => {
     const req = s.getAllKeys(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
     req.onsuccess = () => done(req.result ?? []);
-  }).then((keys) => new Set((keys ?? []).map((k) => String(k).slice(prefix.length)).map((r) => r.slice(0, r.indexOf('::'))).filter((p) => p.length > 0)));
+  })).then((keys) => new Set((keys ?? []).map((k) => String(k).slice(prefix.length)).map((r) => r.slice(0, r.indexOf('::'))).filter((p) => p.length > 0)));
+}
+
+/** #1388: every row of (user, project), oldest first, read only: unlike `listVisitPhotos` it lets go of no key this tab
+ *  holds, as it reads for a project no tab of this person loads. Bounded (`withinWait`). */
+export function readVisitPhotoRows(userScope: string, projectId: string): Promise<VisitPhotoRow[]> {
+  return withinWait(() => tx<VisitPhotoRow[]>('readonly', (s, done) => {
+    const rows: VisitPhotoRow[] = [];
+    eachRow(s, userScope, projectId, (row) => rows.push(row), () => done(rows.sort((a, b) => a.createdAt - b.createdAt)));
+  }));
 }

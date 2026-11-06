@@ -4,7 +4,7 @@ import { useFocusTrap } from '@/lib/useFocusTrap';
 import { useProjectSwitch } from './useProjectSwitch';
 import { CreateProjectModal } from './ProjectSwitcher';
 import { KeptElsewhereModal } from './KeptElsewhere';
-import { keptElsewhereLine } from '@/lib/queueWords';
+import { QW } from '@/lib/queueWords';
 import { Check, Plus, X, LayoutGrid } from '@/lib/icons';
 import { ROLE_LABEL } from '@/lib/screens';
 import { navLabelFor } from '@/lib/mobileNav';
@@ -166,9 +166,9 @@ export function ProjectSheet({ onClose }: { onClose: () => void }) {
           <span className={styles.rowLabel}>{SL.newProject[lang]}</span>
         </button>
       )}
-      {keptElsewhere > 0 && (
+      {keptElsewhere && (
         <button className={styles.row} data-testid="kept-elsewhere-line" onClick={() => setKeptOpen(true)}>
-          <span className={styles.rowLabel}>{keptElsewhereLine(keptElsewhere, lang)}</span>
+          <span className={styles.rowLabel}>{QW.keptElsewhere[lang]}</span>
         </button>
       )}
     </MobileSheet>

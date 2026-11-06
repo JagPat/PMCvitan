@@ -60,15 +60,11 @@ export const QW = {
     gu: '{project} માટેનો 1 ફેરફાર આ ઉપકરણ પર રાખેલો છે અને તમારો પ્રવેશ પાછો મળશે ત્યારે મોકલાશે.',
   },
   /** #1388 (unit 1): the list of changes this device keeps for projects the person no longer holds */
+  // the switcher's line: no count, as it is read from the keys alone (Stage 1 G10); the list counts
   keptElsewhere: {
-    en: 'Changes kept for {n} projects you no longer have',
-    hi: '{n} प्रोजेक्ट के बदलाव रखे गए हैं जिनकी पहुँच अब आपके पास नहीं है',
-    gu: '{n} પ્રોજેક્ટના ફેરફારો રાખેલા છે જેનો પ્રવેશ હવે તમારી પાસે નથી',
-  },
-  keptElsewhereOne: {
-    en: 'Changes kept for a project you no longer have',
-    hi: 'एक प्रोजेक्ट के बदलाव रखे गए हैं जिसकी पहुँच अब आपके पास नहीं है',
-    gu: 'એક પ્રોજેક્ટના ફેરફારો રાખેલા છે જેનો પ્રવેશ હવે તમારી પાસે નથી',
+    en: 'Changes kept for projects you no longer have',
+    hi: 'उन प्रोजेक्ट के बदलाव रखे गए हैं जिनकी पहुँच अब आपके पास नहीं है',
+    gu: 'જે પ્રોજેક્ટનો પ્રવેશ હવે તમારી પાસે નથી તેના ફેરફારો રાખેલા છે',
   },
   keptTitle: { en: 'Changes kept on this device', hi: 'इस डिवाइस पर रखे गए बदलाव', gu: 'આ ઉપકરણ પર રાખેલા ફેરફારો' },
   keptIntro: {
@@ -89,6 +85,17 @@ export const QW = {
     hi: 'इस प्रोजेक्ट के लिए सहेजे गए कुछ बदलाव यह संस्करण नहीं पढ़ सकता।',
     gu: 'આ પ્રોજેક્ટ માટે સાચવેલા કેટલાક ફેરફારો આ સંસ્કરણ વાંચી શકતું નથી.',
   },
+  keptNone: {
+    en: 'Nothing is kept for other projects.',
+    hi: 'दूसरे प्रोजेक्ट के लिए कुछ भी नहीं रखा गया है।',
+    gu: 'બીજા પ્રોજેક્ટ માટે કંઈ રાખેલું નથી.',
+  },
+  // a refused row, or one waiting for the person's retry: not sent of itself when access returns (Stage 1 G6)
+  keptFailed: {
+    en: 'Not sent: refused, or waiting for a retry',
+    hi: 'नहीं भेजा गया: अस्वीकार हुआ, या दोबारा कोशिश की प्रतीक्षा में',
+    gu: 'મોકલાયું નથી: નકાર્યું, અથવા ફરી પ્રયાસની રાહમાં',
+  },
   keptClose: { en: 'Close', hi: 'बंद करें', gu: 'બંધ કરો' },
   keptKindDecision: { en: 'Decision', hi: 'निर्णय', gu: 'નિર્ણય' },
   keptKindDrawing: { en: 'Drawing', hi: 'ड्रॉइंग', gu: 'ડ્રોઇંગ' },
@@ -106,7 +113,3 @@ export const QW = {
 /** a QW line in `lang`, each `{name}` filled from `vars` */
 export const qwFill = (w: Words, lang: Lang, vars: Record<string, string | number>): string =>
   w[lang].replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? String(vars[k]) : m));
-
-/** #1388: the switcher's line, for `n` projects this device keeps changes for that the person no longer holds */
-export const keptElsewhereLine = (n: number, lang: Lang): string =>
-  n === 1 ? QW.keptElsewhereOne[lang] : qwFill(QW.keptElsewhere, lang, { n });

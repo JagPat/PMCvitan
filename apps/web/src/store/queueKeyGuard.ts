@@ -200,14 +200,23 @@ const sameRead = (a: Read, b: Read): boolean => {
 
 /** #1388: what `key` still owes, read only, for a scope this tab does not load (a project the person no longer holds):
  *  the occurrences the ledger owes (the key's, its made records', less its marks), less each one a done fact says the
- *  server has, as a load would take them. Nothing is written, named or held; a key this release cannot read owes none
- *  it can name, and says why. A read that throws reads as nothing owed and is reported as `null`. */
-export function readOwedActs(storage: Store, key: string, scopes: QueueScopes): { read: KeyRead; acts: OutboxOp[] } | null {
+ *  server has, as a load would take them. Nothing is written, named or held. A key this release cannot read owes none it
+ *  can name, and says why; so does a made record this release cannot read (`unread`: 'newer' when one is a newer
+ *  release's, else 'damaged'), beside the acts the rest owe. A read that throws is reported as `null`. */
+export function readOwedActs(storage: Store, key: string, scopes: QueueScopes): { read: KeyRead; acts: OutboxOp[]; unread: Exclude<KeyRead, 'ok'> | null } | null {
   try {
     const s = snapshotOf(storage, key, scopes);
     const read = readOf(s.raw, scopes);
-    if (read !== 'ok') return { read, acts: [] };
-    return { read, acts: owedOf(s).owed.map((o) => o.act).filter((a) => !isDone(storage, key, a)) };
+    if (read !== 'ok') return { read, acts: [], unread: null };
+    let unread: Exclude<KeyRead, 'ok'> | null = null;
+    if (s.recordsUnread) {
+      unread = 'damaged';
+      for (const name of namesUnder(storage, `vitan.made.${key}.`)) {
+        const r = readLedgerQueue(storage.getItem(name), scopes);
+        if ('unreadable' in r && r.unreadable === 'newer') unread = 'newer';
+      }
+    }
+    return { read, acts: owedOf(s).owed.map((o) => o.act).filter((a) => !isDone(storage, key, a)), unread };
   } catch {
     return null;
   }

@@ -99,14 +99,14 @@ import {
 } from './projectCreateHold';
 import { createQueueKeyGuard, queueActIdent, type QueueWrite } from '@/store/queueKeyGuard';
 import { isDone } from '@/store/queueLedger';
-import { readKeptElsewhere, rememberProjectName, type KeptProject } from '@/store/keptElsewhere';
+import { keptAnywhere, readKeptElsewhere, rememberProjectName, type KeptProject } from '@/store/keptElsewhere';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW, qwFill } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
 import { hubFailureOf, HUB_SHOWN_WAIT_MS, type HubCallResult, type HubUnlinkPending } from '@/lib/hubLink';
 import { resolveMediaUrl, sessionRefusal, dropsQueuedAct, type SessionRefused, replayOutboxOp, uploadSitePhotoInput, PlaceCheckFailed, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, isGone, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, timeoutSignal, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
-import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence, type EvidenceEntry } from '@/data/evidenceStore';
+import { EVIDENCE_READ_WAIT_MS, deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence, type EvidenceEntry } from '@/data/evidenceStore';
 import { evidenceShortfall, judgeChecklist, type PendingCapture } from '@/lib/checklistRecordings';
 
 import { clearVisitPhotoStart, clearVisitPoster, deleteVisitPhoto, failVisitPhotosOn, forgetRemovedVisitPhoto, listVisitPhotos, moveVisitPhotos, posterLapsed, posterWaits, removedVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
@@ -448,8 +448,11 @@ export interface AppState {
   // multi-project (Orgs Slice 2)
   activeProjectId: string; // the project the session is scoped to
   memberships: MembershipSummary[]; // projects the user can switch between
-  /** #1388: the projects this device keeps the person's unsent changes for that they no longer hold (read only) */
-  keptElsewhere: KeptProject[];
+  /** #1388: whether this device keeps unsent changes of the person's for a project they no longer hold (a keys-only
+   *  check; it shows the switcher's line) */
+  keptElsewhereAny: boolean;
+  /** #1388: those projects, each with its list, read when the list opens; null until read (read only) */
+  keptElsewhere: KeptProject[] | null;
   myOrgs: OrgSummary[]; // orgs the user administers/belongs to
   orgMembers: OrgMember[]; // the active org's admin roster (owner/admin/member)
   orgModules: OrgTemplateModule[]; // the org's reusable structure modules (Templates Slice 2)
@@ -673,7 +676,9 @@ export interface AppActions {
   filePhoto: (photoId: string, nodeId: string | null) => void;
   // multi-project + team
   loadOrgData: () => void;
-  /** #1388: read again which projects the person no longer holds this device keeps changes for */
+  /** #1388: check again (keys only) whether this device keeps changes for a project the person no longer holds */
+  checkKeptElsewhere: () => Promise<void>;
+  /** #1388: read the list of those changes (the list's open) */
   loadKeptElsewhere: () => Promise<void>;
   loadPortfolio: () => void;
   /** U3b — load the PMC's daily brief (session-scoped, like the portfolio) */
@@ -990,6 +995,25 @@ let toastTimer: ReturnType<typeof setTimeout> | undefined;
 /** U3b — the newest brief request; a reply to any earlier one is superseded and dropped (the landing,
  *  poll and focus reads overlap, and an older reply may carry a project whose access was since removed). */
 let briefRequestSeq = 0;
+/** #1388 (Stage 1 G3): the newest kept-changes check and list read; an older one landing later is dropped */
+let keptCheckSeq = 0;
+let keptListSeq = 0;
+type KeptRead = { tok: string; ms: MembershipSummary[]; active: string; storage: Storage; sub: string; held: ReadonlySet<string> };
+/** what a kept-changes read is for: the person's own keys (`sub`), less every project they hold and the one open (G4);
+ *  none before memberships are read, as a signed-in person always holds one and an empty list is one not read yet */
+function keptReadFor(st: { sessionToken: string | null; memberships: MembershipSummary[]; activeProjectId: string }, sub: string): KeptRead | null {
+  const tok = st.sessionToken;
+  const ms = st.memberships;
+  if (!tok || ms.length === 0) return null;
+  let storage: Storage | undefined;
+  try { storage = globalThis.localStorage; } catch { storage = undefined; }
+  if (!storage || sub === 'anon') return null;
+  const held = new Set(ms.map((m) => m.projectId));
+  if (st.activeProjectId) held.add(st.activeProjectId);
+  return { tok, ms, active: st.activeProjectId, storage, sub, held };
+}
+const keptReadHolds = (st: { sessionToken: string | null; memberships: MembershipSummary[]; activeProjectId: string }, r: KeptRead): boolean =>
+  st.sessionToken === r.tok && st.memberships === r.ms && st.activeProjectId === r.active;
 
 /** #1373: the line for the changes this device keeps for a lost project */
 const keptLine = (lang: Lang, project: string, n: number): string =>
@@ -1587,7 +1611,8 @@ export function getInitialState(): AppState {
     phases: structuredClone(SEED_PHASES),
     activeProjectId: initialProjectId(),
     memberships: [],
-    keptElsewhere: [],
+    keptElsewhereAny: false,
+    keptElsewhere: null,
     myOrgs: [],
     orgMembers: [],
     orgModules: [],
@@ -2445,7 +2470,7 @@ export const useStore = create<Store>()(
         if (switching()) { leavingFor = null; return; }
       }
       set((s) => { s.memberships = read; });
-      void get().loadKeptElsewhere();
+      void get().checkKeptElsewhere();
       // the same pick on every device and every read: by name, then id (the server's list has no order of its own)
       const next = same ?? [...ms].sort((a, b) => cmp(a.name, b.name) || cmp(a.projectId, b.projectId))[0];
       // only acts a write has stored are kept: one this tab could not store leaves with the scope's memory, as on any
@@ -3090,9 +3115,6 @@ export const useStore = create<Store>()(
     // gate round 10: a monotonic id stamped on every ONLINE submit dispatch, so a
     // continuation can tell whether it still owns the submission (see submitInspection).
     let submitAttemptSeq = 0;
-    /** Guided step 4a (unit 3b): how long a durable evidence read may take before it counts as not read (bounded, as
-     *  every IndexedDB call here). */
-    const EVIDENCE_READ_WAIT_MS = 5000;
     /** The one reader and writer of the evidence mirrors and acts. Returns the pending rows it adopted, or null when this
      *  read did not land (superseded, scope moved, failed, or too slow): a caller judging from it then counts no pending
      *  row, never a stale one. */
@@ -4162,7 +4184,8 @@ export const useStore = create<Store>()(
         // scope key and resumes on their next sign-in; the next user never replays it.
         s.outbox = [];
         s.syncQueue = [];
-        s.keptElsewhere = [];
+        s.keptElsewhereAny = false;
+        s.keptElsewhere = null;
         s.pendingEvidenceKeys = null;
         s.pendingEvidenceRows = null;
         // Ending the session ends the scope (Codex gate finding 6): the signed-out
@@ -5301,19 +5324,23 @@ export const useStore = create<Store>()(
     },
 
     // ---- multi-project + team (Orgs Slice 2) ----
+    checkKeptElsewhere: async () => {
+      const seq = ++keptCheckSeq;
+      const read = keptReadFor(get(), evidenceScope());
+      if (!read) return;
+      const any = await keptAnywhere(read.storage, read.sub, read.held).catch(() => null);
+      // adopted only by the newest check, for the session, memberships and project it was read for
+      if (any === null || seq !== keptCheckSeq || !keptReadHolds(get(), read)) return;
+      set((s) => { s.keptElsewhereAny = any; });
+    },
     loadKeptElsewhere: async () => {
-      const tok = get().sessionToken;
-      const ms = get().memberships;
-      // a signed-in person always holds a project: an empty list is one not read yet, never "none held"
-      if (!tok || ms.length === 0) return;
-      let storage: Storage | undefined;
-      try { storage = globalThis.localStorage; } catch { storage = undefined; }
-      const sub = evidenceScope();
-      if (!storage || sub === 'anon') return;
-      const kept = await readKeptElsewhere(storage, sub, new Set(ms.map((m) => m.projectId))).catch(() => null);
-      // adopted only for the session and the memberships it was read for: a newer read of either reads again
-      if (kept === null || get().sessionToken !== tok || get().memberships !== ms) return;
-      set((s) => { s.keptElsewhere = kept; });
+      const seq = ++keptListSeq;
+      const read = keptReadFor(get(), evidenceScope());
+      if (!read) return;
+      const kept = await readKeptElsewhere(read.storage, read.sub, read.held).catch(() => null);
+      if (kept === null || seq !== keptListSeq || !keptReadHolds(get(), read)) return;
+      // the list is the fuller read: the line follows it, so an emptied list takes its line away
+      set((s) => { s.keptElsewhere = kept; s.keptElsewhereAny = kept.length > 0; });
     },
     loadOrgData: () => {
       if (!gateway) return;
@@ -5321,7 +5348,7 @@ export const useStore = create<Store>()(
       const tok = get().sessionToken;
       gateway.listMemberships().then((ms) => {
         set((s) => { if (s.sessionToken === tok) s.memberships = ms; });
-        void get().loadKeptElsewhere();
+        void get().checkKeptElsewhere();
         // #948 Codex 4300725705 / 4300786709 — a restored session opened on a link to ANOTHER project switches
         // there only once its memberships confirm the person belongs to it; a stale, mistyped or foreign link
         // is dropped, and the session stays on its own project, which is already loading

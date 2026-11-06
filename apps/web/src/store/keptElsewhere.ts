@@ -1,7 +1,7 @@
 import { isSiteVisitOp, siteVisitOf, type OutboxOp } from '@/data/apiGateway';
-import { evidenceProjectsOf, listEvidence } from '@/data/evidenceStore';
+import { evidenceProjectsOf, evidenceWithinWait, listEvidence } from '@/data/evidenceStore';
 import { isSitePhotoSent, listSitePhotoRows, sitePhotoProjectsOf } from '@/data/sitePhotoStore';
-import { listVisitPhotos, visitPhotoProjectsOf } from '@/data/visitPhotoStore';
+import { readVisitPhotoRows, visitPhotoProjectsOf } from '@/data/visitPhotoStore';
 import { queueActIdent } from '@/store/queueActIdent';
 import { readOwedActs, type KeyRead } from '@/store/queueKeyGuard';
 
@@ -13,8 +13,14 @@ import { readOwedActs, type KeyRead } from '@/store/queueKeyGuard';
  * ledger as a load would take them), or in a row of the three IndexedDB stores (evidence, visit photos, site photos)
  * whose op is rebuilt from it only when the project loads. The two are one change when they name the same file
  * (`clientKey`). A project the person still holds is never listed: its changes are sent when they open it. Another
- * person's keys and rows on a shared device are never read. Nothing here writes, holds or names an act: the discard is
- * unit 2.
+ * person's keys and rows on a shared device are never read. The list's read writes nothing (no queue key, made record,
+ * mark, row or held-photo record) and holds or names no act: the discard is unit 2. The one write here is the name
+ * record (`rememberProjectName`), which the snapshot makes. Every IndexedDB read is read only and bounded (a store's own
+ * bound); one that fails or is too slow reads as nothing found.
+ *
+ * Cost (Stage 1, G10): the switcher's line asks only whether there is anything (`keptAnywhere`: the queue keys' names
+ * and what they owe, read from localStorage, and the stores' row keys, never a row); the rows themselves, bytes and all,
+ * are read only when the list opens (`readKeptElsewhere`).
  */
 
 /** what a kept change is about, as the list names it: one group per area, not one per act kind */
@@ -45,13 +51,15 @@ export const KEPT_KIND: Record<OutboxOp['t'], KeptKind> = {
 };
 
 /** One line of the list. A site visit's acts are one line (`count` of them): each depends on the ones before it. `at`:
- *  when it was saved, only where the change carries a time (a row's, or a visit file's `queuedAt`); acts carry none */
-export type KeptItem = { id: string; kind: KeptKind; count: number; at: number | null };
+ *  when it was saved, only where the change carries a time (a row's, or a visit file's `queuedAt`); acts carry none.
+ *  `failed`: a refused row, or one waiting for a retry, on a line of its own */
+export type KeptItem = { id: string; kind: KeptKind; count: number; at: number | null; failed: boolean };
 /** One project's kept changes. `name`: the name this device last saw for it, or null. `unreadable`: one of its keys holds
  *  changes this version cannot read (they are listed by this line alone, never counted) */
 export type KeptProject = { projectId: string; name: string | null; items: KeptItem[]; total: number; unreadable: Exclude<KeyRead, 'ok'> | null };
-/** a row kept on this device, as the list needs it */
-export type KeptRow = { clientKey: string; at: number; visitId: string | null };
+/** a row kept on this device, as the list needs it. `failed`: the server refused it, or it waits for the person's retry;
+ *  it is listed apart, as it is not sent of itself when access returns */
+export type KeptRow = { clientKey: string; at: number; visitId: string | null; failed: boolean };
 
 /** the name record of a project for a person: written wherever a snapshot names the project, read only by this list */
 export const projectNameKey = (sub: string, projectId: string): string => `vitan.projectName.${sub}.${projectId}`;
@@ -88,65 +96,100 @@ const fileOf = (o: OutboxOp): string | null =>
 const timeOf = (iso: string | undefined): number | null => { if (!iso) return null; const t = Date.parse(iso); return Number.isNaN(t) ? null : t; };
 const earliest = (a: number | null, b: number | null): number | null => (a === null ? b : b === null ? a : Math.min(a, b));
 
+/** an act whose identity no other act shares (it carries its own key): one act wherever this phone holds it */
+const unique = (o: OutboxOp): boolean => !queueActIdent(o).startsWith('json:');
+type OwedRead = { read: KeyRead; acts: OutboxOp[]; unread?: Exclude<KeyRead, 'ok'> | null } | null;
+const worse = (a: KeptProject['unreadable'], b: Exclude<KeyRead, 'ok'>): Exclude<KeyRead, 'ok'> => (a === 'damaged' || b === 'damaged' ? 'damaged' : 'newer');
+
 /** one project's list, from what its two keys owe (`reads`, as `readOwedActs` gives them) and its rows */
-export function keptOf(projectId: string, name: string | null, reads: ({ read: KeyRead; acts: OutboxOp[] } | null)[], rows: KeptRow[]): KeptProject {
+export function keptOf(projectId: string, name: string | null, reads: OwedRead[], rows: KeptRow[]): KeptProject {
   const items = new Map<string, KeptItem>();
-  const rowAt = new Map(rows.map((r) => [r.clientKey, r]));
+  const rowOf = new Map(rows.map((r) => [r.clientKey, r]));
   const counted = new Set<string>();
+  const once = new Set<string>();
   let unreadable: KeptProject['unreadable'] = null;
+  const add = (id: string, kind: KeptKind, at: number | null, failed: boolean): void => {
+    const was = items.get(id);
+    if (was) { was.count += 1; was.at = earliest(was.at, at); } else items.set(id, { id, kind, count: 1, at, failed });
+  };
   for (const r of reads) {
     if (!r) continue;
-    if (r.read !== 'ok') { unreadable = unreadable === 'damaged' || r.read === 'damaged' ? 'damaged' : 'newer'; continue; }
+    if (r.read !== 'ok') { unreadable = worse(unreadable, r.read); continue; }
+    if (r.unread) unreadable = worse(unreadable, r.unread);
     for (const o of r.acts) {
+      // the same act held twice (the key and a made record, or both lanes) is one change, as a load takes it once
+      if (unique(o)) { const i = queueActIdent(o); if (once.has(i)) continue; once.add(i); }
       const file = fileOf(o);
       if (file !== null) counted.add(file);
-      const fileAt = file !== null ? rowAt.get(file)?.at ?? null : null;
-      const at = earliest(fileAt, o.t === 'siteVisitAddFile' ? timeOf(o.queuedAt) : null);
-      const id = isSiteVisitOp(o) ? `visit:${siteVisitOf(o)}` : `act:${queueActIdent(o)}`;
-      const was = items.get(id);
-      if (was) { was.count += 1; was.at = earliest(was.at, at); } else items.set(id, { id, kind: KEPT_KIND[o.t], count: 1, at });
+      const row = file !== null ? rowOf.get(file) : undefined;
+      const at = earliest(row?.at ?? null, o.t === 'siteVisitAddFile' ? timeOf(o.queuedAt) : null);
+      if (row?.failed) add(`row:${row.clientKey}`, KEPT_KIND[o.t], at, true);
+      else add(isSiteVisitOp(o) ? `visit:${siteVisitOf(o)}` : `act:${queueActIdent(o)}`, KEPT_KIND[o.t], at, false);
     }
   }
   // a row no act names: its act is rebuilt from it at the project's load, so it is a change of its own (a visit file
-  // joins its visit's line)
+  // joins its visit's line; a refused one, or one waiting for a retry, is a line of its own)
   for (const r of rows) {
     if (counted.has(r.clientKey)) continue;
     counted.add(r.clientKey);
-    const id = r.visitId !== null ? `visit:${r.visitId}` : `row:${r.clientKey}`;
-    const was = items.get(id);
-    if (was) { was.count += 1; was.at = earliest(was.at, r.at); } else items.set(id, { id, kind: r.visitId !== null ? 'siteVisit' : 'photo', count: 1, at: r.at });
+    const kind: KeptKind = r.visitId !== null ? 'siteVisit' : 'photo';
+    if (r.failed) add(`row:${r.clientKey}`, kind, r.at, true);
+    else add(r.visitId !== null ? `visit:${r.visitId}` : `row:${r.clientKey}`, kind, r.at, false);
   }
   const list = [...items.values()];
   return { projectId, name, items: list, total: list.reduce((n, i) => n + i.count, 0), unreadable };
 }
 
 /** the rows this device keeps unsent for (`sub`, `projectId`): evidence still to send or refused, visit files not yet
- *  filed, site photos still holding their bytes. A store that cannot be read gives none */
+ *  filed, site photos still holding their bytes. Read only and bounded: a store that cannot be read, or not in time,
+ *  gives none */
 async function rowsOf(sub: string, projectId: string): Promise<KeptRow[]> {
   const [evidence, visit, site] = await Promise.all([
-    listEvidence(sub, projectId).catch(() => []),
-    listVisitPhotos(sub, projectId).catch(() => []),
+    evidenceWithinWait(listEvidence(sub, projectId)).catch(() => []),
+    readVisitPhotoRows(sub, projectId).catch(() => []),
     listSitePhotoRows(sub, projectId).catch(() => []),
   ]);
   return [
-    ...evidence.map((e) => ({ clientKey: e.clientKey, at: e.createdAt, visitId: null })),
-    ...visit.filter((v) => v.state !== 'filed').map((v) => ({ clientKey: v.clientKey, at: v.createdAt, visitId: v.op.visitId })),
-    ...site.flatMap((e) => (isSitePhotoSent(e) ? [] : [{ clientKey: e.clientKey, at: e.createdAt, visitId: null }])),
+    ...evidence.map((e) => ({ clientKey: e.clientKey, at: e.createdAt, visitId: null, failed: e.status === 'failed' })),
+    ...visit.filter((v) => v.state !== 'filed').map((v) => ({ clientKey: v.clientKey, at: v.createdAt, visitId: v.op.visitId, failed: v.state === 'failed' })),
+    ...site.flatMap((e) => (isSitePhotoSent(e) ? [] : [{ clientKey: e.clientKey, at: e.createdAt, visitId: null, failed: false }])),
   ];
+}
+
+const keysOf = (sub: string, p: string): string[] => [`vitan.outbox.${sub}.${p}`, `vitan.siteVisitQueue.${sub}.${p}`];
+/** the projects not `held` that this device keeps rows for, from the stores' row keys alone (bounded; none on a failure) */
+async function rowProjectsOf(sub: string): Promise<Set<string>> {
+  const none = (): Set<string> => new Set();
+  const [evidence, visit, site] = await Promise.all([
+    evidenceProjectsOf(sub).catch(none), visitPhotoProjectsOf(sub).catch(none), sitePhotoProjectsOf(sub).catch(none),
+  ]);
+  return new Set([...evidence, ...visit, ...site]);
+}
+
+/** Whether this device may keep changes for a project `sub` does not hold (`held`): a queue key that owes an act or that
+ *  this version cannot read, or a row kept for such a project. Keys only: no row is read. A row whose change has gone
+ *  since (a sent marker, a filed file) may still say yes; the list then says nothing is kept */
+export async function keptAnywhere(storage: Keys & Names, sub: string, held: ReadonlySet<string>): Promise<boolean> {
+  const scopes = { evidence: sub, visitPhoto: sub };
+  for (const p of queuedProjectsOf(storage, sub)) {
+    if (held.has(p)) continue;
+    for (const k of keysOf(sub, p)) {
+      const r = readOwedActs(storage, k, scopes);
+      if (r && (r.read !== 'ok' || r.unread || r.acts.length > 0)) return true;
+    }
+  }
+  for (const p of await rowProjectsOf(sub)) if (!held.has(p)) return true;
+  return false;
 }
 
 /** Every project `sub` keeps changes for on this device and does not hold (`held`), each with its list; none listed has
  *  nothing kept. `storage`: the queue keys' storage. Read only */
 export async function readKeptElsewhere(storage: Keys & Names, sub: string, held: ReadonlySet<string>): Promise<KeptProject[]> {
-  const none = (): Set<string> => new Set();
-  const [evidence, visit, site] = await Promise.all([
-    evidenceProjectsOf(sub).catch(none), visitPhotoProjectsOf(sub).catch(none), sitePhotoProjectsOf(sub).catch(none),
-  ]);
-  const projects = new Set([...queuedProjectsOf(storage, sub), ...evidence, ...visit, ...site]);
+  const projects = new Set([...queuedProjectsOf(storage, sub), ...await rowProjectsOf(sub)]);
   const scopes = { evidence: sub, visitPhoto: sub };
   const out: KeptProject[] = [];
   for (const p of [...projects].filter((x) => !held.has(x)).sort()) {
-    const reads = [`vitan.outbox.${sub}.${p}`, `vitan.siteVisitQueue.${sub}.${p}`].map((k) => readOwedActs(storage, k, scopes));
+    const reads = keysOf(sub, p).map((k) => readOwedActs(storage, k, scopes));
     const kept = keptOf(p, readProjectName(storage, sub, p), reads, await rowsOf(sub, p));
     if (kept.total > 0 || kept.unreadable !== null) out.push(kept);
   }

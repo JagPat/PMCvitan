@@ -27,7 +27,8 @@ export function KeptElsewhereModal({ onClose }: { onClose: () => void }) {
   const lang = useStore((s) => s.lang);
   const load = useStore((s) => s.loadKeptElsewhere);
   const titleId = useId();
-  // read again on open: another tab may have sent, or kept, changes since the switcher's count was read
+  // the list is read on open (the switcher's line comes from a keys-only check: Stage 1 G10), and again on each open, as
+  // another tab may have sent, or kept, changes since
   useEffect(() => { void load(); }, [load]);
   const saved = (at: number) => qwFill(QW.keptSaved, lang, { date: new Intl.DateTimeFormat(LOCALE[lang], { day: 'numeric', month: 'short', year: 'numeric' }).format(at) });
   return (
@@ -35,17 +36,21 @@ export function KeptElsewhereModal({ onClose }: { onClose: () => void }) {
       <div style={{ padding: 20 }} data-testid="kept-elsewhere">
         <h2 id={titleId} style={title}>{QW.keptTitle[lang]}</h2>
         <p style={note}>{QW.keptIntro[lang]}</p>
-        {kept.map((p) => (
+        {kept !== null && kept.length === 0 && <p style={note} data-testid="kept-none">{QW.keptNone[lang]}</p>}
+        {(kept ?? []).map((p) => (
           <section key={p.projectId} style={project} data-testid={`kept-project-${p.projectId}`}>
             <div style={head}>
               <span style={{ fontWeight: 700 }}>{p.name ?? QW.keptUnknownProject[lang]}</span>
               {p.total > 0 && <span style={muted}>{countLine(p.total, lang)}</span>}
             </div>
             {p.unreadable !== null && <p style={note} data-testid="kept-unreadable">{QW.keptUnreadable[lang]}</p>}
-            <ul style={list}>
+            <ul style={list} role="list">
               {p.items.map((i) => (
                 <li key={i.id} style={item} data-testid="kept-item">
-                  <span>{QW[KIND[i.kind]][lang]}{i.count > 1 ? ` · ${countLine(i.count, lang)}` : ''}</span>
+                  <span>
+                    {QW[KIND[i.kind]][lang]}{i.count > 1 ? ` · ${countLine(i.count, lang)}` : ''}
+                    {i.failed && <span style={{ ...muted, display: 'block', whiteSpace: 'normal' }} data-testid="kept-failed">{QW.keptFailed[lang]}</span>}
+                  </span>
                   {i.at !== null && <span style={muted}>{saved(i.at)}</span>}
                 </li>
               ))}
