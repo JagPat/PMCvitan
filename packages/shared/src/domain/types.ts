@@ -378,6 +378,10 @@ export interface ChecklistItem {
    *  path for (filed on someone else's private draft place before #881), so the submit guard counts every recording the
    *  server's rule counts. Kinds only, never a path; the item's `photos` counter already counts these files. */
   hiddenEvidenceKinds?: Array<'photo' | 'video' | 'voice' | null>;
+  /** Guided site inspections (step 4a unit 3a) — the offline replay key (`clientKey`) of each `evidence` entry this viewer
+   *  uploaded, by position (null for anyone else's file, or one sent with no key). The phone counts a capture still
+   *  waiting in its durable store only when no served entry carries its key. ABSENT from an API older than the field. */
+  evidenceClientKeys?: Array<string | null>;
   /** Guided site inspections (step 2a) — the item's guidance, null for an item issued by name only. ABSENT only from an
    *  API older than the field. */
   guide?: ItemGuide | null;
