@@ -94,10 +94,14 @@ export async function settleSignIn(tx: Prisma.TransactionClient, issuer: string,
   if (!holder) return { kind: 'no-account' };
   if (QA_ACCOUNT_EMAIL.test(holder.email ?? '')) {
     // never linked or retired: the issuer proved this QA address, and the QA company lock (migration 20280116) keeps
-    // the account in QA-only companies once this answer is given, so the same account signs in each time
-    if (!(await orgs.qaSignInAllowed(tx, holder.id))) return { kind: 'test-account' };
+    // the account in QA-only companies once this answer is given, so the same account signs in each time. The
+    // credential lock comes first and the address is re-read under it, then the QA rule's row locks: the order an
+    // address correction takes (credential lock, then the User row), so the two never wait on each other (Codex
+    // 4489142011 on #1367). `login` takes the same advisory lock again, which a transaction already holding it passes.
+    await lockUserCredential(tx, holder.id);
     const qa = await orgs.accountById(tx, holder.id);
     if (!qa || qa.email !== claims.email) return { kind: 'no-account' };
+    if (!(await orgs.qaSignInAllowed(tx, qa.id))) return { kind: 'test-account' };
     return { kind: 'account', user: qa, fresh: false };
   }
   await lockUserCredential(tx, holder.id);
