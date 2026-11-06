@@ -2898,7 +2898,8 @@ export const useStore = create<Store>()(
       return Promise.all([listSitePhotoRows(rowScope, project), sitePhotosLocked(rowScope, project)]).then(([rows, locked]) => {
         if (!scopeStillCurrent(readScope) || outboxKey() !== readKey) return;
         // a row settled while this read was out: read again, so a sent photo is never queued again (Codex 4393007605)
-        if (settles !== sitePhotoSettles) { void reconcileSitePhotos(); return; }
+        // and this read settles with that one, so a load's rebuild is done only once its rows are queued (Codex 4497383930)
+        if (settles !== sitePhotoSettles) return reconcileSitePhotos();
         const full = rows.filter((r): r is SitePhotoRow => !isSitePhotoSent(r));
         // a row a tab is sending now gets no op here; one this tab already queues stays on show while another tab sends it
         const missing = full.filter((r) => !sitePhotoSendsDirect.has(r.clientKey) && !locked.has(r.clientKey) && !uploadQueued(get().outbox, r.clientKey));
