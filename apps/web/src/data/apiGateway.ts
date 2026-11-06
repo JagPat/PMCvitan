@@ -13,7 +13,7 @@
  */
 import { clearVisitPoster, deleteVisitPhoto, failVisitPhoto, fileVisitPhoto, forgetRemovedVisitPhoto, getVisitPhoto, posterWaits, removedVisitPhotos, VisitPhotoUnreadable, withinWait, type CommittedPhoto } from './visitPhotoStore';
 import { deleteEvidence, getEvidence, markEvidenceFailed } from './evidenceStore';
-import { MEDIA_NOT_FOUND_MESSAGE, NOT_A_VISIT_FILE_MESSAGE, SITE_PHOTO_DELETED_MESSAGE, VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
+import { MEDIA_NOT_FOUND_MESSAGE, NOT_A_VISIT_FILE_MESSAGE, PROJECT_ACCESS_CODES, SITE_PHOTO_DELETED_MESSAGE, VISIT_FILE_GONE_MESSAGE } from '@vitan/shared';
 import { deleteSitePhotoRow, getSitePhotoRow, ifSitePhotoUnlocked, isSitePhotoSent, markSitePhotoRefused, markSitePhotoSent, SitePhotoBusy, SitePhotoUnreadable } from './sitePhotoStore';
 import type {
   Activity,
@@ -587,6 +587,9 @@ export class ApiGateway {
   }
 
   private token: string | null = null;
+  /** #1373: told of every refusal of a request that carried this gateway's token, before the caller hears it, with the
+   *  token that was refused. The store installs it (`_setGateway`); public sign-in and setup calls never reach it. */
+  onSessionRefused: ((refused: SessionRefused) => void) | null = null;
   private readonly base: string;
   private readonly projectId: string;
 
@@ -624,7 +627,9 @@ export class ApiGateway {
 
   /** POST to a public (no-auth) auth endpoint. */
   private pub<T>(path: string, body: unknown): Promise<T> {
-    return this.req<T>(path, { method: 'POST', body: JSON.stringify(body) });
+    // public: a refusal here is the sign-in's own answer (a wrong code, a wrong password), never a session's end, even
+    // when a token from an earlier session is still set on this gateway
+    return this.req<T>(path, { method: 'POST', body: JSON.stringify(body) }, true);
   }
 
   /** Email + password sign-in (PMC / client / contractor). */
@@ -674,8 +679,8 @@ export class ApiGateway {
 
   // ── orgs / projects / team (multi-tenant) ──
   /** Projects the signed-in user can access (drives the project switcher). */
-  listMemberships(): Promise<MembershipSummary[]> {
-    return this.req('/me/memberships');
+  listMemberships(signal?: AbortSignal): Promise<MembershipSummary[]> {
+    return this.req('/me/memberships', signal ? { signal } : undefined);
   }
   /** Orgs the user administers/belongs to. */
   myOrgs(): Promise<OrgSummary[]> {
@@ -690,8 +695,8 @@ export class ApiGateway {
     return this.req('/me/brief');
   }
   /** Re-scope the session to another project; returns a fresh token. */
-  switchProject(projectId: string): Promise<AuthResult> {
-    return this.req('/auth/switch', { method: 'POST', body: JSON.stringify({ projectId }) });
+  switchProject(projectId: string, signal?: AbortSignal): Promise<AuthResult> {
+    return this.req('/auth/switch', { method: 'POST', body: JSON.stringify({ projectId }), ...(signal ? { signal } : {}) });
   }
   /** The features THIS server advertises on its public health probe (Codex 4187372404): the web and
    *  API deploy separately, so a client asks before relying on a server behaviour, such as a keyed
@@ -911,7 +916,9 @@ export class ApiGateway {
     return this.p('/daily-log/materials', input, idempotencyKey);
   }
 
-  private async req<T>(path: string, init?: RequestInit): Promise<T> {
+  private async req<T>(path: string, init?: RequestInit, publicCall = false): Promise<T> {
+    // #1373: the token THIS request carries, so a refusal is judged against it and not one adopted while it was out
+    const sent = this.token;
     const res = await fetch(`${this.base}${path}`, {
       ...init,
       headers: {
@@ -920,7 +927,7 @@ export class ApiGateway {
         // the server serve a shape to the bundle that understands it while stripping it for a
         // still-cached PREVIOUS bundle; 4d-ii-b / B1 moves it to `countersign-v1` (see the constant).
         [DECISIONS_CONTRACT_HEADER]: DECISIONS_CONTRACT,
-        ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+        ...(sent ? { Authorization: `Bearer ${sent}` } : {}),
         ...(init?.headers ?? {}),
       },
     });
@@ -944,6 +951,19 @@ export class ApiGateway {
         if (typeof m === 'string' && m.trim()) err.serverMessage = m;
         else if (Array.isArray(m) && m.length) err.serverMessage = m.filter((x): x is string => typeof x === 'string').join('; ');
       } catch { /* no readable body — the status alone is the fact */ }
+      // #1373: a refusal of a token-bearing request is told once, here, for every caller: the session ended (401), the
+      // project was lost (a coded 403), or this one act was refused (any other 403). The caller still hears the error
+      if (sent && !publicCall && (res.status === 401 || res.status === 403)) {
+        try {
+          this.onSessionRefused?.({
+            kind: sessionRefusal(err) ?? 'refused',
+            token: sent,
+            // a write to this gateway's own project, the one kind of refusal that re-reads the project (never a read, so a
+            // refused read can never start another)
+            projectWrite: (init?.method ?? 'GET').toUpperCase() !== 'GET' && path.startsWith(`/projects/${this.projectId}/`),
+          });
+        } catch { /* the hook's own fault never replaces the server's answer */ }
+      }
       throw err;
     }
     return res.json() as Promise<T>;
@@ -2137,6 +2157,32 @@ export class SitePhotoRefusedElsewhere extends Error {
   constructor() { super('the server refused this site photo when another tab sent it'); }
 }
 
+/** #1373: how a refusal bears on the session, never from the server's words. A 401 ends the session; a 403 carrying one
+ *  of the three `PROJECT_ACCESS_CODES` means the person no longer has the token's project (which one is never branched
+ *  on). Anything else is a refusal of that one request (`null`). A server from before the codes sends none, so each of
+ *  its 403s is `null`, exactly as before. */
+export type SessionRefusal = 'session-ended' | 'project-lost';
+/** What `req()` tells the store of a refused token-bearing request (#1373). */
+export interface SessionRefused { kind: SessionRefusal | 'refused'; token: string; projectWrite: boolean }
+const LOST_PROJECT_CODES: readonly string[] = Object.values(PROJECT_ACCESS_CODES);
+export function sessionRefusal(err: unknown): SessionRefusal | null {
+  const e = err as { status?: unknown; serverCode?: unknown } | null;
+  if (e?.status === 401) return 'session-ended';
+  if (e?.status === 403 && typeof e.serverCode === 'string' && LOST_PROJECT_CODES.includes(e.serverCode)) return 'project-lost';
+  return null;
+}
+
+/** #1373: a QUEUED act refused because the person lost the project, never on its own merits. Only the outbox flush and
+ *  the queued replays (site photo, visit photo and poster, evidence, the place check) keep such an act, as they keep one
+ *  refused by a 401; every direct command takes it as the final refusal `isTerminalOutboxError` says it is. */
+export function isKeptQueuedRefusal(err: unknown): boolean {
+  return sessionRefusal(err) === 'project-lost';
+}
+/** A replay's refusal that ends its queued act: final (`isTerminalOutboxError`), and not one the act is kept through. */
+export function dropsQueuedAct(err: unknown): boolean {
+  return isTerminalOutboxError(err) && !isKeptQueuedRefusal(err);
+}
+
 export function isTerminalOutboxError(err: unknown): boolean {
   const status = (err as { status?: number } | null)?.status;
   if (typeof status !== 'number') return false; // network / unknown → transient, retry later
@@ -2218,7 +2264,7 @@ export class PlaceCheckFailed extends Error {
  *  ends rather than asking again forever (Stage 1, Codex 4438007023). */
 async function placeStandsNow(gw: Pick<ApiGateway, 'snapshot'>, nodeId: string, answer: PlaceCheckFailed['answer']): Promise<boolean> {
   const now = await gw.snapshot().catch((err: unknown) => {
-    if (isTerminalOutboxError(err)) return null;
+    if (dropsQueuedAct(err)) return null;
     throw new PlaceCheckFailed(answer);
   });
   return !now || now.nodes.some((n) => n.id === nodeId && !n.draft);
@@ -2355,7 +2401,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
             tellSiteVisits({ kind: 'retry', project: gw.project, generation });
             return 'gone';
           }
-          if (!isTerminalOutboxError(err)) return;
+          if (!dropsQueuedAct(err)) return;
         }
         await withinWait(() => clearVisitPoster(op.scope, gw.project, id)).catch(() => {});
       };
@@ -2399,7 +2445,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
           // refused for good: the flush drops the act, and the row stays with the server's words, so the screen can
           // say which photo was not sent and why whenever it is next opened. The act goes only once the row says so:
           // a row the phone could not mark keeps its act, to be sent and marked again (Codex 4320122168)
-          if (isTerminalOutboxError(err)) tell(await withinWait(() => failVisitPhoto(op.scope, gw.project, id, refusalMessage(err))));
+          if (dropsQueuedAct(err)) tell(await withinWait(() => failVisitPhoto(op.scope, gw.project, id, refusalMessage(err))));
           throw err;
         }
         // and a sent photo's act goes only once its row says so: a row left queued would be rebuilt and sent again. The
@@ -2575,7 +2621,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
             onPhotoGone?.({ url: `data:${entry.mime};base64,${entry.data}`, inspectionId: entry.inspectionId, inspectionItemId: entry.inspectionItemId });
             return gw.snapshot().catch(() => null);
           }
-          if (isTerminalOutboxError(err)) {
+          if (dropsQueuedAct(err)) {
             try {
               await markEvidenceFailed(op.scope, gw.project, op.clientKey, `upload rejected (${(err as { status?: number }).status ?? 'error'})`);
             } catch {
@@ -2616,7 +2662,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp, generation = -1, on
         } catch (err) {
           // answered for good (the photo was deleted after an earlier send of this key landed, or refused): the row goes
           // with the op. A row the phone could not remove keeps its op (no status: sent and answered again)
-          if (isDeletedPhoto(err) || isTerminalOutboxError(err)) {
+          if (isDeletedPhoto(err) || dropsQueuedAct(err)) {
             await (isDeletedPhoto(err) ? deleteSitePhotoRow : markSitePhotoRefused)(op.scope, gw.project, op.clientKey).catch(() => { throw new SitePhotoUnreadable(); });
             // settled by the 410 alone, as an `uploadMedia` replay's is (#482)
             if (isDeletedPhoto(err)) return true;
