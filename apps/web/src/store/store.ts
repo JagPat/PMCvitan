@@ -491,8 +491,6 @@ export interface AppState {
    *  `pending` set, by item), for the submit guard: a capture counts while it is pending, and stops counting once its
    *  upload is refused or it is deleted. Empty until the rows are read (the guard then counts too few, never too many). */
   pendingChecklistEvidence: Array<{ clientKey: string; inspectionItemId: string; mime: string }>;
-  /** Guided site inspections step 4a — an item as the shared evidence rule judges it on this phone (see the store). */
-  judgeChecklistItem: (it: ChecklistItem) => JudgedItem;
   access: AccessState;
   activities: Activity[];
   dailyLog: DailyLog | null; // null = no daily log started for this project
@@ -645,6 +643,8 @@ export interface AppActions {
   deleteFailedEvidence: (clientKey: string) => Promise<void>;
   /** Refresh the pending/failed evidence mirrors from IndexedDB (reload/scope change). */
   hydrateEvidence: () => Promise<void>;
+  /** Guided site inspections step 4a — an item as the shared evidence rule judges it on this phone (see the store). */
+  judgeChecklistItem: (it: ChecklistItem) => JudgedItem;
   setNote: (idx: number, txt: string) => void;
   submitInspection: () => void;
   // inspection (pmc review)
