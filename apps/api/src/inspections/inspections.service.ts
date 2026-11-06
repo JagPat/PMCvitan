@@ -523,9 +523,12 @@ export class InspectionsService {
    * first (this refuses, 400) or waits for this commit (and the read then serves no one). The composite foreign key keeps
    * the name inside this project for every writer.
    *
-   * No domain event: the name is not part of the inspections projection's stored base. It is read live and judged for
-   * standing at read (`InspectionsQueryService.responsibleMembers`), so the projection never holds a stale name and the
-   * event list and its consumer catalog are untouched. The change is audited (`inspection.responsible`).
+   * RM-e-c — the change emits `inspection.responsible_set` (signal-only: it invalidates, so other open tabs re-read; it
+   * never pushes) and is dispatched after commit, as every inspection command is. The name is still not part of the
+   * inspections projection's stored base: it is read live and judged for standing at read
+   * (`InspectionsQueryService.responsibleMembers`), so the projection does not subscribe to the event
+   * (`inspections.projection.ts`, `NOT_PROJECTED`) and its persisted rule is unchanged. The change is audited
+   * (`inspection.responsible`).
    */
   async setResponsible(projectId: string, inspectionId: string, input: SetResponsibleMemberInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
     const actor = await resolveActor(this.prisma, user);
@@ -535,7 +538,7 @@ export class InspectionsService {
     if (await peekReplay(this.prisma, scope, actor.actorId, 'inspections.setResponsible', idempotencyKey, requestHash)) {
       return this.snapshot.build(projectId, user.role, user.sub);
     }
-    await executeCommand(this.prisma, {
+    const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'inspections.setResponsible', idempotencyKey, requestHash,
       run: async (tx) => {
         await lockProjectReadiness(tx, projectId);
@@ -560,9 +563,11 @@ export class InspectionsService {
         const mark = memberId === null ? null : await standingMark(this.orgs, tx, projectId, memberId);
         await tx.inspection.update({ where: { id: inspectionId }, data: { responsibleMemberId: memberId, responsibleStandingMark: mark } });
         await recordAudit(tx, { projectId, actor, action: 'inspection.responsible', entity: 'Inspection', entityId: inspectionId, payload: { from: insp.responsibleMemberId, to: memberId } });
-        return { resultRef: inspectionId, events: [] };
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'inspection.responsible_set', entityType: 'Inspection', entityId: inspectionId, payload: { from: insp.responsibleMemberId, to: memberId }, effectKey: 'inspection.responsible_set', dispatch: {} });
+        return { resultRef: inspectionId, events: [ev] };
       },
     });
+    await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
