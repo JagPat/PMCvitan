@@ -552,8 +552,10 @@ const RECORDERS: readonly RecordKind[] = ['audio', 'video'];
 
 /** #995 V2b: a video clip records from the back camera where there is one, at about 1 Mbps picture and 64 kbps sound, so a
  *  minute stays inside the upload's size; with the microphone refused (or missing) it records picture only. */
+// #995 V2f (Jagrut, 6 Nov: clips were slow to play): 0.6 Mbps at 720p with 64 kbps sound keeps a minute near 5 MB,
+// down from about 8 MB at 1 Mbps, so a clip loads in about half the time and stays well inside the upload's size
 const VIDEO_OPTIONS: RecordOptions = {
-  bits: { videoBitsPerSecond: 1_000_000, audioBitsPerSecond: 64_000 },
+  bits: { videoBitsPerSecond: 600_000, audioBitsPerSecond: 64_000 },
   media: { audio: true, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } },
   fallback: { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } },
 };

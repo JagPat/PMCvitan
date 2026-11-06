@@ -188,7 +188,7 @@ describe('#995 V2b: video clips on a visit', () => {
     await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Record video' })); });
     expect(getUserMedia).toHaveBeenCalledTimes(1);
     expect(getUserMedia.mock.calls[0][0]).toMatchObject({ audio: true, video: { facingMode: { ideal: 'environment' } } });
-    expect(FakeRecorder.last!.options).toMatchObject({ mimeType: 'video/webm;codecs=vp8,opus', videoBitsPerSecond: 1_000_000, audioBitsPerSecond: 64_000 });
+    expect(FakeRecorder.last!.options).toMatchObject({ mimeType: 'video/webm;codecs=vp8,opus', videoBitsPerSecond: 600_000, audioBitsPerSecond: 64_000 });
     const running = within(card).getByTestId('sv-recording-video-v-1');
     expect(running.textContent).toContain('Recording 0:00 of 1:00');
     const preview = running.querySelector('video')!;
@@ -730,6 +730,56 @@ describe('#995 V2b-2: a clip’s still frame', () => {
     await act(async () => { fireEvent.error(tile); });
     expect(screen.getByTestId('sv-file-m-c').querySelector('img')).toBeNull();
     expect(within(screen.getByTestId('sv-file-m-c')).getByRole('button', { name: 'Play: Crack by the column' })).not.toBeNull();
+  });
+
+  it('V2f: says how much of a clip has come while it is fetched, then plays it whole, and says nothing for an answer with no size', async () => {
+    const words = { play: 'Play', failed: 'failed', retry: 'Try again' };
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => Promise.resolve());
+    // a 10-byte clip that comes in three parts, each held until the test lets it go
+    const parts = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6, 7]), new Uint8Array([8, 9, 10])];
+    const gates: Array<() => void> = [];
+    let i = 0;
+    const reader = {
+      read: () => new Promise<{ done: boolean; value?: Uint8Array }>((done) => {
+        const n = i++;
+        if (n >= parts.length) { done({ done: true }); return; }
+        gates.push(() => done({ done: false, value: parts[n] }));
+      }),
+    };
+    const headers = new Headers({ 'content-length': '10', 'content-type': 'application/octet-stream' });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, headers, body: { getReader: () => reader }, blob: async () => { throw new Error('read whole'); } })));
+    let made: Blob | null = null;
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn((b: Blob) => { made = b; return 'blob:clip'; }), revokeObjectURL: vi.fn() }));
+    const view = render(<MediaPlayer url="/media/m-c?sig=x" mime="video/webm" label="Clip" words={words} />);
+    await act(async () => { fireEvent.click(view.getByRole('button', { name: 'Play: Clip' })); });
+    // nothing has come yet: no number shown
+    expect(view.queryByRole('progressbar')).toBeNull();
+    await act(async () => { gates[0](); });
+    expect(view.getByRole('progressbar').textContent).toBe('30%');
+    expect(view.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('30');
+    await act(async () => { gates[1](); });
+    expect(view.getByRole('progressbar').textContent).toBe('70%');
+    expect(view.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('70');
+    // the last part in: never 100 shown, the clip plays from all its bytes, typed as the file is
+    await act(async () => { gates[2](); });
+    await act(async () => {});
+    expect(view.queryByRole('progressbar')).toBeNull();
+    expect(made!.size).toBe(10);
+    expect(made!.type).toBe('video/webm');
+    expect(view.container.querySelector('video')!.getAttribute('src')).toBe('blob:clip');
+    view.unmount();
+    // an answer that does not say its size (a chunked one) is read whole, with no number, its stream never locked first:
+    // a body a reader has locked cannot be read whole, as a browser's cannot (Codex 4492634251)
+    const chunked = { locked: false, getReader() { chunked.locked = true; return reader; } };
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, headers: new Headers(), body: chunked,
+      blob: async () => { if (chunked.locked) throw new TypeError('body is locked'); return new Blob([new Uint8Array([1])]); },
+    })));
+    const plain = render(<MediaPlayer url="/media/m-d?sig=x" mime="video/webm" label="Other" words={words} />);
+    await act(async () => { fireEvent.click(plain.getByRole('button', { name: 'Play: Other' })); });
+    await act(async () => {});
+    expect(plain.queryByRole('progressbar')).toBeNull();
+    expect(plain.container.querySelector('video')!.getAttribute('src')).toBe('blob:clip');
   });
 
   it('tries a frame again when a later read brings it a fresh link (Codex 4399442176)', async () => {
