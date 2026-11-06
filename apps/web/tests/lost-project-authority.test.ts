@@ -808,6 +808,40 @@ describe('#1373 the kept count waits for the rows a load rebuilds (Codex 4496946
     expect(hits('POST', '/auth/switch')).toBe(1);
   });
 
+  it('a row settled while the rebuild read: the rebuild is done only once its read again is', async () => {
+    let first!: (rows: unknown[]) => void;
+    let second!: (rows: unknown[]) => void;
+    const reads = [new Promise<unknown[]>((r) => { first = r; }), new Promise<unknown[]>((r) => { second = r; })];
+    let n = 0;
+    vi.doMock('@/data/sitePhotoStore', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@/data/sitePhotoStore')>()),
+      sitePhotoStorageAvailable: () => true,
+      listSitePhotoRows: () => reads[Math.min(n++, 1)]!,
+    }));
+    const { useStore, gw } = await signedIn('fresh');
+    stubFetch(server({ status: 403, body: REMOVED }, [BETA], (m, p, b) => (
+      m === 'POST' && p === '/projects/p-a/decisions/DEC-1/approve' ? { status: 201, body: ALPHA_SNAPSHOT } : switchTo('p-b')(m, p, b)
+    )));
+    useStore.setState({ online: false });
+    useStore.setState({ modal: { type: 'approve', decId: 'DEC-1', optIdx: 0 } as never });
+    useStore.getState().confirmApprove();
+    await vi.waitFor(() => expect(globalThis.localStorage.getItem('vitan.outbox.u-1.p-a')).toContain('DEC-1'));
+    // the load's rebuild reads the rows (held); a flush settles an act meanwhile, so that read is read again
+    useStore.getState().hydrateOutbox();
+    useStore.setState({ online: true });
+    await useStore.getState().flushOutbox();
+    await gw.snapshot().catch(() => undefined);
+    await vi.waitFor(() => expect(hits('GET', '/me/memberships')).toBe(1));
+    first([]);
+    await drain();
+    // the read again is out: the move still waits on the rebuild
+    expect(n).toBeGreaterThanOrEqual(2);
+    expect(hits('POST', '/auth/switch')).toBe(0);
+    second([ROW]);
+    await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe('p-b'));
+    expect(useStore.getState().toast).toBe(KEPT_ONE);
+  });
+
   it('a rebuild that never settles still moves the person once its bound has passed', async () => {
     keptPhotoRow(new Promise<unknown[]>(() => undefined));
     const { useStore, gw } = await signedIn('fresh');
