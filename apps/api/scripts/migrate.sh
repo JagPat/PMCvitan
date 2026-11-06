@@ -643,6 +643,9 @@ if echo "$out" | grep -q "P3005"; then
   # The visit's walked inspections (guided site inspections step 3b, 20280212000000) are here because of the table's
   # triggers, which a db-push baseline does not have. IF NOT EXISTS with a shape guard, keys added when missing, triggers
   # re-made, re-runnable.
+  #
+  # A clip's full-video links (V2g-0, 20280213000000) are here because of the table's triggers, check and partial
+  # unique index, which a db-push baseline does not have. IF NOT EXISTS with a shape guard, re-issued, re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -707,7 +710,8 @@ if echo "$out" | grep -q "P3005"; then
 20280209000000_hub_link_project_label
 20280210000000_inspection_item_guidance
 20280211000000_media_gallery_origin
-20280212000000_site_visit_inspections"
+20280212000000_site_visit_inspections
+20280213000000_site_visit_media_link"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

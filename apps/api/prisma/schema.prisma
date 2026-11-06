@@ -1608,6 +1608,9 @@ model User {
   siteVisitRemovalsAdded    SiteVisitFileRemoval[] @relation("siteVisitFileRemovalAddedBy")
   siteVisitRemovalsMade     SiteVisitFileRemoval[] @relation("siteVisitFileRemovalRemovedBy")
   siteVisitInspectionsLinked SiteVisitInspection[] @relation("siteVisitInspectionLinkedBy")
+  // V2g-0 — the full-video links this person put on a visit's clips, and the ones they took off or replaced
+  siteVisitMediaLinksAdded  SiteVisitMediaLink[]   @relation("siteVisitMediaLinkAddedBy")
+  siteVisitMediaLinksEnded  SiteVisitMediaLink[]   @relation("siteVisitMediaLinkEndedBy")
   // #1177 VT1b — the voice-note corrections this person made
   voiceTranscriptCorrections VoiceTranscriptCorrection[] @relation("voiceTranscriptCorrectedBy")
   siteVisitPlacesRetired    SiteVisitPlace[]       @relation("siteVisitPlaceRetiredBy")
@@ -5519,11 +5522,46 @@ model SiteVisitMedia {
   addedByRole String
   addedByName String           @default("")
   addedAt     DateTime         @default(now())
+  // V2g-0 (20280213000000): the share links to this clip's full-quality video, current and past
+  links       SiteVisitMediaLink[]
 
   @@id([mediaId])
   @@unique([projectId, mediaId])
   @@index([projectId, visitId])
   @@index([nodeId])
+}
+
+// Video on site visits, V2g-0 (20280213000000) — a share link on a visit's video clip to its full-quality video in
+// Google Drive or Zoho WorkDrive (Jagrut, 6 Nov 2026: small clip in the app, full video in the cloud). One CURRENT link
+// per clip (a partial unique index on mediaId where endedAt is null, in the migration); a replace ends the current link
+// and adds the new one, so a clip's links are its history. The database allows only Drive and Zoho https hosts, sets
+// "host" from the url, checks a video on a visit, checks the adder's and ender's role and freezes their names, stamps
+// both times, keeps the reason rule a file removal uses, and refuses any other change, any direct delete and any
+// truncate: a row goes only with its clip's link to the visit, its visit or its project. Who may add, replace or remove
+// a link is the server's rule (V2g-1).
+model SiteVisitMediaLink {
+  id          String         @id
+  file        SiteVisitMedia @relation(fields: [projectId, mediaId], references: [projectId, mediaId], onDelete: Cascade, onUpdate: NoAction)
+  projectId   String
+  mediaId     String
+  url         String         @db.VarChar(2000)
+  // drive | zoho, set from the url by the insert trigger
+  host        String
+  label       String?        @db.VarChar(120)
+  addedBy     User           @relation("siteVisitMediaLinkAddedBy", fields: [addedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  addedById   String
+  addedByRole String
+  addedByName String         @default("")
+  addedAt     DateTime       @default(now())
+  endedAt     DateTime?
+  endedBy     User?          @relation("siteVisitMediaLinkEndedBy", fields: [endedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  endedById   String?
+  endedByRole String?
+  endedByName String?
+  // required unless the adder ends their own link within the hour; never blank
+  reason      String?        @db.VarChar(300)
+
+  @@index([projectId, mediaId])
 }
 
 // Guided site inspections, step 3b (20280212000000) — an inspection walked during a site visit: one row per inspection

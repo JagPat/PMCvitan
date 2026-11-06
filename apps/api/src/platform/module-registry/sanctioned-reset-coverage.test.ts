@@ -131,8 +131,9 @@ describe('Phase 6 unit 4c-0 — sanctioned resets route through the shared helpe
       // the statement (one looped site). Through the helper the seal would be off and the
       // refusal unmeasured.
       'site-visits-sv1a.test.ts': 1,
-      // Site Visits SV2: the visit-file record's no-truncate seal asserted to REFUSE the statement.
-      'site-visits-sv2-media-link.test.ts': 1,
+      // Site Visits SV2: the visit-file record's no-truncate seal asserted to REFUSE the statement (plain, and with
+      // CASCADE since V2g-0's full-video links reference the table).
+      'site-visits-sv2-media-link.test.ts': 2,
       // #482 site photos: the deleted-photo record's no-truncate seal asserted to REFUSE the statement.
       'media-tombstone-schema.test.ts': 1,
       // #1118 U1a-3: the Hub fetched-blob ledger's no-truncate seal asserted to REFUSE the statement.
@@ -150,6 +151,8 @@ describe('Phase 6 unit 4c-0 — sanctioned resets route through the shared helpe
       'site-visit-file-removal-schema.test.ts': 1,
       // Guided site inspections step 3b: a visit's walked inspections' no-truncate seal asserted to REFUSE the statement.
       'site-visit-inspections-schema.test.ts': 1,
+      // Video V2g-0: a clip's full-video links' no-truncate seal asserted to REFUSE the statement.
+      'site-visit-media-link-schema.test.ts': 1,
       // #1177 VT1: the voice-note transcript's no-truncate seal asserted to REFUSE the statement.
       'voice-transcript-schema.test.ts': 1,
       // #1177 VT1b: the corrections table's no-truncate seal asserted to REFUSE the statement.
