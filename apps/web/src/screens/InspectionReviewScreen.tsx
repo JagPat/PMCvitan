@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { reviewDecisionWaits, useStore } from '@/store/store';
 import { selectActiveReview } from '@/store/selectors';
-import { Eyebrow, ResultChip, Button, LocationContext, EditState, ItemNotFound, ConfirmDialog, ResponsiblePicker } from '@/components';
+import { Eyebrow, ResultChip, Button, LocationContext, EditState, ItemNotFound, ConfirmDialog, ResponsiblePicker, responsibleTargetOf } from '@/components';
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
 import { X, Plus } from '@/lib/icons';
 import { EmptyHint } from '@/guide/EmptyHint';
@@ -266,7 +266,7 @@ export function InspectionReviewScreen() {
             <span>{servedDayIn(review.date, lang)}</span>
           </div>
           {/* #482 "Who fixes this?" — the PMC names the contractor or consultant who fixes this inspection's failed work */}
-          <ResponsiblePicker inspectionId={review.id} testId={`review-responsible-${review.id}`} />
+          <ResponsiblePicker inspectionId={responsibleTargetOf(review)} testId={`review-responsible-${review.id}`} />
         </div>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, padding: '5px 11px', border: '1px solid var(--amber-border)', background: 'var(--amber-chip)', color: 'var(--amber-text)', borderRadius: 20 }}>
           {review.decided ? L.reviewed[lang] : L.awaiting[lang]}
@@ -417,7 +417,7 @@ function OutstandingChecklists({ items, focused, lang }: { items: Checklist[]; f
                 which has left the review queue once decided, and "Your open items" reads the failed items from there
                 (Codex #1361 r1). */}
             <div style={{ flexBasis: '100%' }}>
-              <ResponsiblePicker inspectionId={c.reinspectionOfId ?? c.id} testId={`outstanding-responsible-${c.id}`} />
+              <ResponsiblePicker inspectionId={responsibleTargetOf(c)} testId={`outstanding-responsible-${c.id}`} />
             </div>
           </div>
         ))}

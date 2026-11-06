@@ -837,7 +837,10 @@ export interface AppActions {
   loadTeam: () => Promise<boolean | void>;
   /** RM-w1: the "Who fixes this?" pickers' team read. One read per project scope in flight, shared by every picker
    *  on the screen; true only when the list was read. */
-  readTeamShared: () => Promise<boolean>;
+  readTeamShared: (opts?: { after?: boolean }) => Promise<boolean>;
+  /** RM-w1 (Codex #1361 r2): read the project again, joining a read already in flight or queued for this scope
+   *  instead of adding one, so many pickers opened in a row make one read. */
+  joinSnapshotRead: () => void;
   addMember: (input: AddMemberInput) => void;
   updateMemberRole: (userId: string, role: Role, discipline?: string) => void;
   removeMember: (userId: string) => void;
@@ -1689,7 +1692,7 @@ export const useStore = create<Store>()(
      *  that lands after the scope changed (switch, sign-in) is dropped, not applied. */
     const currentScope = (): ProjectScope => projectScopeOf(get());
     // RM-w1: the pickers' shared team read in flight, by scope key (readTeamShared)
-    let sharedTeamRead: { key: string; read: Promise<boolean> } | null = null;
+    let sharedTeamRead: { key: string; read: Promise<boolean>; after: boolean; sent: boolean } | null = null;
     // RM-w1 (Codex #1361 r1): the key of a naming whose answer never arrived, by scope and inspection. The same choice
     // made again re-sends the SAME key, so a PUT that committed but lost its answer is replayed by the server, never run
     // twice. Cleared on a confirmed answer or a final refusal; a different choice gets a fresh key.
@@ -3620,6 +3623,11 @@ export const useStore = create<Store>()(
     applySnapshot: (snap, capturedScope) =>
       acceptSnapshot(snap, beginSnapshotLease(capturedScope ?? currentScope())) === 'applied',
     requestFreshSnapshot: () => { void requestFreshSnapshot(); },
+    joinSnapshotRead: () => {
+      const c = coordinatorFor(currentScope());
+      if (c.refreshInFlight || c.refreshQueued) return;
+      void requestFreshSnapshot();
+    },
 
     // ---- shell ----
     setRole: (role) => {
@@ -6301,7 +6309,7 @@ export const useStore = create<Store>()(
           // 400: the member no longer stands; 403: the caller's standing or the project changed. Read the team and
           // the project once more, so a member who left stops being offered and the shown name is the server's.
           if (err?.status === 400 || err?.status === 403) {
-            void get().readTeamShared();
+            void get().readTeamShared({ after: true });
             get().requestFreshSnapshot();
           }
           return false;
@@ -6333,11 +6341,23 @@ export const useStore = create<Store>()(
       const lang = get().lang;
       runWriteAhead({ t: 'addSiteMaterial', input, idempotencyKey: key }, DLC.material.en, () => DLX.materialRecorded(input.name, get().lang), DLX.savedOffline(DLC.material[lang], lang));
     },
-    readTeamShared: () => {
+    readTeamShared: (opts) => {
       const key = scopeKey(currentScope());
-      if (sharedTeamRead && sharedTeamRead.key === key) return sharedTeamRead.read;
-      const read = Promise.resolve(get().loadTeam()).then((ok) => ok === true);
-      const entry = { key, read };
+      const inFlight = sharedTeamRead && sharedTeamRead.key === key ? sharedTeamRead : null;
+      // `after` (a refusal, Codex #1361 r2): a read already in flight may have been answered before the refusal, so
+      // exactly one more read is chained after it. Until that chained read has sent its request it answers every
+      // refusal made meanwhile, so later refusals share it rather than chaining one each; one made after it was sent
+      // chains the next.
+      if (inFlight && (!opts?.after || (inFlight.after && !inFlight.sent))) return inFlight.read;
+      const entry: { key: string; read: Promise<boolean>; after: boolean; sent: boolean } = { key, read: Promise.resolve(false), after: inFlight !== null, sent: inFlight === null };
+      const start = () => Promise.resolve(get().loadTeam()).then((ok) => ok === true);
+      // the chained read is for this scope only: after a project switch it makes no read for the old one
+      const startHere = () => {
+        entry.sent = true;
+        return scopeKey(currentScope()) === key ? start() : false;
+      };
+      const read = inFlight ? inFlight.read.then(startHere, startHere) : start();
+      entry.read = read;
       sharedTeamRead = entry;
       void read.finally(() => { if (sharedTeamRead === entry) sharedTeamRead = null; });
       return read;

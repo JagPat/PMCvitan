@@ -29,7 +29,7 @@ const snapshot = (responsibleMembers: Array<{ inspectionId: string; memberId: st
   responsibleMembers,
 });
 
-await warmImports(() => import('@/store/store'), () => import('@/screens/InspectionReviewScreen'), () => import('@/screens/EngineerChecklistScreen'));
+await warmImports(() => import('@/store/store'), () => import('@/screens/InspectionReviewScreen'), () => import('@/screens/EngineerChecklistScreen'), () => import('@/components'));
 
 afterEach(() => {
   cleanup();
@@ -279,6 +279,54 @@ describe('"Who fixes this?" on the PMC review card (#482 RM-w1)', () => {
     expect(select().disabled).toBe(false);
   });
 
+  it('a refusal while a team read is in flight reads the team once more after it (Codex #1361 r2)', async () => {
+    const answers: Array<(m: ProjectMember[]) => void> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answers.push(r); }));
+    const setResponsibleMember = vi.fn(async () => { throw Object.assign(new Error('Only an active contractor or consultant'), { status: 400 }); });
+    const { useStore, select } = await openReview({ listMembers, setResponsibleMember, snapshot: vi.fn(() => new Promise(() => {})) }, { members: TEAM });
+    // opening starts a read; the refusal lands while it is still in flight (it may have been answered before the member left)
+    act(() => { fireEvent.focus(select()); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    // two refusals while it runs share ONE read chained after it
+    await useStore.getState().setResponsibleMember(REVIEW_ID, 'u-zed');
+    await useStore.getState().setResponsibleMember(REVIEW_ID, 'u-amy');
+    expect(listMembers).toHaveBeenCalledTimes(1);
+    await act(async () => { answers[0]!(TEAM); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    // a refusal after the chained read was sent chains exactly one more after it
+    await useStore.getState().setResponsibleMember(REVIEW_ID, 'u-zed');
+    await useStore.getState().setResponsibleMember(REVIEW_ID, 'u-amy');
+    expect(listMembers).toHaveBeenCalledTimes(2);
+    await act(async () => { answers[1]!(TEAM); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(3));
+    await act(async () => { answers[2]!(TEAM.filter((m) => m.userId !== 'u-zed')); });
+    await waitFor(() => expect(optionTexts(select())).toEqual(['Nobody yet', 'Amy Consultant']));
+    expect(listMembers).toHaveBeenCalledTimes(3);
+  });
+
+  it('a later opening reads the shown name again too, not only the team (Codex #1361 r2)', async () => {
+    const listMembers = vi.fn(async () => TEAM);
+    const fails: Array<() => void> = [];
+    const snapshotRead = vi.fn(() => new Promise((_, reject) => { fails.push(() => reject(Object.assign(new Error('Bad gateway'), { status: 502 }))); }));
+    const { select } = await openReview({ listMembers, snapshot: snapshotRead });
+    act(() => { fireEvent.focus(select()); });
+    await waitFor(() => expect(optionTexts(select())).toEqual(['Nobody yet', 'Amy Consultant', 'Zed Contractor']));
+    const before = snapshotRead.mock.calls.length;
+    act(() => { fireEvent.blur(select()); fireEvent.focus(select()); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(snapshotRead.mock.calls.length).toBe(before + 1));
+    // opening again and again while that read runs joins it: one project read, not one per opening
+    for (let i = 0; i < 5; i += 1) act(() => { fireEvent.blur(select()); fireEvent.focus(select()); });
+    await waitFor(() => expect(listMembers.mock.calls.length).toBeGreaterThanOrEqual(2));
+    expect(snapshotRead.mock.calls.length).toBe(before + 1);
+    // nor is one queued behind it: when it settles, no further read follows
+    await act(async () => { fails[fails.length - 1]!(); });
+    const { useStore } = await import('@/store/store');
+    await waitFor(() => expect(useStore.getState().projectLoadState).not.toBe('loading'));
+    await act(async () => { await Promise.resolve(); });
+    expect(snapshotRead.mock.calls.length).toBe(before + 1);
+  });
+
   it('several rows naming a member the list does not hold share one team read', async () => {
     let answer!: (m: ProjectMember[]) => void;
     const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answer = r; }));
@@ -306,6 +354,144 @@ describe('"Who fixes this?" by role (#482 RM-w1)', () => {
     const { EngineerChecklistScreen } = await import('@/screens/EngineerChecklistScreen');
     const view = render(<EngineerChecklistScreen />);
     expect(optionTexts(view.getByTestId('checklist-responsible-select') as HTMLSelectElement)).toEqual(['Nobody yet', 'Amy Consultant', 'Zed Contractor']);
+  });
+
+  it('on a re-inspection the engineer names who fixes the work it re-checks, by its id; a submitted one names itself (Codex #1361 r2)', async () => {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    const reinspection: Checklist = { id: 'INSP-95', title: 'Slab', zone: 'Z', date: 'today', submitted: false, reinspectionOfId: 'INSP-60', items: [{ id: 'i1', name: 'Rebar', state: null, photos: 0, note: '', evidence: [] }] };
+    const setResponsibleMember = vi.fn(async (inspectionId: string, memberId: string | null) =>
+      ({ ...snapshot(memberId ? [{ inspectionId, memberId }] : []), openChecklists: [reinspection], checklist: reinspection }));
+    useStore.setState({ ...getInitialState(), activeProjectId: 'qa', projectScopeGeneration: 1, role: 'engineer', online: true, openChecklists: [reinspection], checklist: reinspection, selectedChecklistId: null, members: TEAM, responsibleMembers: [] } as never);
+    useStore.getState()._setGateway({ snapshot: vi.fn(() => new Promise(() => {})), listMembers: vi.fn(async () => TEAM), setResponsibleMember } as never);
+    const { EngineerChecklistScreen } = await import('@/screens/EngineerChecklistScreen');
+    const view = render(<EngineerChecklistScreen />);
+    const el = () => view.getByTestId('checklist-responsible-select') as HTMLSelectElement;
+    act(() => { fireEvent.change(el(), { target: { value: 'u-zed' } }); });
+    await waitFor(() => expect(setResponsibleMember).toHaveBeenCalledTimes(1));
+    expect((setResponsibleMember.mock.calls[0] as unknown as [string, string | null])[0]).toBe('INSP-60');
+    const { responsibleTargetOf } = await import('@/components');
+    expect(responsibleTargetOf({ ...reinspection, submitted: true })).toBe('INSP-95');
+    expect(responsibleTargetOf({ id: 'INSP-7', submitted: false })).toBe('INSP-7');
+  });
+
+  it('a save still running for one checklist does not hold the picker busy on the next (Codex #1361 r2)', async () => {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    const first: Checklist = { id: 'INSP-7', title: 'Slab', zone: 'Z', date: 'today', submitted: false, items: [{ id: 'i1', name: 'Rebar', state: null, photos: 0, note: '', evidence: [] }] };
+    const second: Checklist = { ...first, id: 'INSP-8', title: 'Beam' };
+    const setResponsibleMember = vi.fn(() => new Promise(() => {}));
+    useStore.setState({ ...getInitialState(), activeProjectId: 'qa', projectScopeGeneration: 1, role: 'engineer', online: true, openChecklists: [first, second], checklist: first, selectedChecklistId: null, members: TEAM, responsibleMembers: [] } as never);
+    useStore.getState()._setGateway({ snapshot: vi.fn(() => new Promise(() => {})), listMembers: vi.fn(async () => TEAM), setResponsibleMember } as never);
+    const { EngineerChecklistScreen } = await import('@/screens/EngineerChecklistScreen');
+    const view = render(<EngineerChecklistScreen />);
+    const el = () => view.getByTestId('checklist-responsible-select') as HTMLSelectElement;
+    act(() => { fireEvent.change(el(), { target: { value: 'u-zed' } }); });
+    await waitFor(() => expect(setResponsibleMember).toHaveBeenCalledTimes(1));
+    expect(el().disabled).toBe(true);
+    act(() => { useStore.setState({ checklist: second } as never); });
+    await waitFor(() => expect(view.getByTestId('checklist-title').textContent).toContain('Beam'));
+    expect(el().disabled).toBe(false);
+  });
+
+  it('when an older save settles after a newer one, the newer one stays busy until its own answer (Codex #1361 r2)', async () => {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    const first: Checklist = { id: 'INSP-7', title: 'Slab', zone: 'Z', date: 'today', submitted: false, items: [{ id: 'i1', name: 'Rebar', state: null, photos: 0, note: '', evidence: [] }] };
+    const second: Checklist = { ...first, id: 'INSP-8', title: 'Beam' };
+    const settle = new Map<string, () => void>();
+    const setResponsibleMember = vi.fn((inspectionId: string) => new Promise((_, reject) => {
+      settle.set(inspectionId, () => reject(Object.assign(new Error('Bad gateway'), { status: 502 })));
+    }));
+    useStore.setState({ ...getInitialState(), activeProjectId: 'qa', projectScopeGeneration: 1, role: 'engineer', online: true, openChecklists: [first, second], checklist: first, selectedChecklistId: null, members: TEAM, responsibleMembers: [] } as never);
+    useStore.getState()._setGateway({ snapshot: vi.fn(() => new Promise(() => {})), listMembers: vi.fn(async () => TEAM), setResponsibleMember } as never);
+    const { EngineerChecklistScreen } = await import('@/screens/EngineerChecklistScreen');
+    const view = render(<EngineerChecklistScreen />);
+    const el = () => view.getByTestId('checklist-responsible-select') as HTMLSelectElement;
+    act(() => { fireEvent.change(el(), { target: { value: 'u-zed' } }); });
+    await waitFor(() => expect(settle.has('INSP-7')).toBe(true));
+    act(() => { useStore.setState({ checklist: second } as never); });
+    await waitFor(() => expect(view.getByTestId('checklist-title').textContent).toContain('Beam'));
+    act(() => { fireEvent.change(el(), { target: { value: 'u-amy' } }); });
+    await waitFor(() => expect(settle.has('INSP-8')).toBe(true));
+    expect(el().disabled).toBe(true);
+    // the older save (INSP-7) answers first: INSP-8's save is still running, so its picker stays busy
+    await act(async () => { settle.get('INSP-7')!(); });
+    await waitFor(() => expect(useStore.getState().toast).toBe('Could not save who fixes this. Try again.'));
+    expect(el().disabled).toBe(true);
+    await act(async () => { settle.get('INSP-8')!(); });
+    await waitFor(() => expect(el().disabled).toBe(false));
+  });
+
+  it('two saves on the SAME inspection, the older settling after the newer: busy until the newer one settles (Codex #1361 r2)', async () => {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    const first: Checklist = { id: 'INSP-7', title: 'Slab', zone: 'Z', date: 'today', submitted: false, items: [{ id: 'i1', name: 'Rebar', state: null, photos: 0, note: '', evidence: [] }] };
+    const second: Checklist = { ...first, id: 'INSP-8', title: 'Beam' };
+    const settles: Array<{ inspectionId: string; fail: () => void }> = [];
+    const setResponsibleMember = vi.fn((inspectionId: string) => new Promise((_, reject) => {
+      settles.push({ inspectionId, fail: () => reject(Object.assign(new Error('Bad gateway'), { status: 502 })) });
+    }));
+    useStore.setState({ ...getInitialState(), activeProjectId: 'qa', projectScopeGeneration: 1, role: 'engineer', online: true, openChecklists: [first, second], checklist: first, selectedChecklistId: null, members: TEAM, responsibleMembers: [] } as never);
+    useStore.getState()._setGateway({ snapshot: vi.fn(() => new Promise(() => {})), listMembers: vi.fn(async () => TEAM), setResponsibleMember } as never);
+    const { EngineerChecklistScreen } = await import('@/screens/EngineerChecklistScreen');
+    const view = render(<EngineerChecklistScreen />);
+    const el = () => view.getByTestId('checklist-responsible-select') as HTMLSelectElement;
+    const showing = async (c: Checklist) => {
+      act(() => { useStore.setState({ checklist: c } as never); });
+      await waitFor(() => expect(view.getByTestId('checklist-title').textContent).toContain(c.title));
+    };
+    // save 1 on INSP-7; away to INSP-8 and save there; back to INSP-7 (no longer the running save's) and save 3 on it
+    act(() => { fireEvent.change(el(), { target: { value: 'u-zed' } }); });
+    await waitFor(() => expect(settles).toHaveLength(1));
+    await showing(second);
+    act(() => { fireEvent.change(el(), { target: { value: 'u-amy' } }); });
+    await waitFor(() => expect(settles).toHaveLength(2));
+    await showing(first);
+    expect(el().disabled).toBe(false);
+    act(() => { fireEvent.change(el(), { target: { value: 'u-amy' } }); });
+    await waitFor(() => expect(settles).toHaveLength(3));
+    expect(settles.map((x) => x.inspectionId)).toEqual(['INSP-7', 'INSP-8', 'INSP-7']);
+    expect(el().disabled).toBe(true);
+    // the OLDER save on INSP-7 settles after the newer one on the same inspection was sent: still busy
+    await act(async () => { settles[0]!.fail(); });
+    await waitFor(() => expect(useStore.getState().toast).toBe('Could not save who fixes this. Try again.'));
+    expect(el().disabled).toBe(true);
+    await act(async () => { settles[2]!.fail(); });
+    await waitFor(() => expect(el().disabled).toBe(false));
+  });
+
+  it('one rule names the inspection on all three sites: A sent back, B open re-checking it, then B submitted (Codex #1361 r2)', async () => {
+    const { getInitialState } = await import('@/store/store');
+    const seeded = getInitialState().reviews.find((r) => r.id === REVIEW_ID)!;
+    const named = [{ inspectionId: 'INSP-60', memberId: 'u-zed' }, { inspectionId: 'INSP-95', memberId: 'u-amy' }];
+    const items = [{ id: 'i1', name: 'Rebar', state: null, photos: 0, note: '', evidence: [] }];
+    const bOpen: Checklist = { id: 'INSP-95', title: 'Slab', zone: 'Z', date: 'today', submitted: false, reinspectionOfId: 'INSP-60', items };
+    const shown = (el: HTMLElement) => (el as HTMLSelectElement).selectedOptions[0]!.textContent;
+    // B open: the outstanding row names A (the work it re-checks)
+    const row = await openReview({ listMembers: vi.fn(async () => TEAM) }, { reviews: [], activeReviewId: null, openChecklists: [bOpen], members: TEAM, responsibleMembers: named });
+    expect(shown(row.view.getByTestId('outstanding-responsible-INSP-95-select'))).toBe('Zed Contractor');
+    cleanup();
+    // B open: the engineer's screen names A too
+    const engineer = async (c: Checklist) => {
+      vi.resetModules();
+      const { useStore, getInitialState: init } = await import('@/store/store');
+      useStore.setState({ ...init(), activeProjectId: 'qa', projectScopeGeneration: 1, role: 'engineer', online: true, openChecklists: [c], checklist: c, selectedChecklistId: null, members: TEAM, responsibleMembers: named } as never);
+      const { EngineerChecklistScreen } = await import('@/screens/EngineerChecklistScreen');
+      return render(<EngineerChecklistScreen />);
+    };
+    expect(shown((await engineer(bOpen)).getByTestId('checklist-responsible-select'))).toBe('Zed Contractor');
+    cleanup();
+    // B submitted: the engineer's screen and the review card name B itself
+    expect(shown((await engineer({ ...bOpen, submitted: true })).getByTestId('checklist-responsible-select'))).toBe('Amy Consultant');
+    cleanup();
+    const bReview = { ...seeded, id: 'INSP-95', reinspectionOfId: 'INSP-60', decided: false };
+    const card = await openReview({ listMembers: vi.fn(async () => TEAM) }, { reviews: [bReview], activeReviewId: 'INSP-95', members: TEAM, responsibleMembers: named });
+    expect(shown(card.view.getByTestId('review-responsible-INSP-95-select'))).toBe('Amy Consultant');
   });
 
   it('a contractor, a consultant and a client see no picker', async () => {

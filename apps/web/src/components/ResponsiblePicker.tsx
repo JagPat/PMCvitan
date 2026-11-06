@@ -3,6 +3,22 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { can, responsibleMemberLabels as L } from '@vitan/shared';
 
+/**
+ * The inspection a picker names (Codex #1361 r1/r2): the one holding the failed work being fixed. The ONE rule every
+ * picker site calls:
+ * - a checklist not yet submitted that re-checks another (`reinspectionOfId`) names that one, the inspection sent back,
+ *   whose failed items are the work being fixed (the outstanding row and the engineer's screen);
+ * - a submitted checklist, or a review (always submitted: it is in the review queue), names itself, since its own failed
+ *   items are what "Your open items" serves for that id (the server's openItems, inspections.query.ts).
+ * A review is told from a checklist by its `decided` field, so a caller cannot leave the state out by mistake.
+ */
+export function responsibleTargetOf(
+  c: { id: string; reinspectionOfId?: string | null } & ({ submitted: boolean } | { decided: boolean }),
+): string {
+  const open = 'submitted' in c && !c.submitted;
+  return open && c.reinspectionOfId ? c.reinspectionOfId : c.id;
+}
+
 /** The roles a member must hold to be named (the server's `RESPONSIBLE_ROLES`; it refuses anyone else with a 400). */
 const NAMEABLE = new Set(['contractor', 'consultant']);
 
@@ -23,7 +39,12 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   const named = useStore((s) => s.responsibleMembers.find((r) => r.inspectionId === inspectionId)?.memberId ?? null);
   const setResponsibleMember = useStore((s) => s.setResponsibleMember);
   const readTeamShared = useStore((s) => s.readTeamShared);
-  const [saving, setSaving] = useState(false);
+  // busy only for THIS inspection's save (Codex #1361 r2): React reuses the picker when the screen moves to another
+  // inspection, and an older save's settling never clears a newer one
+  const [savingFor, setSavingFor] = useState<{ inspectionId: string; token: number } | null>(null);
+  const saveToken = useRef(0);
+  const saving = savingFor?.inspectionId === inspectionId;
+  const joinSnapshotRead = useStore((s) => s.joinSnapshotRead);
   // The team list (the Team screen's read, one read shared by every picker on the screen) is asked for only when it is
   // needed: the picker being opened, or a name to show that the list does not hold. `readFor` is the name the last
   // SUCCESSFUL read was made for, so a member named later (by another tab, after the list was read) is asked for again
@@ -67,7 +88,13 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   // after a failure, hold the picker busy; later ones refresh in the background under the same shared read.
   const onOpen = () => {
     if (readFor === undefined || failedFor !== undefined) readTeam();
-    else if (allowed && online) void readTeamShared();
+    else if (allowed && online) {
+      void readTeamShared();
+      // a member's standing change sends no snapshot event, so the shown name (the server's) is read again too: a
+      // member re-roled away and back is no longer the one named (Codex #1361 r2). It joins a project read already in
+      // flight or queued, so opening many pickers makes one read, not one each.
+      joinSnapshotRead();
+    }
   };
 
   if (!allowed) return null;
@@ -80,8 +107,11 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   const choose = (next: string) => {
     const memberId = next === '' ? null : next;
     if (memberId === (value === '' ? null : value)) return;
-    setSaving(true);
-    void setResponsibleMember(inspectionId, memberId).finally(() => { if (live.current) setSaving(false); });
+    const token = ++saveToken.current;
+    setSavingFor({ inspectionId, token });
+    void setResponsibleMember(inspectionId, memberId).finally(() => {
+      if (live.current) setSavingFor((cur) => (cur?.token === token ? null : cur));
+    });
   };
 
   return (
