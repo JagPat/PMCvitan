@@ -10,11 +10,18 @@ import type { ApiGateway, OutboxOp, SiteVisit } from '@/data/apiGateway';
 import { POSTER_WAIT_MS, fileVisitPhoto, getVisitPhoto, listVisitPhotos, putVisitPhoto, visitPhotoScope, type SiteVisitAddFileOp } from '@/data/visitPhotoStore';
 import { tellSiteVisits } from '@/data/apiGateway';
 import { flushesEnded, settled, startWork, tracked } from './site-visit-work';
+import { STILL_AT_MS, stillFrom } from '@/lib/videoPoster';
 
 // #995 V2b-2: drawing a clip's still frame needs a browser that decodes video (jsdom has none); `video-poster.test.ts`
 // tests the drawing itself. Here each recording is given the frame the test says, none by default
-const still = vi.hoisted(() => ({ frame: null as string | null }));
-vi.mock('@/lib/videoPoster', () => ({ drawPoster: vi.fn(async () => still.frame) }));
+// `frame`: what is drawn from a saved clip; `live`: what is taken from the camera's picture while it records (V2e)
+const still = vi.hoisted(() => ({ frame: null as string | null, live: null as string | null, taken: 0 }));
+vi.mock('@/lib/videoPoster', async (actual) => ({
+  ...(await actual<typeof import('@/lib/videoPoster')>()),
+  stillFrom: vi.fn(async () => { still.taken += 1; return still.live; }),
+  // the camera's still when there is one, else the frame drawn from the clip (clipPoster's own order: video-poster.test.ts)
+  clipPoster: vi.fn(async (_blob: Blob, taken?: Promise<string | null>) => (taken ? await taken : null) ?? still.frame),
+}));
 
 /**
  * #995 V2b, video clips on a visit: the visitor and anyone present record a clip of up to a minute in the app, with the
@@ -109,6 +116,8 @@ beforeEach(() => {
   bytes = new Uint8Array([1, 2, 3]);
   FakeRecorder.last = null;
   still.frame = null;
+  still.live = null;
+  still.taken = 0;
   vi.spyOn(Date, 'now').mockImplementation(() => now);
   vi.spyOn(performance, 'now').mockImplementation(() => now);
   tracks = [{ stop: vi.fn() }];
@@ -179,7 +188,7 @@ describe('#995 V2b: video clips on a visit', () => {
     await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Record video' })); });
     expect(getUserMedia).toHaveBeenCalledTimes(1);
     expect(getUserMedia.mock.calls[0][0]).toMatchObject({ audio: true, video: { facingMode: { ideal: 'environment' } } });
-    expect(FakeRecorder.last!.options).toMatchObject({ mimeType: 'video/webm;codecs=vp8,opus', videoBitsPerSecond: 1_000_000, audioBitsPerSecond: 64_000 });
+    expect(FakeRecorder.last!.options).toMatchObject({ mimeType: 'video/webm;codecs=vp8,opus', videoBitsPerSecond: 600_000, audioBitsPerSecond: 64_000 });
     const running = within(card).getByTestId('sv-recording-video-v-1');
     expect(running.textContent).toContain('Recording 0:00 of 1:00');
     const preview = running.querySelector('video')!;
@@ -453,6 +462,62 @@ describe('#995 V2b-2: a clip’s still frame', () => {
     expect(addVisitPoster).toHaveBeenCalledTimes(1);
   });
 
+  it('V2e: sends the frame taken from the camera’s picture as it records, where the phone draws none from the saved clip', async () => {
+    withRecorder();
+    // the camera's preview shows a picture; the saved clip gives no frame (Jagrut's iPhone, 6 Nov)
+    vi.spyOn(HTMLVideoElement.prototype, 'videoWidth', 'get').mockReturnValue(1280);
+    still.live = '/9j/LIVE';
+    const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
+    const addVisitPoster = vi.fn(async (id: string) => ({ id, posterUrl: `/media/${id}/poster?t=x` }));
+    await mount('consultant', CONSULTANT, fakeGateway([visit()], { uploadMedia, addVisitPoster }));
+    const card = screen.getByTestId('sv-visit-v-1');
+    // the screen's own second-in timer, run by the test when it says (no clock is waited on)
+    const timer = vi.spyOn(globalThis, 'setTimeout');
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Record video' })); });
+    const second = timer.mock.calls.find(([, ms]) => ms === STILL_AT_MS);
+    expect(second).toBeDefined();
+    // nothing taken before that second
+    expect(still.taken).toBe(0);
+    timer.mockRestore();
+    // taken once, from the preview, when it comes
+    await act(async () => { (second![0] as () => void)(); });
+    expect(still.taken).toBe(1);
+    const shown = within(card).getByTestId('sv-recording-video-v-1').querySelector('video');
+    expect(vi.mocked(stillFrom).mock.calls[0][0]).toBe(shown);
+    now += 3_000;
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Stop and add' })); });
+    await settled();
+    // not taken again at Stop
+    expect(still.taken).toBe(1);
+    expect(addVisitPoster).toHaveBeenCalledWith('m-9', '/9j/LIVE');
+    // a clip stopped before that second is taken at Stop, while the camera still shows its picture
+    still.live = '/9j/STOP';
+    uploadMedia.mockImplementation(async () => ({ id: 'm-10', url: '/media/m-10' }));
+    await record(card, 1_500);
+    await settled();
+    expect(still.taken).toBe(2);
+    expect(addVisitPoster).toHaveBeenLastCalledWith('m-10', '/9j/STOP');
+    // nothing is taken for a voice note, nor kept from a discarded clip for the next one
+    still.live = null;
+    uploadMedia.mockImplementation(async () => ({ id: 'm-11', url: '/media/m-11' }));
+    await record(card, 3_000, { record: 'Record voice note', stop: 'Stop and add' });
+    await settled();
+    expect(still.taken).toBe(2);
+    expect(addVisitPoster).toHaveBeenCalledTimes(2);
+    // a clip the browser ends by itself before that second (a call takes the camera) is taken as it stops, before the
+    // camera is let go (Codex 4491914242)
+    still.live = '/9j/ENDED';
+    uploadMedia.mockImplementation(async () => ({ id: 'm-12', url: '/media/m-12' }));
+    tracks = [{ stop: vi.fn() }];
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Record video' })); });
+    now += 1_500;
+    await act(async () => { FakeRecorder.last!.stop(); });
+    await settled();
+    expect(still.taken).toBe(3);
+    expect(vi.mocked(stillFrom).mock.invocationCallOrder.at(-1)!).toBeLessThan(tracks[0].stop.mock.invocationCallOrder[0]);
+    expect(addVisitPoster).toHaveBeenLastCalledWith('m-12', '/9j/ENDED');
+  });
+
   it('sends a clip this phone drew no frame from alone, and a voice note never draws one', async () => {
     withRecorder();
     const uploadMedia = vi.fn(async () => ({ id: 'm-9', url: '/media/m-9' }));
@@ -665,6 +730,56 @@ describe('#995 V2b-2: a clip’s still frame', () => {
     await act(async () => { fireEvent.error(tile); });
     expect(screen.getByTestId('sv-file-m-c').querySelector('img')).toBeNull();
     expect(within(screen.getByTestId('sv-file-m-c')).getByRole('button', { name: 'Play: Crack by the column' })).not.toBeNull();
+  });
+
+  it('V2f: says how much of a clip has come while it is fetched, then plays it whole, and says nothing for an answer with no size', async () => {
+    const words = { play: 'Play', failed: 'failed', retry: 'Try again' };
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => Promise.resolve());
+    // a 10-byte clip that comes in three parts, each held until the test lets it go
+    const parts = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6, 7]), new Uint8Array([8, 9, 10])];
+    const gates: Array<() => void> = [];
+    let i = 0;
+    const reader = {
+      read: () => new Promise<{ done: boolean; value?: Uint8Array }>((done) => {
+        const n = i++;
+        if (n >= parts.length) { done({ done: true }); return; }
+        gates.push(() => done({ done: false, value: parts[n] }));
+      }),
+    };
+    const headers = new Headers({ 'content-length': '10', 'content-type': 'application/octet-stream' });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, headers, body: { getReader: () => reader }, blob: async () => { throw new Error('read whole'); } })));
+    let made: Blob | null = null;
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn((b: Blob) => { made = b; return 'blob:clip'; }), revokeObjectURL: vi.fn() }));
+    const view = render(<MediaPlayer url="/media/m-c?sig=x" mime="video/webm" label="Clip" words={words} />);
+    await act(async () => { fireEvent.click(view.getByRole('button', { name: 'Play: Clip' })); });
+    // nothing has come yet: no number shown
+    expect(view.queryByRole('progressbar')).toBeNull();
+    await act(async () => { gates[0](); });
+    expect(view.getByRole('progressbar').textContent).toBe('30%');
+    expect(view.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('30');
+    await act(async () => { gates[1](); });
+    expect(view.getByRole('progressbar').textContent).toBe('70%');
+    expect(view.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('70');
+    // the last part in: never 100 shown, the clip plays from all its bytes, typed as the file is
+    await act(async () => { gates[2](); });
+    await act(async () => {});
+    expect(view.queryByRole('progressbar')).toBeNull();
+    expect(made!.size).toBe(10);
+    expect(made!.type).toBe('video/webm');
+    expect(view.container.querySelector('video')!.getAttribute('src')).toBe('blob:clip');
+    view.unmount();
+    // an answer that does not say its size (a chunked one) is read whole, with no number, its stream never locked first:
+    // a body a reader has locked cannot be read whole, as a browser's cannot (Codex 4492634251)
+    const chunked = { locked: false, getReader() { chunked.locked = true; return reader; } };
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, headers: new Headers(), body: chunked,
+      blob: async () => { if (chunked.locked) throw new TypeError('body is locked'); return new Blob([new Uint8Array([1])]); },
+    })));
+    const plain = render(<MediaPlayer url="/media/m-d?sig=x" mime="video/webm" label="Other" words={words} />);
+    await act(async () => { fireEvent.click(plain.getByRole('button', { name: 'Play: Other' })); });
+    await act(async () => {});
+    expect(plain.queryByRole('progressbar')).toBeNull();
+    expect(plain.container.querySelector('video')!.getAttribute('src')).toBe('blob:clip');
   });
 
   it('tries a frame again when a later read brings it a fresh link (Codex 4399442176)', async () => {
