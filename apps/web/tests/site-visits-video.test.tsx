@@ -768,8 +768,13 @@ describe('#995 V2b-2: a clip’s still frame', () => {
     expect(made!.type).toBe('video/webm');
     expect(view.container.querySelector('video')!.getAttribute('src')).toBe('blob:clip');
     view.unmount();
-    // an answer that does not say its size is read whole, with no number
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, headers: new Headers(), body: { getReader: () => reader }, blob: async () => new Blob([new Uint8Array([1])]) })));
+    // an answer that does not say its size (a chunked one) is read whole, with no number, its stream never locked first:
+    // a body a reader has locked cannot be read whole, as a browser's cannot (Codex 4492634251)
+    const chunked = { locked: false, getReader() { chunked.locked = true; return reader; } };
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, headers: new Headers(), body: chunked,
+      blob: async () => { if (chunked.locked) throw new TypeError('body is locked'); return new Blob([new Uint8Array([1])]); },
+    })));
     const plain = render(<MediaPlayer url="/media/m-d?sig=x" mime="video/webm" label="Other" words={words} />);
     await act(async () => { fireEvent.click(plain.getByRole('button', { name: 'Play: Other' })); });
     await act(async () => {});

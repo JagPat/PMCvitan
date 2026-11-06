@@ -19,9 +19,11 @@ function tryPlay(el: HTMLMediaElement) {
 /** The fetched file's bytes, reading them as they come so `progress` hears whole percents (never 100 until they are all
  *  in) when the answer says how large the file is; an answer with no size, or no stream to read, is read whole. */
 async function fileOf(r: Response, progress: (pct: number) => void): Promise<Blob> {
+  // the size is read before the stream is touched: a reader locks the body, and a locked body cannot be read whole
+  // (Codex 4492634251)
   const total = Number(r.headers?.get?.('content-length') ?? 0);
-  const reader = r.body?.getReader?.();
-  if (!reader || !Number.isFinite(total) || total <= 0) return r.blob();
+  if (!Number.isFinite(total) || total <= 0 || typeof r.body?.getReader !== 'function') return r.blob();
+  const reader = r.body.getReader();
   const parts: Uint8Array[] = [];
   let got = 0;
   let said = -1;
