@@ -16,6 +16,26 @@ function tryPlay(el: HTMLMediaElement) {
   }
 }
 
+/** The fetched file's bytes, reading them as they come so `progress` hears whole percents (never 100 until they are all
+ *  in) when the answer says how large the file is; an answer with no size, or no stream to read, is read whole. */
+async function fileOf(r: Response, progress: (pct: number) => void): Promise<Blob> {
+  const total = Number(r.headers?.get?.('content-length') ?? 0);
+  const reader = r.body?.getReader?.();
+  if (!reader || !Number.isFinite(total) || total <= 0) return r.blob();
+  const parts: Uint8Array[] = [];
+  let got = 0;
+  let said = -1;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value);
+    got += value.byteLength;
+    const pct = Math.min(99, Math.floor((got * 100) / total));
+    if (pct !== said) { said = pct; progress(pct); }
+  }
+  return new Blob(parts as BlobPart[], { type: r.headers.get('content-type') ?? '' });
+}
+
 /**
  * Stage 1 voice notes: plays a recorded visit file, a voice note (and a video clip the same way, V2). A stored file is
  * fetched whole on Play and played from the phone's own copy (an object URL): `/media` serves no byte ranges, and
@@ -36,6 +56,8 @@ export function MediaPlayer({ url, mime, label, words, poster }: {
 }) {
   const local = url.startsWith('data:');
   const [phase, setPhase] = useState<'idle' | 'loading' | 'ready' | 'failed'>(local ? 'ready' : 'idle');
+  // #995 V2f: how much of the file has come, in whole percent, while it is fetched (when the answer says its size)
+  const [loaded, setLoaded] = useState<number | null>(null);
   // the frame link that did not load: a fresh link (a later read signs a new one) is tried again
   const [posterGone, setPosterGone] = useState<string | null>(null);
   const media = useRef<HTMLMediaElement | null>(null);
@@ -59,10 +81,11 @@ export function MediaPlayer({ url, mime, label, words, poster }: {
       tryPlay(el);
     }
     setPhase('loading');
+    setLoaded(null);
     try {
       const r = await fetch(resolveMediaUrl(url), { signal: ctrl.signal, credentials: 'omit' });
       if (!r.ok) throw new Error(String(r.status));
-      const blob = await r.blob();
+      const blob = await fileOf(r, (pct) => { if (run.current === ctrl) setLoaded(pct); });
       if (ctrl.signal.aborted) return;
       if (owned.current) URL.revokeObjectURL(owned.current);
       // typed as the file is, so the browser knows how to play it whatever the bucket answered with
@@ -82,9 +105,15 @@ export function MediaPlayer({ url, mime, label, words, poster }: {
   const Player = mime.startsWith('video/') ? 'video' : 'audio';
   const still = Player === 'video' && poster && posterGone !== poster ? resolveMediaUrl(poster) : null;
   const play = (
-    <Button variant="light" disabled={phase === 'loading'} aria-label={`${words.play}: ${label}`} onClick={() => void load()}>
-      {words.play}
-    </Button>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+      <Button variant="light" disabled={phase === 'loading'} aria-label={`${words.play}: ${label}`} onClick={() => void load()}>
+        {words.play}
+      </Button>
+      {/* a progress bar, not a live region: a screen reader is not read every percent */}
+      {phase === 'loading' && loaded !== null && (
+        <span role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={loaded} aria-label={`${label}: ${loaded}%`}>{loaded}%</span>
+      )}
+    </span>
   );
 
   return (
