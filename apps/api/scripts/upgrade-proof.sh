@@ -5241,7 +5241,9 @@ for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # #1179 R1's visit file removal line (20280125) references SV1-a's visit table and SV2's files, so it is excluded with them.
   # Hub U5m's catalog generation (20280127) extends SV1-a's and refuses to apply without it, so it is excluded with it.
   # RM-e-m's catalog generation (20280207) extends SV1-a's beside U5m's and refuses to apply without both, so it is excluded with them.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*|20280106000000_*|20280107000000_*|20280111000000_*|20280112000000_*|20280114000000_*|20280125000000_*|20280127000000_*|20280207000000_*) continue ;; esac
+  # Guided inspections step 3b's walked inspections (20280212) reference SV1-a's visit table and use its stamp and standing
+  # functions, so they are excluded with it.
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*|20271226000000_*|20271227000000_*|20271228000000_*|20271229000000_*|20271230000000_*|20271231000000_*|20280101000000_*|20280102000000_*|20280103000000_*|20280104000000_*|20280105000000_*|20280106000000_*|20280107000000_*|20280111000000_*|20280112000000_*|20280114000000_*|20280125000000_*|20280127000000_*|20280207000000_*|20280212000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5978,11 +5980,11 @@ assert "guided inspections: after the replay items keep their guidance columns, 
 assert "guided inspections: after the replay the file rows keep their gallery label columns, its check and its fixed-at-insert trigger" \
   "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'Media' AND ((column_name = 'fromGallery' AND data_type = 'boolean' AND is_nullable = 'NO' AND column_default = 'false') OR (column_name = 'galleryOriginalAt' AND data_type = 'timestamp without time zone' AND is_nullable = 'YES' AND column_default IS NULL)))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"Media\"'::regclass AND conname = 'Media_gallery_original_needs_gallery' AND contype = 'c' AND convalidated)::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"Media\"'::regclass AND tgname = 'Media_gallery_origin_fixed' AND NOT tgisinternal)::text;" \
   "2|1|1"
-# Guided site inspections step 3b (on ALWAYS_EXECUTE): the visit's walked inspections, its three keys and its four
-# triggers, which a db-push baseline does not have.
-assert "guided inspections: after the replay a visit's walked inspections keep their table, three keys and four triggers" \
-  "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'SiteVisitInspection' AND is_nullable = 'NO')::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"SiteVisitInspection\"'::regclass AND contype = 'f' AND conname IN ('SiteVisitInspection_projectId_visitId_fkey', 'SiteVisitInspection_projectId_inspectionId_fkey', 'SiteVisitInspection_linkedById_fkey'))::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"SiteVisitInspection\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('SiteVisitInspection_insert', 'SiteVisitInspection_frozen', 'SiteVisitInspection_no_delete', 'SiteVisitInspection_no_truncate'))::text;" \
-  "5|3|4"
+# Guided site inspections step 3b (on ALWAYS_EXECUTE): the visit's walked inspections, its three keys with their delete
+# actions, its shape check and its four triggers, which a db-push baseline does not have.
+assert "guided inspections: after the replay a visit's walked inspections keep their table, three keys, shape check and four triggers" \
+  "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'SiteVisitInspection' AND is_nullable = 'NO')::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"SiteVisitInspection\"'::regclass AND contype = 'f' AND ((conname = 'SiteVisitInspection_projectId_visitId_fkey' AND confdeltype = 'c') OR (conname = 'SiteVisitInspection_projectId_inspectionId_fkey' AND confdeltype = 'c') OR (conname = 'SiteVisitInspection_linkedById_fkey' AND confdeltype = 'r')))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"SiteVisitInspection\"'::regclass AND contype = 'c' AND conname = 'SiteVisitInspection_shape_check')::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"SiteVisitInspection\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('SiteVisitInspection_insert', 'SiteVisitInspection_frozen', 'SiteVisitInspection_no_delete', 'SiteVisitInspection_no_truncate'))::text;" \
+  "7|3|1|4"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \

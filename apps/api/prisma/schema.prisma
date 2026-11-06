@@ -5528,7 +5528,7 @@ model SiteVisitMedia {
 
 // Guided site inspections, step 3b (20280212000000) — an inspection walked during a site visit: one row per inspection
 // (an inspection was walked on at most one visit; a re-inspection is its own inspection). Both links are composite
-// (projectId, x) foreign keys. The database stamps "linkedAt" and refuses any change to a row and any direct delete or
+// (projectId, x) foreign keys. The database checks the linker's role, freezes their name, stamps "linkedAt" and refuses any change to a row and any direct delete or
 // truncate: a row goes only with its visit, its inspection or its project. Who may link (the visitor or someone present,
 // while the visit is not closed, with the inspection's submit) is the server's rule: the site-visits module writes this
 // row as the inspection submit's participant.
@@ -5540,6 +5540,9 @@ model SiteVisitInspection {
   inspectionId String     @id
   linkedBy     User       @relation("siteVisitInspectionLinkedBy", fields: [linkedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
   linkedById   String
+  // the role the linker acted in, checked held on the project at insert; the trigger copies their account name
+  linkedByRole String
+  linkedByName String     @default("")
   linkedAt     DateTime   @default(now())
 
   @@unique([projectId, inspectionId])

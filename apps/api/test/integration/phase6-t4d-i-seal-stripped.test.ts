@@ -223,6 +223,9 @@ function buildBase(): void {
     '20280114000000_site_visits_sv2_visit_media',
     // #1179 R1's removal lines reference SV1-a's visit table and SV2's files: built on both, excluded with them.
     '20280125000000_site_visit_file_removal',
+    // Guided inspections step 3b's walked inspections reference SV1-a's visit table and use its stamp and standing
+    // functions: built on SV1-a, excluded with it.
+    '20280212000000_site_visit_inspections',
     // Hub #1118 U5m seeds its generation beside SV1-a's (its prerequisite): built on SV1-a, excluded with it.
     '20280127000000_hub_catalog_generation',
     // RM-e-m seeds its generation beside SV1-a's and U5m's (both its prerequisites): built on them, excluded with them.
