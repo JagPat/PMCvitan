@@ -413,9 +413,19 @@ describe('#1118 U7a L1 — Hub project link (live PG + stub Hub)', () => {
     expect(callsSince(k).filter((c) => c.startsWith('DELETE'))).toEqual([]);
     expect(hub.links.get('18')?.externalId).toBe(p);
 
-    // a final refusal of the clear (the old Hub project is out of reach) leaves nothing PMC can clear: the link goes ahead
+    // Hub refuses the clear and still lists the old link: the link fails before anything is written (#1377 review)
     hub.faults.push({ when: (m) => m === 'DELETE', fault: 503 });
     expect((await unlink(p)).body).toEqual({ hubCleared: false });
+    const r = hub.calls.length;
+    hub.faults.push({ when: (m) => m === 'DELETE', fault: 400 });
+    const kept = await link(p, '19');
+    expect([kept.status, kept.body.code]).toEqual([502, 'hub_refused']);
+    expect(callsSince(r).filter((c) => c.includes('/links'))).toEqual(['DELETE /api/v2/projects/18/links/pmc', 'GET /api/v2/projects/18/links']);
+    expect(hub.links.get('18')?.externalId).toBe(p);
+    expect(hub.links.has('19')).toBe(false);
+    expect((await events(p)).map((e) => e.kind).slice(-1)).toEqual(['unlinked']);
+
+    // a 404 on the clear (the old Hub project is gone or out of reach) leaves nothing PMC can clear: the link goes ahead
     hub.faults.push({ when: (m) => m === 'DELETE', fault: 404 });
     expect((await link(p, '19')).status).toBe(200);
     expect(hub.links.get('19')?.externalId).toBe(p);

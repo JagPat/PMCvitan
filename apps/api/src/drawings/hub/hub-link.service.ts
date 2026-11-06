@@ -284,8 +284,9 @@ export class HubLinkService {
    * is told of the new link. The same rule as `clearHubLink`: nothing while a project of the company holds that Hub
    * project (Hub's one `pmc` link is that holder's), and nothing when the new link is to that same Hub project (Hub's
    * link is replaced by it). A Hub that may not have done it (no answer, a 5xx, a throttle) or refused PMC's key fails
-   * the link before anything is written, so trying again tries the clear again; a final refusal (the old Hub project
-   * is archived or out of the key's reach) leaves nothing PMC can clear there, and the link goes ahead.
+   * the link before anything is written, so trying again tries the clear again. So does any other answer that leaves the
+   * old link possibly showing (Hub still lists it after refusing the removal): a relink never goes ahead over it. Only a
+   * 404 (the old Hub project is gone or out of the key's reach) leaves nothing PMC can clear there: the link goes ahead.
    */
   private async clearLeftBehind(
     tx: Prisma.TransactionClient,
@@ -300,7 +301,10 @@ export class HubLinkService {
     if (!ended || ended === hubProjectId) return;
     if ((await activeHolders(tx, orgId, [ended])).has(ended)) return;
     const cleared = await unlinkHubProject(config, ended);
-    if (!cleared.ok && (cleared.failure === 'refused' || hubCallRetryable(cleared.failure, cleared.status))) throw hubFailure(cleared);
+    // only a Hub that removed the link, or answers that the old Hub project is gone (404), lets the link go ahead: any
+    // other answer (Hub still lists the old link, or could not say) leaves it showing, so the link fails before writing
+    if (cleared.ok || (cleared.failure === 'http_status' && cleared.status === 404)) return;
+    throw hubFailure(cleared);
   }
 
   /**
