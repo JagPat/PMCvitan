@@ -192,6 +192,9 @@ export const finishInspectionSchema = z.object({
   dueInDays: z.number().int().min(1).max(60).optional(),
 }).strict();
 export type FinishInspectionInput = z.infer<typeof finishInspectionSchema>;
+/** Guided site inspections step 3c — the `x-vitan-site-visit` header on a submit or finish: one visit id (a UUID, as a
+ *  visit's id is; compared lower-cased, as the visit routes take it). */
+export const siteVisitHeaderSchema = z.string().uuid().transform((value) => value.toLowerCase());
 
 // #482 proof photos, "Who fixes this?": the contractor or consultant member who fixes an inspection's failed work, or
 // null for nobody. Its own route, so no queued command's body changes shape.

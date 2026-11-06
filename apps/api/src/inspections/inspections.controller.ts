@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Post, Put, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, Param, Post, Put, UseGuards } from '@nestjs/common';
 import { InspectionsService } from './inspections.service';
 import { InspectionsQueryService } from './inspections.query';
 import { SnapshotService } from '../snapshot/snapshot.service';
@@ -9,6 +9,7 @@ import {
   createInspectionSchema,
   decideReviewSchema,
   finishInspectionSchema,
+  siteVisitHeaderSchema,
   submitInspectionSchema,
   type CreateInspectionInput,
   type DecideReviewInput,
@@ -17,6 +18,17 @@ import {
   setResponsibleMemberSchema,
   type SetResponsibleMemberInput,
 } from '../contracts';
+
+/** Guided site inspections, step 3c — the site visit a walk was done on, named in a header so the submit's and finish's
+ *  bodies (and the web's queued copies of them) keep their shapes. Absent: the walk is on no visit, as before. */
+const SITE_VISIT_HEADER = 'x-vitan-site-visit';
+
+function visitFrom(header: string | string[] | undefined): string | undefined {
+  if (header === undefined) return undefined;
+  const parsed = siteVisitHeaderSchema.safeParse(header);
+  if (!parsed.success) throw new BadRequestException(`The ${SITE_VISIT_HEADER} header must name one site visit by its id`);
+  return parsed.data;
+}
 
 @Controller('projects/:projectId/inspections')
 @UseGuards(JwtGuard, RolesGuard)
@@ -66,8 +78,9 @@ export class InspectionsController {
     @Body(new ZodPipe(submitInspectionSchema)) body: SubmitInspectionInput,
     @CurrentUser() user: AuthUser,
     @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers(SITE_VISIT_HEADER) visitHeader?: string | string[],
   ) {
-    return this.inspections.submit(projectId, inspectionId, body, user, idempotencyKey);
+    return this.inspections.submit(projectId, inspectionId, body, user, idempotencyKey, visitFrom(visitHeader));
   }
 
   /** Approve or reject a submitted inspection — the PMC/architect only. */
@@ -92,8 +105,9 @@ export class InspectionsController {
     @Body(new ZodPipe(finishInspectionSchema)) body: FinishInspectionInput,
     @CurrentUser() user: AuthUser,
     @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers(SITE_VISIT_HEADER) visitHeader?: string | string[],
   ) {
-    return this.inspections.finish(projectId, inspectionId, body, user, idempotencyKey);
+    return this.inspections.finish(projectId, inspectionId, body, user, idempotencyKey, visitFrom(visitHeader));
   }
 
   /** #482 proof photos, "Who fixes this?" — the PMC or the engineer names the contractor or consultant who fixes this

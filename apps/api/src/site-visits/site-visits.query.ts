@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { INSPECTION_READER_ROLES } from '@vitan/shared';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SignedUrlService } from '../media/signed-url.service';
@@ -42,6 +43,20 @@ export interface SiteVisitDto {
   /** #1179 — the files taken off the visit, by when each was removed (by file id within a millisecond). A line never
    *  changes and stays as long as the visit. */
   removals: SiteVisitRemovalDto[];
+  /** Guided site inspections, step 3c — the checklists walked on the visit, by when the server took each (by inspection
+   *  id within a millisecond). A line never changes and stays as long as the visit. The checklist itself (its title,
+   *  results and decision) is read from the inspections read, by its id. Served only to `INSPECTION_READER_ROLES`
+   *  (empty for any other viewer), as the inspections read serves checklists. */
+  inspections: SiteVisitInspectionDto[];
+}
+
+/** Guided site inspections, step 3c — a checklist walked on a visit: which, who walked it (as they stood) and when. */
+export interface SiteVisitInspectionDto {
+  inspectionId: string;
+  linkedById: string;
+  linkedByName: string;
+  linkedByRole: string;
+  linkedAt: string;
 }
 
 /** #1179 — a file taken off a visit: what it was, who added it, who removed it, when and why. */
@@ -123,6 +138,7 @@ const withChildren = {
   attendees: { orderBy: [{ addedAt: 'asc' }, { id: 'asc' }] },
   media: { orderBy: [{ addedAt: 'asc' }, { mediaId: 'asc' }] },
   removals: { orderBy: [{ removedAt: 'asc' }, { mediaId: 'asc' }] },
+  inspections: { orderBy: [{ linkedAt: 'asc' }, { inspectionId: 'asc' }] },
 } satisfies Prisma.SiteVisitInclude;
 
 type Row = Prisma.SiteVisitGetPayload<{ include: typeof withChildren }>;
@@ -202,6 +218,11 @@ export function toSiteVisitDto(
       mediaId: r.mediaId, kind: r.fileKind as SiteVisitRemovalDto['kind'], addedByName: r.addedByName, addedByRole: r.addedByRole,
       addedAt: r.addedAt.toISOString(), removedById: r.removedById, removedByName: r.removedByName, removedByRole: r.removedByRole,
       reason: r.reason, removedAt: r.removedAt.toISOString(),
+    })),
+    // only to the roles the inspections read serves checklists to; any other viewer (or none named) sees none (gap-check)
+    inspections: (viewer && INSPECTION_READER_ROLES.includes(viewer.role) ? v.inspections : []).map((w) => ({
+      inspectionId: w.inspectionId, linkedById: w.linkedById, linkedByName: w.linkedByName, linkedByRole: w.linkedByRole,
+      linkedAt: w.linkedAt.toISOString(),
     })),
   };
 }
