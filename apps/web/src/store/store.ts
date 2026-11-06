@@ -104,7 +104,7 @@ import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
 import { hubFailureOf, HUB_SHOWN_WAIT_MS, type HubCallResult, type HubUnlinkPending } from '@/lib/hubLink';
-import { resolveMediaUrl, replayOutboxOp, uploadSitePhotoInput, PlaceCheckFailed, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, isGone, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, uploadSitePhotoInput, PlaceCheckFailed, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, isGone, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, timeoutSignal, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { clearVisitPhotoStart, clearVisitPoster, deleteVisitPhoto, failVisitPhotosOn, forgetRemovedVisitPhoto, listVisitPhotos, moveVisitPhotos, posterLapsed, posterWaits, removedVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
@@ -242,6 +242,10 @@ export const noReconcileOwed = (): Record<ReconcileSlice, boolean> =>
 
 /** How long one module-owned read may take before the pull treats it as failed (Codex 4211133323). */
 export const MODULE_READ_TIMEOUT_MS = 30_000;
+/** A project snapshot pull that has not answered in this long is aborted: the pull fails like any other (a background
+ *  refresh quietly, a load the person waits on with Retry), its slot frees, and a queued or later pull starts afresh
+ *  instead of waiting on it for ever (#1356). Twice the module reads' bound, for a slow site connection. */
+export const SNAPSHOT_PULL_TIMEOUT_MS = 60_000;
 
 export interface AppState {
   role: Role;
@@ -2386,7 +2390,8 @@ export const useStore = create<Store>()(
         // explicit error state that keeps the last-good data) rather than failing the whole pull, so the
         // rest of the project still loads. In 'snapshot' mode no extra fetch happens (undefined → unchanged).
         const [snap, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult, activitiesResult] = await Promise.all([
-          g.snapshot(),
+          // bounded, so a pull that never answers is retired and the next request starts a new one (#1356)
+          g.snapshot(timeoutSignal(SNAPSHOT_PULL_TIMEOUT_MS)),
           decisionsReadMode() === 'moduleQuery'
             ? boundedModuleRead<ModuleDecisions>(g.decisions())
             : Promise.resolve(undefined as ModuleDecisions | undefined),
@@ -5889,8 +5894,14 @@ export const useStore = create<Store>()(
         .catch(() => get().flash('Could not update the project — check your access.'));
     },
     listHubProjects: (orgId) => hubCall((gw, pid) => gw.listHubProjects(orgId, pid).then((r) => r.projects)),
-    linkHubProject: (orgId, hubProjectId, key) =>
-      hubCall((gw, pid) => gw.linkHubProject(orgId, pid, hubProjectId, key).then(() => true as const), (_v, link) => link?.hubProjectId === hubProjectId),
+    linkHubProject: async (orgId, hubProjectId, key) => {
+      const scope = currentScope();
+      const r = await hubCall((gw, pid) => gw.linkHubProject(orgId, pid, hubProjectId, key).then(() => true as const), (_v, link) => link?.hubProjectId === hubProjectId);
+      // the site's link changed meanwhile (another admin linked it): the picker reloads, and the row shows that link
+      // from a fresh snapshot, never "This site" in the list beside no link on the row (#1356)
+      if (r.kind === 'failed' && r.failure.kind === 'refused' && r.failure.code === 'hub_linked_elsewhere') void requestFreshSnapshot(scope).catch(() => undefined);
+      return r;
+    },
     unlinkHubProject: async (orgId, hubProjectId) => {
       // one key, and the link it ends, until the unlink has settled, Hub's side included (Codex 4479979986)
       const seen = get().hubLink;
@@ -5909,8 +5920,10 @@ export const useStore = create<Store>()(
       );
       const settled = (r.kind === 'ok' && r.value.hubCleared) || (r.kind === 'failed' && r.failure.kind === 'refused');
       if (settled && scopeStillCurrent(scope)) set((s) => { if (s.hubUnlinkPending?.key === pending.key) s.hubUnlinkPending = null; });
-      // another admin changed the link meanwhile: show the screen what it is now (Codex 4480498892)
-      if (r.kind === 'failed' && r.failure.kind === 'refused' && r.failure.code === 'hub_link_changed') void requestFreshSnapshot(scope).catch(() => undefined);
+      // another admin changed the link meanwhile, or ended it: show the screen what it is now (Codex 4480498892, #1356)
+      if (r.kind === 'failed' && r.failure.kind === 'refused' && (r.failure.code === 'hub_link_changed' || r.failure.code === 'hub_not_linked')) {
+        void requestFreshSnapshot(scope).catch(() => undefined);
+      }
       return r;
     },
     deleteProject: (orgId, projectId) => {

@@ -960,8 +960,8 @@ export class ApiGateway {
     });
   }
 
-  snapshot(): Promise<ApiSnapshot> {
-    return this.req<ApiSnapshot>(`/projects/${this.projectId}/snapshot`);
+  snapshot(signal?: AbortSignal): Promise<ApiSnapshot> {
+    return this.req<ApiSnapshot>(`/projects/${this.projectId}/snapshot`, signal ? { signal } : undefined);
   }
 
   /** Phase 2 Task 9 — the MODULE-OWNED decisions read (projection-served, role-filtered). Fetched
