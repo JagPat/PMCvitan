@@ -1674,6 +1674,9 @@ export const useStore = create<Store>()(
      *  refused token has in flight end the session or move the person once */
     let endedFor: string | null = null;
     let leavingFor: string | null = null;
+    /** #1373 (Codex 4496946117): the rebuild of the row-backed queues (evidence, visit photos, site photos) that the last
+     *  `hydrateOutbox` started, and the scope it started for: the kept count waits for this scope's, never another's */
+    let rowsRebuilt: { scope: ProjectScope; done: Promise<void> } | null = null;
     /** #1373: the sign-in screen's words a sign-out ends on (no project left), shown once the teardown completes */
     let signOutWhy: AccessErrorWhy | null = null;
     /** #1373: the changes this device keeps for the project a no-project sign-out left, said on the sign-in screen */
@@ -2415,8 +2418,19 @@ export const useStore = create<Store>()(
       if (get().sessionToken !== token || leavingFor !== token) return; // a sign-in, switch or sign-out came first
       if (!ms || switching()) { leavingFor = null; return; }
       const read = ms;
-      set((s) => { s.memberships = read; });
       const same = ms.find((m) => m.projectId === from);
+      // the acts a row holds are rebuilt into memory after a load (`hydrateOutbox`): the count waits for this scope's
+      // rebuild, bounded on its own (Codex 4496946117). Past the bound it counts what memory holds; a row not yet
+      // rebuilt still stays queued for the lost project (#1388 lists them)
+      const rebuilt = rowsRebuilt;
+      if (!same && rebuilt && scopeStillCurrent(rebuilt.scope)) {
+        const bound = boundedSignal(LOST_PROJECT_MOVE_WAIT_MS);
+        const passed = new Promise<void>((done) => { bound.signal.addEventListener('abort', () => done(), { once: true }); });
+        await Promise.race([rebuilt.done, passed]).finally(bound.done);
+        if (get().sessionToken !== token || leavingFor !== token) return; // a sign-in, switch or sign-out came first
+        if (switching()) { leavingFor = null; return; }
+      }
+      set((s) => { s.memberships = read; });
       // the same pick on every device and every read: by name, then id (the server's list has no order of its own)
       const next = same ?? [...ms].sort((a, b) => cmp(a.name, b.name) || cmp(a.projectId, b.projectId))[0];
       // only acts a write has stored are kept: one this tab could not store leaves with the scope's memory, as on any
@@ -2872,18 +2886,19 @@ export const useStore = create<Store>()(
       }, wait);
       sitePhotoRetry = { timer, mine };
     };
-    const reconcileSitePhotos = (): void => {
-      if (!gateway || !sitePhotoStorageAvailable()) return;
+    const reconcileSitePhotos = (): Promise<void> => {
+      if (!gateway || !sitePhotoStorageAvailable()) return Promise.resolve();
       const readScope = currentScope();
       const readKey = outboxKey();
       const rowScope = visitPhotoScope(get().sessionToken, get().sessionUserId);
       const project = gateway.project;
       const settles = sitePhotoSettles;
       void dropSentMarkers(Date.now() - SITE_PHOTO_SENT_KEEP_MS).catch(() => {});
-      void Promise.all([listSitePhotoRows(rowScope, project), sitePhotosLocked(rowScope, project)]).then(([rows, locked]) => {
+      // settles once its rows are on the queue (or the read failed); the read again it may start is its own
+      return Promise.all([listSitePhotoRows(rowScope, project), sitePhotosLocked(rowScope, project)]).then(([rows, locked]) => {
         if (!scopeStillCurrent(readScope) || outboxKey() !== readKey) return;
         // a row settled while this read was out: read again, so a sent photo is never queued again (Codex 4393007605)
-        if (settles !== sitePhotoSettles) { reconcileSitePhotos(); return; }
+        if (settles !== sitePhotoSettles) { void reconcileSitePhotos(); return; }
         const full = rows.filter((r): r is SitePhotoRow => !isSitePhotoSent(r));
         // a row a tab is sending now gets no op here; one this tab already queues stays on show while another tab sends it
         const missing = full.filter((r) => !sitePhotoSendsDirect.has(r.clientKey) && !locked.has(r.clientKey) && !uploadQueued(get().outbox, r.clientKey));
@@ -8213,11 +8228,17 @@ export const useStore = create<Store>()(
       // evidence rows are canonical. Merge every pending row back into replay
       // (reconstructing ops a failed/absent setItem lost) and refresh the UI
       // mirrors — this runs even when localStorage is unavailable entirely.
-      void reconcileEvidence();
-      // and the same for queued visit photos (SV2)
-      void reconcileVisitPhotos();
-      // and for site photos whose answer was lost (#917): their ops are never stored, so they come back from their rows
-      reconcileSitePhotos();
+      // (#1373: the rebuild is kept with its scope, so a lost project's kept count can wait for it)
+      rowsRebuilt = {
+        scope: currentScope(),
+        done: Promise.allSettled([
+          reconcileEvidence(),
+          // and the same for queued visit photos (SV2)
+          reconcileVisitPhotos(),
+          // and for site photos whose answer was lost (#917): their ops are never stored, so they come back from their rows
+          reconcileSitePhotos(),
+        ]).then(() => undefined),
+      };
     },
 
     // ---- team access / login ----

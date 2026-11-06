@@ -751,6 +751,59 @@ describe('#1373 the move is bounded, and a switch under way is never read over (
   });
 });
 
+describe('#1373 the kept count waits for the rows a load rebuilds (Codex 4496946117)', () => {
+  const LOST = 'You no longer have access to Alpha.';
+  const KEPT_ONE = `${LOST} 1 change for Alpha is kept on this device and will be sent if your access returns.`;
+  /** a site photo kept on this phone, whose row a load rebuilds into the queue: its read is held until `rows.release` */
+  const keptPhotoRow = (rows: Promise<unknown[]>) => vi.doMock('@/data/sitePhotoStore', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/data/sitePhotoStore')>()),
+    sitePhotoStorageAvailable: () => true,
+    listSitePhotoRows: () => rows,
+  }));
+  const ROW = { key: 'u::p-a::k-row', userScope: 'u', projectId: 'p-a', clientKey: 'k-row', createdAt: 0,
+    input: { kind: 'progress', mime: 'image/png', data: 'AAAA', clientKey: 'k-row' } };
+  afterEach(() => { vi.doUnmock('@/data/sitePhotoStore'); });
+
+  it('a row rebuilt while the move waits is counted as kept', async () => {
+    let release!: (rows: unknown[]) => void;
+    keptPhotoRow(new Promise<unknown[]>((r) => { release = r; }));
+    const { useStore, gw } = await signedIn('fresh');
+    stubFetch(server({ status: 403, body: REMOVED }, [BETA], switchTo('p-b')));
+    // offline, so the rebuilt row is only queued, never sent, while the move counts it
+    useStore.setState({ online: false });
+    useStore.getState().hydrateOutbox();
+    await gw.snapshot().catch(() => undefined);
+    await vi.waitFor(() => expect(hits('GET', '/me/memberships')).toBe(1));
+    await drain();
+    // the move waits on the rebuild: nothing is switched yet
+    expect(hits('POST', '/auth/switch')).toBe(0);
+    expect(useStore.getState().activeProjectId).toBe('p-a');
+    release([ROW]);
+    await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe('p-b'));
+    expect(useStore.getState().toast).toBe(KEPT_ONE);
+  });
+
+  it('a rebuild that never settles still moves the person once its bound has passed', async () => {
+    keptPhotoRow(new Promise<unknown[]>(() => undefined));
+    const { useStore, gw } = await signedIn('fresh');
+    const { LOST_PROJECT_MOVE_WAIT_MS } = await import('@/store/store');
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    stubFetch(server({ status: 403, body: REMOVED }, [BETA], switchTo('p-b')));
+    useStore.setState({ online: false });
+    useStore.getState().hydrateOutbox();
+    await gw.snapshot().catch(() => undefined);
+    await vi.waitFor(() => expect(hits('GET', '/me/memberships')).toBe(1));
+    await drain();
+    expect(hits('POST', '/auth/switch')).toBe(0);
+    await vi.advanceTimersByTimeAsync(LOST_PROJECT_MOVE_WAIT_MS);
+    await drain();
+    expect(hits('POST', '/auth/switch')).toBe(1);
+    await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe('p-b'));
+    // memory held nothing yet: nothing is said kept (the row stays queued for Alpha, #1388 lists it)
+    expect(useStore.getState().toast).toBe(LOST);
+  });
+});
+
 describe('#1373 a direct command takes a coded 403 as the final refusal it is (Stage 1 G4)', () => {
   it('a drawing issue refused for a lost project is not sent again', async () => {
     const { useStore, gw } = await signedIn('fresh');
