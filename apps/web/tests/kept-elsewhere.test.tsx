@@ -3,10 +3,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, cleanup, within, waitFor, act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import type { OutboxOp } from '@/data/apiGateway';
-import { EVIDENCE_READ_WAIT_MS, markEvidenceFailed, putEvidence } from '@/data/evidenceStore';
-import { markSitePhotoSent, putSitePhotoRow } from '@/data/sitePhotoStore';
-import { fileVisitPhoto, putVisitPhoto } from '@/data/visitPhotoStore';
-import { KEPT_KIND, keptAnywhere, keptOf, projectNameKey, queuedProjectsOf, readKeptElsewhere, readProjectName, rememberProjectName, type KeptKind } from '@/store/keptElsewhere';
+import { EVIDENCE_READ_WAIT_MS, markEvidenceFailed, putEvidence, type EvidenceEntry } from '@/data/evidenceStore';
+import { markSitePhotoRefused, markSitePhotoSent, putSitePhotoRow } from '@/data/sitePhotoStore';
+import { POSTER_WAIT_MS, failVisitPhoto, fileVisitPhoto, putVisitPhoto, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { KEPT_KIND, keptAnywhere, keptOf, visitRowKept, projectNameKey, queuedProjectsOf, readKeptElsewhere, readProjectName, rememberProjectName, type KeptKind } from '@/store/keptElsewhere';
 import { doneName, frameOf, markName, recordBytes, recordName } from '@/store/queueLedger';
 import { queueActIdent } from '@/store/queueActIdent';
 import { QW } from '@/lib/queueWords';
@@ -23,20 +23,42 @@ import { TopBar } from '@/layout/TopBar';
  */
 
 // the evidence store's list read, held on purpose by a test (G3); every other call is the store's own
-const evidence = vi.hoisted(() => ({ gate: null as Promise<void> | null, entered: null as (() => void) | null, scanGate: null as Promise<void> | null, scanEntered: null as (() => void) | null }));
+const evidence = vi.hoisted(() => ({
+  gate: null as Promise<void> | null, entered: null as (() => void) | null, scanGate: null as Promise<void> | null, scanEntered: null as (() => void) | null,
+  scans: 0, lists: 0, siteLists: 0, visitRowsRead: [] as number[],
+}));
 vi.mock('@/data/evidenceStore', async (importOriginal) => {
   const real = await importOriginal<typeof import('@/data/evidenceStore')>();
   return {
     ...real,
     listEvidence: async (...a: Parameters<typeof real.listEvidence>) => {
+      evidence.lists += 1;
       const gate = evidence.gate;
       if (gate) { evidence.entered?.(); await gate; }
       return real.listEvidence(...a);
     },
     evidenceProjectsOf: async (...a: Parameters<typeof real.evidenceProjectsOf>) => {
+      evidence.scans += 1;
       const gate = evidence.scanGate;
       if (gate) { evidence.scanEntered?.(); await gate; }
       return real.evidenceProjectsOf(...a);
+    },
+  };
+});
+
+// the row reads of the site and visit stores, counted (Codex 4498679801: the line's check reads no row it need not)
+vi.mock('@/data/sitePhotoStore', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@/data/sitePhotoStore')>();
+  return { ...real, listSitePhotoRows: (...a: Parameters<typeof real.listSitePhotoRows>) => { evidence.siteLists += 1; return real.listSitePhotoRows(...a); } };
+});
+vi.mock('@/data/visitPhotoStore', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@/data/visitPhotoStore')>();
+  return {
+    ...real,
+    readVisitPhotoRowsUntil: async (...a: Parameters<typeof real.readVisitPhotoRowsUntil>) => {
+      const rows = await real.readVisitPhotoRowsUntil(...a);
+      evidence.visitRowsRead.push(rows.length);
+      return rows;
     },
   };
 });
@@ -55,6 +77,7 @@ afterEach(() => {
   cleanup();
   useStore.setState(getInitialState());
   evidence.gate = null; evidence.entered = null; evidence.scanGate = null; evidence.scanEntered = null;
+  evidence.scans = 0; evidence.lists = 0; evidence.siteLists = 0; evidence.visitRowsRead = [];
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -117,7 +140,7 @@ describe('what is listed', () => {
     expect(kept[0].items).toEqual([{ id: 'visit:v-1', kind: 'siteVisit', count: 2, at: expect.any(Number), failed: false }]);
   });
 
-  it('a key this version cannot read is listed by that line alone, never counted', async () => {
+  it('a key this version cannot read, with no readable record beside it, is that line alone, never counted', async () => {
     localStorage.setItem(outbox(SUB, 'p-gone'), '{not a list');
     const kept = await readKeptElsewhere(localStorage, SUB, new Set());
     expect(kept).toEqual([expect.objectContaining({ projectId: 'p-gone', total: 0, unreadable: 'damaged', items: [] })]);
@@ -196,6 +219,160 @@ describe('what is listed (Stage 1 gap-check)', () => {
     localStorage.setItem(recordName(outbox(SUB, 'p-gone'), [], rec, 'nonce1'), rec);
     const kept = await readKeptElsewhere(localStorage, SUB, new Set());
     expect(kept[0].total).toBe(1);
+  });
+});
+
+describe('Codex round 1 (#1394)', () => {
+  const visitFile = (id: string, visitId = 'v-1') =>
+    ({ t: 'siteVisitAddFile', visitId, scope: SUB, file: { id, mime: 'video/mp4' }, by: { name: 'Pat', role: 'pmc' }, placeName: null, idempotencyKey: `sv-${id}` }) as never;
+  const evidenceRow = (ck: string) => putEvidence({ userScope: SUB, projectId: 'p-gone', clientKey: ck, mime: 'image/jpeg', data: 'AA==', inspectionId: 'i-1', inspectionItemId: 'it-1' });
+
+  // Stage 1 (d): the line's metadata-only check and the list agree, fixture by fixture
+  const fixtures: [string, () => Promise<unknown>][] = [
+    ['evidence pending', () => evidenceRow('ev-1')],
+    ['evidence failed', async () => { await evidenceRow('ev-1'); await markEvidenceFailed(SUB, 'p-gone', 'ev-1', 'refused'); }],
+    ['site photo unsent', () => putSitePhotoRow(SUB, 'p-gone', { clientKey: 'ph-1', kind: 'progress' } as never)],
+    ['site photo sent', async () => { await putSitePhotoRow(SUB, 'p-gone', { clientKey: 'ph-1', kind: 'progress' } as never); await markSitePhotoSent(SUB, 'p-gone', 'ph-1'); }],
+    ['site photo refused', async () => { await putSitePhotoRow(SUB, 'p-gone', { clientKey: 'ph-1', kind: 'progress' } as never); await markSitePhotoRefused(SUB, 'p-gone', 'ph-1'); }],
+    ['visit unfiled', () => putVisitPhoto(SUB, 'p-gone', visitFile('f-1'), 'AA==')],
+    ['visit failed', async () => { await putVisitPhoto(SUB, 'p-gone', visitFile('f-1'), 'AA=='); await failVisitPhoto(SUB, 'p-gone', 'f-1', 'refused'); }],
+    ['visit filed', async () => { await putVisitPhoto(SUB, 'p-gone', visitFile('f-1'), 'AA=='); await fileVisitPhoto(SUB, 'p-gone', 'f-1'); }],
+    ['visit filed, its still frame waiting', async () => { await putVisitPhoto(SUB, 'p-gone', visitFile('f-1'), 'AA==', null, undefined, 'BB=='); await fileVisitPhoto(SUB, 'p-gone', 'f-1', 'm-1'); }],
+    ['visit filed, its still frame lapsed', async () => {
+      // the wait is passed on purpose: the clock is set, not waited on
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(1_800_000_000_000);
+      await putVisitPhoto(SUB, 'p-gone', visitFile('f-1'), 'AA==', null, undefined, 'BB=='); await fileVisitPhoto(SUB, 'p-gone', 'f-1', 'm-1');
+      vi.setSystemTime(1_800_000_000_000 + POSTER_WAIT_MS);
+    }],
+    ['mixed: filed visit, sent site photo', async () => {
+      await putVisitPhoto(SUB, 'p-gone', visitFile('f-1'), 'AA=='); await fileVisitPhoto(SUB, 'p-gone', 'f-1');
+      await putSitePhotoRow(SUB, 'p-gone', { clientKey: 'ph-1', kind: 'progress' } as never); await markSitePhotoSent(SUB, 'p-gone', 'ph-1');
+    }],
+    ['mixed: filed visit, unfiled visit', async () => {
+      await putVisitPhoto(SUB, 'p-gone', visitFile('f-1'), 'AA=='); await fileVisitPhoto(SUB, 'p-gone', 'f-1');
+      await putVisitPhoto(SUB, 'p-gone', visitFile('f-2', 'v-2'), 'AA==');
+    }],
+  ];
+  it.each(fixtures)('the line and the list agree: %s', async (_name, seed) => {
+    await seed();
+    const any = await keptAnywhere(localStorage, SUB, new Set());
+    const list = await readKeptElsewhere(localStorage, SUB, new Set());
+    expect(any).toBe(list.length > 0);
+  });
+
+  it('F5: one evidence act held in the key and a made record, with its row, is one change', async () => {
+    const op: OutboxOp = { t: 'uploadEvidence', scope: SUB, clientKey: 'ev-1' };
+    localStorage.setItem(outbox(SUB, 'p-gone'), JSON.stringify([op]));
+    const rec = recordBytes([op], 'nonce1');
+    localStorage.setItem(recordName(outbox(SUB, 'p-gone'), [], rec, 'nonce1'), rec);
+    await evidenceRow('ev-1');
+    const kept = await readKeptElsewhere(localStorage, SUB, new Set());
+    expect(kept[0].total).toBe(1);
+  });
+
+  it('F6: a key this version cannot read still lists what its readable made records hold, as a load restores it', async () => {
+    localStorage.setItem(outbox(SUB, 'p-gone'), '{not a list');
+    const rec = recordBytes([approve('k-1')], 'nonce1');
+    localStorage.setItem(recordName(outbox(SUB, 'p-gone'), [], rec, 'nonce1'), rec);
+    const kept = await readKeptElsewhere(localStorage, SUB, new Set());
+    expect(kept).toEqual([expect.objectContaining({ projectId: 'p-gone', total: 1, unreadable: 'damaged' })]);
+    expect(kept[0].items).toEqual([expect.objectContaining({ kind: 'decision', count: 1 })]);
+  });
+
+  it('F2: the line decides evidence and site photos from keys alone, reading no row', async () => {
+    await evidenceRow('ev-1');
+    await putSitePhotoRow(SUB, 'p-other', { clientKey: 'ph-1', kind: 'progress' } as never);
+    expect(await keptAnywhere(localStorage, SUB, new Set())).toBe(true);
+    expect(await keptAnywhere(localStorage, SUB, new Set(['p-gone']))).toBe(true);
+    expect([evidence.lists, evidence.siteLists]).toEqual([0, 0]);
+  });
+
+  it('F2: a filed visit file is read by the line once per tab, and again after a sign-out', async () => {
+    await putVisitPhoto(SUB, 'p-gone', visitFile('f-1'), 'AA==');
+    await fileVisitPhoto(SUB, 'p-gone', 'f-1');
+    expect(await keptAnywhere(localStorage, SUB, new Set())).toBe(false);
+    expect(await keptAnywhere(localStorage, SUB, new Set())).toBe(false);
+    expect(evidence.visitRowsRead).toEqual([1, 0]);
+    useStore.setState({ sessionToken: jwt({ sub: SUB, role: 'pmc', projectId: 'p-a' }) });
+    useStore.getState().completeSignOut();
+    expect(await keptAnywhere(localStorage, SUB, new Set())).toBe(false);
+    expect(evidence.visitRowsRead).toEqual([1, 0, 1]);
+  });
+
+  it('Stage 1 (e): an evidence row is only ever unsent (a sent one is deleted: evidence.test.ts "confirmed upload cleans the bytes up")', () => {
+    type Other = Exclude<EvidenceEntry['status'], 'pending' | 'failed'>;
+    const none: [Other] extends [never] ? true : false = true;
+    expect(none).toBe(true);
+  });
+
+  it('F3: a filed clip whose still frame waits is kept until the wait lapses', async () => {
+    await putVisitPhoto(SUB, 'p-gone', visitFile('f-1'), 'AA==', null, undefined, 'BB==');
+    await fileVisitPhoto(SUB, 'p-gone', 'f-1', 'm-1');
+    const kept = await readKeptElsewhere(localStorage, SUB, new Set());
+    expect(kept[0].items).toEqual([expect.objectContaining({ id: 'visit:v-1', kind: 'siteVisit', count: 1, failed: false })]);
+    const row = { state: 'filed', poster: 'BB==', mediaId: 'm-1', filedAt: 1_000 } as VisitPhotoRow;
+    expect(visitRowKept(row, 1_000 + POSTER_WAIT_MS - 1)).toBe(true);
+    expect(visitRowKept(row, 1_000 + POSTER_WAIT_MS)).toBe(false);
+  });
+
+  describe('F1: another tab keeping a change, or the page shown again, checks again', () => {
+    const signIn = () => useStore.setState({ sessionToken: jwt({ sub: SUB, role: 'pmc', projectId: 'p-a' }), memberships: [ALPHA] as never, activeProjectId: 'p-a' });
+    const storageEvent = (key: string | null) => window.dispatchEvent(new StorageEvent('storage', { key }));
+
+    it('a write to one of the person’s queue keys in another tab shows the line', async () => {
+      signIn();
+      localStorage.setItem(outbox(SUB, 'p-gone'), JSON.stringify([approve('k-1')]));
+      storageEvent(outbox(SUB, 'p-gone'));
+      await waitFor(() => expect(useStore.getState().keptElsewhereAny).toBe(true));
+    });
+
+    it('the page shown again checks again', async () => {
+      signIn();
+      localStorage.setItem(lane(SUB, 'p-gone'), JSON.stringify([{ t: 'siteVisitEnd', visitId: 'v-1', claimedAt: '2026-11-06T10:00:00.000Z', idempotencyKey: 'sv-1' }]));
+      document.dispatchEvent(new Event('visibilitychange'));
+      await waitFor(() => expect(useStore.getState().keptElsewhereAny).toBe(true));
+    });
+
+    it('another person’s keys, and other keys, start no check', () => {
+      signIn();
+      storageEvent(outbox(`${SUB}-other`, 'p-gone'));
+      storageEvent(`vitan.settled.${outbox(SUB, 'p-gone')}.t.o1`);
+      expect(evidence.scans).toBe(0);
+    });
+
+    it('(a) triggers while a check runs are coalesced: three give one more check, not three', async () => {
+      signIn();
+      let open!: () => void;
+      evidence.scanGate = new Promise<void>((r) => { open = r; });
+      const entered = new Promise<void>((r) => { evidence.scanEntered = r; });
+      storageEvent(outbox(SUB, 'p-x'));
+      expect(evidence.scans).toBe(1); // the check starts at once
+      await entered;
+      evidence.scanGate = null;
+      storageEvent(outbox(SUB, 'p-x'));
+      storageEvent(`vitan.made.${lane(SUB, 'p-x')}.1.n.t`);
+      storageEvent(null);
+      expect(evidence.scans).toBe(1);
+      open();
+      await waitFor(() => expect(evidence.scans).toBe(2));
+    });
+  });
+
+  it('F4: a list read dropped by a memberships change while the list is open is read again', async () => {
+    localStorage.setItem(outbox(SUB, 'p-gone'), JSON.stringify([approve('k-1')]));
+    rememberProjectName(localStorage, SUB, 'p-gone', 'Gone Tower');
+    useStore.setState({ sessionToken: jwt({ sub: SUB, role: 'pmc', projectId: 'p-a' }), memberships: [ALPHA] as never, activeProjectId: 'p-a', keptElsewhereAny: true });
+    let open!: () => void;
+    evidence.gate = new Promise<void>((r) => { open = r; });
+    const entered = new Promise<void>((r) => { evidence.entered = r; });
+    render(<ProjectSheet onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId('kept-elsewhere-line'));
+    await entered; // the first read waits on its rows
+    evidence.gate = null;
+    act(() => { useStore.setState({ memberships: [{ ...ALPHA }] as never }); });
+    open();
+    expect(await screen.findByText('Gone Tower')).toBeTruthy();
   });
 });
 

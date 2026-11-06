@@ -198,16 +198,27 @@ const sameRead = (a: Read, b: Read): boolean => {
   return a.raw === b.raw && JSON.stringify(a.sidecar) === JSON.stringify(b.sidecar) && same(a.marks.ids, b.marks.ids) && same(a.marks.legacy, b.marks.legacy);
 };
 
+/** The snapshot a load takes acts from. A key this release cannot read: its records' acts come back, but not one its
+ *  bytes may hold (its occurrences cannot be named), and none is written over. Only an entry equal to the act covers it
+ *  (4374538867): a keyless one covers one record act (R3), a keyed one every equal record act, all one act. Shared by
+ *  `load` and `readOwedActs` (#1394, Codex 4498773111), so the kept list takes what a load would */
+function recoveredSnapshot<S extends Snapshot>(s: S): S {
+  if (!(s.acts === null && s.raw !== null)) return s;
+  const there = entryCounts(s.raw);
+  const theirs = (o: OutboxOp): boolean => { const c = canon(o); const n = there.get(c) ?? 0; if (n === 0) return false; if (!unique(o)) there.set(c, n - 1); return true; };
+  return { ...s, records: s.records.map((r) => ({ ...r, acts: r.acts.filter((o) => !theirs(o)) })) };
+}
+
 /** #1388: what `key` still owes, read only, for a scope this tab does not load (a project the person no longer holds):
  *  the occurrences the ledger owes (the key's, its made records', less its marks), less each one a done fact says the
- *  server has, as a load would take them. Nothing is written, named or held. A key this release cannot read owes none it
- *  can name, and says why; so does a made record this release cannot read (`unread`: 'newer' when one is a newer
+ *  server has, as a load would take them. Nothing is written, named or held. A key this release cannot read says why
+ *  (`read`), and owes what its readable made records hold, less what its bytes may hold, as a load restores them
+ *  (`recoveredSnapshot`); a made record this release cannot read says why too (`unread`: 'newer' when one is a newer
  *  release's, else 'damaged'), beside the acts the rest owe. A read that throws is reported as `null`. */
 export function readOwedActs(storage: Store, key: string, scopes: QueueScopes): { read: KeyRead; acts: OutboxOp[]; unread: Exclude<KeyRead, 'ok'> | null } | null {
   try {
     const s = snapshotOf(storage, key, scopes);
     const read = readOf(s.raw, scopes);
-    if (read !== 'ok') return { read, acts: [], unread: null };
     let unread: Exclude<KeyRead, 'ok'> | null = null;
     if (s.recordsUnread) {
       unread = 'damaged';
@@ -216,7 +227,8 @@ export function readOwedActs(storage: Store, key: string, scopes: QueueScopes): 
         if ('unreadable' in r && r.unreadable === 'newer') unread = 'newer';
       }
     }
-    return { read, acts: owedOf(s).owed.map((o) => o.act).filter((a) => !isDone(storage, key, a)), unread };
+    // a key this release cannot read still gives its readable records' acts, as a load restores them
+    return { read, acts: owedOf(recoveredSnapshot(s)).owed.map((o) => o.act).filter((a) => !isDone(storage, key, a)), unread };
   } catch {
     return null;
   }
@@ -560,15 +572,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       withheld.delete(key);
       loaded.add(key);
       const held = stranded.get(key) ?? [];
-      // a key this release cannot read: its records' acts come back, but not one its bytes may hold (its occurrences
-      // cannot be named), and none is written over. Only an entry equal to the act covers it (4374538867): a keyless one
-      // covers one record act (R3), a keyed one every equal record act, all one act
-      const there = entryCounts(s.raw);
-      const theirs = (o: OutboxOp): boolean => { const c = canon(o); const n = there.get(c) ?? 0; if (n === 0) return false; if (!unique(o)) there.set(c, n - 1); return true; };
-      const snap: Snapshot = s.acts === null && s.raw !== null
-        ? { ...s, records: s.records.map((r) => ({ ...r, acts: r.acts.filter((o) => !theirs(o)) })) }
-        : s;
-      const all = owedOf(snap, held);
+      const all = owedOf(recoveredSnapshot(s), held);
       const frame = all.frame;
       // an identity no other act shares is one occurrence: one a record holds beside the key's (or another record's)
       // is the same act, taken once (an earlier release's record names it by its bytes, not as the key does)

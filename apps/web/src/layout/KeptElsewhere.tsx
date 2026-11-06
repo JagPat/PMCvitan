@@ -26,10 +26,15 @@ export function KeptElsewhereModal({ onClose }: { onClose: () => void }) {
   const kept = useStore(useShallow((s) => s.keptElsewhere));
   const lang = useStore((s) => s.lang);
   const load = useStore((s) => s.loadKeptElsewhere);
+  const token = useStore((s) => s.sessionToken);
+  const memberships = useStore((s) => s.memberships);
+  const active = useStore((s) => s.activeProjectId);
   const titleId = useId();
   // the list is read on open (the switcher's line comes from a keys-only check: Stage 1 G10), and again on each open, as
   // another tab may have sent, or kept, changes since
-  useEffect(() => { void load(); }, [load]);
+  // a read a memberships, project or session change made stale is dropped (its seq and scope); while the list is open
+  // that same change reads it again (Codex 4498679826)
+  useEffect(() => { void load(); }, [load, token, memberships, active]);
   const saved = (at: number) => qwFill(QW.keptSaved, lang, { date: new Intl.DateTimeFormat(LOCALE[lang], { day: 'numeric', month: 'short', year: 'numeric' }).format(at) });
   return (
     <Modal onClose={onClose} labelledBy={titleId} maxWidth={480}>

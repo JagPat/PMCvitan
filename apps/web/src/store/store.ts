@@ -99,7 +99,7 @@ import {
 } from './projectCreateHold';
 import { createQueueKeyGuard, queueActIdent, type QueueWrite } from '@/store/queueKeyGuard';
 import { isDone } from '@/store/queueLedger';
-import { keptAnywhere, readKeptElsewhere, rememberProjectName, type KeptProject } from '@/store/keptElsewhere';
+import { forgetKeptMemo, keptAnywhere, readKeptElsewhere, rememberProjectName, type KeptProject } from '@/store/keptElsewhere';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW, qwFill } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
@@ -678,6 +678,10 @@ export interface AppActions {
   loadOrgData: () => void;
   /** #1388: check again (keys only) whether this device keeps changes for a project the person no longer holds */
   checkKeptElsewhere: () => Promise<void>;
+  /** #1388 (Codex 4498679811): something may have kept, or sent, a change for a project the person no longer holds: a
+   *  storage write by another tab (`key`; null when it cleared storage) or the page shown again (`key` undefined).
+   *  Checks again, coalesced: one check at a time, and at most one more after it */
+  keptMayHaveChanged: (key?: string | null) => void;
   /** #1388: read the list of those changes (the list's open) */
   loadKeptElsewhere: () => Promise<void>;
   loadPortfolio: () => void;
@@ -998,6 +1002,9 @@ let briefRequestSeq = 0;
 /** #1388 (Stage 1 G3): the newest kept-changes check and list read; an older one landing later is dropped */
 let keptCheckSeq = 0;
 let keptListSeq = 0;
+/** #1388 (Stage 1 F1 (a)): the check in flight from a trigger, and whether another trigger came while it ran */
+let keptChecking: Promise<void> | null = null;
+let keptCheckAgain = false;
 type KeptRead = { tok: string; ms: MembershipSummary[]; active: string; storage: Storage; sub: string; held: ReadonlySet<string> };
 /** what a kept-changes read is for: the person's own keys (`sub`), less every project they hold and the one open (G4);
  *  none before memberships are read, as a signed-in person always holds one and an empty list is one not read yet */
@@ -2470,7 +2477,7 @@ export const useStore = create<Store>()(
         if (switching()) { leavingFor = null; return; }
       }
       set((s) => { s.memberships = read; });
-      void get().checkKeptElsewhere();
+      get().keptMayHaveChanged();
       // the same pick on every device and every read: by name, then id (the server's list has no order of its own)
       const next = same ?? [...ms].sort((a, b) => cmp(a.name, b.name) || cmp(a.projectId, b.projectId))[0];
       // only acts a write has stored are kept: one this tab could not store leaves with the scope's memory, as on any
@@ -4186,6 +4193,7 @@ export const useStore = create<Store>()(
         s.syncQueue = [];
         s.keptElsewhereAny = false;
         s.keptElsewhere = null;
+        forgetKeptMemo();
         s.pendingEvidenceKeys = null;
         s.pendingEvidenceRows = null;
         // Ending the session ends the scope (Codex gate finding 6): the signed-out
@@ -5333,6 +5341,22 @@ export const useStore = create<Store>()(
       if (any === null || seq !== keptCheckSeq || !keptReadHolds(get(), read)) return;
       set((s) => { s.keptElsewhereAny = any; });
     },
+    keptMayHaveChanged: (key) => {
+      if (typeof key === 'string') {
+        // the person's own queue keys and their made records only: another person's writes never start a check
+        const sub = evidenceScope();
+        if (sub === 'anon') return;
+        const own = [`vitan.outbox.${sub}.`, `vitan.siteVisitQueue.${sub}.`].some((p) => key.startsWith(p) || key.startsWith(`vitan.made.${p}`));
+        if (!own) return;
+      }
+      if (keptChecking) { keptCheckAgain = true; return; }
+      keptChecking = (async () => {
+        do {
+          keptCheckAgain = false;
+          await get().checkKeptElsewhere();
+        } while (keptCheckAgain);
+      })().finally(() => { keptChecking = null; });
+    },
     loadKeptElsewhere: async () => {
       const seq = ++keptListSeq;
       const read = keptReadFor(get(), evidenceScope());
@@ -5350,7 +5374,7 @@ export const useStore = create<Store>()(
       const tok = get().sessionToken;
       gateway.listMemberships().then((ms) => {
         set((s) => { if (s.sessionToken === tok) s.memberships = ms; });
-        void get().checkKeptElsewhere();
+        get().keptMayHaveChanged();
         // #948 Codex 4300725705 / 4300786709 — a restored session opened on a link to ANOTHER project switches
         // there only once its memberships confirm the person belongs to it; a stale, mistyped or foreign link
         // is dropped, and the session stays on its own project, which is already loading
@@ -8709,3 +8733,18 @@ export const useStore = create<Store>()(
     };
   }),
 );
+
+// #1388 (Codex 4498679811; Stage 1 F1 (b)): another tab that keeps (or sends) a change for a project this person no longer
+// holds, or the page shown again, checks the switcher's line again. Added once per page, whatever re-evaluates this
+// module (a hot reload): the listeners call whichever store the page holds now.
+const KEPT_WATCH = '__vitanKeptWatch';
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  const page = window as unknown as Record<string, unknown>;
+  const added = typeof page[KEPT_WATCH] === 'function';
+  page[KEPT_WATCH] = () => useStore;
+  if (!added) {
+    const store = (): typeof useStore => (page[KEPT_WATCH] as () => typeof useStore)();
+    window.addEventListener('storage', (e) => { store().getState().keptMayHaveChanged(e.key); });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') store().getState().keptMayHaveChanged(); });
+  }
+}

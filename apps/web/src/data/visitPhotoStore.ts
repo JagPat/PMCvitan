@@ -519,3 +519,31 @@ export function readVisitPhotoRows(userScope: string, projectId: string): Promis
     eachRow(s, userScope, projectId, (row) => rows.push(row), () => done(rows.sort((a, b) => a.createdAt - b.createdAt)));
   }));
 }
+
+/** #1388 (Codex 4498679801): the rows of (user, project) that `skip` does not name, read one at a time and read only,
+ *  stopping after the first that `stop` takes: a row `skip` names is never read, bytes and all. Bounded (`withinWait`). */
+export function readVisitPhotoRowsUntil(
+  userScope: string,
+  projectId: string,
+  skip: (clientKey: string) => boolean,
+  stop: (row: VisitPhotoRow) => boolean,
+): Promise<VisitPhotoRow[]> {
+  const prefix = `${userScope}::${projectId}::`;
+  return withinWait(() => tx<VisitPhotoRow[]>('readonly', (s, done) => {
+    const rows: VisitPhotoRow[] = [];
+    const req = s.getAllKeys(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
+    req.onsuccess = () => {
+      const keys = (req.result ?? []).map(String).filter((k) => !skip(k.slice(prefix.length)));
+      const next = (i: number): void => {
+        if (i >= keys.length) { done(rows); return; }
+        const get = s.get(keys[i]);
+        get.onsuccess = () => {
+          const row = get.result as VisitPhotoRow | undefined;
+          if (row) { rows.push(row); if (stop(row)) { done(rows); return; } }
+          next(i + 1);
+        };
+      };
+      next(0);
+    };
+  }));
+}
