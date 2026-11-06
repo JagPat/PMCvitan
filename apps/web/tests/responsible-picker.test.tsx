@@ -484,6 +484,127 @@ describe('"Who fixes this?" on the PMC review card (#482 RM-w1)', () => {
     expect(setResponsibleMember).toHaveBeenCalledTimes(1);
   });
 
+  it('a team read that settles after the scope moved settles nothing: the hold stays and a read for the scope now is made (Codex #1365 r3)', async () => {
+    const answers: Array<(m: ProjectMember[]) => void> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answers.push(r); }));
+    const { useStore, id, select } = await openReview({ listMembers });
+    act(() => { useStore.setState({ responsibleMembers: [{ inspectionId: id, memberId: 'u-new' }] }); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    // the scope generation moves (a failed switch does this) while the same member stays named
+    act(() => { useStore.setState({ projectScopeGeneration: 2 }); });
+    await act(async () => { answers[0]!(TEAM); });
+    // the old answer settles nothing: still held as "…", never "Nobody yet", and a read for this scope is made
+    expect(select().value).toBe('u-new');
+    expect(select().selectedOptions[0]!.textContent).toBe('…');
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    await act(async () => { answers[1]!([...TEAM, member('u-new', 'Neha New', 'contractor')]); });
+    await waitFor(() => expect(select().selectedOptions[0]!.textContent).toBe('Neha New'));
+  });
+
+  it('a team read in flight when the phone went offline, failing after it, is asked again once back online (Codex #1365 r3)', async () => {
+    const settle: Array<{ ok: (m: ProjectMember[]) => void; fail: (e: unknown) => void }> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((ok, fail) => { settle.push({ ok, fail }); }));
+    const { useStore, id, select } = await openReview({ listMembers });
+    act(() => { useStore.setState({ responsibleMembers: [{ inspectionId: id, memberId: 'u-zed' }] }); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    act(() => { useStore.setState({ online: false }); });
+    await act(async () => { settle[0]!.fail(Object.assign(new Error('Failed to fetch'), { status: 0 })); });
+    expect(select().selectedOptions[0]!.textContent).toBe('…');
+    expect(listMembers).toHaveBeenCalledTimes(1);
+    act(() => { useStore.setState({ online: true }); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    await act(async () => { settle[1]!.ok(TEAM); });
+    await waitFor(() => expect(select().selectedOptions[0]!.textContent).toBe('Zed Contractor'));
+    expect(listMembers).toHaveBeenCalledTimes(2);
+  });
+
+  it('a focused select opened from the keyboard reads the team again; tab then Space is one opening (Codex #1365 r3)', async () => {
+    const answers: Array<(m: ProjectMember[]) => void> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answers.push(r); }));
+    const { select } = await openReview({ listMembers });
+    // tab in, then Space opens it: one opening, one read
+    act(() => { fireEvent.focus(select()); fireEvent.keyDown(select(), { key: ' ' }); });
+    expect(listMembers).toHaveBeenCalledTimes(1);
+    await act(async () => { answers[0]!(TEAM); });
+    await waitFor(() => expect(optionTexts(select())).toEqual(['Nobody yet', 'Amy Consultant', 'Zed Contractor']));
+    // still focused, each opening key later is one opening and one more team read
+    const opening: Array<{ key: string; altKey?: boolean }> = [{ key: ' ' }, { key: 'ArrowDown', altKey: true }, { key: 'ArrowUp', altKey: true }, { key: 'F4' }];
+    for (const [i, k] of opening.entries()) {
+      act(() => { fireEvent.keyDown(select(), k); });
+      await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2 + i));
+      await act(async () => { answers[1 + i]!(TEAM); });
+    }
+    // keys that do not open it here (Enter, plain arrows, Tab, letters) read nothing
+    act(() => {
+      fireEvent.keyDown(select(), { key: 'Enter' });
+      fireEvent.keyDown(select(), { key: 'ArrowDown' });
+      fireEvent.keyDown(select(), { key: 'ArrowUp' });
+      fireEvent.keyDown(select(), { key: 'Tab' });
+      fireEvent.keyDown(select(), { key: 'a' });
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(listMembers).toHaveBeenCalledTimes(1 + opening.length);
+  });
+
+  it('on macOS a plain Up or Down opens the select, so it reads the team again (Codex #1365 r3)', async () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel');
+    const answers: Array<(m: ProjectMember[]) => void> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answers.push(r); }));
+    const { select } = await openReview({ listMembers });
+    // tab in, then Down opens it: the same opening, one read
+    act(() => { fireEvent.focus(select()); fireEvent.keyDown(select(), { key: 'ArrowDown' }); });
+    expect(listMembers).toHaveBeenCalledTimes(1);
+    await act(async () => { answers[0]!(TEAM); });
+    // opened again later with a plain Down: one more read
+    act(() => { fireEvent.keyDown(select(), { key: 'ArrowDown' }); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+  });
+
+  it('coming back online with nothing held or failed sends no request (Codex #1365 r3)', async () => {
+    const listMembers = vi.fn(async () => TEAM);
+    const { useStore, select } = await openReview({ listMembers }, { online: false });
+    act(() => { useStore.setState({ online: true }); });
+    await act(async () => { await Promise.resolve(); });
+    expect(listMembers).not.toHaveBeenCalled();
+    expect(select().disabled).toBe(false);
+  });
+
+  it('a picker handed another inspection while a read is out: the old read settles nothing for the new one (Codex #1365 r3)', async () => {
+    const answers: Array<(m: ProjectMember[]) => void> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answers.push(r); }));
+    const { useStore } = await openReview({ listMembers });
+    act(() => { useStore.setState({ responsibleMembers: [{ inspectionId: 'INSP-A', memberId: 'u-new' }, { inspectionId: 'INSP-B', memberId: 'u-new' }] }); });
+    const { ResponsiblePicker } = await import('@/components');
+    const solo = render(<ResponsiblePicker inspectionId="INSP-A" testId="solo" />);
+    const soloSelect = () => solo.getByTestId('solo-select') as HTMLSelectElement;
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    // the same picker now shows INSP-B, naming the same member, while A's read is out
+    solo.rerender(<ResponsiblePicker inspectionId="INSP-B" testId="solo" />);
+    await act(async () => { answers[0]!(TEAM); });
+    expect(soloSelect().selectedOptions[0]!.textContent).toBe('…');
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    await act(async () => { answers[1]!([...TEAM, member('u-new', 'Neha New', 'contractor')]); });
+    await waitFor(() => expect(soloSelect().selectedOptions[0]!.textContent).toBe('Neha New'));
+  });
+
+  it('a refusal that lands after the scope moved shows nothing and reads nothing for the new scope (Codex #1365 r3 sweep)', async () => {
+    let refuse!: () => void;
+    const setResponsibleMember = vi.fn(() => new Promise((_, reject) => { refuse = () => reject(Object.assign(new Error('refused'), { status: 400 })); }));
+    const listMembers = vi.fn(async () => TEAM);
+    const snapshotRead = vi.fn(() => new Promise(() => {}));
+    const { useStore, select } = await openReview({ listMembers, setResponsibleMember, snapshot: snapshotRead }, { members: TEAM });
+    act(() => { fireEvent.change(select(), { target: { value: 'u-zed' } }); });
+    await waitFor(() => expect(setResponsibleMember).toHaveBeenCalledTimes(1));
+    act(() => { useStore.setState({ projectScopeGeneration: 2, toast: null } as never); });
+    const reads = listMembers.mock.calls.length;
+    const snapshots = snapshotRead.mock.calls.length;
+    await act(async () => { refuse(); });
+    await waitFor(() => expect(useStore.getState().responsibleSaving).toEqual([]));
+    expect(useStore.getState().toast).toBeNull();
+    expect(listMembers.mock.calls.length).toBe(reads);
+    expect(snapshotRead.mock.calls.length).toBe(snapshots);
+  });
+
   it('several rows naming a member the list does not hold share one team read', async () => {
     let answer!: (m: ProjectMember[]) => void;
     const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answer = r; }));

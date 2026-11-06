@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, responsibleSaveRunning } from '@/store/store';
 import { can, responsibleMemberLabels as L } from '@vitan/shared';
@@ -31,6 +31,13 @@ const NAMEABLE = new Set(['contractor', 'consultant']);
  * still stand; the choices are the project's ACTIVE contractors and consultants (`members.read`, open to both roles).
  * A member the list no longer offers reads as "Nobody yet", as the server serves them.
  */
+// Which keys open a closed, focused select differs by platform: Space, F4 and Alt+Up/Down open it in desktop Chrome and
+// Firefox; Enter does not, so it is not an opening. On macOS a plain Up/Down opens the menu, while on Windows and Linux
+// it only moves the choice, so plain arrows count only on macOS.
+const ARROWS_OPEN = (() => {
+  try { return typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform ?? ''); } catch { return false; }
+})();
+
 export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: string; testId: string }) {
   const role = useStore((s) => s.role);
   const lang = useStore((s) => s.lang);
@@ -55,13 +62,17 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   // the naming is new server state (a member named, cleared and named again must be read for again), and a read made in
   // an earlier scope (generation) answers nothing in this one. Both are dropped in the same render either changes.
   const generation = useStore((s) => s.projectScopeGeneration);
-  const seenNow = `${generation}|${named ?? ''}`;
+  // the inspection is part of it too: React can keep one picker and hand it another inspection (Codex #1365 r3)
+  const seenNow = `${generation}|${inspectionId}|${named ?? ''}`;
   const [seen, setSeen] = useState(seenNow);
   if (seen !== seenNow) {
     setSeen(seenNow);
     setReadFor(undefined);
     setFailedFor(undefined);
   }
+  // the naming and scope the picker shows NOW, for a read's completion to check against (Codex #1365 r3)
+  const seenRef = useRef(seenNow);
+  seenRef.current = seenNow;
   const [reading, setReading] = useState(false);
   const live = useRef(true);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
@@ -79,16 +90,23 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   const readTeam = (opts?: { after?: boolean }) => {
     if (!allowed || !online || reading) return;
     const asked = named;
+    const askedIn = seenNow;
     setReading(true);
     void readTeamShared(opts).then((ok) => {
       if (!live.current) return;
       setReading(false);
+      // A read answers only the naming and scope it was made for (Codex #1365 r3): one that settles after the naming or
+      // the scope generation moved (a failed switch keeps the naming but moves the generation) settles nothing, and the
+      // hold stays until a read made for what is shown now answers.
+      if (seenRef.current !== askedIn) return;
       if (ok) { setReadFor(asked); setFailedFor(undefined); } else setFailedFor(asked);
     });
   };
   // a pending name is read for once on its own; after a failure only the user opening the picker, or the phone coming
-  // back online, asks again (no automatic retry)
-  useEffect(() => { if (!online) setFailedFor(undefined); }, [online]);
+  // back online, asks again (no automatic retry). The failure is forgotten when the phone comes BACK online (Codex #1365
+  // r3), not when it goes offline: a read in flight when the connection dropped fails after that, and must not leave the
+  // hold unread once the phone is online again.
+  useEffect(() => { if (online) setFailedFor(undefined); }, [online]);
   useEffect(() => {
     if (pending && failedFor !== named) readTeam();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -101,10 +119,25 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   // One gesture is one opening (Codex #1365 r2): a tap on a select that is not focused fires pointerdown and then focus,
   // so the focus that follows a pointerdown is the same opening and is skipped. Blur clears the mark, so a later keyboard
   // focus still opens (a pointerdown on a select already focused fires no focus).
-  const pointerOpened = useRef(false);
-  const onPointerOpen = () => { pointerOpened.current = true; onOpen(); };
+  // A select already focused can also be opened from the keyboard (Space, Alt+Arrow, F4; plain Up/Down on macOS), which fires neither
+  // pointerdown nor focus (Codex #1365 r3), so those keys are an opening too. The mark says which opening the next event
+  // belongs to: a pointerdown on a select that is not focused marks 'pointer' (the focus it brings is the same opening);
+  // a focus marks 'focus' (the first opening key after it is the same opening: tab then Space is one). Blur clears it.
+  const opened = useRef<'pointer' | 'focus' | null>(null);
+  const onPointerOpen = (e: ReactPointerEvent<HTMLSelectElement>) => {
+    opened.current = document.activeElement === e.currentTarget ? null : 'pointer';
+    onOpen();
+  };
   const onFocusOpen = () => {
-    if (pointerOpened.current) { pointerOpened.current = false; return; }
+    if (opened.current === 'pointer') { opened.current = null; return; }
+    opened.current = 'focus';
+    onOpen();
+  };
+  const onKeyOpen = (e: ReactKeyboardEvent<HTMLSelectElement>) => {
+    const arrow = e.key === 'ArrowDown' || e.key === 'ArrowUp';
+    const opens = e.key === ' ' || e.key === 'F4' || (arrow && (e.altKey || ARROWS_OPEN));
+    if (!opens) return;
+    if (opened.current === 'focus') { opened.current = null; return; }
     onOpen();
   };
   const onOpen = () => {
@@ -146,7 +179,8 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
         onChange={(e) => choose(e.target.value)}
         onFocus={onFocusOpen}
         onPointerDown={onPointerOpen}
-        onBlur={() => { pointerOpened.current = false; }}
+        onKeyDown={onKeyOpen}
+        onBlur={() => { opened.current = null; }}
         data-testid={`${testId}-select`}
         style={{ ...field, opacity: disabled ? 0.6 : 1 }}
       >
