@@ -4541,13 +4541,19 @@ export const useStore = create<Store>()(
       if (!gateway) { submitChecked([], false); return; }
       if (!submitChecked([], true)) return;
       const scope = currentScope();
-      // the checklist tapped: ANY move of the slot away from it while the guard reads retires this tap for good (the same
-      // project keeps the scope, so the scope alone cannot tell; and a switch away and back again is still a switch:
-      // Codex 4495923538). The engineer taps Submit again on the checklist then in front of them.
-      const tapped = get().checklist?.id;
-      let movedAway = false;
-      const stopWatching = storeApi.subscribe((st) => { if (st.checklist?.id !== tapped) movedAway = true; });
-      const stillTapped = (): boolean => !movedAway && scopeStillCurrent(scope) && get().checklist?.id === tapped;
+      // WHAT WAS TAPPED: this checklist with these marks. The guard sends exactly that or nothing: ANY change to it while
+      // the guard reads retires this tap for good, and the engineer taps Submit again on what is in front of them then.
+      // A move of the slot (even away and back: Codex 4495923538), and an edit of any item's mark or note, or an item
+      // added or taken away (Codex 4496075940), are all changes; the served files arriving with the guard's own read
+      // are not (they are what it reads for). The same project keeps the scope, so the scope alone cannot tell.
+      const marksOf = (cl: Checklist | null): string =>
+        cl ? JSON.stringify([cl.id, cl.items.map((it) => [it.id ?? null, it.state ?? null, it.note ?? ''])]) : '';
+      const tapped = marksOf(get().checklist);
+      let changed = false;
+      const stopWatching = storeApi.subscribe((st, prev) => {
+        if (st.checklist !== prev.checklist && marksOf(st.checklist) !== tapped) changed = true;
+      });
+      const stillTapped = (): boolean => !changed && scopeStillCurrent(scope) && marksOf(get().checklist) === tapped;
       try {
         if (get().online) {
           // online, a capture counts once the server holds it: an upload it accepted is not served until a read is

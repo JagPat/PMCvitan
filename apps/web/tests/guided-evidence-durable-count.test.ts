@@ -233,5 +233,16 @@ describe('guided step 4a — the guard counts the durable rows, read again', () 
     expect(s().outbox.some((o) => o.t === 'submitInspection')).toBe(false);
     expect(s().submission.status).not.toBe('queued');
   });
+
+  it('an edit to the tapped checklist while the guard reads submits nothing: the tap was retired (Codex 4496075940)', async () => {
+    s()._setGateway({ project: 'ambli' } as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    seedChecklist();
+    const guarding = s().submitInspection(); // the failed item has no photo: the guard goes on to read the rows
+    useStore.setState((st) => { st.checklist!.items[0].state = 'pass'; }); // changed to Pass while it reads
+    await guarding;
+    expect(s().outbox.some((o) => o.t === 'submitInspection')).toBe(false);
+    expect(s().submission.status).not.toBe('queued');
+  });
 });
 
