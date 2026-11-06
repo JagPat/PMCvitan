@@ -679,8 +679,8 @@ export class ApiGateway {
 
   // ── orgs / projects / team (multi-tenant) ──
   /** Projects the signed-in user can access (drives the project switcher). */
-  listMemberships(): Promise<MembershipSummary[]> {
-    return this.req('/me/memberships');
+  listMemberships(signal?: AbortSignal): Promise<MembershipSummary[]> {
+    return this.req('/me/memberships', signal ? { signal } : undefined);
   }
   /** Orgs the user administers/belongs to. */
   myOrgs(): Promise<OrgSummary[]> {
@@ -695,8 +695,8 @@ export class ApiGateway {
     return this.req('/me/brief');
   }
   /** Re-scope the session to another project; returns a fresh token. */
-  switchProject(projectId: string): Promise<AuthResult> {
-    return this.req('/auth/switch', { method: 'POST', body: JSON.stringify({ projectId }) });
+  switchProject(projectId: string, signal?: AbortSignal): Promise<AuthResult> {
+    return this.req('/auth/switch', { method: 'POST', body: JSON.stringify({ projectId }), ...(signal ? { signal } : {}) });
   }
   /** The features THIS server advertises on its public health probe (Codex 4187372404): the web and
    *  API deploy separately, so a client asks before relying on a server behaviour, such as a keyed

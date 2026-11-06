@@ -60,7 +60,13 @@ function stubFetch(route: Route) {
     const method = (init?.method ?? 'GET').toUpperCase();
     const headers = (init?.headers ?? {}) as Record<string, string>;
     calls.push({ method, path, auth: headers.Authorization ?? null });
-    const a = (await route(method, path, typeof init?.body === 'string' ? init.body : '')) ?? { status: 599, body: { message: `unrouted ${method} ${path}` } };
+    // a request stopped by its signal rejects as a browser's fetch does, whatever the server would have said
+    const signal = init?.signal;
+    const stopped = new Promise<never>((_, reject) => {
+      if (signal?.aborted) reject(signal.reason);
+      signal?.addEventListener('abort', () => reject(signal.reason));
+    });
+    const a = (await Promise.race([route(method, path, typeof init?.body === 'string' ? init.body : ''), stopped])) ?? { status: 599, body: { message: `unrouted ${method} ${path}` } };
     return new Response(JSON.stringify(a.body), { status: a.status, headers: { 'Content-Type': 'application/json' } });
   }));
 }
@@ -597,6 +603,151 @@ describe('#1373 the move never overrides what the person did meanwhile (Stage 1 
     await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe('p-b'));
     expect(globalThis.localStorage.getItem('vitan.outbox.u-1.p-a')).toBe(stored);
     expect(globalThis.localStorage.getItem('vitan.siteVisitQueue.u-1.p-a')).toBe(stored);
+  });
+});
+
+describe('#1373 the move is bounded, and a switch under way is never read over (Codex r1)', () => {
+  it('a memberships read that never answers lets go of the move after its bound; the next refusal moves', async () => {
+    const { useStore, gw } = await signedIn('fresh');
+    const { LOST_PROJECT_MOVE_WAIT_MS } = await import('@/store/store');
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    const stalled = held();
+    let reads = 0;
+    stubFetch(server({ status: 403, body: REMOVED }, [BETA], (m, p, b) => {
+      if (m === 'GET' && p === '/me/memberships') { reads += 1; return reads === 1 ? stalled.reply() : undefined; }
+      return switchTo('p-b')(m, p, b);
+    }));
+    const lists = vi.spyOn(gw, 'listMemberships');
+    await gw.snapshot().catch(() => undefined);
+    await stalled.asked;
+    // a refusal while the read is out is the same move's: nothing new is asked
+    await gw.snapshot().catch(() => undefined);
+    expect(reads).toBe(1);
+    // the request itself settles once its bound has passed (a signal, never a wait for a clock)
+    expect(lists).toHaveBeenCalledTimes(1);
+    let letGo = false;
+    void Promise.resolve(lists.mock.results[0]?.value).catch(() => undefined).finally(() => { letGo = true; });
+    await vi.advanceTimersByTimeAsync(LOST_PROJECT_MOVE_WAIT_MS);
+    await drain();
+    expect(letGo).toBe(true);
+    expect(useStore.getState().sessionToken).toBe(tokA);
+    await gw.snapshot().catch(() => undefined);
+    await vi.waitFor(() => expect(useStore.getState().sessionToken).toBe(tokB));
+    expect(reads).toBe(2);
+  });
+
+  it('a move\'s switch that never answers fails after its bound: the pending switch is cleared, and the next refusal moves', async () => {
+    const { useStore, gw } = await signedIn('fresh');
+    const { LOST_PROJECT_MOVE_WAIT_MS } = await import('@/store/store');
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    const stalled = held();
+    let asks = 0;
+    stubFetch(server({ status: 403, body: REMOVED }, [BETA], (m, p, b) => {
+      if (m !== 'POST' || p !== '/auth/switch') return undefined;
+      asks += 1;
+      return asks === 1 ? stalled.reply() : switchTo('p-b')(m, p, b);
+    }));
+    const switches = vi.spyOn(gw, 'switchProject');
+    await gw.snapshot().catch(() => undefined);
+    await stalled.asked;
+    expect(useStore.getState().pendingProjectId).toBe('p-b');
+    // the request itself settles once its bound has passed (a signal, never a wait for a clock)
+    expect(switches).toHaveBeenCalledTimes(1);
+    let letGo = false;
+    void Promise.resolve(switches.mock.results[0]?.value).catch(() => undefined).finally(() => { letGo = true; });
+    await vi.advanceTimersByTimeAsync(LOST_PROJECT_MOVE_WAIT_MS);
+    await drain();
+    expect(letGo).toBe(true);
+    expect(useStore.getState().pendingProjectId).toBeNull();
+    expect(useStore.getState().sessionToken).toBe(tokA);
+    // the stalled reply, if it ever comes, is adopted by nothing
+    stalled.release({ status: 201, body: { token: tokB, role: 'client', projectId: 'p-b', name: 'Pat' } });
+    await drain();
+    expect(useStore.getState().sessionToken).toBe(tokA);
+    await gw.snapshot().catch(() => undefined);
+    await vi.waitFor(() => expect(useStore.getState().sessionToken).toBe(tokB));
+    expect(asks).toBe(2);
+  });
+
+  it('the person\'s own switch is not bounded', async () => {
+    const { useStore } = await signedIn('fresh');
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    const { LOST_PROJECT_MOVE_WAIT_MS } = await import('@/store/store');
+    const slow = held();
+    stubFetch((m, p) => (m === 'POST' && p === '/auth/switch' ? slow.reply() : undefined));
+    const picked = useStore.getState().switchProject('p-b');
+    await slow.asked;
+    await vi.advanceTimersByTimeAsync(LOST_PROJECT_MOVE_WAIT_MS * 2);
+    expect(useStore.getState().pendingProjectId).toBe('p-b');
+    slow.release({ status: 201, body: { token: tokB, role: 'client', projectId: 'p-b', name: 'Pat' } });
+    expect(await picked).toBe(true);
+    expect(useStore.getState().sessionToken).toBe(tokB);
+  });
+
+  it('a refused write whose reply lands once a switch has started reads nothing of the old project; one after the switch lands does nothing', async () => {
+    const { useStore, gw } = await signedIn('fresh');
+    const refusal = held();
+    const late = held();
+    const toBeta = held();
+    let deletes = 0;
+    stubFetch((m, p) => {
+      if (m === 'DELETE' && p === '/projects/p-a/nodes/n-1') { deletes += 1; return deletes === 1 ? refusal.reply() : late.reply(); }
+      if (m === 'POST' && p === '/auth/switch') return toBeta.reply();
+      return undefined;
+    });
+    const first = gw.deleteNode('n-1').catch(() => undefined);
+    const second = gw.deleteNode('n-1').catch(() => undefined);
+    await refusal.asked;
+    await late.asked;
+    const picked = useStore.getState().switchProject('p-b');
+    await toBeta.asked;
+    refusal.release({ status: 403, body: PER_ACTION });
+    await first;
+    await drain();
+    expect(hits('GET', '/projects/p-a/snapshot')).toBe(0);
+    expect(useStore.getState().pendingProjectId).toBe('p-b');
+    toBeta.release({ status: 201, body: { token: tokB, role: 'client', projectId: 'p-b', name: 'Pat' } });
+    expect(await picked).toBe(true);
+    // the old token's refusal after the switch landed: not this session's, so nothing is read again
+    late.release({ status: 403, body: PER_ACTION });
+    await second;
+    await drain();
+    expect(hits('GET', '/projects/p-a/snapshot')).toBe(0);
+    expect(useStore.getState().sessionToken).toBe(tokB);
+  });
+
+  it('the kept count leaves out an act the same flush already had accepted', async () => {
+    const { useStore, gw } = await signedIn('fresh');
+    // DEC-1 is accepted, DEC-2's answer is held: the flush is still running, with DEC-1 in memory and marked done, when a
+    // read is refused because the project was lost and the move counts what is kept
+    const second = held();
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.replace('http://api.test', '');
+      const method = (init?.method ?? 'GET').toUpperCase();
+      calls.push({ method, path, auth: null });
+      const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (method === 'POST' && path === '/projects/p-a/decisions/DEC-1/approve') return json(201, ALPHA_SNAPSHOT);
+      if (method === 'POST' && path === '/projects/p-a/decisions/DEC-2/approve') { const a = await second.reply(); return json(a.status, a.body); }
+      if (method === 'GET' && path === '/projects/p-a/snapshot') return json(403, REMOVED);
+      if (method === 'GET' && path === '/me/memberships') return json(200, [BETA]);
+      if (method === 'POST' && path === '/auth/switch') return json(201, { token: tokB, role: 'client', projectId: 'p-b', name: 'Pat' });
+      return json(599, { message: `unrouted ${method} ${path}` });
+    }));
+    useStore.setState({ online: false });
+    for (const decId of ['DEC-1', 'DEC-2']) {
+      useStore.setState({ modal: { type: 'approve', decId, optIdx: 0 } as never });
+      useStore.getState().confirmApprove();
+    }
+    await vi.waitFor(() => expect(globalThis.localStorage.getItem('vitan.outbox.u-1.p-a')).toContain('DEC-2'));
+    useStore.setState({ online: true });
+    const flushed = useStore.getState().flushOutbox();
+    await second.asked;
+    expect(useStore.getState().outbox.map((o) => (o as { decisionId?: string }).decisionId)).toEqual(['DEC-1', 'DEC-2']);
+    await gw.snapshot().catch(() => undefined);
+    await vi.waitFor(() => expect(useStore.getState().activeProjectId).toBe('p-b'));
+    expect(useStore.getState().toast).toBe('You no longer have access to Alpha. 1 change for Alpha is kept on this device and will be sent if your access returns.');
+    second.release({ status: 403, body: REMOVED });
+    await flushed;
   });
 });
 

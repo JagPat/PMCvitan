@@ -616,6 +616,24 @@ describe('a queued site photo whose place was removed (#919)', () => {
     expect(row && !rows.isSitePhotoSent(row)).toBe(true);
   });
 
+  it('PG33: an online pick whose upload is refused because the project was lost: its row is kept and queued, never refused (Codex 4496207104)', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const up = uploads(lostProject('/media'));
+    gatewayOf(A, up.fn);
+    A.getState().addProgressPhoto(PNG, 'room-1');
+    // the send's answer is told, whichever way it went (the toast says which)
+    await until(A, (s) => s.toast !== null);
+    await settled();
+    const key = up.inputs[0]!.clientKey as string;
+    expect(up.inputs).toHaveLength(1);
+    expect(A.getState().outbox).toEqual([{ t: 'uploadSitePhoto', scope: ROWS, clientKey: key }]);
+    expect(A.getState().toast).toBe(SAVED);
+    const rows = await import('@/data/sitePhotoStore');
+    const row = await rows.getSitePhotoRow(ROWS, 'villa-b', key);
+    expect(row && !rows.isSitePhotoSent(row)).toBe(true);
+  });
+
   it.each([
     ['names the place it asked for', { id: 'm1', url: '/media/m1', nodeId: 'room-1' }],
     ['comes from an API that names no place', { id: 'm1', url: '/media/m1' }],

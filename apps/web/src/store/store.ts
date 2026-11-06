@@ -980,6 +980,17 @@ const keptLine = (lang: Lang, project: string, n: number): string =>
   qwFill(n === 1 ? QW.keptForLostOne : QW.keptForLost, lang, { project, n });
 /** Code-unit order, the same in every locale (#1373: the project a move lands on is picked the same way everywhere). */
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+/** #1373 (Codex 4496207113): how long the move off a lost project waits on each of its two requests (the memberships
+ *  read, the switch) before it lets go and leaves the person where they are, so the next refusal can try again. Both
+ *  may be stopped: the read changes nothing, and the switch only mints a token and records a landing preference
+ *  (`auth.service.ts` `switchProject` / `rememberLastProject`) */
+export const LOST_PROJECT_MOVE_WAIT_MS = 15_000;
+/** an abort signal that fires after `ms`, and a way to stop its timer once the request has settled */
+const boundedSignal = (ms: number): { signal: AbortSignal; done: () => void } => {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(new DOMException('The operation timed out.', 'TimeoutError')), ms);
+  return { signal: c.signal, done: () => clearTimeout(t) };
+};
 
 /** The HTTP status the gateway attached to a failed request (`req` sets `status`); undefined for a
  *  failure with no response at all (offline, DNS, CORS). */
@@ -2350,7 +2361,9 @@ export const useStore = create<Store>()(
     const handleSessionRefusal = (r: SessionRefused): void => {
       if (r.token !== get().sessionToken) return;
       if (r.kind === 'refused') {
-        if (r.projectWrite) void requestFreshSnapshot().catch(() => undefined);
+        // never while a switch is out (Codex 4496207115): the re-read would run under the switch's new generation as the
+        // old project's, and the switch's own load reads the project it lands on
+        if (r.projectWrite && get().pendingProjectId === null) void requestFreshSnapshot().catch(() => undefined);
         return;
       }
       if (endedFor === r.token) return;
@@ -2382,7 +2395,11 @@ export const useStore = create<Store>()(
       const from = get().activeProjectId;
       const fromName = get().memberships.find((m) => m.projectId === from)?.name || get().name || 'this project';
       let ms: MembershipSummary[] | null = null;
-      if (gw && gw.authToken === token) ms = await gw.listMemberships().catch(() => null);
+      if (gw && gw.authToken === token) {
+        // bounded (Codex 4496207113): a read that never answers lets go of the move, as a failed one does
+        const bound = boundedSignal(LOST_PROJECT_MOVE_WAIT_MS);
+        ms = await gw.listMemberships(bound.signal).catch(() => null).finally(bound.done);
+      }
       if (get().sessionToken !== token || leavingFor !== token) return; // a sign-in, switch or sign-out came first
       if (!ms || switching()) { leavingFor = null; return; }
       const read = ms;
@@ -2965,7 +2982,15 @@ export const useStore = create<Store>()(
      *  key's write did (#1113 r1, Codex 4367242052) */
     const storedNow = (acts: OutboxOp[]): boolean => acts.every((o) => !aheadUnsaved.has(aheadId(o)));
     /** #1373: how many of memory's acts a write has stored on this device (they stay under this scope's keys) */
-    const keptHere = (): number => get().outbox.filter((o) => !aheadUnsaved.has(aheadId(o))).length;
+    // never one the ledger marks done: a flush still running keeps an accepted act in memory until it ends (Codex
+    // 4496207121). The mark is only read here
+    const keptHere = (): number => {
+      let storage: Storage | undefined;
+      try { storage = globalThis.localStorage; } catch { storage = undefined; }
+      const key = outboxKey();
+      const lane = (o: OutboxOp): string => (isSiteVisitOp(o) ? siteVisitKeyOf(key) : key);
+      return get().outbox.filter((o) => !aheadUnsaved.has(aheadId(o)) && !(storage && isDone(storage, lane(o), o))).length;
+    };
     /** an offline act is said saved only once the locked write of its own key holds it (Codex 4344812898, 4344270659,
      *  4367242052); its write is tracked as a write-ahead's is, so no flush sends it first (Codex 4367242045). The line
      *  is shown only while the scope, person and key it was made in still hold (#1099 r3, Codex 4360928308) */
@@ -3711,8 +3736,11 @@ export const useStore = create<Store>()(
        *  late reply after any of those changes nothing (a sign-out stays signed out; the person's own pick stands) */
       const stillOurs = () => get().sessionToken === switchToken && get().projectScopeGeneration === switchGeneration
         && (opts?.move === undefined || leavingFor === opts.move);
-      return gateway
-        .switchProject(projectId)
+      // the move's switch is bounded (Codex 4496207113): one that never answers fails as any failed switch does, which
+      // clears the pending switch and lets go of the move together; the person's own switch is not
+      const bound = opts?.move !== undefined ? boundedSignal(LOST_PROJECT_MOVE_WAIT_MS) : null;
+      return (bound ? gateway.switchProject(projectId, bound.signal) : gateway.switchProject(projectId))
+        .finally(() => bound?.done())
         .then((res) => {
           if (!stillOurs()) return false;
           // adopt the SERVER-returned project/role/token (never the requested id);
@@ -6975,7 +7003,8 @@ export const useStore = create<Store>()(
               // #917: no answer, and the photo is kept on this phone: it is queued by its key, shown and counted from the
               // phone as an offline pick is, and sent again from its row. For a project no longer on screen the row stays,
               // and that project's next flush gives it its op; the person is told it is kept all the same
-              if (saved && !isTerminalOutboxError(err)) {
+              // a lost project's refusal keeps the saved row too, as the queue keeps its act (#1373, Codex 4496207104)
+              if (saved && !dropsQueuedAct(err)) {
                 if (!scopeStillCurrent(scope)) {
                   set((s) => settle(s, false));
                   get().flash(DLT.photoOffline[get().lang]);
