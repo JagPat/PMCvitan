@@ -723,9 +723,15 @@ export type IdentityRefusalCode = (typeof IDENTITY_REFUSAL_CODES)[keyof typeof I
 /**
  * #1373: the machine-readable `code` on the three 403s the live project check (`ProjectAccessService.authorize`) answers
  * when a still-valid token's holder no longer has the project: it was archived (or is missing), their role on it
- * changed, or their access was removed. The status and the English `message` are unchanged; the web tells this "you
- * no longer have this project" refusal from a refusal of one action (every other 403, uncoded) by this code alone,
- * never by the message. A server that sends no code leaves every 403 a refusal of that action.
+ * changed, or their access was removed. The in-transaction re-checks of the same state answer with the same coded body.
+ * The status and the English `message` are unchanged; the web tells this "you no longer have this project" refusal
+ * from a refusal of one action (every other 403, uncoded) by this code alone, never by the message. A server that
+ * sends no code leaves every 403 a refusal of that action.
+ *
+ * A client acts on "one of the three" and never branches on which one: the code names the server's view of the cause,
+ * not the person's standing. An org owner whose narrower membership was removed gets `project-access-removed` while
+ * still holding the project as PMC, and a worker device token (never a member) gets it on every project route. So the
+ * client re-reads the person's projects (`/me/memberships`) and decides from that list.
  */
 export const PROJECT_ACCESS_CODES = {
   unavailable: 'project-unavailable',

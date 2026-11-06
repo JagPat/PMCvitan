@@ -33,6 +33,7 @@ import { checklistPath } from '../platform/record-paths';
 import { isFailedItem } from './failed-item';
 import { guidanceColumnsOf, itemRowFromSpec } from './guided-item';
 import { evidenceShortfalls, type SubmittedItem } from './evidence-rule';
+import { projectUnavailable } from '../common/lost-project';
 
 /** The corrective-assignment rule lives in ONE module ({@link assignment-eligibility}) and every site
  *  that asks about a named assignee calls it. Re-exported here because `inspections.contract.test.ts`
@@ -313,7 +314,7 @@ export class InspectionsService {
         // Codex #1297 r4 — the PROJECT is re-read too, under its row lock (the owner's `FOR NO KEY UPDATE`): an archive
         // takes no readiness key, so one that commits after the guard's unlocked read would otherwise leave this naming
         // free to write on an archived project. The archive either commits first (refused here) or waits for this commit.
-        if (!(await this.orgs.isProjectOperable(tx, projectId))) throw new ForbiddenException('Project is unavailable');
+        if (!(await this.orgs.isProjectOperable(tx, projectId))) throw projectUnavailable();
         // Codex #1297 r2 — the CALLER's authority is re-read here, under the readiness key and with their standing rows
         // locked, as decide does: a PMC or engineer re-roled or removed after the guard read their token must not name
         // anyone. Locked after Inspection, so Membership still follows Inspection on every path.

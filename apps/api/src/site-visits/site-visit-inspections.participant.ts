@@ -5,6 +5,7 @@ import { lockProjectTree } from '../common/tree-lock';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { lockActorStanding, resolveActorEnvelope } from '../platform/actor-envelope';
 import type { Actor } from '../common/actor';
+import { projectUnavailable } from '../common/lost-project';
 
 /** The visit row a link reads, locked. */
 interface VisitForLink {
@@ -54,7 +55,7 @@ export class SiteVisitInspectionsParticipant {
   ): Promise<void> {
     await lockActorStanding(tx, input.projectId, input.userId);
     const [state] = await tx.$queryRaw<Array<{ operable: boolean }>>(Prisma.sql`SELECT phase6_project_operable(${input.projectId}) AS "operable"`);
-    if (state?.operable !== true) throw new ForbiddenException('Project is unavailable');
+    if (state?.operable !== true) throw projectUnavailable();
     const envelope = await resolveActorEnvelope(tx, input.projectId, input.actor);
     if (!envelope) throw new ForbiddenException('Your role on this project has changed; sign in again');
     try {

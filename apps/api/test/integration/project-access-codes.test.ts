@@ -1,15 +1,18 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { ForbiddenException } from '@nestjs/common';
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
 import { PROJECT_ACCESS_CODES } from '@vitan/shared';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { NotificationsSeenService } from '../../src/snapshot/notifications-seen.service';
 
 /**
  * #1373: the live project check's three "you no longer have this project" 403s carry a machine `code`, on a read and on
- * a command alike, with the status and the English message exactly as before (live PostgreSQL, the real guard). Every
- * other 403 (a role the route does not allow, a token for another project) carries none, so the web can tell a lost
- * project from a refusal of one action by the code alone.
+ * a command alike, with the status and the English message exactly as before (live PostgreSQL, the real guard). The
+ * in-transaction re-checks of the same state (here the bell's seen mark, which re-reads both) throw the same coded
+ * body. Every other 403 (a role the route does not allow, a token for another project) carries none, so the web can
+ * tell a lost project from a refusal of one action by the code alone.
  */
 describe('#1373: lost-project 403s carry a code (live PG)', () => {
   let t: TestApp;
@@ -35,6 +38,17 @@ describe('#1373: lost-project 403s carry a code (live PG)', () => {
     await t?.close();
   });
 
+  /** `memberUser` removed from projectA for the length of `run` (a real removal, as project-access.test.ts does), then restored */
+  const whileRemoved = async <T>(run: () => Promise<T>): Promise<T> => {
+    const where = { projectId_userId: { projectId: f.projectA.id, userId: f.memberUser.id } };
+    await t.prisma.membership.update({ where, data: { status: 'removed' } });
+    try {
+      return await run();
+    } finally {
+      await t.prisma.membership.update({ where, data: { status: 'active' } });
+    }
+  };
+
   /** a read and a command on `projectId` with `token`; the guard answers before the body is read */
   const both = (projectId: string, token: string) => Promise.all([
     http().get(`/projects/${projectId}/snapshot`).set('Authorization', `Bearer ${token}`),
@@ -52,8 +66,8 @@ describe('#1373: lost-project 403s carry a code (live PG)', () => {
       ask: () => both(f.projectA.id, t.issueProjectToken(f.memberUser.id, f.projectA.id, 'engineer')),
     },
     {
-      name: 'removed (no active membership)', code: PROJECT_ACCESS_CODES.accessRemoved, message: 'Project access has been removed',
-      ask: () => both(f.projectA.id, t.issueProjectToken(f.strangerUser.id, f.projectA.id)),
+      name: 'removed', code: PROJECT_ACCESS_CODES.accessRemoved, message: 'Project access has been removed',
+      ask: () => whileRemoved(() => both(f.projectA.id, t.issueProjectToken(f.memberUser.id, f.projectA.id))),
     },
   ];
 
@@ -63,6 +77,27 @@ describe('#1373: lost-project 403s carry a code (live PG)', () => {
       // exactly Nest's default 403 body, in its key order, plus the code
       expect(res.text).toBe(JSON.stringify({ message, error: 'Forbidden', statusCode: 403, code }));
     }
+  });
+
+  /** the body an in-transaction re-check threw, read as Nest would send it */
+  const thrownBody = async (run: () => Promise<unknown>) => {
+    const err = await run().then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(ForbiddenException);
+    return JSON.stringify((err as ForbiddenException).getResponse());
+  };
+
+  it('an in-transaction re-check codes an archived project: the seen mark past the guard', async () => {
+    const seen = t.app.get(NotificationsSeenService);
+    const user = { sub: f.otherUser.id, role: 'pmc' as const, projectId: archivedId };
+    expect(await thrownBody(() => seen.markSeen(archivedId, user, []))).toBe(
+      JSON.stringify({ message: 'Project is unavailable', error: 'Forbidden', statusCode: 403, code: PROJECT_ACCESS_CODES.unavailable }));
+  });
+
+  it('an in-transaction re-check codes a removal: the seen mark past the guard', async () => {
+    const seen = t.app.get(NotificationsSeenService);
+    const user = { sub: f.memberUser.id, role: 'pmc' as const, projectId: f.projectA.id };
+    expect(await whileRemoved(() => thrownBody(() => seen.markSeen(f.projectA.id, user, [])))).toBe(
+      JSON.stringify({ message: 'Project access has been removed', error: 'Forbidden', statusCode: 403, code: PROJECT_ACCESS_CODES.accessRemoved }));
   });
 
   it('the three codes are distinct', () => {

@@ -1,17 +1,8 @@
-import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from './auth';
 import { isProduction } from '../config';
-import { PROJECT_ACCESS_CODES, type ProjectAccessCode } from '@vitan/shared';
-
-/**
- * #1373: a lost-project 403 carries its machine `code`. The body is Nest's default for a 403 (`message`, `error`,
- * `statusCode`, in that order) plus `code`, so the status, message and key order are as before; a client that ignores `code` sees no
- * change.
- */
-function lostProject(message: string, code: ProjectAccessCode): ForbiddenException {
-  return new ForbiddenException({ message, error: 'Forbidden', statusCode: 403, code });
-}
+import { projectAccessRemoved, projectRoleChanged, projectUnavailable } from './lost-project';
 
 /**
  * The canonical LIVE authorization for a user on a project (Phase 0 Task 4).
@@ -42,14 +33,14 @@ export class ProjectAccessService {
       where: { id: projectId },
       select: { orgId: true, archivedAt: true },
     });
-    if (!project || project.archivedAt) throw lostProject('Project is unavailable', PROJECT_ACCESS_CODES.unavailable);
+    if (!project || project.archivedAt) throw projectUnavailable();
 
     const membership = await this.prisma.membership.findUnique({
       where: { projectId_userId: { projectId, userId: user.sub } },
       select: { role: true, status: true },
     });
     if (membership?.status === 'active') {
-      if (membership.role !== user.role) throw lostProject('Project role changed; sign in again', PROJECT_ACCESS_CODES.roleChanged);
+      if (membership.role !== user.role) throw projectRoleChanged();
       return user;
     }
 
@@ -62,6 +53,6 @@ export class ProjectAccessService {
         })
       : null;
     if (user.role === 'pmc' && (orgMembership?.role === 'owner' || orgMembership?.role === 'admin')) return user;
-    throw lostProject('Project access has been removed', PROJECT_ACCESS_CODES.accessRemoved);
+    throw projectAccessRemoved();
   }
 }
