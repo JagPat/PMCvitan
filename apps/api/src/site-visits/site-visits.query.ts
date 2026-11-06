@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { INSPECTION_READER_ROLES } from '@vitan/shared';
+import { INSPECTION_READER_ROLES, ROLE_POLICY } from '@vitan/shared';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SignedUrlService } from '../media/signed-url.service';
@@ -195,14 +195,15 @@ function removableBy(
 }
 
 /** Video V2g-1 — whether the viewer may add, replace or take off a video clip's full-video link now (the service's
- *  `judgeFileLink`, read at this read): the PMC always (a reason needed to end a link that is not their own within the
- *  hour); anyone else while the visit is not closed, when they added the clip or are on the visit, to add a link where
- *  there is none or to change their own within the hour. */
-function linkOfferBy(
+ *  `judgeFileLinkActor` and `judgeFileLinkChange`, read at this read). Only a role the routes let in (`media.upload`;
+ *  gap-check G5) is offered anything. Then the PMC always (a reason needed to end a link that is not their own within
+ *  the hour); anyone else, when they added the clip or are on the visit and the visit is not closed, to add a link where
+ *  there is none, or, while the visit is open, to change their own within the hour (gap-check G1). */
+export function linkOfferBy(
   viewer: SiteVisitViewer | undefined, v: Pick<Row, 'status' | 'visitorId' | 'attendees'>, fileAddedById: string,
   link: { addedById: string; addedAt: Date } | null, now: number,
 ): SiteVisitFileDto['fullVideoLinkOffer'] {
-  if (!viewer) return null;
+  if (!viewer || !(ROLE_POLICY['media.upload'] as readonly string[]).includes(viewer.role)) return null;
   const until = link ? link.addedAt.getTime() + SITE_VISIT_OWN_REMOVAL_MS : null;
   // inclusive at the hour, as the database judges it (`addedAt + 1 hour >= now` on its clock)
   const ownInHour = link !== null && until !== null && link.addedById === viewer.id && now <= until;
@@ -212,7 +213,7 @@ function linkOfferBy(
   const onVisit = v.visitorId === viewer.id || v.attendees.some((a) => a.userId === viewer.id && a.retiredAt === null);
   if (!onVisit && fileAddedById !== viewer.id) return null;
   if (link === null) return { reasonRequired: false, until: null, remainingMs: null };
-  return ownInHour ? { reasonRequired: false, ...ends } : null;
+  return ownInHour && v.status === 'open' ? { reasonRequired: false, ...ends } : null;
 }
 
 export function toSiteVisitDto(
@@ -271,7 +272,6 @@ export function toSiteVisitDto(
   };
 }
 /** A video file's mime, as the media module reports it: the exact, case-sensitive "video/" prefix the database's insert trigger uses (V2g-0, K2; no lowercasing). */
-/** A video file's mime, as the media module reports it; the database's insert trigger reads the same (V2g-0, K2). */
 const isVideo = (mime: string | undefined): boolean => (mime ?? '').startsWith('video/');
 
 /** Video V2g-1 — a file's current full-video link and the viewer's offer; both null for a file that is not a video. */

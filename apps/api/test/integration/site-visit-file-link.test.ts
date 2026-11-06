@@ -67,7 +67,7 @@ describe('video V2g-1: a clip\'s full-video link through the routes (live PG)', 
   type FileDto = { mediaId: string; fullVideoLink: Record<string, unknown> | null; fullVideoLinkOffer: Record<string, unknown> | null };
   const fileOf = async (mediaId: string, token = pmcToken, visit = visitId): Promise<FileDto> => {
     const list = await http().get(visits()).set('Authorization', `Bearer ${token}`);
-    expect(list.status).toBe(200);
+    expect(list.status, list.text).toBe(200);
     const v = (list.body as Array<{ id: string; files: FileDto[] }>).find((x) => x.id === visit)!;
     return v.files.find((x) => x.mediaId === mediaId)!;
   };
@@ -346,5 +346,77 @@ describe('video V2g-1: a clip\'s full-video link through the routes (live PG)', 
     expect(rows.filter((r) => r.endedAt === null)).toHaveLength(1);
     expect(rows.find((r) => r.id === seen)).toMatchObject({ endedById: f.memberUser.id });
     expect(rows).toHaveLength(2);
+  });
+
+  const attend = async (userId: string, role: string, visit = visitId) => {
+    const id = randomUUID();
+    const res = await http().post(`${visits()}/${visit}/attendees`).set('Authorization', `Bearer ${pmcToken}`).send({ id, userId, role });
+    expect(res.status, res.text).toBe(201);
+    return id;
+  };
+
+  it('an ended visit: the link\'s adder, even within the hour, asks the PMC, as for a file (gap-check G1)', async () => {
+    const ending = await startVisit(consultantToken);
+    const mediaId = await clip(consultantToken, ending);
+    const theirs = await set(mediaId, DRIVE, null, consultantToken, {}, ending);
+    expect((await http().post(`${visits()}/${ending}/end`).set('Authorization', `Bearer ${consultantToken}`).send({ claimedAt: ago(0) })).status).toBe(201);
+    // the file rule this follows: their own file, within the hour, on the ended visit is the PMC's to remove
+    expect((await fileOf(mediaId, consultantToken, ending)).fullVideoLinkOffer).toBeNull();
+    const replace = await put(mediaId, { id: randomUUID(), url: ZOHO, replaces: theirs }, consultantToken, undefined, ending);
+    expect(replace.status, replace.text).toBe(409);
+    expect(replace.body.message).toBe('This site visit has ended; ask the PMC to change the link');
+    const off = await http().delete(linkPath(mediaId, ending)).set('Authorization', `Bearer ${consultantToken}`).send({ linkId: theirs });
+    expect(off.status, off.text).toBe(409);
+    const fileOff = await http().post(`/projects/${f.projectA.id}/media/${mediaId}/visit-removal`).set('Authorization', `Bearer ${consultantToken}`).send({});
+    expect(fileOff.status).toBe(409);
+    expect((await links(mediaId)).filter((r) => r.endedAt === null).map((r) => r.id)).toEqual([theirs]);
+    // the PMC changes it, with a reason
+    expect((await fileOf(mediaId, pmcToken, ending)).fullVideoLinkOffer).toMatchObject({ reasonRequired: true });
+    const pmc = await http().put(linkPath(mediaId, ending)).set('Authorization', `Bearer ${pmcToken}`)
+      .send({ id: randomUUID(), url: ZOHO, replaces: theirs, reason: 'Right video' });
+    expect(pmc.status, pmc.text).toBe(200);
+  });
+
+  it('who may not act at all gets 403 before any stale-link check (G4)', async () => {
+    const mediaId = await clip();
+    const pmcs = await set(mediaId, DRIVE, null);
+    // the engineer is not on the visit and did not add the clip: a stale `replaces` or an unknown link is still a 403
+    const stale = await put(mediaId, { id: randomUUID(), url: ZOHO, replaces: null }, engineerToken);
+    expect(stale.status, stale.text).toBe(403);
+    expect((await del(mediaId, { linkId: randomUUID() }, engineerToken)).status).toBe(403);
+    expect((await put(mediaId, { id: randomUUID(), url: ZOHO, replaces: pmcs }, engineerToken)).status).toBe(403);
+    // a role the routes never let in (an architect) is offered nothing: no member can hold that role yet (the database
+    // reserves it), so `site-visit-link-offer.test.ts` proves it on the read's own function
+  });
+
+  it('a retired attendee links the clip they added, not anyone else\'s (G2)', async () => {
+    const attendeeId = await attend(engineer, 'engineer');
+    const own = await clip(engineerToken);
+    const pmcClip = await clip();
+    expect((await http().post(`${visits()}/${visitId}/attendees/${attendeeId}/retire`).set('Authorization', `Bearer ${pmcToken}`).send({})).status).toBe(201);
+    // their own clip: the adder rule
+    expect((await fileOf(own, engineerToken)).fullVideoLinkOffer).toMatchObject({ reasonRequired: false });
+    await set(own, DRIVE, null, engineerToken);
+    // someone else's clip: no longer on the visit
+    expect((await fileOf(pmcClip, engineerToken)).fullVideoLinkOffer).toBeNull();
+    const res = await put(pmcClip, { id: randomUUID(), url: DRIVE, replaces: null }, engineerToken);
+    expect(res.status, res.text).toBe(403);
+  });
+
+  it('a client mistake is a 400, never a 500: a lone surrogate in a label or reason, a NUL or a bad id in the path (G3)', async () => {
+    const mediaId = await clip();
+    const label = await put(mediaId, { id: randomUUID(), url: DRIVE, replaces: null, label: 'Pour \ud800' });
+    expect(label.status, label.text).toBe(400);
+    const id = await set(mediaId, DRIVE, null, consultantToken);
+    const reason = await put(mediaId, { id: randomUUID(), url: ZOHO, replaces: id, reason: 'Wrong \udc00 one' });
+    expect(reason.status, reason.text).toBe(400);
+    const endReason = await del(mediaId, { linkId: id, reason: '\ud83d' });
+    expect(endReason.status, endReason.text).toBe(400);
+    for (const path of [linkPath('ab%00cd'), linkPath(mediaId, 'ab%00cd'), linkPath(mediaId, 'not-a-visit')]) {
+      const res = await http().put(path).set('Authorization', `Bearer ${pmcToken}`).send({ id: randomUUID(), url: DRIVE, replaces: id });
+      expect(res.status, `${path}: ${res.text}`).toBe(400);
+      expect((await http().delete(path).set('Authorization', `Bearer ${pmcToken}`).send({ linkId: id })).status).toBe(400);
+    }
+    expect((await links(mediaId)).filter((r) => r.endedAt === null).map((r) => r.id)).toEqual([id]);
   });
 });

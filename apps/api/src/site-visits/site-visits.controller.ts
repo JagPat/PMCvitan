@@ -4,9 +4,9 @@ import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
 import {
   addSiteVisitAttendeeSchema, addSiteVisitPlaceSchema, closeSiteVisitSchema, endSiteVisitFileLinkSchema, endSiteVisitSchema,
-  listSiteVisitsSchema, setSiteVisitFileLinkSchema, startSiteVisitSchema,
+  listSiteVisitsSchema, setSiteVisitFileLinkSchema, siteVisitLinkPathSchema, startSiteVisitSchema,
   type AddSiteVisitAttendeeInput, type AddSiteVisitPlaceInput, type CloseSiteVisitInput, type EndSiteVisitFileLinkInput,
-  type EndSiteVisitInput, type ListSiteVisitsInput, type SetSiteVisitFileLinkInput, type StartSiteVisitInput,
+  type EndSiteVisitInput, type ListSiteVisitsInput, type SetSiteVisitFileLinkInput, type SiteVisitLinkPath, type StartSiteVisitInput,
 } from '../contracts';
 import { SiteVisitsService } from './site-visits.service';
 import { SiteVisitsQueryService } from './site-visits.query';
@@ -119,25 +119,23 @@ export class SiteVisitsController {
   @RolesFor('media.upload')
   setFileLink(
     @Param('projectId') projectId: string,
-    @Param('visitId') visitId: string,
-    @Param('mediaId') mediaId: string,
+    @Param(new ZodPipe(siteVisitLinkPathSchema)) path: SiteVisitLinkPath,
     @Body(new ZodPipe(setSiteVisitFileLinkSchema)) body: SetSiteVisitFileLinkInput,
     @CurrentUser() user: AuthUser,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.visits.setFileLink(projectId, visitId.toLowerCase(), mediaId, body, user, idempotencyKey);
+    return this.visits.setFileLink(projectId, path.visitId, path.mediaId, body, user, idempotencyKey);
   }
 
   @Delete(':visitId/files/:mediaId/link')
   @RolesFor('media.upload')
   endFileLink(
     @Param('projectId') projectId: string,
-    @Param('visitId') visitId: string,
-    @Param('mediaId') mediaId: string,
+    @Param(new ZodPipe(siteVisitLinkPathSchema)) path: SiteVisitLinkPath,
     @Body(new ZodPipe(endSiteVisitFileLinkSchema)) body: EndSiteVisitFileLinkInput,
     @CurrentUser() user: AuthUser,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.visits.endFileLink(projectId, visitId.toLowerCase(), mediaId, body, user, idempotencyKey);
+    return this.visits.endFileLink(projectId, path.visitId, path.mediaId, body, user, idempotencyKey);
   }
 }

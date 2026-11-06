@@ -272,7 +272,7 @@ export class SiteVisitsService {
    * Who (Jagrut's plan, Stage 1 6 Nov 2026): adding a link where there is none, the person who added the clip or anyone
    * who may add files to the visit (its visitor and the people recorded on it), while the visit is not closed, and the
    * PMC at any time. Replacing or taking off a link follows a visit file's removal rule (#1179, V2g-0 K7): the person who
-   * added it, within the hour and while the visit is not closed, needs no reason; the PMC may at any time, saying why
+   * added it, within the hour and while the visit is open (an ended visit's links are the PMC's, as its files are), needs no reason; the PMC may at any time, saying why
    * unless it is their own within the hour. The database judges the hour again at its own stamp.
    */
   async setFileLink(
@@ -280,6 +280,8 @@ export class SiteVisitsService {
   ): Promise<SiteVisitDto> {
     return this.visitorEdit(projectId, visitId, 'site-visits.set-file-link', { visitId, mediaId, ...dto }, user, idempotencyKey, async (tx, actor) => {
       const { visit, file, current, envelope } = await this.lockFileLink(tx, projectId, visitId, mediaId, actor, user);
+      // who may act at all comes first: someone who may not touch this clip's link gets 403, never a stale-link 409 (G4)
+      this.judgeFileLinkActor(visit, file, envelope.actorRole, user.sub);
       if ((current?.id ?? null) !== dto.replaces) {
         throw new ConflictException(current
           ? 'Someone else changed this video\'s full video link; look at it again'
@@ -288,7 +290,7 @@ export class SiteVisitsService {
       if (await tx.siteVisitMediaLink.findUnique({ where: { id: dto.id }, select: { id: true } })) {
         throw new ConflictException('This link has already been added');
       }
-      this.judgeFileLink(visit, file, current, envelope.actorRole, user.sub, dto.reason, current ? 'replacing' : null);
+      this.judgeFileLinkChange(visit, current, envelope.actorRole, user.sub, dto.reason, current ? 'replacing' : null);
       if (current) await this.endLink(tx, current.id, user.sub, envelope.actorRole, dto.reason);
       try {
         // the database sets the host from the url, copies the adder's name as they stand and stamps the time (V2g-0)
@@ -315,12 +317,13 @@ export class SiteVisitsService {
   ): Promise<SiteVisitDto> {
     return this.visitorEdit(projectId, visitId, 'site-visits.end-file-link', { visitId, mediaId, ...dto }, user, idempotencyKey, async (tx, actor) => {
       const { visit, file, current, envelope } = await this.lockFileLink(tx, projectId, visitId, mediaId, actor, user);
+      this.judgeFileLinkActor(visit, file, envelope.actorRole, user.sub);
       if (current?.id !== dto.linkId) {
         const known = await tx.siteVisitMediaLink.findFirst({ where: { projectId, mediaId, id: dto.linkId }, select: { id: true } });
         if (!known) throw new NotFoundException(VIDEO_LINK_GONE_MESSAGE);
         throw new ConflictException('This full video link was already taken off or replaced');
       }
-      this.judgeFileLink(visit, file, current, envelope.actorRole, user.sub, dto.reason, 'removing');
+      this.judgeFileLinkChange(visit, current, envelope.actorRole, user.sub, dto.reason, 'removing');
       await this.endLink(tx, current.id, user.sub, envelope.actorRole, dto.reason);
       return { resultRef: current.id, events: [] };
     });
@@ -353,22 +356,38 @@ export class SiteVisitsService {
     return { visit, file: { addedById: file.addedById, present }, current: current ?? null, envelope };
   }
 
-  /** Who may add, replace or take off a clip's link (see {@link setFileLink}); `changing` is null when nothing ends. */
-  private judgeFileLink(
-    visit: LockedVisit, file: { addedById: string; present: boolean }, current: FileLinkRow | null, role: string, userId: string,
-    reason: string | undefined, changing: 'replacing' | 'removing' | null,
+  /**
+   * Whether this person may touch the clip's link at all (see {@link setFileLink}), judged before the link they saw is
+   * compared, so someone who may not act gets 403 rather than a stale-link 409 (V2g-1 gap-check G4). The PMC always may;
+   * anyone else only when they added the clip or are on the visit (its visitor, or a recorded attendee not taken off),
+   * and never on a visit the PMC closed.
+   */
+  private judgeFileLinkActor(visit: LockedVisit, file: { addedById: string; present: boolean }, role: string, userId: string): void {
+    if (role === 'pmc') return;
+    if (!file.present && file.addedById !== userId) {
+      throw new ForbiddenException('Only the person who added this video, the people on this visit, or the PMC may add its full video link');
+    }
+    if (visit.status === 'closed') throw new ConflictException('This site visit was closed by the PMC; ask the PMC to change the link');
+  }
+
+  /**
+   * Whether this person may replace or take off the current link (`changing` is null when nothing ends), after
+   * {@link judgeFileLinkActor}. A visit file's removal rule (#1179, `site-visit-files.participant.ts`): anyone but the
+   * PMC changes only their own link, within the hour, and only while the visit is open (an ended visit is the PMC's, the
+   * same 409 as a file's removal; gap-check G1). The PMC gives a reason unless the link is their own within the hour.
+   */
+  private judgeFileLinkChange(
+    visit: LockedVisit, current: FileLinkRow | null, role: string, userId: string, reason: string | undefined,
+    changing: 'replacing' | 'removing' | null,
   ): void {
     const ownInHour = current !== null && current.addedById === userId && current.inHour === true;
     if (role === 'pmc') {
       if (changing && !ownInHour && reason === undefined) throw new BadRequestException(`Say why you are ${changing} this link`);
       return;
     }
-    if (visit.status === 'closed') throw new ConflictException('This site visit was closed by the PMC; ask the PMC to change the link');
-    if (!file.present && file.addedById !== userId) {
-      throw new ForbiddenException('Only the person who added this video, the people on this visit, or the PMC may add its full video link');
-    }
     if (current === null) return;
     if (current.addedById !== userId) throw new ForbiddenException('Only the person who added this link, or the PMC, may change it');
+    if (visit.status !== 'open') throw new ConflictException('This site visit has ended; ask the PMC to change the link');
     if (!ownInHour) throw new ForbiddenException('A link can be changed only within an hour of adding it; ask the PMC');
   }
 
