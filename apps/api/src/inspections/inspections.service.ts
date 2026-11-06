@@ -613,6 +613,12 @@ export class InspectionsService {
       // the submit and read sites deliberately do not repeat this arm.
       const eligible = holdsCorrectiveRole(membership) || (membership?.status === 'active' && pmcSelfExplicit);
       if (!eligible) {
+        // Guided step 3a (gap-check): a PMC by org standing alone (an org owner or admin with no Membership row) cannot
+        // be written down as the re-checker: the assignee's composite foreign key names a Membership. Finish defaults
+        // the re-check to its walker, so say what to do instead of the general sentence.
+        if (!membership && assigneeId === user.sub) {
+          throw new BadRequestException('You are not a member of this project, so the re-check cannot be yours — name an engineer on this project to re-check the failed items.');
+        }
         throw new BadRequestException(
           input.assigneeId === undefined
             ? `The recorded completer no longer holds ${CORRECTIVE_ROLES_PHRASE} membership on this project — name an explicit eligible assignee.`

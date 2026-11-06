@@ -18,15 +18,18 @@ describe('guided site inspections step 3a — check and decide in one walk (live
   let f: TwoProjectFixture;
   let pmcToken: string;
   let engToken: string;
+  let orgOwnerToken: string;
   let seq = 0;
 
   beforeAll(async () => {
     t = await createTestApp();
     f = await createTwoProjectFixture(t.prisma);
     pmcToken = t.issueProjectToken(f.memberUser.id, f.projectA.id);
-    engToken = t.issueProjectToken(f.ownerUser.id, f.projectA.id, 'engineer');
+    engToken = t.issueProjectToken(f.otherUser.id, f.projectA.id, 'engineer');
+    // an org owner acting as this project's PMC, with no Membership row (how Vitan's owners open a project they are not on)
+    orgOwnerToken = t.issueOrgOwnerToken(f.ownerUser.id, f.projectA.id, f.orgA.id);
     await t.prisma.membership.createMany({
-      data: [{ projectId: f.projectA.id, userId: f.ownerUser.id, role: 'engineer', status: 'active' }],
+      data: [{ projectId: f.projectA.id, userId: f.otherUser.id, role: 'engineer', status: 'active' }],
       skipDuplicates: true,
     });
   });
@@ -43,7 +46,7 @@ describe('guided site inspections step 3a — check and decide in one walk (live
     // a re-inspection points at its parent: children first
     await t.prisma.inspection.deleteMany({ where: { projectId, reinspectionOfId: { not: null } } });
     await t.prisma.inspection.deleteMany({ where: { projectId } });
-    await t.prisma.membership.deleteMany({ where: { projectId, userId: f.ownerUser.id } });
+    await t.prisma.membership.deleteMany({ where: { projectId, userId: f.otherUser.id } });
     await f?.cleanup();
     await t?.close();
   });
@@ -124,14 +127,14 @@ describe('guided site inspections step 3a — check and decide in one walk (live
   it('the re-check can be named to an engineer, with its own due date', async () => {
     const c = await checklist();
     await photo(c, c.A);
-    const res = await finish(pmcToken, c, walk(c, 'pass', 'fail', { assigneeId: f.ownerUser.id, dueInDays: 5 }, 'Cracked'));
+    const res = await finish(pmcToken, c, walk(c, 'pass', 'fail', { assigneeId: f.otherUser.id, dueInDays: 5 }, 'Cracked'));
     // B is plain: a failed plain item needs a linked recording too
     expect(res.status).toBe(400);
     await photo(c, c.B);
-    const ok = await finish(pmcToken, c, walk(c, 'pass', 'fail', { assigneeId: f.ownerUser.id, dueInDays: 5 }, 'Cracked'));
+    const ok = await finish(pmcToken, c, walk(c, 'pass', 'fail', { assigneeId: f.otherUser.id, dueInDays: 5 }, 'Cracked'));
     expect(ok.status).toBe(201);
     const child = await t.prisma.inspection.findFirstOrThrow({ where: { reinspectionOfId: c.id }, include: { items: true } });
-    expect(child.assigneeId).toBe(f.ownerUser.id);
+    expect(child.assigneeId).toBe(f.otherUser.id);
     expect(child.items.map((i) => i.name)).toEqual(['B']);
     expect(Math.round((child.dueDate!.getTime() - child.inspectionDate!.getTime()) / 86_400_000)).toBe(5);
   });
@@ -168,6 +171,24 @@ describe('guided site inspections step 3a — check and decide in one walk (live
     const again = await finish(pmcToken, c, walk(c, 'pass', 'pass'));
     expect(again.status).toBe(400);
     expect(again.body.message).toBe('This checklist has already been submitted and is awaiting review.');
+  });
+
+  it('an org owner acting as PMC with no project membership must name the re-checker for a failed walk (gap-check)', async () => {
+    // the re-checker is written as a Membership (composite foreign key), which an org owner acting as PMC does not have
+    const c = await checklist();
+    await photo(c, c.A);
+    const res = await finish(orgOwnerToken, c, walk(c, 'fail', 'pass', {}, 'Missing'));
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('You are not a member of this project, so the re-check cannot be yours — name an engineer on this project to re-check the failed items.');
+    expect(await t.prisma.inspection.findUniqueOrThrow({ where: { id: c.id } })).toMatchObject({ submitted: false, decided: false });
+    // naming an engineer finishes it, attributed to the owner; an all-pass walk needs no one
+    const ok = await finish(orgOwnerToken, c, walk(c, 'fail', 'pass', { assigneeId: f.otherUser.id }, 'Missing'));
+    expect(ok.status).toBe(201);
+    expect(await t.prisma.inspection.findUniqueOrThrow({ where: { id: c.id } })).toMatchObject({ submitted: true, decided: true, submittedById: f.ownerUser.id, decidedById: f.ownerUser.id });
+    expect((await t.prisma.inspection.findFirstOrThrow({ where: { reinspectionOfId: c.id } })).assigneeId).toBe(f.otherUser.id);
+    const d = await checklist();
+    await photo(d, d.A);
+    expect((await finish(orgOwnerToken, d, walk(d, 'pass', 'pass'))).status).toBe(201);
   });
 
   it('a keyed resend replays without a second re-check; the same key with another walk is refused', async () => {
