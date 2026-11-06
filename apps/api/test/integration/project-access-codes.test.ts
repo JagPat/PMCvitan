@@ -6,12 +6,16 @@ import { PROJECT_ACCESS_CODES } from '@vitan/shared';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { NotificationsSeenService } from '../../src/snapshot/notifications-seen.service';
+import { SiteVisitInspectionsParticipant } from '../../src/site-visits/site-visit-inspections.participant';
+import { requireActorEnvelope } from '../../src/platform/actor-envelope';
+import { ROLE_CHANGED_MESSAGES } from '../../src/common/lost-project';
 
 /**
  * #1373: the live project check's three "you no longer have this project" 403s carry a machine `code`, on a read and on
  * a command alike, with the status and the English message exactly as before (live PostgreSQL, the real guard). The
- * in-transaction re-checks of the same state (here the bell's seen mark, which re-reads both) throw the same coded
- * body. Every other 403 (a role the route does not allow, a token for another project) carries none, so the web can
+ * in-transaction re-checks of the same state throw the same coded body, each with its own words: here the bell's seen
+ * mark (archived, removed), a stale actor pair and a site visit write; the decision approve and the inspection naming
+ * are pinned in their own suites' races. Every other 403 (a role the route does not allow, a token for another project) carries none, so the web can
  * tell a lost project from a refusal of one action by the code alone.
  */
 describe('#1373: lost-project 403s carry a code (live PG)', () => {
@@ -98,6 +102,23 @@ describe('#1373: lost-project 403s carry a code (live PG)', () => {
     const user = { sub: f.memberUser.id, role: 'pmc' as const, projectId: f.projectA.id };
     expect(await whileRemoved(() => thrownBody(() => seen.markSeen(f.projectA.id, user, [])))).toBe(
       JSON.stringify({ message: 'Project access has been removed', error: 'Forbidden', statusCode: 403, code: PROJECT_ACCESS_CODES.accessRemoved }));
+  });
+
+  // the client holds `client` on projectA; an act whose pair claims `pmc` is a token role that no longer stands
+  const roleChangedBody = (where: keyof typeof ROLE_CHANGED_MESSAGES) =>
+    JSON.stringify({ message: ROLE_CHANGED_MESSAGES[where], error: 'Forbidden', statusCode: 403, code: PROJECT_ACCESS_CODES.roleChanged });
+
+  it('an in-transaction re-check codes a stale actor pair (STALE_ROLE_MESSAGE): every act that requires the pair', async () => {
+    const actor = { actorId: f.clientUser.id, actorRole: 'pmc', actorKind: 'human' as const };
+    expect(await thrownBody(() => t.prisma.$transaction((tx) => requireActorEnvelope(tx, f.projectA.id, actor)))).toBe(roleChangedBody('stale'));
+  });
+
+  it('an in-transaction re-check codes a stale actor pair at a site visit write', async () => {
+    const link = t.app.get(SiteVisitInspectionsParticipant);
+    const actor = { actorId: f.clientUser.id, actorName: 'Client', actorRole: 'pmc', actorKind: 'human' as const };
+    expect(await thrownBody(() => t.prisma.$transaction((tx) => link.link(tx, {
+      projectId: f.projectA.id, visitId: 'no-visit', inspectionId: 'no-inspection', userId: f.clientUser.id, actor,
+    })))).toBe(roleChangedBody('envelope'));
   });
 
   it('the three codes are distinct', () => {

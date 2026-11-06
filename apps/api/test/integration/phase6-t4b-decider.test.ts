@@ -6,6 +6,8 @@ import { createTestApp, type TestApp } from './test-app';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { SnapshotService } from '../../src/snapshot/snapshot.service';
+import { PROJECT_ACCESS_CODES } from '@vitan/shared';
+import { ROLE_CHANGED_MESSAGES } from '../../src/common/lost-project';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
@@ -1010,6 +1012,10 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     await expect(
       svc.approve(projectId, did, { optionIndex: 0 }, { sub: tempClient, role: 'client', projectId } as never),
     ).rejects.toThrow(/standing changed/i);
+    // #1373: a lost project's 403, coded like the guard's
+    await expect(
+      svc.approve(projectId, did, { optionIndex: 0 }, { sub: tempClient, role: 'client', projectId } as never),
+    ).rejects.toMatchObject({ status: 403, response: { message: ROLE_CHANGED_MESSAGES.approving, code: PROJECT_ACCESS_CODES.roleChanged } });
     // the removed pmc's guard-passed context tries the ON-BEHALF arm → refused in-tx
     await expect(
       svc.approve(projectId, did, { optionIndex: 0 }, { sub: tempPmc, role: 'pmc', projectId } as never),

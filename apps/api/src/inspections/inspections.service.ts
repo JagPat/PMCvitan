@@ -33,7 +33,7 @@ import { checklistPath } from '../platform/record-paths';
 import { isFailedItem } from './failed-item';
 import { guidanceColumnsOf, itemRowFromSpec } from './guided-item';
 import { evidenceShortfalls, type SubmittedItem } from './evidence-rule';
-import { projectUnavailable } from '../common/lost-project';
+import { projectRoleChanged, projectUnavailable } from '../common/lost-project';
 
 /** The corrective-assignment rule lives in ONE module ({@link assignment-eligibility}) and every site
  *  that asks about a named assignee calls it. Re-exported here because `inspections.contract.test.ts`
@@ -319,7 +319,7 @@ export class InspectionsService {
         // locked, as decide does: a PMC or engineer re-roled or removed after the guard read their token must not name
         // anyone. Locked after Inspection, so Membership still follows Inspection on every path.
         if (!(await this.orgs.hasProjectRoleStanding(tx, projectId, user.sub, [user.role], { forUpdate: true }))) {
-          throw new ForbiddenException('Your project standing changed — the role that allowed naming who fixes this is no longer yours');
+          throw projectRoleChanged('naming');
         }
         if (memberId !== null && !(await standsAsResponsible(this.orgs, tx, projectId, memberId, { forUpdate: true }))) {
           throw new BadRequestException(`Only an active ${RESPONSIBLE_ROLES.join(' or ')} on this project can be named to fix this.`);

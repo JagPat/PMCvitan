@@ -16,7 +16,7 @@ import type {
 } from '../contracts';
 import { SiteVisitsQueryService, type SiteVisitDto } from './site-visits.query';
 import { SITE_VISIT_NOTICE_COLOR, siteVisitClosedNotice, siteVisitEndedNotice, siteVisitStartedNotice } from './site-visit-notice';
-import { projectUnavailable } from '../common/lost-project';
+import { projectRoleChanged, projectUnavailable } from '../common/lost-project';
 
 /** The visit row a later act reads, locked. */
 interface LockedVisit {
@@ -349,7 +349,7 @@ export class SiteVisitsService {
     if (state?.operable !== true) throw projectUnavailable();
     if (attendeeId !== undefined) await lockIdentities(tx, [user.sub, attendeeId]);
     const envelope = await resolveActorEnvelope(tx, projectId, actor);
-    if (!envelope) throw new ForbiddenException('Your role on this project has changed; sign in again');
+    if (!envelope) throw projectRoleChanged('envelope');
     return envelope;
   }
 
