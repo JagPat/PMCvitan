@@ -843,55 +843,11 @@ export const checklistText = {
       : lang === 'gu'
         ? n === 1 ? 'મોકલતાં પહેલાં આઇટમ પર નિશાન કરો.' : `મોકલતાં પહેલાં બધી ${n} આઇટમ પર નિશાન કરો.`
         : 'Please mark all ' + n + ' items before submitting.',
-  // Guided site inspections step 4a — an item's guidance on its card, and what the submit guard says is missing
-  lookAt: (text: string, lang: Lang): string => (lang === 'hi' ? `देखें: ${text}` : lang === 'gu' ? `જુઓ: ${text}` : `Look at: ${text}`),
-  passRule: (text: string, lang: Lang): string =>
-    lang === 'hi' ? `ठीक तब, जब: ${text}` : lang === 'gu' ? `બરાબર ત્યારે, જ્યારે: ${text}` : `Passes when: ${text}`,
-  /** what to record: "Record 2 photos" / "If it fails, record 1 video", with the hint after a dash */
-  recordAsk: (kind: 'photo' | 'video' | 'voice', count: number, when: 'always' | 'fail', hint: string | null, lang: Lang): string => {
-    const what = recordingWords(kind, count, lang);
-    const head = lang === 'hi'
-      ? (when === 'fail' ? `ख़राब हो तो ${what} रिकॉर्ड करें` : `${what} रिकॉर्ड करें`)
-      : lang === 'gu'
-        ? (when === 'fail' ? `ખામી હોય તો ${what} રેકોર્ડ કરો` : `${what} રેકોર્ડ કરો`)
-        : (when === 'fail' ? `If it fails, record ${what}` : `Record ${what}`);
-    return hint ? `${head} — ${hint}` : head;
-  },
-  /** progress beside the ask: "1 of 2" */
-  recordHave: (have: number, count: number, lang: Lang): string =>
-    lang === 'hi' ? `${count} में से ${have}` : lang === 'gu' ? `${count} માંથી ${have}` : `${have} of ${count}`,
-  failNeedsReasonPhoto: { en: 'Fail requires a reason (a note) + photo evidence', hi: 'ख़राब होने पर कारण (नोट) + फ़ोटो सबूत ज़रूरी', gu: 'ખામી હોય તો કારણ (નોંધ) + ફોટો પુરાવો જરૂરી' },
-  /** a record ask the phone cannot record yet (video, voice until step 4b): shown, but not held at submit */
-  recordNotYet: { en: 'not needed to submit yet', hi: 'अभी भेजने के लिए ज़रूरी नहीं', gu: 'હમણાં મોકલવા માટે જરૂરી નથી' },
-  recordHaveLabel: (have: number, count: number, lang: Lang): string =>
-    lang === 'hi' ? `${count} में से ${have} रिकॉर्ड हुईं` : lang === 'gu' ? `${count} માંથી ${have} રેકોર્ડ થયાં` : `${have} of ${count} recorded`,
-  failNeedsReason: { en: 'Fail requires a reason (a note) + the recordings asked for', hi: 'ख़राब होने पर कारण (नोट) + माँगी गई रिकॉर्डिंग ज़रूरी', gu: 'ખામી હોય તો કારણ (નોંધ) + માગેલાં રેકોર્ડિંગ જરૂરી' },
-  needsRecordings: (names: string[], lang: Lang): string =>
-    lang === 'hi'
-      ? `भेजने से पहले इन आइटम की माँगी गई रिकॉर्डिंग ज़रूरी है: ${names.join(', ')}`
-      : lang === 'gu'
-        ? `મોકલતાં પહેલાં આ આઇટમનાં માગેલાં રેકોર્ડિંગ જરૂરી છે: ${names.join(', ')}`
-        : `These items need the recordings they ask for before you can submit: ${names.join(', ')}`,
-  needsReason: (names: string[], lang: Lang): string =>
-    lang === 'hi'
-      ? `भेजने से पहले ख़राब आइटम का कारण लिखें: ${names.join(', ')}`
-      : lang === 'gu'
-        ? `મોકલતાં પહેલાં ખામીવાળી આઇટમનું કારણ લખો: ${names.join(', ')}`
-        : `A failed item needs a reason before you can submit: ${names.join(', ')}`,
 };
-
-/** "2 photos", "1 video", "1 voice note" in the viewer's language. */
-function recordingWords(kind: 'photo' | 'video' | 'voice', count: number, lang: Lang): string {
-  if (lang === 'hi') return `${count} ${kind === 'photo' ? 'फ़ोटो' : kind === 'video' ? 'वीडियो' : 'वॉइस नोट'}`;
-  if (lang === 'gu') return `${count} ${kind === 'photo' ? (count === 1 ? 'ફોટો' : 'ફોટા') : kind === 'video' ? 'વીડિયો' : 'વોઇસ નોટ'}`;
-  const one = kind === 'photo' ? 'photo' : kind === 'video' ? 'video' : 'voice note';
-  return `${count} ${one}${count === 1 ? '' : 's'}`;
-}
 
 /** What the checklist's actions say back. */
 export const checklistToast = {
   switchWait: { en: 'Finishing the submit — you can switch checklists in a moment.', hi: 'भेजना पूरा हो रहा है — थोड़ी देर में चेकलिस्ट बदल सकेंगे।', gu: 'મોકલવાનું પૂરું થઈ રહ્યું છે — થોડી વારમાં ચેકલિસ્ટ બદલી શકશો.' },
-  notAPhoto: { en: 'Only a photo can be attached here — choose an image.', hi: 'यहाँ सिर्फ़ फ़ोटो जोड़ी जा सकती है — कोई तस्वीर चुनें।', gu: 'અહીં ફક્ત ફોટો જોડી શકાય — કોઈ છબી પસંદ કરો.' },
   noLongerOpen: { en: 'That checklist is no longer open — the photo was not attached.', hi: 'वह चेकलिस्ट अब खुली नहीं है — फ़ोटो नहीं जुड़ी।', gu: 'તે ચેકલિસ્ટ હવે ખુલ્લી નથી — ફોટો જોડાયો નથી.' },
   noMoreChanges: { en: 'This inspection is submitted — no more changes.', hi: 'यह निरीक्षण भेजा जा चुका है — अब बदलाव नहीं।', gu: 'આ નિરીક્ષણ મોકલાઈ ગયું છે — હવે ફેરફાર નહીં.' },
   readFailed: { en: 'Could not read that photo — please try again.', hi: 'वह फ़ोटो पढ़ी नहीं जा सकी — फिर कोशिश करें।', gu: 'તે ફોટો વાંચી શકાયો નહીં — ફરી પ્રયાસ કરો.' },

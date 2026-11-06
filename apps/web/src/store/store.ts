@@ -86,8 +86,7 @@ import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectS
 import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, planSeenChunks, reconcileSeen, type NotifSeenState } from '@/lib/notificationSeen';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
-import type { SodRule, VendorAdvanceListDto, ChecklistItem, JudgedItem, RecordingKind } from '@vitan/shared';
-import { judgeEvidence, recordingKindOf } from '@vitan/shared';
+import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
 import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoDeletable, sitePhotoLabels as SPL, PHASE_NOT_FOUND_MESSAGE, activityNotFoundMessage, overrideNotFoundMessage, COMPANY_NOT_FOUND_MESSAGE, NOT_AN_ORG_MEMBER_MESSAGE } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
@@ -491,10 +490,6 @@ export interface AppState {
   /** #482 site photos — the upload keys of those pending evidence rows, as last read from IndexedDB; null until they have
    *  been read for this scope (a reload, a sign-in or a project switch empties it), so a delete can wait for them */
   pendingEvidenceKeys: string[] | null;
-  /** Guided site inspections step 4a — this scope's checklist evidence still waiting to upload (the durable rows'
-   *  `pending` set, by item), for the submit guard: a capture counts while it is pending, and stops counting once its
-   *  upload is refused or it is deleted. Empty until the rows are read (the guard then counts too few, never too many). */
-  pendingChecklistEvidence: Array<{ clientKey: string; inspectionItemId: string; mime: string; settled?: boolean; after?: number; lease?: number }>;
   access: AccessState;
   activities: Activity[];
   dailyLog: DailyLog | null; // null = no daily log started for this project
@@ -647,8 +642,6 @@ export interface AppActions {
   deleteFailedEvidence: (clientKey: string) => Promise<void>;
   /** Refresh the pending/failed evidence mirrors from IndexedDB (reload/scope change). */
   hydrateEvidence: () => Promise<void>;
-  /** Guided site inspections step 4a — an item as the shared evidence rule judges it on this phone (see the store). */
-  judgeChecklistItem: (it: ChecklistItem) => JudgedItem;
   setNote: (idx: number, txt: string) => void;
   submitInspection: () => void;
   // inspection (pmc review)
@@ -1581,7 +1574,6 @@ export function getInitialState(): AppState {
     failedEvidence: [],
     pendingEvidenceCount: 0,
     pendingEvidenceKeys: null,
-    pendingChecklistEvidence: [],
     access: freshAccess(),
     activities: structuredClone(SEED_ACTIVITIES),
     dailyLog: structuredClone(SEED_DAILY_LOG),
@@ -2257,13 +2249,6 @@ export const useStore = create<Store>()(
       // rode the SAME lease as the snapshot, so they pass the identical scope/newest-owner ordering checks:
       // a stale module response is dropped with its snapshot, never applied over a newer scope's data.
       const prevTimeZone = st.timeZone;
-      // guided step 4a (Codex 4491442658) — an answered checklist capture stops counting as pending in the step before the
-      // read that holds its file is applied (a read begun after its answer, or the flush's own), only when this apply
-      // carries the inspection slices: never counted twice, and not zero for longer than this apply
-      const evidenceAnswered = (p: AppState['pendingChecklistEvidence'][number]): boolean => !!p.settled && ((p.after !== undefined && lease.sequence > p.after) || p.lease === lease.sequence);
-      if ((inspectionsReadMode() === 'snapshot' || inspectionsResult != null) && st.pendingChecklistEvidence.some(evidenceAnswered)) {
-        set((s) => { s.pendingChecklistEvidence = s.pendingChecklistEvidence.filter((p) => !evidenceAnswered(p)); });
-      }
       applySnapshotCore(snap, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult, activitiesResult);
       // COMMAND and SUBMIT obligations clear INDEPENDENTLY (gate round 14). Only a pull that BEGAN AFTER
       // an obligation's threshold can satisfy it (round 13, semantic 2) — a stale in-flight refresh can't
@@ -2963,12 +2948,6 @@ export const useStore = create<Store>()(
           s.failedEvidence = failed;
           s.pendingEvidenceCount = pending.length;
           s.pendingEvidenceKeys = pending.map((e) => e.clientKey);
-          // an answered capture's row is gone, but it counts until a read holding its file is applied (Codex 4491442658)
-          const rows = new Set(pending.map((e) => e.clientKey));
-          s.pendingChecklistEvidence = [
-            ...pending.map((e) => ({ clientKey: e.clientKey, inspectionItemId: e.inspectionItemId, mime: e.mime })),
-            ...s.pendingChecklistEvidence.filter((p) => p.settled && !rows.has(p.clientKey)),
-          ];
           const queued = new Set(s.outbox.filter((o) => o.t === 'uploadEvidence').map((o) => o.clientKey));
           for (const e of pending) {
             if (queued.has(e.clientKey)) continue;
@@ -3746,7 +3725,6 @@ export const useStore = create<Store>()(
         s.outbox = [];
         s.syncQueue = [];
         s.pendingEvidenceKeys = null;
-        s.pendingChecklistEvidence = [];
         // Ending the session ends the scope (Codex gate finding 6): the signed-out
         // user's records leave memory, and the generation bump refuses any of their
         // replies still in flight — nothing survives for the next identity to see.
@@ -4188,13 +4166,6 @@ export const useStore = create<Store>()(
         return;
       }
       const [, mime, base64] = m;
-      // Guided site inspections step 4a (gap-check S1, Codex 4490264665) — only the image types the upload takes
-      // (`RASTER_IMAGE_MIMES`, as #918's site photos check): another is refused before anything is kept, counted or
-      // queued, since the server would refuse its upload and a submit counting it. Video and voice arrive with step 4b.
-      if (!UPLOAD_IMAGE_MIMES.includes(mime)) {
-        get().flash(CHT.notAPhoto[get().lang]);
-        return;
-      }
       // hard size cap (the capture flow should downscale before calling this;
       // an oversize photo is REFUSED explicitly, never silently truncated)
       if (base64.length > 5_600_000) { // ~4 MB decoded
@@ -4283,7 +4254,6 @@ export const useStore = create<Store>()(
           // `overlayChecklistMarks` and `ownerOfEditSlot` reconcile them on the next apply.
           mirrorCapture(s);
           s.pendingEvidenceCount += 1;
-          s.pendingChecklistEvidence.push({ clientKey, inspectionItemId: meta.inspectionItemId, mime });
         });
         // the bytes' row is the durable record (the act is rebuilt from it), so the line does not depend on the write
         const stillThere = madeHere();
@@ -4320,11 +4290,6 @@ export const useStore = create<Store>()(
       // gate round-3: moved mid-revive — the now-pending row reconstructs in its own scope
       if (!evidenceContextStillCurrent(ctx)) return;
       set((s) => {
-        // guided step 4a (Codex 4490791983): the revived row is pending again, so the submit guard counts it again now,
-        // offline too, not only after the next reconciliation (the stored row knows its item and type)
-        if (!s.pendingChecklistEvidence.some((p) => p.clientKey === clientKey)) {
-          s.pendingChecklistEvidence.push({ clientKey, inspectionItemId: revived.inspectionItemId, mime: revived.mime });
-        }
         s.failedEvidence = s.failedEvidence.filter((f) => f.clientKey !== clientKey);
         s.outbox.push({ t: 'uploadEvidence', scope: ctx.scope, clientKey }); // SAME key — the server dedupes
         s.syncQueue.push('Evidence photo (retry)');
@@ -4355,28 +4320,6 @@ export const useStore = create<Store>()(
       get().flash(CHT.deleted[get().lang]);
     },
     hydrateEvidence: async () => reconcileEvidence(),
-    judgeChecklistItem: (it) => {
-      // Codex 4490264657 / 4490264671 — count what the server will count, by kind, and nothing it will not: a served
-      // evidence entry by the kind the API serves beside it (none from an older API: counted as a file of no kind), and
-      // a capture still waiting to upload by its own type. A local thumbnail is not counted (its upload may yet be
-      // refused, or deleted), nor the legacy `photos` counter, which the server never reads. Demo has no server: its
-      // thumbnails and counter are the whole record, so they count there, the counter as one photo at most.
-      let recordings: Array<RecordingKind | null>;
-      if (!gateway) {
-        recordings = (it.evidence ?? []).map((url) => recordingKindOf(/^data:([^;,]+)/.exec(url)?.[1] ?? ''));
-        if (recordings.length === 0 && it.photos > 0) recordings = ['photo'];
-      } else {
-        // Codex 4491442650 — an API older than the field serves no kinds: everything it could link to a checklist item
-        // was an image, so a served entry from it counts as a photo (that API's own rule counts it so)
-        const kinds = it.evidenceKinds;
-        recordings = [];
-        (it.evidence ?? []).forEach((url, k) => { if (!url.startsWith('data:')) recordings.push(kinds ? (kinds[k] ?? null) : 'photo'); });
-        // a linked file this viewer is served no path for still counts on the server (Codex 4490791994)
-        recordings.push(...(it.hiddenEvidenceKinds ?? []));
-        if (it.id) for (const p of get().pendingChecklistEvidence) if (p.inspectionItemId === it.id) recordings.push(recordingKindOf(p.mime));
-      }
-      return { name: it.name, state: it.state, note: it.note, guide: it.guide ?? null, recordings };
-    },
     setNote: (idx, txt) => set((s) => { const c = s.checklist; const it = c?.items[idx]; if (c && it) { if (checklistFrozen(s)) return; it.note = txt; recordChecklistMark(s, c.id, it.id, 'note', txt); } }),
     submitInspection: () => {
       const c = get().checklist;
@@ -4395,23 +4338,13 @@ export const useStore = create<Store>()(
       // a fail needs EVIDENCE: a linked photo (the server's proof, Task 4) or the
       // legacy counter (demo). The deprecated counter alone must not block a fail
       // whose photo is a real linked Media row (Task 7 acceptance finding).
-      // Guided site inspections step 4a — the server's evidence rule, asked here first (the shared judge), so a submit
-      // this phone sends or queues is never refused by a rule it did not know: a refusal is final for a queued act.
-      const shortfalls = judgeEvidence(c.items.map(get().judgeChecklistItem));
+      const failNoPhoto = c.items.filter((it) => it.state === 'fail' && it.photos === 0 && (it.evidence?.length ?? 0) === 0).length;
       if (undone > 0) {
         get().flash(CHX.markAll(c.items.length, get().lang));
         return;
       }
-      if (shortfalls.noEvidence.length > 0) {
+      if (failNoPhoto > 0) {
         get().flash(CHT.failNeedsPhoto[get().lang]);
-        return;
-      }
-      if (shortfalls.missingRecordings.length > 0) {
-        get().flash(CHX.needsRecordings(shortfalls.missingRecordings.map((m) => m.name), get().lang));
-        return;
-      }
-      if (shortfalls.noReason.length > 0) {
-        get().flash(CHX.needsReason(shortfalls.noReason, get().lang));
         return;
       }
       if (gateway) {
@@ -7353,25 +7286,6 @@ export const useStore = create<Store>()(
       // a site photo's op is in no key: its row's marker is its record, so it leaves no settled mark here (a mark named
       // for an act no key holds would outlive a tab closed before the end write tidies it, #917 gap-check)
       const settle = (o: OutboxOp, refused = false): void => { if (o.t !== 'uploadSitePhoto') queueKeys.settled(markStore, laneOf(o), o, refused); };
-      // guided step 4a (Codex 4490791983): an evidence send the server has answered, accepted or refused, leaves the submit
-      // guard's pending mirror at once, before this flush applies any snapshot that holds its file: one capture is never
-      // counted both as pending and as served. Only in the scope it was sent from
-      const leavePendingEvidence = (o: OutboxOp): void => {
-        if (o.t !== 'uploadEvidence' || !scopeStillCurrent(flushScope) || get().sessionToken !== flushToken) return;
-        const key = o.clientKey;
-        set((s) => { s.pendingChecklistEvidence = s.pendingChecklistEvidence.filter((p) => p.clientKey !== key); });
-      };
-      // Codex 4491442658 — an ACCEPTED one keeps counting until a pull that holds its file is applied: it is marked
-      // answered (as a site photo's `photoUploadsInFlight` entry is), and `acceptSnapshot` lets it go in the same step that
-      // applies a read begun after this answer, or this flush's own read. Never zero between, never twice
-      const answerPendingEvidence = (o: OutboxOp, snap: ApiSnapshot | null): void => {
-        if (o.t !== 'uploadEvidence' || !scopeStillCurrent(flushScope) || get().sessionToken !== flushToken) return;
-        const key = o.clientKey;
-        set((s) => {
-          const p = s.pendingChecklistEvidence.find((x) => x.clientKey === key);
-          if (p) Object.assign(p, { settled: true, after: snapshotSeq, ...(snap && flushLease ? { lease: flushLease.sequence } : {}) });
-        });
-      };
       /** An act the server accepted, by this flush's send or, with no snapshot, by another tab's (its done fact): every
        *  effect of the success that does not read the server's answer, one function for both (xtab-drain U2 r1 root
        *  cause: a copy of these effects drifted, 4384591499/4384591507/4384591508). The 410 of an upload is read only by
@@ -7380,9 +7294,6 @@ export const useStore = create<Store>()(
       // out of the queue after this (Codex 4410673603)
       const afterSent = (o: OutboxOp, snap: ApiSnapshot | null, gone = false): Promise<unknown> | null => {
         settle(o);
-        // a 410 says the server does not hold it: it stops counting at once; a 2xx keeps it counted until its read lands
-        if (gone) leavePendingEvidence(o);
-        else answerPendingEvidence(o, snap);
         if (snap) { lastSnap = snap; lastSnapStale = false; } else if (lastSnap && isSiteVisitOp(o)) lastSnapStale = true;
         // an evidence send settled with its refresh failed (its bytes are gone, so it is never sent again): the pull it
         // owes is asked for once the flush is done, as a 410's is (#482)
@@ -7618,7 +7529,6 @@ export const useStore = create<Store>()(
               }
             }
             settle(ops[i], true);
-            leavePendingEvidence(ops[i]);
             const k = keyOf(ops[i]); if (k) droppedKeys.push(k);
             if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
             if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
@@ -7885,7 +7795,7 @@ export const useStore = create<Store>()(
     hydrateOutbox: () => {
       resetQueueScope(); // before any storage access: a storage that throws below leaves no other scope's list
       // this scope's evidence rows are read again below: until then an own evidence photo's Delete waits (#482)
-      set((s) => { s.pendingEvidenceKeys = null; s.pendingChecklistEvidence = []; });
+      set((s) => { s.pendingEvidenceKeys = null; });
       try {
         const storage = globalThis.localStorage;
         if (storage) {

@@ -50,7 +50,6 @@ const bake = (
     bindingAssignees: bindingAssignees
       ?? new Set(inspections.map((i) => i.assigneeId).filter((id): id is string => typeof id === 'string')),
     hiddenEvidence: new Set(),
-    evidenceKinds: new Map(),
   });
 
 describe('bakeInspections — issued checklists are visible', () => {
@@ -271,23 +270,5 @@ describe('#771 read contract — the stored due date and assignee ride the rows 
     const reached = bake([reinspection], 'engineer', 'u-other', new Set()).openChecklists;
     expect(reached).toHaveLength(1);
     expect(reached[0]).toMatchObject({ assigneeId: 'u-eng', dueDate: '2026-10-15' }); // historical fact, not authority
-  });
-});
-
-describe('bakeInspections — guided step 4a, evidence kinds (Codex 4490791994)', () => {
-  it('serves a hidden linked file by its kind alone, so the phone counts what the server rule counts', () => {
-    const row = entry({ id: 'INSP-1', items: [{ id: 'i1', name: 'Verify', guide: null, order: 0, state: 'pass', photos: 3, note: '', result: null, swatch: null, rejected: false, mediaIds: ['m1', 'h1', 'm2'] }] });
-    const slices = bakeInspections({ inspections: [row] } as InspectionsBase, {
-      role: 'engineer',
-      evidencePath: (id) => `/evidence/${id}`,
-      bindingAssignees: new Set(),
-      hiddenEvidence: new Set(['h1']),
-      evidenceKinds: new Map([['m1', 'photo'], ['h1', 'photo'], ['m2', 'video']]),
-    });
-    const it0 = slices.openChecklists[0].items[0];
-    expect(it0.evidence).toEqual(['/evidence/m1', '/evidence/m2']);
-    expect(it0.evidenceKinds).toEqual(['photo', 'video']);
-    expect(it0.hiddenEvidenceKinds).toEqual(['photo']);
-    expect(JSON.stringify(it0)).not.toContain('h1');
   });
 });
