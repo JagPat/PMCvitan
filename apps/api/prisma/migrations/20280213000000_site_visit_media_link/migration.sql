@@ -16,10 +16,12 @@
 --
 -- THE ROW IS A RECORD. What the database guarantees for every writer, raw SQL included:
 --   K1  Drive or Zoho only. "url" is https, on one of the allowed hosts, with nothing between "https://" and the host
---       (no userinfo) and a "/" right after it (no port), no space or control character, at most 2,000 characters.
---       "host" is set from the url ('drive' or 'zoho'), whatever the writer sent. The allowed hosts: drive.google.com,
---       docs.google.com, workdrive.zoho.{com,in,eu} and workdrive.zohopublic.{com,in,eu}. Lowercase only: the web and
---       the server send the host as URL parsing writes it.
+--       (no userinfo) and a "/" right after it (no port), printable ASCII only (no space of any kind, no control or
+--       other character, whatever the database's character settings), at most 2,000 characters. "host" is set from the
+--       url ('drive' or 'zoho'), whatever the writer sent. The allowed hosts: drive.google.com (a Drive file or folder
+--       share is always there; docs.google.com is left out, it also serves Forms and /url redirects),
+--       workdrive.zoho.{com,in,eu} and workdrive.zohopublic.{com,in,eu}. Lowercase only: the web and the server send
+--       the host as URL parsing writes it. V2g-1's shared allow-list matches this list exactly.
 --   K2  A video on a visit. The file must be on a visit of the same project (the foreign key) and be a video (the media
 --       module's contract, `media_mime_of`).
 --   K3  Who, as they stood. The writer names the role the adder acts in; the insert checks that they hold it on the
@@ -136,9 +138,9 @@ END $site_visit_media_link$;
 ALTER TABLE public."SiteVisitMediaLink"
   DROP CONSTRAINT IF EXISTS "SiteVisitMediaLink_shape_check",
   ADD CONSTRAINT "SiteVisitMediaLink_shape_check" CHECK (
-    "url" ~ '^https://(drive\.google\.com|docs\.google\.com|workdrive\.zoho\.(com|in|eu)|workdrive\.zohopublic\.(com|in|eu))/'
-    AND "url" !~ '[[:space:][:cntrl:]]'
-    AND "host" = CASE WHEN "url" ~ '^https://(drive|docs)\.google\.com/' THEN 'drive' ELSE 'zoho' END
+    "url" ~ '^https://(drive\.google\.com|workdrive\.zoho\.(com|in|eu)|workdrive\.zohopublic\.(com|in|eu))/'
+    AND "url" ~ '^[\x21-\x7E]+$'
+    AND "host" = CASE WHEN "url" ~ '^https://drive\.google\.com/' THEN 'drive' ELSE 'zoho' END
     AND ("label" IS NULL OR btrim("label", E' \t\n\x0B\f\r') <> '')
     AND btrim("addedByRole", E' \t\n\x0B\f\r') <> ''
     AND btrim("addedByName", E' \t\n\x0B\f\r') <> ''
@@ -233,7 +235,7 @@ BEGIN
     RAISE EXCEPTION 'site-visits: a full-video link is added current; it is ended only by an update'
       USING ERRCODE = 'check_violation';
   END IF;
-  NEW."host" := CASE WHEN NEW."url" ~ '^https://(drive|docs)\.google\.com/' THEN 'drive' ELSE 'zoho' END;
+  NEW."host" := CASE WHEN NEW."url" ~ '^https://drive\.google\.com/' THEN 'drive' ELSE 'zoho' END;
   NEW."addedByName" := public.site_visits_standing_name(NEW."projectId", NEW."addedById", NEW."addedByRole", 'adder of a full-video link');
   NEW."addedAt" := public.site_visits_now();
   RETURN NEW;

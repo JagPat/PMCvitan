@@ -93,7 +93,7 @@ describe('video V2g-0: a clip\'s full-video link (live PG)', () => {
 
   it('only https links on the allowed hosts are kept: no other host, userinfo, port, lookalike, space or scheme', async () => {
     const clip = await onVisit();
-    const allowed = ['https://drive.google.com/drive/folders/1xyz', 'https://docs.google.com/file/d/1/edit',
+    const allowed = ['https://drive.google.com/drive/folders/1xyz', 'https://drive.google.com/file/d/1/view',
       'https://workdrive.zoho.com/file/a', 'https://workdrive.zoho.in/folder/b', 'https://workdrive.zoho.eu/file/c',
       'https://workdrive.zohopublic.com/file/d', 'https://workdrive.zohopublic.eu/file/e'];
     for (const ok of allowed) {
@@ -104,7 +104,12 @@ describe('video V2g-0: a clip\'s full-video link (live PG)', () => {
       'https://user@drive.google.com/file', 'https://drive.google.com:8443/file', 'https://DRIVE.google.com/file',
       'https://drive.google.com', 'https://drive.google.com/file d', 'https://drive.google.com/file\n',
       'javascript:alert(1)//https://drive.google.com/', 'https://x.zohopublic.in/file', 'https://workdrive.zoho.jp/file',
-      `https://drive.google.com/${'a'.repeat(1990)}`];
+      `https://drive.google.com/${'a'.repeat(1990)}`,
+      // docs.google.com also serves Forms and /url redirects: a Drive share is always on drive.google.com
+      'https://docs.google.com/file/d/1/edit', 'https://docs.google.com/url?q=https://evil.io',
+      // Unicode spaces, which a POSIX class may not count as space under every database locale
+      'https://drive.google.com/file\u00A0d', 'https://drive.google.com/file\u200Bd',
+      'https://drive.google.com/fil\u00E9'];
     for (const bad of refused) {
       await expect(add(clip, bad), bad).rejects.toThrow(/SiteVisitMediaLink_shape_check|value too long/);
     }
@@ -177,7 +182,8 @@ describe('video V2g-0: a clip\'s full-video link (live PG)', () => {
     void firstTx.catch(() => undefined).finally(() => inserted());
     await firstIn;
     let settled = false;
-    const secondTx = add(clip, ZOHO).then(() => 'kept', (e: Error) => e.message).finally(() => { settled = true; });
+    // a different adder, so the second insert can only wait on the first's index entry, never on the adder's identity
+    const secondTx = add(clip, ZOHO, consultant, 'consultant').then(() => 'kept', (e: Error) => e.message).finally(() => { settled = true; });
     // the second insert waits on the first's uncommitted index entry: wait for that lock wait (or for the second to end
     // without one, which the assertions below then report), then let the first commit
     for (;;) {
