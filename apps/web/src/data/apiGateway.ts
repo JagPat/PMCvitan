@@ -123,6 +123,9 @@ export interface ApiSnapshot {
   /** #482 site photos — the viewer's own site photos still in their delete hour that `photos` (the newest window) leaves
    *  out. Absent from a server older than the #1011 replacement. */
   myDeletablePhotos?: Photo[];
+  /** #482 "Who fixes this?" — for the PMC and the engineer, who is named to fix each inspection that names a member who
+   *  still stands (others get []). Absent from a server older than #1297. */
+  responsibleMembers?: Array<{ inspectionId: string; memberId: string }>;
   /** all material deliveries across the project, with their place — the Site Map's "materials here" */
   materials: Material[];
 }
@@ -901,6 +904,15 @@ export class ApiGateway {
     return this.req(`/projects/${this.projectId}/phases/${phaseId}`, {
       method: 'DELETE',
       ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+    });
+  }
+  /** #482 "Who fixes this?" (RM-w1) — name the contractor or consultant member who fixes an inspection's failed work, or
+   *  nobody (`null`). PMC and engineer. ONLINE ONLY: not an outbox kind; keyed so a retried send replays, never repeats. */
+  setResponsibleMember(inspectionId: string, memberId: string | null, idempotencyKey: string): Promise<ApiSnapshot> {
+    return this.req<ApiSnapshot>(`/projects/${this.projectId}/inspections/${encodeURIComponent(inspectionId)}/responsible`, {
+      method: 'PUT',
+      body: JSON.stringify({ memberId }),
+      ...keyHeader(idempotencyKey),
     });
   }
   /** Issue a stage checklist (PMC) — becomes the engineer's current field checklist. */

@@ -87,7 +87,7 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoDeletable, sitePhotoLabels as SPL, PHASE_NOT_FOUND_MESSAGE, activityNotFoundMessage, overrideNotFoundMessage, COMPANY_NOT_FOUND_MESSAGE, NOT_AN_ORG_MEMBER_MESSAGE } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoDeletable, sitePhotoLabels as SPL, PHASE_NOT_FOUND_MESSAGE, activityNotFoundMessage, overrideNotFoundMessage, COMPANY_NOT_FOUND_MESSAGE, NOT_AN_ORG_MEMBER_MESSAGE, responsibleMemberLabels as RML } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
@@ -436,6 +436,12 @@ export interface AppState {
   /** #482 site photos — the viewer's own site photos still in their delete hour past the newest window `photos` holds
    *  (the snapshot's `myDeletablePhotos`), so that hour's Delete is never out of reach; never counted as photos */
   myDeletablePhotos: Photo[];
+  /** #482 "Who fixes this?" — who is named to fix each inspection (the snapshot's list; PMC and engineer only) */
+  responsibleMembers: Array<{ inspectionId: string; memberId: string }>;
+  /** #482 "Who fixes this?" (Codex #1361 r3) — the saves on their way, one per inspection, as `<projectId>|<inspectionId>`:
+   *  a second save for an inspection waits for its first to settle, so two of one person's namings never overlap and a
+   *  delayed older one can never land last. Read through {@link responsibleSaveRunning}. */
+  responsibleSaving: string[];
   /** #482 site photos — a delete took a photo out of a full window: its count stays a floor until a snapshot rebuilds
    *  the window (Codex 4337661439) */
   photosWindowShort: boolean;
@@ -855,10 +861,19 @@ export interface AppActions {
   createPhase: (name: string) => void;
   deletePhase: (phaseId: string) => void;
   issueChecklist: (input: { title: string; zone: string; items: string[]; nodeId?: string }) => void;
+  /** #482 "Who fixes this?" (RM-w1) — name (or clear, `null`) the member who fixes an inspection's failed work. ONLINE ONLY:
+   *  refused with a line while offline. Resolves true when the server accepted it. */
+  setResponsibleMember: (inspectionId: string, memberId: string | null) => Promise<boolean>;
   startDailyLog: () => void;
   addSiteMaterial: (input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string; nodeId?: string }) => void;
   /** Read the project's team; resolves false when the read failed (Site Visits' picker then offers a retry). */
   loadTeam: () => Promise<boolean | void>;
+  /** RM-w1: the "Who fixes this?" pickers' team read. One read per project scope in flight, shared by every picker
+   *  on the screen; true only when the list was read. */
+  readTeamShared: (opts?: { after?: boolean }) => Promise<boolean>;
+  /** RM-w1 (Codex #1361 r2, #1365 r1): read the project again with a read that starts after this call: one queued behind
+   *  a read in flight, shared by every caller until it starts, so many pickers opened in a row make one more read. */
+  joinSnapshotRead: () => void;
   addMember: (input: AddMemberInput) => void;
   updateMemberRole: (userId: string, role: Role, discipline?: string) => void;
   removeMember: (userId: string) => void;
@@ -991,6 +1006,17 @@ export type Store = AppState & AppActions;
  *  ('idle'/'loading'/'error') — the store would be acting on stale or absent data. In the default
  *  'snapshot' mode the snapshot slice is authoritative, so mutations are never blocked (`drawingsLoad`
  *  stays 'idle' there and this returns false). */
+/** #482 "Who fixes this?" (Codex #1361 r3) — a save for this inspection, of the project on screen, is on its way. */
+export function responsibleSaveRunning(s: Pick<AppState, 'responsibleSaving' | 'activeProjectId'>, inspectionId: string): boolean {
+  return s.responsibleSaving.includes(responsibleSaveKey(s.activeProjectId, inspectionId));
+}
+/** The gate's key is the project and the inspection, with NO scope generation: a scope change (a project switch, even
+ *  a failed one or one away and back, a persona change, a sign-in or sign-out) moves the generation while the PUT is
+ *  still on the server's way, and must not release the gate. */
+function responsibleSaveKey(projectId: string, inspectionId: string): string {
+  return `${projectId}|${inspectionId}`;
+}
+
 export function drawingMutationsBlocked(s: Pick<AppState, 'drawingsLoad'>): boolean {
   return drawingsReadMode() === 'moduleQuery' && s.drawingsLoad !== 'ready';
 }
@@ -1611,6 +1637,8 @@ export function getInitialState(): AppState {
     drawings: structuredClone(SEED_DRAWINGS),
     photos: structuredClone(SEED_PHOTOS), // placed site photos for the demo Site Map
     myDeletablePhotos: [],
+    responsibleMembers: [],
+    responsibleSaving: [],
     photosWindowShort: false,
     sitePhotosKept: [],
     materials: structuredClone(SEED_MATERIALS), // placed deliveries for the demo Site Map
@@ -1761,6 +1789,14 @@ export const useStore = create<Store>()(
     /** The scope a network request is issued FOR — pass to applySnapshot so a reply
      *  that lands after the scope changed (switch, sign-in) is dropped, not applied. */
     const currentScope = (): ProjectScope => projectScopeOf(get());
+    // RM-w1: the pickers' shared team read in flight, by scope key (readTeamShared)
+    let sharedTeamRead: { key: string; read: Promise<boolean>; after: boolean; sent: boolean } | null = null;
+    // RM-w1 (Codex #1365 r2): every team read (loadTeam, from any caller) takes the next number when it starts; an answer
+    // is written only if no read started after it has already been written, so an older roster that answers late never
+    // overwrites a newer one. An older answer that lands first is still written (it is newer than what the store holds),
+    // and the newer answer then replaces it.
+    let teamReadStarted = 0;
+    let teamReadWritten = 0;
 
     /** Is a scope captured at request time still the live one? Guards EVERY
      *  post-await project mutation — including raw-DTO paths that don't go
@@ -2224,6 +2260,11 @@ export const useStore = create<Store>()(
         // #482 site photos — the viewer's own photos in their hour past that window: under the same lease, so a pull
         // superseded by a delete can no more refill this list than the window
         s.myDeletablePhotos = (snap.myDeletablePhotos ?? []).map((p) => ({ ...p, url: resolveMediaUrl(p.url) }));
+        // #482 "Who fixes this?" — read live by the server, never from the inspections module read, so it follows the snapshot
+        // An older API that does not serve the key says nothing about who is named (Codex #1365 r3, 4490051422): the
+        // names already shown in this scope are kept; a served list, even empty, replaces them. A scope change still
+        // resets them (projectScope.ts).
+        if (Array.isArray(snap.responsibleMembers)) s.responsibleMembers = [...snap.responsibleMembers];
         // (s.materials + s.dailyLog are set together under the daily-log XOR below)
         // pmc/engineer get the placed inspections; other roles get [] from the server
         // XOR (Task 10 Module 3): the Site-Map inspection placements follow the same ownership.
@@ -4075,6 +4116,10 @@ export const useStore = create<Store>()(
     applySnapshot: (snap, capturedScope) =>
       acceptSnapshot(snap, beginSnapshotLease(capturedScope ?? currentScope())) === 'applied',
     requestFreshSnapshot: () => { void requestFreshSnapshot(); },
+    // a read that STARTS after the opening (Codex #1365 r1): one already in flight may have been answered before it, so
+    // one rerun is queued behind it, and every opening until that rerun starts shares it (requestFreshSnapshot's own
+    // in-flight + one-queued coalescing): many openings make at most one read in flight and one queued
+    joinSnapshotRead: () => { void requestFreshSnapshot(); },
 
     // ---- shell ----
     setRole: (role) => {
@@ -6618,6 +6663,59 @@ export const useStore = create<Store>()(
           get().flash('Could not reach the server — please try again.');
         });
     },
+    setResponsibleMember: (inspectionId, memberId) => {
+      const lang = get().lang;
+      // online only (Stage 1, 2 Nov): no outbox kind, so a choice is never held for later and never sent twice
+      if (!gateway || !get().online) {
+        get().flash(RML.offline[lang]);
+        return Promise.resolve(false);
+      }
+      // one save per inspection at a time (Codex #1361 r3): a second one while the first is on its way is not sent, so a
+      // delayed older save can never land after a newer one and restore the older name
+      // The key is the project and the inspection, never the scope generation, so no scope change (a switch, even a failed
+      // one or one away and back, a persona change, a sign-in or sign-out) releases it while the PUT is out (Stage 1
+      // gap-check G1). A new identity on the same project stays blocked for that inspection until the PUT settles: fail
+      // closed. The entry is cleared when this save settles, and needs no token: no other save can add the same key
+      // while it is there (the check just below), so the settle that clears it is always its own.
+      // A hung save keeps this one inspection busy until the request settles (the server answers, or the browser's own
+      // network failure rejects it), or the page reloads (then the two-tabs rule: last commit wins, RM-e-c re-reads). No
+      // web-only timeout: an aborted PUT can still commit on the server, and a different choice sent after it would
+      // overlap again. A timeout may only come with a server-side guard.
+      const savingAt = responsibleSaveKey(get().activeProjectId, inspectionId);
+      if (get().responsibleSaving.includes(savingAt)) return Promise.resolve(false);
+      set((s) => { s.responsibleSaving.push(savingAt); });
+      const done = () => set((s) => { s.responsibleSaving = s.responsibleSaving.filter((k) => k !== savingAt); });
+      const lease = beginSnapshotLease(currentScope());
+      // EVERY choice gets a fresh key (Stage 1, 6 Nov; Codex #1365 4490108375). The key covers this one request; it is
+      // never reused for a later choice. A replayed key returns the server's STORED answer to the original request, not
+      // the current state, so reuse could only ever be a silent no-op (another person's newer naming left in place while
+      // this reports success) or a stale answer. Without reuse, a choice made again after an answer that never arrived
+      // runs again: a re-stamp, a second audit row and event, the same as two PMCs naming the same person (RM-e-c's
+      // intended behaviour). Overlap within this tab is still prevented by the save gate above.
+      const key = newIdempotencyKey();
+      return gateway
+        .setResponsibleMember(inspectionId, memberId, key)
+        .then((snap) => {
+          consumeSnapshotResult(acceptSnapshot(snap, lease), undefined, lease.scope);
+          return true;
+        })
+        .catch((err: { status?: number } | undefined) => {
+          // a 4xx is final (the member no longer stands, or the caller's role changed): say so, never retry
+          if (!scopeStillCurrent(lease.scope)) return false;
+          // a session that ended or a project that was lost (#1373's coded refusals) is the one shared rule's to act on: the
+          // gateway has already told the store, which signs out or moves the person. Nothing here re-reads a project the
+          // token can no longer read (Codex #1365 4490532256).
+          if (sessionRefusal(err)) return false;
+          get().flash(RML.saveFailed[get().lang]);
+          // 400: the member no longer stands (or the inspection is not its lineage's root); 403: the caller's standing for
+          // this act changed. Read the team once more, so a member who left stops being offered. The project is read again
+          // too: after a 403 by the shared rule (a refused project write re-reads it, #1373), after a 400 here.
+          if (err?.status === 400 || err?.status === 403) void get().readTeamShared({ after: true });
+          if (err?.status === 400) get().requestFreshSnapshot();
+          return false;
+        })
+        .finally(done);
+    },
     startDailyLog: () => {
       if (!gateway) {
         get().flash(DLT.startNeedsServer[get().lang]);
@@ -6644,15 +6742,39 @@ export const useStore = create<Store>()(
       const lang = get().lang;
       runWriteAhead({ t: 'addSiteMaterial', input, idempotencyKey: key }, DLC.material.en, () => DLX.materialRecorded(input.name, get().lang), DLX.savedOffline(DLC.material[lang], lang));
     },
+    readTeamShared: (opts) => {
+      const key = scopeKey(currentScope());
+      const inFlight = sharedTeamRead && sharedTeamRead.key === key ? sharedTeamRead : null;
+      // `after` (a refusal, Codex #1361 r2): a read already in flight may have been answered before the refusal, so
+      // exactly one more read is chained after it. Until that chained read has sent its request it answers every
+      // refusal made meanwhile, so later refusals share it rather than chaining one each; one made after it was sent
+      // chains the next.
+      if (inFlight && (!opts?.after || (inFlight.after && !inFlight.sent))) return inFlight.read;
+      const entry: { key: string; read: Promise<boolean>; after: boolean; sent: boolean } = { key, read: Promise.resolve(false), after: inFlight !== null, sent: inFlight === null };
+      const start = () => Promise.resolve(get().loadTeam()).then((ok) => ok === true);
+      // the chained read is for this scope only: after a project switch it makes no read for the old one
+      const startHere = () => {
+        entry.sent = true;
+        return scopeKey(currentScope()) === key ? start() : false;
+      };
+      const read = inFlight ? inFlight.read.then(startHere, startHere) : start();
+      entry.read = read;
+      sharedTeamRead = entry;
+      void read.finally(() => { if (sharedTeamRead === entry) sharedTeamRead = null; });
+      return read;
+    },
     loadTeam: () => {
       if (!gateway) return Promise.resolve(false);
       // capture the SCOPE this request is FOR — an id-only pin would wrongly apply
       // an A-scoped reply after switching A→B→A; the generation catches that too
       const scope = currentScope();
+      const seq = ++teamReadStarted;
       return gateway
         .listMembers()
         .then((m) => { set((s) => {
           if (!isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) return;
+          if (seq < teamReadWritten) return;
+          teamReadWritten = seq;
           s.members = m;
         }); return true; })
         .catch(() => false);
