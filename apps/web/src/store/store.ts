@@ -4163,6 +4163,13 @@ export const useStore = create<Store>()(
         if (capturedOn) get().flash(CHT.noLongerOpen[get().lang]);
         return;
       }
+      // Guided site inspections step 4a (gap-check S1) — this screen records photos only, and the submit guard counts each
+      // capture as a photo, so a file that is not an image is not attached: the server counts only images toward a photo
+      // ask, and a queued submit it refuses is lost. Video and voice capture arrive with step 4b, counted by their kind.
+      if (!dataUrl.startsWith('data:image/')) {
+        get().flash(CHT.notAPhoto[get().lang]);
+        return;
+      }
       if (inspectionFrozen(get(), c)) { get().flash(CHT.noMoreChanges[get().lang]); return; } // gate round 8
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {

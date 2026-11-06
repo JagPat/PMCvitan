@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore, checklistFrozen, judgedChecklistItem } from '@/store/store';
 import { EmptyState, Eyebrow, StatTile, Button, LocationContext, EditState, ItemNotFound } from '@/components';
 import { Camera } from '@/lib/icons';
-import { checklistLabels as L, checklistText as T, inspectionTitle, recordingsAsked, servedDayIn, type ItemState } from '@vitan/shared';
+import { checklistLabels as L, checklistText as T, inspectionTitle, recordingsAsked, servedDayIn, ENFORCED_RECORD_KINDS, type ChecklistItem, type ItemState, type Lang } from '@vitan/shared';
 import { inspectionsReadMode, resolveMediaUrl } from '@/data/apiGateway';
 import { inspectionsSliceSettled } from '@/lib/notifications';
 import { useUrlItem } from '@/lib/useUrlItem';
@@ -35,6 +35,15 @@ function toggleStyle(active: boolean, solid: string, text: string): CSSPropertie
 function noteRows(note: string, frozen: boolean): number {
   const rows = note.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / 36)), 0);
   return Math.max(2, frozen ? rows : Math.min(8, rows));
+}
+
+/** What a failed item's box says it needs. A plain item: a note and photo evidence, as always. A guided item also needs
+ *  its reason; the recordings it asks for are named only when the phone can record their kind (step 4a gap-check S3),
+ *  else it needs photo evidence like any failed item. */
+function failLine(it: ChecklistItem, lang: Lang): string {
+  if (!it.guide) return L.failNeeds[lang];
+  const rec = it.guide.record;
+  return rec && ENFORCED_RECORD_KINDS.has(rec.kind) ? T.failNeedsReason[lang] : T.failNeedsReasonPhoto[lang];
 }
 
 export function EngineerChecklistScreen() {
@@ -316,12 +325,30 @@ export function EngineerChecklistScreen() {
                     {it.guide.passRule && <div data-testid={`guide-pass-${i}`} style={{ color: 'var(--muted)' }}>{T.passRule(it.guide.passRule, lang)}</div>}
                     {it.guide.record && (() => {
                       const rec = it.guide.record;
+                      // a kind this phone cannot record yet (video, voice until step 4b) is shown as guidance, muted and
+                      // said to be not needed yet: the submit is not held to it, here or on the server
+                      if (!ENFORCED_RECORD_KINDS.has(rec.kind)) {
+                        return (
+                          <div data-testid={`guide-record-${i}`} data-enforced="false" style={{ color: 'var(--muted)' }}>
+                            {T.recordAsk(rec.kind, rec.count, rec.when, rec.hint, lang)} ({T.recordNotYet[lang]})
+                          </div>
+                        );
+                      }
                       const asked = recordingsAsked(judgedChecklistItem(it));
                       const short = asked !== null && asked.have < asked.count;
+                      const have = asked === null ? 0 : Math.min(asked.have, asked.count);
                       return (
                         <div data-testid={`guide-record-${i}`} data-short={short ? 'true' : undefined} style={{ fontWeight: 600, color: short ? 'var(--amber-text)' : 'var(--ink)' }}>
                           {T.recordAsk(rec.kind, rec.count, rec.when, rec.hint, lang)}
-                          {asked !== null && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, marginLeft: 6 }} data-testid={`guide-have-${i}`}>{T.recordHave(Math.min(asked.have, asked.count), asked.count, lang)}</span>}
+                          {asked !== null && (
+                            <span
+                              aria-label={T.recordHaveLabel(have, asked.count, lang)}
+                              style={{ fontFamily: 'var(--font-mono)', fontSize: 13, marginLeft: 8 }}
+                              data-testid={`guide-have-${i}`}
+                            >
+                              {T.recordHave(have, asked.count, lang)}
+                            </span>
+                          )}
                         </div>
                       );
                     })()}
@@ -373,7 +400,7 @@ export function EngineerChecklistScreen() {
                     {/* #584 review round 1, finding 3 — the fail-evidence REQUIREMENT is what the engineer must
                         do before this checklist can be submitted, so it leaves metadata type for F-1b's 13px
                         floor with real weight. The letter-spacing goes with the mono face. */}
-                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red-solid)' }}>{it.guide ? T.failNeedsReason[lang] : L.failNeeds[lang]}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red-solid)' }}>{failLine(it, lang)}</div>
                     {/* #482 QA item 4 — a one-line input cut a long note off (and a frozen one could not even be
                         scrolled), so the note wraps and grows with what was written. A frozen note is read-only,
                         not disabled, so it stays focusable and selectable (Codex 4278142781); `setNote` refuses

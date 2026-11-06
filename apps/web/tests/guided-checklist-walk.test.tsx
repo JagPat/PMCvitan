@@ -49,6 +49,17 @@ describe('guided step 4a — the item card shows its guidance', () => {
     expect(rec.textContent).toContain('Record 2 photos — one wide, one close');
     expect(view.getByTestId('guide-have-0').textContent).toBe('1 of 2');
     expect(rec.getAttribute('data-short')).toBe('true');
+    expect(view.getByTestId('guide-have-0').getAttribute('aria-label')).toBe('1 of 2 recorded');
+  });
+
+  it('shows a video ask the phone cannot record yet as muted guidance, not needed to submit', async () => {
+    const { view } = await mount(checklist([
+      { id: 'a', name: 'Pour', state: 'pass', photos: 0, note: '', guide: videoAlways },
+    ]));
+    const rec = view.getByTestId('guide-record-0');
+    expect(rec.textContent).toBe('Record 1 video (not needed to submit yet)');
+    expect(rec.getAttribute('data-enforced')).toBe('false');
+    expect(view.queryByTestId('guide-have-0')).toBeNull();
   });
 
   it('shows no progress until the state holds the ask (a fail-only ask on a pass), and nothing for a plain item', async () => {
@@ -61,13 +72,16 @@ describe('guided step 4a — the item card shows its guidance', () => {
     expect(view.queryByTestId('guide-1')).toBeNull();
   });
 
-  it('asks a failed guided item for its reason; a plain one keeps its old line', async () => {
+  it('asks a failed guided item for its reason; names photo evidence unless it asks for photos; a plain item keeps its line', async () => {
     const { view } = await mount(checklist([
       { id: 'a', name: 'Shuttering', state: 'fail', photos: 0, note: '', guide: photoOnFail },
       { id: 'b', name: 'Plain item', state: 'fail', photos: 0, note: '' },
+      { id: 'c', name: 'Level', state: 'fail', photos: 0, note: '', guide: { lookAt: 'Spirit level', passRule: null, record: null } },
+      { id: 'd', name: 'Pour', state: 'fail', photos: 0, note: '', guide: videoAlways },
     ]));
     expect(view.getAllByText('Fail requires a reason (a note) + the recordings asked for')).toHaveLength(1);
     expect(view.getAllByText('Fail requires a note + photo evidence')).toHaveLength(1);
+    expect(view.getAllByText('Fail requires a reason (a note) + photo evidence')).toHaveLength(2);
   });
 });
 
@@ -102,5 +116,15 @@ describe('guided step 4a — the submit guard asks the server rule first', () =>
     ]));
     useStore.getState().submitInspection();
     expect(useStore.getState().toast).not.toMatch(/recordings they ask for/);
+  });
+});
+
+describe('guided step 4a — only a photo is attached on this screen', () => {
+  it('refuses a file that is not an image, so the guard never counts a recording the server would not', async () => {
+    const { useStore } = await mount(checklist([{ id: 'a', name: 'Cover blocks', state: 'pass', photos: 0, note: '', guide: photos2Always }]));
+    await useStore.getState().addChecklistEvidence(0, 'data:audio/webm;base64,AAAA', 'INSP-1');
+    expect(useStore.getState().toast).toBe('Only a photo can be attached here — choose an image.');
+    expect(useStore.getState().checklist?.items[0].photos).toBe(0);
+    expect(useStore.getState().checklist?.items[0].evidence ?? []).toEqual([]);
   });
 });
