@@ -16,6 +16,8 @@ export * from './domain/material-spec';
 export * from './domain/money';
 // Phase 4 Task 1 — the deterministic labour-specification identity (trade/skill/shift)
 export * from './domain/labour-spec';
+// Guided site inspections step 4a — the evidence rule, judged the same on the phone and on the server
+export * from './domain/evidence-rule';
 // Platform: the shared DomainEvent envelope + catalog (Phase 2 Task 4)
 export * from './platform/events';
 // Platform: the module registry contract — manifests + validator + enablement (Phase 2 Task 7)
