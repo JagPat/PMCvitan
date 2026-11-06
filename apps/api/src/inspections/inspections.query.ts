@@ -95,12 +95,19 @@ export class InspectionsQueryService {
   ) {}
 
   /** The recording kind of every evidence file the field view serves (`fieldViewMediaIds`: open checklists and the
-   *  submitted fallback, never the whole project's history; #1374), by the media module's answer. A file it does not
-   *  name (not in this project) is left out, and served as null. */
-  private async evidenceKinds(projectId: string, base: InspectionsBase): Promise<ReadonlyMap<string, RecordingKind | null>> {
-    const ids = fieldViewMediaIds(base);
-    const mimes = await this.media.mimesOf(this.prisma, { projectId, mediaIds: ids });
-    return new Map([...mimes].map(([id, mime]) => [id, recordingKindOf(mime)]));
+   *  submitted fallback, never the whole project's history; #1374), by the media module's answer, and the offline replay
+   *  key of each of those files THIS viewer uploaded (unit 3a: the phone matches its own pending captures to them by
+   *  identity). A file the module does not name (not in this project) is left out, and served as null. */
+  private async evidenceFacts(
+    projectId: string,
+    base: InspectionsBase,
+    viewerId: string | undefined,
+  ): Promise<{ evidenceKinds: ReadonlyMap<string, RecordingKind | null>; evidenceOwnKeys: ReadonlyMap<string, string> }> {
+    const facts = await this.media.evidenceFactsOf(this.prisma, { projectId, mediaIds: fieldViewMediaIds(base) });
+    const evidenceKinds = new Map([...facts].map(([id, f]) => [id, recordingKindOf(f.mime)]));
+    const evidenceOwnKeys = new Map<string, string>();
+    if (viewerId) for (const [id, f] of facts) if (f.uploadedBy === viewerId && f.clientKey) evidenceOwnKeys.set(id, f.clientKey);
+    return { evidenceKinds, evidenceOwnKeys };
   }
 
   /** Bake an evidence media row's short-lived signed serve path (minted per read — never stored). */
@@ -113,7 +120,7 @@ export class InspectionsQueryService {
    */
   async snapshotSlice(projectId: string, role: string, viewerId?: string, hiddenEvidence: ReadonlySet<string> = NONE_HIDDEN): Promise<InspectionsSlices> {
     const base = await computeInspectionsBase(this.prisma, projectId);
-    return bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base), hiddenEvidence, evidenceKinds: await this.evidenceKinds(projectId, base) });
+    return bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base), hiddenEvidence, ...(await this.evidenceFacts(projectId, base, viewerId)) });
   }
 
   /**
@@ -255,7 +262,7 @@ export class InspectionsQueryService {
     // half of the fence; the write half (an `InspectionsProjection` writer trigger mirroring the
     // decisions one) is a separate unit, and until it exists this is what keeps wrong data unserved.
     if (!isCurrentInspectionsBase(base)) return { slices: empty, generation: null };
-    return { slices: bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base), hiddenEvidence, evidenceKinds: await this.evidenceKinds(projectId, base) }), generation: gen.generation };
+    return { slices: bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base), hiddenEvidence, ...(await this.evidenceFacts(projectId, base, viewerId)) }), generation: gen.generation };
   }
 
   /**
