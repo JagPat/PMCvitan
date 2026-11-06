@@ -5733,7 +5733,8 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20280206000000_inspection_responsible_member
 20280207000000_inspection_responsible_catalog
 20280210000000_inspection_item_guidance
-20280211000000_media_gallery_origin"
+20280211000000_media_gallery_origin
+20280212000000_site_visit_inspections"
 # 4d-ii-a / A7d — THE RUNNER'S RULE, MIRRORED (scripts/migrate.sh, the P3005 baseline path): on a database
 # that CARRIES A7d (its two claimant seals and the re-issued actor seal standing beside 4d-i's own seal
 # functions) 4d-i's two halves and 4d-i-b U3 are resolved as applied rather than replayed, because each
@@ -5977,6 +5978,11 @@ assert "guided inspections: after the replay items keep their guidance columns, 
 assert "guided inspections: after the replay the file rows keep their gallery label columns, its check and its fixed-at-insert trigger" \
   "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'Media' AND ((column_name = 'fromGallery' AND data_type = 'boolean' AND is_nullable = 'NO' AND column_default = 'false') OR (column_name = 'galleryOriginalAt' AND data_type = 'timestamp without time zone' AND is_nullable = 'YES' AND column_default IS NULL)))::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"Media\"'::regclass AND conname = 'Media_gallery_original_needs_gallery' AND contype = 'c' AND convalidated)::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"Media\"'::regclass AND tgname = 'Media_gallery_origin_fixed' AND NOT tgisinternal)::text;" \
   "2|1|1"
+# Guided site inspections step 3b (on ALWAYS_EXECUTE): the visit's walked inspections, its three keys and its four
+# triggers, which a db-push baseline does not have.
+assert "guided inspections: after the replay a visit's walked inspections keep their table, three keys and four triggers" \
+  "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'SiteVisitInspection' AND is_nullable = 'NO')::text || '|' || (SELECT count(*) FROM pg_constraint WHERE conrelid = '\"SiteVisitInspection\"'::regclass AND contype = 'f' AND conname IN ('SiteVisitInspection_projectId_visitId_fkey', 'SiteVisitInspection_projectId_inspectionId_fkey', 'SiteVisitInspection_linkedById_fkey'))::text || '|' || (SELECT count(*) FROM pg_trigger WHERE tgrelid = '\"SiteVisitInspection\"'::regclass AND NOT tgisinternal AND tgenabled = 'O' AND tgname IN ('SiteVisitInspection_insert', 'SiteVisitInspection_frozen', 'SiteVisitInspection_no_delete', 'SiteVisitInspection_no_truncate'))::text;" \
+  "5|3|4"
 # A4a — the replay re-runs 4d-i, whose consultation seals count EVERY revision, and then 20271227,
 # which re-issues them counting FINALIZED approvals. The later file must be the one that stands.
 assert "4d-ii-a / A4a: after the replay both consultation seals count finalized approvals" \

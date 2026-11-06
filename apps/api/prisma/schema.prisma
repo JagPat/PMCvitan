@@ -1607,6 +1607,7 @@ model User {
   siteVisitMediaAdded       SiteVisitMedia[]       @relation("siteVisitMediaAddedBy")
   siteVisitRemovalsAdded    SiteVisitFileRemoval[] @relation("siteVisitFileRemovalAddedBy")
   siteVisitRemovalsMade     SiteVisitFileRemoval[] @relation("siteVisitFileRemovalRemovedBy")
+  siteVisitInspectionsLinked SiteVisitInspection[] @relation("siteVisitInspectionLinkedBy")
   // #1177 VT1b — the voice-note corrections this person made
   voiceTranscriptCorrections VoiceTranscriptCorrection[] @relation("voiceTranscriptCorrectedBy")
   siteVisitPlacesRetired    SiteVisitPlace[]       @relation("siteVisitPlaceRetiredBy")
@@ -3389,6 +3390,8 @@ model Inspection {
   workType         String?
   items            InspectionItem[]
   media            Media[]
+  // Guided site inspections, step 3b (20280212000000): the site visit this inspection was walked on, if any (site-visits owns it)
+  visitLink        SiteVisitInspection?
 
   @@unique([projectId, id]) // composite identity — tenant-safe reference target (Task 4)
   @@index([nodeId])
@@ -5450,6 +5453,7 @@ model SiteVisit {
   places    SiteVisitPlace[]
   media     SiteVisitMedia[]
   removals  SiteVisitFileRemoval[]
+  inspections SiteVisitInspection[]
 
   @@unique([projectId, id])
   @@index([projectId])
@@ -5520,6 +5524,26 @@ model SiteVisitMedia {
   @@unique([projectId, mediaId])
   @@index([projectId, visitId])
   @@index([nodeId])
+}
+
+// Guided site inspections, step 3b (20280212000000) — an inspection walked during a site visit: one row per inspection
+// (an inspection was walked on at most one visit; a re-inspection is its own inspection). Both links are composite
+// (projectId, x) foreign keys. The database stamps "linkedAt" and refuses any change to a row and any direct delete or
+// truncate: a row goes only with its visit, its inspection or its project. Who may link (the visitor or someone present,
+// while the visit is not closed, with the inspection's submit) is the server's rule: the site-visits module writes this
+// row as the inspection submit's participant.
+model SiteVisitInspection {
+  visit        SiteVisit  @relation(fields: [projectId, visitId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  projectId    String
+  visitId      String
+  inspection   Inspection @relation(fields: [projectId, inspectionId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  inspectionId String     @id
+  linkedBy     User       @relation("siteVisitInspectionLinkedBy", fields: [linkedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  linkedById   String
+  linkedAt     DateTime   @default(now())
+
+  @@unique([projectId, inspectionId])
+  @@index([projectId, visitId])
 }
 
 // #1179 R1 — a file taken off a visit (Jagrut, 27 Oct 2026: the adder within the hour, the PMC any time with a
