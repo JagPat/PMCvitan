@@ -1,5 +1,5 @@
 import { addPosterSchema } from '@/data/queueContracts';
-import { setClampedTimeout } from './clampedTimer';
+import { setClampedTimeout, type ClampedTimer } from './clampedTimer';
 import { blobBase64 } from './mediaRecorder';
 
 /** The widest still frame drawn: a frame from a wider clip is scaled down to it, keeping its shape. */
@@ -10,6 +10,76 @@ export const POSTER_QUALITY = 0.8;
 export const POSTER_AT_SEC = 0.1;
 /** How long drawing the frame may take before the clip is kept without one. */
 export const POSTER_DRAW_WAIT_MS = 3000;
+/** When, into a recording, the still frame is taken from the camera's own picture (#995 V2e): past a camera's first
+ *  dark frames, and before the shortest clip kept (a second) ends. */
+export const STILL_AT_MS = 1000;
+
+/**
+ * #995 V2e: the frame `video` shows now, as base64 JPEG with no `data:` prefix, or null. It is drawn on a canvas at once
+ * (so the caller may let the video go as soon as this returns) at most `POSTER_MAX_WIDTH` wide, in the video's own
+ * shape, and written by the canvas as JPEG, so it carries no Exif. A frame the upload's contract refuses is no frame.
+ */
+export function stillFrom(video: HTMLVideoElement): Promise<string | null> {
+  const w = video.videoWidth;
+  const h = video.videoHeight;
+  if (!w || !h || typeof document === 'undefined') return Promise.resolve(null);
+  const scale = Math.min(1, POSTER_MAX_WIDTH / w);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(w * scale));
+  canvas.height = Math.max(1, Math.round(h * scale));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return Promise.resolve(null);
+  try {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  } catch {
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    try {
+      canvas.toBlob((jpeg) => {
+        // a browser that writes no JPEG answers with a PNG: not a frame the server takes
+        if (!jpeg || jpeg.type !== 'image/jpeg') { resolve(null); return; }
+        blobBase64(jpeg).then(
+          (data) => resolve(addPosterSchema.safeParse({ mime: 'image/jpeg', data }).success ? data : null),
+          () => resolve(null),
+        );
+      }, 'image/jpeg', POSTER_QUALITY);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+/**
+ * #995 V2e: a recorded clip's still frame: the one taken from the camera's picture while it recorded (`still`), when
+ * that gives one, else one drawn from the clip itself (`drawPoster`), else null, all within `waitMs` together, so a
+ * clip is never held longer for its frame than before. An iPhone draws nothing from a saved clip (6 Nov, after V2c),
+ * so the camera's own picture comes first.
+ */
+export async function clipPoster(blob: Blob, still?: Promise<string | null>, waitMs = POSTER_DRAW_WAIT_MS): Promise<string | null> {
+  // one bound for both, kept by one deadline timer from the start (`setClampedTimeout`, which a phone's sleep or a
+  // clock set back never pushes out): a camera frame that comes too late leaves the clip only the rest of it to be
+  // drawn from, and the frame drawn from the clip is given up at that same deadline (Codex 4491803356, 4491914232)
+  let timer: ClampedTimer | undefined;
+  let ranOut = false;
+  const late = new Promise<null>((resolve) => {
+    timer = setClampedTimeout(() => { ranOut = true; resolve(null); }, waitMs);
+  });
+  const began = Date.now();
+  try {
+    if (still) {
+      const taken = await Promise.race([still.catch(() => null), late]);
+      if (taken) return taken;
+    }
+    if (ranOut) return null;
+    // how long the drawing keeps its hidden player: at most what is left by the clock, never more than the bound
+    const rest = Math.min(waitMs, waitMs - (Date.now() - began));
+    if (rest <= 0) return null;
+    return await Promise.race([drawPoster(blob, rest).catch(() => null), late]);
+  } finally {
+    timer?.clear();
+  }
+}
 
 /**
  * #995 V2b-2: a recorded clip's still frame, as base64 JPEG with no `data:` prefix, or null when this browser cannot
@@ -52,28 +122,7 @@ export function drawPoster(blob: Blob, waitMs = POSTER_DRAW_WAIT_MS): Promise<st
       if (done || drawing) return;
       drawing = true;
       try { video.pause(); } catch { /* the frame shown now is drawn */ }
-      const w = video.videoWidth;
-      const h = video.videoHeight;
-      if (!w || !h) { finish(null); return; }
-      const scale = Math.min(1, POSTER_MAX_WIDTH / w);
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(w * scale));
-      canvas.height = Math.max(1, Math.round(h * scale));
-      const ctx = canvas.getContext('2d');
-      if (!ctx) { finish(null); return; }
-      try {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        canvas.toBlob((jpeg) => {
-          // a browser that writes no JPEG answers with a PNG: not a frame the server takes
-          if (!jpeg || jpeg.type !== 'image/jpeg') { finish(null); return; }
-          blobBase64(jpeg).then(
-            (data) => finish(addPosterSchema.safeParse({ mime: 'image/jpeg', data }).success ? data : null),
-            () => finish(null),
-          );
-        }, 'image/jpeg', POSTER_QUALITY);
-      } catch {
-        finish(null);
-      }
+      stillFrom(video).then(finish, () => finish(null));
     };
     // not played: the frame at POSTER_AT_SEC by a seek, once the clip's size is known; the first frame if it cannot seek
     const seek = (): void => {
