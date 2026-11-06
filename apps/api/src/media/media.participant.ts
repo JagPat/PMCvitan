@@ -32,4 +32,21 @@ export class MediaParticipant {
     const rows = await tx.media.findMany({ where: { projectId, id: { in: [...mediaIds] } }, select: { id: true, mime: true } });
     return new Map(rows.map((r) => [r.id, r.mime]));
   }
+
+  /** Guided site inspections, step 4a unit 3a — for the field view: each file's type, who uploaded it and its offline
+   *  replay key, so a read can serve the kind of every evidence entry and, to the person who uploaded a file, its key (the
+   *  phone matches a capture still waiting in its durable store to the file the server already holds). A file not in
+   *  this project is left out. */
+  async evidenceFactsOf(
+    tx: Prisma.TransactionClient,
+    params: { projectId: string; mediaIds: readonly string[] },
+  ): Promise<Map<string, { mime: string; uploadedBy: string; clientKey: string | null }>> {
+    const { projectId, mediaIds } = params;
+    if (mediaIds.length === 0) return new Map();
+    const rows = await tx.media.findMany({
+      where: { projectId, id: { in: [...mediaIds] } },
+      select: { id: true, mime: true, uploadedBy: true, clientKey: true },
+    });
+    return new Map(rows.map((r) => [r.id, { mime: r.mime, uploadedBy: r.uploadedBy, clientKey: r.clientKey }]));
+  }
 }
