@@ -1178,6 +1178,10 @@ model Media {
   // #1283: the file this row was uploaded as a copy of, as the request named it; no FK, so it outlives the original's
   // removal; fixed at the insert (20280204000000's trigger); NULL for a plain upload or a row stored before it
   uploadSourceMediaId        String?
+  // guided inspections decision 3 (20280211000000): picked from the device's gallery rather than taken in the app, and
+  // that file's own date when the device reported one (only on a gallery file); both fixed at the insert
+  fromGallery                Boolean              @default(false)
+  galleryOriginalAt          DateTime?
   geoLat                     Float?
   geoLng                     Float?
   takenAt                    String? // display timestamp, e.g. "03 Jul 2026 · 9:12 AM"
