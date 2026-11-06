@@ -162,6 +162,36 @@ describe('Stage 1 voice notes: the shared recorder', () => {
     expect(await r.stop()).toBe(ended!.rec);
   });
 
+  it('calls its hook once as it stops, before the devices are let go, however it stops, and never when cancelled (#995 V2e)', async () => {
+    const order: string[] = [];
+    const hook = vi.fn(() => { order.push(tracks[0].stop.mock.calls.length ? 'after' : 'before'); });
+    // Stop
+    let r = await startRecording('audio', 'audio/webm', 119_500, { beforeRelease: hook });
+    await r.stop();
+    // its cap
+    tracks = [{ stop: vi.fn() }];
+    r = await startRecording('audio', 'audio/webm', 119_500, { beforeRelease: hook });
+    vi.advanceTimersByTime(119_500);
+    await r.ended;
+    // the browser (Codex 4491914242: a call takes the camera before the screen's own second)
+    tracks = [{ stop: vi.fn() }];
+    r = await startRecording('audio', 'audio/webm', 119_500, { beforeRelease: hook });
+    FakeRecorder.last!.stop();
+    await r.ended;
+    expect(order).toEqual(['before', 'before', 'before']);
+    // cancelled: not called, and the devices still go
+    tracks = [{ stop: vi.fn() }];
+    r = await startRecording('audio', 'audio/webm', 119_500, { beforeRelease: hook });
+    r.cancel();
+    expect(hook).toHaveBeenCalledTimes(3);
+    expect(tracks[0].stop).toHaveBeenCalled();
+    // a hook that throws leaves the recording kept and the devices let go
+    tracks = [{ stop: vi.fn() }];
+    r = await startRecording('audio', 'audio/webm', 119_500, { beforeRelease: () => { throw new Error('no'); } });
+    expect((await r.stop()).mime).toBe('audio/webm');
+    expect(tracks[0].stop).toHaveBeenCalled();
+  });
+
   it('is as long as it ran until the stop was asked for, however long the recorder then takes to finish', async () => {
     stopTakes = 900;
     const r = await startRecording('audio', 'audio/webm', 119_500);
