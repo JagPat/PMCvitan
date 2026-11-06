@@ -11,6 +11,7 @@ import { clockText, pickRecordType, RecordError, startRecording, type Recorded, 
 import { UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
 import { refusalWords, SV, visitTime } from '@/lib/siteVisitWords';
 import { stampText } from '@/lib/captureStamp';
+import { STILL_AT_MS, stillFrom } from '@/lib/videoPoster';
 import { resolveMediaUrl, type SiteVisit, type SiteVisitFile, type SiteVisitRating, type SiteVisitRemoval, type RemovalOffer } from '@/data/apiGateway';
 import { guideRunToken } from '@/guide/outcomes';
 import { useVisitGuideReports } from '@/guide/visitGuideReports';
@@ -592,6 +593,22 @@ function MediaRecorderButton({ kind, visitId, lang, busy, held, onActive, onReco
   // the recording stays this screen's until it has stopped, so leaving (or Discard) meanwhile still keeps nothing
   const stopping = useRef<Recording | null>(null);
   const alive = useRef(true);
+  // #995 V2e: a video clip's still frame, taken from the camera's own picture as it records (the preview below), at
+  // STILL_AT_MS or at Stop if that comes first: an iPhone draws nothing from the saved clip, but shows the camera
+  const preview = useRef<HTMLVideoElement | null>(null);
+  const still = useRef<Promise<string | null> | null>(null);
+  const takeStill = () => {
+    const el = preview.current;
+    if (kind !== 'video' || still.current || !el || !el.videoWidth) return;
+    still.current = stillFrom(el);
+  };
+  const takeStillRef = useRef(takeStill);
+  useEffect(() => { takeStillRef.current = takeStill; });
+  useEffect(() => {
+    if (phase !== 'recording' || kind !== 'video') return;
+    const at = setTimeout(() => takeStillRef.current(), STILL_AT_MS);
+    return () => clearTimeout(at);
+  }, [phase, kind]);
   // the note, rating and place as they are when the recording ends, however it ends (the cap included)
   const recorded = useRef(onRecorded);
   useEffect(() => { recorded.current = onRecorded; });
@@ -619,16 +636,21 @@ function MediaRecorderButton({ kind, visitId, lang, busy, held, onActive, onReco
   const finish = async (rec: Recorded, capped: boolean) => {
     setPhase('idle');
     setLive(null);
-    const ok = await recorded.current(rec);
+    const taken = still.current;
+    still.current = null;
+    const ok = await recorded.current(taken ? { ...rec, still: taken } : rec);
     if (ok && capped && alive.current) setSaid(words.capped[lang]);
   };
   const start = async () => {
     setSaid(null);
+    still.current = null;
     setPhase('starting');
     const given = new AbortController();
     starting.current = given;
     try {
-      const r = await startRecording(kind, type, maxMs, { ...options, signal: given.signal });
+      // the still frame is taken as the recording stops, before the camera is let go, however it stops: a recording the
+      // browser ended (or its cap stopped) before the second-in timer ran still gets one (Codex 4491914242)
+      const r = await startRecording(kind, type, maxMs, { ...options, signal: given.signal, beforeRelease: () => takeStillRef.current() });
       if (starting.current === given) starting.current = null;
       if (!alive.current) { r.cancel(); return; }
       run.current = r;
@@ -652,12 +674,15 @@ function MediaRecorderButton({ kind, visitId, lang, busy, held, onActive, onReco
     const r = run.current;
     if (!r || stopping.current === r) return;
     stopping.current = r;
+    // before the camera is let go, while the preview still shows its picture
+    takeStill();
     const rec = await r.stop();
     if (run.current !== r || !alive.current) return;
     run.current = null;
     void finish(rec, false);
   };
   const discard = () => {
+    still.current = null;
     run.current?.cancel();
     run.current = null;
     setLive(null);
@@ -674,7 +699,7 @@ function MediaRecorderButton({ kind, visitId, lang, busy, held, onActive, onReco
           {kind === 'video' && live && (
             <video
               className={styles.preview} muted autoPlay playsInline aria-hidden="true"
-              ref={(el) => { if (el && el.srcObject !== live) el.srcObject = live; }}
+              ref={(el) => { preview.current = el; if (el && el.srcObject !== live) el.srcObject = live; }}
             />
           )}
           <span>{SV.recording[lang]} {clockText(elapsed)} {SV.recordingOf[lang]} {clockText(maxMs + 500)}</span>

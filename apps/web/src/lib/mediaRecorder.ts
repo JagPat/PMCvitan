@@ -65,6 +65,8 @@ export interface Recorded {
   mime: string;
   type: string;
   ms: number;
+  /** a video clip's still frame, taken from the camera's picture while it recorded (#995 V2e), when the screen took one */
+  still?: Promise<string | null>;
 }
 
 /** Why a recording could not start: the person (or the browser for the site) said no to the microphone or camera; this
@@ -103,6 +105,9 @@ export interface RecordOptions {
   /** the caller gave up before the recording started (its screen was left): the devices are let go at once, and the
    *  start is refused, rather than run on until the camera's wait ends */
   signal?: AbortSignal;
+  /** #995 V2e: called once as the recording stops, however it stops (Stop, its cap, or the browser), unless it was
+   *  cancelled, and before the devices are let go, while a video's preview still shows the camera's picture */
+  beforeRelease?: () => void;
 }
 
 /**
@@ -171,6 +176,9 @@ export async function startRecording(kind: RecordKind, type: string, maxMs: numb
   const done = new Promise<Recorded>((resolve) => {
     recorder.onstop = () => {
       if (timer) clearTimeout(timer);
+      if (!cancelled) {
+        try { options.beforeRelease?.(); } catch { /* the recording is kept whatever the caller's hook does */ }
+      }
       release();
       const written = recorder.mimeType || type;
       const mime = baseType(written);
