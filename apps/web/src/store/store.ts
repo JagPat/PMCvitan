@@ -105,7 +105,9 @@ import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
 import { hubFailureOf, HUB_SHOWN_WAIT_MS, type HubCallResult, type HubUnlinkPending } from '@/lib/hubLink';
 import { resolveMediaUrl, replayOutboxOp, uploadSitePhotoInput, PlaceCheckFailed, isTerminalOutboxError, isDeletedPhoto, isMediaNotFound, isGone, SitePhotoGone, isCountersignChainOp, refusalMessage, isSiteVisitOp, siteVisitOf, isOpenVisitConflict, ownOpenVisit, moveSiteVisitOps, tellSiteVisits, siteVisitListeners, type SiteVisit, type UploadMediaInput, newIdempotencyKey, timeoutSignal, PROJECT_ID, API_BASE, DEV_AUTH, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections, type Phase6_4dRollout, type NodeCreatedSnapshot } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
-import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
+import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence, type EvidenceEntry } from '@/data/evidenceStore';
+import { evidenceShortfall, judgeChecklist, type PendingCapture } from '@/lib/checklistRecordings';
+
 import { clearVisitPhotoStart, clearVisitPoster, deleteVisitPhoto, failVisitPhotosOn, forgetRemovedVisitPhoto, listVisitPhotos, moveVisitPhotos, posterLapsed, posterWaits, removedVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { parseLocation } from '@/lib/screens';
 import { setClampedTimeout, type ClampedTimer } from '@/lib/clampedTimer';
@@ -118,6 +120,9 @@ import { buildWorkerFingerprints } from '@/lib/labourSelection';
 import { emitGuideOutcome, guideRunToken, recordGuidedDrawing, recordGuidedPhotoPick } from '@/guide/outcomes';
 import { saveSession, clearSession, loadSession } from '@/lib/sessionPersist';
 import { readDeviceLang } from '@/lib/langPreference';
+
+/** A pending durable evidence row as the submit guard counts it (no bytes). */
+const pendingCaptureOf = (e: EvidenceEntry): PendingCapture => ({ clientKey: e.clientKey, inspectionId: e.inspectionId, inspectionItemId: e.inspectionItemId, mime: e.mime });
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -490,6 +495,10 @@ export interface AppState {
   /** #482 site photos — the upload keys of those pending evidence rows, as last read from IndexedDB; null until they have
    *  been read for this scope (a reload, a sign-in or a project switch empties it), so a delete can wait for them */
   pendingEvidenceKeys: string[] | null;
+  /** Guided site inspections step 4a (unit 3b) — those pending evidence rows as the submit guard counts them (their
+   *  checklist, item and type), as last read from IndexedDB, any tab's. Written only from a read of the durable store
+   *  (`reconcileEvidence`, `refreshPendingEvidence`), never kept in step by hand; null until read for this scope. */
+  pendingEvidenceRows: PendingCapture[] | null;
   access: AccessState;
   activities: Activity[];
   dailyLog: DailyLog | null; // null = no daily log started for this project
@@ -642,8 +651,10 @@ export interface AppActions {
   deleteFailedEvidence: (clientKey: string) => Promise<void>;
   /** Refresh the pending/failed evidence mirrors from IndexedDB (reload/scope change). */
   hydrateEvidence: () => Promise<void>;
+  /** Guided step 4a (unit 3b) — read the durable evidence rows again (their mirror only: no act is rebuilt) */
+  refreshPendingEvidence: () => Promise<void>;
   setNote: (idx: number, txt: string) => void;
-  submitInspection: () => void;
+  submitInspection: () => Promise<void>;
   // inspection (pmc review)
   setActiveReview: (id: string) => void;
   toggleReject: (idx: number) => void;
@@ -1574,6 +1585,7 @@ export function getInitialState(): AppState {
     failedEvidence: [],
     pendingEvidenceCount: 0,
     pendingEvidenceKeys: null,
+    pendingEvidenceRows: null,
     access: freshAccess(),
     activities: structuredClone(SEED_ACTIVITIES),
     dailyLog: structuredClone(SEED_DAILY_LOG),
@@ -2927,27 +2939,39 @@ export const useStore = create<Store>()(
     // gate round 10: a monotonic id stamped on every ONLINE submit dispatch, so a
     // continuation can tell whether it still owns the submission (see submitInspection).
     let submitAttemptSeq = 0;
-    const reconcileEvidence = async (): Promise<void> => {
+    /** Guided step 4a (unit 3b): how long a durable evidence read may take before it counts as not read (bounded, as
+     *  every IndexedDB call here). */
+    const EVIDENCE_READ_WAIT_MS = 5000;
+    /** The one reader and writer of the evidence mirrors and acts. Returns the pending rows it adopted, or null when this
+     *  read did not land (superseded, scope moved, failed, or too slow): a caller judging from it then counts no pending
+     *  row, never a stale one. */
+    const reconcileEvidence = async (): Promise<PendingCapture[] | null> => {
       const epoch = invalidateEvidenceReconciles(); // this reconciliation supersedes older ones
       const scope = evidenceScope();
       const projectId = get().activeProjectId;
       const projScope = currentScope();
       const storageKey = outboxKey();
+      const landsHere = (): boolean =>
+        epoch === evidenceEpoch && scopeStillCurrent(projScope) && evidenceScope() === scope && get().activeProjectId === projectId && outboxKey() === storageKey;
+      let timer: ClampedTimer | undefined;
       try {
-        const entries = await listEvidence(scope, projectId);
-        // REJECT a stale result: every captured coordinate must still be live
-        if (epoch !== evidenceEpoch) return; // a newer reconciliation / flush / retry / delete owns the truth now
-        if (!scopeStillCurrent(projScope)) return; // the project switched mid-read
-        if (evidenceScope() !== scope || get().activeProjectId !== projectId || outboxKey() !== storageKey) return;
+        const tooSlow = new Promise<never>((_, reject) => { timer = setClampedTimeout(() => reject(new Error('evidence read too slow')), EVIDENCE_READ_WAIT_MS); });
+        const entries = await Promise.race([listEvidence(scope, projectId), tooSlow]);
+        // REJECT a stale result: every captured coordinate must still be live; a newer reconciliation / flush / retry /
+        // delete owns the truth when the epoch moved, and the project or queue may have switched mid-read
+        if (!landsHere()) return null;
 
         // the stored entry has always known its checklist and item — carry them, do not discard them
         const failed = entries.filter((e) => e.status === 'failed').map((e) => ({ clientKey: e.clientKey, reason: e.failReason ?? 'upload rejected', mime: e.mime, inspectionId: e.inspectionId, inspectionItemId: e.inspectionItemId }));
         const pending = entries.filter((e) => e.status === 'pending'); // only pending rows earn a replay op
+        const rows = pending.map(pendingCaptureOf);
         let reconstructed = false;
         set((s) => {
           s.failedEvidence = failed;
           s.pendingEvidenceCount = pending.length;
           s.pendingEvidenceKeys = pending.map((e) => e.clientKey);
+          s.pendingEvidenceRows = rows;
+          // every pending row, another tab's too, has its act in this queue: a submit queued after it is sent after it
           const queued = new Set(s.outbox.filter((o) => o.t === 'uploadEvidence').map((o) => o.clientKey));
           for (const e of pending) {
             if (queued.has(e.clientKey)) continue;
@@ -2956,14 +2980,191 @@ export const useStore = create<Store>()(
           }
         });
         if (reconstructed) void persistOutbox(); // the bytes' rows are the durable record: the acts are rebuilt from them
+        return rows;
       } catch {
-        /* evidence store unavailable — the mirrors stay empty */
+        /* evidence store unavailable, the read failed, or it was too slow */
         // with no IndexedDB at all nothing can be pending on this device; a read that failed otherwise leaves the keys
-        // unknown, and an own evidence photo's Delete keeps waiting (#482 site photos)
-        if (!evidenceAvailable() && epoch === evidenceEpoch && scopeStillCurrent(projScope) && evidenceScope() === scope && get().activeProjectId === projectId) {
-          set((s) => { s.pendingEvidenceKeys = []; });
+        // unknown, and an own evidence photo's Delete keeps waiting (#482 site photos). The pending rows are then not
+        // known either: the count holds none (short, never long), until a read lands
+        if (landsHere()) {
+          set((s) => {
+            s.pendingEvidenceRows = evidenceAvailable() ? null : [];
+            if (!evidenceAvailable()) s.pendingEvidenceKeys = [];
+          });
         }
+        return null;
+      } finally {
+        timer?.clear();
       }
+    };
+    /** The checklist submit itself, judged with `pending` (the durable rows read for it; [] counts none). Returns true
+     *  when the evidence rule stopped it (said to the engineer unless `quiet`), else false (sent, queued, or stopped by
+     *  another check, which said so). */
+    const submitChecked = (pending: readonly PendingCapture[], quiet: boolean): boolean | void => {
+      const c = get().checklist;
+      if (!c || !c.items.length) {
+        get().flash(CHT.noneIssued[get().lang]);
+        return;
+      }
+      // gate round 8: once the payload is frozen (submitting / queued / already
+      // server-submitted) a repeat submit is a no-op — no double submission, and
+      // no edit can slip in between the click and the outcome.
+      if (checklistFrozen(get())) {
+        get().flash(CHT.alreadySubmitted[get().lang]);
+        return;
+      }
+      const undone = c.items.filter((it) => !it.state).length;
+      if (undone > 0) {
+        get().flash(CHX.markAll(c.items.length, get().lang));
+        return;
+      }
+      // THE EVIDENCE RULE. With a server, guided step 4a (unit 3b): the shared judge, over exactly the recordings the
+      // server will count — served entries by their served kinds, and (`pending`) captures still waiting in the durable
+      // store not already served (`judgeChecklist`, lib/checklistRecordings.ts). Demo, with no server: a fail needs a
+      // local photo or the counter.
+      // pending rows count only on a submit that is queued behind their uploads: online the submit is sent at once
+      const short = gateway
+        ? judgeChecklist(c.items, c.id, get().online ? [] : pending)
+        : { noEvidence: c.items.filter((it) => it.state === 'fail' && it.photos === 0 && (it.evidence?.length ?? 0) === 0).map((it) => it.name), missingRecordings: [], noReason: [] };
+      if (evidenceShortfall(short)) {
+        if (quiet) return true;
+        if (short.noEvidence.length > 0) get().flash(CHT.failNeedsPhoto[get().lang]);
+        else if (short.missingRecordings.length > 0) get().flash(CHX.needsRecordings(short.missingRecordings.map((m) => m.name), get().lang));
+        else get().flash(CHX.needsReason(short.noReason, get().lang));
+        return true;
+      }
+      if (gateway) {
+        if (get().online) {
+          // gate round 8: FREEZE the checklist the instant we dispatch — no edit may
+          // change the payload while the submit is in flight (the round-7 finding:
+          // an edit made during the pending window was silently reverted when the
+          // ack arrived). On success the server's submitted checklist lands and
+          // applySnapshot drops the marks (gate round 7). On FAILURE we UNLOCK the
+          // checklist WITHOUT losing the marks so the engineer can fix and resubmit.
+          // gate round 10: stamp this dispatch with a unique attempt id. The
+          // (project, generation) scope guard (round 9) cannot separate two submits
+          // WITHIN one session — a socket-delivered checklist swap can retire this
+          // submit and start another under the SAME generation. `attempt` makes each
+          // dispatch identifiable; `isThisAttempt()` is true only while THIS dispatch
+          // still owns the submission (no newer submit, and no reconcile has retired it).
+          const attempt = ++submitAttemptSeq;
+          set((s) => { s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'submitting', attempt }; });
+          const scope = currentScope();
+          // gate round 11: the submit needs BOTH guards — the attempt id owns the
+          // COMMAND lifecycle (round 10), and a snapshot lease captured at dispatch
+          // owns snapshot FRESHNESS (so a newer socket refresh / submit that began
+          // while this was in flight supersedes this response even in the same scope).
+          const lease = beginSnapshotLease(scope);
+          const isThisAttempt = (): boolean => scopeStillCurrent(scope) && get().submission.attempt === attempt;
+          gateway
+            .submitInspection(c.id, c.items)
+            .then((snap) => {
+              if (!isThisAttempt()) return; // a newer submit/socket/session retired this command
+              const result = acceptSnapshot(snap, lease);
+              if (result === 'applied') {
+                emitGuideOutcome('inspection-submitted', c.id);
+                get().flash(CHT.submitted[get().lang]);
+                // Live bug 1b — the same rule as `consumeSnapshotResult`: an APPLIED snapshot carries no
+                // module slice, so under module ownership the submit still owes the read that shows it
+                // (the submitted checklist leaving the outstanding set; the slice is owed until it lands)
+                if (anyModuleOwnedRead()) scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq, modulesOnly: true });
+              } else if (result === 'superseded') {
+                // gate round 12/13: the submit committed, but a newer refresh owns the
+                // view. Keep the checklist FROZEN (don't unlock — the submit succeeded)
+                // and record a SUBMIT reconcile requirement naming THIS attempt, so the
+                // requirement clears only when this exact submit is confirmed by server
+                // truth (not by a stale unsubmitted snapshot); if the mandatory reconcile
+                // fails or lands still-unconfirmed, a recoverable error/Retry is exposed
+                // instead of freezing forever.
+                emitGuideOutcome('inspection-submitted', c.id);
+                scheduleReconcile(scope, { kind: 'submit', inspectionId: c.id, attempt, createdAfterSequence: snapshotSeq });
+              } else if (result === 'invalid-project') {
+                // manifestation 2: a rejected (wrong-project) payload must NOT report
+                // success and must NOT leave the checklist frozen forever — unlock the
+                // attempt and pull a fresh snapshot to recover current truth.
+                set((s) => { if (s.submission.attempt === attempt && s.submission.status === 'submitting') s.submission.status = 'idle'; });
+                emitGuideOutcome('inspection-submit-failed', c.id);
+                void requestFreshSnapshot();
+              }
+              // scope-moved: silent — the new scope owns its own truth.
+            })
+            .catch(() => {
+              // A retired attempt (round 9/10) or a superseded session must not unlock
+              // the live submit or toast — a socket refresh may already have confirmed.
+              if (!isThisAttempt()) return;
+              set((s) => {
+                if (s.submission.attempt === attempt && s.submission.status === 'submitting') {
+                  s.submission.status = 'idle';
+                }
+              });
+              emitGuideOutcome('inspection-submit-failed', c.id);
+              get().flash(CHT.submitFailed[get().lang]);
+            });
+          return;
+        }
+        // offline: QUEUE the submit (persisted) and freeze as 'queued'. The freeze
+        // survives a reload because reconcileSubmission rebuilds it from the outbox.
+        const submit: OutboxOp = { t: 'submitInspection', inspectionId: c.id, items: c.items };
+        set((s) => {
+          s.outbox.push(submit);
+          s.syncQueue.push('Submit inspection');
+          s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'queued', attempt: 0 };
+        });
+        emitGuideOutcome('inspection-submitted', c.id);
+        flashSaved(CHT.savedOfflineSubmit[get().lang], [submit]); // said only once the locked write holds it (Codex 4344812898)
+        return;
+      }
+      // demo (no gateway): the submit succeeds locally and synchronously — the
+      // marks are now recorded on the (local) submitted checklist, so drop them.
+      set((s) => {
+        if (!s.checklist) return;
+        s.checklist.submitted = true;
+        s.submission = { inspectionId: null, generation: s.projectScopeGeneration, status: 'idle', attempt: 0 };
+        delete s.checklistMarks.byInspection[s.checklist.id];
+        // THE REVIEW IS BUILT FIRST, from the checklist that was actually submitted. The advance below
+        // replaces `s.checklist` with the next OPEN one, so reading the slot afterwards filed the
+        // still-unsubmitted checklist into the PMC's queue — with PASS/FAIL results derived from marks
+        // nobody had made — and lost the submitted one entirely. `current` first: `s.checklist` is an
+        // immer draft, and the advance mutates the slot out from under any reference kept into it.
+        const submitted = structuredClone(current(s.checklist)) as Checklist;
+        // demo (no API): the submitted checklist enters the PMC review queue,
+        // mapping each item's pass/fail state to a PASS/FAIL result.
+        if (!s.reviews.some((r) => r.id === submitted.id)) {
+          s.reviews.push({
+            id: submitted.id,
+            title: submitted.title,
+            ...(submitted.reinspectionOfId ? { reinspectionOfId: submitted.reinspectionOfId } : {}),
+            zone: submitted.zone,
+            // the review inherits the checklist's FILED location, not just its legacy zone
+            // text: a checklist raised against a room is reviewed at that room, and dropping
+            // `nodeId` here would leave every demo-path review reading as unplaced.
+            ...(submitted.nodeId ? { nodeId: submitted.nodeId } : {}),
+            by: 'Site Engineer',
+            date: submitted.date,
+            decided: false,
+            items: submitted.items.map((it) => ({
+              name: it.name,
+              result: it.state === 'fail' ? 'FAIL' : 'PASS',
+              swatch: 'concrete',
+              note: it.note,
+              rejected: false,
+            })),
+          });
+        }
+        // a submitted checklist is no longer outstanding: drop it from the open set so the demo path
+        // agrees with what the server would serve. The edit slot must MOVE with it — leaving the
+        // submitted checklist in the slot drops the open count to one, which hides the picker and
+        // makes the checklist still out on site unreachable. The server path has no such problem: its
+        // next snapshot re-picks the slot from the open set.
+        s.openChecklists = s.openChecklists.filter((c) => c.id !== submitted.id);
+        if (s.selectedChecklistId === submitted.id) s.selectedChecklistId = null;
+        const next = s.openChecklists[0];
+        // `current` first: `next` is an immer draft, and a draft proxy is not a cloneable source
+        if (next) { s.checklist = structuredClone(current(next)) as Checklist; s.selectedChecklistId = next.id; }
+      });
+      emitGuideOutcome('inspection-submitted', c.id);
+      get().flash(CHT.submitted[get().lang]);
+      return false;
     };
     /** Site Visits SV2 (#792): `visitPhotoStore` is the one record of a visit photo, and the outbox holds its act only
      *  in memory. Each queued row's act is put back, exactly as it was queued (same key: the server adds the file once),
@@ -3725,6 +3926,7 @@ export const useStore = create<Store>()(
         s.outbox = [];
         s.syncQueue = [];
         s.pendingEvidenceKeys = null;
+        s.pendingEvidenceRows = null;
         // Ending the session ends the scope (Codex gate finding 6): the signed-out
         // user's records leave memory, and the generation bump refuses any of their
         // replies still in flight — nothing survives for the next identity to see.
@@ -4166,6 +4368,13 @@ export const useStore = create<Store>()(
         return;
       }
       const [, mime, base64] = m;
+      // Guided site inspections step 4a (Codex 4490264665 on #1371) — only the image types the upload takes
+      // (`UPLOAD_IMAGE_MIMES`, as #918's site photos): another is refused before anything is kept, counted or queued,
+      // since the server would refuse its upload. Video and voice capture arrive with step 4b.
+      if (!UPLOAD_IMAGE_MIMES.includes(mime)) {
+        get().flash(CHT.notAPhoto[get().lang]);
+        return;
+      }
       // hard size cap (the capture flow should downscale before calling this;
       // an oversize photo is REFUSED explicitly, never silently truncated)
       if (base64.length > 5_600_000) { // ~4 MB decoded
@@ -4256,6 +4465,7 @@ export const useStore = create<Store>()(
           s.pendingEvidenceCount += 1;
         });
         // the bytes' row is the durable record (the act is rebuilt from it), so the line does not depend on the write
+        void reconcileEvidence(); // the new row counts from the durable store's own answer
         const stillThere = madeHere();
         await persistOutbox();
         if (stillThere()) get().flash(CHT.savedOffline[get().lang]);
@@ -4295,6 +4505,7 @@ export const useStore = create<Store>()(
         s.syncQueue.push('Evidence photo (retry)');
         s.pendingEvidenceCount += 1;
       });
+      void reconcileEvidence(); // pending again: it counts again, from the durable store's answer
       await persistOutbox();
       if (evidenceContextStillCurrent(ctx) && get().online) void get().flushOutbox();
     },
@@ -4319,165 +4530,44 @@ export const useStore = create<Store>()(
       set((s) => { s.failedEvidence = s.failedEvidence.filter((f) => f.clientKey !== clientKey); });
       get().flash(CHT.deleted[get().lang]);
     },
-    hydrateEvidence: async () => reconcileEvidence(),
+    hydrateEvidence: async () => { await reconcileEvidence(); },
+    refreshPendingEvidence: async () => { await reconcileEvidence(); },
     setNote: (idx, txt) => set((s) => { const c = s.checklist; const it = c?.items[idx]; if (c && it) { if (checklistFrozen(s)) return; it.note = txt; recordChecklistMark(s, c.id, it.id, 'note', txt); } }),
-    submitInspection: () => {
+    submitInspection: async () => {
+      // THE EVIDENCE RULE, asked before anything is sent or queued (a refusal is final for a queued act). Guided step 4a
+      // (unit 3b, notes/inspections/guided/s4/a/u3-design.md): first over what the server already serves, at once, as
+      // before. Only when that falls short does the guard look further, and only where the server will look too:
+      if (!gateway) { submitChecked([], false); return; }
+      if (!submitChecked([], true)) return;
+      const scope = currentScope();
+      // the checklist tapped: a switch to another one while the guard reads submits nothing (the same project keeps the
+      // scope, so the scope alone cannot tell)
+      const tapped = get().checklist?.id;
+      const stillTapped = (): boolean => scopeStillCurrent(scope) && get().checklist?.id === tapped;
+      if (get().online) {
+        // online, a capture counts once the server holds it: an upload it accepted is not served until a read is
+        // applied, so the guard runs one fresh read and judges again before it shows the message
+        await afterFreshPull(scope);
+        if (!stillTapped() || !submitChecked([], true)) return;
+      }
+      // the captures still waiting, read from the durable store now (any tab's). Every one read has its upload queued
+      // here by that read, so a submit queued after it is sent after it. A newer read (a second tap, the screen's own
+      // refresh) supersedes this one: it is then read once more, and a read that still does not land counts none
+      let rows = await reconcileEvidence();
+      if (!stillTapped()) return;
+      if (!rows && evidenceAvailable()) {
+        rows = await reconcileEvidence();
+        if (!stillTapped()) return;
+      }
       const c = get().checklist;
-      if (!c || !c.items.length) {
-        get().flash(CHT.noneIssued[get().lang]);
+      if (get().online && rows && c && !evidenceShortfall(judgeChecklist(c.items, c.id, rows))) {
+        // online, a waiting capture counts only once sent (a submit sent ahead of it is refused): when the waiting rows
+        // make up the shortfall they are sent now, and the engineer submits once they are
+        get().flash(CHT.stillUploading[get().lang]);
+        void get().flushOutbox();
         return;
       }
-      // gate round 8: once the payload is frozen (submitting / queued / already
-      // server-submitted) a repeat submit is a no-op — no double submission, and
-      // no edit can slip in between the click and the outcome.
-      if (checklistFrozen(get())) {
-        get().flash(CHT.alreadySubmitted[get().lang]);
-        return;
-      }
-      const undone = c.items.filter((it) => !it.state).length;
-      // a fail needs EVIDENCE: a linked photo (the server's proof, Task 4) or the
-      // legacy counter (demo). The deprecated counter alone must not block a fail
-      // whose photo is a real linked Media row (Task 7 acceptance finding).
-      const failNoPhoto = c.items.filter((it) => it.state === 'fail' && it.photos === 0 && (it.evidence?.length ?? 0) === 0).length;
-      if (undone > 0) {
-        get().flash(CHX.markAll(c.items.length, get().lang));
-        return;
-      }
-      if (failNoPhoto > 0) {
-        get().flash(CHT.failNeedsPhoto[get().lang]);
-        return;
-      }
-      if (gateway) {
-        if (get().online) {
-          // gate round 8: FREEZE the checklist the instant we dispatch — no edit may
-          // change the payload while the submit is in flight (the round-7 finding:
-          // an edit made during the pending window was silently reverted when the
-          // ack arrived). On success the server's submitted checklist lands and
-          // applySnapshot drops the marks (gate round 7). On FAILURE we UNLOCK the
-          // checklist WITHOUT losing the marks so the engineer can fix and resubmit.
-          // gate round 10: stamp this dispatch with a unique attempt id. The
-          // (project, generation) scope guard (round 9) cannot separate two submits
-          // WITHIN one session — a socket-delivered checklist swap can retire this
-          // submit and start another under the SAME generation. `attempt` makes each
-          // dispatch identifiable; `isThisAttempt()` is true only while THIS dispatch
-          // still owns the submission (no newer submit, and no reconcile has retired it).
-          const attempt = ++submitAttemptSeq;
-          set((s) => { s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'submitting', attempt }; });
-          const scope = currentScope();
-          // gate round 11: the submit needs BOTH guards — the attempt id owns the
-          // COMMAND lifecycle (round 10), and a snapshot lease captured at dispatch
-          // owns snapshot FRESHNESS (so a newer socket refresh / submit that began
-          // while this was in flight supersedes this response even in the same scope).
-          const lease = beginSnapshotLease(scope);
-          const isThisAttempt = (): boolean => scopeStillCurrent(scope) && get().submission.attempt === attempt;
-          gateway
-            .submitInspection(c.id, c.items)
-            .then((snap) => {
-              if (!isThisAttempt()) return; // a newer submit/socket/session retired this command
-              const result = acceptSnapshot(snap, lease);
-              if (result === 'applied') {
-                emitGuideOutcome('inspection-submitted', c.id);
-                get().flash(CHT.submitted[get().lang]);
-                // Live bug 1b — the same rule as `consumeSnapshotResult`: an APPLIED snapshot carries no
-                // module slice, so under module ownership the submit still owes the read that shows it
-                // (the submitted checklist leaving the outstanding set; the slice is owed until it lands)
-                if (anyModuleOwnedRead()) scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq, modulesOnly: true });
-              } else if (result === 'superseded') {
-                // gate round 12/13: the submit committed, but a newer refresh owns the
-                // view. Keep the checklist FROZEN (don't unlock — the submit succeeded)
-                // and record a SUBMIT reconcile requirement naming THIS attempt, so the
-                // requirement clears only when this exact submit is confirmed by server
-                // truth (not by a stale unsubmitted snapshot); if the mandatory reconcile
-                // fails or lands still-unconfirmed, a recoverable error/Retry is exposed
-                // instead of freezing forever.
-                emitGuideOutcome('inspection-submitted', c.id);
-                scheduleReconcile(scope, { kind: 'submit', inspectionId: c.id, attempt, createdAfterSequence: snapshotSeq });
-              } else if (result === 'invalid-project') {
-                // manifestation 2: a rejected (wrong-project) payload must NOT report
-                // success and must NOT leave the checklist frozen forever — unlock the
-                // attempt and pull a fresh snapshot to recover current truth.
-                set((s) => { if (s.submission.attempt === attempt && s.submission.status === 'submitting') s.submission.status = 'idle'; });
-                emitGuideOutcome('inspection-submit-failed', c.id);
-                void requestFreshSnapshot();
-              }
-              // scope-moved: silent — the new scope owns its own truth.
-            })
-            .catch(() => {
-              // A retired attempt (round 9/10) or a superseded session must not unlock
-              // the live submit or toast — a socket refresh may already have confirmed.
-              if (!isThisAttempt()) return;
-              set((s) => {
-                if (s.submission.attempt === attempt && s.submission.status === 'submitting') {
-                  s.submission.status = 'idle';
-                }
-              });
-              emitGuideOutcome('inspection-submit-failed', c.id);
-              get().flash(CHT.submitFailed[get().lang]);
-            });
-          return;
-        }
-        // offline: QUEUE the submit (persisted) and freeze as 'queued'. The freeze
-        // survives a reload because reconcileSubmission rebuilds it from the outbox.
-        const submit: OutboxOp = { t: 'submitInspection', inspectionId: c.id, items: c.items };
-        set((s) => {
-          s.outbox.push(submit);
-          s.syncQueue.push('Submit inspection');
-          s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'queued', attempt: 0 };
-        });
-        emitGuideOutcome('inspection-submitted', c.id);
-        flashSaved(CHT.savedOfflineSubmit[get().lang], [submit]); // said only once the locked write holds it (Codex 4344812898)
-        return;
-      }
-      // demo (no gateway): the submit succeeds locally and synchronously — the
-      // marks are now recorded on the (local) submitted checklist, so drop them.
-      set((s) => {
-        if (!s.checklist) return;
-        s.checklist.submitted = true;
-        s.submission = { inspectionId: null, generation: s.projectScopeGeneration, status: 'idle', attempt: 0 };
-        delete s.checklistMarks.byInspection[s.checklist.id];
-        // THE REVIEW IS BUILT FIRST, from the checklist that was actually submitted. The advance below
-        // replaces `s.checklist` with the next OPEN one, so reading the slot afterwards filed the
-        // still-unsubmitted checklist into the PMC's queue — with PASS/FAIL results derived from marks
-        // nobody had made — and lost the submitted one entirely. `current` first: `s.checklist` is an
-        // immer draft, and the advance mutates the slot out from under any reference kept into it.
-        const submitted = structuredClone(current(s.checklist)) as Checklist;
-        // demo (no API): the submitted checklist enters the PMC review queue,
-        // mapping each item's pass/fail state to a PASS/FAIL result.
-        if (!s.reviews.some((r) => r.id === submitted.id)) {
-          s.reviews.push({
-            id: submitted.id,
-            title: submitted.title,
-            ...(submitted.reinspectionOfId ? { reinspectionOfId: submitted.reinspectionOfId } : {}),
-            zone: submitted.zone,
-            // the review inherits the checklist's FILED location, not just its legacy zone
-            // text: a checklist raised against a room is reviewed at that room, and dropping
-            // `nodeId` here would leave every demo-path review reading as unplaced.
-            ...(submitted.nodeId ? { nodeId: submitted.nodeId } : {}),
-            by: 'Site Engineer',
-            date: submitted.date,
-            decided: false,
-            items: submitted.items.map((it) => ({
-              name: it.name,
-              result: it.state === 'fail' ? 'FAIL' : 'PASS',
-              swatch: 'concrete',
-              note: it.note,
-              rejected: false,
-            })),
-          });
-        }
-        // a submitted checklist is no longer outstanding: drop it from the open set so the demo path
-        // agrees with what the server would serve. The edit slot must MOVE with it — leaving the
-        // submitted checklist in the slot drops the open count to one, which hides the picker and
-        // makes the checklist still out on site unreachable. The server path has no such problem: its
-        // next snapshot re-picks the slot from the open set.
-        s.openChecklists = s.openChecklists.filter((c) => c.id !== submitted.id);
-        if (s.selectedChecklistId === submitted.id) s.selectedChecklistId = null;
-        const next = s.openChecklists[0];
-        // `current` first: `next` is an immer draft, and a draft proxy is not a cloneable source
-        if (next) { s.checklist = structuredClone(current(next)) as Checklist; s.selectedChecklistId = next.id; }
-      });
-      emitGuideOutcome('inspection-submitted', c.id);
-      get().flash(CHT.submitted[get().lang]);
+      submitChecked(rows ?? [], false);
     },
 
     // ---- pmc review (queue) ----
@@ -7795,7 +7885,7 @@ export const useStore = create<Store>()(
     hydrateOutbox: () => {
       resetQueueScope(); // before any storage access: a storage that throws below leaves no other scope's list
       // this scope's evidence rows are read again below: until then an own evidence photo's Delete waits (#482)
-      set((s) => { s.pendingEvidenceKeys = null; });
+      set((s) => { s.pendingEvidenceKeys = null; s.pendingEvidenceRows = null; });
       try {
         const storage = globalThis.localStorage;
         if (storage) {
