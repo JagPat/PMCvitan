@@ -412,9 +412,12 @@ function OutstandingChecklists({ items, focused, lang }: { items: Checklist[]; f
             <span style={{ fontSize: 13.5, color: 'var(--ink)', flex: 1, minWidth: 160 }}>{inspectionTitle(c, lang)}</span>
             <span style={{ fontSize: 12, color: 'var(--muted)' }}>{T.items(c.items.length, lang)}</span>
             <LocationContext nodeId={c.nodeId} fallback={c.zone} lang={lang} />
-            {/* #482 "Who fixes this?" — named right after issuing, from the row the new checklist appears on */}
+            {/* #482 "Who fixes this?" — named right after issuing, from the row the new checklist appears on. A re-inspection
+                names who fixes the failed work it re-checks: that work is on the inspection sent back (its `reinspectionOfId`),
+                which has left the review queue once decided, and "Your open items" reads the failed items from there
+                (Codex #1361 r1). */}
             <div style={{ flexBasis: '100%' }}>
-              <ResponsiblePicker inspectionId={c.id} testId={`outstanding-responsible-${c.id}`} />
+              <ResponsiblePicker inspectionId={c.reinspectionOfId ?? c.id} testId={`outstanding-responsible-${c.id}`} />
             </div>
           </div>
         ))}

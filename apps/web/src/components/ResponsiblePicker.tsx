@@ -62,7 +62,13 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
     if (pending && failedFor !== named) readTeam();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, named, failedFor, online, reading]);
-  const onOpen = () => { if (readFor === undefined || failedFor !== undefined) readTeam(); };
+  // Every opening reads the list again (Codex #1361 r1): a member added, removed or re-roled in another tab after an
+  // earlier read sends no snapshot event, so only a fresh read offers them as they stand now. The first read, and a read
+  // after a failure, hold the picker busy; later ones refresh in the background under the same shared read.
+  const onOpen = () => {
+    if (readFor === undefined || failedFor !== undefined) readTeam();
+    else if (allowed && online) void readTeamShared();
+  };
 
   if (!allowed) return null;
 

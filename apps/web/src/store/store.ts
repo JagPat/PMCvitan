@@ -1690,6 +1690,10 @@ export const useStore = create<Store>()(
     const currentScope = (): ProjectScope => projectScopeOf(get());
     // RM-w1: the pickers' shared team read in flight, by scope key (readTeamShared)
     let sharedTeamRead: { key: string; read: Promise<boolean> } | null = null;
+    // RM-w1 (Codex #1361 r1): the key of a naming whose answer never arrived, by scope and inspection. The same choice
+    // made again re-sends the SAME key, so a PUT that committed but lost its answer is replayed by the server, never run
+    // twice. Cleared on a confirmed answer or a final refusal; a different choice gets a fresh key.
+    const responsibleRetryKeys = new Map<string, { memberId: string | null; key: string }>();
 
     /** Is a scope captured at request time still the live one? Guards EVERY
      *  post-await project mutation — including raw-DTO paths that don't go
@@ -6276,13 +6280,21 @@ export const useStore = create<Store>()(
         return Promise.resolve(false);
       }
       const lease = beginSnapshotLease(currentScope());
+      const retryAt = `${scopeKey(lease.scope)}|${inspectionId}`;
+      const held = responsibleRetryKeys.get(retryAt);
+      const key = held && held.memberId === memberId ? held.key : newIdempotencyKey();
+      responsibleRetryKeys.set(retryAt, { memberId, key });
+      const settle = () => { if (responsibleRetryKeys.get(retryAt)?.key === key) responsibleRetryKeys.delete(retryAt); };
       return gateway
-        .setResponsibleMember(inspectionId, memberId, newIdempotencyKey())
+        .setResponsibleMember(inspectionId, memberId, key)
         .then((snap) => {
+          settle();
           consumeSnapshotResult(acceptSnapshot(snap, lease), undefined, lease.scope);
           return true;
         })
         .catch((err: { status?: number } | undefined) => {
+          // a final refusal settles the key; an answer that never arrived (no network, a 5xx) keeps it for the same choice
+          if (isTerminalOutboxError(err)) settle();
           // a 4xx is final (the member no longer stands, or the caller's role changed): say so, never retry
           if (!scopeStillCurrent(lease.scope)) return false;
           get().flash(RML.saveFailed[get().lang]);

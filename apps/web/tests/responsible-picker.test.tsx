@@ -215,6 +215,70 @@ describe('"Who fixes this?" on the PMC review card (#482 RM-w1)', () => {
     expect(view.getByTestId('outstanding-responsible-INSP-90-select')).toBeTruthy();
   });
 
+  it('a re-inspection row names who fixes the work it re-checks: the inspection sent back, by its id (Codex #1361 r1)', async () => {
+    const reinspection: Checklist = { id: 'INSP-95', title: 'Slab', zone: 'Z', date: 'today', submitted: false, items: [], reinspectionOfId: 'INSP-60' };
+    const setResponsibleMember = vi.fn(async (inspectionId: string, memberId: string | null) =>
+      ({ ...snapshot(memberId ? [{ inspectionId, memberId }] : []), openChecklists: [reinspection] }));
+    const { view, useStore } = await openReview(
+      { listMembers: vi.fn(async () => TEAM), setResponsibleMember },
+      { reviews: [], activeReviewId: null, openChecklists: [reinspection], members: TEAM },
+    );
+    const el = () => view.getByTestId('outstanding-responsible-INSP-95-select') as HTMLSelectElement;
+    act(() => { fireEvent.change(el(), { target: { value: 'u-zed' } }); });
+    await waitFor(() => expect(setResponsibleMember).toHaveBeenCalledTimes(1));
+    expect((setResponsibleMember.mock.calls[0] as unknown as [string, string | null])[0]).toBe('INSP-60');
+    await waitFor(() => expect(el().value).toBe('u-zed'));
+    expect(useStore.getState().responsibleMembers).toEqual([{ inspectionId: 'INSP-60', memberId: 'u-zed' }]);
+  });
+
+  it('the same choice after an answer that never arrived re-sends the same key; a final refusal or a confirmed answer starts a new one (Codex #1361 r1)', async () => {
+    let call = 0;
+    const setResponsibleMember = vi.fn(async (inspectionId: string, memberId: string | null) => {
+      call += 1;
+      if (call === 1) throw Object.assign(new Error('Failed to fetch'), {});
+      if (call === 2) throw Object.assign(new Error('Bad gateway'), { status: 502 });
+      if (call === 3) return answerKeepingQueue(memberId ? [{ inspectionId, memberId }] : []);
+      throw Object.assign(new Error('refused'), { status: 400 });
+    });
+    const { useStore, id, select } = await openReview({ listMembers: vi.fn(async () => TEAM), setResponsibleMember, snapshot: vi.fn(() => new Promise(() => {})) }, { members: TEAM });
+    const keyOf = (n: number) => (setResponsibleMember.mock.calls[n] as unknown as [string, string | null, string])[2];
+    act(() => { fireEvent.change(select(), { target: { value: 'u-zed' } }); });
+    await waitFor(() => expect(useStore.getState().toast).toBe('Could not save who fixes this. Try again.'));
+    await waitFor(() => expect(select().disabled).toBe(false));
+    act(() => { fireEvent.change(select(), { target: { value: 'u-zed' } }); });
+    await waitFor(() => expect(setResponsibleMember).toHaveBeenCalledTimes(2));
+    expect(keyOf(1)).toBe(keyOf(0));
+    await waitFor(() => expect(select().disabled).toBe(false));
+    act(() => { fireEvent.change(select(), { target: { value: 'u-zed' } }); });
+    await waitFor(() => expect(select().value).toBe('u-zed'));
+    expect(keyOf(2)).toBe(keyOf(0));
+    // confirmed: the next naming is a new operation with a new key
+    await waitFor(() => expect(select().disabled).toBe(false));
+    act(() => { fireEvent.change(select(), { target: { value: 'u-amy' } }); });
+    await waitFor(() => expect(setResponsibleMember).toHaveBeenCalledTimes(4));
+    expect(keyOf(3)).not.toBe(keyOf(0));
+    // a final refusal settles that key too: the same choice again is a new attempt
+    await waitFor(() => expect(select().disabled).toBe(false));
+    act(() => { fireEvent.change(select(), { target: { value: 'u-amy' } }); });
+    await waitFor(() => expect(setResponsibleMember).toHaveBeenCalledTimes(5));
+    expect(keyOf(4)).not.toBe(keyOf(3));
+    expect(useStore.getState().responsibleMembers).toEqual([{ inspectionId: id, memberId: 'u-zed' }]);
+  });
+
+  it('every opening reads the team again, so a member added or removed in another tab is offered as they stand now (Codex #1361 r1)', async () => {
+    let team = TEAM;
+    const listMembers = vi.fn(async () => team);
+    const { select } = await openReview({ listMembers });
+    act(() => { fireEvent.focus(select()); });
+    await waitFor(() => expect(optionTexts(select())).toEqual(['Nobody yet', 'Amy Consultant', 'Zed Contractor']));
+    team = [...TEAM.filter((m) => m.userId !== 'u-zed'), member('u-new', 'Neha New', 'contractor')];
+    act(() => { fireEvent.blur(select()); fireEvent.focus(select()); });
+    await waitFor(() => expect(optionTexts(select())).toEqual(['Nobody yet', 'Amy Consultant', 'Neha New']));
+    expect(listMembers).toHaveBeenCalledTimes(2);
+    // a later read refreshes in the background: the picker stays usable while it runs
+    expect(select().disabled).toBe(false);
+  });
+
   it('several rows naming a member the list does not hold share one team read', async () => {
     let answer!: (m: ProjectMember[]) => void;
     const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answer = r; }));
