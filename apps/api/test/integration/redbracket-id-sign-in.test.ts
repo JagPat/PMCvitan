@@ -1262,6 +1262,42 @@ describe('Redbracket ID sign-in (live PostgreSQL, fake issuer)', () => {
     expect(await t.prisma.user.findUniqueOrThrow({ where: { id: qa.id } })).toMatchObject({ email: qa.email });
   });
 
+  it('a QA account in QA-only companies signs in with its Redbracket ID password, to the same account, never linked or retired', async () => {
+    const run = Date.now().toString(36).replace(/[0-9]/g, 'x');
+    const ids = { org: `it-org-qa-rbid-${run}`, project: `it-proj-qa-rbid-${run}`, user: `it-qa-rbid-${run}` };
+    const email = `qa.shared${run}@vitan.in`;
+    await t.prisma.org.create({ data: { id: ids.org, name: `QA org ${run}`, slug: ids.org, qaOnly: true } });
+    await t.prisma.project.create({ data: {
+      id: ids.project, orgId: ids.org, name: `QA project ${run}`, short: 'QA', descriptor: '', stage: 'Planning',
+      siteCode: 'QA', projStart: '01 Jan 2026', projEnd: '31 Dec 2026', elapsedPct: 0, todayDay: 0, milestonePct: 0,
+    } });
+    await t.prisma.user.create({ data: { id: ids.user, projectId: ids.project, role: 'engineer', name: 'QA Engineer', email } });
+    await t.prisma.membership.create({ data: { projectId: ids.project, userId: ids.user, role: 'engineer', status: 'active' } });
+    try {
+      fake.addPerson(email, 'the shared qa passphrase');
+      // a wrong password is a wrong password, as for anyone
+      expect((await login(email, 'a wrong passphrase').expect(401)).body.code).toBeUndefined();
+      for (let i = 0; i < 2; i += 1) {
+        const ok = await login(email, 'the shared qa passphrase').expect(201);
+        expect(ok.body).toMatchObject({ role: 'engineer', projectId: ids.project, name: 'QA Engineer' });
+        expect(new JwtService().decode(ok.body.token)).toMatchObject({ sub: ids.user });
+      }
+      // the same row each time: its address kept, no link, no retirement, no second account
+      expect(await t.prisma.user.findUniqueOrThrow({ where: { id: ids.user } })).toMatchObject({ email });
+      expect(await t.prisma.platformPersonLink.count({ where: { userId: ids.user } })).toBe(0);
+      expect(await t.prisma.identityRetirement.count({ where: { userId: ids.user } })).toBe(0);
+      expect(await t.prisma.user.count({ where: { email: { startsWith: email } } })).toBe(1);
+    } finally {
+      await t.prisma.$transaction([
+        t.prisma.auditLog.deleteMany({ where: { projectId: ids.project } }),
+        t.prisma.membership.deleteMany({ where: { projectId: ids.project } }),
+        t.prisma.user.deleteMany({ where: { id: ids.user } }),
+        t.prisma.project.deleteMany({ where: { id: ids.project } }),
+        t.prisma.org.deleteMany({ where: { id: ids.org } }),
+      ]);
+    }
+  });
+
   it('A4b guards: a retired row never counts as the last owner or the last holder; a decision under change is re-seated through its change request', async () => {
     const pmc = t.issueProjectToken(f.memberUser.id, f.projectA.id, 'pmc');
     const owner = t.issueOrgOwnerToken(f.ownerUser.id, f.projectA.id, f.orgA.id);

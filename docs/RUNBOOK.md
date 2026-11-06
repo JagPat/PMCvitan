@@ -2684,6 +2684,14 @@ now (nothing is written; try again).
 Because the database keeps real people out of those companies, the session needs no re-check while it lasts.
 Each sign-in writes an `auth.qaSignIn` audit row with the operator and reason.
 
+**QA accounts with a Redbracket ID password** (Jagrut, 6 Nov 2026: one shared password for every QA account, on Hub
+and PMC). With `IDENTITY_OIDC=1`, a QA account whose every company is QA-only (the operator door's rule above) also
+signs in on PMC's normal sign-in screen with its Redbracket ID password, to the SAME account: it is never linked or
+retired, so its seats stay. A QA account that also reaches a company that is not QA-only is still refused ("Test
+accounts sign in through the operator door."). PMC never sets a QA password itself ("Set or reset password" refuses
+QA addresses): the shared value is kept once in Coolify and set on each `qa.<word>@vitan.in` Redbracket ID person at
+the issuer.
+
 **Redbracket ID re-seat** (Redbracket ID A4b, Stage 1 ruling 3 Nov 2026). With `IDENTITY_OIDC=1`, an established
 PMC account whose email first signs in through Redbracket ID is set aside (retired), and the person gets a new, linked
 account with no seats. Retirement moves no seat: the retired row keeps its project and company seats until someone
