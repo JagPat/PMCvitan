@@ -68,8 +68,8 @@ async function main(): Promise<void> {
     // Site Visits (#792) SV1-a — the visit record refuses row DELETE (so `deleteMany` on a project, user or node would
     // be refused or blocked); it is cleared here, its TRUNCATE seals bypassed by `sanctionedReset`.
     // SV2 — a visit's files reference the visit, so they truncate in the same statement; so do its removal lines (#1179 R1)
-    // and the inspections walked on it (guided site inspections step 3b).
-    'SiteVisitInspection', 'SiteVisitFileRemoval', 'SiteVisitMedia', 'SiteVisitPlace', 'SiteVisitAttendee', 'SiteVisit',
+    // and the inspections walked on it (guided site inspections step 3b), and its clips' full-video links (V2g-0).
+    'SiteVisitMediaLink', 'SiteVisitInspection', 'SiteVisitFileRemoval', 'SiteVisitMedia', 'SiteVisitPlace', 'SiteVisitAttendee', 'SiteVisit',
     'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
     'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
     'InspectionsProjection', 'MaterialReadinessProjection', 'CashForecastProjection',
