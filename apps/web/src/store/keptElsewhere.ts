@@ -13,7 +13,8 @@ import { readOwedActs, type KeyRead } from '@/store/queueKeyGuard';
  * ledger as a load would take them), or in a row of the three IndexedDB stores (evidence, visit photos, site photos)
  * whose op is rebuilt from it only when the project loads. The two are one change when they name the same file
  * (`clientKey`). A project the person still holds is never listed: its changes are sent when they open it. Another
- * person's keys and rows on a shared device are never read. The list's read writes nothing (no queue key, made record,
+ * person's queue keys and rows on a shared device are never read; the site photos' sent index is read by key alone
+ * (`sitePhotoKeptProjectsOf`), and only this person's keys are kept from it. The list's read writes nothing (no queue key, made record,
  * mark, row or held-photo record) and holds or names no act: the discard is unit 2. The one write here is the name
  * record (`rememberProjectName`), which the snapshot makes. Every IndexedDB read is read only and bounded (a store's own
  * bound); one that fails or is too slow reads as nothing found.
