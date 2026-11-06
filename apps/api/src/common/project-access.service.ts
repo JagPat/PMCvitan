@@ -1,7 +1,8 @@
-import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from './auth';
 import { isProduction } from '../config';
+import { projectAccessRemoved, projectRoleChanged, projectUnavailable } from './lost-project';
 
 /**
  * The canonical LIVE authorization for a user on a project (Phase 0 Task 4).
@@ -32,14 +33,14 @@ export class ProjectAccessService {
       where: { id: projectId },
       select: { orgId: true, archivedAt: true },
     });
-    if (!project || project.archivedAt) throw new ForbiddenException('Project is unavailable');
+    if (!project || project.archivedAt) throw projectUnavailable();
 
     const membership = await this.prisma.membership.findUnique({
       where: { projectId_userId: { projectId, userId: user.sub } },
       select: { role: true, status: true },
     });
     if (membership?.status === 'active') {
-      if (membership.role !== user.role) throw new ForbiddenException('Project role changed; sign in again');
+      if (membership.role !== user.role) throw projectRoleChanged();
       return user;
     }
 
@@ -52,6 +53,6 @@ export class ProjectAccessService {
         })
       : null;
     if (user.role === 'pmc' && (orgMembership?.role === 'owner' || orgMembership?.role === 'admin')) return user;
-    throw new ForbiddenException('Project access has been removed');
+    throw projectAccessRemoved();
   }
 }

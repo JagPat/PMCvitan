@@ -8,6 +8,7 @@ import { resolveActor, type Actor } from '../common/actor';
 import { lockActorStanding, resolveActorEnvelope } from '../platform/actor-envelope';
 import { lockProjectTreeShared } from '../common/tree-lock';
 import { SPEECH_PROVIDER, type SpeechProvider } from './speech/speech-provider';
+import { projectRoleChanged, projectUnavailable } from '../common/lost-project';
 
 /**
  * #1177 VT2-C1 — a voice note's words (AI item 1): read them, correct them, and ask once more after a failure. Plan and
@@ -197,8 +198,8 @@ export class VoiceTranscriptService {
     if (!media) throw new NotFoundException('Media not found');
     await lockActorStanding(tx, projectId, user.sub);
     const [state] = await tx.$queryRaw<Array<{ operable: boolean }>>(Prisma.sql`SELECT phase6_project_operable(${projectId}) AS "operable"`);
-    if (state?.operable !== true) throw new ForbiddenException('Project is unavailable');
-    if (!(await resolveActorEnvelope(tx, projectId, actor))) throw new ForbiddenException('Your role on this project has changed; sign in again');
+    if (state?.operable !== true) throw projectUnavailable();
+    if (!(await resolveActorEnvelope(tx, projectId, actor))) throw projectRoleChanged('envelope');
     if (!(await this.capabilities.isEnabled(projectId, VOICE_TEXT_CAPABILITY, tx))) throw new NotFoundException('Not found');
     if (media.nodeId && (await this.nodes.placeHiddenFrom(tx, projectId, media.nodeId, user.sub))) throw new NotFoundException('Media not found');
     const [row] = await tx.$queryRaw<Array<{ status: string; text: string | null; retried: boolean }>>(Prisma.sql`
