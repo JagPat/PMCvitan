@@ -178,6 +178,64 @@ describe('the store keeps the snapshot\'s Hub link for its own project only', ()
     expect(gw.unlinkHubProject.mock.calls.map((c) => (c as unknown[])[3])).toEqual([expect.any(String), (gw.unlinkHubProject.mock.calls[0] as unknown[])[3]]);
   });
 
+  it('a pull that never answers is retired at its deadline, so Try again pulls afresh and settles (#1356)', async () => {
+    const useStore = await fresh();
+    useStore.setState({ activeProjectId: 'ambli' });
+    const { SNAPSHOT_PULL_TIMEOUT_MS } = await import('@/store/store');
+    // the pull's deadline, held here so the test fires it
+    const deadlines: Array<{ ms: number; abort: () => void }> = [];
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      const c = new AbortController();
+      deadlines.push({ ms, abort: () => c.abort(new DOMException('timed out', 'TimeoutError')) });
+      return c.signal;
+    });
+    try {
+      let hang = true;
+      const gw = {
+        linkHubProject: vi.fn(async () => ({ link: LINK })),
+        snapshot: vi.fn((signal?: AbortSignal) => hang
+          ? new Promise<ApiSnapshot>((_r, reject) => signal?.addEventListener('abort', () => reject(signal.reason)))
+          : Promise.resolve(snapshot(LINK))),
+      };
+      useStore.getState()._setGateway(gw as unknown as ApiGateway);
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      let first: HubCallResult<true> | null = null;
+      void useStore.getState().linkHubProject('org-1', '12', 'key-h').then((x) => { first = x; });
+      await vi.advanceTimersByTimeAsync(HUB_SHOWN_WAIT_MS);
+      expect(first).toEqual({ kind: 'unconfirmed', value: true });
+      expect(deadlines.map((d) => d.ms)).toEqual([SNAPSHOT_PULL_TIMEOUT_MS]);
+      vi.useRealTimers();
+      // the hung pull reaches its deadline and is retired; the next pull answers
+      hang = false;
+      deadlines[0].abort();
+      const again = await useStore.getState().linkHubProject('org-1', '12', 'key-h');
+      expect(again).toEqual({ kind: 'ok', value: true });
+      expect(gw.linkHubProject.mock.calls.map((c) => (c as unknown[])[3])).toEqual(['key-h', 'key-h']);
+      expect(useStore.getState().hubLink).toEqual(LINK);
+    } finally {
+      vi.useRealTimers();
+      timeout.mockRestore();
+    }
+  });
+
+  it('a link refused because the site was linked meanwhile, or an unlink of a link already ended, re-reads the snapshot (#1356)', async () => {
+    const useStore = await fresh();
+    useStore.setState({ activeProjectId: 'ambli' });
+    let served = snapshot({ ...LINK, hubProjectId: '14' });
+    const gw = {
+      linkHubProject: vi.fn(async () => { throw err(409, 'hub_linked_elsewhere'); }),
+      unlinkHubProject: vi.fn(async () => { throw err(409, 'hub_not_linked'); }),
+      snapshot: vi.fn(async () => served),
+    };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    expect(await useStore.getState().linkHubProject('org-1', '12', 'key-e')).toEqual({ kind: 'failed', failure: { kind: 'refused', code: 'hub_linked_elsewhere' } });
+    await waitFor(() => expect(useStore.getState().hubLink?.hubProjectId).toBe('14'));
+    served = snapshot();
+    expect(await useStore.getState().unlinkHubProject('org-1', '14')).toEqual({ kind: 'failed', failure: { kind: 'refused', code: 'hub_not_linked' } });
+    await waitFor(() => expect(useStore.getState().hubLink).toBeNull());
+    expect(useStore.getState().hubUnlinkPending).toBeNull();
+  });
+
   it('a stalled snapshot after a command answers unconfirmed, not never (Codex 4480498904)', async () => {
     const useStore = await fresh();
     useStore.setState({ activeProjectId: 'ambli' });
