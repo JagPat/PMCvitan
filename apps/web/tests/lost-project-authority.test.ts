@@ -47,6 +47,9 @@ function held() {
 }
 
 type Answer = { status: number; body: unknown };
+/** Lets every continuation already queued run (microtasks only, never a timer): after a reply has settled, what the
+ *  store does with it has run by the time this returns */
+const drain = async (): Promise<void> => { for (let i = 0; i < 20; i += 1) await Promise.resolve(); };
 type Route = (method: string, path: string, body: string) => Answer | Promise<Answer> | undefined;
 const calls: Array<{ method: string; path: string; auth: string | null }> = [];
 const hits = (method: string, path: string) => calls.filter((c) => c.method === method && c.path === path).length;
@@ -417,17 +420,19 @@ describe('#1373 a coded 403 moves the person off the lost project', () => {
     const { useStore, gw } = await signedIn('fresh');
     let listed: Answer = { status: 503, body: {} };
     stubFetch(server({ status: 403, body: REMOVED }, [BETA], (m, p, b) => (m === 'GET' && p === '/me/memberships' ? listed : switchTo('p-b')(m, p, b))));
+    const lists = vi.spyOn(gw, 'listMemberships');
     await gw.snapshot().catch(() => undefined);
-    await vi.waitFor(() => expect(hits('GET', '/me/memberships')).toBe(1));
+    // the failed read has settled, and the move has let go of it
+    await lists.mock.results[0]?.value.catch(() => undefined);
+    await drain();
+    expect(hits('GET', '/me/memberships')).toBe(1);
     expect(useStore.getState().sessionToken).toBe(tokA);
     expect(hits('POST', '/auth/switch')).toBe(0);
     listed = { status: 200, body: [BETA] };
-    // each later refusal reads again once the failed read has let go of the move: refused until it does
-    await vi.waitFor(async () => {
-      await gw.snapshot().catch(() => undefined);
-      expect(useStore.getState().sessionToken).toBe(tokB);
-    });
-    expect(hits('GET', '/me/memberships')).toBeGreaterThanOrEqual(2);
+    // exactly one later refusal reads again, and moves
+    await gw.snapshot().catch(() => undefined);
+    await vi.waitFor(() => expect(useStore.getState().sessionToken).toBe(tokB));
+    expect(hits('GET', '/me/memberships')).toBe(2);
     expect(hits('POST', '/auth/switch')).toBe(1);
   });
 
@@ -510,18 +515,52 @@ describe('#1373 the move never overrides what the person did meanwhile (Stage 1 
       m === 'GET' && p === '/me/memberships' ? listed.reply() : m === 'POST' && p === '/auth/switch' ? toGamma.reply() : undefined
     )));
     useStore.setState({ memberships: [ALPHA, BETA, GAMMA] as never });
+    const lists = vi.spyOn(gw, 'listMemberships');
     await gw.snapshot().catch(() => undefined);
     await listed.asked;
     const picked = useStore.getState().switchProject('p-c');
     await toGamma.asked;
     const reads = vi.spyOn(gw, 'switchProject');
+    // the read settles, and the move has done all it will with it, while the person's pick is still out: the session's
+    // token has not changed, so only the move's own check on that pick makes it stand aside (Stage 1 re-check T1)
     listed.release({ status: 200, body: [BETA, GAMMA] });
+    await lists.mock.results[0]?.value;
+    await drain();
+    expect(reads).not.toHaveBeenCalled();
     toGamma.release({ status: 201, body: { token: tokC, role: 'client', projectId: 'p-c', name: 'Pat' } });
     expect(await picked).toBe(true);
     expect(useStore.getState().activeProjectId).toBe('p-c');
     // the move asked for no switch of its own
     expect(reads).not.toHaveBeenCalled();
     expect(hits('POST', '/auth/switch')).toBe(1);
+  });
+
+  it('the person picks another project while the move is out, and the move\'s reply lands first: their pick stands', async () => {
+    const { useStore, gw } = await signedIn('fresh');
+    useStore.setState({ memberships: [ALPHA, BETA, GAMMA] as never });
+    const toBeta = held();
+    const toGamma = held();
+    stubFetch(server({ status: 403, body: REMOVED }, [BETA, GAMMA], (m, p, b) => {
+      if (m !== 'POST' || p !== '/auth/switch') return undefined;
+      return (JSON.parse(b) as { projectId: string }).projectId === 'p-b' ? toBeta.reply() : toGamma.reply();
+    }));
+    const switches = vi.spyOn(gw, 'switchProject');
+    await gw.snapshot().catch(() => undefined);
+    await toBeta.asked;
+    const picked = useStore.getState().switchProject('p-c');
+    await toGamma.asked;
+    // the move's reply first: the session's token is still the lost one and the move still holds its guard, so only the
+    // scope generation the pick moved on says it is late (Stage 1 re-check T2)
+    toBeta.release({ status: 201, body: { token: tokB, role: 'client', projectId: 'p-b', name: 'Pat' } });
+    await switches.mock.results[0]?.value;
+    await drain();
+    expect(useStore.getState().sessionToken).toBe(tokA);
+    expect(useStore.getState().activeProjectId).toBe('p-a');
+    toGamma.release({ status: 201, body: { token: tokC, role: 'client', projectId: 'p-c', name: 'Pat' } });
+    expect(await picked).toBe(true);
+    expect(useStore.getState().activeProjectId).toBe('p-c');
+    expect(useStore.getState().sessionToken).toBe(tokC);
+    expect(useStore.getState().pendingProjectId).toBeNull();
   });
 
   it('a 401 on the move\'s own switch signs out, and nothing is adopted', async () => {
@@ -580,7 +619,10 @@ describe('#1373 a 401 on a token-bearing request signs out, once', () => {
     const { useStore, gw } = await signedIn('fresh');
     // a push-capable browser: the teardown waits (bounded) for the push unlink, so the session is still held while the
     // other refusals land, and only the once-per-token guard keeps them from signing out again
-    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { ready: new Promise(() => {}) } });
+    // its unlink waits on the worker until the test lets it go: the signal, never the teardown's own bound
+    let workerReady!: (reg: unknown) => void;
+    const ready = new Promise((r) => { workerReady = r; });
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { ready } });
     Object.defineProperty(window, 'PushManager', { configurable: true, value: function PushManager() {} });
     onTestFinished(() => {
       delete (navigator as { serviceWorker?: unknown }).serviceWorker;
@@ -598,7 +640,11 @@ describe('#1373 a 401 on a token-bearing request signs out, once', () => {
     // all refused while the first sign-out still holds the session (its push unlink waits): one sign-out
     expect(useStore.getState().sessionToken).toBe(tokA);
     expect(signOuts).toBe(1);
-    await vi.waitFor(() => expect(useStore.getState().sessionToken).toBeNull(), { timeout: 4000 });
+    const signedOut = new Promise<void>((done) => {
+      const off = useStore.subscribe((st) => { if (st.sessionToken === null) { off(); done(); } });
+    });
+    workerReady({ pushManager: { getSubscription: async () => null } });
+    await signedOut;
     expect(signOuts).toBe(1);
     expect(globalThis.sessionStorage.getItem('vitan.session.v1')).toBeNull();
     expect(hits('POST', '/auth/switch')).toBe(0);

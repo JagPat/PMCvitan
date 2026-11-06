@@ -4,7 +4,7 @@ import {
   POSTER_WAIT_MS, clearVisitPoster, fileVisitPhoto, getVisitPhoto, posterLapsed, posterWaits, putVisitPhoto, settleFiledVisitPhotos,
   type SiteVisitAddFileOp,
 } from '@/data/visitPhotoStore';
-import { ApiGateway, POSTER_SEND_WAIT_MS, isTerminalOutboxError } from '@/data/apiGateway';
+import { ApiGateway, POSTER_SEND_WAIT_MS, dropsQueuedAct, isTerminalOutboxError, replayOutboxOp } from '@/data/apiGateway';
 
 /**
  * #995 V2b-2: a clip's still frame is kept on the clip's own row (`visitPhotoStore`), in the same write, and waits there
@@ -128,5 +128,33 @@ describe('#995 V2b-2: the still frame’s send is bounded (Codex 4400008727)', (
     expect(err).toMatchObject({ name: 'TimeoutError' });
     // no status: kept for a later flush, never let go as a refusal
     expect(isTerminalOutboxError(err)).toBe(false);
+  });
+});
+
+describe('#1373: a visit file or frame refused because the project was lost is kept, never let go (Stage 1 re-check T3)', () => {
+  const lostProject = () => Object.assign(new Error('HTTP 403'), { status: 403, serverMessage: 'Project access has been removed', serverCode: 'project-access-removed' });
+
+  it('a queued visit photo: its act is kept (the refusal rethrown, not one that drops it) and its row stays queued', async () => {
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const photo = op('p-9', 'image/jpeg');
+    await putVisitPhoto(SCOPE, PROJECT, photo, 'AQID');
+    const gw = { project: PROJECT, uploadMedia: vi.fn().mockRejectedValue(lostProject()) };
+    const err = await replayOutboxOp(gw as unknown as ApiGateway, photo).then(() => null, (e: unknown) => e);
+    expect(gw.uploadMedia).toHaveBeenCalledTimes(1);
+    expect(err).toMatchObject({ status: 403, serverCode: 'project-access-removed' });
+    expect(dropsQueuedAct(err)).toBe(false);
+    expect(await getVisitPhoto(SCOPE, PROJECT, 'p-9')).toMatchObject({ state: 'queued', reason: null });
+  });
+
+  it('a clip whose still frame waits: the frame stays on its row for the next send', async () => {
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const clip = op('c-9');
+    await putVisitPhoto(SCOPE, PROJECT, clip, 'AQID', null, undefined, FRAME);
+    await fileVisitPhoto(SCOPE, PROJECT, 'c-9', 'm-9');
+    const gw = { project: PROJECT, addVisitPoster: vi.fn().mockRejectedValue(lostProject()), uploadMedia: vi.fn() };
+    await replayOutboxOp(gw as unknown as ApiGateway, clip);
+    expect(gw.addVisitPoster).toHaveBeenCalledTimes(1);
+    expect(gw.uploadMedia).not.toHaveBeenCalled();
+    expect(await getVisitPhoto(SCOPE, PROJECT, 'c-9')).toMatchObject({ state: 'filed', poster: FRAME, mediaId: 'm-9' });
   });
 });

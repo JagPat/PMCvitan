@@ -975,14 +975,14 @@ let toastTimer: ReturnType<typeof setTimeout> | undefined;
  *  poll and focus reads overlap, and an older reply may carry a project whose access was since removed). */
 let briefRequestSeq = 0;
 
-/** The HTTP status the gateway attached to a failed request (`req` sets `status`); undefined for a
- *  failure with no response at all (offline, DNS, CORS). */
-/** Code-unit order, the same in every locale (#1373: the project a move lands on is picked the same way everywhere). */
 /** #1373: the line for the changes this device keeps for a lost project */
 const keptLine = (lang: Lang, project: string, n: number): string =>
   qwFill(n === 1 ? QW.keptForLostOne : QW.keptForLost, lang, { project, n });
+/** Code-unit order, the same in every locale (#1373: the project a move lands on is picked the same way everywhere). */
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
+/** The HTTP status the gateway attached to a failed request (`req` sets `status`); undefined for a
+ *  failure with no response at all (offline, DNS, CORS). */
 function httpStatusOf(err: unknown): number | undefined {
   const status = (err as { status?: unknown } | null)?.status;
   return typeof status === 'number' ? status : undefined;

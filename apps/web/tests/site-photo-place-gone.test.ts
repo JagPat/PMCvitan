@@ -581,6 +581,41 @@ describe('a queued site photo whose place was removed (#919)', () => {
     expect(A.getState().outbox).toEqual([]);
   });
 
+  // #1373: a coded 403 says the person lost the project, not that this photo was refused: the act and its row are kept,
+  // as a 401 keeps them, to be sent if access returns (Stage 1 re-check T3)
+  const lostProject = (path: string) => Object.assign(new Error(`${path} 403`), { status: 403, serverMessage: 'Project access has been removed', serverCode: 'project-access-removed' });
+
+  it('PG31: a replay whose tree read is refused because the project was lost: kept, unsent, never settled', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const key = await queued(A);
+    const up = uploads({ id: 'm1', url: '/media/m1', nodeId: null });
+    withTree(A, up.fn, async () => { throw lostProject('/snapshot'); });
+    await A.getState().flushOutbox();
+    await settled();
+    expect(up.inputs.map((i) => i.clientKey)).toEqual([key]);
+    expect(A.getState().outbox).toEqual([{ t: 'uploadSitePhoto', scope: ROWS, clientKey: key }]);
+    const rows = await import('@/data/sitePhotoStore');
+    const row = await rows.getSitePhotoRow(ROWS, 'villa-b', key);
+    expect(row && !rows.isSitePhotoSent(row)).toBe(true);
+  });
+
+  it('PG32: a replay whose upload is refused because the project was lost: the act and its row are kept, never refused', async () => {
+    const A = await tab();
+    startWork(A as never);
+    const key = await queued(A);
+    const up = uploads(lostProject('/media'));
+    gatewayOf(A, up.fn);
+    await A.getState().flushOutbox();
+    await settled();
+    expect(up.inputs.map((i) => i.clientKey)).toEqual([key]);
+    expect(A.getState().outbox).toEqual([{ t: 'uploadSitePhoto', scope: ROWS, clientKey: key }]);
+    expect(A.getState().toast ?? '').not.toContain('discarded');
+    const rows = await import('@/data/sitePhotoStore');
+    const row = await rows.getSitePhotoRow(ROWS, 'villa-b', key);
+    expect(row && !rows.isSitePhotoSent(row)).toBe(true);
+  });
+
   it.each([
     ['names the place it asked for', { id: 'm1', url: '/media/m1', nodeId: 'room-1' }],
     ['comes from an API that names no place', { id: 'm1', url: '/media/m1' }],
