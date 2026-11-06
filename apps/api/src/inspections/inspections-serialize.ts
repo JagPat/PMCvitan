@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import type {
   Checklist, ChecklistItem, InspectionResult, ItemGuide, ItemState, PlacedInspection, Review, ReviewItem, SwatchKey,
 } from '@vitan/shared';
+import { INSPECTION_READER_ROLES } from '@vitan/shared';
 import { toIsoCivilDate } from '../common/civil-date';
 import { isFailedItem } from './failed-item';
 import { guideOf } from './guided-item';
@@ -207,7 +208,7 @@ export function bakeInspections(
   // no signed path is ever minted for a hidden photo; the evidence list simply omits it
   const evidencePath = (mediaIds: string[]): string[] => mediaIds.filter((m) => !hiddenEvidence.has(m)).map(opts.evidencePath);
   const isPmc = role === 'pmc';
-  const canSeeInspections = role === 'pmc' || role === 'engineer';
+  const canSeeInspections = INSPECTION_READER_ROLES.includes(role);
   const all = base.inspections;
 
   // Issued checklists. `computeInspectionsBase` reads them with no `orderBy`, so row order is

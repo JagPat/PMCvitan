@@ -164,7 +164,7 @@ describe('Phase 2 Task 7 — module registry', () => {
       // reason as every row here: orgs.dependsOn reaches inspections (project initialization reads
       // `InspectionsQueryService.allIds`), so an inspections → orgs READ edge would close a cycle
       // and the participant channel does not.
-      inspections: ['activities', 'orgs', 'media'],
+      inspections: ['activities', 'orgs', 'media', 'site-visits'],
       // Phase 4 Task 2 — the labour commercial chain validates the reused procurement Vendor/
       // ProjectVendor binding through ProcurementParticipant.assertVendorBound (+ resolveOrgVendor):
       // a CYCLE-EXEMPT labour → procurement workflow edge, not a dependsOn read, so labour stays a
