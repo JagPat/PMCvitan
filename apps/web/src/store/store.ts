@@ -1646,7 +1646,7 @@ function forgetMedia(s: AppState, mediaId: string): void {
 }
 
 export const useStore = create<Store>()(
-  immer((set, get) => {
+  immer((set, get, storeApi) => {
     // API bridge (Phase 7b): injected by useApiSync when VITE_API_URL is set.
     // When present, mutating actions persist through the API and reconcile from
     // the returned snapshot; when null, they mutate the seeded local store.
@@ -4541,34 +4541,41 @@ export const useStore = create<Store>()(
       if (!gateway) { submitChecked([], false); return; }
       if (!submitChecked([], true)) return;
       const scope = currentScope();
-      // the checklist tapped: a switch to another one while the guard reads submits nothing (the same project keeps the
-      // scope, so the scope alone cannot tell)
+      // the checklist tapped: ANY move of the slot away from it while the guard reads retires this tap for good (the same
+      // project keeps the scope, so the scope alone cannot tell; and a switch away and back again is still a switch:
+      // Codex 4495923538). The engineer taps Submit again on the checklist then in front of them.
       const tapped = get().checklist?.id;
-      const stillTapped = (): boolean => scopeStillCurrent(scope) && get().checklist?.id === tapped;
-      if (get().online) {
-        // online, a capture counts once the server holds it: an upload it accepted is not served until a read is
-        // applied, so the guard runs one fresh read and judges again before it shows the message
-        await afterFreshPull(scope);
-        if (!stillTapped() || !submitChecked([], true)) return;
-      }
-      // the captures still waiting, read from the durable store now (any tab's). Every one read has its upload queued
-      // here by that read, so a submit queued after it is sent after it. A newer read (a second tap, the screen's own
-      // refresh) supersedes this one: it is then read once more, and a read that still does not land counts none
-      let rows = await reconcileEvidence();
-      if (!stillTapped()) return;
-      if (!rows && evidenceAvailable()) {
-        rows = await reconcileEvidence();
+      let movedAway = false;
+      const stopWatching = storeApi.subscribe((st) => { if (st.checklist?.id !== tapped) movedAway = true; });
+      const stillTapped = (): boolean => !movedAway && scopeStillCurrent(scope) && get().checklist?.id === tapped;
+      try {
+        if (get().online) {
+          // online, a capture counts once the server holds it: an upload it accepted is not served until a read is
+          // applied, so the guard runs one fresh read and judges again before it shows the message
+          await afterFreshPull(scope);
+          if (!stillTapped() || !submitChecked([], true)) return;
+        }
+        // the captures still waiting, read from the durable store now (any tab's). Every one read has its upload queued
+        // here by that read, so a submit queued after it is sent after it. A newer read (a second tap, the screen's own
+        // refresh) supersedes this one: it is then read once more, and a read that still does not land counts none
+        let rows = await reconcileEvidence();
         if (!stillTapped()) return;
+        if (!rows && evidenceAvailable()) {
+          rows = await reconcileEvidence();
+          if (!stillTapped()) return;
+        }
+        const c = get().checklist;
+        if (get().online && rows && c && !evidenceShortfall(judgeChecklist(c.items, c.id, rows))) {
+          // online, a waiting capture counts only once sent (a submit sent ahead of it is refused): when the waiting rows
+          // make up the shortfall they are sent now, and the engineer submits once they are
+          get().flash(CHT.stillUploading[get().lang]);
+          void get().flushOutbox();
+          return;
+        }
+        submitChecked(rows ?? [], false);
+      } finally {
+        stopWatching();
       }
-      const c = get().checklist;
-      if (get().online && rows && c && !evidenceShortfall(judgeChecklist(c.items, c.id, rows))) {
-        // online, a waiting capture counts only once sent (a submit sent ahead of it is refused): when the waiting rows
-        // make up the shortfall they are sent now, and the engineer submits once they are
-        get().flash(CHT.stillUploading[get().lang]);
-        void get().flushOutbox();
-        return;
-      }
-      submitChecked(rows ?? [], false);
     },
 
     // ---- pmc review (queue) ----

@@ -217,5 +217,21 @@ describe('guided step 4a — the guard counts the durable rows, read again', () 
     expect(s().outbox.some((o) => o.t === 'submitInspection')).toBe(false);
     expect(s().submission.status).not.toBe('queued');
   });
+
+  it('a switch away and back while the guard reads still submits nothing: the tap was retired (Codex 4495923538)', async () => {
+    s()._setGateway({ project: 'ambli' } as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    seedChecklist();
+    // A's waiting capture would make the item whole, so a guard that survived the switch would queue A's submit
+    await putEvidence({ userScope: 'anon', projectId: 'ambli', clientKey: 'a-photo', mime: 'image/jpeg', data: 'AA==', inspectionId: 'INSP-90', inspectionItemId: 'item-1' });
+    const guarding = s().submitInspection();
+    useStore.setState((st) => {
+      st.checklist = { id: 'INSP-91', title: 'Other check', zone: 'Terrace', date: '03 Jul 2026', submitted: false, items: [{ ...ITEM, id: 'item-2', state: 'pass' }] };
+    });
+    seedChecklist(); // back on A before the read lands
+    await guarding;
+    expect(s().outbox.some((o) => o.t === 'submitInspection')).toBe(false);
+    expect(s().submission.status).not.toBe('queued');
+  });
 });
 
