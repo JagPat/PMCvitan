@@ -127,6 +127,84 @@ describe('video V2g-0: a clip\'s full-video link (live PG)', () => {
     await expect(add(clip, DRIVE, f.otherUser.id, 'pmc', randomUUID(), f.projectB.id)).rejects.toThrow(/is not on a site visit/);
   });
 
+  const setMime = (mediaId: string, mime: string) => t.prisma.$executeRaw`UPDATE "Media" SET "mime" = ${mime} WHERE "id" = ${mediaId}`;
+  const mimeOf = async (mediaId: string) => (await t.prisma.media.findUniqueOrThrow({ where: { id: mediaId }, select: { mime: true } })).mime;
+  const keptVideo = /has a full-video link, so it stays a video/;
+
+  it('a clip with a link, current or ended, stays a video; one video type to another passes', async () => {
+    const clip = await onVisit();
+    const id = await add(clip);
+    await expect(setMime(clip, 'audio/webm')).rejects.toThrow(keptVideo);
+    await expect(setMime(clip, 'image/jpeg')).rejects.toThrow(keptVideo);
+    await setMime(clip, 'video/mp4');
+    expect(await mimeOf(clip)).toBe('video/mp4');
+    // an ended link is history of a video: it still holds the type
+    await end(id, f.memberUser.id, 'pmc', 'Wrong video');
+    await expect(setMime(clip, 'audio/webm')).rejects.toThrow(keptVideo);
+    // a video with no link changes freely (the guard is only for linked files)
+    const bare = await onVisit();
+    await setMime(bare, 'audio/webm');
+    expect(await mimeOf(bare)).toBe('audio/webm');
+    // a fixed-snapshot writer is refused before it looks, as for a voice note's transcript
+    const other = await onVisit();
+    await expect(t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+      await tx.$executeRaw`UPDATE "Media" SET "mime" = 'audio/webm' WHERE "id" = ${other}`;
+    })).rejects.toThrow(/a video's type changes only at READ COMMITTED, not repeatable read/);
+    expect(await mimeOf(other)).toBe('video/webm');
+  });
+
+  /** hold `first` uncommitted, start `second`, wait until `second` waits on a row lock (or ends without one, which the
+   *  caller's assertions then report), then commit `first` and give `second`'s outcome */
+  const raced = async (first: (tx: Parameters<Parameters<typeof t.prisma.$transaction>[0]>[0]) => Promise<unknown>, second: () => Promise<unknown>, waitingOn: string) => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let ran!: () => void;
+    const firstRan = new Promise<void>((r) => { ran = r; });
+    const firstTx = t.prisma.$transaction(async (tx) => { await first(tx); ran(); await held; }, { timeout: 60_000 });
+    // a first statement that fails never reaches `ran()`: let the test go on and report it rather than hang
+    void firstTx.catch(() => undefined).finally(() => ran());
+    await firstRan;
+    let settled = false;
+    const outcome = second().then(() => 'kept', (e: Error) => e.message).finally(() => { settled = true; });
+    let waited = false;
+    for (;;) {
+      if (settled) break;
+      const waiting = await t.prisma.$queryRaw<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE ${waitingOn}`;
+      if (waiting[0]!.n > 0) { waited = true; break; }
+      await new Promise((r) => setImmediate(r));
+    }
+    release();
+    await firstTx;
+    return { waited, outcome: await outcome };
+  };
+
+  it('a link added while a type change waits: the change waits for the insert, then sees the link and is refused', async () => {
+    const clip = await onVisit();
+    const r = await raced(
+      (tx) => tx.$executeRaw`
+        INSERT INTO "SiteVisitMediaLink" ("id","projectId","mediaId","url","host","addedById","addedByRole")
+        VALUES (${randomUUID()}, ${f.projectA.id}, ${clip}, ${DRIVE}, 'drive', ${f.memberUser.id}, 'pmc')`,
+      () => setMime(clip, 'audio/webm'),
+      '%UPDATE "Media" SET "mime"%');
+    expect(r.waited).toBe(true);
+    expect(r.outcome).toMatch(keptVideo);
+    expect(await mimeOf(clip)).toBe('video/webm');
+    expect(await current(clip)).toBe(1);
+  });
+
+  it('a type change that commits first: the insert waits for it, then reads the new type and is refused', async () => {
+    const clip = await onVisit();
+    const r = await raced(
+      (tx) => tx.$executeRaw`UPDATE "Media" SET "mime" = 'audio/webm' WHERE "id" = ${clip}`,
+      () => add(clip),
+      '%INSERT INTO "SiteVisitMediaLink"%');
+    expect(r.waited).toBe(true);
+    expect(r.outcome).toMatch(/is not a video/);
+    expect(await current(clip)).toBe(0);
+  });
+
   it('checks the adder\'s role on the project and refuses an archived project', async () => {
     const clip = await onVisit();
     await expect(add(clip, DRIVE, consultant, 'pmc')).rejects.toThrow(/does not hold role pmc/);
@@ -266,6 +344,7 @@ describe('video V2g-0: a clip\'s full-video link (live PG)', () => {
     const id = await add(clip);
     const before = await row(id);
     await t.prisma.$executeRawUnsafe(`DROP TRIGGER "SiteVisitMediaLink_end" ON "SiteVisitMediaLink"`);
+    await t.prisma.$executeRawUnsafe(`DROP TRIGGER "Media_site_visit_link_video_kept" ON "Media"`);
     await t.prisma.$executeRawUnsafe(`ALTER TABLE "SiteVisitMediaLink" DROP CONSTRAINT "SiteVisitMediaLink_shape_check"`);
     await t.prisma.$executeRawUnsafe(`DROP INDEX "SiteVisitMediaLink_one_current_per_file"`);
     await t.prisma.$executeRawUnsafe(`CREATE INDEX "SiteVisitMediaLink_one_current_per_file" ON "SiteVisitMediaLink"("mediaId")`);
@@ -277,6 +356,7 @@ describe('video V2g-0: a clip\'s full-video link (live PG)', () => {
               (SELECT count(*)::int FROM pg_indexes WHERE indexname = 'SiteVisitMediaLink_one_current_per_file'
                  AND indexdef LIKE 'CREATE UNIQUE INDEX%WHERE ("endedAt" IS NULL)') AS index`);
     expect(objects[0]).toEqual({ triggers: 4, keys: 3, checks: 1, index: 1 });
+    await expect(setMime(clip, 'audio/webm')).rejects.toThrow(keptVideo);
     expect(await row(id)).toEqual(before);
     await expect(t.prisma.$executeRaw`UPDATE "SiteVisitMediaLink" SET "url" = ${ZOHO} WHERE "id" = ${id}`).rejects.toThrow(record);
     await expect(add(clip, ZOHO)).rejects.toThrow(/SiteVisitMediaLink_one_current_per_file|Unique constraint|23505/);

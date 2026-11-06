@@ -23,7 +23,10 @@
 --       workdrive.zoho.{com,in,eu} and workdrive.zohopublic.{com,in,eu}. Lowercase only: the web and the server send
 --       the host as URL parsing writes it. V2g-1's shared allow-list matches this list exactly.
 --   K2  A video on a visit. The file must be on a visit of the same project (the foreign key) and be a video (the media
---       module's contract, `media_mime_of`).
+--       module's contract, `media_mime_of_locked`, read under a share lock on the file's "Media" row). It stays a video
+--       while it has any link, current or ended: "Media_site_visit_link_video_kept" refuses a raw UPDATE of its type
+--       that leaves video (Codex 4496204765); a change from one video type to another passes. No server code writes a
+--       file's type after its upload.
 --   K3  Who, as they stood. The writer names the role the adder acts in; the insert checks that they hold it on the
 --       project, refuses an archived project, and copies their account name, through SV1-a's
 --       `site_visits_standing_name`, as a visit's file freezes its adder. The same holds for whoever ends a link.
@@ -44,10 +47,14 @@
 -- read can therefore show a link on a removed file.
 --
 -- LOCK ORDER. The server's writer (V2g-1) takes, in this order and never retries: the visit row FOR UPDATE (as every
--- write on a visit does), the file's "SiteVisitMedia" row FOR UPDATE, the file's current link FOR UPDATE; then it ends
--- that link and inserts the new one. The triggers below take the visit FOR KEY SHARE and the file's link FOR SHARE
--- before the writer's standing (`site_visits_standing_name`), the order a file's removal takes them in, so a raw
--- inserter that never locks the visit itself still waits behind a removal holding it. A raw UPDATE already holds its
+-- write on a visit does), the file's "Media" row FOR SHARE, the file's "SiteVisitMedia" row FOR UPDATE, the file's
+-- current link FOR UPDATE; then it ends that link and inserts the new one. The insert trigger below takes the visit FOR
+-- KEY SHARE, the file's "Media" row FOR SHARE and the file's link FOR SHARE before the writer's standing
+-- (`site_visits_standing_name`): the order a file's removal takes them in (the visit, the "Media" row FOR UPDATE, then
+-- the link; 20280125000000), so a raw inserter that never locks the visit itself still waits behind a removal holding
+-- it. A raw UPDATE of a file's type locks its "Media" row and then reads its links (the guard below): while an insert
+-- holds the row's share lock the update waits and then sees the link; an update that commits first is seen by the
+-- insert, which then reads the new type. A raw UPDATE already holds its
 -- own link row before its trigger runs: one that skips the visit lock may meet a concurrent removal in a deadlock,
 -- which PostgreSQL detects and aborts, writing nothing.
 --
@@ -57,12 +64,14 @@
 --
 -- SAFE UNDER THE PREVIOUS RELEASE. The previous release never names the table: nothing reads or writes it, and no
 -- statement of the previous release changes because it exists. A file's removal and a project's removal cascade through
--- it below trigger depth 1, which K8 lets through.
+-- it below trigger depth 1, which K8 lets through. The K2 guard on "Media" fires only on a change of a file's type,
+-- which no release writes after upload (`media.service.ts` updates only a file's place and still frame).
 --
--- LOCKS WHILE IT RUNS. A new table: its foreign keys need SHARE ROW EXCLUSIVE on "SiteVisitMedia" and "User". Both are
--- taken by ONE LOCK TABLE statement before any change, so the file never holds one while it waits for the other, and no
--- later statement needs a stronger lock on either; they are held to COMMIT of this short transaction (an empty table: no
--- rows to validate). No lock is waited for longer than 15 s (lock_timeout, this transaction only).
+-- LOCKS WHILE IT RUNS. A new table: its foreign keys need SHARE ROW EXCLUSIVE on "SiteVisitMedia" and "User", and the
+-- K2 guard's trigger on "Media" needs the same on "Media". All three are taken by ONE LOCK TABLE statement before any
+-- change ("Media" before "SiteVisitMedia", the order a file's removal takes their rows), so the file never holds one
+-- while it waits for another, and no later statement needs a stronger lock on any; they are held to COMMIT of this
+-- short transaction (an empty table: no rows to validate). No lock is waited for longer than 15 s (lock_timeout, this transaction only).
 --
 -- ONE TRANSACTION, RE-RUNNABLE. BEGIN ... COMMIT; on `scripts/migrate.sh`'s ALWAYS_EXECUTE (a `db push` baseline models
 -- the table but not the triggers, the check or the partial index). IF NOT EXISTS with a shape guard, constraints
@@ -73,7 +82,7 @@ BEGIN;
 
 SELECT pg_catalog.set_config('lock_timeout', '15s', true);
 
-LOCK TABLE public."User", public."SiteVisitMedia" IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE public."User", public."Media", public."SiteVisitMedia" IN SHARE ROW EXCLUSIVE MODE;
 
 CREATE TABLE IF NOT EXISTS public."SiteVisitMediaLink" (
   "id"          TEXT NOT NULL,
@@ -209,8 +218,15 @@ BEGIN
   END IF;
 END $site_visit_media_link_keys$;
 
--- K1 to K4 on insert, in the lock order above: the file's visit FOR KEY SHARE, the file's link FOR SHARE, then the
--- adder's standing and frozen name, then the receipt stamp (read after the locks are held). A writer cannot add a link
+-- The media module's database contract, as `media_mime_of` (20280125000000) with the file's row held FOR SHARE: a file's
+-- stored type, NULL when it is not a file of the project. A later change to how media stores its type changes it here.
+CREATE OR REPLACE FUNCTION public.media_mime_of_locked(p_project TEXT, p_media TEXT)
+RETURNS TEXT LANGUAGE sql VOLATILE SET search_path = pg_catalog, public, pg_temp AS $$
+  SELECT "mime" FROM public."Media" WHERE "projectId" = p_project AND "id" = p_media FOR SHARE;
+$$;
+
+-- K1 to K4 on insert, in the lock order above: the file's visit FOR KEY SHARE, the file's "Media" row FOR SHARE, the
+-- file's link FOR SHARE, then the adder's standing and frozen name, then the receipt stamp (read after the locks are held). A writer cannot add a link
 -- that is already ended.
 CREATE OR REPLACE FUNCTION public.site_visits_media_link_insert() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
@@ -220,12 +236,13 @@ BEGIN
   IF FOUND THEN
     PERFORM 1 FROM public."SiteVisit" WHERE "projectId" = NEW."projectId" AND "id" = v_visit FOR KEY SHARE;
   END IF;
+  -- the file's type under a share lock on its row, so a change of type waits for this insert and then sees its link
+  v_mime := lower(coalesce(public.media_mime_of_locked(NEW."projectId", NEW."mediaId"), ''));
   PERFORM 1 FROM public."SiteVisitMedia" WHERE "projectId" = NEW."projectId" AND "mediaId" = NEW."mediaId" FOR SHARE;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'site-visits: the file % is not on a site visit of project %, so it takes no full-video link', NEW."mediaId", NEW."projectId"
       USING ERRCODE = 'foreign_key_violation';
   END IF;
-  v_mime := lower(coalesce(public.media_mime_of(NEW."projectId", NEW."mediaId"), ''));
   IF v_mime NOT LIKE 'video/%' THEN
     RAISE EXCEPTION 'site-visits: the file % is not a video, so it takes no full-video link', NEW."mediaId"
       USING ERRCODE = 'check_violation';
@@ -298,5 +315,47 @@ DROP TRIGGER IF EXISTS "SiteVisitMediaLink_no_truncate" ON public."SiteVisitMedi
 CREATE TRIGGER "SiteVisitMediaLink_no_truncate"
   BEFORE TRUNCATE ON public."SiteVisitMediaLink"
   FOR EACH STATEMENT EXECUTE FUNCTION public.site_visits_no_truncate();
+
+-- K2 kept, on the file (Codex 4496204765): while a file has a full-video link, current or ended, its "Media" row stays a
+-- video. A file's type is set at upload and no server code changes it, but a raw writer could; this holds K2 after the
+-- insert as well as at it. A change from one video type to another passes. The insert share-locks the file's row
+-- (`media_mime_of_locked`), so the two serialize, and each statement here reads anew. The isolation rule is
+-- `media_voice_transcript_note_kept`'s (20280126000000_voice_transcript, lines 248-253), copied.
+CREATE OR REPLACE FUNCTION public.media_site_visit_link_video_kept() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  -- only a video can hold a full-video link (K2), and only its leaving video matters
+  IF OLD."mime" IS NULL OR lower(OLD."mime") NOT LIKE 'video/%' OR lower(coalesce(NEW."mime", '')) LIKE 'video/%' THEN
+    RETURN NEW;
+  END IF;
+  -- the lookup below must see a link committed while this write waited for the row; only READ COMMITTED reads
+  -- anew per statement, so a fixed-snapshot writer is refused here (Codex #1182, 4398170733)
+  IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'media: a video''s type changes only at READ COMMITTED, not %',
+      pg_catalog.current_setting('transaction_isolation') USING ERRCODE = 'check_violation';
+  END IF;
+  IF EXISTS (SELECT 1 FROM public."SiteVisitMediaLink" l WHERE l."projectId" = OLD."projectId" AND l."mediaId" = OLD."id") THEN
+    RAISE EXCEPTION 'media: file % has a full-video link, so it stays a video', OLD."id"
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "Media_site_visit_link_video_kept" ON public."Media";
+CREATE TRIGGER "Media_site_visit_link_video_kept"
+  BEFORE UPDATE OF "mime" ON public."Media"
+  FOR EACH ROW EXECUTE FUNCTION public.media_site_visit_link_video_kept();
+
+-- The guard stands as made: one enabled row trigger on "Media", BEFORE UPDATE OF "mime", calling this function.
+DO $site_visit_media_link_video_kept$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t
+                  WHERE t.tgrelid = 'public."Media"'::regclass AND t.tgname = 'Media_site_visit_link_video_kept'
+                    AND NOT t.tgisinternal AND t.tgenabled = 'O'
+                    AND t.tgfoid = 'public.media_site_visit_link_video_kept()'::regprocedure
+                    AND pg_catalog.pg_get_triggerdef(t.oid) LIKE 'CREATE TRIGGER "Media_site_visit_link_video_kept" BEFORE UPDATE OF mime ON public."Media" FOR EACH ROW %') THEN
+    RAISE EXCEPTION 'Media_site_visit_link_video_kept does not stand as made';
+  END IF;
+END $site_visit_media_link_video_kept$;
 
 COMMIT;
