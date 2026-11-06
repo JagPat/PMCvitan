@@ -1,4 +1,4 @@
-import { ENFORCED_RECORD_KINDS as SHARED_ENFORCED, judgeEvidence, type RecordingKind } from '@vitan/shared';
+import { ENFORCED_RECORD_KINDS as SHARED_ENFORCED, judgeEvidence, recordingKindOf as sharedRecordingKindOf, type RecordingKind } from '@vitan/shared';
 import type { InspectionRecordKind } from '../contracts';
 import { guideOf, type ItemGuidanceColumns } from './guided-item';
 
@@ -17,13 +17,8 @@ import { guideOf, type ItemGuidanceColumns } from './guided-item';
 /** The record kinds a submit is held to (the shared set). */
 export const ENFORCED_RECORD_KINDS: ReadonlySet<InspectionRecordKind> = SHARED_ENFORCED;
 
-/** The kind of recording a stored file is, by its type; null for anything else. */
-export function recordingKindOf(mime: string): InspectionRecordKind | null {
-  if (mime.startsWith('image/')) return 'photo';
-  if (mime.startsWith('video/')) return 'video';
-  if (mime.startsWith('audio/')) return 'voice';
-  return null;
-}
+/** The kind of recording a stored file is, by its type; null for anything else (the shared statement). */
+export const recordingKindOf: (mime: string) => InspectionRecordKind | null = sharedRecordingKindOf;
 
 const KIND_WORDS: Record<InspectionRecordKind, [string, string]> = {
   photo: ['photo', 'photos'],

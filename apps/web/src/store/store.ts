@@ -86,8 +86,8 @@ import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectS
 import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, planSeenChunks, reconcileSeen, type NotifSeenState } from '@/lib/notificationSeen';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
-import type { SodRule, VendorAdvanceListDto, ChecklistItem, JudgedItem } from '@vitan/shared';
-import { judgeEvidence } from '@vitan/shared';
+import type { SodRule, VendorAdvanceListDto, ChecklistItem, JudgedItem, RecordingKind } from '@vitan/shared';
+import { judgeEvidence, recordingKindOf } from '@vitan/shared';
 import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoDeletable, sitePhotoLabels as SPL, PHASE_NOT_FOUND_MESSAGE, activityNotFoundMessage, overrideNotFoundMessage, COMPANY_NOT_FOUND_MESSAGE, NOT_AN_ORG_MEMBER_MESSAGE } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
@@ -487,6 +487,12 @@ export interface AppState {
   /** #482 site photos — the upload keys of those pending evidence rows, as last read from IndexedDB; null until they have
    *  been read for this scope (a reload, a sign-in or a project switch empties it), so a delete can wait for them */
   pendingEvidenceKeys: string[] | null;
+  /** Guided site inspections step 4a — this scope's checklist evidence still waiting to upload (the durable rows'
+   *  `pending` set, by item), for the submit guard: a capture counts while it is pending, and stops counting once its
+   *  upload is refused or it is deleted. Empty until the rows are read (the guard then counts too few, never too many). */
+  pendingChecklistEvidence: Array<{ clientKey: string; inspectionItemId: string; mime: string }>;
+  /** Guided site inspections step 4a — an item as the shared evidence rule judges it on this phone (see the store). */
+  judgeChecklistItem: (it: ChecklistItem) => JudgedItem;
   access: AccessState;
   activities: Activity[];
   dailyLog: DailyLog | null; // null = no daily log started for this project
@@ -1313,14 +1319,6 @@ function ownerOfEditSlot(
  *  is pending in the current scope (submitting / queued). Every checklist mutation
  *  (state, note, photo, evidence) consults this so nothing changes the payload once
  *  it has been dispatched. */
-/** Guided site inspections step 4a — a checklist item as the shared evidence rule judges it. This phone records photos
- *  only (step 4b adds video and voice), so each linked or captured file counts as a photo; `photos` is the demo's
- *  counter, kept as the larger of the two as the screen counts them. */
-export function judgedChecklistItem(it: ChecklistItem): JudgedItem {
-  const n = Math.max(it.photos, it.evidence?.length ?? 0);
-  return { name: it.name, state: it.state, note: it.note, guide: it.guide ?? null, recordings: Array.from({ length: n }, () => 'photo' as const) };
-}
-
 export function checklistFrozen(
   s: Pick<AppState, 'checklist' | 'submission' | 'projectScopeGeneration' | 'outbox'>,
 ): boolean {
@@ -1579,6 +1577,7 @@ export function getInitialState(): AppState {
     failedEvidence: [],
     pendingEvidenceCount: 0,
     pendingEvidenceKeys: null,
+    pendingChecklistEvidence: [],
     access: freshAccess(),
     activities: structuredClone(SEED_ACTIVITIES),
     dailyLog: structuredClone(SEED_DAILY_LOG),
@@ -2952,6 +2951,7 @@ export const useStore = create<Store>()(
           s.failedEvidence = failed;
           s.pendingEvidenceCount = pending.length;
           s.pendingEvidenceKeys = pending.map((e) => e.clientKey);
+          s.pendingChecklistEvidence = pending.map((e) => ({ clientKey: e.clientKey, inspectionItemId: e.inspectionItemId, mime: e.mime }));
           const queued = new Set(s.outbox.filter((o) => o.t === 'uploadEvidence').map((o) => o.clientKey));
           for (const e of pending) {
             if (queued.has(e.clientKey)) continue;
@@ -3729,6 +3729,7 @@ export const useStore = create<Store>()(
         s.outbox = [];
         s.syncQueue = [];
         s.pendingEvidenceKeys = null;
+        s.pendingChecklistEvidence = [];
         // Ending the session ends the scope (Codex gate finding 6): the signed-out
         // user's records leave memory, and the generation bump refuses any of their
         // replies still in flight — nothing survives for the next identity to see.
@@ -4163,13 +4164,6 @@ export const useStore = create<Store>()(
         if (capturedOn) get().flash(CHT.noLongerOpen[get().lang]);
         return;
       }
-      // Guided site inspections step 4a (gap-check S1) — this screen records photos only, and the submit guard counts each
-      // capture as a photo, so a file that is not an image is not attached: the server counts only images toward a photo
-      // ask, and a queued submit it refuses is lost. Video and voice capture arrive with step 4b, counted by their kind.
-      if (!dataUrl.startsWith('data:image/')) {
-        get().flash(CHT.notAPhoto[get().lang]);
-        return;
-      }
       if (inspectionFrozen(get(), c)) { get().flash(CHT.noMoreChanges[get().lang]); return; } // gate round 8
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {
@@ -4177,6 +4171,13 @@ export const useStore = create<Store>()(
         return;
       }
       const [, mime, base64] = m;
+      // Guided site inspections step 4a (gap-check S1, Codex 4490264665) — only the image types the upload takes
+      // (`RASTER_IMAGE_MIMES`, as #918's site photos check): another is refused before anything is kept, counted or
+      // queued, since the server would refuse its upload and a submit counting it. Video and voice arrive with step 4b.
+      if (!UPLOAD_IMAGE_MIMES.includes(mime)) {
+        get().flash(CHT.notAPhoto[get().lang]);
+        return;
+      }
       // hard size cap (the capture flow should downscale before calling this;
       // an oversize photo is REFUSED explicitly, never silently truncated)
       if (base64.length > 5_600_000) { // ~4 MB decoded
@@ -4265,6 +4266,7 @@ export const useStore = create<Store>()(
           // `overlayChecklistMarks` and `ownerOfEditSlot` reconcile them on the next apply.
           mirrorCapture(s);
           s.pendingEvidenceCount += 1;
+          s.pendingChecklistEvidence.push({ clientKey, inspectionItemId: meta.inspectionItemId, mime });
         });
         // the bytes' row is the durable record (the act is rebuilt from it), so the line does not depend on the write
         const stillThere = madeHere();
@@ -4331,6 +4333,24 @@ export const useStore = create<Store>()(
       get().flash(CHT.deleted[get().lang]);
     },
     hydrateEvidence: async () => reconcileEvidence(),
+    judgeChecklistItem: (it) => {
+      // Codex 4490264657 / 4490264671 — count what the server will count, by kind, and nothing it will not: a served
+      // evidence entry by the kind the API serves beside it (none from an older API: counted as a file of no kind), and
+      // a capture still waiting to upload by its own type. A local thumbnail is not counted (its upload may yet be
+      // refused, or deleted), nor the legacy `photos` counter, which the server never reads. Demo has no server: its
+      // thumbnails and counter are the whole record, so they count there, the counter as one photo at most.
+      let recordings: Array<RecordingKind | null>;
+      if (!gateway) {
+        recordings = (it.evidence ?? []).map((url) => recordingKindOf(/^data:([^;,]+)/.exec(url)?.[1] ?? ''));
+        if (recordings.length === 0 && it.photos > 0) recordings = ['photo'];
+      } else {
+        const kinds = it.evidenceKinds ?? [];
+        recordings = [];
+        (it.evidence ?? []).forEach((url, k) => { if (!url.startsWith('data:')) recordings.push(kinds[k] ?? null); });
+        if (it.id) for (const p of get().pendingChecklistEvidence) if (p.inspectionItemId === it.id) recordings.push(recordingKindOf(p.mime));
+      }
+      return { name: it.name, state: it.state, note: it.note, guide: it.guide ?? null, recordings };
+    },
     setNote: (idx, txt) => set((s) => { const c = s.checklist; const it = c?.items[idx]; if (c && it) { if (checklistFrozen(s)) return; it.note = txt; recordChecklistMark(s, c.id, it.id, 'note', txt); } }),
     submitInspection: () => {
       const c = get().checklist;
@@ -4351,7 +4371,7 @@ export const useStore = create<Store>()(
       // whose photo is a real linked Media row (Task 7 acceptance finding).
       // Guided site inspections step 4a — the server's evidence rule, asked here first (the shared judge), so a submit
       // this phone sends or queues is never refused by a rule it did not know: a refusal is final for a queued act.
-      const shortfalls = judgeEvidence(c.items.map(judgedChecklistItem));
+      const shortfalls = judgeEvidence(c.items.map(get().judgeChecklistItem));
       if (undone > 0) {
         get().flash(CHX.markAll(c.items.length, get().lang));
         return;
@@ -7808,7 +7828,7 @@ export const useStore = create<Store>()(
     hydrateOutbox: () => {
       resetQueueScope(); // before any storage access: a storage that throws below leaves no other scope's list
       // this scope's evidence rows are read again below: until then an own evidence photo's Delete waits (#482)
-      set((s) => { s.pendingEvidenceKeys = null; });
+      set((s) => { s.pendingEvidenceKeys = null; s.pendingChecklistEvidence = []; });
       try {
         const storage = globalThis.localStorage;
         if (storage) {

@@ -3,7 +3,7 @@
     "TS2345: Argument of type '(q: { values?: unknown[]; } | readonly string[]) => Promise<{ status: string; role: string; }[]>' is not assignable to parameter of type '(q: RawQuery, ...rest: unknown[]) => Promise<{ status: string; role: string; }[]>'.": 1,
     "TS2554: Expected 1 arguments, but got 0.": 1,
     "TS2554: Expected 14 arguments, but got 12.": 1,
-    "TS2554: Expected 3 arguments, but got 2.": 1
+    "TS2554: Expected 4 arguments, but got 2.": 1
   },
   "src/commercial/commercial.contract.test.ts": {
     "TS2741: Property 'lifecycleVersion' is missing in type '{ id: string; vendorId: string; vendorBillNumber: string; documentDate: string; status: \"certified\"; statusChangedAt: string; statusReason: null; disputeReason: null; createdAt: string; createdById: string; versions: VendorBillVersionDto[]; }' but required in type 'VendorBillDto'.": 1
@@ -63,7 +63,7 @@
     "TS2554: Expected 1 arguments, but got 0.": 1,
     "TS2554: Expected 10 arguments, but got 4.": 2,
     "TS2554: Expected 10-11 arguments, but got 8.": 1,
-    "TS2554: Expected 3 arguments, but got 2.": 2,
+    "TS2554: Expected 4 arguments, but got 2.": 2,
     "TS2571: Object is of type 'unknown'.": 1
   },
   "src/orgs/project-initialization.test.ts": {

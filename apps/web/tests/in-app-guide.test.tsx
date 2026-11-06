@@ -96,6 +96,14 @@ const press = (el: Element) => act(() => { fireEvent.click(el); });
 
 type Store = Awaited<ReturnType<typeof setup>>['useStore'];
 /** what a picked photo does to the item (`addChecklistEvidence`): its photo count goes up */
+/** With a server, the submit guard counts what the server counts (guided step 4a, Codex 4490264657): a photo linked on
+ *  the server, served with its kind — not the demo's counter. */
+function servedPhoto(useStore: Store, i: number) {
+  useStore.setState((st) => ({
+    checklist: st.checklist && { ...st.checklist, items: st.checklist.items.map((it, j) => (j === i ? { ...it, evidence: ['/media/p1?t=1'], evidenceKinds: ['photo' as const] } : it)) },
+  }));
+}
+
 function attachPhoto(useStore: Store, i: number) {
   act(() => {
     useStore.setState((st) => ({
@@ -374,6 +382,7 @@ describe('a step that can fail finishes only when it really succeeds (review rou
     act(() => {
       useStore.getState()._setGateway(gw as never);
       useStore.setState({ online: true });
+      servedPhoto(useStore, 1);
     });
     press(document.querySelector('[data-testid="submit-inspection"]')!);
     expect(gw.submitInspection).toHaveBeenCalledTimes(1);
@@ -394,6 +403,7 @@ describe('a step that can fail finishes only when it really succeeds (review rou
     act(() => {
       useStore.getState()._setGateway({} as never);
       useStore.setState({ online: false });
+      servedPhoto(useStore, 1);
     });
     press(document.querySelector('[data-testid="submit-inspection"]')!);
     expect(useStore.getState().submission.status).toBe('queued');
@@ -479,6 +489,7 @@ describe('follow-ups from review (#858, #861, #862)', () => {
     act(() => {
       useStore.getState()._setGateway(gw as never);
       useStore.setState({ online: true });
+      servedPhoto(useStore, 1);
     });
     press(document.querySelector('[data-testid="submit-inspection"]')!);
     tick(2000);

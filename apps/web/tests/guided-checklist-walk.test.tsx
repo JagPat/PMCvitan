@@ -128,3 +128,57 @@ describe('guided step 4a — only a photo is attached on this screen', () => {
     expect(useStore.getState().checklist?.items[0].evidence ?? []).toEqual([]);
   });
 });
+
+describe('guided step 4a — with a server, the guard counts what the server counts (Codex 4490264657 / 4490264671)', () => {
+  const live = async (c: Checklist, pending: Array<{ clientKey: string; inspectionItemId: string; mime: string }> = []) => {
+    const m = await mount(c);
+    m.useStore.getState()._setGateway({} as never);
+    m.useStore.setState({ pendingChecklistEvidence: pending });
+    return m;
+  };
+
+  it('counts a served entry by its served kind: a video is not a photo', async () => {
+    const { useStore } = await live(checklist([
+      { id: 'a', name: 'Cover blocks', state: 'pass', photos: 2, note: '', evidence: ['/media/m1?t=1', '/media/m2?t=1'], evidenceKinds: ['photo', 'video'], guide: photos2Always },
+    ]));
+    expect(useStore.getState().judgeChecklistItem(useStore.getState().checklist!.items[0]).recordings).toEqual(['photo', 'video']);
+    useStore.getState().submitInspection();
+    expect(useStore.getState().toast).toBe('These items need the recordings they ask for before you can submit: Cover blocks');
+  });
+
+  it('never counts the legacy photos counter, nor a large one (no array of that length)', async () => {
+    const { useStore } = await live(checklist([
+      { id: 'a', name: 'Plain', state: 'fail', photos: 1_000_000_000, note: 'x' },
+    ]));
+    expect(useStore.getState().judgeChecklistItem(useStore.getState().checklist!.items[0]).recordings).toEqual([]);
+    useStore.getState().submitInspection();
+    expect(useStore.getState().toast).toBe('A failed item needs a photo before you can submit.');
+  });
+
+  it('counts a capture while it is pending, and not its local thumbnail once its upload is refused or deleted', async () => {
+    const item = { id: 'a', name: 'Cover blocks', state: 'pass' as const, photos: 2, note: '', evidence: ['/media/m1?t=1', 'data:image/png;base64,AA=='], evidenceKinds: ['photo' as const], guide: photos2Always };
+    const pending = await live(checklist([item]), [{ clientKey: 'k1', inspectionItemId: 'a', mime: 'image/jpeg' }]);
+    expect(pending.useStore.getState().judgeChecklistItem(item).recordings).toEqual(['photo', 'photo']);
+    cleanup();
+    const refused = await live(checklist([item]), []);
+    expect(refused.useStore.getState().judgeChecklistItem(item).recordings).toEqual(['photo']);
+    refused.useStore.getState().submitInspection();
+    expect(refused.useStore.getState().toast).toBe('These items need the recordings they ask for before you can submit: Cover blocks');
+  });
+
+  it('a pending capture for another item does not count here', async () => {
+    const { useStore } = await live(checklist([{ id: 'a', name: 'Plain', state: 'fail', photos: 0, note: 'x' }]), [{ clientKey: 'k', inspectionItemId: 'b', mime: 'image/png' }]);
+    expect(useStore.getState().judgeChecklistItem(useStore.getState().checklist!.items[0]).recordings).toEqual([]);
+  });
+});
+
+describe('guided step 4a — only an image type the upload takes is attached (Codex 4490264665)', () => {
+  it('refuses an SVG or a BMP before anything is kept or counted', async () => {
+    const { useStore } = await mount(checklist([{ id: 'a', name: 'Cover blocks', state: 'pass', photos: 0, note: '', guide: photos2Always }]));
+    for (const url of ['data:image/svg+xml;base64,AAAA', 'data:image/bmp;base64,AAAA']) {
+      await useStore.getState().addChecklistEvidence(0, url, 'INSP-1');
+      expect(useStore.getState().toast).toBe('Only a photo can be attached here — choose an image.');
+    }
+    expect(useStore.getState().checklist?.items[0].evidence ?? []).toEqual([]);
+  });
+});

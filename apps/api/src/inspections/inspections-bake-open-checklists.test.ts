@@ -50,6 +50,7 @@ const bake = (
     bindingAssignees: bindingAssignees
       ?? new Set(inspections.map((i) => i.assigneeId).filter((id): id is string => typeof id === 'string')),
     hiddenEvidence: new Set(),
+    evidenceKinds: new Map(),
   });
 
 describe('bakeInspections — issued checklists are visible', () => {

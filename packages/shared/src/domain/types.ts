@@ -370,6 +370,10 @@ export interface ChecklistItem {
   note: string;
   /** the item's linked photo evidence as resolvable URLs (Task 4) */
   evidence?: string[];
+  /** Guided site inspections (step 4a) — the recording kind of each `evidence` entry, by position (null: a file that is
+   *  no recording kind). ABSENT from an API older than the field, and from local captures appended after the served
+   *  entries. The phone's submit guard counts by these, as the server does. */
+  evidenceKinds?: Array<'photo' | 'video' | 'voice' | null>;
   /** Guided site inspections (step 2a) — the item's guidance, null for an item issued by name only. ABSENT only from an
    *  API older than the field. */
   guide?: ItemGuide | null;

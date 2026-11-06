@@ -1,6 +1,6 @@
 import { useEffect, useRef, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useStore, checklistFrozen, judgedChecklistItem } from '@/store/store';
+import { useStore, checklistFrozen } from '@/store/store';
 import { EmptyState, Eyebrow, StatTile, Button, LocationContext, EditState, ItemNotFound } from '@/components';
 import { Camera } from '@/lib/icons';
 import { checklistLabels as L, checklistText as T, inspectionTitle, recordingsAsked, servedDayIn, ENFORCED_RECORD_KINDS, type ChecklistItem, type ItemState, type Lang } from '@vitan/shared';
@@ -63,6 +63,10 @@ export function EngineerChecklistScreen() {
   const setItem = useStore((s) => s.setItem);
   const setNote = useStore((s) => s.setNote);
   const submitInspection = useStore((s) => s.submitInspection);
+  // Guided step 4a — the store's judge of an item (what the server will count); read with the pending captures it
+  // counts, so the progress moves when an upload lands, is refused or deleted
+  const judgeItem = useStore((s) => s.judgeChecklistItem);
+  useStore((s) => s.pendingChecklistEvidence);
   const addChecklistEvidence = useStore((s) => s.addChecklistEvidence);
   const failedEvidence = useStore((s) => s.failedEvidence);
   const pendingEvidenceCount = useStore((s) => s.pendingEvidenceCount);
@@ -334,7 +338,7 @@ export function EngineerChecklistScreen() {
                           </div>
                         );
                       }
-                      const asked = recordingsAsked(judgedChecklistItem(it));
+                      const asked = recordingsAsked(judgeItem(it));
                       const short = asked !== null && asked.have < asked.count;
                       const have = asked === null ? 0 : Math.min(asked.have, asked.count);
                       return (

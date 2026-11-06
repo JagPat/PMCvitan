@@ -16,6 +16,14 @@ import type { ItemGuide } from './types';
 
 export type RecordingKind = 'photo' | 'video' | 'voice';
 
+/** The kind of recording a file is, by its type; null for anything else. */
+export function recordingKindOf(mime: string): RecordingKind | null {
+  if (mime.startsWith('image/')) return 'photo';
+  if (mime.startsWith('video/')) return 'video';
+  if (mime.startsWith('audio/')) return 'voice';
+  return null;
+}
+
 /** The record kinds a submit is held to. The web walk adds 'video' and 'voice' with their capture (guided step 4b). */
 export const ENFORCED_RECORD_KINDS: ReadonlySet<RecordingKind> = new Set<RecordingKind>(['photo']);
 
