@@ -294,6 +294,37 @@ describe('the store', () => {
     expect(useStore.getState().keptElsewhereAny).toBe(true);
   });
 
+  it('H1: a lost project whose rows are all gone since (a filed visit file, a sent site photo) shows no line', async () => {
+    const file = { t: 'siteVisitAddFile', visitId: 'v-1', scope: SUB, file: { id: 'f-1', mime: 'image/jpeg' }, by: { name: 'Pat', role: 'pmc' }, placeName: null, idempotencyKey: 'sv-2' } as const;
+    await putVisitPhoto(SUB, 'p-gone', file as never, 'AA==');
+    await fileVisitPhoto(SUB, 'p-gone', 'f-1', 'm-1');
+    await putSitePhotoRow(SUB, 'p-gone', { clientKey: 'ph-1', kind: 'progress' } as never);
+    await markSitePhotoSent(SUB, 'p-gone', 'ph-1');
+    signIn();
+    await useStore.getState().checkKeptElsewhere();
+    expect(useStore.getState().keptElsewhereAny).toBe(false);
+    render(<ProjectSwitcher />);
+    expect(screen.getByTestId('project-switcher').tagName).toBe('DIV');
+    expect(screen.queryByTestId('kept-elsewhere-line')).toBeNull();
+  });
+
+  it('H2: a check started before a list read and landing after it does not overwrite the list’s answer', async () => {
+    signIn({ keptElsewhereAny: true });
+    let open!: () => void;
+    evidence.scanGate = new Promise<void>((r) => { open = r; });
+    const entered = new Promise<void>((r) => { evidence.scanEntered = r; });
+    // the check finds no key owing and waits on the stores' row keys
+    const check = useStore.getState().checkKeptElsewhere();
+    await entered;
+    evidence.scanGate = null;
+    localStorage.setItem(outbox(SUB, 'p-gone'), JSON.stringify([approve('k-1')]));
+    await useStore.getState().loadKeptElsewhere();
+    expect(useStore.getState().keptElsewhereAny).toBe(true);
+    open();
+    await check;
+    expect(useStore.getState().keptElsewhereAny).toBe(true);
+  });
+
   it('G4: the project open now is never listed, even before the memberships name it', async () => {
     localStorage.setItem(outbox(SUB, 'p-new'), JSON.stringify([approve('k-1')]));
     signIn({ activeProjectId: 'p-new' });

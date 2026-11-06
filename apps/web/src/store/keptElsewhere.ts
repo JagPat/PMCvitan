@@ -167,8 +167,8 @@ async function rowProjectsOf(sub: string): Promise<Set<string>> {
 }
 
 /** Whether this device may keep changes for a project `sub` does not hold (`held`): a queue key that owes an act or that
- *  this version cannot read, or a row kept for such a project. Keys only: no row is read. A row whose change has gone
- *  since (a sent marker, a filed file) may still say yes; the list then says nothing is kept */
+ *  this version cannot read, or an unsent row kept for such a project. The queue keys are read from localStorage and the
+ *  stores by their row keys; rows are read only for a project not held that has some (bounded, read only) */
 export async function keptAnywhere(storage: Keys & Names, sub: string, held: ReadonlySet<string>): Promise<boolean> {
   const scopes = { evidence: sub, visitPhoto: sub };
   for (const p of queuedProjectsOf(storage, sub)) {
@@ -178,7 +178,9 @@ export async function keptAnywhere(storage: Keys & Names, sub: string, held: Rea
       if (r && (r.read !== 'ok' || r.unread || r.acts.length > 0)) return true;
     }
   }
-  for (const p of await rowProjectsOf(sub)) if (!held.has(p)) return true;
+  // a project not held is rare: only its rows are read (bounded, read only), so a row whose change has gone since (a filed
+  // visit file, a site photo the server took) never keeps the line up (Stage 1 H1)
+  for (const p of await rowProjectsOf(sub)) if (!held.has(p) && (await rowsOf(sub, p)).length > 0) return true;
   return false;
 }
 

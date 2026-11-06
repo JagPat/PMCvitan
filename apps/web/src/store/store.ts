@@ -5339,7 +5339,9 @@ export const useStore = create<Store>()(
       if (!read) return;
       const kept = await readKeptElsewhere(read.storage, read.sub, read.held).catch(() => null);
       if (kept === null || seq !== keptListSeq || !keptReadHolds(get(), read)) return;
-      // the list is the fuller read: the line follows it, so an emptied list takes its line away
+      // the list is the fuller read: the line follows it, so an emptied list takes its line away, and a check started
+      // before it that lands after it is dropped (Stage 1 H2)
+      keptCheckSeq += 1;
       set((s) => { s.keptElsewhere = kept; s.keptElsewhereAny = kept.length > 0; });
     },
     loadOrgData: () => {
