@@ -307,8 +307,8 @@ export class InspectionsService {
       scope, actor, commandType: 'inspections.setResponsible', idempotencyKey, requestHash,
       run: async (tx) => {
         await lockProjectReadiness(tx, projectId);
-        const [insp] = await tx.$queryRaw<Array<{ responsibleMemberId: string | null }>>(
-          Prisma.sql`SELECT "responsibleMemberId" FROM "Inspection" WHERE "id" = ${inspectionId} AND "projectId" = ${projectId} FOR UPDATE`,
+        const [insp] = await tx.$queryRaw<Array<{ responsibleMemberId: string | null; reinspectionOfId: string | null }>>(
+          Prisma.sql`SELECT "responsibleMemberId", "reinspectionOfId" FROM "Inspection" WHERE "id" = ${inspectionId} AND "projectId" = ${projectId} FOR UPDATE`,
         );
         if (!insp) throw new NotFoundException(`Inspection ${inspectionId} not found`);
         // Codex #1297 r4 — the PROJECT is re-read too, under its row lock (the owner's `FOR NO KEY UPDATE`): an archive
@@ -320,6 +320,14 @@ export class InspectionsService {
         // anyone. Locked after Inspection, so Membership still follows Inspection on every path.
         if (!(await this.orgs.hasProjectRoleStanding(tx, projectId, user.sub, [user.role], { forUpdate: true }))) {
           throw projectRoleChanged('naming');
+        }
+        // #482 "Who fixes this?" — ONE name per inspection lineage, held on its ROOT (`lineageRoots`, the root every
+        // served checklist and review carries as `lineageRootId`). An inspection is its lineage's root exactly when it
+        // re-checks nothing, and `reinspectionOfId` is set once, when the reject creates the re-inspection, and never
+        // changes, so the row read above under its lock answers it. Checked after the caller's authority, so a caller
+        // who may not name anyone learns nothing about the lineage.
+        if (insp.reinspectionOfId !== null) {
+          throw new BadRequestException('Name who fixes this on the first inspection of this check.');
         }
         if (memberId !== null && !(await standsAsResponsible(this.orgs, tx, projectId, memberId, { forUpdate: true }))) {
           throw new BadRequestException(`Only an active ${RESPONSIBLE_ROLES.join(' or ')} on this project can be named to fix this.`);

@@ -6,6 +6,7 @@ import { INSPECTION_READER_ROLES, type RecordingKind } from '@vitan/shared';
 import { toIsoCivilDate } from '../common/civil-date';
 import { isFailedItem } from './failed-item';
 import { guideOf } from './guided-item';
+import { lineageRoots } from './inspection-lineage';
 
 /**
  * Phase 2 Task 10 (Module 3) — the ONE canonical inspections read serializer, shared by the live snapshot
@@ -239,6 +240,10 @@ export function bakeInspections(
   const isPmc = role === 'pmc';
   const canSeeInspections = INSPECTION_READER_ROLES.includes(role);
   const all = base.inspections;
+  // #482 "Who fixes this?" — every row says the root of its lineage (derived here from `reinspectionOfId`, which the
+  // base already holds for every inspection of the project, so the live and projection reads serve it identically and
+  // nothing stored changes). A naming is held on the root.
+  const rootOf = lineageRoots(all);
 
   // Issued checklists. `computeInspectionsBase` reads them with no `orderBy`, so row order is
   // whatever the planner returns: every choice made here sorts first, or it is not reproducible.
@@ -257,6 +262,7 @@ export function bakeInspections(
     // says so too, as `null`: an ABSENT key is how a client recognises a server older than the field, whose
     // count it cannot know (#482 6114668018).
     reinspectionOfId: row.reinspectionOfId ?? null,
+    lineageRootId: rootOf(row.id),
     // #771 read contract (#482 6115700782) — the STORED assignee and due date, on a row this viewer already
     // receives (the `mine` filter below decides that, unchanged). Like the lineage above, `null` means none is
     // stored and an absent key means an older server. The stored assignee is a historical fact, not an
@@ -339,6 +345,7 @@ export function bakeInspections(
         decided: i.decided,
         // Task 4: a reinspection is labelled by its predecessor in the review queue.
         reinspectionOfId: i.reinspectionOfId ?? undefined,
+        lineageRootId: rootOf(i.id),
         // #771 read contract — the same stored facts as the field view's rows (`null` when none is stored).
         assigneeId: i.assigneeId,
         dueDate: i.dueDate,

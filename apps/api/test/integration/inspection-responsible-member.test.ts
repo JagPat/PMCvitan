@@ -107,6 +107,34 @@ describe('the PMC or engineer names who fixes an inspection\'s failed work (live
     await put('pmc', null);
   });
 
+  it('one name per lineage, on its root: naming a re-inspection at any depth is 400 with no write, no audit row and no event', async () => {
+    const reB = `${f.projectA.id}-resp-reB`;
+    const reC = `${f.projectA.id}-resp-reC`;
+    await t.prisma.inspection.create({ data: { id: reB, projectId: f.projectA.id, kind: 'checklist', title: 'Re-check B', zone: 'Zone A', date: '3 Nov', reinspectionOfId: inspectionId(), submitted: true, decided: true } });
+    await t.prisma.inspection.create({ data: { id: reC, projectId: f.projectA.id, kind: 'checklist', title: 'Re-check C', zone: 'Zone A', date: '4 Nov', reinspectionOfId: reB } });
+    try {
+      const audits = () => t.prisma.auditLog.count({ where: { projectId: f.projectA.id, action: 'inspection.responsible' } });
+      const events = () => t.prisma.domainEvent.count({ where: { projectId: f.projectA.id, eventType: 'inspection.responsible_set' } });
+      const [a0, e0] = [await audits(), await events()];
+      for (const insp of [reB, reC]) {
+        for (const memberId of [ids.contractor!, null]) {
+          const res = await put('pmc', memberId, insp);
+          expect(res.status).toBe(400);
+          expect(res.body.message).toBe('Name who fixes this on the first inspection of this check.');
+        }
+        expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp }, select: { responsibleMemberId: true } })).responsibleMemberId).toBeNull();
+      }
+      expect([await audits(), await events()]).toEqual([a0, e0]);
+      // the root of the same lineage is named as before
+      expect((await put('pmc', ids.contractor!)).status).toBe(200);
+      expect(await stored()).toBe(ids.contractor);
+      expect(await audits()).toBe(a0 + 1);
+      await put('pmc', null);
+    } finally {
+      await t.prisma.inspection.deleteMany({ where: { id: { in: [reC, reB] } } });
+    }
+  });
+
   it('another project\'s inspection or an unknown one is 404; a body that is not one member id or null is 400', async () => {
     expect((await put('pmc', ids.contractor!, otherProjectInspection())).status).toBe(404);
     expect((await put('pmc', ids.contractor!, `${f.projectA.id}-no-such`)).status).toBe(404);

@@ -257,6 +257,8 @@ export interface ChecklistDto {
   /** #771 — the rejected inspection this re-inspection re-checks; `null` on an ordinary checklist. Always
    *  present: an absent key tells a client the server predates it (#482 6114668018). */
   reinspectionOfId: string | null;
+  /** #482 "Who fixes this?" — the root of this inspection's lineage (its own id when it re-checks nothing). */
+  lineageRootId: string;
   /** #771 read contract — the STORED assignee (`null` = none); a historical fact, not an authority. Always
    *  present, like the lineage: an absent key tells a client the server predates it. */
   assigneeId: string | null;
@@ -281,6 +283,8 @@ export interface ReviewDto {
   decided: boolean;
   /** set when this review IS a reinspection — the predecessor it re-checks (Task 4) */
   reinspectionOfId?: string;
+  /** #482 "Who fixes this?" — as {@link ChecklistDto.lineageRootId}. */
+  lineageRootId: string;
   /** #771 read contract — the stored assignee and civil due date (`null` = none stored). Always present. */
   assigneeId: string | null;
   dueDate: string | null;
