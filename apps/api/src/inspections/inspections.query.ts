@@ -1,12 +1,14 @@
 import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import type { InspectionsModuleResult, ReadinessInspection } from '@vitan/shared';
+import type { InspectionsModuleResult, ReadinessInspection, RecordingKind } from '@vitan/shared';
+import { recordingKindOf } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { SignedUrlService } from '../media/signed-url.service';
-import { bakeInspections, computeInspectionsBase, type InspectionsBase, type InspectionsSlices } from './inspections-serialize';
+import { bakeInspections, computeInspectionsBase, fieldViewMediaIds, type InspectionsBase, type InspectionsSlices } from './inspections-serialize';
 import { bindingAssigneeIds } from './assignment-eligibility';
 import { heldNamings } from './responsible-member';
 import { OrgsParticipant } from '../orgs/orgs.participant';
+import { MediaParticipant } from '../media/media.participant';
 import { INSPECTIONS_PROJECTION } from './inspections.projection';
 import { readServableGeneration } from '../platform/projections/generation';
 import { nextSeqId } from '../domain/ids';
@@ -87,7 +89,19 @@ export class InspectionsQueryService {
     private readonly signed: SignedUrlService,
     // #571 round 8, finding 3 — the assignee-standing question goes to the model's OWNER.
     private readonly orgs: OrgsParticipant,
+    // Guided site inspections step 4a — each evidence file's type goes to the media module, its owner (as the submit's
+    // evidence rule asks it), so the field view serves the kind of every evidence entry.
+    private readonly media: MediaParticipant,
   ) {}
+
+  /** The recording kind of every evidence file the field view serves (`fieldViewMediaIds`: open checklists and the
+   *  submitted fallback, never the whole project's history; #1374), by the media module's answer. A file it does not
+   *  name (not in this project) is left out, and served as null. */
+  private async evidenceKinds(projectId: string, base: InspectionsBase): Promise<ReadonlyMap<string, RecordingKind | null>> {
+    const ids = fieldViewMediaIds(base);
+    const mimes = await this.media.mimesOf(this.prisma, { projectId, mediaIds: ids });
+    return new Map([...mimes].map(([id, mime]) => [id, recordingKindOf(mime)]));
+  }
 
   /** Bake an evidence media row's short-lived signed serve path (minted per read — never stored). */
   private evidencePath = (mediaId: string): string => this.signed.mediaPath(mediaId);
@@ -99,7 +113,7 @@ export class InspectionsQueryService {
    */
   async snapshotSlice(projectId: string, role: string, viewerId?: string, hiddenEvidence: ReadonlySet<string> = NONE_HIDDEN): Promise<InspectionsSlices> {
     const base = await computeInspectionsBase(this.prisma, projectId);
-    return bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base), hiddenEvidence });
+    return bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base), hiddenEvidence, evidenceKinds: await this.evidenceKinds(projectId, base) });
   }
 
   /**
@@ -241,7 +255,7 @@ export class InspectionsQueryService {
     // half of the fence; the write half (an `InspectionsProjection` writer trigger mirroring the
     // decisions one) is a separate unit, and until it exists this is what keeps wrong data unserved.
     if (!isCurrentInspectionsBase(base)) return { slices: empty, generation: null };
-    return { slices: bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base), hiddenEvidence }), generation: gen.generation };
+    return { slices: bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base), hiddenEvidence, evidenceKinds: await this.evidenceKinds(projectId, base) }), generation: gen.generation };
   }
 
   /**
