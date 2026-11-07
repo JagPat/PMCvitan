@@ -73,6 +73,7 @@ async function mount(role: Role, me: string, gw: Fake, lang: Lang = 'en') {
 const refusal = (status: number, serverMessage: string) => Object.assign(new Error(String(status)), { status, serverMessage });
 const click = async (el: HTMLElement) => { await act(async () => { fireEvent.click(el); }); await settled(); };
 const type = (el: HTMLElement, value: string) => fireEvent.change(el, { target: { value } });
+const listCalls = (gw: Fake) => gw.listSiteVisits!.mock.calls.length;
 
 beforeEach(() => {
   expect(useStore.getState()._outboxFlushing()).toBe(false);
@@ -490,5 +491,135 @@ describe('video V2g-2: a clip\'s full-video link', () => {
       expect(within(card).getByTestId('sv-link-said-m-c').textContent, msg).toContain(words);
       cleanup();
     }
+  });
+  it('a take-off that lands says the link was taken off, never that it was saved (#1409 r1)', async () => {
+    for (const [lang, words] of [['en', 'Full video link taken off.'], ['hi', 'पूरे वीडियो का लिंक हटाया गया।'], ['gu', 'પૂરા વીડિયોની લિંક કાઢી.']] as const) {
+      const { gw, state } = server(visit({ files: [clip({ fullVideoLink: link(), fullVideoLinkOffer: ownOffer })] }));
+      const card = await mount('consultant', CONSULTANT, gw, lang);
+      await click(within(card).getByTestId('sv-link-off-m-c'));
+      state.visit = visit({ files: [clip({ fullVideoLinkOffer: addOffer })] });
+      await click(within(card).getByTestId('sv-link-off-yes-m-c'));
+      expect(gw.endSiteVisitFileLink).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole('status').textContent, lang).toBe(words);
+      cleanup();
+    }
+  });
+
+  it('a form whose offer leaves while it is open closes, its key dropped, and focus stays on the clip (#1409 r1)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    const hour = { reasonRequired: false, until: new Date(NOW + 60_000).toISOString() };
+    const lost = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const { gw, state } = server(visit({ files: [clip({ fullVideoLink: link(), fullVideoLinkOffer: hour })] }), { setSiteVisitFileLink: lost });
+    const card = await mount('consultant', CONSULTANT, gw);
+    await click(within(card).getByTestId('sv-link-change-m-c'));
+    type(within(card).getByTestId('sv-link-url-m-c'), ZOHO);
+    await click(within(card).getByTestId('sv-link-save-m-c'));
+    expect(lost).toHaveBeenCalledTimes(1);
+    within(card).getByTestId('sv-link-url-m-c').focus();
+    // the hour runs out with the form open: the form goes, and focus is not left on the page's body
+    vi.spyOn(Date, 'now').mockImplementation(() => NOW + 60_001);
+    await act(async () => { vi.advanceTimersByTime(60_100); });
+    await settled();
+    expect(within(card).queryByTestId('sv-link-form-m-c')).toBeNull();
+    expect(within(card).queryByTestId('sv-link-change-m-c')).toBeNull();
+    expect(document.activeElement).toBe(within(card).getByTestId('sv-link-open-m-c'));
+    // an offer read again later opens a fresh form: the closed one's key went with it
+    state.visit = visit({ files: [clip({ fullVideoLink: link(), fullVideoLinkOffer: { reasonRequired: false, until: new Date(NOW + 3_600_000).toISOString() } })] });
+    const st = useStore.getState();
+    await act(async () => { tellSiteVisits({ kind: 'answer', project: st.activeProjectId, generation: st.projectScopeGeneration, visit: state.visit }); });
+    await settled();
+    await click(within(card).getByTestId('sv-link-change-m-c'));
+    expect((within(card).getByTestId('sv-link-url-m-c') as HTMLInputElement).value).toBe('');
+    type(within(card).getByTestId('sv-link-url-m-c'), ZOHO);
+    lost.mockImplementationOnce(async () => state.visit);
+    await click(within(card).getByTestId('sv-link-save-m-c'));
+    const [, , first, firstKey] = lost.mock.calls[0]!;
+    const [, , fresh, freshKey] = lost.mock.calls[1]!;
+    expect(freshKey).not.toBe(firstKey);
+    expect((fresh as { id: string }).id).not.toBe((first as { id: string }).id);
+  });
+
+  it('the PMC\'s change sent again after a lost answer keeps its reason, key and body, though a read shows the change landed (#1409 r1)', async () => {
+    const mineAfter = (id: string) => link({ id, url: ZOHO, host: 'zoho', label: null, addedById: PMC, addedByName: 'Priya Shah', addedByRole: 'pmc' });
+    const sends = vi.fn()
+      .mockImplementationOnce(async (_v: string, _m: string, body: { id: string }) => {
+        // the change lands; its answer is lost. The read after shows the link as the PMC's own: no reason asked of it now
+        state.visit = visit({ files: [clip({ fullVideoLink: mineAfter(body.id), fullVideoLinkOffer: ownOffer })] });
+        throw new TypeError('Failed to fetch');
+      })
+      .mockImplementationOnce(async () => state.visit);
+    const { gw, state } = server(visit({ files: [clip({ fullVideoLink: link(), fullVideoLinkOffer: pmcOffer })] }), { setSiteVisitFileLink: sends });
+    const card = await mount('pmc', PMC, gw);
+    await click(within(card).getByTestId('sv-link-change-m-c'));
+    type(within(card).getByTestId('sv-link-url-m-c'), ZOHO);
+    type(within(card).getByTestId('sv-link-reason-m-c'), 'Better copy');
+    await click(within(card).getByTestId('sv-link-save-m-c'));
+    expect(listCalls(gw)).toBeGreaterThan(1);
+    expect(within(card).getByTestId('sv-link-m-c').textContent).toContain('Priya Shah');
+    // the form still asks the reason it asked at open, so the same body goes again under the same key, once
+    expect(within(card).getByTestId('sv-link-reason-m-c')).toBeTruthy();
+    await click(within(card).getByTestId('sv-link-save-m-c'));
+    const [, , first, firstKey] = sends.mock.calls[0]!;
+    const [, , again, againKey] = sends.mock.calls[1]!;
+    expect(againKey).toBe(firstKey);
+    expect(again).toEqual(first);
+    expect(again).toEqual({ id: expect.stringMatching(UUID), url: ZOHO, replaces: link().id, reason: 'Better copy' });
+    expect(within(card).queryByTestId('sv-link-form-m-c')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('Full video link saved.');
+  });
+
+  it('the PMC\'s take-off sent again after a lost answer keeps its reason and key, though a read shows the link gone (#1409 r1)', async () => {
+    const sends = vi.fn()
+      .mockImplementationOnce(async () => {
+        state.visit = visit({ files: [clip({ fullVideoLinkOffer: addOffer })] });
+        throw new TypeError('Failed to fetch');
+      })
+      .mockImplementationOnce(async () => state.visit);
+    const { gw, state } = server(visit({ files: [clip({ fullVideoLink: link(), fullVideoLinkOffer: pmcOffer })] }), { endSiteVisitFileLink: sends });
+    const card = await mount('pmc', PMC, gw);
+    await click(within(card).getByTestId('sv-link-off-m-c'));
+    type(within(card).getByTestId('sv-link-reason-m-c'), 'Wrong clip linked');
+    await click(within(card).getByTestId('sv-link-off-yes-m-c'));
+    expect(within(card).queryByTestId('sv-link-m-c')).toBeNull();
+    expect(within(card).getByTestId('sv-link-reason-m-c')).toBeTruthy();
+    await click(within(card).getByTestId('sv-link-off-yes-m-c'));
+    const [, , first, firstKey] = sends.mock.calls[0]!;
+    const [, , again, againKey] = sends.mock.calls[1]!;
+    expect(againKey).toBe(firstKey);
+    expect(again).toEqual({ linkId: link().id, reason: 'Wrong clip linked' });
+    expect(again).toEqual(first);
+    expect(within(card).queryByTestId('sv-link-off-ask-m-c')).toBeNull();
+  });
+
+  it('the PMC\'s change sent again after a lost answer that did not land, when a third person\'s link went on meanwhile: a stale 409, and the card shows that link (#1409 r1)', async () => {
+    const third = link({ id: '55555555-5555-4555-8555-555555555555', url: ZOHO, host: 'zoho', label: 'Third', addedById: 'u-other', addedByName: 'Asha Mehta', addedByRole: 'consultant' });
+    const stale = refusal(409, 'Someone else changed this video\'s full video link; look at it again');
+    const sends = vi.fn()
+      .mockImplementationOnce(async () => {
+        // the change did not land; another person's link went on before the read
+        state.visit = visit({ files: [clip({ fullVideoLink: third, fullVideoLinkOffer: pmcOffer })] });
+        throw new TypeError('Failed to fetch');
+      })
+      .mockRejectedValueOnce(stale);
+    const { gw, state } = server(visit({ files: [clip({ fullVideoLink: link(), fullVideoLinkOffer: pmcOffer })] }), { setSiteVisitFileLink: sends });
+    const card = await mount('pmc', PMC, gw);
+    await click(within(card).getByTestId('sv-link-change-m-c'));
+    type(within(card).getByTestId('sv-link-url-m-c'), DRIVE);
+    type(within(card).getByTestId('sv-link-reason-m-c'), 'Better copy');
+    await click(within(card).getByTestId('sv-link-save-m-c'));
+    expect(within(card).getByTestId('sv-link-m-c').textContent).toContain('Third');
+    await click(within(card).getByTestId('sv-link-save-m-c'));
+    const [, , first, firstKey] = sends.mock.calls[0]!;
+    const [, , again, againKey] = sends.mock.calls[1]!;
+    // the same body under the same key: it still names the link seen at open, so the server refuses it as stale
+    expect(againKey).toBe(firstKey);
+    expect(again).toEqual(first);
+    expect((again as { replaces: string }).replaces).toBe(link().id);
+    expect(within(card).queryByTestId('sv-link-form-m-c')).toBeNull();
+    expect(within(card).getByTestId('sv-link-said-m-c').textContent).toBe('The link was not saved. Someone else changed this video’s full video link; look at it again');
+    expect(within(card).getByTestId('sv-link-m-c').textContent).toContain('Third');
+    expect(within(card).getByTestId('sv-link-change-m-c')).toBeTruthy();
+    expect(sends).toHaveBeenCalledTimes(2);
   });
 });

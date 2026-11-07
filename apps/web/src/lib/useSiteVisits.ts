@@ -906,7 +906,8 @@ export function useSiteVisits() {
       if (!live(scope)) return null;
       // as an act's answer is: the whole visit, its offers included, shown in place of the one read before
       tellSiteVisits({ kind: 'answer', project: scope.projectId, generation: scope.generation, visit: v });
-      setNotice(SV.linkSaved[useStore.getState().lang]);
+      // the notice names the change made: a take-off is never told as a save (#1409 r1)
+      setNotice((act === 'end' ? SV.linkTakenOff : SV.linkSaved)[useStore.getState().lang]);
       return null;
     } catch (err) {
       if (!live(scope)) return null;

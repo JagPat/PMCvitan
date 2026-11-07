@@ -342,6 +342,7 @@ export const SV = {
   },
   linkTakeOffYes: { en: 'Take it off', hi: 'हटाएँ', gu: 'કાઢો' },
   linkSaved: { en: 'Full video link saved.', hi: 'पूरे वीडियो का लिंक सहेजा गया।', gu: 'પૂરા વીડિયોની લિંક સાચવી.' },
+  linkTakenOff: { en: 'Full video link taken off.', hi: 'पूरे वीडियो का लिंक हटाया गया।', gu: 'પૂરા વીડિયોની લિંક કાઢી.' },
   linkNotSaved: { en: 'The link was not saved.', hi: 'लिंक नहीं सहेजा गया।', gu: 'લિંક સચવાઈ નથી.' },
   linkNotTakenOff: { en: 'The link was not taken off.', hi: 'लिंक नहीं हटाया गया।', gu: 'લિંક કાઢી નથી.' },
   linkOffline: {

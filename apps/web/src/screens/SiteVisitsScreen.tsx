@@ -288,8 +288,15 @@ function FileLink({ visitId, file, lang, pmc, busy, setLink, endLink }: {
   const box = useRef<HTMLDivElement>(null);
   const opener = useRef<string | null>(null);
   const [focusTurn, setFocusTurn] = useState(0);
+  // whether a reason was asked when the form opened: kept for the form's life, so a try sent again after a lost answer
+  // is the same body under the same key even when a read meanwhile shows the change landed (the link now the PMC's own,
+  // no reason asked of it) (#1409 r1)
+  const [reasonAtOpen, setReasonAtOpen] = useState(false);
+  // the form was closed because its offer left (the hour up): focus is given back only if it was lost with the form
+  const offerGone = useRef(false);
   const open = (to: 'form' | 'off', from: string) => {
-    setSaid(null); setSeen(link?.id ?? null); setMode(to); opener.current = from; setFocusTurn((n) => n + 1);
+    setSaid(null); setSeen(link?.id ?? null); setReasonAtOpen(link !== null && offer?.reasonRequired === true);
+    setMode(to); opener.current = from; offerGone.current = false; setFocusTurn((n) => n + 1);
   };
   const [url, setUrl] = useState('');
   const [label, setLabel] = useState('');
@@ -303,8 +310,15 @@ function FileLink({ visitId, file, lang, pmc, busy, setLink, endLink }: {
     const root = box.current;
     if (!root || focusTurn === 0) return;
     const at = (sel: string) => root.querySelector<HTMLElement>(sel);
-    if (mode === 'idle') (at(`[data-testid="${opener.current}"]`) ?? at('button, a'))?.focus();
-    else at(mode === 'form' ? `[data-testid="sv-link-url-${id}"]` : `[data-testid="sv-link-reason-${id}"], [data-testid="sv-link-cancel-${id}"]`)?.focus();
+    if (mode === 'idle') {
+      if (offerGone.current) {
+        offerGone.current = false;
+        const now = document.activeElement;
+        if (now && now !== document.body && now.isConnected) return;
+      }
+      // the opener, else the link's own first control still there
+      (at(`[data-testid="${opener.current}"]`) ?? at('button, a'))?.focus();
+    } else at(mode === 'form' ? `[data-testid="sv-link-url-${id}"]` : `[data-testid="sv-link-reason-${id}"], [data-testid="sv-link-cancel-${id}"]`)?.focus();
   }, [focusTurn, mode, id]);
   const host = link ? videoLinkHost(link.url) : null;
   const shown = link && (
@@ -325,13 +339,19 @@ function FileLink({ visitId, file, lang, pmc, busy, setLink, endLink }: {
   );
   const told = said && <div className={styles.error} role="alert" data-testid={`sv-link-said-${id}`}>{said}</div>;
   // a reason only where the change ends a link that is not the viewer's own within the hour
-  const needsReason = seen !== null && offer?.reasonRequired === true;
+  const needsReason = seen !== null && (reasonAtOpen || offer?.reasonRequired === true);
   // a closed form's change is over: a later try is a fresh one, under a fresh key, naming the link then on screen. A
   // change whose answer was lost and that did land is then refused as stale (409) and the visit read again: never a
   // second link (Stage 1 ruling B)
   const close = () => {
     setMode('idle'); setUrl(''); setLabel(''); setReason(''); setKey.current = null; endKey.current = null; setFocusTurn((n) => n + 1);
   };
+  // the offer left while the form was open (the hour up, not the PMC): the form closes as Cancel does, its key with it,
+  // and focus goes to a control still on the clip (#1409 r1)
+  const formOpen = mode !== 'idle';
+  useEffect(() => {
+    if (offer === null && formOpen) { offerGone.current = true; close(); }
+  }, [offer === null, formOpen]); // eslint-disable-line react-hooks/exhaustive-deps
   const settle = (out: LinkOutcome) => {
     setSending(false);
     setSaid(out?.said ?? null);
