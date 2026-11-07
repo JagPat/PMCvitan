@@ -258,6 +258,47 @@ describe('"Your open items" on a contractor\'s or consultant\'s Dashboard (#482 
     expect(useStore.getState().toast).toBeNull();
   });
 
+  it('an upload still out across a switch away and back keeps its item busy; its late answer releases only its mark and says nothing (Codex #1408 4500500680)', async () => {
+    const up = uploads();
+    const { useStore, view, snap } = await openBlock({ uploadMedia: up.fn });
+    const { emptyProjectData } = await import('@/store/projectScope');
+    const sent = useStore.getState().addProofPhoto('INSP-32', 'it-joints', PNG);
+    await up.called();
+    // away to another project and back to this one, through the real teardown: a new scope generation each time
+    act(() => { useStore.setState({ ...emptyProjectData(), activeProjectId: 'other', projectScopeGeneration: 2 } as never); });
+    act(() => { useStore.setState({ ...emptyProjectData(), activeProjectId: 'qa', projectScopeGeneration: 3, openItems: ITEMS, toast: null } as never); });
+    // the item is still busy: a second proof for it is never sent while the first may still be stored
+    expect(view.getByTestId('open-proof-it-joints-add').textContent).toContain('Sending…');
+    expect(await useStore.getState().addProofPhoto('INSP-32', 'it-joints', PNG2)).toBe(false);
+    expect(up.fn).toHaveBeenCalledTimes(1);
+    // the old send is refused late: its mark is released, and nothing else (no line, no project read) reaches this scope
+    const reads = snap.mock.calls.length;
+    await act(async () => { up.calls[0]!.answer.reject(refused(409)); });
+    expect(await sent).toBe(false);
+    expect(useStore.getState().proofSending).toEqual([]);
+    expect(useStore.getState().toast).toBeNull();
+    expect(snap.mock.calls.length).toBe(reads);
+    await waitFor(() => expect(view.getByTestId('open-proof-it-joints-add').textContent).toContain('Add proof photo'));
+  });
+
+  it('a send is marked for its own project: another project\'s send for the same item id blocks nothing here, and each answer releases only its own mark (Codex #1408 4500500680)', async () => {
+    const up = uploads();
+    const { useStore } = await openBlock({ uploadMedia: up.fn }, { activeProjectId: 'other' });
+    const there = useStore.getState().addProofPhoto('INSP-32', 'it-joints', PNG);
+    await up.called();
+    act(() => { useStore.setState({ activeProjectId: 'qa', projectScopeGeneration: 2 } as never); });
+    const here = useStore.getState().addProofPhoto('INSP-32', 'it-joints', PNG);
+    // whichever comes first: this project's upload starts, or the send is refused as busy
+    expect(await Promise.race([up.called(2).then(() => 'sent'), here.then((ok) => `refused:${String(ok)}`)])).toBe('sent');
+    expect(useStore.getState().proofSending).toEqual(['other|it-joints', 'qa|it-joints']);
+    await act(async () => { up.calls[1]!.answer.resolve({ id: 'm2', url: '/media/m2' }); });
+    expect(await here).toBe(true);
+    expect(useStore.getState().proofSending).toEqual(['other|it-joints']);
+    await act(async () => { up.calls[0]!.answer.resolve({ id: 'm1', url: '/media/m1' }); });
+    expect(await there).toBe(false);
+    expect(useStore.getState().proofSending).toEqual([]);
+  });
+
   it('the snapshot\'s open items are taken whole, and a server without the key reads as none', async () => {
     vi.stubEnv('VITE_API_URL', 'http://api.test');
     vi.resetModules();

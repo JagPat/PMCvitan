@@ -446,7 +446,13 @@ export interface AppState {
   responsibleSaving: string[];
   /** #482 "Your open items" — the open inspections this contractor or consultant is named to fix (the snapshot's list) */
   openItems: OpenItem[];
-  /** #482 "Your open items" — the failed items whose proof photo is being sent now, by item id (one send per item) */
+  /** #482 "Your open items" — the failed items whose proof photo is being sent now, one send per item. Keyed by the
+   *  project and the item with NO scope generation (Codex #1408 4500500680, as the RM-w1 save gate): a scope change never
+   *  releases it, since the send's key belongs to its scope and a second send from the next one could store the proof
+   *  twice. Only that send's own answer releases its entry. Read through {@link proofSendRunning}.
+   *  Residual: an upload that hangs keeps its item busy until the request settles (a server answer or the browser's own
+   *  network failure); a reload ends it. There is no web timeout, because an aborted upload can still commit and a resend
+   *  under a new key would store the proof twice. */
   proofSending: string[];
   /** #482 site photos — a delete took a photo out of a full window: its count stays a floor until a snapshot rebuilds
    *  the window (Codex 4337661439) */
@@ -1011,12 +1017,13 @@ export interface AppActions {
 
 export type Store = AppState & AppActions;
 
-/** Task 10 correction — the SINGLE drawing-mutation readiness predicate, used BOTH to disable the
- *  controls in the UI and to defensively reject the command in the store (belt-and-braces). Under module
- *  read-ownership a drawing mutation must never run against a register whose module read hasn't settled
- *  ('idle'/'loading'/'error') — the store would be acting on stale or absent data. In the default
- *  'snapshot' mode the snapshot slice is authoritative, so mutations are never blocked (`drawingsLoad`
- *  stays 'idle' there and this returns false). */
+/** #482 "Your open items" (Codex #1408 4500500680) — a proof photo for this item, of the project on screen, is on its way. */
+export function proofSendRunning(s: Pick<AppState, 'proofSending' | 'activeProjectId'>, inspectionItemId: string): boolean {
+  return s.proofSending.includes(proofSendKey(s.activeProjectId, inspectionItemId));
+}
+function proofSendKey(projectId: string, inspectionItemId: string): string {
+  return `${projectId}|${inspectionItemId}`;
+}
 /** #482 "Who fixes this?" (Codex #1361 r3) — a save for this inspection, of the project on screen, is on its way. */
 export function responsibleSaveRunning(s: Pick<AppState, 'responsibleSaving' | 'activeProjectId'>, inspectionId: string): boolean {
   return s.responsibleSaving.includes(responsibleSaveKey(s.activeProjectId, inspectionId));
@@ -1028,6 +1035,12 @@ function responsibleSaveKey(projectId: string, inspectionId: string): string {
   return `${projectId}|${inspectionId}`;
 }
 
+/** Task 10 correction — the SINGLE drawing-mutation readiness predicate, used BOTH to disable the
+ *  controls in the UI and to defensively reject the command in the store (belt-and-braces). Under module
+ *  read-ownership a drawing mutation must never run against a register whose module read hasn't settled
+ *  ('idle'/'loading'/'error') — the store would be acting on stale or absent data. In the default
+ *  'snapshot' mode the snapshot slice is authoritative, so mutations are never blocked (`drawingsLoad`
+ *  stays 'idle' there and this returns false). */
 export function drawingMutationsBlocked(s: Pick<AppState, 'drawingsLoad'>): boolean {
   return drawingsReadMode() === 'moduleQuery' && s.drawingsLoad !== 'ready';
 }
@@ -6733,7 +6746,7 @@ export const useStore = create<Store>()(
         return Promise.resolve(false);
       }
       // one send per item: a second tap while one is on its way sends nothing
-      if (get().proofSending.includes(inspectionItemId)) return Promise.resolve(false);
+      if (proofSendRunning(get(), inspectionItemId)) return Promise.resolve(false);
       const photo = /^data:([^;,]+);base64,(.+)$/.exec(dataUrl);
       if (!photo) {
         get().flash(OIL.failed[lang]);
@@ -6748,8 +6761,11 @@ export const useStore = create<Store>()(
       const retryKey = `${scopeKey(scope)}|${inspectionItemId}`;
       const kept = proofRetryKeys.get(retryKey);
       const clientKey = kept && kept.data === data ? kept.key : newIdempotencyKey();
-      const settle = () => set((s) => { s.proofSending = s.proofSending.filter((id) => id !== inspectionItemId); });
-      set((s) => { s.proofSending = [...s.proofSending, inspectionItemId]; });
+      // the send's own entry, released by its own answer only, whatever scope is live by then (Codex #1408 4500500680);
+      // everything else the answer does below runs only while the scope it was sent from is still the live one
+      const sendingAt = proofSendKey(scope.projectId, inspectionItemId);
+      const settle = () => set((s) => { s.proofSending = s.proofSending.filter((k) => k !== sendingAt); });
+      set((s) => { s.proofSending = [...s.proofSending, sendingAt]; });
       return gateway
         .uploadMedia({ kind: 'proof', mime, data, inspectionId, inspectionItemId, clientKey })
         .then(() => {

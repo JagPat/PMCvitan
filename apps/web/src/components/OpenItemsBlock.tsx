@@ -1,6 +1,6 @@
 import { useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useStore } from '@/store/store';
+import { useStore, proofSendRunning } from '@/store/store';
 import { projectScopeOf, type ProjectScope } from '@/store/projectScope';
 import { API_BASE, type OpenItem } from '@/data/apiGateway';
 import { Camera } from '@/lib/icons';
@@ -23,6 +23,7 @@ export function OpenItemsBlock() {
   const online = useStore((s) => s.online);
   const openItems = useStore(useShallow((s) => s.openItems));
   const sending = useStore(useShallow((s) => s.proofSending));
+  const projectId = useStore((s) => s.activeProjectId);
   const addProofPhoto = useStore((s) => s.addProofPhoto);
   const fileRef = useRef<HTMLInputElement>(null);
   // the item the camera was opened for, and the scope it was opened in, pinned at the tap: reading the file is
@@ -70,7 +71,7 @@ export function OpenItemsBlock() {
                 <ul style={{ listStyle: 'none', margin: '8px 0 0', padding: 0, display: 'grid', gap: 8 }}>
                   {insp.failedItems.map((it) => {
                     const full = it.proofCount >= PROOF_PHOTOS_PER_ITEM;
-                    const busy = sending.includes(it.itemId);
+                    const busy = proofSendRunning({ proofSending: sending, activeProjectId: projectId }, it.itemId);
                     return (
                       <li key={it.itemId} data-testid={`open-proof-${it.itemId}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                         <span style={{ fontSize: 13 }}>
