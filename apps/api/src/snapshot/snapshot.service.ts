@@ -246,11 +246,16 @@ export class SnapshotService {
         })
       : [];
     const prover = await this.orgs.projectUploaders(this.prisma, projectId, [...new Set(proofMedia.map((m) => m.uploadedBy))]);
+    // U-4a — each proof's item name and lineage root, answered by the inspections module (no inspection table read here),
+    // so the web shows a lineage's proofs on its open row, each labelled by its own item. Same rows, same roles as above.
+    const proofTarget = await this.inspectionsQuery.proofTargets(projectId, proofMedia.map((m) => m.inspectionItemId!));
     const proofDtos: ProofPhotoDto[] = proofMedia.map((m) => ({
       id: m.id,
       url: this.signed.mediaPath(m.id),
       inspectionId: m.inspectionId!,
       inspectionItemId: m.inspectionItemId!,
+      ...(proofTarget.has(m.inspectionItemId!) ? { itemName: proofTarget.get(m.inspectionItemId!)!.itemName } : {}),
+      lineageRootId: proofTarget.get(m.inspectionItemId!)?.lineageRootId ?? m.inspectionId!,
       by: prover.get(m.uploadedBy)?.name,
       byRole: prover.get(m.uploadedBy)?.role,
       at: m.createdAt.toISOString(),
