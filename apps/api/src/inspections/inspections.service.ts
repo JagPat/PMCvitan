@@ -311,6 +311,21 @@ export class InspectionsService {
           Prisma.sql`SELECT "responsibleMemberId", "reinspectionOfId" FROM "Inspection" WHERE "id" = ${inspectionId} AND "projectId" = ${projectId} FOR UPDATE`,
         );
         if (!insp) throw new NotFoundException(`Inspection ${inspectionId} not found`);
+        // Codex #1395 4499451699 — a write on the ROOT sets the one name of the whole lineage, so a name a re-inspection
+        // still holds (written by the previous release, which accepted a naming on any inspection) is cleared in this
+        // same transaction, each with its own audit row and event. The held descendants are locked here, right after the
+        // root row and before the project and membership rows, so Inspection rows still come first on every path (and
+        // every inspection write takes the readiness key before any of them). Only a lock and a read: nothing is told
+        // to the caller before the authority checks below. The walk follows `reinspectionOfId` ids downward.
+        const heldBelow = insp.reinspectionOfId !== null ? [] : await tx.$queryRaw<Array<{ id: string; responsibleMemberId: string }>>(Prisma.sql`
+          WITH RECURSIVE "lineage"("id") AS (
+            SELECT "id" FROM "Inspection" WHERE "projectId" = ${projectId} AND "reinspectionOfId" = ${inspectionId}
+            UNION
+            SELECT c."id" FROM "Inspection" c JOIN "lineage" l ON c."reinspectionOfId" = l."id" WHERE c."projectId" = ${projectId}
+          )
+          SELECT i."id", i."responsibleMemberId" FROM "Inspection" i
+          WHERE i."projectId" = ${projectId} AND i."id" IN (SELECT "id" FROM "lineage") AND i."responsibleMemberId" IS NOT NULL
+          ORDER BY i."id" FOR UPDATE OF i`);
         // Codex #1297 r4 — the PROJECT is re-read too, under its row lock (the owner's `FOR NO KEY UPDATE`): an archive
         // takes no readiness key, so one that commits after the guard's unlocked read would otherwise leave this naming
         // free to write on an archived project. The archive either commits first (refused here) or waits for this commit.
@@ -342,7 +357,13 @@ export class InspectionsService {
         await tx.inspection.update({ where: { id: inspectionId }, data: { responsibleMemberId: memberId, responsibleStandingMark: mark } });
         await recordAudit(tx, { projectId, actor, action: 'inspection.responsible', entity: 'Inspection', entityId: inspectionId, payload: { from: insp.responsibleMemberId, to: memberId } });
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'inspection.responsible_set', entityType: 'Inspection', entityId: inspectionId, payload: { from: insp.responsibleMemberId, to: memberId }, effectKey: 'inspection.responsible_set', dispatch: {} });
-        return { resultRef: inspectionId, events: [ev] };
+        const events = [ev];
+        for (const child of heldBelow) {
+          await tx.inspection.update({ where: { id: child.id }, data: { responsibleMemberId: null, responsibleStandingMark: null } });
+          await recordAudit(tx, { projectId, actor, action: 'inspection.responsible', entity: 'Inspection', entityId: child.id, payload: { from: child.responsibleMemberId, to: null } });
+          events.push(await emitEvent(tx, { projectId, actor, eventType: 'inspection.responsible_set', entityType: 'Inspection', entityId: child.id, payload: { from: child.responsibleMemberId, to: null }, effectKey: 'inspection.responsible_set', dispatch: {} }));
+        }
+        return { resultRef: inspectionId, events };
       },
     });
     await this.dispatcher.dispatchCommitted(outcome.events);

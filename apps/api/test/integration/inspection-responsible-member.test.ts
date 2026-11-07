@@ -125,10 +125,14 @@ describe('the PMC or engineer names who fixes an inspection\'s failed work (live
         expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp }, select: { responsibleMemberId: true } })).responsibleMemberId).toBeNull();
       }
       expect([await audits(), await events()]).toEqual([a0, e0]);
-      // the root of the same lineage is named as before
+      // the root of the same lineage is named as before: with no name held below it, exactly one audit row and one event
+      // (the root's), and its re-inspections stay unnamed
       expect((await put('pmc', ids.contractor!)).status).toBe(200);
       expect(await stored()).toBe(ids.contractor);
-      expect(await audits()).toBe(a0 + 1);
+      expect([await audits(), await events()]).toEqual([a0 + 1, e0 + 1]);
+      for (const insp of [reB, reC]) {
+        expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp }, select: { responsibleMemberId: true } })).responsibleMemberId).toBeNull();
+      }
       await put('pmc', null);
     } finally {
       await t.prisma.inspection.deleteMany({ where: { id: { in: [reC, reB] } } });
@@ -173,6 +177,47 @@ describe('the PMC or engineer names who fixes an inspection\'s failed work (live
       expect([(await audits()).length, await events()]).toEqual([1, 1]);
     } finally {
       await t.prisma.inspection.deleteMany({ where: { id: reB } });
+    }
+  });
+
+  it('a write on the root clears every name its re-inspections still hold, in the same request, each audited', async () => {
+    const reB = `${f.projectA.id}-resp-rootB`;
+    const reC = `${f.projectA.id}-resp-rootC`;
+    // rows as the previous release wrote them: B and C each hold a name, with the mark a real naming takes
+    expect((await put('pmc', ids.contractor!)).status).toBe(200);
+    const { responsibleStandingMark } = await t.prisma.inspection.findUniqueOrThrow({ where: { id: inspectionId() }, select: { responsibleStandingMark: true } });
+    expect((await put('pmc', null)).status).toBe(200);
+    await t.prisma.inspection.create({ data: { id: reB, projectId: f.projectA.id, kind: 'checklist', title: 'Re-check B', zone: 'Zone A', date: '3 Nov', reinspectionOfId: inspectionId(), submitted: true, decided: true, responsibleMemberId: ids.contractor!, responsibleStandingMark } });
+    await t.prisma.inspection.create({ data: { id: reC, projectId: f.projectA.id, kind: 'checklist', title: 'Re-check C', zone: 'Zone A', date: '4 Nov', reinspectionOfId: reB, responsibleMemberId: ids.contractor!, responsibleStandingMark } });
+    try {
+      const held = async (id: string) => (await t.prisma.inspection.findUniqueOrThrow({ where: { id }, select: { responsibleMemberId: true } })).responsibleMemberId;
+      const auditsOn = (id: string) => t.prisma.auditLog.findMany({ where: { projectId: f.projectA.id, action: 'inspection.responsible', entityId: id } });
+      const eventsOn = (id: string) => t.prisma.domainEvent.count({ where: { projectId: f.projectA.id, eventType: 'inspection.responsible_set', entityId: id } });
+      const [rootAudits0, rootEvents0] = [(await auditsOn(inspectionId())).length, await eventsOn(inspectionId())];
+      // naming the consultant on the root leaves exactly one name in the lineage
+      const key = randomUUID();
+      const named = await put('pmc', ids.consultant!, inspectionId(), key);
+      expect(named.status).toBe(200);
+      expect([await stored(), await held(reB), await held(reC)]).toEqual([ids.consultant, null, null]);
+      const lineageRows = (named.body.responsibleMembers as Array<{ inspectionId: string; memberId: string }>).filter((r) => [inspectionId(), reB, reC].includes(r.inspectionId));
+      expect(lineageRows).toEqual([{ inspectionId: inspectionId(), memberId: ids.consultant }]);
+      for (const child of [reB, reC]) {
+        expect((await auditsOn(child)).map((a) => a.payload)).toEqual([{ from: ids.contractor, to: null }]);
+        expect(await eventsOn(child)).toBe(1);
+      }
+      expect([(await auditsOn(inspectionId())).length, await eventsOn(inspectionId())]).toEqual([rootAudits0 + 1, rootEvents0 + 1]);
+      // the same request replayed with its key returns the stored answer and writes nothing more
+      expect((await put('pmc', ids.consultant!, inspectionId(), key)).status).toBe(200);
+      for (const child of [reB, reC]) expect([(await auditsOn(child)).length, await eventsOn(child)]).toEqual([1, 1]);
+      expect([(await auditsOn(inspectionId())).length, await eventsOn(inspectionId())]).toEqual([rootAudits0 + 1, rootEvents0 + 1]);
+      // a root CLEAR with a held name on a re-inspection clears both
+      await t.prisma.inspection.update({ where: { id: reC }, data: { responsibleMemberId: ids.contractor!, responsibleStandingMark } });
+      expect((await put('engineer', null)).status).toBe(200);
+      expect([await stored(), await held(reB), await held(reC)]).toEqual([null, null, null]);
+      expect((await auditsOn(reC)).map((a) => a.payload)).toEqual([{ from: ids.contractor, to: null }, { from: ids.contractor, to: null }]);
+      expect(await eventsOn(reC)).toBe(2);
+    } finally {
+      await t.prisma.inspection.deleteMany({ where: { id: { in: [reC, reB] } } });
     }
   });
 
