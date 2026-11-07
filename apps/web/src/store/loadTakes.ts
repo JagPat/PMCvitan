@@ -75,9 +75,22 @@ export function normalizeGeneric(ops: OutboxOp[], scope: string, adopt?: (was: O
  *  belong in it (`isStoredGenericOp`), or the visit lane's acts that belong in it (`isStoredVisitOp`). An act in the
  *  wrong key is left where it is, byte for byte, by the ledger and is never sent from there (Codex 4499008051). */
 export function takenFromKey(lane: 'generic' | 'visit', acts: readonly unknown[], scope: string): OutboxOp[] {
-  const ops = acts.filter((o): o is OutboxOp => o !== null && typeof o === 'object');
-  if (lane === 'visit') return ops.filter(isStoredVisitOp);
-  return normalizeGeneric(ops, scope).ops.filter(isStoredGenericOp);
+  return takenAs(lane, acts, scope).filter((o): o is OutboxOp => o !== null);
+}
+
+/** #1388 U2: `takenFromKey`, act by act: for each of `acts`, in place, the act a load takes it as (keyed as the load
+ *  keys it), or null when the load leaves it where it is. The three normalizers each judge one act alone, and the legacy
+ *  photo keys run over the acts they pass in the same order, so the acts taken are `normalizeGeneric`'s, one for one
+ *  (pinned by a test). The discard names what to remove through this, so it removes exactly what the list shows. */
+export function takenAs(lane: 'generic' | 'visit', acts: readonly unknown[], scope: string): (OutboxOp | null)[] {
+  const isAct = (o: unknown): o is OutboxOp => o !== null && typeof o === 'object';
+  if (lane === 'visit') return acts.map((o) => (isAct(o) && isStoredVisitOp(o) ? o : null));
+  const each = acts.map((o) => (isAct(o) ? normalizeCommercialOutbox(normalizeLabourOutbox(normalizeMaterialsOutbox([o]).ops).ops).ops[0] ?? null : null));
+  const at = each.flatMap((o, n) => (o ? [n] : []));
+  const keyed = keyLegacyPhotos(at.map((n) => each[n] as OutboxOp), scope).ops;
+  const out: (OutboxOp | null)[] = acts.map(() => null);
+  at.forEach((n, i) => { out[n] = isStoredGenericOp(keyed[i]) ? keyed[i] : null; });
+  return out;
 }
 
 /** One visit photo row's put-back (`putBackVisitPhotos`), given the visit acts already queued (`queued`, by

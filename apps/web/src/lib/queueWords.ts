@@ -97,6 +97,60 @@ export const QW = {
     gu: 'મોકલાયું નથી: નકાર્યું, અથવા ફરી પ્રયાસની રાહમાં',
   },
   keptClose: { en: 'Close', hi: 'बंद करें', gu: 'બંધ કરો' },
+  // #1388 U2: the discard
+  keptDiscard: { en: 'Discard', hi: 'हटाएँ', gu: 'કાઢી નાખો' },
+  keptDiscardAll: { en: 'Discard all', hi: 'सभी हटाएँ', gu: 'બધા કાઢી નાખો' },
+  keptConfirmTitle: { en: 'Discard changes?', hi: 'बदलाव हटाएँ?', gu: 'ફેરફારો કાઢી નાખવા છે?' },
+  keptConfirm: {
+    en: 'Discard {n} changes for {project}? They were never sent and cannot be recovered.',
+    hi: '{project} के {n} बदलाव हटाएँ? ये कभी भेजे नहीं गए और वापस नहीं लाए जा सकते।',
+    gu: '{project} માટેના {n} ફેરફારો કાઢી નાખવા છે? તે ક્યારેય મોકલાયા નથી અને પાછા મેળવી શકાશે નહીં.',
+  },
+  keptConfirmOne: {
+    en: 'Discard 1 change for {project}? It was never sent and cannot be recovered.',
+    hi: '{project} का 1 बदलाव हटाएँ? यह कभी भेजा नहीं गया और वापस नहीं लाया जा सकता।',
+    gu: '{project} માટેનો 1 ફેરફાર કાઢી નાખવો છે? તે ક્યારેય મોકલાયો નથી અને પાછો મેળવી શકાશે નહીં.',
+  },
+  // "Discard all" of a project whose only kept changes cannot be read (none counted)
+  keptConfirmUnread: {
+    en: 'Discard the changes saved for {project}? They were never sent and cannot be recovered.',
+    hi: '{project} के लिए सहेजे गए बदलाव हटाएँ? ये कभी भेजे नहीं गए और वापस नहीं लाए जा सकते।',
+    gu: '{project} માટે સાચવેલા ફેરફારો કાઢી નાખવા છે? તે ક્યારેય મોકલાયા નથી અને પાછા મેળવી શકાશે નહીં.',
+  },
+  // added to "Discard all"'s confirm when it also removes changes this version cannot read (Stage 1's U2 ruling)
+  keptConfirmUnreadIncluded: {
+    en: 'This includes changes this version of the app cannot read.',
+    hi: 'इसमें वे बदलाव भी शामिल हैं जिन्हें ऐप का यह संस्करण पढ़ नहीं सकता।',
+    gu: 'આમાં એવા ફેરફારો પણ સામેલ છે જે ઍપનું આ સંસ્કરણ વાંચી શકતું નથી.',
+  },
+  keptBack: {
+    en: 'You have access to {project} again. These changes will be sent when you open it.',
+    hi: '{project} की पहुँच आपको फिर से मिल गई है। इसे खोलते ही ये बदलाव भेज दिए जाएँगे।',
+    gu: '{project}નો પ્રવેશ તમને ફરી મળ્યો છે. તેને ખોલશો ત્યારે આ ફેરફારો મોકલાશે.',
+  },
+  keptNoCheck: {
+    en: 'Could not check your access. Nothing was discarded.',
+    hi: 'आपकी पहुँच जाँची नहीं जा सकी। कुछ भी नहीं हटाया गया।',
+    gu: 'તમારો પ્રવેશ તપાસી શકાયો નથી. કંઈ કાઢી નાખ્યું નથી.',
+  },
+  keptNotDiscarded: {
+    en: 'Could not discard. Try again.',
+    hi: 'हटाया नहीं जा सका। फिर से कोशिश करें।',
+    gu: 'કાઢી શકાયું નથી. ફરી પ્રયાસ કરો.',
+  },
+  keptBusy: {
+    en: 'Being sent from another tab.',
+    hi: 'दूसरे टैब से भेजा जा रहा है।',
+    gu: 'બીજા ટૅબમાંથી મોકલાઈ રહ્યું છે.',
+  },
+  keptVisitUnchecked: {
+    en: 'Some site visit files could not be checked. Try again later.',
+    hi: 'साइट विज़िट की कुछ फ़ाइलें जाँची नहीं जा सकीं। बाद में फिर से कोशिश करें।',
+    gu: 'સાઇટ મુલાકાતની કેટલીક ફાઇલો તપાસી શકાઈ નથી. પછીથી ફરી પ્રયાસ કરો.',
+  },
+  keptDiscarded: { en: 'Discarded.', hi: 'हटा दिया गया।', gu: 'કાઢી નાખ્યું.' },
+  // a discard that found nothing to remove (another tab discarded it already)
+  keptNothingLeft: { en: 'Nothing left to discard.', hi: 'हटाने के लिए कुछ नहीं बचा।', gu: 'કાઢી નાખવા માટે કંઈ બાકી નથી.' },
   keptKindDecision: { en: 'Decision', hi: 'निर्णय', gu: 'નિર્ણય' },
   keptKindDrawing: { en: 'Drawing', hi: 'ड्रॉइंग', gu: 'ડ્રોઇંગ' },
   keptKindInspection: { en: 'Inspection', hi: 'निरीक्षण', gu: 'નિરીક્ષણ' },

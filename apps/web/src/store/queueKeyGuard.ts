@@ -216,20 +216,23 @@ function recoveredSnapshot<S extends Snapshot>(s: S): S {
  *  (`read`), and owes what its readable made records hold, less what its bytes may hold, as a load restores them
  *  (`recoveredSnapshot`); a made record this release cannot read says why too (`unread`: 'newer' when one is a newer
  *  release's, else 'damaged'), beside the acts the rest owe. A read that throws is reported as `null`. */
-export function readOwedActs(storage: Store, key: string, scopes: QueueScopes): { read: KeyRead; acts: OutboxOp[]; unread: Exclude<KeyRead, 'ok'> | null } | null {
+export function readOwedActs(storage: Store, key: string, scopes: QueueScopes): { read: KeyRead; acts: OutboxOp[]; unread: Exclude<KeyRead, 'ok'> | null; damagedRecords: boolean } | null {
   try {
     const s = snapshotOf(storage, key, scopes);
     const read = readOf(s.raw, scopes);
     let unread: Exclude<KeyRead, 'ok'> | null = null;
+    // #1388 U2: whether any made record is damaged (not a newer release's): "Discard all" removes those
+    let damagedRecords = false;
     if (s.recordsUnread) {
       unread = 'damaged';
       for (const name of namesUnder(storage, `vitan.made.${key}.`)) {
         const r = readLedgerQueue(storage.getItem(name), scopes);
         if ('unreadable' in r && r.unreadable === 'newer') unread = 'newer';
+        if ('unreadable' in r && r.unreadable === 'damaged') damagedRecords = true;
       }
     }
     // a key this release cannot read still gives its readable records' acts, as a load restores them
-    return { read, acts: owedOf(recoveredSnapshot(s)).owed.map((o) => o.act), unread };
+    return { read, acts: owedOf(recoveredSnapshot(s)).owed.map((o) => o.act), unread, damagedRecords };
   } catch {
     return null;
   }
@@ -704,6 +707,107 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
         due.set(doneName(key, o), o);
       }
       return marked;
+    },
+    /** #1388 U2, the person's discard of changes kept for a project they no longer hold. Run under `key`'s lock. The
+     *  key's owed occurrences (the key's, its readable made records' and those this tab holds stranded, as a load takes
+     *  them) are read in one snapshot, in a load's order; `select` names, by place in that list, the ones to discard
+     *  (the caller keys and filters them as a load does, so it names exactly what the person was shown). Each is marked
+     *  settled first, so a load between the mark and the write never takes it again; then the key is written with every
+     *  other occurrence, and every entry nothing names (another tab's act, an act in the wrong key, a malformed one)
+     *  stays byte for byte. A record the write makes redundant goes; this tab lets go of a discarded occurrence it held
+     *  stranded. 'unreadable': a key this release cannot read, never written here; 'failed': nothing was written (a
+     *  mark or the write did not land) */
+    discard(storage: Store, key: string, select: (acts: OutboxOp[]) => boolean[]): 'ok' | 'none' | 'unreadable' | 'failed' {
+      try {
+        const s = snapshotOf(storage, key, scopesOf(key));
+        if (s.acts === null && s.raw !== null) return 'unreadable';
+        const all = owedOf(recoveredSnapshot(s), stranded.get(key) ?? []);
+        const picked = select(all.owed.map((o) => o.act));
+        const gone = all.owed.filter((_, n) => picked[n] === true);
+        if (gone.length === 0) return 'none';
+        const goneIds = new Set(gone.map((o) => o.oid));
+        // the same act held twice (the key and a record) is one occurrence kept: the other is spent with the write
+        const once = new Set<string>();
+        const keep = all.owed.filter((o) => {
+          if (goneIds.has(o.oid)) return false;
+          if (!unique(o.act)) return true;
+          const i = queueActIdent(o.act);
+          if (once.has(i)) return false;
+          once.add(i);
+          return true;
+        });
+        // a done fact for each discarded act with an identity of its own, first: another tab that still holds one in
+        // memory settles it unsent at its flush (`settleDone`), never sends it (Stage 1 G5). A discard's fact is
+        // numbered 0, below every fact of an accepted act, so the budget (`pruneDone`, in `release` after the write) drops
+        // discard facts first and never an accepted act's for one (Stage 1 re-check 2). A fact already there stands.
+        const facts = new Map<string, string>();
+        for (const o of gone) {
+          const name = doneName(key, o.act);
+          const ident = queueActIdent(o.act);
+          if (!unique(o.act) || facts.has(ident) || readDone(storage.getItem(name))?.i === ident) continue;
+          facts.set(ident, name);
+          if (!put(storage, name, JSON.stringify({ i: ident, n: 0 }))) { for (const f of facts.values()) remove(storage, f); return 'failed'; }
+        }
+        // then the marks. If one cannot be written, this call is undone whole: the marks it wrote, their place in
+        // `sent`, and its facts, so 'failed' means nothing changed and every act stays kept, listed and sendable (Stage 1
+        // re-check 1). Once every mark is written, the acts are settled here whatever the write does (a load never takes
+        // a marked occurrence), and the facts stay with them
+        const marks: { name: string; oid: string }[] = [];
+        for (const o of gone) {
+          const name = markName(key, o.act, o.oid);
+          if (!put(storage, name, queueActIdent(o.act))) {
+            for (const m of marks) { remove(storage, m.name); sent.get(key)?.delete(m.oid); }
+            for (const f of facts.values()) remove(storage, f);
+            return 'failed';
+          }
+          marks.push({ name, oid: o.oid });
+          setOf(sent, key).add(o.oid);
+        }
+        const plan = planWrite(s, { mine: keep, known: new Set(all.frame.occs.map((o) => o.oid)), sent: goneIds });
+        if (plan === null || !apply(storage, key, plan, s.raw)) return 'failed';
+        landed(key, plan.next, keep, plan.raw);
+        const kept = new Set(plan.next.map((o) => o.oid));
+        unstrand(key, (i) => goneIds.has(i) || kept.has(i));
+        if (!stranded.has(key)) handed.delete(key);
+        release(storage, key, plan);
+        return 'ok';
+      } catch {
+        return 'failed';
+      }
+    },
+    /** #1388 U2, "Discard all" of a key this release cannot read as a list (a damaged one; a newer release's key is
+     *  never passed here): the key, its sidecar, its made records, its marks and every copy of it set aside go. Run
+     *  under the key's lock. True when nothing of it is left */
+    discardWhole(storage: Store, key: string): boolean {
+      const names = [
+        ...namesUnder(storage, `vitan.unreadable.${key}.`), ...namesUnder(storage, `vitan.made.${key}.`),
+        ...namesUnder(storage, `vitan.settled.${key}.`), sidecarName(key), key,
+      ];
+      let all = true;
+      for (const name of names) if (!remove(storage, name)) all = false;
+      stranded.delete(key);
+      handed.delete(key);
+      madeAside.delete(key);
+      setAsideRaw.delete(key);
+      return all;
+    },
+    /** #1388 U2, "Discard all" of a readable key: its made records this release cannot read and does not take as a
+     *  newer release's go (what they hold cannot be named, and no load ever restores it). Run under the key's lock,
+     *  after `discard`. True when none is left */
+    discardDamagedRecords(storage: Store, key: string): { ok: boolean; n: number } {
+      try {
+        const scopes = scopesOf(key);
+        let ok = true;
+        let n = 0;
+        for (const name of namesUnder(storage, `vitan.made.${key}.`)) {
+          const r = readLedgerQueue(storage.getItem(name), scopes);
+          if (!('unreadable' in r) || r.unreadable !== 'damaged') continue;
+          if (remove(storage, name)) n += 1; else ok = false;
+        }
+        return { ok, n };
+      } catch {
+        return { ok: false, n: 0 };
+      }
     },
     /** how many occurrences are held stranded, over every key */
     strandedCount(): number {
