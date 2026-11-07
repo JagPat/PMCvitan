@@ -893,7 +893,7 @@ export function useSiteVisits() {
    *  server's answer is the visit, shown at once; a refusal reads the visit again (someone else's change, or the hour
    *  up, shows there). Answers null once the change is the server's, or what to say beside the clip; `stale` when the
    *  link or the clip the person saw has changed (409, 404), so the form they filled for it is closed. */
-  const changeLink = async (send: (gw: ApiGateway) => Promise<SiteVisit>): Promise<LinkOutcome> => {
+  const changeLink = async (act: 'set' | 'end', send: (gw: ApiGateway) => Promise<SiteVisit>): Promise<LinkOutcome> => {
     const state = useStore.getState();
     const gateway = state.serverGateway();
     if (!gateway) return { said: SV.needsServer[state.lang], stale: false };
@@ -912,13 +912,16 @@ export function useSiteVisits() {
       if (!live(scope)) return null;
       const lang = useStore.getState().lang;
       const status = (err as { status?: unknown } | null)?.status;
+      // what the server holds may have moved (someone else's change, the hour up), and with no answer at all the change
+      // may still have been made: either way the visit is read again
+      void readHead(false);
       if (typeof status !== 'number') {
         return { said: globalThis.navigator?.onLine === false ? SV.linkOffline[lang] : SV.linkUnreachable[lang], stale: false };
       }
-      void readHead(false);
       if (isVisitFileGone(err)) return { said: SV.linkFileGone[lang], stale: true };
       const said = refusalMessage(err);
-      return { said: said ? `${SV.linkNotSaved[lang]} ${linkRefusalWords(said, lang)}` : SV.linkNotSaved[lang], stale: status === 409 || status === 404 };
+      const lead = act === 'end' ? SV.linkNotTakenOff[lang] : SV.linkNotSaved[lang];
+      return { said: said ? `${lead} ${linkRefusalWords(said, lang)}` : lead, stale: status === 409 || status === 404 };
     } finally {
       if (live(scope)) setBusy(false);
     }
@@ -928,10 +931,10 @@ export function useSiteVisits() {
     removeFile,
     /** V2g-2: put a link on the clip, or replace the one shown (`body.replaces`) */
     setFileLink: (visitId: string, file: SiteVisitFile, body: SiteVisitFileLinkBody, key: string) =>
-      changeLink((gw) => gw.setSiteVisitFileLink(visitId, file.mediaId, body, key)),
+      changeLink('set', (gw) => gw.setSiteVisitFileLink(visitId, file.mediaId, body, key)),
     /** V2g-2: take the clip's link off, naming the one shown */
     endFileLink: (visitId: string, file: SiteVisitFile, body: { linkId: string; reason?: string }, key: string) =>
-      changeLink((gw) => gw.endSiteVisitFileLink(visitId, file.mediaId, body, key)),
+      changeLink('end', (gw) => gw.endSiteVisitFileLink(visitId, file.mediaId, body, key)),
     visits: shown.visits, waiting: shown.waiting,
     /** the visits as the server last gave them (its reads and its answers), without the acts still queued here */
     read: rows,

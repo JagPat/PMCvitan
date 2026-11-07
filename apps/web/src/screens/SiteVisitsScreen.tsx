@@ -283,7 +283,14 @@ function FileLink({ visitId, file, lang, pmc, busy, setLink, endLink }: {
   // the link the person saw when they opened the form: the change names it, so a link someone else put on meanwhile
   // is refused (409) rather than replaced unseen, and the form is closed to be opened on the link as it now is
   const [seen, setSeen] = useState<string | null>(null);
-  const open = (to: 'form' | 'off') => { setSaid(null); setSeen(link?.id ?? null); setMode(to); };
+  // focus follows the form (G7): into its first field on open, and back to the button that opened it on close (or the
+  // clip's first control, when that button is gone because the change was made)
+  const box = useRef<HTMLDivElement>(null);
+  const opener = useRef<string | null>(null);
+  const [focusTurn, setFocusTurn] = useState(0);
+  const open = (to: 'form' | 'off', from: string) => {
+    setSaid(null); setSeen(link?.id ?? null); setMode(to); opener.current = from; setFocusTurn((n) => n + 1);
+  };
   const [url, setUrl] = useState('');
   const [label, setLabel] = useState('');
   const [reason, setReason] = useState('');
@@ -292,6 +299,13 @@ function FileLink({ visitId, file, lang, pmc, busy, setLink, endLink }: {
   const setKey = useRef<{ sig: string; key: string; id: string } | null>(null);
   const endKey = useRef<{ sig: string; key: string; id: string } | null>(null);
   const id = file.mediaId;
+  useEffect(() => {
+    const root = box.current;
+    if (!root || focusTurn === 0) return;
+    const at = (sel: string) => root.querySelector<HTMLElement>(sel);
+    if (mode === 'idle') (at(`[data-testid="${opener.current}"]`) ?? at('button, a'))?.focus();
+    else at(mode === 'form' ? `[data-testid="sv-link-url-${id}"]` : `[data-testid="sv-link-reason-${id}"], [data-testid="sv-link-cancel-${id}"]`)?.focus();
+  }, [focusTurn, mode, id]);
   const host = link ? videoLinkHost(link.url) : null;
   const shown = link && (
     <div className={styles.meta} data-testid={`sv-link-${id}`}>
@@ -315,7 +329,9 @@ function FileLink({ visitId, file, lang, pmc, busy, setLink, endLink }: {
   // a closed form's change is over: a later try is a fresh one, under a fresh key, naming the link then on screen. A
   // change whose answer was lost and that did land is then refused as stale (409) and the visit read again: never a
   // second link (Stage 1 ruling B)
-  const close = () => { setMode('idle'); setUrl(''); setLabel(''); setReason(''); setKey.current = null; endKey.current = null; };
+  const close = () => {
+    setMode('idle'); setUrl(''); setLabel(''); setReason(''); setKey.current = null; endKey.current = null; setFocusTurn((n) => n + 1);
+  };
   const settle = (out: LinkOutcome) => {
     setSending(false);
     setSaid(out?.said ?? null);
@@ -323,87 +339,99 @@ function FileLink({ visitId, file, lang, pmc, busy, setLink, endLink }: {
   };
   if (!offer || mode === 'idle') {
     return (
-      <>
+      <div ref={box} style={{ display: 'contents' }}>
         {shown}
         {offer && (
           <div className={styles.add}>
             {link ? (
               <>
-                <Button variant="light" disabled={busy} data-testid={`sv-link-change-${id}`} onClick={() => open('form')}>{SV.linkChange[lang]}</Button>
-                <Button variant="dangerOutline" disabled={busy} data-testid={`sv-link-off-${id}`} onClick={() => open('off')}>{SV.linkTakeOff[lang]}</Button>
+                <Button variant="light" disabled={busy} data-testid={`sv-link-change-${id}`} onClick={() => open('form', `sv-link-change-${id}`)}>{SV.linkChange[lang]}</Button>
+                <Button variant="dangerOutline" disabled={busy} data-testid={`sv-link-off-${id}`} onClick={() => open('off', `sv-link-off-${id}`)}>{SV.linkTakeOff[lang]}</Button>
               </>
             ) : (
-              <Button variant="light" disabled={busy} data-testid={`sv-link-add-${id}`} onClick={() => open('form')}>{SV.linkAdd[lang]}</Button>
+              <Button variant="light" disabled={busy} data-testid={`sv-link-add-${id}`} onClick={() => open('form', `sv-link-add-${id}`)}>{SV.linkAdd[lang]}</Button>
             )}
           </div>
         )}
         {told}
-      </>
+      </div>
     );
   }
-  const reasonField = needsReason && (
+  // the field the problem is about is marked invalid and described by it (G7)
+  const problemId = `sv-link-problem-text-${id}`;
+  const invalid = (field: string, on: string | null | undefined) =>
+    (on === field ? { 'aria-invalid': true, 'aria-describedby': problemId } : {});
+  const reasonField = (on: string | null | undefined) => needsReason && (
     <input
       aria-label={SV.linkReason[lang]} placeholder={SV.linkReason[lang]} className={styles.field} value={reason}
-      disabled={sending} onChange={(e) => setReason(e.target.value)} data-testid={`sv-link-reason-${id}`}
+      disabled={sending} onChange={(e) => setReason(e.target.value)} data-testid={`sv-link-reason-${id}`} {...invalid('reason', on)}
     />
+  );
+  const problemLine = (problem: string | null) => problem && (
+    <div className={styles.meta} id={problemId} data-testid={`sv-link-problem-${id}`}>{linkRefusalWords(problem, lang)}</div>
   );
   // a blank reason is sent as one, so the server's own contract (copied) refuses it here
   const typedReason = needsReason ? reason : undefined;
   if (mode === 'off' && seen !== null) {
     const body = { linkId: seen, ...(typedReason !== undefined ? { reason: typedReason } : {}) };
     const checked = endSiteVisitFileLinkSchema.safeParse(body);
-    const problem = needsReason && reason.trim() !== '' && !checked.success ? checked.error.issues[0]?.message ?? null : null;
+    const issue = needsReason && reason.trim() !== '' && !checked.success ? checked.error.issues[0] : undefined;
+    const problem = issue?.message ?? null;
+    const takeOff = () => {
+      if (busy || sending || !checked.success) return;
+      const sent = keyFor(endKey, JSON.stringify(checked.data));
+      setSending(true);
+      setSaid(null);
+      void endLink(visitId, file, checked.data, sent.key).then(settle);
+    };
     return (
-      <>
+      <div ref={box} style={{ display: 'contents' }}>
         {shown}
-        <div className={styles.add} data-testid={`sv-link-off-ask-${id}`}>
+        <form className={styles.add} data-testid={`sv-link-off-ask-${id}`} onSubmit={(e) => { e.preventDefault(); takeOff(); }}>
           <div className={styles.meta}>{SV.linkTakeOffAsk[lang]}{offer.until ? ` ${SV.removeUntil[lang]} ${visitTime(offer.until, lang)}.` : ''}</div>
-          {reasonField}
-          {problem && <div className={styles.meta} data-testid={`sv-link-problem-${id}`}>{linkRefusalWords(problem, lang)}</div>}
-          <Button variant="danger" disabled={busy || sending || !checked.success} data-testid={`sv-link-off-yes-${id}`} onClick={() => {
-            if (!checked.success) return;
-            const sent = keyFor(endKey, JSON.stringify(checked.data));
-            setSending(true);
-            setSaid(null);
-            void endLink(visitId, file, checked.data, sent.key).then(settle);
-          }}>{SV.linkTakeOffYes[lang]}</Button>
-          <Button variant="ghost" disabled={sending} data-testid={`sv-link-cancel-${id}`} onClick={() => { close(); setSaid(null); }}>{SV.linkCancel[lang]}</Button>
+          {reasonField(issue ? String(issue.path[0]) : null)}
+          {problemLine(problem)}
+          <Button type="submit" variant="danger" disabled={busy || sending || !checked.success} data-testid={`sv-link-off-yes-${id}`}>{SV.linkTakeOffYes[lang]}</Button>
+          <Button type="button" variant="ghost" disabled={sending} data-testid={`sv-link-cancel-${id}`} onClick={() => { close(); setSaid(null); }}>{SV.linkCancel[lang]}</Button>
           {told}
-        </div>
-      </>
+        </form>
+      </div>
     );
   }
   // the server's own contract, copied byte for byte (queueContracts.ts), checks the body before it is sent
   const draft = { url, label, replaces: seen, ...(typedReason !== undefined ? { reason: typedReason } : {}) };
   const checked = setSiteVisitFileLinkSchema.safeParse({ id: '00000000-0000-4000-8000-000000000000', ...draft });
-  const problem = url.trim() === '' || checked.success ? null : checked.error.issues[0]?.message ?? null;
+  const issue = url.trim() === '' || checked.success ? undefined : checked.error.issues[0];
+  const problem = issue?.message ?? null;
+  const on = issue ? String(issue.path[0]) : null;
+  const save = () => {
+    if (busy || sending || !checked.success) return;
+    const { id: _unminted, ...parsed } = checked.data;
+    const sent = keyFor(setKey, JSON.stringify(parsed));
+    setSending(true);
+    setSaid(null);
+    void setLink(visitId, file, { ...parsed, id: sent.id }, sent.key).then(settle);
+  };
   return (
-    <>
+    <div ref={box} style={{ display: 'contents' }}>
       {shown}
-      <div className={styles.add} data-testid={`sv-link-form-${id}`}>
+      <form className={styles.add} data-testid={`sv-link-form-${id}`} onSubmit={(e) => { e.preventDefault(); save(); }}>
         <input
           aria-label={SV.linkUrl[lang]} placeholder={SV.linkUrl[lang]} className={styles.field} value={url} inputMode="url"
-          disabled={sending} onChange={(e) => setUrl(e.target.value)} data-testid={`sv-link-url-${id}`}
+          disabled={sending} onChange={(e) => setUrl(e.target.value)} data-testid={`sv-link-url-${id}`} {...invalid('url', on)}
         />
         <input
           aria-label={SV.linkLabel[lang]} placeholder={SV.linkLabel[lang]} className={styles.field} value={label}
-          disabled={sending} onChange={(e) => setLabel(e.target.value)} data-testid={`sv-link-label-${id}`}
+          disabled={sending} onChange={(e) => setLabel(e.target.value)} data-testid={`sv-link-label-${id}`} {...invalid('label', on)}
         />
-        {reasonField}
+        {reasonField(on)}
         <div className={styles.meta}>{SV.linkHint[lang]}</div>
-        {problem && <div className={styles.meta} data-testid={`sv-link-problem-${id}`}>{linkRefusalWords(problem, lang)}</div>}
-        <Button variant="ink" disabled={busy || sending || !checked.success} data-testid={`sv-link-save-${id}`} onClick={() => {
-          if (!checked.success) return;
-          const { id: _unminted, ...parsed } = checked.data;
-          const sent = keyFor(setKey, JSON.stringify(parsed));
-          setSending(true);
-          setSaid(null);
-          void setLink(visitId, file, { ...parsed, id: sent.id }, sent.key).then(settle);
-        }}>{SV.linkSave[lang]}</Button>
-        <Button variant="ghost" disabled={sending} data-testid={`sv-link-cancel-${id}`} onClick={() => { close(); setSaid(null); }}>{SV.linkCancel[lang]}</Button>
+        {problemLine(problem)}
+        <Button type="submit" variant="ink" disabled={busy || sending || !checked.success} data-testid={`sv-link-save-${id}`}>{SV.linkSave[lang]}</Button>
+        <Button type="button" variant="ghost" disabled={sending} data-testid={`sv-link-cancel-${id}`} onClick={() => { close(); setSaid(null); }}>{SV.linkCancel[lang]}</Button>
         {told}
-      </div>
-    </>
+      </form>
+    </div>
   );
 }
 

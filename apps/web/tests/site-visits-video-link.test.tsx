@@ -243,7 +243,10 @@ describe('video V2g-2: a clip\'s full-video link', () => {
     const card = await mount('consultant', CONSULTANT, gw);
     await click(within(card).getByTestId('sv-link-add-m-c'));
     type(within(card).getByTestId('sv-link-url-m-c'), DRIVE);
+    const reads = gw.listSiteVisits!.mock.calls.length;
     await click(within(card).getByTestId('sv-link-save-m-c'));
+    // no answer at all: the change may still have landed, so the visit is read again (gap-check G5)
+    expect(gw.listSiteVisits!.mock.calls.length).toBeGreaterThan(reads);
     expect(within(card).getByTestId('sv-link-said-m-c').textContent).toBe('No signal. Saving a link needs a connection; try again when you are online.');
     expect(useStore.getState().outbox).toEqual([]);
     expect(Object.keys(localStorage).filter((k) => (localStorage.getItem(k) ?? '').includes('m-c'))).toEqual([]);
@@ -354,5 +357,138 @@ describe('video V2g-2: a clip\'s full-video link', () => {
     expect(within(card).getByTestId('sv-link-m-c')).toBeTruthy();
     expect(within(card).queryByTestId('sv-link-change-m-c')).toBeNull();
     expect(within(card).queryByTestId('sv-link-off-m-c')).toBeNull();
+  });
+
+  it('an answer that lands after a new sign-in changes nothing on the new screen, saved or refused (gap-check G2)', async () => {
+    for (const outcome of ['saved', 'refused'] as const) {
+      let answer!: () => void;
+      const theirs = visit({ files: [clip({ fullVideoLink: link({ label: 'From the old sign-in' }), fullVideoLinkOffer: ownOffer })] });
+      const held = vi.fn(() => new Promise<SiteVisit>((ok, no) => {
+        answer = () => (outcome === 'saved' ? ok(theirs) : no(refusal(409, 'Someone else changed this video\'s full video link; look at it again')));
+      }));
+      const { gw } = server(visit({ files: [clip({ fullVideoLinkOffer: addOffer })] }), { setSiteVisitFileLink: held });
+      const card = await mount('consultant', CONSULTANT, gw);
+      await click(within(card).getByTestId('sv-link-add-m-c'));
+      type(within(card).getByTestId('sv-link-url-m-c'), DRIVE);
+      await act(async () => { fireEvent.click(within(card).getByTestId('sv-link-save-m-c')); });
+      // the new sign-in's screen reads its own visits while the old change is still out
+      const before = gw.listSiteVisits!.mock.calls.length;
+      await act(async () => { useStore.setState({ projectScopeGeneration: useStore.getState().projectScopeGeneration + 1 }); });
+      await vi.waitFor(() => expect(within(screen.getByTestId(`sv-visit-${VISIT}`)).getByTestId('sv-link-add-m-c')).toBeTruthy());
+      expect(gw.listSiteVisits!.mock.calls.length).toBeGreaterThan(before);
+      const reads = gw.listSiteVisits!.mock.calls.length;
+      await act(async () => { answer(); });
+      await settled();
+      const fresh = screen.getByTestId(`sv-visit-${VISIT}`);
+      expect(screen.queryByRole('status'), outcome).toBeNull();
+      expect(within(fresh).queryByTestId('sv-link-said-m-c'), outcome).toBeNull();
+      // the old answer is neither shown nor a reason to read again
+      expect(within(fresh).queryByTestId('sv-link-m-c'), outcome).toBeNull();
+      expect(gw.listSiteVisits!.mock.calls.length, outcome).toBe(reads);
+      cleanup();
+    }
+  });
+
+  it('a take-off names the link seen when it was asked, even when a read shows another meanwhile (gap-check G3)', async () => {
+    const other = link({ id: '44444444-4444-4444-8444-444444444444', url: ZOHO, host: 'zoho', label: 'Newer' });
+    const { gw, state } = server(visit({ files: [clip({ fullVideoLink: link(), fullVideoLinkOffer: ownOffer })] }), {
+      endSiteVisitFileLink: vi.fn(async () => { throw refusal(409, 'This full video link was already taken off or replaced'); }),
+    });
+    const card = await mount('consultant', CONSULTANT, gw);
+    await click(within(card).getByTestId('sv-link-off-m-c'));
+    state.visit = visit({ files: [clip({ fullVideoLink: other, fullVideoLinkOffer: ownOffer })] });
+    const st = useStore.getState();
+    await act(async () => { tellSiteVisits({ kind: 'answer', project: st.activeProjectId, generation: st.projectScopeGeneration, visit: state.visit }); });
+    await settled();
+    expect(within(card).getByTestId('sv-link-m-c').textContent).toContain('Newer');
+    await click(within(card).getByTestId('sv-link-off-yes-m-c'));
+    expect(gw.endSiteVisitFileLink).toHaveBeenCalledWith(VISIT, 'm-c', { linkId: link().id }, expect.stringMatching(UUID));
+    // the take-off's own words lead the refusal, and the prompt for the old link is closed
+    expect(within(card).getByTestId('sv-link-said-m-c').textContent).toBe('The link was not taken off. This full video link was already taken off or replaced');
+    expect(within(card).queryByTestId('sv-link-off-ask-m-c')).toBeNull();
+  });
+
+  it('a take-off whose answer was lost is sent again under the same key (gap-check G3)', async () => {
+    const lost = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const { gw, state } = server(visit({ files: [clip({ fullVideoLink: link(), fullVideoLinkOffer: ownOffer })] }), { endSiteVisitFileLink: lost });
+    const card = await mount('consultant', CONSULTANT, gw);
+    await click(within(card).getByTestId('sv-link-off-m-c'));
+    await click(within(card).getByTestId('sv-link-off-yes-m-c'));
+    expect(within(card).getByTestId('sv-link-said-m-c').textContent).toBe('No answer from the server. Try again: it is saved only once.');
+    expect(within(card).getByTestId('sv-link-off-ask-m-c')).toBeTruthy();
+    state.visit = visit({ files: [clip({ fullVideoLinkOffer: addOffer })] });
+    lost.mockImplementationOnce(async () => state.visit);
+    await click(within(card).getByTestId('sv-link-off-yes-m-c'));
+    const [, , first, firstKey] = lost.mock.calls[0]!;
+    const [, , again, againKey] = lost.mock.calls[1]!;
+    expect(againKey).toBe(firstKey);
+    expect(again).toEqual(first);
+    expect(within(card).queryByTestId('sv-link-m-c')).toBeNull();
+  });
+
+  it('the PMC\'s own link: no reason within the hour, and a reason once the hour is up (gap-check G4)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const mine = link({ addedById: PMC, addedByName: 'Priya Shah', addedByRole: 'pmc' });
+    const card = await mount('pmc', PMC, server(visit({
+      files: [clip({ fullVideoLink: mine, fullVideoLinkOffer: { reasonRequired: false, until: new Date(NOW + 60_000).toISOString() } })],
+    })).gw);
+    await click(within(card).getByTestId('sv-link-change-m-c'));
+    expect(within(card).queryByTestId('sv-link-reason-m-c')).toBeNull();
+    await click(within(card).getByTestId('sv-link-cancel-m-c'));
+    vi.spyOn(Date, 'now').mockImplementation(() => NOW + 60_001);
+    await act(async () => { vi.advanceTimersByTime(60_100); });
+    await click(within(card).getByTestId('sv-link-change-m-c'));
+    expect(within(card).getByTestId('sv-link-reason-m-c')).toBeTruthy();
+    type(within(card).getByTestId('sv-link-url-m-c'), ZOHO);
+    expect(within(card).getByTestId('sv-link-save-m-c')).toBeDisabled();
+    vi.useRealTimers();
+  });
+
+  it('the form takes focus and gives it back, marks the field a problem is about, and Enter sends it (gap-check G7)', async () => {
+    const { gw, state } = server(visit({ files: [clip({ fullVideoLinkOffer: addOffer })] }));
+    const card = await mount('consultant', CONSULTANT, gw);
+    const add = within(card).getByTestId('sv-link-add-m-c');
+    await click(add);
+    const url = within(card).getByTestId('sv-link-url-m-c');
+    expect(document.activeElement).toBe(url);
+    type(url, 'https://example.com/x');
+    const problem = within(card).getByTestId('sv-link-problem-m-c');
+    expect(url.getAttribute('aria-invalid')).toBe('true');
+    expect(url.getAttribute('aria-describedby')).toBe(problem.id);
+    expect(within(card).getByTestId('sv-link-label-m-c').getAttribute('aria-invalid')).toBeNull();
+    type(url, DRIVE);
+    type(within(card).getByTestId('sv-link-label-m-c'), 'x'.repeat(121));
+    expect(within(card).getByTestId('sv-link-label-m-c').getAttribute('aria-invalid')).toBe('true');
+    expect(url.getAttribute('aria-invalid')).toBeNull();
+    expect(within(card).getByTestId('sv-link-cancel-m-c').getAttribute('type')).toBe('button');
+    await click(within(card).getByTestId('sv-link-cancel-m-c'));
+    expect(document.activeElement).toBe(within(card).getByTestId('sv-link-add-m-c'));
+    // Enter in the field submits the form: the change is sent once
+    await click(within(card).getByTestId('sv-link-add-m-c'));
+    type(within(card).getByTestId('sv-link-url-m-c'), DRIVE);
+    state.visit = visit({ files: [clip({ fullVideoLink: link(), fullVideoLinkOffer: ownOffer })] });
+    await act(async () => { fireEvent.submit(within(card).getByTestId('sv-link-form-m-c')); });
+    await settled();
+    expect(gw.setSiteVisitFileLink).toHaveBeenCalledTimes(1);
+    // the button that opened the form is gone with the change made: focus goes to the clip's first control
+    expect(card.contains(document.activeElement) && document.activeElement !== document.body).toBe(true);
+  });
+
+  it('the request\'s own refusals and a repeated link are said in Hindi and Gujarati (gap-check G6)', async () => {
+    for (const [lang, msg, words] of [
+      ['hi', 'label: Keep the label to 120 characters', 'नाम 120 अक्षरों तक रखें'],
+      ['gu', 'This link has already been added', 'આ લિંક પહેલેથી ઉમેરાઈ ગઈ છે'],
+      ['hi', 'reason: A reason cannot contain that character', 'कारण में यह अक्षर नहीं हो सकता'],
+    ] as const) {
+      const { gw } = server(visit({ files: [clip({ fullVideoLinkOffer: addOffer })] }), {
+        setSiteVisitFileLink: vi.fn(async () => { throw refusal(msg.startsWith('This') ? 409 : 400, msg); }),
+      });
+      const card = await mount('consultant', CONSULTANT, gw, lang);
+      await click(within(card).getByTestId('sv-link-add-m-c'));
+      type(within(card).getByTestId('sv-link-url-m-c'), DRIVE);
+      await click(within(card).getByTestId('sv-link-save-m-c'));
+      expect(within(card).getByTestId('sv-link-said-m-c').textContent, msg).toContain(words);
+      cleanup();
+    }
   });
 });

@@ -1632,19 +1632,22 @@ export class ApiGateway {
    *  removal is: the hour and the link seen are judged at the server's clock, so a link is never queued to be sent
    *  later. A lost answer sent again under the same key and body is the same change, once (the server replays). */
   setSiteVisitFileLink(visitId: string, mediaId: string, body: SiteVisitFileLinkBody, idempotencyKey: string): Promise<SiteVisit> {
-    return this.visitAct(`/${visitId}/files/${mediaId}/link`, body, idempotencyKey, 'PUT');
+    return this.visitAct(`/${visitId}/files/${mediaId}/link`, body, idempotencyKey, 'PUT', timeoutSignal(REMOVE_VISIT_FILE_WAIT_MS));
   }
   /** Video V2g-2: take a clip's full-video link off with no successor; the ended link stays as the server's history. */
   endSiteVisitFileLink(visitId: string, mediaId: string, body: { linkId: string; reason?: string }, idempotencyKey: string): Promise<SiteVisit> {
-    return this.visitAct(`/${visitId}/files/${mediaId}/link`, body, idempotencyKey, 'DELETE');
+    return this.visitAct(`/${visitId}/files/${mediaId}/link`, body, idempotencyKey, 'DELETE', timeoutSignal(REMOVE_VISIT_FILE_WAIT_MS));
   }
-  private visitAct(path: string, body: unknown, idempotencyKey: string, method: 'POST' | 'PUT' | 'DELETE' = 'POST'): Promise<SiteVisit> {
+  /** `signal` bounds an online-only act (a link change): the person waits for its answer, so it is given up after the
+   *  removal's wait, as no answer at all, and the same key sends it again on the next press. Queued acts have none. */
+  private visitAct(path: string, body: unknown, idempotencyKey: string, method: 'POST' | 'PUT' | 'DELETE' = 'POST', signal?: AbortSignal): Promise<SiteVisit> {
     // #1239: an act answers with the whole visit, its removal offers included, and the screen shows that answer
     const asked = askedAt();
     return this.req<SiteVisit>(`/projects/${this.projectId}/site-visits${path}`, {
       method,
       body: body === undefined ? undefined : JSON.stringify(body),
       headers: { 'Idempotency-Key': idempotencyKey },
+      ...(signal ? { signal } : {}),
     }).then((v) => offersFrom([v], asked)[0]!);
   }
 }

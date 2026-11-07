@@ -332,7 +332,6 @@ export const SV = {
     hi: 'Google Drive या Zoho WorkDrive का शेयर लिंक चिपकाएँ',
     gu: 'Google Drive અથવા Zoho WorkDriveની શેર લિંક પેસ્ટ કરો',
   },
-  linkLabelLong: { en: 'Keep the label to 120 characters.', hi: 'नाम 120 अक्षरों तक रखें।', gu: 'નામ 120 અક્ષરો સુધી રાખો.' },
   linkReason: { en: 'Why are you changing it?', hi: 'आप इसे क्यों बदल रहे हैं?', gu: 'તમે તેને કેમ બદલો છો?' },
   linkSave: { en: 'Save link', hi: 'लिंक सहेजें', gu: 'લિંક સાચવો' },
   linkCancel: { en: 'Cancel', hi: 'रद्द करें', gu: 'રદ કરો' },
@@ -344,6 +343,7 @@ export const SV = {
   linkTakeOffYes: { en: 'Take it off', hi: 'हटाएँ', gu: 'કાઢો' },
   linkSaved: { en: 'Full video link saved.', hi: 'पूरे वीडियो का लिंक सहेजा गया।', gu: 'પૂરા વીડિયોની લિંક સાચવી.' },
   linkNotSaved: { en: 'The link was not saved.', hi: 'लिंक नहीं सहेजा गया।', gu: 'લિંક સચવાઈ નથી.' },
+  linkNotTakenOff: { en: 'The link was not taken off.', hi: 'लिंक नहीं हटाया गया।', gu: 'લિંક કાઢી નથી.' },
   linkOffline: {
     en: 'No signal. Saving a link needs a connection; try again when you are online.',
     hi: 'नेटवर्क नहीं। लिंक सहेजने के लिए कनेक्शन चाहिए; ऑनलाइन होने पर फिर कोशिश करें।',
@@ -424,6 +424,37 @@ const LINK_REFUSALS: Record<string, Words> = {
     en: 'This site visit was closed by the PMC; ask the PMC to change the link',
     hi: 'यह साइट विज़िट PMC ने बंद कर दी है; लिंक बदलने के लिए PMC से कहें',
     gu: 'આ સાઇટ મુલાકાત PMCએ બંધ કરી છે; લિંક બદલવા PMCને કહો',
+  },
+  'This link has already been added': {
+    en: 'This link has already been added',
+    hi: 'यह लिंक पहले ही जोड़ा जा चुका है',
+    gu: 'આ લિંક પહેલેથી ઉમેરાઈ ગઈ છે',
+  },
+  // the request's own checks (contracts.ts `setSiteVisitFileLinkSchema`, `videoLinkReason`), as the server words them
+  'A label cannot contain that character': {
+    en: 'A label cannot contain that character',
+    hi: 'नाम में यह अक्षर नहीं हो सकता',
+    gu: 'નામમાં આ અક્ષર ન હોઈ શકે',
+  },
+  'A label needs some words': {
+    en: 'A label needs some words',
+    hi: 'नाम में कुछ शब्द होने चाहिए',
+    gu: 'નામમાં થોડા શબ્દો હોવા જોઈએ',
+  },
+  'Keep the label to 120 characters': {
+    en: 'Keep the label to 120 characters',
+    hi: 'नाम 120 अक्षरों तक रखें',
+    gu: 'નામ 120 અક્ષરો સુધી રાખો',
+  },
+  'A reason cannot contain that character': {
+    en: 'A reason cannot contain that character',
+    hi: 'कारण में यह अक्षर नहीं हो सकता',
+    gu: 'કારણમાં આ અક્ષર ન હોઈ શકે',
+  },
+  'Keep the reason to 300 characters': {
+    en: 'Keep the reason to 300 characters',
+    hi: 'कारण 300 अक्षरों तक रखें',
+    gu: 'કારણ 300 અક્ષરો સુધી રાખો',
   },
   'Only a video takes a full video link': {
     en: 'Only a video takes a full video link',
