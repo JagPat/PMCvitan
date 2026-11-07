@@ -676,21 +676,24 @@ describe('"Who fixes this?" on the PMC review card (#482 RM-w1)', () => {
     expect(listMembers).not.toHaveBeenCalled();
   });
 
-  it('a focused select opened from the keyboard reads the team again; tab then Space is one opening (Codex #1365 r3)', async () => {
+  it('a focused select opened from the keyboard reads the team again, and a key opening right after focus reads again too (Codex #1365 r3, #1403 4500368269)', async () => {
     const answers: Array<(m: ProjectMember[]) => void> = [];
     const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answers.push(r); }));
     const { select } = await openReview({ listMembers });
-    // tab in, then Space opens it: one opening, one read
+    // tab in: focus reads; Space then opens it, and its list is read after the focus's read (a change made in between shows)
     act(() => { fireEvent.focus(select()); fireEvent.keyDown(select(), { key: ' ' }); });
     expect(listMembers).toHaveBeenCalledTimes(1);
     await act(async () => { answers[0]!(TEAM); });
-    await waitFor(() => expect(optionTexts(select())).toEqual(['Nobody yet', 'Amy Consultant', 'Zed Contractor']));
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    const added = [...TEAM, member('u-new', 'Neha New', 'contractor')];
+    await act(async () => { answers[1]!(added); });
+    await waitFor(() => expect(optionTexts(select())).toEqual(['Nobody yet', 'Amy Consultant', 'Neha New', 'Zed Contractor']));
     // still focused, each opening key later is one opening and one more team read
     const opening: Array<{ key: string; altKey?: boolean }> = [{ key: ' ' }, { key: 'ArrowDown', altKey: true }, { key: 'ArrowUp', altKey: true }, { key: 'F4' }];
     for (const [i, k] of opening.entries()) {
       act(() => { fireEvent.keyDown(select(), k); });
-      await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2 + i));
-      await act(async () => { answers[1 + i]!(TEAM); });
+      await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(3 + i));
+      await act(async () => { answers[2 + i]!(added); });
     }
     // keys that do not open it here (Enter, plain arrows, Tab, letters) read nothing
     act(() => {
@@ -701,7 +704,7 @@ describe('"Who fixes this?" on the PMC review card (#482 RM-w1)', () => {
       fireEvent.keyDown(select(), { key: 'a' });
     });
     await act(async () => { await Promise.resolve(); });
-    expect(listMembers).toHaveBeenCalledTimes(1 + opening.length);
+    expect(listMembers).toHaveBeenCalledTimes(2 + opening.length);
   });
 
   it('on macOS a plain Up or Down opens the select, so it reads the team again (Codex #1365 r3)', async () => {
@@ -761,6 +764,47 @@ describe('"Who fixes this?" on the PMC review card (#482 RM-w1)', () => {
     expect(useStore.getState().toast).toBeNull();
     expect(listMembers.mock.calls.length).toBe(reads);
     expect(snapshotRead.mock.calls.length).toBe(snapshots);
+  });
+
+  it('one row\'s successful retry settles every row whose shared read failed (Codex #1403 4500368262, #1406)', async () => {
+    const settle: Array<{ ok: (m: ProjectMember[]) => void; fail: (e: unknown) => void }> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((ok, fail) => { settle.push({ ok, fail }); }));
+    const rows: Checklist[] = ['INSP-91', 'INSP-92', 'INSP-93'].map((rowId) => ({ id: rowId, title: 'Slab', zone: 'Z', date: 'today', submitted: false, items: [] }));
+    const { view } = await openReview({ listMembers }, { reviews: [], activeReviewId: null, openChecklists: rows });
+    const { useStore } = await import('@/store/store');
+    const el = (rowId: string) => view.getByTestId(`outstanding-responsible-${rowId}-select`) as HTMLSelectElement;
+    // every row names a member the list does not hold; their one shared read fails
+    act(() => { useStore.setState({ responsibleMembers: rows.map((r) => ({ inspectionId: r.id, memberId: 'u-left' })) }); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    await act(async () => { settle[0]!.fail(Object.assign(new Error('Failed to fetch'), { status: 0 })); });
+    for (const r of rows) await waitFor(() => expect(el(r.id).getAttribute('aria-busy')).toBe('false'));
+    for (const r of rows) expect(el(r.id).selectedOptions[0]!.textContent).toBe('…');
+    // opening one row retries, and it succeeds
+    act(() => { fireEvent.focus(el('INSP-91')); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    await act(async () => { settle[1]!.ok(TEAM); });
+    // the other rows forget their failure as the list is written, and are answered by that same read: every row settles,
+    // with no read of their own
+    for (const r of rows) await waitFor(() => expect(el(r.id).selectedOptions[0]!.textContent).toBe('Nobody yet'));
+    await act(async () => { await Promise.resolve(); });
+    expect(listMembers).toHaveBeenCalledTimes(2);
+  });
+
+  it('a read that fails after a newer list was written records no failure, so the row reads again (#1406)', async () => {
+    const settle: Array<{ ok: (m: ProjectMember[]) => void; fail: (e: unknown) => void }> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((ok, fail) => { settle.push({ ok, fail }); }));
+    const { useStore, id, select } = await openReview({ listMembers });
+    act(() => { useStore.setState({ responsibleMembers: [{ inspectionId: id, memberId: 'u-left' }] }); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    // the Team screen reads the list on its own, and that read is written first
+    act(() => { void useStore.getState().loadTeam(); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    await act(async () => { settle[1]!.ok(TEAM); });
+    // the picker's older read fails after that: the row is not left on "…", it reads again
+    await act(async () => { settle[0]!.fail(Object.assign(new Error('Failed to fetch'), { status: 0 })); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(3));
+    await act(async () => { settle[2]!.ok(TEAM); });
+    await waitFor(() => expect(select().selectedOptions[0]!.textContent).toBe('Nobody yet'));
   });
 
   it('several rows naming a member the list does not hold share one team read', async () => {

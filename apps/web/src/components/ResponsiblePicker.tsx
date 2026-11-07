@@ -4,21 +4,6 @@ import { useStore, responsibleSaveRunning } from '@/store/store';
 import { can, responsibleMemberLabels as L } from '@vitan/shared';
 import { API_BASE } from '@/data/apiGateway';
 
-/**
- * The inspection a picker names (Stage 1, 6 Nov; Codex #1365 4490108387): ONE name per inspection lineage, held on its
- * ROOT, the first inspection of the check (`lineageRootId`, served on every checklist and review row). The server refuses
- * a naming anywhere else (400), and its open items list the root's own failures (the original failed work) with the
- * lineage's status. So every picker of the lineage (the open re-inspection's row, the engineer's screen, the review card)
- * reaches the one name in effect, at any depth.
- *
- * An API older than the field omits it: `reinspectionOfId` (the direct parent) is the root up to depth 2, which a lineage
- * passes only after two rejects. Depth 3 or more on an older API happens only during a rollout; the API serving the field
- * is deployed before this web change merges.
- */
-export function responsibleTargetOf(c: { id: string; reinspectionOfId?: string | null; lineageRootId?: string }): string {
-  return c.lineageRootId ?? c.reinspectionOfId ?? c.id;
-}
-
 /** The roles a member must hold to be named (the server's `RESPONSIBLE_ROLES`; it refuses anyone else with a 400). */
 const NAMEABLE = new Set(['contractor', 'consultant']);
 
@@ -103,6 +88,8 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
     const asked = named;
     const askedIn = seenNow;
     const startedAt = reconnects.current;
+    // a list written after this read started (any caller's) is fresher than this read's failure (#1406)
+    const okAt = useStore.getState().teamReadOk;
     setReadingFor(askedIn);
     return readTeamShared(opts).then((ok) => {
       if (!live.current) return;
@@ -112,7 +99,7 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
       // the scope generation moved (a failed switch keeps the naming but moves the generation) settles nothing, and the
       // hold stays until a read made for what is shown now answers.
       if (seenRef.current !== askedIn) return;
-      if (ok) { setReadFor(asked); setFailedFor(undefined); } else if (reconnects.current === startedAt) setFailedFor(asked);
+      if (ok) { setReadFor(asked); setFailedFor(undefined); } else if (reconnects.current === startedAt && useStore.getState().teamReadOk === okAt) setFailedFor(asked);
     });
   };
   // a pending name is read for once on its own; after a failure only the user opening the picker, or the phone coming
@@ -120,6 +107,11 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   // r3), not when it goes offline: a read in flight when the connection dropped fails after that, and must not leave the
   // hold unread once the phone is online again.
   useEffect(() => { if (online) { reconnects.current += 1; setFailedFor(undefined); } }, [online]);
+  // A team read written by ANY caller (another row's retry, the Team screen) is a fresh list (Codex #1403 4500368262,
+  // #1406): a failure this picker recorded is forgotten, so the hold effect reads once more, shared with every row that
+  // failed, and each settles under its own identity guard. A row that did not fail has nothing to forget.
+  const teamReadOk = useStore((s) => s.teamReadOk);
+  useEffect(() => { setFailedFor(undefined); }, [teamReadOk]);
   // A picker handed another target while its read for the old one is out (`readingFor` set, not this target) asks for a
   // read that starts AFTER that one (Codex #1403 4500095659 with #1365 r3): the read out was made before this target was
   // shown, so it may predate this naming and must not settle it. With nothing of its own out, it shares any read in flight.
@@ -136,24 +128,23 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   // so the focus that follows a pointerdown is the same opening and is skipped. Blur clears the mark, so a later keyboard
   // focus still opens (a pointerdown on a select already focused fires no focus).
   // A select already focused can also be opened from the keyboard (Space, Alt+Arrow, F4; plain Up/Down on macOS), which fires neither
-  // pointerdown nor focus (Codex #1365 r3), so those keys are an opening too. The mark says which opening the next event
-  // belongs to: a pointerdown on a select that is not focused marks 'pointer' (the focus it brings is the same opening);
-  // a focus marks 'focus' (the first opening key after it is the same opening: tab then Space is one). Blur clears it.
-  const opened = useRef<'pointer' | 'focus' | null>(null);
+  // pointerdown nor focus (Codex #1365 r3), so those keys are an opening too. Focus alone does not open a native select, so
+  // a key that opens it reads again even right after a focus (Codex #1403 4500368269, #1406): the list it opens is never
+  // older than the opening. The mark says only that a focus belongs to the pointerdown before it. Blur clears it.
+  const opened = useRef<'pointer' | null>(null);
   const onPointerOpen = (e: ReactPointerEvent<HTMLSelectElement>) => {
     opened.current = document.activeElement === e.currentTarget ? null : 'pointer';
     onOpen();
   };
   const onFocusOpen = () => {
     if (opened.current === 'pointer') { opened.current = null; return; }
-    opened.current = 'focus';
     onOpen();
   };
   const onKeyOpen = (e: ReactKeyboardEvent<HTMLSelectElement>) => {
     const arrow = e.key === 'ArrowDown' || e.key === 'ArrowUp';
     const opens = e.key === ' ' || e.key === 'F4' || (arrow && (e.altKey || ARROWS_OPEN));
     if (!opens) return;
-    if (opened.current === 'focus') { opened.current = null; return; }
+    opened.current = null;
     onOpen();
   };
   const onOpen = () => {

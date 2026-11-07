@@ -444,6 +444,9 @@ export interface AppState {
    *  a second save for an inspection waits for its first to settle, so two of one person's namings never overlap and a
    *  delayed older one can never land last. Read through {@link responsibleSaveRunning}. */
   responsibleSaving: string[];
+  /** #1406 (Codex #1403 4500368262) — counts the team reads written to `members`. A "Who fixes this?" picker whose own
+   *  read failed forgets that failure when this moves, so one row's successful retry settles every row that failed. */
+  teamReadOk: number;
   /** #482 site photos — a delete took a photo out of a full window: its count stays a floor until a snapshot rebuilds
    *  the window (Codex 4337661439) */
   photosWindowShort: boolean;
@@ -1623,6 +1626,7 @@ export function getInitialState(): AppState {
     myDeletablePhotos: [],
     responsibleMembers: [],
     responsibleSaving: [],
+    teamReadOk: 0,
     photosWindowShort: false,
     sitePhotosKept: [],
     materials: structuredClone(SEED_MATERIALS), // placed deliveries for the demo Site Map
@@ -6741,6 +6745,7 @@ export const useStore = create<Store>()(
           if (seq < teamReadWritten) return;
           teamReadWritten = seq;
           s.members = m;
+          s.teamReadOk += 1;
         }); return true; })
         .catch(() => false);
     },
