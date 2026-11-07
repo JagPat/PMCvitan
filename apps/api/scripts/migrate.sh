@@ -646,6 +646,10 @@ if echo "$out" | grep -q "P3005"; then
   #
   # A clip's full-video links (V2g-0, 20280213000000) are here because of the table's triggers, check and partial
   # unique index, which a db-push baseline does not have. IF NOT EXISTS with a shape guard, re-issued, re-runnable.
+  #
+  # A removal line's exact file kind (#1393, 20280214000000) is here for VT1c's reason: it replaces the insert function
+  # body that #1179 R1's file, also replayed, writes back with lower(); the replay applies files by name, so this later
+  # file's body is the one that stands. Re-runnable.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -711,7 +715,8 @@ if echo "$out" | grep -q "P3005"; then
 20280210000000_inspection_item_guidance
 20280211000000_media_gallery_origin
 20280212000000_site_visit_inspections
-20280213000000_site_visit_media_link"
+20280213000000_site_visit_media_link
+20280214000000_site_visit_removal_kind_exact"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
