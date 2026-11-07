@@ -1,7 +1,7 @@
 import { useEffect, useRef, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, checklistFrozen } from '@/store/store';
-import { EmptyState, Eyebrow, StatTile, Button, LocationContext, EditState, ItemNotFound } from '@/components';
+import { EmptyState, Eyebrow, StatTile, Button, LocationContext, EditState, ItemNotFound, ResponsiblePicker, responsibleTargetOf } from '@/components';
 import { Camera } from '@/lib/icons';
 import { checklistLabels as L, checklistText as T, inspectionTitle, recordingsAsked, servedDayIn, ENFORCED_RECORD_KINDS, type ChecklistItem, type ItemState, type Lang } from '@vitan/shared';
 import { inspectionsReadMode, resolveMediaUrl } from '@/data/apiGateway';
@@ -251,6 +251,8 @@ export function EngineerChecklistScreen() {
             <LocationContext nodeId={checklist.nodeId} fallback={checklist.zone} compact testId="checklist-place" lang={lang} />
           </div>
           <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }} data-testid="checklist-date">{servedDayIn(checklist.date, lang)}</div>
+          {/* #482 "Who fixes this?" — the engineer can name the contractor or consultant who fixes what fails here */}
+          <ResponsiblePicker inspectionId={responsibleTargetOf(checklist)} testId="checklist-responsible" />
           {/* More than one checklist is out on this site. Before this, the engineer saw only the
               oldest and the rest were invisible work — so the picker is the whole point of the
               list, not decoration. Unsubmitted marks on the one they leave are kept, so moving
