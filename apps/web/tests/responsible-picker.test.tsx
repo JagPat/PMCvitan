@@ -29,11 +29,12 @@ const snapshot = (responsibleMembers: Array<{ inspectionId: string; memberId: st
   responsibleMembers,
 });
 
-await warmImports(() => import('@/store/store'), () => import('@/screens/InspectionReviewScreen'), () => import('@/screens/EngineerChecklistScreen'), () => import('@/components'));
+await warmImports(() => import('@/store/store'), () => import('@/data/apiGateway'), () => import('@/screens/InspectionReviewScreen'), () => import('@/screens/EngineerChecklistScreen'), () => import('@/components'));
 
 afterEach(() => {
   cleanup();
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.resetModules();
 });
@@ -554,6 +555,68 @@ describe('"Who fixes this?" on the PMC review card (#482 RM-w1)', () => {
     await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
   });
 
+  it('the team read carries a time limit; a read that runs past it fails, and only the read does (Codex #1403 4500171686)', async () => {
+    const { ApiGateway, TEAM_READ_TIMEOUT_MS } = await import('@/data/apiGateway');
+    expect(TEAM_READ_TIMEOUT_MS).toBe(15_000);
+    // the limit is AbortSignal.timeout's; stand it in with a signal the test fires, as the clock would
+    const limit = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(limit.signal);
+    const inits: Array<RequestInit | undefined> = [];
+    // a server that never answers: a request ends only when its signal aborts it
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      inits.push(init);
+      init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+    })));
+    try {
+      const gw = new ApiGateway('http://api.test', 'qa');
+      const read = gw.listMembers();
+      expect(timeout).toHaveBeenCalledWith(TEAM_READ_TIMEOUT_MS);
+      limit.abort(new DOMException('The operation timed out.', 'TimeoutError'));
+      await expect(read).rejects.toMatchObject({ name: 'TimeoutError' });
+      // a member command is a write: it gets no time limit (as the naming save, ruled for RM-w1)
+      timeout.mockClear();
+      void gw.updateMemberRole('u-zed', 'engineer', undefined, 'key-1').catch(() => undefined);
+      await Promise.resolve();
+      expect(timeout).not.toHaveBeenCalled();
+      expect(inits.at(-1)?.signal ?? null).toBeNull();
+    } finally {
+      timeout.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a team read that gets no answer is given up at its limit: the held name is released from busy, and opening asks again (Codex #1403 4500171686)', async () => {
+    const { ApiGateway, TEAM_READ_TIMEOUT_MS } = await import('@/data/apiGateway');
+    // each team read gets its own limit, fired by the test
+    const limits: AbortController[] = [];
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      const c = new AbortController();
+      if (ms === TEAM_READ_TIMEOUT_MS) limits.push(c);
+      return c.signal;
+    });
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+    })));
+    const real = new ApiGateway('http://api.test', 'qa');
+    const listMembers = vi.fn(() => real.listMembers());
+    const { useStore, id, select } = await openReview({ listMembers });
+    act(() => { useStore.setState({ responsibleMembers: [{ inspectionId: id, memberId: 'u-zed' }] }); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(select().getAttribute('aria-busy')).toBe('true'));
+    expect(limits).toHaveLength(1);
+    // the server never answers; the read's limit runs out
+    await act(async () => { limits[0]!.abort(new DOMException('The operation timed out.', 'TimeoutError')); });
+    await waitFor(() => expect(select().getAttribute('aria-busy')).toBe('false'));
+    // a failure like any other: the name stays held as "…", not shown as nobody, and nothing is retried on its own
+    expect(select().selectedOptions[0]!.textContent).toBe('…');
+    await act(async () => { await Promise.resolve(); });
+    expect(listMembers).toHaveBeenCalledTimes(1);
+    // opening the picker asks again, under a limit of its own
+    act(() => { fireEvent.focus(select()); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    expect(limits).toHaveLength(2);
+  });
+
   it('a new scope is not held busy by a read the old one left out: its own read runs, and the old answer changes nothing (Codex #1403 4500095659)', async () => {
     const answers: Array<(m: ProjectMember[]) => void> = [];
     const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answers.push(r); }));
@@ -730,6 +793,60 @@ describe('"Who fixes this?" and the snapshot (#482 RM-w1)', () => {
     reads.push(await answerKeepingQueue([]));
     await act(async () => { await useStore.getState().requestFreshSnapshot(); });
     expect(useStore.getState().responsibleMembers).toEqual([]);
+  });
+
+  it('a member re-roled away and back is not shown named again: a confirmed member edit reads the project again (Codex #1403 4500171697)', async () => {
+    let team = TEAM;
+    const listMembers = vi.fn(async () => team);
+    const updateMemberRole = vi.fn(async (userId: string, role: ProjectMember['role']) => {
+      team = team.map((m) => (m.userId === userId ? { ...m, role } : m));
+      return { ok: true };
+    });
+    const reads: Array<Record<string, unknown>> = [];
+    const snapshotRead = vi.fn(async () => reads.shift() ?? new Promise(() => {}));
+    const { useStore, id, select } = await openReview({ listMembers, updateMemberRole, snapshot: snapshotRead }, { members: TEAM, responsibleMembers: [{ inspectionId: REVIEW_ID, memberId: 'u-zed' }] });
+    expect(select().selectedOptions[0]!.textContent).toBe('Zed Contractor');
+    const before = snapshotRead.mock.calls.length;
+    // re-roled away: the server ends the naming, and the project read after the edit says so
+    reads.push(await answerKeepingQueue([]));
+    act(() => { useStore.getState().updateMemberRole('u-zed', 'engineer'); });
+    await waitFor(() => expect(snapshotRead.mock.calls.length).toBe(before + 1));
+    await waitFor(() => expect(useStore.getState().responsibleMembers).toEqual([]));
+    // and back: on the list again, but not named
+    reads.push(await answerKeepingQueue([]));
+    act(() => { useStore.getState().updateMemberRole('u-zed', 'contractor'); });
+    await waitFor(() => expect(snapshotRead.mock.calls.length).toBe(before + 2));
+    await waitFor(() => expect(useStore.getState().members.find((m) => m.userId === 'u-zed')?.role).toBe('contractor'));
+    expect(useStore.getState().responsibleMembers.some((r) => r.inspectionId === id)).toBe(false);
+    expect(select().selectedOptions[0]!.textContent).toBe('Nobody yet');
+  });
+
+  it('a failed member edit reads nothing more; several confirmed edits share the coordinator\'s one pull (Codex #1403 4500171697)', async () => {
+    const answers: Array<(v: unknown) => void> = [];
+    const snapshotRead = vi.fn(() => new Promise((r) => { answers.push(r); }));
+    const removeMember = vi.fn(async () => { throw Object.assign(new Error('refused'), { status: 403 }); });
+    const updateMemberRole = vi.fn(async () => ({ ok: true }));
+    const { useStore } = await openReview({ listMembers: vi.fn(async () => TEAM), removeMember, updateMemberRole, snapshot: snapshotRead }, { members: TEAM });
+    const before = snapshotRead.mock.calls.length;
+    act(() => { useStore.getState().removeMember('u-zed'); });
+    await waitFor(() => expect(removeMember).toHaveBeenCalledTimes(1));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(snapshotRead.mock.calls.length).toBe(before);
+    // three confirmed edits in a row: one pull goes out, and one more is queued behind it, never one per edit
+    act(() => {
+      useStore.getState().updateMemberRole('u-zed', 'engineer');
+      useStore.getState().updateMemberRole('u-amy', 'contractor');
+      useStore.getState().updateMemberRole('u-eng', 'consultant');
+    });
+    await waitFor(() => expect(updateMemberRole).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(snapshotRead.mock.calls.length).toBe(before + 1));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(snapshotRead.mock.calls.length).toBe(before + 1);
+    await act(async () => { answers.at(-1)!(await answerKeepingQueue([])); });
+    await waitFor(() => expect(snapshotRead.mock.calls.length).toBe(before + 2));
+    await act(async () => { answers.at(-1)!(await answerKeepingQueue([])); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(snapshotRead.mock.calls.length).toBe(before + 2);
   });
 
   it('a refusal that says the project was lost is left to the shared rule: no toast, no team or project read from the picker (Codex #1365 4490532256, #1373)', async () => {

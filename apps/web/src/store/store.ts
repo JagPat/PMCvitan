@@ -3729,6 +3729,13 @@ export const useStore = create<Store>()(
     const settleMemberAct = (boundAct: string, key: string): void => {
       if (memberActKeys.get(boundAct) === key) memberActKeys.delete(boundAct);
     };
+    /** #482 RM-w1 (Codex #1403 4500171697) — after the server confirms a member command, read the project again. A
+     *  standing change (re-roled away from contractor or consultant, removed) ends that member's "Who fixes this?"
+     *  namings on the server, and membership events do not refresh the snapshot, so without this read the store keeps
+     *  the old name and shows it again once the member is back on the list. It is the coordinator's coalesced pull (one
+     *  in flight per scope, at most one queued behind it), so several edits in a row make one more read; a failed or
+     *  refused command asks for nothing. */
+    const refreshNamingsAfterMemberAct = () => { void requestFreshSnapshot().catch(() => undefined); };
     /** One dispatch of a member act in the CURRENT scope: refuse a second attempt while the first is
      *  unanswered; mint or reuse the act's key; settle exactly that key on a success or a terminal refusal;
      *  keep it on a transient failure for the user's retry; run the UI effects only while the attempt's
@@ -6762,7 +6769,7 @@ export const useStore = create<Store>()(
           addRunsInFlight.set(boundAdd, guideRun);
           return g.addMember(input, key).finally(() => { if (addRunsInFlight.get(boundAdd) === guideRun) addRunsInFlight.delete(boundAdd); });
         },
-        () => { get().loadTeam(); get().flash(input.name + ' added to the team.'); reportAdd(true); },
+        () => { get().loadTeam(); refreshNamingsAfterMemberAct(); get().flash(input.name + ' added to the team.'); reportAdd(true); },
         () => {
           get().flash('Could not add the member — check the details / your access.');
           // another add pressed in this run is still on its way (this one's entry is already cleared): its answer decides
@@ -6780,7 +6787,7 @@ export const useStore = create<Store>()(
         `role:${userId}:${role}:${discipline ?? ''}`,
         'Changing the role',
         (key) => g.updateMemberRole(userId, role, discipline, key),
-        () => { get().loadTeam(); },
+        () => { get().loadTeam(); refreshNamingsAfterMemberAct(); },
         () => { get().flash('Could not change the role.'); },
       );
     },
@@ -6791,7 +6798,7 @@ export const useStore = create<Store>()(
         `remove:${userId}`,
         'Removing the member',
         (key) => g.removeMember(userId, key),
-        () => { get().loadTeam(); get().flash('Member removed.'); },
+        () => { get().loadTeam(); refreshNamingsAfterMemberAct(); get().flash('Member removed.'); },
         () => { get().flash('Could not remove the member.'); },
       );
     },
