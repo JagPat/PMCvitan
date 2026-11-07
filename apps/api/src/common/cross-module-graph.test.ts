@@ -84,7 +84,7 @@ const MODEL_OWNER: Record<string, string> = {
   // daily-log.resolveMismatch (one per observation; the observation row is never edited)
   mismatchResolution: 'daily-log',
   // Site Visits (#792) — the append-only visit record, written only by the site-visits commands
-  siteVisit: 'site-visits', siteVisitAttendee: 'site-visits', siteVisitPlace: 'site-visits',
+  siteVisit: 'site-visits', siteVisitAttendee: 'site-visits', siteVisitPlace: 'site-visits', siteVisitMediaLink: 'site-visits',
   // Phase 3 Task 1 — the demand contract is activities-module-owned; its classifier domain is
   // 'requirements' (the requirements.service pillar entry writes ONLY this model)
   activityRequirement: 'requirements', activityRequirementRoot: 'requirements', materialRequirementSpec: 'requirements',
@@ -440,6 +440,8 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     'Post()', "Post(':visitId/end')", "Post(':visitId/close')",
     "Post(':visitId/places')", "Post(':visitId/places/:placeId/retire')",
     "Post(':visitId/attendees')", "Post(':visitId/attendees/:attendeeId/retire')",
+    // #995 V2g-1: a video clip's full-video link, set and end
+    "Put(':visitId/files/:mediaId/link')", "Delete(':visitId/files/:mediaId/link')",
   ],
   'orgs/members.controller.ts': ['Post()', "Patch(':userId')", "Delete(':userId')"],
   'orgs/companies.controller.ts': ['Post()', "Patch(':companyId')", "Delete(':companyId')"],
@@ -661,12 +663,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('179 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only; +1 #995 V1b a video clip\'s still frame; +1 #1118 U3 Hub webhook deliveries; +1 #1179 R2 a file\'s removal from its site visit; +2 #1177 VT2-C1 a voice note\'s words retry/correct; +1 #482 who fixes an inspection\'s failed work; +1 Redbracket ID A4c operator owner re-seat; +2 #1118 U7a Hub link/unlink; +1 guided step 3a finish in one walk)', () => {
+    it('179 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond; +3 Phase-6 unit 4d-ii-a A8b countersign/disagree/stranded; +1 Top 10 #4b unit C notifications seen; +3 Site Visits SV1-b start/end/close; +4 SV1-b unit 2 place/attendee add/retire; +2 #482 operator door enable/disable; +2 #482 QA door rebuild qa-sign-in/mark a company QA-only; +1 #995 V1b a video clip\'s still frame; +1 #1118 U3 Hub webhook deliveries; +1 #1179 R2 a file\'s removal from its site visit; +2 #1177 VT2-C1 a voice note\'s words retry/correct; +1 #482 who fixes an inspection\'s failed work; +1 Redbracket ID A4c operator owner re-seat; +2 #1118 U7a Hub link/unlink; +1 guided step 3a finish in one walk; +2 #995 V2g-1 a video clip\'s full-video link set/end)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(198);
+      expect(total).toBe(200);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(198);
+      expect(live).toBe(200);
     });
   });
 

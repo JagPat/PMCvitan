@@ -10,9 +10,11 @@
  * progress never reaches the site. What the reader can't make sense of is refused; the receiver records both and answers
  * 2xx, so Hub doesn't retry a delivery that would read the same way every time.
  *
- * U3o: Hub names the office an event comes from in `data.office` = `{"id": "<Hub company id>"}`. It is optional, since
- * events Hub recorded before it added the field have none (`officeId` null); present, it must be an object with a Hub id,
- * or the event is malformed. The receiver compares it with `HUB_OFFICE_ID`.
+ * U3o: Hub names the office an event comes from in `data.office` = `{"id": "<Hub company id>"}`. The receiver compares it
+ * with `HUB_OFFICE_ID`. Required (Hub's JagPat/hub#331 names the office in every event it records): an event with no
+ * office, or one that isn't an object with a Hub id, is malformed. Only events Hub recorded before #331 lack it, and
+ * Hub queues an event only for the webhooks that exist when it is recorded, so PMC's webhook, made after #331 is live,
+ * never gets one.
  */
 
 export const HUB_SUBSCRIBED_EVENTS = ['drawing.issued', 'drawing.superseded', 'drawing.status_changed'] as const;
@@ -31,7 +33,7 @@ export type HubEventReading =
   | { kind: 'ignored'; type: string; why: 'not_subscribed' | 'work_in_progress' }
   /** a subscribed type whose `data` doesn't hold what the receiver needs */
   | { kind: 'malformed'; type: HubSubscribedEvent; versionId: string | null }
-  | { kind: 'event'; type: HubSubscribedEvent; versionId: string | null; hubProjectId: string; pmcProjectIds: string[]; officeId: string | null };
+  | { kind: 'event'; type: HubSubscribedEvent; versionId: string | null; hubProjectId: string; pmcProjectIds: string[]; officeId: string };
 
 const TYPE = /^[a-z][a-z0-9_.]*$/;
 
@@ -72,13 +74,10 @@ export function readHubEvent(body: Buffer): HubEventReading {
   }
   if (!(HUB_STAGES as readonly unknown[]).includes(stage)) return malformed;
 
-  // absent (or null) on events recorded before Hub added it; present, it must name an office
-  let officeId: string | null = null;
-  if (data.office !== undefined && data.office !== null) {
-    if (!isObject(data.office)) return malformed;
-    officeId = hubId(data.office.id);
-    if (officeId === null) return malformed;
-  }
+  // every event names its office: one that doesn't can't be checked against HUB_OFFICE_ID, so nothing comes of it
+  if (!isObject(data.office)) return malformed;
+  const officeId = hubId(data.office.id);
+  if (officeId === null) return malformed;
 
   const project = data.project;
   if (!isObject(project)) return malformed;
