@@ -6,7 +6,7 @@ import type { OutboxOp } from '@/data/apiGateway';
 import { EVIDENCE_READ_WAIT_MS, markEvidenceFailed, putEvidence, type EvidenceEntry } from '@/data/evidenceStore';
 import { markSitePhotoRefused, markSitePhotoSent, putSitePhotoRow } from '@/data/sitePhotoStore';
 import { POSTER_WAIT_MS, failVisitPhoto, fileVisitPhoto, putVisitPhoto, type VisitPhotoRow } from '@/data/visitPhotoStore';
-import { afterRowWrite, closeKeptSignals } from '@/data/keptSignal';
+import { afterRowWrite, closeKeptSignals, listenRowWrites } from '@/data/keptSignal';
 import { keyLegacyPhotos, putBackOf } from '@/store/loadTakes';
 import { KEPT_KIND, keptAnywhere, keptOf, visitRowKept, projectNameKey, queuedProjectsOf, readKeptElsewhere, readProjectName, rememberProjectName, type KeptKind } from '@/store/keptElsewhere';
 import { doneName, frameOf, markName, recordBytes, recordName } from '@/store/queueLedger';
@@ -752,6 +752,14 @@ describe('#1397: what a load takes, by the load\'s own rules (Codex round 2 on #
       expect(putBackOf(row(a, 'f-1'), new Set(), new Set(['f-1']))).toBeNull();
     });
 
+    it('Stage 1 G1: a carried start the server already has (a done fact) is settled unsent by the flush: not counted', async () => {
+      const [op] = visitFile('f-1');
+      await putVisitPhoto(SUB, 'p-gone', op as never, 'AA==', startOf('v-1'));
+      localStorage.setItem(doneName(lane(SUB, 'p-gone'), startOf('v-1')), JSON.stringify({ i: queueActIdent(startOf('v-1')), n: 1 }));
+      const list = await readKeptElsewhere(localStorage, SUB, new Set());
+      expect(list[0].items).toEqual([expect.objectContaining({ id: 'visit:v-1', count: 1 })]);
+    });
+
     it('a refused file\'s start is not put back, so not counted: the file is its own line', async () => {
       const [op] = visitFile('f-1');
       await putVisitPhoto(SUB, 'p-gone', op as never, 'AA==', startOf('v-1'));
@@ -822,6 +830,7 @@ describe('#1397: what a load takes, by the load\'s own rules (Codex round 2 on #
     afterEach(() => { closeKeptSignals(); vi.unstubAllGlobals(); });
 
     it('each row write, landed or not, tells the person\'s other tabs, on their own channel', async () => {
+      listenRowWrites(SUB, () => {});
       const otherTab = new FakeChannel(`vitan.kept.${SUB}`);
       let heard = 0;
       otherTab.onmessage = () => { heard += 1; };
@@ -877,6 +886,8 @@ describe('#1397: what a load takes, by the load\'s own rules (Codex round 2 on #
       await useStore.getState().checkKeptElsewhere();
       expect(useStore.getState().keptElsewhereAny).toBe(true);
       vi.stubGlobal('BroadcastChannel', FakeChannel);
+      closeKeptSignals();
+      listenRowWrites(SUB, () => {});
       const otherTab = new FakeChannel(`vitan.kept.${SUB}`);
       let heard = 0;
       otherTab.onmessage = () => { heard += 1; };

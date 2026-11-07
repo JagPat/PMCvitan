@@ -1,7 +1,7 @@
 import { isSiteVisitOp, siteVisitOf, type OutboxOp } from '@/data/apiGateway';
 import { evidenceProjectsOf, evidenceWithinWait, listEvidence } from '@/data/evidenceStore';
 import { isSitePhotoSent, listSitePhotoRows, sitePhotoKeptProjectsOf, sitePhotoProjectsOf } from '@/data/sitePhotoStore';
-import { posterWaits, readVisitPhotoRows, readVisitPhotoRowsUntil, removedVisitPhotos, visitPhotoProjectsOf, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { posterWaits, readVisitPhotoRowsUntil, removedVisitPhotos, visitPhotoProjectsOf, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { putBackOf, takenFromKey } from '@/store/loadTakes';
 import { queueActIdent } from '@/store/queueActIdent';
 import { readOwedActs, type KeyRead } from '@/store/queueKeyGuard';
@@ -104,6 +104,8 @@ const earliest = (a: number | null, b: number | null): number | null => (a === n
 /** an act whose identity no other act shares (it carries its own key): one act wherever this phone holds it */
 const unique = (o: OutboxOp): boolean => !queueActIdent(o).startsWith('json:');
 type OwedRead = { read: KeyRead; acts: OutboxOp[]; unread?: Exclude<KeyRead, 'ok'> | null } | null;
+/** a key as a load takes it: `held`, every act it takes into memory (a done one included), and `acts`, those still owed */
+type TakenRead = { read: KeyRead; acts: OutboxOp[]; held: OutboxOp[]; unread: Exclude<KeyRead, 'ok'> | null } | null;
 const worse = (a: KeptProject['unreadable'], b: Exclude<KeyRead, 'ok'>): Exclude<KeyRead, 'ok'> => (a === 'damaged' || b === 'damaged' ? 'damaged' : 'newer');
 
 /** one project's list, from what its two keys owe (`reads`, as `readOwedActs` gives them) and its rows */
@@ -174,22 +176,30 @@ export function forgetKeptMemo(): void { provenDone.clear(); }
  *  read, or not in time, gives none */
 async function rowsOf(sub: string, projectId: string, queued: Set<string>): Promise<{ rows: KeptRow[]; starts: OutboxOp[]; unread: 'damaged' | null }> {
   const now = Date.now();
+  // the removal records first: a removed file is skipped by its key, never read (Stage 1 G6, as the line does)
+  const removed = removedVisitPhotos(sub, projectId);
   const [evidence, visit, site] = await Promise.all([
     evidenceWithinWait(listEvidence(sub, projectId)).catch(() => []),
-    readVisitPhotoRows(sub, projectId).catch(() => []),
+    removed === 'unreadable'
+      ? Promise.resolve(null)
+      : readVisitPhotoRowsUntil(sub, projectId, (ck) => removed.has(ck), () => false).then((r) => r.sort((a, b) => a.createdAt - b.createdAt)).catch(() => []),
     listSitePhotoRows(sub, projectId).catch(() => []),
   ]);
-  noteDone(sub, projectId, visit, now);
   const rows: KeptRow[] = [
     ...evidence.map((e) => ({ clientKey: e.clientKey, at: e.createdAt, visitId: null, failed: e.status === 'failed' })),
     ...site.flatMap((e) => (isSitePhotoSent(e) ? [] : [{ clientKey: e.clientKey, at: e.createdAt, visitId: null, failed: false }])),
   ];
   const starts: OutboxOp[] = [];
-  const removed = visit.length > 0 ? removedVisitPhotos(sub, projectId) : new Set<string>();
-  if (removed === 'unreadable') return { rows, starts, unread: 'damaged' };
+  if (removed === 'unreadable' || visit === null) {
+    // records that cannot be read may hold any row: the load puts back none (#1266), so none is counted, and a project
+    // that keeps visit files says some of its changes cannot be read
+    const keeps = await visitPhotoProjectsOf(sub).then((ps) => ps.has(projectId), () => true);
+    return { rows, starts, unread: keeps ? 'damaged' : null };
+  }
+  noteDone(sub, projectId, visit, now);
   for (const v of visit) {
     const row: KeptRow = { clientKey: v.clientKey, at: v.createdAt, visitId: v.op.visitId, failed: v.state === 'failed' };
-    if (v.state === 'failed') { if (!removed.has(v.clientKey)) rows.push(row); continue; }
+    if (v.state === 'failed') { rows.push(row); continue; }
     const back = putBackOf(v, queued, removed, now);
     if (!back) continue;
     if (!back.poster && back.start) starts.push(back.start);
@@ -200,14 +210,16 @@ async function rowsOf(sub: string, projectId: string, queued: Set<string>): Prom
 
 const keysOf = (sub: string, p: string): string[] => [`vitan.outbox.${sub}.${p}`, `vitan.siteVisitQueue.${sub}.${p}`];
 /** a project's two keys as a load takes them (`takenFromKey`: the general key's acts normalized, each key keeping
- *  only the acts that belong in it; Codex 4499008051), less each act a done fact says the server has, read again once
- *  keyed (a legacy photo is keyed by the load) */
-function takenOf(storage: Keys & Names, sub: string, p: string): OwedRead[] {
+ *  only the acts that belong in it; Codex 4499008051): `held`, what the load holds in memory, and `acts`, those less
+ *  each a done fact says the server has (the flush settles those unsent, and #1390's count leaves them out), read once
+ *  the acts are keyed as the load keys them */
+function takenOf(storage: Keys & Names, sub: string, p: string): TakenRead[] {
   const scopes = { evidence: sub, visitPhoto: sub };
   return keysOf(sub, p).map((k, i) => {
     const r = readOwedActs(storage, k, scopes);
     if (!r) return null;
-    return { ...r, acts: takenFromKey(i === 0 ? 'generic' : 'visit', r.acts, k).filter((a) => !isDone(storage, k, a)) };
+    const held = takenFromKey(i === 0 ? 'generic' : 'visit', r.acts, k);
+    return { ...r, held, acts: held.filter((a) => !isDone(storage, k, a)) };
   });
 }
 /** the projects not `held` that this device keeps rows for, from the stores' row keys alone (bounded; none on a failure) */
@@ -259,10 +271,12 @@ export async function readKeptElsewhere(storage: Keys & Names, sub: string, held
   const out: KeptProject[] = [];
   for (const p of [...projects].filter((x) => !held.has(x)).sort()) {
     const reads = takenOf(storage, sub, p);
-    // the visit acts a load holds before it puts files back: the lane's (the general key keeps none)
-    const queued = new Set((reads[1]?.acts ?? []).filter(isSiteVisitOp).map((o) => o.idempotencyKey));
+    // the visit acts a load holds in memory before it puts files back: the lane's, a done one too (the general key keeps
+    // none). A start put back that the server already has is settled unsent by the flush: not kept (Stage 1 G1)
+    const queued = new Set((reads[1]?.held ?? []).filter(isSiteVisitOp).map((o) => o.idempotencyKey));
     const r = await rowsOf(sub, p, queued);
-    const kept = keptOf(p, readProjectName(storage, sub, p), [...reads, { read: 'ok', acts: r.starts, unread: r.unread }], r.rows);
+    const starts = r.starts.filter((o) => !isDone(storage, keysOf(sub, p)[1], o));
+    const kept = keptOf(p, readProjectName(storage, sub, p), [...reads, { read: 'ok', acts: starts, unread: r.unread }], r.rows);
     if (kept.total > 0 || kept.unreadable !== null) out.push(kept);
   }
   return out;
