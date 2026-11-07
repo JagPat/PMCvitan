@@ -46,7 +46,7 @@ export type HubDelivery = {
  *     judged again, so a refused or ignored delivery can still be applied by a later release (C2).
  *  4. The event is read: unreadable or malformed is refused; an unsubscribed type or work in progress is ignored. An
  *     event naming a Hub office other than `HUB_OFFICE_ID` is refused (U3o) before any project is looked at; one naming
- *     no office (Hub's events from before it added `data.office`) goes on.
+ *     no office is malformed (the reader requires it since Hub's JagPat/hub#331).
  *  5. The project resolves only through its active link: the link of the PMC project Hub names (`links[app=pmc]`), in
  *     the Hub org, whose latest event is `linked` to the Hub project the event is about. The link row is read FOR UPDATE:
  *     a link event's insert takes KEY SHARE on that row through its foreign key, which only FOR UPDATE conflicts with, so
@@ -101,7 +101,7 @@ export class HubReceiverService {
       if (event.kind === 'unreadable') return record('refused', HUB_UNREADABLE_TYPE, null, 'unreadable');
       if (event.kind === 'ignored') return record('ignored', event.type, null);
       if (event.kind === 'malformed') return record('refused', event.type, event.versionId, 'malformed');
-      if (event.officeId !== null && event.officeId !== hub.config.officeId) return record('refused', event.type, event.versionId, 'office_mismatch');
+      if (event.officeId !== hub.config.officeId) return record('refused', event.type, event.versionId, 'office_mismatch');
       // Hub names one PMC project per link; none, or more than one, resolves nothing
       if (event.pmcProjectIds.length !== 1) return record('refused', event.type, event.versionId, 'not_linked');
 
