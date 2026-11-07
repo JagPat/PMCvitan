@@ -49,7 +49,8 @@ export function OpenItemsBlock() {
       // body limit. The store refuses what is still too large or of a type the upload does not take, with its own line;
       // the scope pinned at the tap goes with it, so a shrink that ends after a switch sends nothing
       // with the picked file's and the sent bytes' digests, so a key kept across a reload replays only the same bytes
-      // (Codex #1408 4500685646)
+      // (Codex #1408 4500685646). Nothing here rejects: `shrinkPhoto` and `photoDigest` catch every failure and resolve (to
+      // the photo as it was, or to no digest), and `addProofPhoto` answers every refusal itself, so there is no catch
       void (async () => {
         const [photo, picked] = await Promise.all([shrinkPhoto(original), photoDigest(original)]);
         const sent = picked === null ? null : await photoDigest(photo);
