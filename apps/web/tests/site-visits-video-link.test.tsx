@@ -622,4 +622,93 @@ describe('video V2g-2: a clip\'s full-video link', () => {
     expect(within(card).getByTestId('sv-link-change-m-c')).toBeTruthy();
     expect(sends).toHaveBeenCalledTimes(2);
   });
+  describe('the PMC\'s own link, its answer lost as its hour ends (#1409 r2)', () => {
+    const mine = link({ addedById: PMC, addedByName: 'Priya Shah', addedByRole: 'pmc' });
+    const hour = { reasonRequired: false, until: new Date(NOW + 60_000).toISOString() };
+    const hourUp = async () => {
+      vi.spyOn(Date, 'now').mockImplementation(() => NOW + 60_001);
+      await act(async () => { vi.advanceTimersByTime(60_100); });
+      await settled();
+    };
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      onTestFinished(() => { vi.useRealTimers(); });
+    });
+
+    it('a change that landed is sent again as the same body under the same key: no reason added though the hour is now up', async () => {
+      let readsFail = false;
+      const sends = vi.fn()
+        .mockImplementationOnce(async (_v: string, _m: string, body: { id: string }) => {
+          state.visit = visit({ files: [clip({ fullVideoLink: link({ ...mine, id: body.id, url: ZOHO, host: 'zoho', label: null }), fullVideoLinkOffer: hour })] });
+          readsFail = true;
+          throw new TypeError('Failed to fetch');
+        })
+        .mockImplementationOnce(async () => state.visit);
+      const { gw, state } = server(visit({ files: [clip({ fullVideoLink: mine, fullVideoLinkOffer: hour })] }), { setSiteVisitFileLink: sends });
+      const reads = gw.listSiteVisits!.getMockImplementation() as (q?: { status?: string }) => Promise<SiteVisit[]>;
+      gw.listSiteVisits!.mockImplementation(async (q?: { status?: string }) => { if (readsFail) throw new TypeError('Failed to fetch'); return reads(q); });
+      const card = await mount('pmc', PMC, gw);
+      await click(within(card).getByTestId('sv-link-change-m-c'));
+      expect(within(card).queryByTestId('sv-link-reason-m-c')).toBeNull();
+      type(within(card).getByTestId('sv-link-url-m-c'), ZOHO);
+      await click(within(card).getByTestId('sv-link-save-m-c'));
+      expect(within(card).getByTestId('sv-link-said-m-c').textContent).toBe('No answer from the server. Try again: it is saved only once.');
+      await hourUp();
+      // the offer now asks a reason of a new change, but this one was sent without: it goes again as it was
+      expect(within(card).queryByTestId('sv-link-reason-m-c')).toBeNull();
+      readsFail = false;
+      await click(within(card).getByTestId('sv-link-save-m-c'));
+      const [, , first, firstKey] = sends.mock.calls[0]!;
+      const [, , again, againKey] = sends.mock.calls[1]!;
+      expect(againKey).toBe(firstKey);
+      expect(again).toEqual(first);
+      expect(again).toEqual({ id: expect.stringMatching(UUID), url: ZOHO, replaces: mine.id });
+      expect(within(card).queryByTestId('sv-link-form-m-c')).toBeNull();
+      expect(within(card).getByTestId('sv-link-open-m-c').getAttribute('href')).toBe(ZOHO);
+    });
+
+    it('a change that did not land, refused when sent again for want of a reason: the answer lets the form ask one, and the next try is a fresh key', async () => {
+      const sends = vi.fn()
+        .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+        .mockRejectedValueOnce(refusal(403, 'A link can be changed only within an hour of adding it; ask the PMC'))
+        .mockImplementationOnce(async () => state.visit);
+      const { gw, state } = server(visit({ files: [clip({ fullVideoLink: mine, fullVideoLinkOffer: hour })] }), { setSiteVisitFileLink: sends });
+      const card = await mount('pmc', PMC, gw);
+      await click(within(card).getByTestId('sv-link-change-m-c'));
+      type(within(card).getByTestId('sv-link-url-m-c'), ZOHO);
+      await click(within(card).getByTestId('sv-link-save-m-c'));
+      await hourUp();
+      expect(within(card).queryByTestId('sv-link-reason-m-c')).toBeNull();
+      await click(within(card).getByTestId('sv-link-save-m-c'));
+      const [, , first, firstKey] = sends.mock.calls[0]!;
+      const [, , again, againKey] = sends.mock.calls[1]!;
+      expect(againKey).toBe(firstKey);
+      expect(again).toEqual(first);
+      // the server answered: the form stays, and now asks the reason the offer asks
+      expect(within(card).getByTestId('sv-link-said-m-c').textContent).toBe('The link was not saved. A link can be changed only within an hour of adding it; ask the PMC');
+      expect(within(card).getByTestId('sv-link-form-m-c')).toBeTruthy();
+      expect(within(card).getByTestId('sv-link-save-m-c')).toBeDisabled();
+      type(within(card).getByTestId('sv-link-reason-m-c'), 'Better copy');
+      state.visit = visit({ files: [clip({ fullVideoLink: link({ url: ZOHO, host: 'zoho' }), fullVideoLinkOffer: pmcOffer })] });
+      await click(within(card).getByTestId('sv-link-save-m-c'));
+      const [, , fresh, freshKey] = sends.mock.calls[2]!;
+      expect(freshKey).not.toBe(firstKey);
+      expect(fresh).toEqual({ id: expect.stringMatching(UUID), url: ZOHO, replaces: mine.id, reason: 'Better copy' });
+      expect(sends).toHaveBeenCalledTimes(3);
+    });
+
+    it('a form closed after a lost answer forgets what was sent: opened again, it asks the reason the offer now asks', async () => {
+      const sends = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch'));
+      const { gw } = server(visit({ files: [clip({ fullVideoLink: mine, fullVideoLinkOffer: hour })] }), { setSiteVisitFileLink: sends });
+      const card = await mount('pmc', PMC, gw);
+      await click(within(card).getByTestId('sv-link-change-m-c'));
+      type(within(card).getByTestId('sv-link-url-m-c'), ZOHO);
+      await click(within(card).getByTestId('sv-link-save-m-c'));
+      await hourUp();
+      expect(within(card).queryByTestId('sv-link-reason-m-c')).toBeNull();
+      await click(within(card).getByTestId('sv-link-cancel-m-c'));
+      await click(within(card).getByTestId('sv-link-change-m-c'));
+      expect(within(card).getByTestId('sv-link-reason-m-c')).toBeTruthy();
+    });
+  });
 });

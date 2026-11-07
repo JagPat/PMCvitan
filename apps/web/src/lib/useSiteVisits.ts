@@ -41,7 +41,8 @@ const OPEN_LIMIT = 200;
 type Load = 'loading' | 'ready' | 'error';
 /** Video V2g-2: a link change's outcome: null once the server has it, else what to say beside the clip, and whether the
  *  link or clip the person saw has changed since (the form filled for it is closed). */
-export type LinkOutcome = { said: string; stale: boolean } | null;
+/** `unknown`: no answer came (a lost answer, or the wait's bound), so the change may or may not have landed. */
+export type LinkOutcome = { said: string; stale: boolean; unknown?: true } | null;
 
 /** A version 4 UUID, as the server requires of every row id, from whatever randomness the browser has. */
 export function uuidV4(): string {
@@ -917,7 +918,7 @@ export function useSiteVisits() {
       // may still have been made: either way the visit is read again
       void readHead(false);
       if (typeof status !== 'number') {
-        return { said: globalThis.navigator?.onLine === false ? SV.linkOffline[lang] : SV.linkUnreachable[lang], stale: false };
+        return { said: globalThis.navigator?.onLine === false ? SV.linkOffline[lang] : SV.linkUnreachable[lang], stale: false, unknown: true };
       }
       if (isVisitFileGone(err)) return { said: SV.linkFileGone[lang], stale: true };
       const said = refusalMessage(err);

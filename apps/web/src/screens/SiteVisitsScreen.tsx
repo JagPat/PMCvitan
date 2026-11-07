@@ -288,14 +288,15 @@ function FileLink({ visitId, file, lang, pmc, busy, setLink, endLink }: {
   const box = useRef<HTMLDivElement>(null);
   const opener = useRef<string | null>(null);
   const [focusTurn, setFocusTurn] = useState(0);
-  // whether a reason was asked when the form opened: kept for the form's life, so a try sent again after a lost answer
-  // is the same body under the same key even when a read meanwhile shows the change landed (the link now the PMC's own,
-  // no reason asked of it) (#1409 r1)
-  const [reasonAtOpen, setReasonAtOpen] = useState(false);
+  // whether the last send carried a reason, kept only while its outcome is unknown (no answer came): a try sent again is
+  // then that same body under the same key, whatever a read or the clock has done to the offer meanwhile (the link now
+  // the PMC's own, or their hour over). Any answer with a status, and opening the form again, let the offer decide again
+  // (#1409 r1, r2; audit notes/video/v2g-link/v2g2/r2/audit.md)
+  const [reasonSent, setReasonSent] = useState<boolean | null>(null);
   // the form was closed because its offer left (the hour up): focus is given back only if it was lost with the form
   const offerGone = useRef(false);
   const open = (to: 'form' | 'off', from: string) => {
-    setSaid(null); setSeen(link?.id ?? null); setReasonAtOpen(link !== null && offer?.reasonRequired === true);
+    setSaid(null); setSeen(link?.id ?? null); setReasonSent(null);
     setMode(to); opener.current = from; offerGone.current = false; setFocusTurn((n) => n + 1);
   };
   const [url, setUrl] = useState('');
@@ -339,7 +340,7 @@ function FileLink({ visitId, file, lang, pmc, busy, setLink, endLink }: {
   );
   const told = said && <div className={styles.error} role="alert" data-testid={`sv-link-said-${id}`}>{said}</div>;
   // a reason only where the change ends a link that is not the viewer's own within the hour
-  const needsReason = seen !== null && (reasonAtOpen || offer?.reasonRequired === true);
+  const needsReason = seen !== null && (reasonSent ?? offer?.reasonRequired === true);
   // a closed form's change is over: a later try is a fresh one, under a fresh key, naming the link then on screen. A
   // change whose answer was lost and that did land is then refused as stale (409) and the visit read again: never a
   // second link (Stage 1 ruling B)
@@ -352,8 +353,9 @@ function FileLink({ visitId, file, lang, pmc, busy, setLink, endLink }: {
   useEffect(() => {
     if (offer === null && formOpen) { offerGone.current = true; close(); }
   }, [offer === null, formOpen]); // eslint-disable-line react-hooks/exhaustive-deps
-  const settle = (out: LinkOutcome) => {
+  const settle = (carried: boolean) => (out: LinkOutcome) => {
     setSending(false);
+    setReasonSent(out?.unknown ? carried : null);
     setSaid(out?.said ?? null);
     if (out === null || out.stale) close();
   };
@@ -402,7 +404,7 @@ function FileLink({ visitId, file, lang, pmc, busy, setLink, endLink }: {
       const sent = keyFor(endKey, JSON.stringify(checked.data));
       setSending(true);
       setSaid(null);
-      void endLink(visitId, file, checked.data, sent.key).then(settle);
+      void endLink(visitId, file, checked.data, sent.key).then(settle(typedReason !== undefined));
     };
     return (
       <div ref={box} style={{ display: 'contents' }}>
@@ -430,7 +432,7 @@ function FileLink({ visitId, file, lang, pmc, busy, setLink, endLink }: {
     const sent = keyFor(setKey, JSON.stringify(parsed));
     setSending(true);
     setSaid(null);
-    void setLink(visitId, file, { ...parsed, id: sent.id }, sent.key).then(settle);
+    void setLink(visitId, file, { ...parsed, id: sent.id }, sent.key).then(settle(typedReason !== undefined));
   };
   return (
     <div ref={box} style={{ display: 'contents' }}>
