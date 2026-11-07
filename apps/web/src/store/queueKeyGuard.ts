@@ -717,14 +717,14 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
      *  stays byte for byte. A record the write makes redundant goes; this tab lets go of a discarded occurrence it held
      *  stranded. 'unreadable': a key this release cannot read, never written here; 'failed': nothing was written (a
      *  mark or the write did not land) */
-    discard(storage: Store, key: string, select: (acts: OutboxOp[]) => boolean[]): 'ok' | 'unreadable' | 'failed' {
+    discard(storage: Store, key: string, select: (acts: OutboxOp[]) => boolean[]): 'ok' | 'none' | 'unreadable' | 'failed' {
       try {
         const s = snapshotOf(storage, key, scopesOf(key));
         if (s.acts === null && s.raw !== null) return 'unreadable';
         const all = owedOf(recoveredSnapshot(s), stranded.get(key) ?? []);
         const picked = select(all.owed.map((o) => o.act));
         const gone = all.owed.filter((_, n) => picked[n] === true);
-        if (gone.length === 0) return 'ok';
+        if (gone.length === 0) return 'none';
         const goneIds = new Set(gone.map((o) => o.oid));
         // the same act held twice (the key and a record) is one occurrence kept: the other is spent with the write
         const once = new Set<string>();
@@ -736,6 +736,16 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
           once.add(i);
           return true;
         });
+        // a done fact for each discarded act with an identity of its own, first: another tab that still holds one in
+        // memory settles it unsent at its flush (`settleDone`), never sends it (Stage 1 G5). If one cannot be written,
+        // those written go again and nothing else is. Once the marks are written the act is settled here whatever the
+        // write does (a load never takes a marked occurrence), so the facts stay with them
+        const facts: string[] = [];
+        for (const o of gone) {
+          if (!unique(o.act) || readDone(storage.getItem(doneName(key, o.act)))?.i === queueActIdent(o.act)) continue;
+          if (!putDone(storage, key, o.act)) { for (const f of facts) remove(storage, f); return 'failed'; }
+          facts.push(doneName(key, o.act));
+        }
         for (const o of gone) {
           if (!put(storage, markName(key, o.act, o.oid), queueActIdent(o.act))) return 'failed';
           setOf(sent, key).add(o.oid);
@@ -745,6 +755,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
         landed(key, plan.next, keep, plan.raw);
         const kept = new Set(plan.next.map((o) => o.oid));
         unstrand(key, (i) => goneIds.has(i) || kept.has(i));
+        if (!stranded.has(key)) handed.delete(key);
         release(storage, key, plan);
         return 'ok';
       } catch {
@@ -762,6 +773,7 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       let all = true;
       for (const name of names) if (!remove(storage, name)) all = false;
       stranded.delete(key);
+      handed.delete(key);
       madeAside.delete(key);
       setAsideRaw.delete(key);
       return all;
@@ -769,17 +781,19 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
     /** #1388 U2, "Discard all" of a readable key: its made records this release cannot read and does not take as a
      *  newer release's go (what they hold cannot be named, and no load ever restores it). Run under the key's lock,
      *  after `discard`. True when none is left */
-    discardDamagedRecords(storage: Store, key: string): boolean {
+    discardDamagedRecords(storage: Store, key: string): { ok: boolean; n: number } {
       try {
         const scopes = scopesOf(key);
-        let all = true;
+        let ok = true;
+        let n = 0;
         for (const name of namesUnder(storage, `vitan.made.${key}.`)) {
           const r = readLedgerQueue(storage.getItem(name), scopes);
-          if ('unreadable' in r && r.unreadable === 'damaged' && !remove(storage, name)) all = false;
+          if (!('unreadable' in r) || r.unreadable !== 'damaged') continue;
+          if (remove(storage, name)) n += 1; else ok = false;
         }
-        return all;
+        return { ok, n };
       } catch {
-        return false;
+        return { ok: false, n: 0 };
       }
     },
     /** how many occurrences are held stranded, over every key */

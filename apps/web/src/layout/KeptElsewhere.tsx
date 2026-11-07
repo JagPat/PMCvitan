@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type CSSProperties } from 'react';
+import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { Lang } from '@vitan/shared';
 import { useStore } from '@/store/store';
@@ -28,13 +28,14 @@ const LOCALE: Record<Lang, string> = { en: 'en-GB', hi: 'hi-IN', gu: 'gu-IN' };
 const countLine = (n: number, lang: Lang): string => (n === 1 ? QW.keptCountOne[lang] : qwFill(QW.keptCount, lang, { n }));
 type Ask = { projectId: string; item: string | null; n: number; name: string; unread: boolean };
 /** what a discard says: nothing when all of it went, else each thing the person should know */
-function saidOf(r: KeptDiscard, name: string, lang: Lang): string {
+function saidOf(r: KeptDiscard, name: string, lang: Lang): string | null {
   if (r.outcome === 'held') return qwFill(QW.keptBack, lang, { project: name });
   if (r.outcome === 'unknown') return QW.keptNoCheck[lang];
-  const said = [r.outcome === 'failed' ? QW.keptNotDiscarded[lang] : QW.keptDiscarded[lang]];
+  // "Discarded." only when something was (Stage 1 U2 G2)
+  const said = r.outcome === 'failed' ? [QW.keptNotDiscarded[lang]] : r.removed ? [QW.keptDiscarded[lang]] : [];
   if (r.busy) said.push(QW.keptBusy[lang]);
   if (r.unchecked) said.push(QW.keptVisitUnchecked[lang]);
-  return said.join(' ');
+  return said.length > 0 ? said.join(' ') : null;
 }
 const canDiscardAll = (p: KeptProject): boolean => p.total > 0 || p.unreadable === 'damaged';
 
@@ -46,16 +47,22 @@ export function KeptElsewhereModal({ onClose }: { onClose: () => void }) {
   const memberships = useStore((s) => s.memberships);
   const active = useStore((s) => s.activeProjectId);
   const discard = useStore((s) => s.discardKeptChanges);
+  const heard = useStore((s) => s.keptHeard);
   const titleId = useId();
   const [ask, setAsk] = useState<Ask | null>(null);
   const [working, setWorking] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
+  // after a discard, focus goes to what it says, not to the page (the line tapped may be gone; Stage 1 U2 G7)
+  const saidRef = useRef<HTMLParagraphElement>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const [told, setTold] = useState(0);
+  useEffect(() => { if (told > 0) (saidRef.current ?? titleRef.current)?.focus(); }, [told]);
   const run = (a: Ask): void => {
     setWorking(true);
     setSaid(null);
     void discard(a.projectId, a.item)
       .then((r) => { setSaid(saidOf(r, a.name, lang)); }, () => { setSaid(QW.keptNotDiscarded[lang]); })
-      .finally(() => { setWorking(false); });
+      .finally(() => { setWorking(false); setTold((n) => n + 1); });
   };
   const confirmText = (a: Ask): string => {
     const first = a.n === 0 ? qwFill(QW.keptConfirmUnread, lang, { project: a.name })
@@ -67,14 +74,16 @@ export function KeptElsewhereModal({ onClose }: { onClose: () => void }) {
   // another tab may have sent, or kept, changes since
   // a read a memberships, project or session change made stale is dropped (its seq and scope); while the list is open
   // that same change reads it again (Codex 4498679826)
-  useEffect(() => { void load(); }, [load, token, memberships, active]);
+  // and again on each change heard from another tab (a discard there, a row write), so the list never offers a line
+  // that is gone (Stage 1 U2 G8)
+  useEffect(() => { void load(); }, [load, token, memberships, active, heard]);
   const saved = (at: number) => qwFill(QW.keptSaved, lang, { date: new Intl.DateTimeFormat(LOCALE[lang], { day: 'numeric', month: 'short', year: 'numeric' }).format(at) });
   return (
     <Modal onClose={onClose} labelledBy={titleId} maxWidth={480}>
       <div style={{ padding: 20 }} data-testid="kept-elsewhere">
-        <h2 id={titleId} style={title}>{QW.keptTitle[lang]}</h2>
+        <h2 id={titleId} ref={titleRef} tabIndex={-1} style={title}>{QW.keptTitle[lang]}</h2>
         <p style={note}>{QW.keptIntro[lang]}</p>
-        {said !== null && <p style={note} role="status" data-testid="kept-said">{said}</p>}
+        {said !== null && <p ref={saidRef} tabIndex={-1} style={note} role="status" data-testid="kept-said">{said}</p>}
         {kept !== null && kept.length === 0 && <p style={note} data-testid="kept-none">{QW.keptNone[lang]}</p>}
         {(kept ?? []).map((p) => (
           <section key={p.projectId} style={project} data-testid={`kept-project-${p.projectId}`}>

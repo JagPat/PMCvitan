@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, cleanup, within, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, cleanup, within } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, OutboxOp } from '@/data/apiGateway';
 import { listEvidence, putEvidence } from '@/data/evidenceStore';
@@ -11,6 +11,8 @@ import { normalizeGeneric, takenAs } from '@/store/loadTakes';
 import { createQueueKeyGuard } from '@/store/queueKeyGuard';
 import { recordBytes, recordName } from '@/store/queueLedger';
 import { QW } from '@/lib/queueWords';
+import { closeKeptSignals } from '@/data/keptSignal';
+import { EVIDENCE_READ_WAIT_MS } from '@/data/evidenceStore';
 import { KeptElsewhereModal } from '@/layout/KeptElsewhere';
 import { holdQueueLock, releaseQueueLocks, storedQueue } from './queueWrites';
 
@@ -21,15 +23,45 @@ import { holdQueueLock, releaseQueueLocks, storedQueue } from './queueWrites';
  * bound of the access check is advanced on purpose, once).
  */
 
-// the visit store's removal records, made unreadable by a test; and a row delete made to fail
-const ctl = vi.hoisted(() => ({ removalsUnreadable: false, evidenceDeleteFails: false }));
+// the visit store's removal records, made unreadable by a test; a row delete made to fail, or never to answer; and a
+// store's read made to fail (`…Fails`: how many reads from now fail)
+const ctl = vi.hoisted(() => ({
+  removalsUnreadable: false, evidenceDeleteFails: false, evidenceDeleteHangs: null as null | (() => void), visitDeleteHangs: null as null | (() => void),
+  evidenceListFails: 0, visitReadFails: 0, siteListFails: 0,
+}));
+// each clamped wait armed, so a test can end one by hand (a signal, never a clock)
+const timers = vi.hoisted(() => ({ armed: [] as { ms: number; fn: () => void }[] }));
+vi.mock('@/lib/clampedTimer', async (orig) => {
+  const real = await orig<typeof import('@/lib/clampedTimer')>();
+  return { ...real, setClampedTimeout: (fn: () => void, ms: number) => { timers.armed.push({ ms, fn }); return real.setClampedTimeout(fn, ms); } };
+});
+const fails = (n: 'evidenceListFails' | 'visitReadFails' | 'siteListFails'): boolean => { if (ctl[n] <= 0) return false; ctl[n] -= 1; return true; };
 vi.mock('@/data/visitPhotoStore', async (importOriginal) => {
   const real = await importOriginal<typeof import('@/data/visitPhotoStore')>();
-  return { ...real, removedVisitPhotos: (...a: Parameters<typeof real.removedVisitPhotos>) => (ctl.removalsUnreadable ? 'unreadable' as const : real.removedVisitPhotos(...a)) };
+  return {
+    ...real,
+    removedVisitPhotos: (...a: Parameters<typeof real.removedVisitPhotos>) => (ctl.removalsUnreadable ? 'unreadable' as const : real.removedVisitPhotos(...a)),
+    readVisitPhotoRowsUntil: (...a: Parameters<typeof real.readVisitPhotoRowsUntil>) => (fails('visitReadFails') ? Promise.reject(new Error('idb')) : real.readVisitPhotoRowsUntil(...a)),
+    deleteVisitPhoto: (...a: Parameters<typeof real.deleteVisitPhoto>) => {
+      if (ctl.visitDeleteHangs) { ctl.visitDeleteHangs(); return new Promise<void>(() => {}); }
+      return real.deleteVisitPhoto(...a);
+    },
+  };
 });
 vi.mock('@/data/evidenceStore', async (importOriginal) => {
   const real = await importOriginal<typeof import('@/data/evidenceStore')>();
-  return { ...real, deleteEvidence: (...a: Parameters<typeof real.deleteEvidence>) => (ctl.evidenceDeleteFails ? Promise.reject(new Error('blocked')) : real.deleteEvidence(...a)) };
+  return {
+    ...real,
+    deleteEvidence: (...a: Parameters<typeof real.deleteEvidence>) => {
+      if (ctl.evidenceDeleteHangs) { ctl.evidenceDeleteHangs(); return new Promise<void>(() => {}); }
+      return ctl.evidenceDeleteFails ? Promise.reject(new Error('blocked')) : real.deleteEvidence(...a);
+    },
+    listEvidence: (...a: Parameters<typeof real.listEvidence>) => (fails('evidenceListFails') ? Promise.reject(new Error('idb')) : real.listEvidence(...a)),
+  };
+});
+vi.mock('@/data/sitePhotoStore', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@/data/sitePhotoStore')>();
+  return { ...real, listSitePhotoRows: (...a: Parameters<typeof real.listSitePhotoRows>) => (fails('siteListFails') ? Promise.reject(new Error('idb')) : real.listSitePhotoRows(...a)) };
 });
 
 const b64url = (o: unknown) => btoa(JSON.stringify(o)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -55,12 +87,21 @@ const keys = () => (Object.keys(localStorage) as string[]).sort();
 const listed = async () => (await readKeptElsewhere(localStorage, SUB, new Set(['p-a'])))[0] ?? null;
 const idOf = async (match: (id: string) => boolean): Promise<string> => (await listed())!.items.map((i) => i.id).find(match)!;
 
+/** resolves once the store's state meets `cond` (a signal: the store's own change, never a poll) */
+const until = (cond: (st: ReturnType<typeof useStore.getState>) => boolean): Promise<void> => new Promise((resolve) => {
+  if (cond(useStore.getState())) { resolve(); return; }
+  const stop = useStore.subscribe((st) => { if (cond(st)) { stop(); resolve(); } });
+});
+
 beforeEach(() => { n += 1; SUB = `d-${n}`; localStorage.clear(); });
 afterEach(() => {
   cleanup();
   releaseQueueLocks();
   useStore.setState(getInitialState());
-  ctl.removalsUnreadable = false; ctl.evidenceDeleteFails = false;
+  ctl.removalsUnreadable = false; ctl.evidenceDeleteFails = false; ctl.evidenceDeleteHangs = null; ctl.visitDeleteHangs = null;
+  ctl.evidenceListFails = 0; ctl.visitReadFails = 0; ctl.siteListFails = 0;
+  timers.armed.length = 0;
+  closeKeptSignals();
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -75,7 +116,7 @@ describe('one line', () => {
     // another tab, holding the lock: its act lands before the discard runs
     localStorage.setItem(outbox(), JSON.stringify([approve('k-1'), approve('k-2', 'd-2'), approve('k-other', 'd-3')]));
     held.release();
-    expect(await discarding).toEqual({ ok: true, busy: false, unchecked: false });
+    expect(await discarding).toEqual({ ok: true, busy: false, unchecked: false, removed: true });
     expect(storedQueue(localStorage.getItem(outbox()))).toEqual([approve('k-2', 'd-2'), approve('k-other', 'd-3')]);
     const ids = (await listed())!.items.map((i) => i.id);
     expect(ids).toHaveLength(2);
@@ -172,6 +213,79 @@ describe('rows first, then acts', () => {
     expect(storedQueue(localStorage.getItem(outbox()))).toEqual([op]);
   });
 
+  it('a row store that cannot be read writes nothing, and says it could not discard: evidence (Stage 1 U2 G1)', async () => {
+    await putEvidence(ev('e-1'));
+    localStorage.setItem(outbox(), JSON.stringify([evOp('e-1'), approve('k-1')]));
+    const before = localStorage.getItem(outbox());
+    ctl.evidenceListFails = 1;
+    expect(await discardKept(localStorage, guard(), SUB, P, null)).toEqual({ ok: false, busy: false, unchecked: false, removed: false });
+    expect(localStorage.getItem(outbox())).toBe(before);
+    expect(await listEvidence(SUB, P)).toHaveLength(1);
+  });
+
+  it('a row store that cannot be read writes nothing: visit files (Stage 1 U2 G1)', async () => {
+    localStorage.setItem(lane(), JSON.stringify([startOf(V1)]));
+    await putVisitPhoto(SUB, P, visitFile('f-1', V1), 'AA==');
+    const before = localStorage.getItem(lane());
+    ctl.visitReadFails = 1;
+    expect((await discardKept(localStorage, guard(), SUB, P, `visit:${V1}`)).ok).toBe(false);
+    expect(localStorage.getItem(lane())).toBe(before);
+    expect(await listVisitPhotos(SUB, P)).toHaveLength(1);
+  });
+
+  it('a row store that cannot be read writes nothing: site photos (Stage 1 U2 G1)', async () => {
+    await putSitePhotoRow(SUB, P, { clientKey: 's-1', kind: 'progress' } as never);
+    localStorage.setItem(outbox(), JSON.stringify([{ t: 'uploadSitePhoto', scope: SUB, clientKey: 's-1' }]));
+    const before = localStorage.getItem(outbox());
+    ctl.siteListFails = 1;
+    expect((await discardKept(localStorage, guard(), SUB, P, null)).ok).toBe(false);
+    expect(localStorage.getItem(outbox())).toBe(before);
+    expect(await listSitePhotoRows(SUB, P)).toHaveLength(1);
+  });
+
+  it('a row delete that does not answer in time leaves its row, which keeps its act (Stage 1 U2 G4)', async () => {
+    await putEvidence(ev('e-1'));
+    localStorage.setItem(outbox(), JSON.stringify([evOp('e-1'), approve('k-1')]));
+    let asked: () => void = () => {};
+    const deleting = new Promise<void>((r) => { asked = r; });
+    ctl.evidenceDeleteHangs = () => asked();
+    const discarding = discardKept(localStorage, guard(), SUB, P, null);
+    await deleting;
+    // the delete's bound ends, by hand
+    const bound = timers.armed.filter((t) => t.ms === EVIDENCE_READ_WAIT_MS).at(-1)!;
+    bound.fn();
+    expect(await discarding).toEqual({ ok: false, busy: false, unchecked: false, removed: true });
+    expect(storedQueue(localStorage.getItem(outbox()))).toEqual([evOp('e-1')]);
+  });
+
+  it('a visit file delete that does not answer in time leaves the file, which keeps its visit’s acts (Stage 1 U2 G4)', async () => {
+    localStorage.setItem(lane(), JSON.stringify([startOf(V1)]));
+    await putVisitPhoto(SUB, P, visitFile('f-1', V1), 'AA==');
+    let asked: () => void = () => {};
+    const deleting = new Promise<void>((r) => { asked = r; });
+    ctl.visitDeleteHangs = () => asked();
+    const discarding = discardKept(localStorage, guard(), SUB, P, `visit:${V1}`);
+    await deleting;
+    timers.armed.filter((t) => t.ms === EVIDENCE_READ_WAIT_MS).at(-1)!.fn();
+    expect((await discarding).ok).toBe(false);
+    expect(await listVisitPhotos(SUB, P)).toHaveLength(1);
+    // the visit stays whole: its start stays with the file left
+    expect(storedQueue(localStorage.getItem(lane()))).toEqual([startOf(V1)]);
+  });
+
+  it('asked again under the locks: the project no longer lost while the discard waited means nothing is written (Stage 1 U2 G6)', async () => {
+    localStorage.setItem(outbox(), JSON.stringify([approve('k-1')]));
+    const before = localStorage.getItem(outbox());
+    const held = holdQueueLock(outbox());
+    await held.has;
+    let lost = true;
+    const discarding = discardKept(localStorage, guard(), SUB, P, null, () => lost);
+    lost = false;
+    held.release();
+    expect(await discarding).toEqual({ ok: false, busy: false, unchecked: false, removed: false, stale: true });
+    expect(localStorage.getItem(outbox())).toBe(before);
+  });
+
   it('a guard that cannot read a key the list read (its scopes not registered) writes nothing, and says so', async () => {
     const op = { t: 'uploadEvidence', scope: SUB, clientKey: 'e-9' } as OutboxOp;
     localStorage.setItem(outbox(), JSON.stringify([op]));
@@ -185,7 +299,7 @@ describe('rows first, then acts', () => {
     const locks = navigator.locks;
     Object.defineProperty(navigator, 'locks', { value: undefined, configurable: true });
     try {
-      expect(await discardKept(localStorage, guard(), SUB, P, null)).toEqual({ ok: false, busy: false, unchecked: false });
+      expect(await discardKept(localStorage, guard(), SUB, P, null)).toEqual({ ok: false, busy: false, unchecked: false, removed: false });
     } finally {
       Object.defineProperty(navigator, 'locks', { value: locks, configurable: true });
     }
@@ -217,15 +331,15 @@ describe('a site visit is one line', () => {
     localStorage.setItem(outbox(), JSON.stringify([approve('k-1')]));
     await putVisitPhoto(SUB, P, visitFile('f-1', V1), 'AA==');
     ctl.removalsUnreadable = true;
-    expect(await discardKept(localStorage, guard(), SUB, P, `visit:${V1}`)).toEqual({ ok: true, busy: false, unchecked: true });
+    expect(await discardKept(localStorage, guard(), SUB, P, `visit:${V1}`)).toEqual({ ok: true, busy: false, unchecked: true, removed: false });
     expect(storedQueue(localStorage.getItem(lane()))).toEqual([startOf(V1)]);
-    expect(await discardKept(localStorage, guard(), SUB, P, null)).toEqual({ ok: true, busy: false, unchecked: true });
+    expect(await discardKept(localStorage, guard(), SUB, P, null)).toEqual({ ok: true, busy: false, unchecked: true, removed: true });
     expect(storedQueue(localStorage.getItem(outbox()))).toEqual([]);
     expect(storedQueue(localStorage.getItem(lane()))).toEqual([startOf(V1)]);
     expect(await listVisitPhotos(SUB, P)).toHaveLength(1);
     // the person tries again once the records can be read: the visit goes whole
     ctl.removalsUnreadable = false;
-    expect(await discardKept(localStorage, guard(), SUB, P, null)).toEqual({ ok: true, busy: false, unchecked: false });
+    expect(await discardKept(localStorage, guard(), SUB, P, null)).toEqual({ ok: true, busy: false, unchecked: false, removed: true });
     expect(storedQueue(localStorage.getItem(lane()))).toEqual([]);
     expect(await listVisitPhotos(SUB, P)).toEqual([]);
     expect(await listed()).toBeNull();
@@ -255,6 +369,16 @@ describe('"Discard all"', () => {
     expect((await discardKept(localStorage, guard(), SUB, P, null)).ok).toBe(true);
     expect(localStorage.getItem(outbox())).toBeNull();
     expect(localStorage.getItem(lane())).toBe(lanes);
+  });
+
+  it('a damaged lane key stays whole while the visit files cannot be checked, and the person is told (Stage 1 U2 G9)', async () => {
+    localStorage.setItem(lane(), '{not a list');
+    localStorage.setItem(outbox(), JSON.stringify([approve('k-1')]));
+    await putVisitPhoto(SUB, P, visitFile('f-1', V1), 'AA==');
+    ctl.removalsUnreadable = true;
+    expect(await discardKept(localStorage, guard(), SUB, P, null)).toEqual({ ok: true, busy: false, unchecked: true, removed: true });
+    expect(localStorage.getItem(lane())).toBe('{not a list');
+    expect(storedQueue(localStorage.getItem(outbox()))).toEqual([]);
   });
 
   it('a made record this version cannot read goes with "Discard all"; a newer release’s record stays', async () => {
@@ -296,6 +420,62 @@ describe('this tab’s memory and another tab’s (Stage 1, #1397 §6)', () => {
     expect(g.strandedCount()).toBe(0);
   });
 
+  /** this tab loads the key, and a write of the scope it moved off cannot be stored: `k-2` is held stranded here */
+  function strandOne(g: ReturnType<typeof guard>) {
+    localStorage.setItem(outbox(), JSON.stringify([approve('k-1')]));
+    g.load(localStorage, outbox());
+    const setItem = Storage.prototype.setItem;
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith('vitan.')) throw new DOMException('full', 'QuotaExceededError');
+      setItem.call(this, k, v);
+    });
+    expect(g.keepUnsent(localStorage, outbox(), [approve('k-2', 'd-2')], [], (l) => l)).toBe(false);
+    spy.mockRestore();
+    expect(g.strandedCount()).toBe(1);
+  }
+
+  it('access returns in this tab after "Discard all": its load takes nothing discarded, the stranded act included (Stage 1 U2 G3)', async () => {
+    const g = guard();
+    strandOne(g);
+    expect((await discardKept(localStorage, g, SUB, P, null)).ok).toBe(true);
+    expect(g.strandedCount()).toBe(0);
+    expect(g.load(localStorage, outbox())).toEqual([]);
+  });
+
+  it('a damaged key with an act held stranded: "Discard all" lets both go, and a load after takes nothing (Stage 1 U2 G3)', async () => {
+    const g = guard();
+    strandOne(g);
+    localStorage.setItem(outbox(), '{not a list');
+    expect((await discardKept(localStorage, g, SUB, P, null)).ok).toBe(true);
+    expect(g.strandedCount()).toBe(0);
+    expect(g.load(localStorage, outbox())).toEqual([]);
+  });
+
+  for (const damaged of [false, true]) {
+    it(`after "Discard all"${damaged ? ' of a damaged key' : ''}, an act held stranded later is not let go by this tab’s next write (Stage 1 U2 G3: handed cleared)`, async () => {
+      const g = guard();
+      strandOne(g);
+      // a load hands the stranded act back to memory
+      g.load(localStorage, outbox());
+      if (damaged) localStorage.setItem(outbox(), '{not a list');
+      expect((await discardKept(localStorage, g, SUB, P, null)).ok).toBe(true);
+      // access back: this tab loads the key again, a later write of its scope moved off cannot be stored, and its act
+      // is held stranded; this tab's next write of the key must keep it held until the key holds it
+      localStorage.setItem(outbox(), JSON.stringify([approve('k-5', 'd-5')]));
+      g.load(localStorage, outbox());
+      const setItem = Storage.prototype.setItem;
+      const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+        if (k.startsWith('vitan.')) throw new DOMException('full', 'QuotaExceededError');
+        setItem.call(this, k, v);
+      });
+      expect(g.keepUnsent(localStorage, outbox(), [approve('k-3', 'd-3')], [], (l) => l)).toBe(false);
+      spy.mockRestore();
+      expect(g.strandedCount()).toBe(1);
+      expect(g.write(localStorage, outbox(), [approve('k-5', 'd-5')])).toBe(true);
+      expect(g.strandedCount()).toBe(1);
+    });
+  }
+
   it('another tab holding a discarded act in memory: its next write does not put it back', async () => {
     localStorage.setItem(outbox(), JSON.stringify([approve('k-1'), approve('k-2', 'd-2')]));
     const b = guard();
@@ -329,7 +509,7 @@ describe('through the store: access is checked afresh, fail closed', () => {
     localStorage.setItem(outbox(), JSON.stringify([approve('k-1')]));
     rememberProjectName(localStorage, SUB, P, 'Gone Tower');
     signIn(vi.fn(async () => [ALPHA] as never));
-    expect(await useStore.getState().discardKeptChanges(P, null)).toEqual({ outcome: 'done', busy: false, unchecked: false });
+    expect(await useStore.getState().discardKeptChanges(P, null)).toEqual({ outcome: 'done', busy: false, unchecked: false, removed: true });
     expect(useStore.getState().keptElsewhere).toEqual([]);
     expect(localStorage.getItem(projectNameKey(SUB, P))).toBeNull();
   });
@@ -349,6 +529,18 @@ describe('through the store: access is checked afresh, fail closed', () => {
     useStore.setState({ sessionToken: jwt({ sub: `${SUB}-other`, role: 'pmc', projectId: 'p-a' }) });
     answer([ALPHA]);
     expect((await asked).outcome).toBe('failed');
+    expect(storedQueue(localStorage.getItem(outbox()))).toEqual([approve('k-1')]);
+  });
+
+  it('the project comes back while the discard waits for the locks: nothing is discarded, and the person is told (Stage 1 U2 G6)', async () => {
+    localStorage.setItem(outbox(), JSON.stringify([approve('k-1')]));
+    signIn(vi.fn(async () => [ALPHA] as never));
+    const held = holdQueueLock(outbox());
+    await held.has;
+    const asked = useStore.getState().discardKeptChanges(P, null);
+    useStore.setState({ memberships: [ALPHA, GONE] as never });
+    held.release();
+    expect((await asked).outcome).toBe('held');
     expect(storedQueue(localStorage.getItem(outbox()))).toEqual([approve('k-1')]);
   });
 
@@ -395,8 +587,11 @@ describe('the list', () => {
     expect(ask.textContent).toContain('Discard 1 change for Gone Tower? It was never sent and cannot be recovered.');
     expect(ask.textContent).not.toContain(QW.keptConfirmUnreadIncluded.en);
     fireEvent.click(within(ask).getByTestId('kept-confirm-confirm'));
-    expect((await screen.findByTestId('kept-said')).textContent).toBe(QW.keptDiscarded.en);
-    await waitFor(() => expect(within(list).getByText('1 change')).toBeTruthy());
+    const said = await screen.findByTestId('kept-said');
+    expect(said.textContent).toBe(QW.keptDiscarded.en);
+    // the line is gone from the list (read again before the discard answered), and focus is on what it said
+    expect(within(list).getByText('1 change')).toBeTruthy();
+    expect(document.activeElement).toBe(said);
   });
 
   it('a project some of whose changes cannot be read offers "Discard all" only', async () => {
@@ -436,9 +631,55 @@ describe('the list', () => {
     const list = await screen.findByTestId('kept-elsewhere');
     fireEvent.click(await within(list).findByTestId('kept-discard-all'));
     fireEvent.click(within(await screen.findByTestId('kept-confirm')).getByTestId('kept-confirm-confirm'));
-    expect((await screen.findByTestId('kept-said')).textContent).toBe(`${QW.keptDiscarded.en} ${QW.keptVisitUnchecked.en}`);
+    expect((await screen.findByTestId('kept-said')).textContent).toBe(QW.keptVisitUnchecked.en);
     // the visit's line is still there to discard again
     expect(within(list).getAllByTestId('kept-item').length).toBeGreaterThan(0);
+  });
+
+  it('a line another tab discards leaves this tab’s open list: heard by the storage event (Stage 1 U2 G8)', async () => {
+    localStorage.setItem(outbox(), JSON.stringify([approve('k-1'), approve('k-2', 'd-2')]));
+    signIn(vi.fn(async () => [ALPHA] as never));
+    render(<KeptElsewhereModal onClose={() => {}} />);
+    const list = await screen.findByTestId('kept-elsewhere');
+    await within(list).findByText('2 changes');
+    // the other tab: its own guard, the same storage
+    const target = await idOf((id) => id.includes('k-1'));
+    expect((await discardKept(localStorage, guard(), SUB, P, target)).ok).toBe(true);
+    const read = useStore.getState().keptElsewhere;
+    act(() => { window.dispatchEvent(new StorageEvent('storage', { key: outbox(), newValue: localStorage.getItem(outbox()), storageArea: localStorage })); });
+    await until((st) => st.keptElsewhere !== read);
+    expect(within(list).getByText('1 change')).toBeTruthy();
+  });
+
+  it('a row another tab discards leaves this tab’s open list: heard on the person’s channel (Stage 1 U2 G8)', async () => {
+    const channels = new Map<string, Set<{ name: string; closed: boolean; onmessage: ((e: { data: unknown }) => void) | null }>>();
+    class FakeChannel {
+      onmessage: ((e: { data: unknown }) => void) | null = null;
+      closed = false;
+      readonly name: string;
+      constructor(name: string) { this.name = name; const open = channels.get(name) ?? new Set(); open.add(this); channels.set(name, open); }
+      postMessage(data: unknown): void { for (const c of channels.get(this.name) ?? []) if (c !== this) queueMicrotask(() => { if (!c.closed) c.onmessage?.({ data }); }); }
+      close(): void { this.closed = true; channels.get(this.name)?.delete(this); }
+    }
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    try {
+      await putEvidence({ userScope: SUB, projectId: P, clientKey: 'e-1', mime: 'image/jpeg', data: 'AA==', inspectionId: 'i-1', inspectionItemId: 'it-1' });
+      signIn(vi.fn(async () => [ALPHA] as never));
+      render(<KeptElsewhereModal onClose={() => {}} />);
+      const list = await screen.findByTestId('kept-elsewhere');
+      await within(list).findByText(QW.keptKindPhoto.en);
+      // the store listens on the person's channel once it checks
+      await act(async () => { useStore.getState().keptMayHaveChanged(); await until((st) => st.keptHeard > 0); });
+      const heard = useStore.getState().keptHeard;
+      // the other tab discards the row, and says so on the person's channel
+      expect((await discardKept(localStorage, guard(), SUB, P, null)).ok).toBe(true);
+      const read = useStore.getState().keptElsewhere;
+      new FakeChannel(`vitan.kept.${SUB}`).postMessage('row');
+      await until((st) => st.keptHeard > heard && st.keptElsewhere !== read);
+      expect(await screen.findByTestId('kept-none')).toBeTruthy();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('held again: the list says so, and nothing goes', async () => {
