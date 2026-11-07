@@ -92,6 +92,7 @@ describe('#1118 U3 — Hub webhook receiver (live PG)', () => {
     data: {
       fileId: 'f-17', fileNo: 'A-101', toStage: 'CONSTRUCTION', versionId: 'v-9031',
       project: { id: hubProjectId, links: externalIds.map((externalId) => ({ app: 'pmc', externalId, url: 'https://pms.test' })) },
+      office: { id: '7' },
       ...data,
     },
   });
@@ -326,6 +327,9 @@ describe('#1118 U3 — Hub webhook receiver (live PG)', () => {
       ['another Hub office, as a number', event([linked], 42, { office: { id: 70 } }), 'office_mismatch'],
       ['another Hub office naming no project', event([], 42, { office: { id: '8' } }), 'office_mismatch'],
       ['an office with no id', event([linked], 42, { office: {} }), 'malformed'],
+      // required since JagPat/hub#331: an event naming no office can't be checked, so it is malformed
+      ['no office', event([linked], 42, { office: undefined }), 'malformed'],
+      ['office null', event([linked], 42, { office: null }), 'malformed'],
     ];
     for (const [what, payload, reason] of refused) {
       const { id, r } = deliver(payload);
@@ -339,9 +343,8 @@ describe('#1118 U3 — Hub webhook receiver (live PG)', () => {
     // each of two links to one Hub project resolves its own PMC project, by the id Hub names; a numeric Hub id matches
     for (const [payload, what] of [[event([linked]), 'linked'], [event([twin], '42'), 'twin'], [event([linked], 42, {}, 'drawing.superseded'), 'superseded'],
       [event([linked], 42, { toStage: 'SHARED' }, 'drawing.status_changed'), 'shared'],
-      // U3o: this org's own Hub office, as a string or a number, and an event from before Hub named the office
-      [event([linked], 42, { office: { id: '7' } }), 'own office'], [event([linked], 42, { office: { id: 7 } }), 'own office as a number'],
-      [event([linked], 42, { office: null }), 'office null']] as const) {
+      // U3o: this org's own Hub office, as a string or a number
+      [event([linked], 42, { office: { id: '7' } }), 'own office'], [event([linked], 42, { office: { id: 7 } }), 'own office as a number']] as const) {
       const { id, r } = deliver(payload);
       expect((await r).status, what).toBe(503);
       expect(await receipts(id), what).toEqual([]);
