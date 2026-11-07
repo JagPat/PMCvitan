@@ -168,7 +168,7 @@ const EXPECT: Record<string, Spec> = {
     optional: ['nodeId', 'draft', 'recipientOfCurrent'].sort(), nullable: ['zone', 'activityId', 'decisionId', 'current'].sort(),
   },
   OpenItemDto: { keys: ['inspectionId', 'title', 'zone', 'nodeId', 'status', 'failedItems'].sort(), optional: [], nullable: ['nodeId'] },
-  ProofPhotoDto: { keys: ['id', 'url', 'inspectionId', 'inspectionItemId', 'by', 'byRole', 'at'].sort(), optional: ['by', 'byRole'].sort(), nullable: [] },
+  ProofPhotoDto: { keys: ['id', 'url', 'inspectionId', 'inspectionItemId', 'itemName', 'lineageRootId', 'by', 'byRole', 'at'].sort(), optional: ['itemName', 'by', 'byRole'].sort(), nullable: [] },
   PhotoDto: { keys: ['id', 'url', 'takenAt', 'nodeId', 'kind', 'by', 'byRole', 'at', 'clientKey', 'deletable', 'deletableUntil'].sort(), optional: ['takenAt', 'nodeId', 'by', 'byRole', 'clientKey', 'deletable', 'deletableUntil'].sort(), nullable: [] },
   DailyLogDto: { keys: ['id', 'date', 'logDate', 'checkedIn', 'checkinTime', 'submitted', 'crew', 'previous', 'materials', 'progress', 'photos', 'photoCount', 'myPhotoKeys'].sort(), optional: ['id', 'previous'].sort(), nullable: ['logDate', 'checkinTime', 'previous'].sort() },
   CompanyDto: { keys: ['id', 'name', 'kind', 'contactName', 'contactEmail', 'contactPhone', 'notes'].sort(), optional: [], nullable: [] },
