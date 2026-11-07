@@ -23,6 +23,7 @@
  * `SitePhotoUnreadable`, and the call is abandoned: a transaction still running is aborted, and a database that opens
  * after the bound is closed without one, so a write that passed its bound does not land later.
  */
+import { afterRowWrite } from './keptSignal';
 import type { UploadMediaInput } from './apiGateway';
 import { setClampedTimeout } from '@/lib/clampedTimer';
 
@@ -160,7 +161,7 @@ const keyOf = (userScope: string, projectId: string, clientKey: string): string 
 /** Keep a photo before its upload. Resolves only once committed, within the bound. */
 export function putSitePhotoRow(userScope: string, projectId: string, input: UploadMediaInput & { clientKey: string }): Promise<void> {
   const row: SitePhotoRow = { key: keyOf(userScope, projectId, input.clientKey), userScope, projectId, clientKey: input.clientKey, input, createdAt: Date.now() };
-  return bounded((run) => tx(run, 'readwrite', (s) => s.put(row)).then(() => undefined));
+  return afterRowWrite(userScope, bounded((run) => tx(run, 'readwrite', (s) => s.put(row)).then(() => undefined)));
 }
 
 export function getSitePhotoRow(userScope: string, projectId: string, clientKey: string): Promise<SitePhotoEntry | null> {
@@ -170,19 +171,19 @@ export function getSitePhotoRow(userScope: string, projectId: string, clientKey:
 /** The server took the photo: its bytes go, and a marker says so to a copy of its op another tab may still hold. */
 export function markSitePhotoSent(userScope: string, projectId: string, clientKey: string, placeDropped = false): Promise<void> {
   const sent: SitePhotoSent = { key: keyOf(userScope, projectId, clientKey), userScope, projectId, clientKey, sentAt: Date.now(), ...(placeDropped ? { placeDropped: true as const } : {}) };
-  return bounded((run) => tx(run, 'readwrite', (s) => s.put(sent)).then(() => undefined));
+  return afterRowWrite(userScope, bounded((run) => tx(run, 'readwrite', (s) => s.put(sent)).then(() => undefined)));
 }
 
 /** The server refused the photo for good on a replay: its bytes go, and a marker says so to a copy of its op another tab
  *  may still hold, so that tab says "discarded" too rather than dropping it quietly. Dropped with the sent markers. */
 export function markSitePhotoRefused(userScope: string, projectId: string, clientKey: string): Promise<void> {
   const refused: SitePhotoSent = { key: keyOf(userScope, projectId, clientKey), userScope, projectId, clientKey, sentAt: Date.now(), refused: true };
-  return bounded((run) => tx(run, 'readwrite', (s) => s.put(refused)).then(() => undefined));
+  return afterRowWrite(userScope, bounded((run) => tx(run, 'readwrite', (s) => s.put(refused)).then(() => undefined)));
 }
 
 /** Let a photo go: the server refused it for good, or it was never kept. */
 export function deleteSitePhotoRow(userScope: string, projectId: string, clientKey: string): Promise<void> {
-  return bounded((run) => tx(run, 'readwrite', (s) => s.delete(keyOf(userScope, projectId, clientKey))).then(() => undefined));
+  return afterRowWrite(userScope, bounded((run) => tx(run, 'readwrite', (s) => s.delete(keyOf(userScope, projectId, clientKey))).then(() => undefined)));
 }
 
 /** Every entry kept for (user, project), oldest first. Only uploads whose answer was lost, or that are on their way,

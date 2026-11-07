@@ -2,7 +2,7 @@ import type { OutboxOp } from '@/data/apiGateway';
 import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { queueActIdent } from '@/store/queueActIdent';
 import {
-  decodeSidecar, doneName, donePrefixes, doneToPrune, encodeSidecar, evidenceOf, frameOf, isDone, ledgerTag, markName, owedOf, planWrite,
+  decodeSidecar, doneName, donePrefixes, doneToPrune, encodeSidecar, evidenceOf, frameOf, ledgerTag, markName, owedOf, planWrite,
   readDone, readMarkName, recordBytes, recordName, recordOid, sidecarName, tokenOf,
   type Memory, type Occ, type Snapshot, type WritePlan,
 } from '@/store/queueLedger';
@@ -210,8 +210,9 @@ function recoveredSnapshot<S extends Snapshot>(s: S): S {
 }
 
 /** #1388: what `key` still owes, read only, for a scope this tab does not load (a project the person no longer holds):
- *  the occurrences the ledger owes (the key's, its made records', less its marks), less each one a done fact says the
- *  server has, as a load would take them. Nothing is written, named or held. A key this release cannot read says why
+ *  the occurrences the ledger owes (the key's, its made records', less its marks), as a load takes them into memory: one
+ *  a done fact says the server has is among them, as the load holds it until the flush settles it unsent (the kept list
+ *  leaves it out once it has keyed the acts as the load does: `takenOf`, #1397 G1). Nothing is written, named or held. A key this release cannot read says why
  *  (`read`), and owes what its readable made records hold, less what its bytes may hold, as a load restores them
  *  (`recoveredSnapshot`); a made record this release cannot read says why too (`unread`: 'newer' when one is a newer
  *  release's, else 'damaged'), beside the acts the rest owe. A read that throws is reported as `null`. */
@@ -228,7 +229,7 @@ export function readOwedActs(storage: Store, key: string, scopes: QueueScopes): 
       }
     }
     // a key this release cannot read still gives its readable records' acts, as a load restores them
-    return { read, acts: owedOf(recoveredSnapshot(s)).owed.map((o) => o.act).filter((a) => !isDone(storage, key, a)), unread };
+    return { read, acts: owedOf(recoveredSnapshot(s)).owed.map((o) => o.act), unread };
   } catch {
     return null;
   }

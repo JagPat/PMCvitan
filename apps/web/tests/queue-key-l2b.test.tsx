@@ -125,6 +125,24 @@ describe('L2b: forced probes through the store', () => {
     const reloaded = await page(false);
     expect(reloaded.getState().outbox).toEqual([]);
   });
+  it('#1397 (Stage 1): a keyless photo the load keys is the key\u2019s own occurrence: sent while the key cannot be written, a reload does not owe it again', async () => {
+    const photo = { t: 'uploadMedia', input: { kind: 'progress', mime: 'image/jpeg', data: 'AAAA', nodeId: 'slab-1' } } as unknown as OutboxOp;
+    expect(createQueueKeyGuard().write(localStorage, key, [photo])).toBe(true); // this release's key: its token, then the photo
+    const setItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k === key) throw new DOMException('full', 'QuotaExceededError'); // the key cannot be written: not the keyed copy, not the end write
+      setItem.call(this, k, v);
+    });
+    const uploadMedia = vi.fn(async () => ({ id: 'm-1', url: '/media/m-1' }));
+    const first = await page(true, { uploadMedia });
+    await first.getState().flushOutbox();
+    await queueWritten();
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(localStorage.getItem(key)!).filter((o: { t: string }) => o.t === 'uploadMedia')).toEqual([photo]); // still keyless in the key
+    vi.restoreAllMocks();
+    const reloaded = await page(false);
+    expect(reloaded.getState().outbox).toEqual([]);
+  });
 });
 
 describe('L2b: forced probes at the guard', () => {
