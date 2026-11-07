@@ -555,7 +555,7 @@ describe('the switcher', () => {
     const list = await screen.findByTestId('kept-elsewhere');
     expect(await within(list).findByText('Gone Tower')).toBeTruthy();
     expect(within(list).getByText('2 changes')).toBeTruthy();
-    expect(within(list).getAllByTestId('kept-item').map((e) => e.textContent)).toEqual(['Decision', 'Decision']);
+    expect(within(list).getAllByTestId('kept-item').map((e) => e.firstElementChild?.textContent)).toEqual(['Decision', 'Decision']);
     expect(within(list).getByText(QW.keptIntro.en)).toBeTruthy();
   });
 

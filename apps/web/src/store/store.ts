@@ -99,7 +99,7 @@ import {
 } from './projectCreateHold';
 import { createQueueKeyGuard, queueActIdent, type QueueWrite } from '@/store/queueKeyGuard';
 import { isDone } from '@/store/queueLedger';
-import { forgetKeptMemo, keptAnywhere, readKeptElsewhere, rememberProjectName, type KeptProject } from '@/store/keptElsewhere';
+import { discardKept, forgetKeptMemo, keptAnywhere, projectNameKey, readKeptElsewhere, rememberProjectName, type KeptProject } from '@/store/keptElsewhere';
 import { isStoredGenericOp, isStoredVisitOp, normalizeGeneric, putBackOf } from '@/store/loadTakes';
 import { closeKeptSignals, listenRowWrites } from '@/data/keptSignal';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
@@ -686,6 +686,9 @@ export interface AppActions {
   keptMayHaveChanged: (key?: string | null) => void;
   /** #1388: read the list of those changes (the list's open) */
   loadKeptElsewhere: () => Promise<void>;
+  /** #1388 U2: the person's discard of one line of a project's kept changes (`item`, its id), or all of them (null),
+   *  after a fresh check that they still do not hold the project. What happened, for the list to say */
+  discardKeptChanges: (projectId: string, item: string | null) => Promise<KeptDiscard>;
   loadPortfolio: () => void;
   /** U3b — load the PMC's daily brief (session-scoped, like the portfolio) */
   loadBrief: () => void;
@@ -1023,6 +1026,12 @@ function keptReadFor(st: { sessionToken: string | null; memberships: MembershipS
 }
 const keptReadHolds = (st: { sessionToken: string | null; memberships: MembershipSummary[]; activeProjectId: string }, r: KeptRead): boolean =>
   st.sessionToken === r.tok && st.memberships === r.ms && st.activeProjectId === r.active;
+
+/** #1388 U2: what a discard did. `held`: the project is the person's again, so nothing was discarded (its changes are
+ *  sent when they open it); `unknown`: their access could not be checked, so nothing was discarded; `failed`: the
+ *  discard could not be written (what was not removed is still kept, and listed); `done`: it was, but for a site photo
+ *  another tab is sending (`busy`) or visit files that could not be checked (`unchecked`) */
+export type KeptDiscard = { outcome: 'done' | 'held' | 'unknown' | 'failed'; busy: boolean; unchecked: boolean };
 
 /** #1373: the line for the changes this device keeps for a lost project */
 const keptLine = (lang: Lang, project: string, n: number): string =>
@@ -5325,6 +5334,35 @@ export const useStore = create<Store>()(
       // before it that lands after it is dropped (Stage 1 H2)
       keptCheckSeq += 1;
       set((s) => { s.keptElsewhere = kept; s.keptElsewhereAny = kept.length > 0; });
+    },
+    discardKeptChanges: async (projectId, item) => {
+      const none = (outcome: KeptDiscard['outcome']): KeptDiscard => ({ outcome, busy: false, unchecked: false });
+      const read = keptReadFor(get(), evidenceScope());
+      const gw = gateway;
+      if (!read || !gw) return none('failed');
+      // fail closed: discard only on a fresh answer that the person does not hold the project, never on a stale one
+      const bound = boundedSignal(LOST_PROJECT_MOVE_WAIT_MS);
+      const ms = await gw.listMemberships(bound.signal).catch(() => null).finally(bound.done);
+      if (get().sessionToken !== read.tok || evidenceScope() !== read.sub) return none('failed');
+      if (ms === null) return none('unknown');
+      if (ms.some((m) => m.projectId === projectId)) {
+        set((s) => { s.memberships = ms; });
+        get().keptMayHaveChanged();
+        return none('held');
+      }
+      // the guard reads the lost project's keys with the person's scopes, as the list did (a key of a project this tab
+      // never opened has none recorded yet; a scoped act would otherwise read as unreadable)
+      const scopes = { evidence: read.sub, visitPhoto: read.sub };
+      for (const k of [`vitan.outbox.${read.sub}.${projectId}`, `vitan.siteVisitQueue.${read.sub}.${projectId}`]) if (!queueKeyScopes.has(k)) queueKeyScopes.set(k, scopes);
+      const out = await discardKept(read.storage, queueKeys, read.sub, projectId, item).catch(() => null);
+      await get().loadKeptElsewhere();
+      // the project's name goes with its last kept change
+      const listed = get().keptElsewhere;
+      if (listed !== null && !listed.some((p) => p.projectId === projectId) && get().sessionToken === read.tok) {
+        try { read.storage.removeItem(projectNameKey(read.sub, projectId)); } catch { /* kept: read only by this list */ }
+      }
+      if (!out) return none('failed');
+      return { outcome: out.ok ? 'done' : 'failed', busy: out.busy, unchecked: out.unchecked };
     },
     loadOrgData: () => {
       if (!gateway) return;

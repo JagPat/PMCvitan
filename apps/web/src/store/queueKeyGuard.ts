@@ -705,6 +705,64 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       }
       return marked;
     },
+    /** #1388 U2, the person's discard of changes kept for a project they no longer hold. Run under `key`'s lock. The
+     *  key's owed occurrences (the key's, its readable made records' and those this tab holds stranded, as a load takes
+     *  them) are read in one snapshot, in a load's order; `select` names, by place in that list, the ones to discard
+     *  (the caller keys and filters them as a load does, so it names exactly what the person was shown). Each is marked
+     *  settled first, so a load between the mark and the write never takes it again; then the key is written with every
+     *  other occurrence, and every entry nothing names (another tab's act, an act in the wrong key, a malformed one)
+     *  stays byte for byte. A record the write makes redundant goes; this tab lets go of a discarded occurrence it held
+     *  stranded. 'unreadable': a key this release cannot read, never written here; 'failed': nothing was written (a
+     *  mark or the write did not land) */
+    discard(storage: Store, key: string, select: (acts: OutboxOp[]) => boolean[]): 'ok' | 'unreadable' | 'failed' {
+      try {
+        const s = snapshotOf(storage, key, scopesOf(key));
+        if (s.acts === null && s.raw !== null) return 'unreadable';
+        const all = owedOf(recoveredSnapshot(s), stranded.get(key) ?? []);
+        const picked = select(all.owed.map((o) => o.act));
+        const gone = all.owed.filter((_, n) => picked[n] === true);
+        if (gone.length === 0) return 'ok';
+        const goneIds = new Set(gone.map((o) => o.oid));
+        // the same act held twice (the key and a record) is one occurrence kept: the other is spent with the write
+        const once = new Set<string>();
+        const keep = all.owed.filter((o) => {
+          if (goneIds.has(o.oid)) return false;
+          if (!unique(o.act)) return true;
+          const i = queueActIdent(o.act);
+          if (once.has(i)) return false;
+          once.add(i);
+          return true;
+        });
+        for (const o of gone) {
+          if (!put(storage, markName(key, o.act, o.oid), queueActIdent(o.act))) return 'failed';
+          setOf(sent, key).add(o.oid);
+        }
+        const plan = planWrite(s, { mine: keep, known: new Set(all.frame.occs.map((o) => o.oid)), sent: goneIds });
+        if (plan === null || !apply(storage, key, plan, s.raw)) return 'failed';
+        landed(key, plan.next, keep, plan.raw);
+        const kept = new Set(plan.next.map((o) => o.oid));
+        unstrand(key, (i) => goneIds.has(i) || kept.has(i));
+        release(storage, key, plan);
+        return 'ok';
+      } catch {
+        return 'failed';
+      }
+    },
+    /** #1388 U2, "Discard all" of a key this release cannot read as a list (a damaged one; a newer release's key is
+     *  never passed here): the key, its sidecar, its made records, its marks and every copy of it set aside go. Run
+     *  under the key's lock. True when nothing of it is left */
+    discardWhole(storage: Store, key: string): boolean {
+      const names = [
+        ...namesUnder(storage, `vitan.unreadable.${key}.`), ...namesUnder(storage, `vitan.made.${key}.`),
+        ...namesUnder(storage, `vitan.settled.${key}.`), sidecarName(key), key,
+      ];
+      let all = true;
+      for (const name of names) if (!remove(storage, name)) all = false;
+      stranded.delete(key);
+      madeAside.delete(key);
+      setAsideRaw.delete(key);
+      return all;
+    },
     /** how many occurrences are held stranded, over every key */
     strandedCount(): number {
       // one this tab also lists not kept for its key is counted there, not twice

@@ -1,10 +1,11 @@
 import { isSiteVisitOp, siteVisitOf, type OutboxOp } from '@/data/apiGateway';
-import { evidenceProjectsOf, evidenceWithinWait, listEvidence } from '@/data/evidenceStore';
-import { isSitePhotoSent, listSitePhotoRows, sitePhotoKeptProjectsOf, sitePhotoProjectsOf } from '@/data/sitePhotoStore';
-import { posterWaits, readVisitPhotoRowsUntil, removedVisitPhotos, visitPhotoProjectsOf, type VisitPhotoRow } from '@/data/visitPhotoStore';
-import { putBackOf, takenFromKey } from '@/store/loadTakes';
+import { deleteEvidence, evidenceProjectsOf, evidenceWithinWait, listEvidence } from '@/data/evidenceStore';
+import { deleteSitePhotoRow, ifSitePhotoUnlocked, isSitePhotoSent, listSitePhotoRows, sitePhotoKeptProjectsOf, sitePhotoProjectsOf } from '@/data/sitePhotoStore';
+import { deleteVisitPhoto, posterWaits, readVisitPhotoRowsUntil, removedVisitPhotos, visitPhotoProjectsOf, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { putBackOf, takenAs, takenFromKey } from '@/store/loadTakes';
 import { queueActIdent } from '@/store/queueActIdent';
-import { readOwedActs, type KeyRead } from '@/store/queueKeyGuard';
+import { readOwedActs, type KeyRead, type QueueKeyGuard } from '@/store/queueKeyGuard';
+import { underQueueLocks } from '@/store/queueKeyLock';
 import { isDone } from '@/store/queueLedger';
 
 /**
@@ -64,7 +65,9 @@ export type KeptItem = { id: string; kind: KeptKind; count: number; at: number |
 export type KeptProject = { projectId: string; name: string | null; items: KeptItem[]; total: number; unreadable: Exclude<KeyRead, 'ok'> | null };
 /** a row kept on this device, as the list needs it. `failed`: the server refused it, or it waits for the person's retry;
  *  it is listed apart, as it is not sent of itself when access returns */
-export type KeptRow = { clientKey: string; at: number; visitId: string | null; failed: boolean };
+export type KeptRow = { clientKey: string; at: number; visitId: string | null; failed: boolean; store?: RowStore };
+/** the store a row is kept in (the discard deletes it through that store's own delete) */
+export type RowStore = 'evidence' | 'site' | 'visit';
 
 /** the name record of a project for a person: written wherever a snapshot names the project, read only by this list */
 export const projectNameKey = (sub: string, projectId: string): string => `vitan.projectName.${sub}.${projectId}`;
@@ -108,6 +111,17 @@ type OwedRead = { read: KeyRead; acts: OutboxOp[]; unread?: Exclude<KeyRead, 'ok
 type TakenRead = { read: KeyRead; acts: OutboxOp[]; held: OutboxOp[]; unread: Exclude<KeyRead, 'ok'> | null } | null;
 const worse = (a: KeptProject['unreadable'], b: Exclude<KeyRead, 'ok'>): Exclude<KeyRead, 'ok'> => (a === 'damaged' || b === 'damaged' ? 'damaged' : 'newer');
 
+/** The line an act is listed on (`KeptItem.id`), given the rows by file: a refused row's own line; a site visit's acts
+ *  on their visit's line; any other act on its own. The discard names what to remove by the same ids */
+export function actItemId(o: OutboxOp, rowOf: ReadonlyMap<string, KeptRow>): string {
+  const file = fileOf(o);
+  const row = file !== null ? rowOf.get(file) : undefined;
+  if (row?.failed) return `row:${row.clientKey}`;
+  return isSiteVisitOp(o) ? `visit:${siteVisitOf(o)}` : `act:${queueActIdent(o)}`;
+}
+/** the line a row no act names is listed on */
+export const rowItemId = (r: KeptRow): string => (r.failed || r.visitId === null ? `row:${r.clientKey}` : `visit:${r.visitId}`);
+
 /** one project's list, from what its two keys owe (`reads`, as `readOwedActs` gives them) and its rows */
 export function keptOf(projectId: string, name: string | null, reads: OwedRead[], rows: KeptRow[]): KeptProject {
   const items = new Map<string, KeptItem>();
@@ -134,8 +148,7 @@ export function keptOf(projectId: string, name: string | null, reads: OwedRead[]
       if (file !== null) { if (counted.has(file)) continue; counted.add(file); }
       const row = file !== null ? rowOf.get(file) : undefined;
       const at = earliest(row?.at ?? null, o.t === 'siteVisitAddFile' ? timeOf(o.queuedAt) : null);
-      if (row?.failed) add(`row:${row.clientKey}`, KEPT_KIND[o.t], at, true);
-      else add(isSiteVisitOp(o) ? `visit:${siteVisitOf(o)}` : `act:${queueActIdent(o)}`, KEPT_KIND[o.t], at, false);
+      add(actItemId(o, rowOf), KEPT_KIND[o.t], at, row?.failed === true);
     }
   }
   // a row no act names: its act is rebuilt from it at the project's load, so it is a change of its own (a visit file
@@ -143,9 +156,7 @@ export function keptOf(projectId: string, name: string | null, reads: OwedRead[]
   for (const r of rows) {
     if (counted.has(r.clientKey)) continue;
     counted.add(r.clientKey);
-    const kind: KeptKind = r.visitId !== null ? 'siteVisit' : 'photo';
-    if (r.failed) add(`row:${r.clientKey}`, kind, r.at, true);
-    else add(r.visitId !== null ? `visit:${r.visitId}` : `row:${r.clientKey}`, kind, r.at, false);
+    add(rowItemId(r), r.visitId !== null ? 'siteVisit' : 'photo', r.at, r.failed);
   }
   const list = [...items.values()];
   return { projectId, name, items: list, total: list.reduce((n, i) => n + i.count, 0), unreadable };
@@ -186,8 +197,8 @@ async function rowsOf(sub: string, projectId: string, queued: Set<string>): Prom
     listSitePhotoRows(sub, projectId).catch(() => []),
   ]);
   const rows: KeptRow[] = [
-    ...evidence.map((e) => ({ clientKey: e.clientKey, at: e.createdAt, visitId: null, failed: e.status === 'failed' })),
-    ...site.flatMap((e) => (isSitePhotoSent(e) ? [] : [{ clientKey: e.clientKey, at: e.createdAt, visitId: null, failed: false }])),
+    ...evidence.map((e) => ({ clientKey: e.clientKey, at: e.createdAt, visitId: null, failed: e.status === 'failed', store: 'evidence' as const })),
+    ...site.flatMap((e) => (isSitePhotoSent(e) ? [] : [{ clientKey: e.clientKey, at: e.createdAt, visitId: null, failed: false, store: 'site' as const }])),
   ];
   const starts: OutboxOp[] = [];
   if (removed === 'unreadable' || visit === null) {
@@ -198,7 +209,7 @@ async function rowsOf(sub: string, projectId: string, queued: Set<string>): Prom
   }
   noteDone(sub, projectId, visit, now);
   for (const v of visit) {
-    const row: KeptRow = { clientKey: v.clientKey, at: v.createdAt, visitId: v.op.visitId, failed: v.state === 'failed' };
+    const row: KeptRow = { clientKey: v.clientKey, at: v.createdAt, visitId: v.op.visitId, failed: v.state === 'failed', store: 'visit' };
     if (v.state === 'failed') { rows.push(row); continue; }
     const back = putBackOf(v, queued, removed, now);
     if (!back) continue;
@@ -280,4 +291,93 @@ export async function readKeptElsewhere(storage: Keys & Names, sub: string, held
     if (kept.total > 0 || kept.unreadable !== null) out.push(kept);
   }
   return out;
+}
+
+/** remove every copy of `key` set aside (`vitan.unreadable.<key>.*`); true when none is left */
+function removeAside(storage: DiscardStore, key: string): boolean {
+  const prefix = `vitan.unreadable.${key}.`;
+  try {
+    const names: string[] = [];
+    for (let i = 0; i < storage.length; i += 1) { const k = storage.key(i); if (k?.startsWith(prefix)) names.push(k); }
+    for (const name of names) storage.removeItem(name);
+    return names.every((name) => storage.getItem(name) === null);
+  } catch {
+    return false;
+  }
+}
+
+/** What a discard did. `ok`: everything asked was removed; false when a row or a key could not be written (nothing
+ *  of what was left is lost: a row whose delete failed keeps its act). `busy`: a site photo another tab is sending now
+ *  was left, with its act. `unchecked`: the visit files could not be checked (their removal records cannot be read), so
+ *  none was removed */
+export type DiscardResult = { ok: boolean; busy: boolean; unchecked: boolean };
+type DiscardStore = Keys & Names & { removeItem: (name: string) => void };
+
+/** #1388 U2: discard one line of `projectId`'s list (`item`, a `KeptItem.id`), or every change kept for it (`item`
+ *  null), for `sub`, who no longer holds it (the caller checked that, fresh, just before). Rows first, then acts: each
+ *  row is deleted through its store's own delete (a site photo only when no tab is sending it), and only then are the
+ *  acts naming it removed, so a page closed between the two leaves an act with no row (sent as nothing, still listed,
+ *  and removed by a second discard), never a row that rebuilds an act the person discarded. The acts go under both
+ *  keys' locks (`guard.discard`), named again under the lock as the list names them (`takenAs`, `actItemId`); every
+ *  other entry stays byte for byte. "Discard all" also takes the acts a load leaves where they are, every copy of a key
+ *  set aside, and a damaged key whole (`discardWhole`); a newer release's key is never touched. Without the locks
+ *  nothing is written. */
+export async function discardKept(storage: DiscardStore, guard: Pick<QueueKeyGuard, 'discard' | 'discardWhole'>, sub: string, projectId: string, item: string | null): Promise<DiscardResult> {
+  const keys = keysOf(sub, projectId);
+  const out = await underQueueLocks(keys, () => discardHeld(storage, guard, sub, projectId, item));
+  return out ?? { ok: false, busy: false, unchecked: false };
+}
+
+/** `discardKept`, holding both keys' locks: what is read here is what is removed */
+async function discardHeld(storage: DiscardStore, guard: Pick<QueueKeyGuard, 'discard' | 'discardWhole'>, sub: string, projectId: string, item: string | null): Promise<DiscardResult> {
+  const keys = keysOf(sub, projectId);
+  const reads = takenOf(storage, sub, projectId);
+  const queued = new Set((reads[1]?.held ?? []).filter(isSiteVisitOp).map((o) => o.idempotencyKey));
+  const listed = await rowsOf(sub, projectId, queued);
+  const unchecked = listed.unread !== null;
+  // a visit's line cannot be discarded while its files cannot be checked: a file left behind would put its acts back
+  if (unchecked && item !== null && item.startsWith('visit:')) return { ok: true, busy: false, unchecked: true };
+  const rowOf = new Map(listed.rows.map((r) => [r.clientKey, r]));
+  const wanted = (id: string): boolean => item === null || id === item;
+  // the rows of this line: those listed on it, and those an act on it names
+  const rows = new Map<string, KeptRow>();
+  for (const r of listed.rows) if (wanted(rowItemId(r))) rows.set(r.clientKey, r);
+  for (const r of reads) {
+    for (const o of r?.held ?? []) {
+      const file = fileOf(o);
+      const row = file !== null ? rowOf.get(file) : undefined;
+      if (row && wanted(actItemId(o, rowOf))) rows.set(row.clientKey, row);
+    }
+  }
+  let ok = true;
+  let busy = false;
+  const left = new Set<string>();
+  for (const r of rows.values()) {
+    const gone = await (r.store === 'evidence' ? deleteEvidence(sub, projectId, r.clientKey).then(() => true)
+      : r.store === 'visit' ? deleteVisitPhoto(sub, projectId, r.clientKey).then(() => true)
+        : ifSitePhotoUnlocked(sub, projectId, r.clientKey, () => deleteSitePhotoRow(sub, projectId, r.clientKey).then(() => true)).then((d) => {
+          if (d === null) busy = true;
+          return d === true;
+        })).catch(() => { ok = false; return false; });
+    if (!gone) left.add(r.clientKey);
+  }
+  const done = keys.map((key, n) => {
+    const lane = n === 0 ? 'generic' : 'visit';
+    const r = readOwedActs(storage, key, { evidence: sub, visitPhoto: sub });
+    if (item === null && r?.read === 'damaged') return guard.discardWhole(storage, key);
+    if (r?.read === 'newer') return true;
+    const wrote = guard.discard(storage, key, (acts) => takenAs(lane, acts, key).map((t, i) => {
+      // an act naming a row that was left (another tab is sending it, or its delete failed) stays with its row
+      const file = fileOf(t ?? (acts[i] as OutboxOp));
+      if (file !== null && left.has(file)) return false;
+      // an act a load leaves where it is goes only with "Discard all"
+      if (t === null) return item === null;
+      return wanted(actItemId(t, rowOf));
+    }));
+    if (wrote === 'failed') return false;
+    // "Discard all": the copies of this key set aside hold its acts too
+    return item === null && wrote === 'ok' ? removeAside(storage, key) : true;
+  });
+  if (done.some((d) => !d)) ok = false;
+  return { ok, busy, unchecked };
 }
