@@ -16,6 +16,7 @@
  * Its own database, apart from inspection evidence: every evidence entry is replayed as inspection evidence, which a
  * visit photo is not.
  */
+import { afterRowWrite, signalRowWrite } from './keptSignal';
 import type { OutboxOp } from './apiGateway';
 import { setClampedTimeout, type ClampedTimer } from '@/lib/clampedTimer';
 
@@ -256,7 +257,7 @@ export function putVisitPhoto(
   let held = false;
   let late = false;
   let txn: IDBTransaction | undefined;
-  return new Promise<void>((resolve, reject) => {
+  return afterRowWrite(userScope, new Promise<void>((resolve, reject) => {
     let settled = false;
     let unconfirmed: ClampedTimer | undefined;
     const settle = (err?: unknown): void => {
@@ -293,7 +294,7 @@ export function putVisitPhoto(
         timer.clear();
         unconfirmed?.clear();
         // committed after it was reported unconfirmed: kept after all
-        if (settled) onLateCommit?.(); else settle();
+        if (settled) { signalRowWrite(userScope); onLateCommit?.(); } else settle();
       },
       (err: unknown) => {
         timer.clear();
@@ -303,7 +304,7 @@ export function putVisitPhoto(
         settle(err ?? new VisitPhotoUnreadable());
       },
     );
-  });
+  }));
 }
 
 export function getVisitPhoto(userScope: string, projectId: string, clientKey: string): Promise<VisitPhotoRow | null> {
@@ -330,8 +331,8 @@ export function listVisitPhotos(userScope: string, projectId: string): Promise<V
 
 /** Sent, or dismissed by the person: the row goes. */
 export function deleteVisitPhoto(userScope: string, projectId: string, clientKey: string): Promise<void> {
-  return tx<void>('readwrite', (s) => { s.delete(keyOf(userScope, projectId, clientKey)); })
-    .then(() => letGoOf(userScope, projectId, [clientKey]));
+  return afterRowWrite(userScope, tx<void>('readwrite', (s) => { s.delete(keyOf(userScope, projectId, clientKey)); })
+    .then(() => letGoOf(userScope, projectId, [clientKey])));
 }
 
 /** #1241: one localStorage key per file the server removed whose row this phone could not delete just then: the record,
@@ -397,7 +398,7 @@ export type CommittedPhoto = { state: 'filed' | 'failed'; reason: string | null 
  *  send keeps `mediaId`, the id the upload answered with, which the frame is sent to (V2b-2). Read and written in one
  *  transaction; resolves with the state committed. */
 export function fileVisitPhoto(userScope: string, projectId: string, clientKey: string, mediaId?: string): Promise<CommittedPhoto> {
-  return tx<CommittedPhoto>('readwrite', (s, done) => {
+  return afterRowWrite(userScope, tx<CommittedPhoto>('readwrite', (s, done) => {
     const req = s.get(keyOf(userScope, projectId, clientKey));
     req.onsuccess = () => {
       const row = req.result as VisitPhotoRow | undefined;
@@ -407,7 +408,7 @@ export function fileVisitPhoto(userScope: string, projectId: string, clientKey: 
       }
       done(row ? { state: 'filed', reason: null } : null);
     };
-  }).then((committed) => { letGoOf(userScope, projectId, [clientKey]); return committed; }); // no longer queued, whatever it was
+  }).then((committed) => { letGoOf(userScope, projectId, [clientKey]); return committed; })); // no longer queued, whatever it was
 }
 
 /** A Site Visits read sent at `readAt` answered: a photo filed before then is now the server's to show when that read
@@ -419,7 +420,7 @@ export function settleFiledVisitPhotos(
 ): Promise<void> {
   if (!storageAvailable()) return Promise.resolve(); // nothing was ever filed here
   const gone: string[] = [];
-  return tx<void>('readwrite', (s, done) => {
+  return afterRowWrite(userScope, tx<void>('readwrite', (s, done) => {
     eachRow(s, userScope, projectId, (row, cursor) => {
       if (row.state !== 'filed' || !((row.filedAt ?? 0) < readAt || heard.has(row.clientKey))) return;
       // a clip whose still frame is still to send stays for it, up to its bound (V2b-2)
@@ -428,13 +429,13 @@ export function settleFiledVisitPhotos(
       // answer (no files), or one that did not read its visit, says nothing of it (Codex 4323247753)
       if (listed.has(row.clientKey) || spoken.has(row.op.visitId)) { cursor.delete(); gone.push(row.clientKey); }
     }, () => done(undefined));
-  }).then(() => letGoOf(userScope, projectId, gone));
+  }).then(() => letGoOf(userScope, projectId, gone)));
 }
 
 /** A clip's still frame was taken by the server, or refused for good: it leaves the row, which is then settled as any
  *  filed row is (V2b-2). Read and written in one transaction. */
 export function clearVisitPoster(userScope: string, projectId: string, clientKey: string): Promise<void> {
-  return tx<void>('readwrite', (s) => {
+  return afterRowWrite(userScope, tx<void>('readwrite', (s) => {
     const req = s.get(keyOf(userScope, projectId, clientKey));
     req.onsuccess = () => {
       const row = req.result as VisitPhotoRow | undefined;
@@ -444,14 +445,14 @@ export function clearVisitPoster(userScope: string, projectId: string, clientKey
       delete rest.mediaId;
       s.put(rest);
     };
-  });
+  }));
 }
 
 /** Refused for good: kept, with the reason, until the person dismisses it. Never a row already filed: another tab's
  *  send of the same photo was confirmed, and the server holds it (Codex 4322430064). Read and written in one
  *  transaction. */
 export function failVisitPhoto(userScope: string, projectId: string, clientKey: string, reason: string | null): Promise<CommittedPhoto> {
-  return tx<CommittedPhoto>('readwrite', (s, done) => {
+  return afterRowWrite(userScope, tx<CommittedPhoto>('readwrite', (s, done) => {
     const req = s.get(keyOf(userScope, projectId, clientKey));
     req.onsuccess = () => {
       const row = req.result as VisitPhotoRow | undefined;
@@ -460,24 +461,24 @@ export function failVisitPhoto(userScope: string, projectId: string, clientKey: 
       s.put({ ...row, state: 'failed', reason });
       done({ state: 'failed', reason });
     };
-  }).then((committed) => { letGoOf(userScope, projectId, [clientKey]); return committed; }); // no longer queued, whatever it was
+  }).then((committed) => { letGoOf(userScope, projectId, [clientKey]); return committed; })); // no longer queued, whatever it was
 }
 
 /** Its visit's start was taken by the server: the photos queued on that visit no longer need it, so it is not sent again
  *  ahead of them. */
 export function clearVisitPhotoStart(userScope: string, projectId: string, visitId: string): Promise<void> {
   if (!storageAvailable()) return Promise.resolve();
-  return tx<void>('readwrite', (s, done) => {
+  return afterRowWrite(userScope, tx<void>('readwrite', (s, done) => {
     eachRow(s, userScope, projectId, (row, cursor) => {
       if (row.start && row.op.visitId === visitId) cursor.update({ ...row, start: null });
     }, () => done(undefined));
-  });
+  }));
 }
 
 /** A start refused because the visitor already had a visit open: the photos queued on it now go on that visit. */
 export function moveVisitPhotos(userScope: string, projectId: string, from: string, to: string): Promise<void> {
   if (!storageAvailable()) return Promise.resolve(); // a phone with no store keeps no photo to move
-  return tx<void>('readwrite', (s, done) => {
+  return afterRowWrite(userScope, tx<void>('readwrite', (s, done) => {
     eachRow(s, userScope, projectId, (row, cursor) => {
       // the open visit is on the server already: the refused start is no longer this photo's
       if (row.state === 'queued' && row.op.visitId === from) {
@@ -486,7 +487,7 @@ export function moveVisitPhotos(userScope: string, projectId: string, from: stri
         cursor.update({ ...row, op: { ...row.op, visitId: to }, start: null });
       }
     }, () => done(undefined));
-  });
+  }));
 }
 
 /** Any other refused start: the photos queued on it are not sent, and say why. Resolves, once committed, with the keys
@@ -494,11 +495,11 @@ export function moveVisitPhotos(userScope: string, projectId: string, from: stri
 export function failVisitPhotosOn(userScope: string, projectId: string, visitId: string, reason: string | null): Promise<string[]> {
   if (!storageAvailable()) return Promise.resolve([]); // nor any to mark
   const failed: string[] = [];
-  return tx<void>('readwrite', (s, done) => {
+  return afterRowWrite(userScope, tx<void>('readwrite', (s, done) => {
     eachRow(s, userScope, projectId, (row, cursor) => {
       if (row.state === 'queued' && row.op.visitId === visitId) { cursor.update({ ...row, state: 'failed', reason }); failed.push(row.clientKey); }
     }, () => done(undefined));
-  }).then(() => { letGoOf(userScope, projectId, failed); return failed; });
+  }).then(() => { letGoOf(userScope, projectId, failed); return failed; }));
 }
 
 /** #1388: the projects whose rows this phone keeps for `userScope`, from the rows' keys alone (no row is read, so no
