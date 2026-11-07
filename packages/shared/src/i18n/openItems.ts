@@ -25,6 +25,15 @@ export const openItemsLabels = {
   added: { en: 'Proof photo added.', hi: 'सबूत फ़ोटो जुड़ गई।', gu: 'પુરાવાનો ફોટો ઉમેરાયો.' },
   failed: { en: 'Could not add the proof photo. Try again.', hi: 'सबूत फ़ोटो नहीं जुड़ सकी। फिर कोशिश करें।', gu: 'પુરાવાનો ફોટો ઉમેરી શકાયો નહીં. ફરી પ્રયાસ કરો.' },
   full: { en: 'This item already has all its proof photos.', hi: 'इस बिंदु पर सारी सबूत फ़ोटो पहले से हैं।', gu: 'આ મુદ્દા પર બધા પુરાવાના ફોટા પહેલેથી છે.' },
+  // a photo refused before it is sent (Codex #1408 4500685655): the words are Site Visits' own (`siteVisitWords`)
+  unreadable: { en: 'This photo could not be read. Try another.', hi: 'यह फ़ोटो पढ़ी नहीं जा सकी। दूसरी आज़माएँ।', gu: 'આ ફોટો વાંચી શકાયો નહીં. બીજો અજમાવો.' },
+  tooBig: { en: 'This photo is too large to send. Try a smaller one.', hi: 'यह फ़ोटो भेजने के लिए बहुत बड़ी है। छोटी फ़ोटो आज़माएँ।', gu: 'આ ફોટો મોકલવા માટે બહુ મોટો છે. નાનો ફોટો અજમાવો.' },
+  // the same photo again after a lost answer, whose shrink came out different (Codex #1408 4500685646)
+  maybeAdded: {
+    en: 'This photo may already be added. Check the count, and add it again if it is missing.',
+    hi: 'यह फ़ोटो शायद पहले ही जुड़ चुकी है। गिनती देखें, और न हो तो फिर से जोड़ें।',
+    gu: 'આ ફોટો કદાચ પહેલેથી ઉમેરાયો છે. ગણતરી જુઓ, અને ન હોય તો ફરી ઉમેરો.',
+  },
 } satisfies Record<string, Words>;
 
 /** "3 of 10 proof photos" in the viewer's language (`cap` is `PROOF_PHOTOS_PER_ITEM`). */

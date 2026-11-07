@@ -4,6 +4,8 @@ import { useStore, proofSendRunning } from '@/store/store';
 import { projectScopeOf, type ProjectScope } from '@/store/projectScope';
 import { API_BASE, type OpenItem } from '@/data/apiGateway';
 import { Camera } from '@/lib/icons';
+import { shrinkPhoto } from '@/lib/shrinkPhoto';
+import { photoDigest } from '@/lib/proofRetry';
 import { openItemsLabels as L, openItemsProofCount, PROOF_PHOTOS_PER_ITEM } from '@vitan/shared';
 
 const STATUS: Record<OpenItem['status'], keyof typeof L> = { issued: 'issued', 'in-review': 'inReview', reinspection: 'reinspection' };
@@ -24,7 +26,6 @@ export function OpenItemsBlock() {
   const openItems = useStore(useShallow((s) => s.openItems));
   const sending = useStore(useShallow((s) => s.proofSending));
   const projectId = useStore((s) => s.activeProjectId);
-  const addProofPhoto = useStore((s) => s.addProofPhoto);
   const fileRef = useRef<HTMLInputElement>(null);
   // the item the camera was opened for, and the scope it was opened in, pinned at the tap: reading the file is
   // asynchronous, and the list (or the project) can change before it ends
@@ -42,7 +43,18 @@ export function OpenItemsBlock() {
     if (!file || !t) return;
     const reader = new FileReader();
     reader.onload = () => {
-      if (typeof reader.result === 'string') void addProofPhoto(t.inspectionId, t.itemId, reader.result, t.scope);
+      const original = reader.result;
+      if (typeof original !== 'string') return;
+      // made small first, as Site Visits' photos (Codex #1408 4500685655): a camera's full-size file can be over the API's
+      // body limit. The store refuses what is still too large or of a type the upload does not take, with its own line;
+      // the scope pinned at the tap goes with it, so a shrink that ends after a switch sends nothing
+      // with the picked file's and the sent bytes' digests, so a key kept across a reload replays only the same bytes
+      // (Codex #1408 4500685646)
+      void (async () => {
+        const [photo, picked] = await Promise.all([shrinkPhoto(original), photoDigest(original)]);
+        const sent = picked === null ? null : await photoDigest(photo);
+        await useStore.getState().addProofPhoto(t.inspectionId, t.itemId, photo, t.scope, picked !== null && sent !== null ? { original: picked, sent } : undefined);
+      })();
     };
     reader.readAsDataURL(file);
   };

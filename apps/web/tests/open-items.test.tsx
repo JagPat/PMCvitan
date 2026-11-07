@@ -31,14 +31,31 @@ const snapshot = (openItems: OpenItem[] | undefined) => ({
   ...(openItems ? { openItems } : {}),
 });
 
-await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/components/OpenItemsBlock'), () => import('@/screens/DashboardScreen'));
+await warmImports(() => import('@/store/store'), () => import('@/store/projectScope'), () => import('@/components/OpenItemsBlock'), () => import('@/screens/DashboardScreen'), () => import('@/lib/shrinkPhoto'));
 
 afterEach(() => {
   cleanup();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
+  vi.doUnmock('@/lib/shrinkPhoto');
   vi.resetModules();
+  globalThis.sessionStorage.clear();
 });
+
+/** `shrinkPhoto` held until the test answers it: each call's photo and its answer, in order */
+function shrinks() {
+  const calls: Array<{ photo: string; answer: (v: string) => void }> = [];
+  const waiting: Array<{ n: number; done: () => void }> = [];
+  vi.doMock('@/lib/shrinkPhoto', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/lib/shrinkPhoto')>()),
+    shrinkPhoto: (photo: string) => new Promise<string>((answer) => {
+      calls.push({ photo, answer });
+      for (const w of waiting.filter((x) => calls.length >= x.n)) { waiting.splice(waiting.indexOf(w), 1); w.done(); }
+    }),
+  }));
+  const called = (n = 1) => new Promise<void>((done) => { if (calls.length >= n) done(); else waiting.push({ n, done }); });
+  return { calls, called };
+}
 
 /** The block for `role` on a live, loaded project, under a server whose methods are `gateway`. */
 async function openBlock(gateway: Record<string, unknown> = {}, state: Record<string, unknown> = {}) {
@@ -76,6 +93,22 @@ function uploads() {
   const called = (n = 1) => new Promise<void>((done) => { if (calls.length >= n) done(); else waiting.push({ n, done }); });
   return { fn, calls, called };
 }
+/** settles when the store's line reads `text` */
+const said = (useStore: { getState: () => { toast: unknown }; subscribe: (f: (s: { toast: unknown }) => void) => () => void }, text: string) =>
+  new Promise<'said'>((done) => {
+    if (useStore.getState().toast === text) { done('said'); return; }
+    const stop = useStore.subscribe((st) => { if (st.toast === text) { stop(); done('said'); } });
+  });
+const JPG1 = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ==';
+const JPG2 = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAg==';
+
+/** pick `file` for item it-joints, let its shrink give `shrunk`, and wait for the n-th shrink to be asked */
+async function pickShrunk(view: ReturnType<typeof render>, sh: ReturnType<typeof shrinks>, n: number, shrunk: string, file = PNG) {
+  choose(view, 'it-joints', file);
+  await sh.called(n);
+  act(() => { sh.calls[n - 1]!.answer(shrunk); });
+}
+
 const refused = (status: number) => Object.assign(new Error(`HTTP ${status}`), { status });
 
 describe('"Your open items" on a contractor\'s or consultant\'s Dashboard (#482 RM-w2b)', () => {
@@ -297,6 +330,135 @@ describe('"Your open items" on a contractor\'s or consultant\'s Dashboard (#482 
     await act(async () => { up.calls[0]!.answer.resolve({ id: 'm1', url: '/media/m1' }); });
     expect(await there).toBe(false);
     expect(useStore.getState().proofSending).toEqual([]);
+  });
+
+  it('a chosen photo is made small before it goes, and what goes is the small one (Codex #1408 4500685655)', async () => {
+    const sh = shrinks();
+    const up = uploads();
+    const { view } = await openBlock({ uploadMedia: up.fn });
+    choose(view, 'it-joints');
+    // whichever comes first: the shrink is asked, or the photo goes as it was picked
+    expect(await Promise.race([sh.called().then(() => 'shrink'), up.called().then(() => 'sent')])).toBe('shrink');
+    expect(sh.calls[0]!.photo).toBe(PNG);
+    expect(up.fn).not.toHaveBeenCalled();
+    act(() => { sh.calls[0]!.answer('data:image/jpeg;base64,/9j/4AAQ'); });
+    await up.called();
+    expect(up.calls[0]!.input).toMatchObject({ kind: 'proof', mime: 'image/jpeg', data: '/9j/4AAQ', inspectionItemId: 'it-joints' });
+  });
+
+  it('a photo whose shrink ends after a project switch is not sent, and nothing is said (Codex #1408 4500685655)', async () => {
+    const sh = shrinks();
+    const up = uploads();
+    const { useStore, view } = await openBlock({ uploadMedia: up.fn });
+    choose(view, 'it-joints');
+    expect(await Promise.race([sh.called().then(() => 'shrink'), up.called().then(() => 'sent')])).toBe('shrink');
+    act(() => { useStore.setState({ activeProjectId: 'other', projectScopeGeneration: 2, toast: null } as never); });
+    act(() => { useStore.setState({ activeProjectId: 'qa', projectScopeGeneration: 3, toast: null } as never); });
+    await act(async () => { sh.calls[0]!.answer(PNG); });
+    expect(up.fn).not.toHaveBeenCalled();
+    expect(useStore.getState().proofSending).toEqual([]);
+    expect(useStore.getState().toast).toBeNull();
+  });
+
+  it('a type the upload does not take is refused with its own line, nothing sent and nothing marked (Codex #1408 4500685655)', async () => {
+    const up = uploads();
+    const { useStore } = await openBlock({ uploadMedia: up.fn });
+    // whichever comes first: the store's answer, or an upload
+    const sent = useStore.getState().addProofPhoto('INSP-32', 'it-joints', 'data:image/bmp;base64,Qk0=');
+    expect(await Promise.race([sent, up.called().then(() => 'sent')])).toBe(false);
+    expect(useStore.getState().toast).toBe('This photo could not be read. Try another.');
+    expect(up.fn).not.toHaveBeenCalled();
+    expect(useStore.getState().proofSending).toEqual([]);
+  });
+
+  it('a photo still over the body limit after the shrink is refused with its own line, nothing sent and nothing marked (Codex #1408 4500685655)', async () => {
+    const up = uploads();
+    const { useStore } = await openBlock({ uploadMedia: up.fn });
+    const { MAX_PHOTO_BASE64 } = await import('@/lib/shrinkPhoto');
+    const sent = useStore.getState().addProofPhoto('INSP-32', 'it-joints', `data:image/jpeg;base64,${'A'.repeat(MAX_PHOTO_BASE64 + 4)}`);
+    expect(await Promise.race([sent, up.called().then(() => 'sent')])).toBe(false);
+    expect(useStore.getState().toast).toBe('This photo is too large to send. Try a smaller one.');
+    expect(up.fn).not.toHaveBeenCalled();
+    expect(useStore.getState().proofSending).toEqual([]);
+    // one at the limit still goes
+    void useStore.getState().addProofPhoto('INSP-32', 'it-joints', `data:image/jpeg;base64,${'A'.repeat(MAX_PHOTO_BASE64)}`);
+    await up.called();
+  });
+
+  it('a proof whose answer was lost keeps its key across a reload: the same file, shrunk to the same bytes, replays it (Codex #1408 4500685646)', async () => {
+    const sh = shrinks();
+    const up = uploads();
+    const first = await openBlock({ uploadMedia: up.fn });
+    await pickShrunk(first.view, sh, 1, JPG1);
+    await up.called();
+    await act(async () => { up.calls[0]!.answer.reject(refused(504)); });
+    cleanup();
+    // a reload: a fresh store, nothing in memory
+    const again = await openBlock({ uploadMedia: up.fn });
+    await pickShrunk(again.view, sh, 2, JPG1);
+    await up.called(2);
+    expect(up.calls[1]!.input).toMatchObject({ data: JPG1.split(',')[1], clientKey: up.calls[0]!.input.clientKey });
+  });
+
+  it('after a reload, the same file whose shrink came out different is not sent: one line, the project read again, and the next pick goes under a new key (Codex #1408 4500685646)', async () => {
+    const sh = shrinks();
+    const up = uploads();
+    const first = await openBlock({ uploadMedia: up.fn });
+    await pickShrunk(first.view, sh, 1, JPG1);
+    await up.called();
+    await act(async () => { up.calls[0]!.answer.reject(refused(504)); });
+    cleanup();
+    const again = await openBlock({ uploadMedia: up.fn });
+    const reads = again.snap.mock.calls.length;
+    await pickShrunk(again.view, sh, 2, JPG2);
+    // whichever comes first: the line, or an upload
+    expect(await Promise.race([said(again.useStore as never, 'This photo may already be added. Check the count, and add it again if it is missing.'), up.called(2).then(() => 'sent')])).toBe('said');
+    expect(up.fn).toHaveBeenCalledTimes(1);
+    expect(again.snap.mock.calls.length).toBeGreaterThan(reads);
+    expect(again.useStore.getState().proofSending).toEqual([]);
+    await pickShrunk(again.view, sh, 3, JPG2);
+    await up.called(2);
+    expect(up.calls[1]!.input.data).toBe(JPG2.split(',')[1]);
+    expect(up.calls[1]!.input.clientKey).not.toBe(up.calls[0]!.input.clientKey);
+  });
+
+  it('after a reload, another file goes under a new key even when its shrink gives the same bytes; and a 409 drops the kept key (Codex #1408 4500685646)', async () => {
+    const sh = shrinks();
+    const up = uploads();
+    const first = await openBlock({ uploadMedia: up.fn });
+    await pickShrunk(first.view, sh, 1, JPG1);
+    await up.called();
+    await act(async () => { up.calls[0]!.answer.reject(refused(504)); });
+    cleanup();
+    const again = await openBlock({ uploadMedia: up.fn });
+    await pickShrunk(again.view, sh, 2, JPG1, PNG2);
+    await up.called(2);
+    expect(up.calls[1]!.input.clientKey).not.toBe(up.calls[0]!.input.clientKey);
+    await act(async () => { up.calls[1]!.answer.resolve({ id: 'm2', url: '/media/m2' }); });
+    // the first file again replays its kept key; refused for good (409), that key is dropped
+    await pickShrunk(again.view, sh, 3, JPG1);
+    await up.called(3);
+    expect(up.calls[2]!.input.clientKey).toBe(up.calls[0]!.input.clientKey);
+    await act(async () => { up.calls[2]!.answer.reject(refused(409)); });
+    cleanup();
+    const third = await openBlock({ uploadMedia: up.fn });
+    await pickShrunk(third.view, sh, 4, JPG1);
+    await up.called(4);
+    expect(up.calls[3]!.input.clientKey).not.toBe(up.calls[0]!.input.clientKey);
+  });
+
+  it('with session storage refusing every write, a proof still goes, and its key is still kept in memory (Codex #1408 4500685646)', async () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('QuotaExceededError'); });
+    const sh = shrinks();
+    const up = uploads();
+    const { useStore, view } = await openBlock({ uploadMedia: up.fn });
+    await pickShrunk(view, sh, 1, JPG1);
+    await up.called();
+    await act(async () => { up.calls[0]!.answer.reject(refused(504)); });
+    expect(useStore.getState().toast).toBe('Could not add the proof photo. Try again.');
+    await pickShrunk(view, sh, 2, JPG1);
+    await up.called(2);
+    expect(up.calls[1]!.input.clientKey).toBe(up.calls[0]!.input.clientKey);
   });
 
   it('the snapshot\'s open items are taken whole, and a server without the key reads as none', async () => {

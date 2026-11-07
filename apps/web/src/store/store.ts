@@ -77,7 +77,8 @@ import {
 } from '@vitan/shared';
 import { routableScreensFor, screensFor } from '@/lib/screens';
 import { deleteWaitsForUpload, uploadQueued, type KeptSitePhoto } from '@/lib/queuedSitePhotos';
-import { UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
+import { MAX_PHOTO_BASE64, UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
+import { dropProofKey, keepProofKey, proofRetrySlot, readProofKey, type ProofSource } from '@/lib/proofRetry';
 import { deleteSitePhotoRow, dropSentMarkers, holdSitePhotoLock, isSitePhotoSent, listSitePhotoRows, markSitePhotoSent, putSitePhotoRow, sitePhotosLocked, SITE_PHOTO_SENT_KEEP_MS, sitePhotoStorageAvailable, SitePhotoBusy, SitePhotoUnreadable, type SitePhotoRow } from '@/data/sitePhotoStore';
 import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
@@ -879,8 +880,9 @@ export interface AppActions {
   /** #482 "Your open items" (RM-w2b) — add a proof photo (a `data:` URL) on a failed item the viewer is named to fix.
    *  ONLINE ONLY: refused with a line while offline, and one send per item at a time. `pickedIn` is the scope the photo
    *  was chosen in (before its read): a photo chosen in another project, or by another sign-in, is never sent. Resolves
-   *  true when it was stored. */
-  addProofPhoto: (inspectionId: string, inspectionItemId: string, dataUrl: string, pickedIn?: ProjectScope) => Promise<boolean>;
+   *  true when it was stored. `source` (the picked file's and the sent bytes' SHA-256) lets a key kept across a reload
+   *  be replayed (`proofRetry.ts`, Codex #1408 4500685646); without it the key is kept in memory only. */
+  addProofPhoto: (inspectionId: string, inspectionItemId: string, dataUrl: string, pickedIn?: ProjectScope, source?: ProofSource) => Promise<boolean>;
   startDailyLog: () => void;
   addSiteMaterial: (input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string; nodeId?: string }) => void;
   /** Read the project's team; resolves false when the read failed (Site Visits' picker then offers a retry). */
@@ -6736,7 +6738,7 @@ export const useStore = create<Store>()(
       const lang = get().lang;
       runWriteAhead({ t: 'addSiteMaterial', input, idempotencyKey: key }, DLC.material.en, () => DLX.materialRecorded(input.name, get().lang), DLX.savedOffline(DLC.material[lang], lang));
     },
-    addProofPhoto: (inspectionId, inspectionItemId, dataUrl, pickedIn) => {
+    addProofPhoto: (inspectionId, inspectionItemId, dataUrl, pickedIn, source) => {
       const lang = get().lang;
       // chosen before a switch or a new sign-in: not this scope's photo, so nothing is sent and nothing said
       if (pickedIn && !scopeStillCurrent(pickedIn)) return Promise.resolve(false);
@@ -6753,6 +6755,16 @@ export const useStore = create<Store>()(
         return Promise.resolve(false);
       }
       const [, mime, data] = photo as unknown as [string, string, string];
+      // a type the upload does not take, or a photo still over the body limit after the shrink, is refused here with its
+      // own line, nothing sent and nothing marked: the server would refuse it for good (Codex #1408 4500685655)
+      if (!UPLOAD_IMAGE_MIMES.includes(mime)) {
+        get().flash(OIL.unreadable[lang]);
+        return Promise.resolve(false);
+      }
+      if (data.length > MAX_PHOTO_BASE64) {
+        get().flash(OIL.tooBig[lang]);
+        return Promise.resolve(false);
+      }
       // the same photo sent again for the same item after an answer was lost keeps its key, so the server's ledger stores
       // it once (its reply is the stored proof); any other photo, or a send after an answer, is a new key
       const scope = currentScope();
@@ -6760,7 +6772,20 @@ export const useStore = create<Store>()(
       // resends this one's key
       const retryKey = `${scopeKey(scope)}|${inspectionItemId}`;
       const kept = proofRetryKeys.get(retryKey);
-      const clientKey = kept && kept.data === data ? kept.key : newIdempotencyKey();
+      // and across a reload, per person, project and item (Codex #1408 4500685646): the same file whose shrink gives the
+      // same bytes replays its key exactly; the same file with other bytes cannot (the server compares the bytes on a
+      // replay and would refuse the key as another photo's), so nothing is sent, the project is read again and the
+      // person told the photo may already be there; the entry is dropped, so the next pick goes under a new key
+      const slot = proofRetrySlot(get().sessionUserId, scope.projectId, inspectionItemId);
+      const stored = !(kept && kept.data === data) && source ? readProofKey(slot) : null;
+      if (stored && source && stored.original === source.original && stored.sent !== source.sent) {
+        dropProofKey(slot);
+        get().flash(OIL.maybeAdded[lang]);
+        get().requestFreshSnapshot();
+        return Promise.resolve(false);
+      }
+      const clientKey = kept && kept.data === data ? kept.key
+        : stored && source && stored.original === source.original ? stored.key : newIdempotencyKey();
       // the send's own entry, released by its own answer only, whatever scope is live by then (Codex #1408 4500500680);
       // everything else the answer does below runs only while the scope it was sent from is still the live one
       const sendingAt = proofSendKey(scope.projectId, inspectionItemId);
@@ -6770,6 +6795,7 @@ export const useStore = create<Store>()(
         .uploadMedia({ kind: 'proof', mime, data, inspectionId, inspectionItemId, clientKey })
         .then(() => {
           proofRetryKeys.delete(retryKey);
+          dropProofKey(slot, clientKey);
           settle();
           if (!scopeStillCurrent(scope)) return false;
           get().flash(OIL.added[get().lang]);
@@ -6785,6 +6811,8 @@ export const useStore = create<Store>()(
           const final = isTerminalOutboxError(err);
           if (final) proofRetryKeys.delete(retryKey);
           else proofRetryKeys.set(retryKey, { data, key: clientKey });
+          if (final) dropProofKey(slot, clientKey);
+          else if (source) keepProofKey(slot, source, clientKey);
           settle();
           if (!scopeStillCurrent(scope)) return false;
           // 409: the item holds all its proofs, or it no longer failed; either way the list is read again
