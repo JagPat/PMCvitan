@@ -326,7 +326,12 @@ export class InspectionsService {
         // re-checks nothing, and `reinspectionOfId` is set once, when the reject creates the re-inspection, and never
         // changes, so the row read above under its lock answers it. Checked after the caller's authority, so a caller
         // who may not name anyone learns nothing about the lineage.
-        if (insp.reinspectionOfId !== null) {
+        // Codex #1395 4498932663 — the one exception: CLEARING a name a re-inspection already holds. The previous release
+        // accepted a naming on any inspection, so such a row can exist (written before this release, or by an old
+        // replica during the rollout) and is still served; refusing its clear would leave it unclearable. A null on a
+        // re-inspection that holds no name, and any naming of one, are still refused, so nothing new lands off the root.
+        const clearsHeldChildName = memberId === null && insp.responsibleMemberId !== null;
+        if (insp.reinspectionOfId !== null && !clearsHeldChildName) {
           throw new BadRequestException('Name who fixes this on the first inspection of this check.');
         }
         if (memberId !== null && !(await standsAsResponsible(this.orgs, tx, projectId, memberId, { forUpdate: true }))) {
