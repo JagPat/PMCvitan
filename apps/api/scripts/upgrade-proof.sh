@@ -5725,6 +5725,7 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20280111000000_site_visits_sv1a_catalog
 20280112000000_site_visits_sv1a_record
 20280114000000_site_visits_sv2_visit_media
+20280125000000_site_visit_file_removal
 20280126000000_voice_transcript
 20280127000000_hub_catalog_generation
 20280128000000_voice_transcript_correction
@@ -5740,7 +5741,8 @@ T4D_REPLAY="20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d
 20280210000000_inspection_item_guidance
 20280211000000_media_gallery_origin
 20280212000000_site_visit_inspections
-20280213000000_site_visit_media_link"
+20280213000000_site_visit_media_link
+20280214000000_site_visit_removal_kind_exact"
 # 4d-ii-a / A7d — THE RUNNER'S RULE, MIRRORED (scripts/migrate.sh, the P3005 baseline path): on a database
 # that CARRIES A7d (its two claimant seals and the re-issued actor seal standing beside 4d-i's own seal
 # functions) 4d-i's two halves and 4d-i-b U3 are resolved as applied rather than replayed, because each
@@ -5882,6 +5884,12 @@ fi
 assert "4d-ii-a: the replay kept the A1 pair it adopted, and 4d-ii stays installed" \
   "SELECT \"actorRole\" || '|' || \"actorName\" || '|' || phase6_t4d_ii_installed()::text FROM \"DomainEvent\" WHERE \"eventId\" = 'UP4D-LL-E0';" \
   "pmc|Restored Pmc|true"
+# #1393 (Codex 4500151216 on #1401): #1179 R1's removal file (20280125) replays its `lower()` body and the later
+# exact-kind file (20280214) replays after it, in ledger order, so the restored database ends on the exact match (the
+# body's own comment names lower(), so the check reads the assignment itself).
+assert "#1393: after the ledger-lost replay the removal insert function names a file's kind by its exact type" \
+  "SELECT (position('v_mime := lower(' in prosrc) = 0 AND position('v_mime := coalesce(public.media_mime_of(NEW.\"projectId\", NEW.\"mediaId\"), '''')' in prosrc) > 0)::text FROM pg_proc WHERE proname = 'site_visits_file_removal_insert';" \
+  "true"
 assert "4d-ii-a: the replay did not put the lease door back" \
   "SELECT count(*)::text FROM pg_trigger WHERE tgname = 'ReleaseLease_t4d_insert_reserved' AND NOT tgisinternal;" \
   "0"
