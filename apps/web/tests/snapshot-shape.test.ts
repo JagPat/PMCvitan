@@ -49,6 +49,8 @@ const SNAPSHOT_KEYS = [
   'materials',
   // #482 site photos: who fixes each inspection (RM-a server key; the web reads it from RM-w1)
   'responsibleMembers',
+  // #482 proof photos: a contractor's or consultant's open items (RM-w2a server key; the web reads it from RM-w2b)
+  'openItems',
 ].sort();
 
 // The sub-keys of the inline `project` object (ProjectMetaDto / ApiSnapshot.project); #1118 U7a's optional `hubLink`

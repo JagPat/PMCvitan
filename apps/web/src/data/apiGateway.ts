@@ -126,6 +126,10 @@ export interface ApiSnapshot {
   /** #482 "Who fixes this?" — for the PMC and the engineer, who is named to fix each inspection that names a member who
    *  still stands (others get []). Absent from a server older than #1297. */
   responsibleMembers?: Array<{ inspectionId: string; memberId: string }>;
+  /** #482 "Your open items" (RM-w2a) — for a contractor or consultant, the open inspections they are named to fix, with
+   *  their failed items and each item's proof count (everyone's, the count the per-item cap counts); [] for others.
+   *  Absent from a server older than RM-w2a. */
+  openItems?: OpenItem[];
   /** all material deliveries across the project, with their place — the Site Map's "materials here" */
   materials: Material[];
 }
@@ -520,8 +524,21 @@ export interface AuthResult {
   name?: string;
 }
 
+/** #482 "Your open items" — one open inspection the viewer is named to fix (the snapshot's `openItems`). */
+export interface OpenItem {
+  inspectionId: string;
+  title: string;
+  zone: string;
+  nodeId: string | null;
+  /** `issued` (with the engineer), `in-review` (waiting on the PMC) or `reinspection` (sent back; re-inspection under way) */
+  status: 'issued' | 'in-review' | 'reinspection';
+  failedItems: Array<{ itemId: string; name: string; proofCount: number }>;
+}
+
 export interface UploadMediaInput {
-  kind: 'progress' | 'inspection' | 'decision' | 'attendance' | 'material' | 'visit';
+  // `proof` (#482 RM-w2b): a contractor's or consultant's photo showing a failed inspection item fixed; it names that
+  // item (`inspectionId` + `inspectionItemId`) and nothing else
+  kind: 'progress' | 'inspection' | 'decision' | 'attendance' | 'material' | 'visit' | 'proof';
   mime: string;
   data: string; // base64, no data: prefix
   decisionId?: string;

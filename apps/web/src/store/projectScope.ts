@@ -24,7 +24,7 @@ import type { DailyLogDraft } from './dailyLogDraft';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
-import type { AllocateLabourInput, Phase6_4dRollout } from '../data/apiGateway';
+import type { AllocateLabourInput, OpenItem, Phase6_4dRollout } from '../data/apiGateway';
 import type { KeptSitePhoto } from '@/lib/queuedSitePhotos';
 import type { HubUnlinkPending } from '@/lib/hubLink';
 
@@ -118,6 +118,8 @@ export interface ProjectDataState {
   myDeletablePhotos: Photo[];
   /** #482 "Who fixes this?" — the snapshot's responsible members (PMC and engineer; [] for others) */
   responsibleMembers: Array<{ inspectionId: string; memberId: string }>;
+  /** #482 "Your open items" — the snapshot's open items (contractor and consultant; [] for others) */
+  openItems: OpenItem[];
   /** #917 — this project's site photos whose online send lost its answer, read from their rows on this phone (their
    *  outbox ops carry the key only), so the Dashboard shows them as queued; rebuilt from the rows at each flush */
   sitePhotosKept: KeptSitePhoto[];
@@ -239,6 +241,7 @@ export function emptyProjectData(): ProjectDataState {
     photosWindowShort: false,
     myDeletablePhotos: [],
     responsibleMembers: [],
+    openItems: [],
     sitePhotosKept: [],
     materials: [],
     placedInspections: [],

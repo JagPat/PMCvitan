@@ -77,7 +77,8 @@ import {
 } from '@vitan/shared';
 import { routableScreensFor, screensFor } from '@/lib/screens';
 import { deleteWaitsForUpload, uploadQueued, type KeptSitePhoto } from '@/lib/queuedSitePhotos';
-import { UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
+import { MAX_PHOTO_BASE64, UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
+import { dropProofKey, keepProofKey, proofRetrySlot, readProofKey, type ProofSource } from '@/lib/proofRetry';
 import { deleteSitePhotoRow, dropSentMarkers, holdSitePhotoLock, isSitePhotoSent, listSitePhotoRows, markSitePhotoSent, putSitePhotoRow, sitePhotosLocked, SITE_PHOTO_SENT_KEEP_MS, sitePhotoStorageAvailable, SitePhotoBusy, SitePhotoUnreadable, type SitePhotoRow } from '@/data/sitePhotoStore';
 import { readImpact } from '@/lib/impactInput';
 import { dailyLogCommandInFlight } from './dailyLogPending';
@@ -87,12 +88,12 @@ import { applySeenConfirmed, applySeenFailure, claimSeenChunk, emptyNotifSeen, p
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
-import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoDeletable, sitePhotoLabels as SPL, PHASE_NOT_FOUND_MESSAGE, activityNotFoundMessage, overrideNotFoundMessage, COMPANY_NOT_FOUND_MESSAGE, NOT_AN_ORG_MEMBER_MESSAGE, responsibleMemberLabels as RML } from '@vitan/shared';
+import { dailyLogCommandLabels as DLC, dailyLogToast as DLT, dailyLogToastText as DLX, syncResultText as SYNC, locationResultText as LOC, checklistToast as CHT, checklistText as CHX, decisionToastText as DTX, serverRefusalText as SRV, changeSubmittedToast, drawingToast as DWT, drawingToastText as DWX, scheduleToast as SCT, scheduleToastText as SCX, placeToastText as PLT, inspectionReviewLabels as IRL, inspectionReviewText as IRT, inspectionTitle, SNAPSHOT_SITE_PHOTO_LIMIT, sitePhotoDeletable, sitePhotoLabels as SPL, PHASE_NOT_FOUND_MESSAGE, activityNotFoundMessage, overrideNotFoundMessage, COMPANY_NOT_FOUND_MESSAGE, NOT_AN_ORG_MEMBER_MESSAGE, responsibleMemberLabels as RML, openItemsLabels as OIL } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import { jwtSub } from '@/lib/jwt';
 import { unlinkPushOnSignOut } from '@/data/push';
-import type { ApiGateway, ApiSnapshot, HubProjectChoice, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, UpdateDecisionDraftInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, HubProjectChoice, OpenItem, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, UpdateDecisionDraftInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
 import {
   beginCreateSend, createHoldScope, currentCreateHoldView, releaseCreate, reserveCreateRetry, reserveNewCreate, serverKeepsCreateReceipts,
   settleCreate, SERVER_NOT_READY, SERVER_NOT_READY_RETRY, type CreateHoldView, type CreateRecord, type Reservation,
@@ -444,6 +445,16 @@ export interface AppState {
    *  a second save for an inspection waits for its first to settle, so two of one person's namings never overlap and a
    *  delayed older one can never land last. Read through {@link responsibleSaveRunning}. */
   responsibleSaving: string[];
+  /** #482 "Your open items" — the open inspections this contractor or consultant is named to fix (the snapshot's list) */
+  openItems: OpenItem[];
+  /** #482 "Your open items" — the failed items whose proof photo is being sent now, one send per item. Keyed by the
+   *  project and the item with NO scope generation (Codex #1408 4500500680, as the RM-w1 save gate): a scope change never
+   *  releases it, since the send's key belongs to its scope and a second send from the next one could store the proof
+   *  twice. Only that send's own answer releases its entry. Read through {@link proofSendRunning}.
+   *  Residual: an upload that hangs keeps its item busy until the request settles (a server answer or the browser's own
+   *  network failure); a reload ends it. There is no web timeout, because an aborted upload can still commit and a resend
+   *  under a new key would store the proof twice. */
+  proofSending: string[];
   /** #482 site photos — a delete took a photo out of a full window: its count stays a floor until a snapshot rebuilds
    *  the window (Codex 4337661439) */
   photosWindowShort: boolean;
@@ -866,6 +877,12 @@ export interface AppActions {
   /** #482 "Who fixes this?" (RM-w1) — name (or clear, `null`) the member who fixes an inspection's failed work. ONLINE ONLY:
    *  refused with a line while offline. Resolves true when the server accepted it. */
   setResponsibleMember: (inspectionId: string, memberId: string | null) => Promise<boolean>;
+  /** #482 "Your open items" (RM-w2b) — add a proof photo (a `data:` URL) on a failed item the viewer is named to fix.
+   *  ONLINE ONLY: refused with a line while offline, and one send per item at a time. `pickedIn` is the scope the photo
+   *  was chosen in (before its read): a photo chosen in another project, or by another sign-in, is never sent. Resolves
+   *  true when it was stored. `source` (the picked file's and the sent bytes' SHA-256) lets a key kept across a reload
+   *  be replayed (`proofRetry.ts`, Codex #1408 4500685646); without it the key is kept in memory only. */
+  addProofPhoto: (inspectionId: string, inspectionItemId: string, dataUrl: string, pickedIn?: ProjectScope, source?: ProofSource) => Promise<boolean>;
   startDailyLog: () => void;
   addSiteMaterial: (input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string; nodeId?: string }) => void;
   /** Read the project's team; resolves false when the read failed (Site Visits' picker then offers a retry). */
@@ -1002,12 +1019,13 @@ export interface AppActions {
 
 export type Store = AppState & AppActions;
 
-/** Task 10 correction — the SINGLE drawing-mutation readiness predicate, used BOTH to disable the
- *  controls in the UI and to defensively reject the command in the store (belt-and-braces). Under module
- *  read-ownership a drawing mutation must never run against a register whose module read hasn't settled
- *  ('idle'/'loading'/'error') — the store would be acting on stale or absent data. In the default
- *  'snapshot' mode the snapshot slice is authoritative, so mutations are never blocked (`drawingsLoad`
- *  stays 'idle' there and this returns false). */
+/** #482 "Your open items" (Codex #1408 4500500680) — a proof photo for this item, of the project on screen, is on its way. */
+export function proofSendRunning(s: Pick<AppState, 'proofSending' | 'activeProjectId'>, inspectionItemId: string): boolean {
+  return s.proofSending.includes(proofSendKey(s.activeProjectId, inspectionItemId));
+}
+function proofSendKey(projectId: string, inspectionItemId: string): string {
+  return `${projectId}|${inspectionItemId}`;
+}
 /** #482 "Who fixes this?" (Codex #1361 r3) — a save for this inspection, of the project on screen, is on its way. */
 export function responsibleSaveRunning(s: Pick<AppState, 'responsibleSaving' | 'activeProjectId'>, inspectionId: string): boolean {
   return s.responsibleSaving.includes(responsibleSaveKey(s.activeProjectId, inspectionId));
@@ -1019,6 +1037,12 @@ function responsibleSaveKey(projectId: string, inspectionId: string): string {
   return `${projectId}|${inspectionId}`;
 }
 
+/** Task 10 correction — the SINGLE drawing-mutation readiness predicate, used BOTH to disable the
+ *  controls in the UI and to defensively reject the command in the store (belt-and-braces). Under module
+ *  read-ownership a drawing mutation must never run against a register whose module read hasn't settled
+ *  ('idle'/'loading'/'error') — the store would be acting on stale or absent data. In the default
+ *  'snapshot' mode the snapshot slice is authoritative, so mutations are never blocked (`drawingsLoad`
+ *  stays 'idle' there and this returns false). */
 export function drawingMutationsBlocked(s: Pick<AppState, 'drawingsLoad'>): boolean {
   return drawingsReadMode() === 'moduleQuery' && s.drawingsLoad !== 'ready';
 }
@@ -1623,6 +1647,8 @@ export function getInitialState(): AppState {
     myDeletablePhotos: [],
     responsibleMembers: [],
     responsibleSaving: [],
+    openItems: [],
+    proofSending: [],
     photosWindowShort: false,
     sitePhotosKept: [],
     materials: structuredClone(SEED_MATERIALS), // placed deliveries for the demo Site Map
@@ -1781,6 +1807,9 @@ export const useStore = create<Store>()(
     // and the newer answer then replaces it.
     let teamReadStarted = 0;
     let teamReadWritten = 0;
+    // #482 "Your open items" — a proof whose answer was lost: its photo and key, so the same photo sent again
+    // replays under that key (the server stores it once) rather than storing a second copy; keyed by scope and item
+    const proofRetryKeys = new Map<string, { data: string; key: string }>();
 
     /** Is a scope captured at request time still the live one? Guards EVERY
      *  post-await project mutation — including raw-DTO paths that don't go
@@ -2229,6 +2258,8 @@ export const useStore = create<Store>()(
         // names already shown in this scope are kept; a served list, even empty, replaces them. A scope change still
         // resets them (projectScope.ts).
         if (Array.isArray(snap.responsibleMembers)) s.responsibleMembers = [...snap.responsibleMembers];
+        // #482 "Your open items" — read live per viewer by the server, so it follows the snapshot too
+        s.openItems = (snap.openItems ?? []).map((i) => ({ ...i, failedItems: i.failedItems.map((it) => ({ ...it })) }));
         // (s.materials + s.dailyLog are set together under the daily-log XOR below)
         // pmc/engineer get the placed inspections; other roles get [] from the server
         // XOR (Task 10 Module 3): the Site-Map inspection placements follow the same ownership.
@@ -6706,6 +6737,89 @@ export const useStore = create<Store>()(
       const key = newIdempotencyKey();
       const lang = get().lang;
       runWriteAhead({ t: 'addSiteMaterial', input, idempotencyKey: key }, DLC.material.en, () => DLX.materialRecorded(input.name, get().lang), DLX.savedOffline(DLC.material[lang], lang));
+    },
+    addProofPhoto: (inspectionId, inspectionItemId, dataUrl, pickedIn, source) => {
+      const lang = get().lang;
+      // chosen before a switch or a new sign-in: not this scope's photo, so nothing is sent and nothing said
+      if (pickedIn && !scopeStillCurrent(pickedIn)) return Promise.resolve(false);
+      // online only (RM-w2 design, as the picker): no outbox kind, so a proof is never held for later
+      if (!gateway || !get().online) {
+        get().flash(OIL.offline[lang]);
+        return Promise.resolve(false);
+      }
+      // one send per item: a second tap while one is on its way sends nothing
+      if (proofSendRunning(get(), inspectionItemId)) return Promise.resolve(false);
+      const photo = /^data:([^;,]+);base64,(.+)$/.exec(dataUrl);
+      if (!photo) {
+        get().flash(OIL.failed[lang]);
+        return Promise.resolve(false);
+      }
+      const [, mime, data] = photo as unknown as [string, string, string];
+      // a type the upload does not take, or a photo still over the body limit after the shrink, is refused here with its
+      // own line, nothing sent and nothing marked: the server would refuse it for good (Codex #1408 4500685655)
+      if (!UPLOAD_IMAGE_MIMES.includes(mime)) {
+        get().flash(OIL.unreadable[lang]);
+        return Promise.resolve(false);
+      }
+      if (data.length > MAX_PHOTO_BASE64) {
+        get().flash(OIL.tooBig[lang]);
+        return Promise.resolve(false);
+      }
+      // the same photo sent again for the same item after an answer was lost keeps its key, so the server's ledger stores
+      // it once (its reply is the stored proof); any other photo, or a send after an answer, is a new key
+      const scope = currentScope();
+      // kept per project scope (the project and its generation, which a switch or a new sign-in moves), so no later scope
+      // resends this one's key
+      const retryKey = `${scopeKey(scope)}|${inspectionItemId}`;
+      const kept = proofRetryKeys.get(retryKey);
+      // and across a reload, per person, project and item (Codex #1408 4500685646): the same file whose shrink gives the
+      // same bytes replays its key exactly; the same file with other bytes cannot (the server compares the bytes on a
+      // replay and would refuse the key as another photo's), so nothing is sent, the project is read again and the
+      // person told the photo may already be there; the entry is dropped, so the next pick goes under a new key
+      const slot = proofRetrySlot(get().sessionUserId, scope.projectId, inspectionItemId);
+      const stored = !(kept && kept.data === data) && source ? readProofKey(slot) : null;
+      if (stored && source && stored.original === source.original && stored.sent !== source.sent) {
+        dropProofKey(slot);
+        get().flash(OIL.maybeAdded[lang]);
+        get().requestFreshSnapshot();
+        return Promise.resolve(false);
+      }
+      const clientKey = kept && kept.data === data ? kept.key
+        : stored && source && stored.original === source.original ? stored.key : newIdempotencyKey();
+      // the send's own entry, released by its own answer only, whatever scope is live by then (Codex #1408 4500500680);
+      // everything else the answer does below runs only while the scope it was sent from is still the live one
+      const sendingAt = proofSendKey(scope.projectId, inspectionItemId);
+      const settle = () => set((s) => { s.proofSending = s.proofSending.filter((k) => k !== sendingAt); });
+      set((s) => { s.proofSending = [...s.proofSending, sendingAt]; });
+      return gateway
+        .uploadMedia({ kind: 'proof', mime, data, inspectionId, inspectionItemId, clientKey })
+        .then(() => {
+          proofRetryKeys.delete(retryKey);
+          dropProofKey(slot, clientKey);
+          settle();
+          if (!scopeStillCurrent(scope)) return false;
+          get().flash(OIL.added[get().lang]);
+          // the proof count and the viewer's own proofs come back with the next snapshot
+          get().requestFreshSnapshot();
+          return true;
+        })
+        .catch((err: { status?: number } | undefined) => {
+          const status = err?.status;
+          // only a final answer (a 4xx the repo treats as permanent, `isTerminalOutboxError`) settles the proof. No
+          // answer, a 5xx, 401, 408 or 429 may follow a stored proof (a proxy's 504 after the commit), so its key is kept
+          // for a resend of the same photo, which the server then answers with the stored proof
+          const final = isTerminalOutboxError(err);
+          if (final) proofRetryKeys.delete(retryKey);
+          else proofRetryKeys.set(retryKey, { data, key: clientKey });
+          if (final) dropProofKey(slot, clientKey);
+          else if (source) keepProofKey(slot, source, clientKey);
+          settle();
+          if (!scopeStillCurrent(scope)) return false;
+          // 409: the item holds all its proofs, or it no longer failed; either way the list is read again
+          get().flash(status === 409 ? OIL.full[get().lang] : OIL.failed[get().lang]);
+          if (final) get().requestFreshSnapshot();
+          return false;
+        });
     },
     readTeamShared: (opts) => {
       const key = scopeKey(currentScope());
