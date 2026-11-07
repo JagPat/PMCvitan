@@ -150,9 +150,10 @@ const EXPECT: Record<string, Spec> = {
   },
   // #771 read contract: the stored assignee and civil due date are always present (`null` = none stored).
   // Guided site inspections step 2a: the work type, always present (`null` = none).
-  ChecklistDto: { keys: ['id', 'title', 'zone', 'nodeId', 'date', 'submitted', 'reinspectionOfId', 'assigneeId', 'dueDate', 'workType', 'items'].sort(), optional: ['nodeId'], nullable: ['reinspectionOfId', 'assigneeId', 'dueDate', 'workType'].sort() },
+  // #482 "Who fixes this?": the root of the inspection's lineage, always present on a checklist and a review (its own id when it re-checks nothing).
+  ChecklistDto: { keys: ['id', 'title', 'zone', 'nodeId', 'date', 'submitted', 'reinspectionOfId', 'lineageRootId', 'assigneeId', 'dueDate', 'workType', 'items'].sort(), optional: ['nodeId'], nullable: ['reinspectionOfId', 'assigneeId', 'dueDate', 'workType'].sort() },
   ReviewDto: {
-    keys: ['id', 'title', 'zone', 'nodeId', 'by', 'date', 'decided', 'reinspectionOfId', 'assigneeId', 'dueDate', 'workType', 'closing', 'activityId', 'activityName', 'items'].sort(),
+    keys: ['id', 'title', 'zone', 'nodeId', 'by', 'date', 'decided', 'reinspectionOfId', 'lineageRootId', 'assigneeId', 'dueDate', 'workType', 'closing', 'activityId', 'activityName', 'items'].sort(),
     optional: ['nodeId', 'reinspectionOfId', 'closing', 'activityId', 'activityName'].sort(), nullable: ['assigneeId', 'dueDate', 'workType'].sort(),
   },
   MaterialDto: { keys: ['id', 'name', 'qty', 'zone', 'matched', 'swatch', 'decisionId', 'nodeId'].sort(), optional: ['decisionId', 'nodeId'].sort(), nullable: [] },
