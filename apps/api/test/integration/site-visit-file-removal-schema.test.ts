@@ -14,6 +14,9 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
  * writer (R1-R8 in the migration's header), and that the file re-runs.
  */
 const MIGRATION = join(__dirname, '../../prisma/migrations/20280125000000_site_visit_file_removal/migration.sql');
+/** #1393: the additive migration that re-issues the insert function with the exact match; replayed after this one's
+ *  replay, so the database is left as the latest migration made it */
+const KIND_EXACT = join(__dirname, '../../prisma/migrations/20280214000000_site_visit_removal_kind_exact/migration.sql');
 
 describe('#1179 R1 — a visit file\'s removal line (live PG)', () => {
   let t: TestApp;
@@ -113,6 +116,16 @@ describe('#1179 R1 — a visit file\'s removal line (live PG)', () => {
       const m = await onVisit({ mime });
       await remove(m.id, f.memberUser.id, 'pmc', null);
       expect((await t.prisma.siteVisitFileRemoval.findUniqueOrThrow({ where: { mediaId: m.id } })).fileKind, mime).toBe(kind);
+    }
+  });
+
+  it('#1393: the kind is the media module\'s exact, case-sensitive prefix, never a lower-cased one', async () => {
+    // lower() follows the locale (U+0130 lowers to "i" on a C.UTF-8 database), and the media module calls neither of
+    // these a video, photo or voice note (media.service.ts startsWith, "Media_av_shape_check" LIKE 'video/%')
+    for (const mime of ['VIDEO/webm', 'v\u0130deo/webm', 'Image/png', 'AUDIO/mp4']) {
+      const m = await onVisit({ mime });
+      await remove(m.id, f.memberUser.id, 'pmc', null);
+      expect((await t.prisma.siteVisitFileRemoval.findUniqueOrThrow({ where: { mediaId: m.id } })).fileKind, mime).toBe('file');
     }
   });
 
@@ -347,7 +360,9 @@ describe('#1179 R1 — a visit file\'s removal line (live PG)', () => {
   });
 
   const url = (process.env.DATABASE_URL ?? '').split('?')[0]!;
-  const replay = () => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url, '-f', MIGRATION], { stdio: 'pipe' });
+  const replay = (file = MIGRATION) => execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', url, '-f', file], { stdio: 'pipe' });
+  const insertFunction = async () => (await t.prisma.$queryRaw<Array<{ src: string }>>`
+    SELECT prosrc AS src FROM pg_proc WHERE oid = 'public.site_visits_file_removal_insert()'::regprocedure`)[0]!.src;
 
   it('the migration re-runs as a no-op, and repairs what a db push baseline leaves out', async () => {
     const before = await t.prisma.siteVisitFileRemoval.count();
@@ -367,6 +382,8 @@ describe('#1179 R1 — a visit file\'s removal line (live PG)', () => {
       replay();
     } finally {
       await t.prisma.$executeRawUnsafe(`DROP TABLE "SvrmDecoy_${run}"`);
+      // #1393: the deployed file re-issues its own insert function; the later migration puts the exact match back
+      replay(KIND_EXACT);
     }
     const triggers = async (table: string) => (await t.prisma.$queryRawUnsafe<Array<{ n: string }>>(
       `SELECT tgname AS n FROM pg_trigger WHERE tgrelid = $1::regclass AND NOT tgisinternal AND tgenabled = 'O' ORDER BY tgname`, `"${table}"`)).map((r) => r.n);
@@ -380,5 +397,21 @@ describe('#1179 R1 — a visit file\'s removal line (live PG)', () => {
     const [{ del }] = await t.prisma.$queryRaw<Array<{ del: string }>>`
       SELECT confdeltype::text AS del FROM pg_constraint WHERE conname = 'SiteVisitFileRemoval_projectId_visitId_fkey'`;
     expect(del).toBe('c');
+  });
+
+  it('#1393: the kind migration re-runs as a no-op, and puts the exact match back over a replay of the deployed file', async () => {
+    replay(MIGRATION);
+    expect(await insertFunction()).toMatch(/v_mime := lower\(/u);
+    replay(KIND_EXACT);
+    replay(KIND_EXACT);
+    const src = await insertFunction();
+    expect(src).not.toMatch(/v_mime := lower\(/u);
+    expect(src).toMatch(/v_mime := coalesce\(public\.media_mime_of\(NEW\."projectId", NEW\."mediaId"\), ''\);/u);
+    const m = await onVisit({ mime: 'VIDEO/webm' });
+    await remove(m.id, f.memberUser.id, 'pmc', null);
+    expect((await t.prisma.siteVisitFileRemoval.findUniqueOrThrow({ where: { mediaId: m.id } })).fileKind).toBe('file');
+    const clip = await onVisit({ mime: 'video/webm' });
+    await remove(clip.id, f.memberUser.id, 'pmc', null);
+    expect((await t.prisma.siteVisitFileRemoval.findUniqueOrThrow({ where: { mediaId: clip.id } })).fileKind).toBe('video');
   });
 });
