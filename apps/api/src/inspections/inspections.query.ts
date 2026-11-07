@@ -13,7 +13,7 @@ import { INSPECTIONS_PROJECTION } from './inspections.projection';
 import { readServableGeneration } from '../platform/projections/generation';
 import { nextSeqId } from '../domain/ids';
 import { isFailedItem } from './failed-item';
-import { lineageApproval } from './inspection-lineage';
+import { lineageApproval, lineageRoots } from './inspection-lineage';
 import { AuditQuery } from '../platform/audit.query';
 import type { InspectionItemSpec } from '../contracts';
 import { specFromItemRow } from './guided-item';
@@ -416,6 +416,28 @@ export class InspectionsQueryService {
       ${db ? Prisma.sql`FOR SHARE` : Prisma.empty}`);
     if (!item) throw new BadRequestException('The item does not belong to an inspection of this project');
     if (!isFailedItem(item)) throw new ConflictException('A proof photo goes on an item that has failed, and this one has not');
+  }
+
+  /**
+   * #482 proof photos, U-4a — what the snapshot's `proofs` says about each proof's item: the item's name and the ROOT of
+   * its inspection's lineage (the same `lineageRoots` walk the bake uses for `lineageRootId`). The web shows a lineage's
+   * proofs on its open row, whichever inspection of the lineage a proof was added on, and labels each by its own item:
+   * a re-inspection's items are new rows, never matched to the items they re-check. Read from this module's own tables,
+   * so the snapshot module reads no inspection table itself. Keyed by item id; an item this project does not hold (not
+   * possible on stored data: a proof's item is a foreign key, `NO ACTION`) is left out, and the caller falls back.
+   */
+  async proofTargets(projectId: string, itemIds: readonly string[]): Promise<Map<string, { itemName: string; lineageRootId: string }>> {
+    const out = new Map<string, { itemName: string; lineageRootId: string }>();
+    if (itemIds.length === 0) return out;
+    const items = await this.prisma.inspectionItem.findMany({
+      where: { id: { in: [...new Set(itemIds)] }, inspection: { projectId } },
+      select: { id: true, name: true, inspectionId: true },
+    });
+    if (items.length === 0) return out;
+    const lineage = await this.prisma.inspection.findMany({ where: { projectId }, select: { id: true, reinspectionOfId: true } });
+    const rootOf = lineageRoots(lineage);
+    for (const it of items) out.set(it.id, { itemName: it.name, lineageRootId: rootOf(it.inspectionId) });
+    return out;
   }
 
   /** Does inspection `inspectionId` exist in project `projectId`? The tenant-ownership check a consumer
