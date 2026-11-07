@@ -2,12 +2,16 @@
  * #1088 r1 (Codex 4349463894): the web's own copy of the server's request contracts its stored queue check reads
  * (`storedActs.ts`), so the web no longer imports API source or resolves `zod` through the API. Each statement below is
  * a byte-for-byte copy of the same-named one in `apps/api/src/contracts.ts`, with every statement it uses, in that
- * file's order. `queue-contracts-drift.test.ts` reads that file as text and fails when any copy differs, so a server
+ * file's order. The Site Visits screen checks a clip's full-video link with the same copies before sending it (video V2g-2,
+ * #995). `queue-contracts-drift.test.ts` reads that file as text and fails when any copy differs, so a server
  * change to one of these contracts cannot land without this copy changing with it. `parseCivilDate` is the shared one,
  * which `apps/api/src/common/civil-date.ts` re-exports.
  */
 import { z } from 'zod';
-import { DEDUCTION_TYPES, MONEY_STRING, QUANTITY_STRING, SOD_RULES, parseCivilDate } from '@vitan/shared';
+import {
+  DEDUCTION_TYPES, MONEY_STRING, QUANTITY_STRING, SITE_VISIT_REMOVAL_REASON_MAX, SOD_RULES, VIDEO_LINK_LABEL_MAX, VIDEO_LINK_REFUSED_MESSAGE,
+  isAllowedVideoLink, parseCivilDate, removalReasonShows,
+} from '@vitan/shared';
 
 export const approveSchema = z.object({ optionIndex: z.number().int().min(0) });
 
@@ -829,3 +833,38 @@ export const addSiteVisitAttendeeSchema = z.union([
   z.object({ id: siteVisitIdSchema, userId: z.string().trim().min(1), role: z.string().trim().min(1).max(32) }).strict(),
   z.object({ id: siteVisitIdSchema, guestName: z.string().trim().min(1).max(120) }).strict(),
 ]);
+
+// Video V2g-1 (#995) — a video clip's link to its full-quality video in Google Drive or Zoho WorkDrive. `id` is the new
+// link's, minted by the device as a visit row's is. `replaces` names the link the person saw on the clip (null when it
+// showed none): a link someone else changed since is refused (409), never silently ended. The url is trimmed and then
+// checked with the shared allow-list, the database's K1 CHECK exactly. A label is optional, at most 120 characters and
+// shows something. The reason is the PMC's, kept when they end a link that is not their own within the hour (K7); it
+// follows the visit file removal's rule and bounds (`removeVisitFileSchema`).
+/** Half of a surrogate pair standing alone: no character at all, and PostgreSQL's UTF-8 text cannot hold it, so Prisma
+ *  would refuse it with a 500 (V2g-1 gap-check G3). The pattern of `voice-transcript.service.ts:37`, copied. */
+const VIDEO_LINK_LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+const videoLinkReason = z.string().trim()
+  .refine((s) => !s.includes('\u0000') && !VIDEO_LINK_LONE_SURROGATE.test(s), 'A reason cannot contain that character')
+  .refine(removalReasonShows, 'Say why you are changing this link')
+  .refine((s) => [...s].length <= SITE_VISIT_REMOVAL_REASON_MAX, `Keep the reason to ${SITE_VISIT_REMOVAL_REASON_MAX} characters`)
+  .nullish()
+  .transform((s) => s ?? undefined);
+export const setSiteVisitFileLinkSchema = z.object({
+  id: siteVisitIdSchema,
+  url: z.string().trim().refine(isAllowedVideoLink, VIDEO_LINK_REFUSED_MESSAGE),
+  label: z.string().trim()
+    .refine((s) => !s.includes('\u0000') && !VIDEO_LINK_LONE_SURROGATE.test(s), 'A label cannot contain that character')
+    .refine((s) => s === '' || removalReasonShows(s), 'A label needs some words')
+    .refine((s) => [...s].length <= VIDEO_LINK_LABEL_MAX, `Keep the label to ${VIDEO_LINK_LABEL_MAX} characters`)
+    .nullish()
+    .transform((s) => (s ? s : undefined)),
+  replaces: siteVisitIdSchema.nullable(),
+  reason: videoLinkReason,
+}).strict();
+export type SetSiteVisitFileLinkInput = z.infer<typeof setSiteVisitFileLinkSchema>;
+// taking a link off with no successor: the link the person saw, and the PMC's reason as for a replace
+export const endSiteVisitFileLinkSchema = z.object({
+  linkId: siteVisitIdSchema,
+  reason: videoLinkReason,
+}).strict();
+export type EndSiteVisitFileLinkInput = z.infer<typeof endSiteVisitFileLinkSchema>;

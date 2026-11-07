@@ -6,7 +6,7 @@ import { isCurrentProjectScope, projectScopeOf, type ProjectScope } from '@/stor
 import {
   isSiteVisitOp, isVisitFileGone, newIdempotencyKey, refusalMessage, resolveMediaUrl, siteVisitListeners, siteVisitOf,
   type ApiGateway, type OutboxOp, type SiteVisit, type SiteVisitAttendeeBody, type SiteVisitEvent, type SiteVisitFile, type SiteVisitOp,
-  type SiteVisitRating,
+  type SiteVisitFileLinkBody, type SiteVisitRating, tellSiteVisits,
 } from '@/data/apiGateway';
 import { deleteRemovedVisitPhoto, deleteVisitPhoto, forgetRemovedVisitPhoto, listVisitPhotos, REMOVED_VISIT_PHOTO_PREFIX, removedVisitPhotos, posterWaits, putVisitPhoto, settleFiledVisitPhotos, storageAvailable, visitPhotoScope, withinWait, VisitPhotoUnconfirmed, type SiteVisitAddFileOp, type SiteVisitStartOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import type { MarkedCopy } from '@/components/PhotoMarkup';
@@ -17,7 +17,7 @@ import { MAX_PHOTO_BASE64, shrinkPhoto, UPLOAD_IMAGE_MIMES } from './shrinkPhoto
 import { acceptedType, blobBase64, type Recorded, type RecordKind } from './mediaRecorder';
 import { clipPoster } from './videoPoster';
 import { VIDEO_CLIP_MIMES, VOICE_NOTE_MIMES } from '@/data/queueContracts';
-import { refusalWords, removalRefusalWords, SV } from './siteVisitWords';
+import { linkRefusalWords, refusalWords, removalRefusalWords, SV } from './siteVisitWords';
 import { emitGuideOutcome, guideRunToken, recordGuidedPhotoPick } from '@/guide/outcomes';
 
 /**
@@ -39,6 +39,9 @@ export const VISIT_PAGE = 20;
 const OPEN_LIMIT = 200;
 
 type Load = 'loading' | 'ready' | 'error';
+/** Video V2g-2: a link change's outcome: null once the server has it, else what to say beside the clip, and whether the
+ *  link or clip the person saw has changed since (the form filled for it is closed). */
+export type LinkOutcome = { said: string; stale: boolean } | null;
 
 /** A version 4 UUID, as the server requires of every row id, from whatever randomness the browser has. */
 export function uuidV4(): string {
@@ -884,8 +887,51 @@ export function useSiteVisits() {
     }
   };
 
+  /** Video V2g-2 (#995): add, replace or take off a clip's full-video link. Online only, as a removal is: the hour and the
+   *  link the person saw are judged at the server, so nothing is queued to send later. `send` is the gateway call under
+   *  the caller's key: the form keeps one key for one body, so a lost answer sent again is the same change, once. The
+   *  server's answer is the visit, shown at once; a refusal reads the visit again (someone else's change, or the hour
+   *  up, shows there). Answers null once the change is the server's, or what to say beside the clip; `stale` when the
+   *  link or the clip the person saw has changed (409, 404), so the form they filled for it is closed. */
+  const changeLink = async (send: (gw: ApiGateway) => Promise<SiteVisit>): Promise<LinkOutcome> => {
+    const state = useStore.getState();
+    const gateway = state.serverGateway();
+    if (!gateway) return { said: SV.needsServer[state.lang], stale: false };
+    const scope = projectScopeOf(state);
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const v = await send(gateway);
+      if (!live(scope)) return null;
+      // as an act's answer is: the whole visit, its offers included, shown in place of the one read before
+      tellSiteVisits({ kind: 'answer', project: scope.projectId, generation: scope.generation, visit: v });
+      setNotice(SV.linkSaved[useStore.getState().lang]);
+      return null;
+    } catch (err) {
+      if (!live(scope)) return null;
+      const lang = useStore.getState().lang;
+      const status = (err as { status?: unknown } | null)?.status;
+      if (typeof status !== 'number') {
+        return { said: globalThis.navigator?.onLine === false ? SV.linkOffline[lang] : SV.linkUnreachable[lang], stale: false };
+      }
+      void readHead(false);
+      if (isVisitFileGone(err)) return { said: SV.linkFileGone[lang], stale: true };
+      const said = refusalMessage(err);
+      return { said: said ? `${SV.linkNotSaved[lang]} ${linkRefusalWords(said, lang)}` : SV.linkNotSaved[lang], stale: status === 409 || status === 404 };
+    } finally {
+      if (live(scope)) setBusy(false);
+    }
+  };
+
   return {
     removeFile,
+    /** V2g-2: put a link on the clip, or replace the one shown (`body.replaces`) */
+    setFileLink: (visitId: string, file: SiteVisitFile, body: SiteVisitFileLinkBody, key: string) =>
+      changeLink((gw) => gw.setSiteVisitFileLink(visitId, file.mediaId, body, key)),
+    /** V2g-2: take the clip's link off, naming the one shown */
+    endFileLink: (visitId: string, file: SiteVisitFile, body: { linkId: string; reason?: string }, key: string) =>
+      changeLink((gw) => gw.endSiteVisitFileLink(visitId, file.mediaId, body, key)),
     visits: shown.visits, waiting: shown.waiting,
     /** the visits as the server last gave them (its reads and its answers), without the acts still queued here */
     read: rows,
