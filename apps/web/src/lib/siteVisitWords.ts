@@ -311,7 +311,161 @@ export const SV = {
   removalReason: { en: 'Reason:', hi: 'कारण:', gu: 'કારણ:' },
   photo: { en: 'Photo', hi: 'फ़ोटो', gu: 'ફોટો' },
   file: { en: 'File', hi: 'फ़ाइल', gu: 'ફાઇલ' },
+  // Video V2g-2 (#995): a clip's link to its full-quality video in Google Drive or Zoho WorkDrive
+  fullVideo: { en: 'Full video', hi: 'पूरा वीडियो', gu: 'પૂરો વીડિયો' },
+  hostDrive: { en: 'Google Drive', hi: 'Google Drive', gu: 'Google Drive' },
+  hostZoho: { en: 'Zoho WorkDrive', hi: 'Zoho WorkDrive', gu: 'Zoho WorkDrive' },
+  linkOpens: { en: 'opens in a new tab', hi: 'नए टैब में खुलता है', gu: 'નવા ટૅબમાં ખૂલે છે' },
+  linkAddedBy: { en: 'Link added by', hi: 'लिंक जोड़ने वाले', gu: 'લિંક ઉમેરનાર' },
+  linkAdd: { en: 'Add full video link', hi: 'पूरे वीडियो का लिंक जोड़ें', gu: 'પૂરા વીડિયોની લિંક ઉમેરો' },
+  linkChange: { en: 'Change link', hi: 'लिंक बदलें', gu: 'લિંક બદલો' },
+  linkTakeOff: { en: 'Take link off', hi: 'लिंक हटाएँ', gu: 'લિંક કાઢો' },
+  linkUrl: { en: 'Share link from Google Drive or Zoho WorkDrive', hi: 'Google Drive या Zoho WorkDrive का शेयर लिंक', gu: 'Google Drive અથવા Zoho WorkDriveની શેર લિંક' },
+  linkLabel: { en: 'Label (optional)', hi: 'नाम (चाहें तो)', gu: 'નામ (ઇચ્છો તો)' },
+  linkHint: {
+    en: 'Make sure the link’s sharing lets your project team open it.',
+    hi: 'ध्यान रखें कि लिंक की शेयरिंग से आपकी प्रोजेक्ट टीम इसे खोल सके।',
+    gu: 'ધ્યાન રાખો કે લિંકના શેરિંગથી તમારી પ્રોજેક્ટ ટીમ તેને ખોલી શકે.',
+  },
+  linkBadUrl: {
+    en: 'Paste a share link from Google Drive or Zoho WorkDrive',
+    hi: 'Google Drive या Zoho WorkDrive का शेयर लिंक चिपकाएँ',
+    gu: 'Google Drive અથવા Zoho WorkDriveની શેર લિંક પેસ્ટ કરો',
+  },
+  linkReason: { en: 'Why are you changing it?', hi: 'आप इसे क्यों बदल रहे हैं?', gu: 'તમે તેને કેમ બદલો છો?' },
+  linkSave: { en: 'Save link', hi: 'लिंक सहेजें', gu: 'લિંક સાચવો' },
+  linkCancel: { en: 'Cancel', hi: 'रद्द करें', gu: 'રદ કરો' },
+  linkTakeOffAsk: {
+    en: 'Take this link off the clip? The visit keeps a record of it.',
+    hi: 'यह लिंक क्लिप से हटाएँ? विज़िट में इसका रिकॉर्ड रहेगा।',
+    gu: 'આ લિંક ક્લિપ પરથી કાઢવી છે? મુલાકાતમાં તેનો રેકોર્ડ રહેશે.',
+  },
+  linkTakeOffYes: { en: 'Take it off', hi: 'हटाएँ', gu: 'કાઢો' },
+  linkSaved: { en: 'Full video link saved.', hi: 'पूरे वीडियो का लिंक सहेजा गया।', gu: 'પૂરા વીડિયોની લિંક સાચવી.' },
+  linkTakenOff: { en: 'Full video link taken off.', hi: 'पूरे वीडियो का लिंक हटाया गया।', gu: 'પૂરા વીડિયોની લિંક કાઢી.' },
+  linkNotSaved: { en: 'The link was not saved.', hi: 'लिंक नहीं सहेजा गया।', gu: 'લિંક સચવાઈ નથી.' },
+  linkNotTakenOff: { en: 'The link was not taken off.', hi: 'लिंक नहीं हटाया गया।', gu: 'લિંક કાઢી નથી.' },
+  linkOffline: {
+    en: 'No signal. Saving a link needs a connection; try again when you are online.',
+    hi: 'नेटवर्क नहीं। लिंक सहेजने के लिए कनेक्शन चाहिए; ऑनलाइन होने पर फिर कोशिश करें।',
+    gu: 'નેટવર્ક નથી. લિંક સાચવવા કનેક્શન જોઈએ; ઓનલાઇન થાઓ ત્યારે ફરી પ્રયત્ન કરો.',
+  },
+  linkUnreachable: {
+    en: 'No answer from the server. Try again: it is saved only once.',
+    hi: 'सर्वर से जवाब नहीं आया। फिर कोशिश करें: यह एक ही बार सहेजा जाएगा।',
+    gu: 'સર્વર તરફથી જવાબ ન આવ્યો. ફરી પ્રયત્ન કરો: તે એક જ વાર સચવાશે.',
+  },
+  linkFileGone: {
+    en: 'This clip was taken off the visit.',
+    hi: 'यह क्लिप विज़िट से हटा दी गई है।',
+    gu: 'આ ક્લિપ મુલાકાત પરથી કાઢી નાખી છે.',
+  },
 } satisfies Record<string, Words>;
+
+/** Video V2g-2: the server's refusals of a clip's link (V2g-1, site-visits.service.ts and contracts.ts), in each language.
+ *  The English is the server's own words. A refusal of the request's own fields names the field first ("url: …"). */
+const LINK_REFUSALS: Record<string, Words> = {
+  'Paste a share link from Google Drive or Zoho WorkDrive': SV.linkBadUrl,
+  'Say why you are changing this link': {
+    en: 'Say why you are changing this link',
+    hi: 'बताइए कि आप यह लिंक क्यों बदल रहे हैं',
+    gu: 'તમે આ લિંક કેમ બદલો છો તે જણાવો',
+  },
+  'Say why you are replacing this link': {
+    en: 'Say why you are replacing this link',
+    hi: 'बताइए कि आप यह लिंक क्यों बदल रहे हैं',
+    gu: 'તમે આ લિંક કેમ બદલો છો તે જણાવો',
+  },
+  'Say why you are removing this link': {
+    en: 'Say why you are removing this link',
+    hi: 'बताइए कि आप यह लिंक क्यों हटा रहे हैं',
+    gu: 'તમે આ લિંક કેમ કાઢો છો તે જણાવો',
+  },
+  'Someone else changed this video\'s full video link; look at it again': {
+    en: 'Someone else changed this video’s full video link; look at it again',
+    hi: 'किसी और ने इस वीडियो का लिंक बदल दिया है; इसे फिर से देखें',
+    gu: 'કોઈ બીજાએ આ વીડિયોની લિંક બદલી છે; તેને ફરી જુઓ',
+  },
+  'This video\'s full video link was taken off by someone else; look at it again': {
+    en: 'This video’s full video link was taken off by someone else; look at it again',
+    hi: 'किसी और ने इस वीडियो का लिंक हटा दिया है; इसे फिर से देखें',
+    gu: 'કોઈ બીજાએ આ વીડિયોની લિંક કાઢી છે; તેને ફરી જુઓ',
+  },
+  'This full video link was already taken off or replaced': {
+    en: 'This full video link was already taken off or replaced',
+    hi: 'यह लिंक पहले ही हटाया या बदला जा चुका है',
+    gu: 'આ લિંક પહેલેથી કાઢી કે બદલી દેવાઈ છે',
+  },
+  'This full video link is no longer on the clip': {
+    en: 'This full video link is no longer on the clip',
+    hi: 'यह लिंक अब क्लिप पर नहीं है',
+    gu: 'આ લિંક હવે ક્લિપ પર નથી',
+  },
+  'Only the person who added this link, or the PMC, may change it': {
+    en: 'Only the person who added this link, or the PMC, may change it',
+    hi: 'यह लिंक वही बदल सकता है जिसने इसे जोड़ा, या PMC',
+    gu: 'આ લિંક તે જ બદલી શકે જેણે તે ઉમેરી હતી, અથવા PMC',
+  },
+  'Only the person who added this video, the people on this visit, or the PMC may add its full video link': {
+    en: 'Only the person who added this video, the people on this visit, or the PMC may add its full video link',
+    hi: 'पूरे वीडियो का लिंक वही जोड़ सकता है जिसने यह वीडियो जोड़ा, इस विज़िट के लोग, या PMC',
+    gu: 'પૂરા વીડિયોની લિંક તે જ ઉમેરી શકે જેણે આ વીડિયો ઉમેર્યો, આ મુલાકાતના લોકો, અથવા PMC',
+  },
+  'A link can be changed only within an hour of adding it; ask the PMC': {
+    en: 'A link can be changed only within an hour of adding it; ask the PMC',
+    hi: 'लिंक जोड़ने के एक घंटे के अंदर ही बदला जा सकता है; PMC से कहें',
+    gu: 'લિંક ઉમેર્યાના એક કલાકમાં જ બદલી શકાય; PMCને કહો',
+  },
+  'This site visit has ended; ask the PMC to change the link': {
+    en: 'This site visit has ended; ask the PMC to change the link',
+    hi: 'यह साइट विज़िट ख़त्म हो चुकी है; लिंक बदलने के लिए PMC से कहें',
+    gu: 'આ સાઇટ મુલાકાત પૂરી થઈ ગઈ છે; લિંક બદલવા PMCને કહો',
+  },
+  'This site visit was closed by the PMC; ask the PMC to change the link': {
+    en: 'This site visit was closed by the PMC; ask the PMC to change the link',
+    hi: 'यह साइट विज़िट PMC ने बंद कर दी है; लिंक बदलने के लिए PMC से कहें',
+    gu: 'આ સાઇટ મુલાકાત PMCએ બંધ કરી છે; લિંક બદલવા PMCને કહો',
+  },
+  'This link has already been added': {
+    en: 'This link has already been added',
+    hi: 'यह लिंक पहले ही जोड़ा जा चुका है',
+    gu: 'આ લિંક પહેલેથી ઉમેરાઈ ગઈ છે',
+  },
+  // the request's own checks (contracts.ts `setSiteVisitFileLinkSchema`, `videoLinkReason`), as the server words them
+  'A label cannot contain that character': {
+    en: 'A label cannot contain that character',
+    hi: 'नाम में यह अक्षर नहीं हो सकता',
+    gu: 'નામમાં આ અક્ષર ન હોઈ શકે',
+  },
+  'A label needs some words': {
+    en: 'A label needs some words',
+    hi: 'नाम में कुछ शब्द होने चाहिए',
+    gu: 'નામમાં થોડા શબ્દો હોવા જોઈએ',
+  },
+  'Keep the label to 120 characters': {
+    en: 'Keep the label to 120 characters',
+    hi: 'नाम 120 अक्षरों तक रखें',
+    gu: 'નામ 120 અક્ષરો સુધી રાખો',
+  },
+  'A reason cannot contain that character': {
+    en: 'A reason cannot contain that character',
+    hi: 'कारण में यह अक्षर नहीं हो सकता',
+    gu: 'કારણમાં આ અક્ષર ન હોઈ શકે',
+  },
+  'Keep the reason to 300 characters': {
+    en: 'Keep the reason to 300 characters',
+    hi: 'कारण 300 अक्षरों तक रखें',
+    gu: 'કારણ 300 અક્ષરો સુધી રાખો',
+  },
+  'Only a video takes a full video link': {
+    en: 'Only a video takes a full video link',
+    hi: 'पूरे वीडियो का लिंक सिर्फ़ वीडियो पर लगता है',
+    gu: 'પૂરા વીડિયોની લિંક ફક્ત વીડિયો પર લાગે છે',
+  },
+};
+export function linkRefusalWords(reason: string, lang: Lang): string {
+  return LINK_REFUSALS[reason.trim().replace(/^(?:url|label|reason|linkId|id|replaces):\s*/u, '')]?.[lang] ?? reason;
+}
 
 /** #1179: the server's refusals of a removal (site-visit-files.participant.ts, media.service.ts), in each language. The
  *  English is the server's own words. */

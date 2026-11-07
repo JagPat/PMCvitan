@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { can, forYouRole, removalReasonShows, SITE_VISIT_REMOVAL_REASON_MAX, type Lang, type ProjectMember, type Role } from '@vitan/shared';
+import { can, forYouRole, removalReasonShows, SITE_VISIT_REMOVAL_REASON_MAX, videoLinkHost, type Lang, type ProjectMember, type Role } from '@vitan/shared';
 import { useStore } from '@/store/store';
 import { Button, Modal } from '@/components';
 import { PhotoMarkup } from '@/components/PhotoMarkup';
 import { MediaPlayer } from '@/components/MediaPlayer';
 import { trailOf } from '@/lib/locationTree';
-import { mayAddPhoto, useSiteVisits, VIDEO_MAX_MS, VOICE_MAX_MS } from '@/lib/useSiteVisits';
+import { mayAddPhoto, useSiteVisits, uuidV4, VIDEO_MAX_MS, VOICE_MAX_MS, type LinkOutcome } from '@/lib/useSiteVisits';
 import { clockText, pickRecordType, RecordError, startRecording, type Recorded, type Recording, type RecordKind, type RecordOptions } from '@/lib/mediaRecorder';
 import { UPLOAD_IMAGE_MIMES } from '@/lib/shrinkPhoto';
-import { refusalWords, SV, visitTime } from '@/lib/siteVisitWords';
+import { linkRefusalWords, refusalWords, SV, visitTime } from '@/lib/siteVisitWords';
 import { stampText } from '@/lib/captureStamp';
 import { STILL_AT_MS, stillFrom } from '@/lib/videoPoster';
-import { resolveMediaUrl, type SiteVisit, type SiteVisitFile, type SiteVisitRating, type SiteVisitRemoval, type RemovalOffer } from '@/data/apiGateway';
+import { resolveMediaUrl, type SiteVisit, type SiteVisitFile, type SiteVisitRating, type SiteVisitRemoval, type RemovalOffer, type SiteVisitFileLinkBody } from '@/data/apiGateway';
+import { endSiteVisitFileLinkSchema, setSiteVisitFileLinkSchema } from '@/data/queueContracts';
 import { guideRunToken } from '@/guide/outcomes';
 import { useVisitGuideReports } from '@/guide/visitGuideReports';
 import styles from './SiteVisitsScreen.module.css';
@@ -199,18 +200,13 @@ function offerLeft(given: RemovalOffer | null): number | null {
  *  file goes for everyone and does not come back; the PMC says why when the file is not their own within the hour. When
  *  the hour on one's own file is up, the offer leaves, except the PMC's, which then asks for a reason as the server does.
  *  What went wrong is said beside the file, and stays said once a fresh read withdraws the offer. */
-function RemoveFile({ file, lang, pmc, busy, remove }: {
-  file: SiteVisitFile; lang: Lang; pmc: boolean; busy: boolean; remove: (file: SiteVisitFile, reason?: string) => Promise<string | null>;
-}) {
-  const given = file.removable ?? null;
+/** #1179: an offer as it stands now. When the hour on one's own file is up, the offer leaves, except the PMC's, which
+ *  then asks for a reason as the server does. It looks again when the hour ends. A clip's link offer (V2g-2) follows
+ *  the same rule. */
+function useOfferNow(given: RemovalOffer | null, pmc: boolean): Pick<RemovalOffer, 'reasonRequired' | 'until'> | null {
   const [turn, tick] = useState(0);
-  const [asking, setAsking] = useState(false);
-  const [reason, setReason] = useState('');
-  const [said, setSaid] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
   const left = offerLeft(given);
   const over = left !== null && left <= 0;
-  const offer = !given ? null : over ? (pmc ? { reasonRequired: true, until: null } : null) : given;
   useEffect(() => {
     const wait = offerLeft(given);
     if (wait === null || wait <= 0) return;
@@ -218,6 +214,18 @@ function RemoveFile({ file, lang, pmc, busy, remove }: {
     const timer = setTimeout(() => tick((n) => n + 1), wait + 50);
     return () => clearTimeout(timer);
   }, [given, over, turn]);
+  return !given ? null : over ? (pmc ? { reasonRequired: true, until: null } : null) : given;
+}
+
+function RemoveFile({ file, lang, pmc, busy, remove }: {
+  file: SiteVisitFile; lang: Lang; pmc: boolean; busy: boolean; remove: (file: SiteVisitFile, reason?: string) => Promise<string | null>;
+}) {
+  const given = file.removable ?? null;
+  const [asking, setAsking] = useState(false);
+  const [reason, setReason] = useState('');
+  const [said, setSaid] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const offer = useOfferNow(given, pmc);
   const id = file.mediaId;
   const told = said && <div className={styles.error} role="alert" data-testid={`sv-remove-said-${id}`}>{said}</div>;
   if (!offer) return told || null;
@@ -249,6 +257,202 @@ function RemoveFile({ file, lang, pmc, busy, remove }: {
       }}>{SV.removeYes[lang]}</Button>
       <Button variant="ghost" disabled={sending} data-testid={`sv-remove-keep-${id}`} onClick={() => { setAsking(false); setReason(''); setSaid(null); }}>{SV.removeKeep[lang]}</Button>
       {told}
+    </div>
+  );
+}
+
+/** One key for one body: the same body sent again (its answer was lost) goes under the same key and is the same change,
+ *  once; any other body is a change of its own under a fresh key. */
+function keyFor(slot: { current: { sig: string; key: string; id: string } | null }, sig: string) {
+  if (slot.current?.sig !== sig) slot.current = { sig, key: uuidV4(), id: uuidV4() };
+  return slot.current;
+}
+
+/** Video V2g-2 (#995): a clip's link to its full-quality video in Google Drive or Zoho WorkDrive. The link opens in a new
+ *  tab with no opener and no referrer, and only when it passes the shared allow-list (the database's own check); one
+ *  that does not shows as text. Add, Change and Take off show only where the server's read offers them
+ *  (`fullVideoLinkOffer`, a removal offer's rule), online only: what went wrong is said beside the clip. */
+function FileLink({ visitId, file, lang, pmc, busy, setLink, endLink }: {
+  visitId: string; file: SiteVisitFile; lang: Lang; pmc: boolean; busy: boolean;
+  setLink: (visitId: string, file: SiteVisitFile, body: SiteVisitFileLinkBody, key: string) => Promise<LinkOutcome>;
+  endLink: (visitId: string, file: SiteVisitFile, body: { linkId: string; reason?: string }, key: string) => Promise<LinkOutcome>;
+}) {
+  const link = file.fullVideoLink ?? null;
+  const offer = useOfferNow(file.fullVideoLinkOffer ?? null, pmc);
+  const [mode, setMode] = useState<'idle' | 'form' | 'off'>('idle');
+  // the link the person saw when they opened the form: the change names it, so a link someone else put on meanwhile
+  // is refused (409) rather than replaced unseen, and the form is closed to be opened on the link as it now is
+  const [seen, setSeen] = useState<string | null>(null);
+  // focus follows the form (G7): into its first field on open, and back to the button that opened it on close (or the
+  // clip's first control, when that button is gone because the change was made)
+  const box = useRef<HTMLDivElement>(null);
+  const opener = useRef<string | null>(null);
+  const [focusTurn, setFocusTurn] = useState(0);
+  // whether the last send carried a reason, kept only while its outcome is unknown (no answer came): a try sent again is
+  // then that same body under the same key, whatever a read or the clock has done to the offer meanwhile (the link now
+  // the PMC's own, or their hour over). Any answer with a status, and opening the form again, let the offer decide again
+  // (#1409 r1, r2; audit notes/video/v2g-link/v2g2/r2/audit.md)
+  const [reasonSent, setReasonSent] = useState<boolean | null>(null);
+  // the form was closed because its offer left (the hour up): focus is given back only if it was lost with the form
+  const offerGone = useRef(false);
+  const open = (to: 'form' | 'off', from: string) => {
+    setSaid(null); setSeen(link?.id ?? null); setReasonSent(null);
+    setMode(to); opener.current = from; offerGone.current = false; setFocusTurn((n) => n + 1);
+  };
+  const [url, setUrl] = useState('');
+  const [label, setLabel] = useState('');
+  const [reason, setReason] = useState('');
+  const [said, setSaid] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const setKey = useRef<{ sig: string; key: string; id: string } | null>(null);
+  const endKey = useRef<{ sig: string; key: string; id: string } | null>(null);
+  const id = file.mediaId;
+  useEffect(() => {
+    const root = box.current;
+    if (!root || focusTurn === 0) return;
+    const at = (sel: string) => root.querySelector<HTMLElement>(sel);
+    if (mode === 'idle') {
+      if (offerGone.current) {
+        offerGone.current = false;
+        const now = document.activeElement;
+        if (now && now !== document.body && now.isConnected) return;
+      }
+      // the opener, else the link's own first control still there
+      (at(`[data-testid="${opener.current}"]`) ?? at('button, a'))?.focus();
+    } else at(mode === 'form' ? `[data-testid="sv-link-url-${id}"]` : `[data-testid="sv-link-reason-${id}"], [data-testid="sv-link-cancel-${id}"]`)?.focus();
+  }, [focusTurn, mode, id]);
+  const host = link ? videoLinkHost(link.url) : null;
+  const shown = link && (
+    <div className={styles.meta} data-testid={`sv-link-${id}`}>
+      {host ? (
+        <a
+          href={link.url} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" data-testid={`sv-link-open-${id}`}
+          aria-label={`${SV.fullVideo[lang]}, ${(host === 'drive' ? SV.hostDrive : SV.hostZoho)[lang]} (${SV.linkOpens[lang]})`}
+        >
+          {SV.fullVideo[lang]} ↗
+        </a>
+      ) : <span data-testid={`sv-link-text-${id}`}>{SV.fullVideo[lang]}: {link.url}</span>}
+      {host && <> · {(host === 'drive' ? SV.hostDrive : SV.hostZoho)[lang]}</>}
+      {link.label && <> · {link.label}</>}
+      <br />
+      {SV.linkAddedBy[lang]} {link.addedByName}{roleName(link.addedByRole, lang) ? ` · ${roleName(link.addedByRole, lang)}` : ''} · {visitTime(link.addedAt, lang)}
+    </div>
+  );
+  const told = said && <div className={styles.error} role="alert" data-testid={`sv-link-said-${id}`}>{said}</div>;
+  // a reason only where the change ends a link that is not the viewer's own within the hour
+  const needsReason = seen !== null && (reasonSent ?? offer?.reasonRequired === true);
+  // a closed form's change is over: a later try is a fresh one, under a fresh key, naming the link then on screen. A
+  // change whose answer was lost and that did land is then refused as stale (409) and the visit read again: never a
+  // second link (Stage 1 ruling B)
+  const close = () => {
+    setMode('idle'); setUrl(''); setLabel(''); setReason(''); setKey.current = null; endKey.current = null; setFocusTurn((n) => n + 1);
+  };
+  // the offer left while the form was open (the hour up, not the PMC): the form closes as Cancel does, its key with it,
+  // and focus goes to a control still on the clip (#1409 r1)
+  const formOpen = mode !== 'idle';
+  useEffect(() => {
+    if (offer === null && formOpen) { offerGone.current = true; close(); }
+  }, [offer === null, formOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+  const settle = (carried: boolean) => (out: LinkOutcome) => {
+    setSending(false);
+    setReasonSent(out?.unknown ? carried : null);
+    setSaid(out?.said ?? null);
+    if (out === null || out.stale) close();
+  };
+  if (!offer || mode === 'idle') {
+    return (
+      <div ref={box} style={{ display: 'contents' }}>
+        {shown}
+        {offer && (
+          <div className={styles.add}>
+            {link ? (
+              <>
+                <Button variant="light" disabled={busy} data-testid={`sv-link-change-${id}`} onClick={() => open('form', `sv-link-change-${id}`)}>{SV.linkChange[lang]}</Button>
+                <Button variant="dangerOutline" disabled={busy} data-testid={`sv-link-off-${id}`} onClick={() => open('off', `sv-link-off-${id}`)}>{SV.linkTakeOff[lang]}</Button>
+              </>
+            ) : (
+              <Button variant="light" disabled={busy} data-testid={`sv-link-add-${id}`} onClick={() => open('form', `sv-link-add-${id}`)}>{SV.linkAdd[lang]}</Button>
+            )}
+          </div>
+        )}
+        {told}
+      </div>
+    );
+  }
+  // the field the problem is about is marked invalid and described by it (G7)
+  const problemId = `sv-link-problem-text-${id}`;
+  const invalid = (field: string, on: string | null | undefined) =>
+    (on === field ? { 'aria-invalid': true, 'aria-describedby': problemId } : {});
+  const reasonField = (on: string | null | undefined) => needsReason && (
+    <input
+      aria-label={SV.linkReason[lang]} placeholder={SV.linkReason[lang]} className={styles.field} value={reason}
+      disabled={sending} onChange={(e) => setReason(e.target.value)} data-testid={`sv-link-reason-${id}`} {...invalid('reason', on)}
+    />
+  );
+  const problemLine = (problem: string | null) => problem && (
+    <div className={styles.meta} id={problemId} data-testid={`sv-link-problem-${id}`}>{linkRefusalWords(problem, lang)}</div>
+  );
+  // a blank reason is sent as one, so the server's own contract (copied) refuses it here
+  const typedReason = needsReason ? reason : undefined;
+  if (mode === 'off' && seen !== null) {
+    const body = { linkId: seen, ...(typedReason !== undefined ? { reason: typedReason } : {}) };
+    const checked = endSiteVisitFileLinkSchema.safeParse(body);
+    const issue = needsReason && reason.trim() !== '' && !checked.success ? checked.error.issues[0] : undefined;
+    const problem = issue?.message ?? null;
+    const takeOff = () => {
+      if (busy || sending || !checked.success) return;
+      const sent = keyFor(endKey, JSON.stringify(checked.data));
+      setSending(true);
+      setSaid(null);
+      void endLink(visitId, file, checked.data, sent.key).then(settle(typedReason !== undefined));
+    };
+    return (
+      <div ref={box} style={{ display: 'contents' }}>
+        {shown}
+        <form className={styles.add} data-testid={`sv-link-off-ask-${id}`} onSubmit={(e) => { e.preventDefault(); takeOff(); }}>
+          <div className={styles.meta}>{SV.linkTakeOffAsk[lang]}{offer.until ? ` ${SV.removeUntil[lang]} ${visitTime(offer.until, lang)}.` : ''}</div>
+          {reasonField(issue ? String(issue.path[0]) : null)}
+          {problemLine(problem)}
+          <Button type="submit" variant="danger" disabled={busy || sending || !checked.success} data-testid={`sv-link-off-yes-${id}`}>{SV.linkTakeOffYes[lang]}</Button>
+          <Button type="button" variant="ghost" disabled={sending} data-testid={`sv-link-cancel-${id}`} onClick={() => { close(); setSaid(null); }}>{SV.linkCancel[lang]}</Button>
+          {told}
+        </form>
+      </div>
+    );
+  }
+  // the server's own contract, copied byte for byte (queueContracts.ts), checks the body before it is sent
+  const draft = { url, label, replaces: seen, ...(typedReason !== undefined ? { reason: typedReason } : {}) };
+  const checked = setSiteVisitFileLinkSchema.safeParse({ id: '00000000-0000-4000-8000-000000000000', ...draft });
+  const issue = url.trim() === '' || checked.success ? undefined : checked.error.issues[0];
+  const problem = issue?.message ?? null;
+  const on = issue ? String(issue.path[0]) : null;
+  const save = () => {
+    if (busy || sending || !checked.success) return;
+    const { id: _unminted, ...parsed } = checked.data;
+    const sent = keyFor(setKey, JSON.stringify(parsed));
+    setSending(true);
+    setSaid(null);
+    void setLink(visitId, file, { ...parsed, id: sent.id }, sent.key).then(settle(typedReason !== undefined));
+  };
+  return (
+    <div ref={box} style={{ display: 'contents' }}>
+      {shown}
+      <form className={styles.add} data-testid={`sv-link-form-${id}`} onSubmit={(e) => { e.preventDefault(); save(); }}>
+        <input
+          aria-label={SV.linkUrl[lang]} placeholder={SV.linkUrl[lang]} className={styles.field} value={url} inputMode="url"
+          disabled={sending} onChange={(e) => setUrl(e.target.value)} data-testid={`sv-link-url-${id}`} {...invalid('url', on)}
+        />
+        <input
+          aria-label={SV.linkLabel[lang]} placeholder={SV.linkLabel[lang]} className={styles.field} value={label}
+          disabled={sending} onChange={(e) => setLabel(e.target.value)} data-testid={`sv-link-label-${id}`} {...invalid('label', on)}
+        />
+        {reasonField(on)}
+        <div className={styles.meta}>{SV.linkHint[lang]}</div>
+        {problemLine(problem)}
+        <Button type="submit" variant="ink" disabled={busy || sending || !checked.success} data-testid={`sv-link-save-${id}`}>{SV.linkSave[lang]}</Button>
+        <Button type="button" variant="ghost" disabled={sending} data-testid={`sv-link-cancel-${id}`} onClick={() => { close(); setSaid(null); }}>{SV.linkCancel[lang]}</Button>
+        {told}
+      </form>
     </div>
   );
 }
@@ -473,6 +677,9 @@ function VisitCard({ visit: v, lang, role, me, placeOptions, sv, members, teamFa
                 <Button variant="light" disabled={sv.busy} data-testid={`sv-markup-${f.mediaId}`} onClick={() => { void sv.openMarkup(v.id, f.mediaId); }}>
                   {SV.markUp[lang]}
                 </Button>
+              )}
+              {f.mime.startsWith('video/') && (
+                <FileLink visitId={v.id} file={f} lang={lang} pmc={role === 'pmc'} busy={sv.busy} setLink={sv.setFileLink} endLink={sv.endFileLink} />
               )}
               <RemoveFile file={f} lang={lang} pmc={role === 'pmc'} busy={sv.busy} remove={sv.removeFile} />
             </div>
