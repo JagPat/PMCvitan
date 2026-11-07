@@ -558,6 +558,7 @@ describe('#1118 U7a L1 — Hub project link (live PG + stub Hub)', () => {
         data: {
           fileId: 'f-1', fileNo: 'A-101', toStage: 'CONSTRUCTION', versionId: 'v-1',
           project: { id: 16, links: [{ app: 'pmc', externalId: p, url: 'https://pms.test' }] },
+          office: { id: '7' },
         },
       }));
       const id = `evt_${randomUUID().replace(/-/g, '')}`;
