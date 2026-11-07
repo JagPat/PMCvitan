@@ -100,6 +100,8 @@ import {
 import { createQueueKeyGuard, queueActIdent, type QueueWrite } from '@/store/queueKeyGuard';
 import { isDone } from '@/store/queueLedger';
 import { forgetKeptMemo, keptAnywhere, readKeptElsewhere, rememberProjectName, type KeptProject } from '@/store/keptElsewhere';
+import { isStoredGenericOp, isStoredVisitOp, normalizeGeneric, putBackOf } from '@/store/loadTakes';
+import { closeKeptSignals, listenRowWrites } from '@/data/keptSignal';
 import { keepUnsentLocked, writeQueueKey } from '@/store/queueKeyLock';
 import { QW, qwFill } from '@/lib/queueWords';
 import { queueStrip, type UnreadableKey } from '@/store/queueUnreadable';
@@ -109,12 +111,12 @@ import { readLedgerQueue, type QueueScopes } from '@/data/storedActs';
 import { EVIDENCE_READ_WAIT_MS, deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence, type EvidenceEntry } from '@/data/evidenceStore';
 import { evidenceShortfall, judgeChecklist, type PendingCapture } from '@/lib/checklistRecordings';
 
-import { clearVisitPhotoStart, clearVisitPoster, deleteVisitPhoto, failVisitPhotosOn, forgetRemovedVisitPhoto, listVisitPhotos, moveVisitPhotos, posterLapsed, posterWaits, removedVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
+import { clearVisitPhotoStart, clearVisitPoster, deleteVisitPhoto, failVisitPhotosOn, forgetRemovedVisitPhoto, listVisitPhotos, moveVisitPhotos, posterLapsed, REMOVED_VISIT_PHOTO_PREFIX, removedVisitPhotos, storageAvailable, visitPhotoScope, visitsHeldByPhotos, VisitPhotoUnreadable, withinWait, type SiteVisitAddFileOp, type VisitPhotoRow } from '@/data/visitPhotoStore';
 import { parseLocation } from '@/lib/screens';
 import { setClampedTimeout, type ClampedTimer } from '@/lib/clampedTimer';
-import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
-import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
-import { COMMERCIAL_OP_PERMISSION, advanceCoalesceKey, budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, approveCoalesceKey, payCoalesceKey, reverseCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType } from '@/lib/materialsKeys';
+import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, bindSig } from '@/lib/labourKeys';
+import { COMMERCIAL_OP_PERMISSION, advanceCoalesceKey, budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, approveCoalesceKey, payCoalesceKey, reverseCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead } from '@/lib/commercialKeys';
 import { checkinClock, todayCivil } from '@/lib/civilDate';
 import { hasStamp, type CaptureStamp } from '@/lib/captureStamp';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
@@ -1336,24 +1338,6 @@ const outstandingFrom = (
  * Mirroring the slot back before it is replaced keeps the list the single source the switch reads
  * from, rather than adding a second per-inspection record for two fields.
  */
-/** A stable, synchronous digest of `text` (two seeded 53-bit cyrb53 passes, hex): the same text gives the same
- *  value in every tab and on every load. An identity, not a security boundary. */
-function contentHash(text: string): string {
-  const pass = (seed: number): string => {
-    let h1 = 0xdeadbeef ^ seed;
-    let h2 = 0x41c6ce57 ^ seed;
-    for (let i = 0; i < text.length; i++) {
-      const c = text.charCodeAt(i);
-      h1 = Math.imul(h1 ^ c, 2654435761);
-      h2 = Math.imul(h2 ^ c, 1597334677);
-    }
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0');
-  };
-  return `${pass(1)}${pass(2)}`;
-}
-
 function parkEditSlot(s: AppState): void {
   const c = s.checklist;
   if (!c) return;
@@ -2004,26 +1988,6 @@ export const useStore = create<Store>()(
       } catch {
         /* storage unavailable — the in-session draft still works */
       }
-    };
-    /** A queued photo upload from an earlier release has no `clientKey`; give it one (#482), so each replay of it
-     *  is the same photo on the server. Ops that already carry a key, and every other op, pass unchanged.
-     *  The key is DERIVED from the queue's scope, the upload's own content and its place among identical
-     *  uploads, never minted: two tabs hydrating the same queue (or a reload whose write-back failed) reach
-     *  the same key, so their replays are still one photo. */
-    const keyQueuedPhotoUploads = (ops: OutboxOp[], scope: string): { ops: OutboxOp[]; changed: boolean } => {
-      let changed = false;
-      const seen = new Map<string, number>();
-      const keyed = ops.map((o) => {
-        if (o.t !== 'uploadMedia' || o.input.clientKey) return o;
-        changed = true;
-        const content = `${scope}\n${JSON.stringify(o.input)}`;
-        const nth = seen.get(content) ?? 0;
-        seen.set(content, nth + 1);
-        const keyedOp = { ...o, input: { ...o.input, clientKey: `legacy-photo-${contentHash(content)}-${nth}` } };
-        queueKeys.adopt(scope, o, keyedOp); // L2b (G1): the keyed photo is the same occurrence, in the same place
-        return keyedOp;
-      });
-      return { ops: keyed, changed };
     };
     /** Land the SERVER's log on the store with the engineer's unsent draft laid over it; the draft
      *  that no longer applies (the log was sent, a new day replaced it, or there is no log) is dropped
@@ -2982,14 +2946,7 @@ export const useStore = create<Store>()(
       }).catch(() => undefined); // never rejects: its callers do not wait on it, and the load's wait only needs it settled
     };
     const siteVisitKeyOf = (key: string): string => key.replace(/^vitan\.outbox\./, 'vitan.siteVisitQueue.');
-    /** SV2 (#792): a visit photo's act is never stored here. Its one record is its `visitPhotoStore` row (act, bytes,
-     *  and the start it waits on), and the act is rebuilt from that row on every load (`reconcileVisitPhotos`). So a
-     *  release before it, which replays every `siteVisit…` act it finds and has no case for a photo, never meets one,
-     *  and this lane is stored exactly as before (Codex 4320122193, 4320404449, 4320404441). */
-    const isStoredVisitOp = (o: OutboxOp): boolean => isSiteVisitOp(o) && o.t !== 'siteVisitAddFile';
-    /** #917: a site photo's op is never stored either: its row is its record, and the op is rebuilt from it on every load
-     *  and flush (`reconcileSitePhotos`). So no release, one before #917 or one that knows no such kind, ever reads one. */
-    const isStoredGenericOp = (o: OutboxOp): boolean => !isSiteVisitOp(o) && o.t !== 'uploadSitePhoto';
+    // the two keys' take rules (`isStoredVisitOp`, `isStoredGenericOp`) are shared with the kept list: loadTakes.ts (#1397)
     /** the release drains asked so far, settled once each has asked its flush or found the app offline (tests wait on it,
      *  `_queueReleased`, #1134 r1 4376641821) */
     let releaseDrains: Promise<void> = Promise.resolve();
@@ -3383,21 +3340,21 @@ export const useStore = create<Store>()(
       set((s) => {
         const queued = new Set(s.outbox.filter(isSiteVisitOp).map((o) => o.idempotencyKey));
         for (const row of rows) {
-          if (removed.has(row.clientKey)) continue;
-          if (posterWaits(row)) {
-            if (!queued.has(row.op.idempotencyKey)) {
-              s.outbox.push(row.op);
-              queued.add(row.op.idempotencyKey);
-              posters.push(row.op);
+          // which acts go back, by the rule the kept list shares (`putBackOf`, #1397): none for a removed file, a
+          // refused one, or a filed one with no still frame waiting; `queued` takes what goes back
+          const back = putBackOf(row, queued, removed);
+          if (!back) continue;
+          if (back.poster) {
+            if (back.op) {
+              s.outbox.push(back.op);
+              posters.push(back.op);
             }
             continue;
           }
-          if (row.state !== 'queued') continue;
           // the start it needs, when the queue lost it, goes back ahead of it even when the photo's own act is still
           // queued (one kept just after its start was settled, then queued alone: Codex 4321998492). A start the
           // server already has answers its replay with the same visit
-          const start = row.start && !queued.has(row.start.idempotencyKey) ? row.start : null;
-          const present = queued.has(row.op.idempotencyKey);
+          const { start, present } = back;
           if (!start && present) continue;
           const visitId = row.op.visitId;
           let at: number;
@@ -3419,15 +3376,10 @@ export const useStore = create<Store>()(
             const newer = s.outbox.findIndex((o, k) => k >= lo && k < hi && o.t === 'siteVisitAddFile' && takenAt(o) > row.createdAt);
             at = newer >= 0 ? newer : hi;
           }
+          // (`putBackOf` has already added both to `queued`)
           const put: OutboxOp[] = [];
-          if (start) {
-            put.push(start);
-            queued.add(start.idempotencyKey);
-          }
-          if (!present) {
-            put.push(row.op);
-            queued.add(row.op.idempotencyKey);
-          }
+          if (start) put.push(start);
+          if (!present) put.push(row.op);
           s.outbox.splice(at, 0, ...put);
           rebuilt = true;
         }
@@ -4194,6 +4146,7 @@ export const useStore = create<Store>()(
         s.keptElsewhereAny = false;
         s.keptElsewhere = null;
         forgetKeptMemo();
+        closeKeptSignals();
         s.pendingEvidenceKeys = null;
         s.pendingEvidenceRows = null;
         // Ending the session ends the scope (Codex gate finding 6): the signed-out
@@ -5336,6 +5289,9 @@ export const useStore = create<Store>()(
       const seq = ++keptCheckSeq;
       const read = keptReadFor(get(), evidenceScope());
       if (!read) return;
+      // #1397 (Codex 4499008032): another tab's row write for this person (evidence, site or visit photos) fires no
+      // storage event; it is heard on the person's own channel, and checked again only while they are signed in
+      listenRowWrites(read.sub, () => { if (evidenceScope() === read.sub) get().keptMayHaveChanged(); });
       const any = await keptAnywhere(read.storage, read.sub, read.held).catch(() => null);
       // adopted only by the newest check, for the session, memberships and project it was read for
       if (any === null || seq !== keptCheckSeq || !keptReadHolds(get(), read)) return;
@@ -5346,7 +5302,9 @@ export const useStore = create<Store>()(
         // the person's own queue keys and their made records only: another person's writes never start a check
         const sub = evidenceScope();
         if (sub === 'anon') return;
-        const own = [`vitan.outbox.${sub}.`, `vitan.siteVisitQueue.${sub}.`].some((p) => key.startsWith(p) || key.startsWith(`vitan.made.${p}`));
+        // and the records of files the server removed (#1397, Codex 4499008047: such a file is no longer kept)
+        const own = [`vitan.outbox.${sub}.`, `vitan.siteVisitQueue.${sub}.`].some((p) => key.startsWith(p) || key.startsWith(`vitan.made.${p}`))
+          || key.startsWith(`${REMOVED_VISIT_PHOTO_PREFIX}${sub}.`);
         if (!own) return;
       }
       if (keptChecking) { keptCheckAgain = true; return; }
@@ -8200,25 +8158,24 @@ export const useStore = create<Store>()(
           // a legacy queued op would not coalesce and could execute a SECOND time (double reserve). Derive
           // `coalesceKey` from the legacy `idempotencyKey` (same business-coordinate format), preserve the
           // `idempotencyKey` byte-for-byte (replay stays exactly-once), and drop malformed materials ops.
-          const materialsNorm = normalizeMaterialsOutbox(Array.isArray(parsed) ? (parsed as OutboxOp[]) : []);
           // Phase 4 Task 6 (§J) — labour ops were born two-keyed, so this only DROPS malformed rows
           // (a labour op missing either key must never replay or leak `undefined` into labourPending).
-          const labourNorm = normalizeLabourOutbox(materialsNorm.ops);
           // Phase 5 Task 7B-iii-a (§M) — commercial ops were likewise born two-keyed and no
           // earlier format was ever persisted, so this is a GUARD (drop a malformed row), not a
           // migration: there is no legacy key to derive one from, and inventing an identity for a
           // command whose exactly-once guarantee rests on it would be worse than dropping it.
-          const commercialNorm = normalizeCommercialOutbox(labourNorm.ops);
           // #482 — a photo queued by an earlier release carries no key, so a replay whose reply was lost would
           // store it twice. It gets one key now, persisted below, so every later replay is the same photo.
-          const photosNorm = keyQueuedPhotoUploads(commercialNorm.ops, outboxKey());
+          // #1397: one shared call (`normalizeGeneric`: materials, labour, commercial, then the legacy photo keys, in that
+          // order), the same the kept list takes the key's acts through
+          const photosNorm = normalizeGeneric(Array.isArray(parsed) ? (parsed as OutboxOp[]) : [], outboxKey(), (was, keyed) => queueKeys.adopt(outboxKey(), was, keyed));
           // step B2f-1: the made record a write kept while it waited for its lock holds a photo under the key it got here,
           // while the stored queue may still hold it with none (that write not yet run): once keyed, the same act is
           // taken once (#1099 r2)
           const keyedOnce = new Set<string>();
           // L2b: only an identity no other act shares is one act; two identical unkeyed acts are two occurrences (the ledger's)
           photosNorm.ops = photosNorm.ops.filter((o) => { const i = queueActIdent(o); if (i.startsWith('json:')) return true; if (keyedOnce.has(i)) { queueKeys.merge(outboxKey(), o); return false; } keyedOnce.add(i); return true; });
-          const changed = materialsNorm.changed || labourNorm.changed || commercialNorm.changed || photosNorm.changed;
+          const changed = photosNorm.changed;
           // persist the migrated queue back to the SAME scoped key so the one-time normalization is durable;
           // a write that fails (storage full) keeps the queue in memory, and the next load derives the same keys
           if (changed || adopted.length > 0) {

@@ -1,3 +1,4 @@
+import { afterRowWrite } from './keptSignal';
 import { setClampedTimeout, type ClampedTimer } from '@/lib/clampedTimer';
 /**
  * evidenceStore — durable OFFLINE storage for inspection evidence BYTES (Phase 1
@@ -91,7 +92,7 @@ export function putEvidence(entry: Omit<EvidenceEntry, 'key' | 'status' | 'creat
     status: 'pending',
     createdAt: entry.createdAt ?? Date.now(),
   };
-  return tx('readwrite', (s) => s.put(row)).then(() => undefined);
+  return afterRowWrite(entry.userScope, tx('readwrite', (s) => s.put(row)).then(() => undefined));
 }
 
 export function getEvidence(userScope: string, projectId: string, clientKey: string): Promise<EvidenceEntry | null> {
@@ -100,23 +101,27 @@ export function getEvidence(userScope: string, projectId: string, clientKey: str
 
 /** Delete bytes — ONLY on confirmed server persistence or the user's explicit decision. */
 export function deleteEvidence(userScope: string, projectId: string, clientKey: string): Promise<void> {
-  return tx('readwrite', (s) => s.delete(evidenceKey(userScope, projectId, clientKey))).then(() => undefined);
+  return afterRowWrite(userScope, tx('readwrite', (s) => s.delete(evidenceKey(userScope, projectId, clientKey))).then(() => undefined));
 }
 
 /** A terminal, non-dedupe rejection: the bytes are KEPT, flagged for the user's Retry/Delete. */
-export async function markEvidenceFailed(userScope: string, projectId: string, clientKey: string, reason: string): Promise<void> {
-  const entry = await getEvidence(userScope, projectId, clientKey);
-  if (!entry) return;
-  await tx('readwrite', (s) => s.put({ ...entry, status: 'failed', failReason: reason }));
+export function markEvidenceFailed(userScope: string, projectId: string, clientKey: string, reason: string): Promise<void> {
+  return afterRowWrite(userScope, (async () => {
+    const entry = await getEvidence(userScope, projectId, clientKey);
+    if (!entry) return;
+    await tx('readwrite', (s) => s.put({ ...entry, status: 'failed', failReason: reason }));
+  })());
 }
 
 /** The user chose Retry — back to pending with the SAME clientKey (server dedupes). */
-export async function retryEvidence(userScope: string, projectId: string, clientKey: string): Promise<EvidenceEntry | null> {
-  const entry = await getEvidence(userScope, projectId, clientKey);
-  if (!entry) return null;
-  const revived: EvidenceEntry = { ...entry, status: 'pending', failReason: undefined };
-  await tx('readwrite', (s) => s.put(revived));
-  return revived;
+export function retryEvidence(userScope: string, projectId: string, clientKey: string): Promise<EvidenceEntry | null> {
+  return afterRowWrite(userScope, (async () => {
+    const entry = await getEvidence(userScope, projectId, clientKey);
+    if (!entry) return null;
+    const revived: EvidenceEntry = { ...entry, status: 'pending', failReason: undefined };
+    await tx('readwrite', (s) => s.put(revived));
+    return revived;
+  })());
 }
 
 /** Every entry for this user+project scope (pending AND failed), oldest first. */
