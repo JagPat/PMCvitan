@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEv
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, responsibleSaveRunning } from '@/store/store';
 import { can, responsibleMemberLabels as L } from '@vitan/shared';
+import { API_BASE } from '@/data/apiGateway';
 
 /**
  * The inspection a picker names (Stage 1, 6 Nov; Codex #1365 4490108387): ONE name per inspection lineage, held on its
@@ -41,6 +42,9 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   const role = useStore((s) => s.role);
   const lang = useStore((s) => s.lang);
   const online = useStore((s) => s.online);
+  // A choice needs the server (Codex #1403 4500095675): with no API (the local demo, `VITE_API_URL` unset) there is none
+  // to send it to, so the picker is disabled and says so, as when offline, and reads nothing.
+  const connected = online && Boolean(API_BASE);
   const members = useStore(useShallow((s) => s.members));
   const named = useStore((s) => s.responsibleMembers.find((r) => r.inspectionId === inspectionId)?.memberId ?? null);
   const setResponsibleMember = useStore((s) => s.setResponsibleMember);
@@ -72,7 +76,15 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   // the naming and scope the picker shows NOW, for a read's completion to check against (Codex #1365 r3)
   const seenRef = useRef(seenNow);
   seenRef.current = seenNow;
-  const [reading, setReading] = useState(false);
+  // Busy belongs to the target the read was made for (Codex #1403 4500095659): the naming in the scope shown, `seenNow`.
+  // When the picker is handed another inspection or scope while a read is out, the new target is not busy with the old
+  // read, so its own read is not blocked by one that stalls; the old read's answer still settles nothing here (below).
+  const [readingFor, setReadingFor] = useState<string | null>(null);
+  const reading = readingFor === seenNow;
+  // Counts the phone coming back online (Codex #1403 4500095669). A read that started before the latest reconnect and
+  // fails after it records no failure: the reconnect already forgot failures, and the read it would block is the retry
+  // the reconnect promised. A failure with no reconnect in between is recorded as before (no automatic retry).
+  const reconnects = useRef(0);
   const live = useRef(true);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const id = useId();
@@ -86,30 +98,35 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   const pending = named !== null && !known && readFor !== named;
 
   // never read while offline (it can only fail); the shown name is the server's either way
-  const readTeam = (opts?: { after?: boolean }) => {
-    if (!allowed || !online || reading) return;
+  const readTeam = (opts?: { after?: boolean }): Promise<unknown> | undefined => {
+    if (!allowed || !connected || reading) return undefined;
     const asked = named;
     const askedIn = seenNow;
-    setReading(true);
-    void readTeamShared(opts).then((ok) => {
+    const startedAt = reconnects.current;
+    setReadingFor(askedIn);
+    return readTeamShared(opts).then((ok) => {
       if (!live.current) return;
-      setReading(false);
+      // only this read's own busy mark is cleared: a read made since for another target keeps its own
+      setReadingFor((cur) => (cur === askedIn ? null : cur));
       // A read answers only the naming and scope it was made for (Codex #1365 r3): one that settles after the naming or
       // the scope generation moved (a failed switch keeps the naming but moves the generation) settles nothing, and the
       // hold stays until a read made for what is shown now answers.
       if (seenRef.current !== askedIn) return;
-      if (ok) { setReadFor(asked); setFailedFor(undefined); } else setFailedFor(asked);
+      if (ok) { setReadFor(asked); setFailedFor(undefined); } else if (reconnects.current === startedAt) setFailedFor(asked);
     });
   };
   // a pending name is read for once on its own; after a failure only the user opening the picker, or the phone coming
   // back online, asks again (no automatic retry). The failure is forgotten when the phone comes BACK online (Codex #1365
   // r3), not when it goes offline: a read in flight when the connection dropped fails after that, and must not leave the
   // hold unread once the phone is online again.
-  useEffect(() => { if (online) setFailedFor(undefined); }, [online]);
+  useEffect(() => { if (online) { reconnects.current += 1; setFailedFor(undefined); } }, [online]);
+  // A picker handed another target while its read for the old one is out (`readingFor` set, not this target) asks for a
+  // read that starts AFTER that one (Codex #1403 4500095659 with #1365 r3): the read out was made before this target was
+  // shown, so it may predate this naming and must not settle it. With nothing of its own out, it shares any read in flight.
   useEffect(() => {
-    if (pending && failedFor !== named) readTeam();
+    if (pending && failedFor !== named) readTeam(readingFor !== null ? { after: true } : undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pending, named, failedFor, online, reading]);
+  }, [pending, named, failedFor, connected, reading]);
   // Every opening reads the list again (Codex #1361 r1): a member added, removed or re-roled in another tab after an
   // earlier read sends no snapshot event, so only a fresh read offers them as they stand now. The first read, and a read
   // after a failure, hold the picker busy; later ones refresh in the background under the same shared read.
@@ -140,17 +157,19 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
     onOpen();
   };
   const onOpen = () => {
-    if (!allowed || !online) return;
+    if (!allowed || !connected) return;
     // The picker's own first read (and a read after a failure) holds its busy state. A reopening while that read is out
     // still asks for a read that starts after it (Codex #1365 4490532251): the read out may have been answered before a
     // change made elsewhere. Either way the read is the shared one, chained once after a read in flight.
-    if (!reading && (readFor === undefined || failedFor !== undefined)) readTeam({ after: true });
-    else void readTeamShared({ after: true });
+    const team = !reading && (readFor === undefined || failedFor !== undefined) ? readTeam({ after: true }) : readTeamShared({ after: true });
     // Every opening, the first too (Codex #1365 4490108371), reads the shown name (the server's) again: a member's
     // standing change sends no snapshot event, so a member re-roled away and back is no longer the one named (Codex #1361
     // r2). A read in flight gets one rerun queued behind it, shared by every opening until it starts, so opening many
     // pickers makes one more read, not one each.
-    joinSnapshotRead();
+    // The project is read only AFTER the opening's team read settles (Codex #1403 4500095681), so the name it serves is
+    // never older than the list: read side by side, a member removed and re-added between the two could be shown by an
+    // old name and offered by a fresh list, a naming the server no longer serves.
+    void Promise.resolve(team).finally(() => { if (live.current) joinSnapshotRead(); });
   };
 
   if (!allowed) return null;
@@ -161,7 +180,7 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
   // An opening's read never disables the select (Codex #1365 r2): disabling it on the tap that opens it would stop the
   // native list from opening. The list fills in when the read lands, and a choice from a list that is out of date is
   // checked by the server (a 400 re-reads it). Only a held name ("…") being read for keeps it disabled, as before.
-  const disabled = saving || !online || (reading && pending);
+  const disabled = saving || !connected || (reading && pending);
 
   const choose = (next: string) => {
     const memberId = next === '' ? null : next;
@@ -193,7 +212,7 @@ export function ResponsiblePicker({ inspectionId, testId }: { inspectionId: stri
         ))}
       </select>
       <div id={`${id}-hint`} style={hint} data-testid={`${testId}-hint`}>
-        {online ? L.hint[lang] : L.offline[lang]}
+        {connected ? L.hint[lang] : L.offline[lang]}
       </div>
     </div>
   );

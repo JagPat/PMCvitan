@@ -520,6 +520,99 @@ describe('"Who fixes this?" on the PMC review card (#482 RM-w1)', () => {
     expect(listMembers).toHaveBeenCalledTimes(2);
   });
 
+  it('a read that started before the phone went offline and came back, failing after that, is asked again (Codex #1403 4500095669)', async () => {
+    const settle: Array<{ ok: (m: ProjectMember[]) => void; fail: (e: unknown) => void }> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((ok, fail) => { settle.push({ ok, fail }); }));
+    const { useStore, id, select } = await openReview({ listMembers });
+    act(() => { useStore.setState({ responsibleMembers: [{ inspectionId: id, memberId: 'u-zed' }] }); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    // offline and back while the read is out; it fails only after the phone is online again
+    act(() => { useStore.setState({ online: false }); });
+    act(() => { useStore.setState({ online: true }); });
+    await act(async () => { settle[0]!.fail(Object.assign(new Error('Failed to fetch'), { status: 0 })); });
+    // the reconnect promised a read: it is made, not swallowed by the late failure
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    expect(select().selectedOptions[0]!.textContent).toBe('…');
+    await act(async () => { settle[1]!.ok(TEAM); });
+    await waitFor(() => expect(select().selectedOptions[0]!.textContent).toBe('Zed Contractor'));
+    expect(listMembers).toHaveBeenCalledTimes(2);
+  });
+
+  it('a read that fails with no reconnect since it started is recorded: held as "…" and not retried on its own (Codex #1403 4500095669 guard)', async () => {
+    const settle: Array<{ ok: (m: ProjectMember[]) => void; fail: (e: unknown) => void }> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((ok, fail) => { settle.push({ ok, fail }); }));
+    const { useStore, id, select } = await openReview({ listMembers });
+    act(() => { useStore.setState({ responsibleMembers: [{ inspectionId: id, memberId: 'u-zed' }] }); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    await act(async () => { settle[0]!.fail(Object.assign(new Error('Failed to fetch'), { status: 0 })); });
+    await waitFor(() => expect(select().getAttribute('aria-busy')).toBe('false'));
+    await act(async () => { await Promise.resolve(); });
+    expect(listMembers).toHaveBeenCalledTimes(1);
+    expect(select().selectedOptions[0]!.textContent).toBe('…');
+    // opening the picker asks again, as before
+    act(() => { fireEvent.focus(select()); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+  });
+
+  it('a new scope is not held busy by a read the old one left out: its own read runs, and the old answer changes nothing (Codex #1403 4500095659)', async () => {
+    const answers: Array<(m: ProjectMember[]) => void> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answers.push(r); }));
+    const { useStore, id, select } = await openReview({ listMembers });
+    act(() => { useStore.setState({ responsibleMembers: [{ inspectionId: id, memberId: 'u-new' }] }); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    // the scope moves while the first read stalls: the picker's read for the scope now starts at once
+    act(() => { useStore.setState({ projectScopeGeneration: 2 }); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+    await act(async () => { answers[1]!([...TEAM, member('u-new', 'Neha New', 'contractor')]); });
+    await waitFor(() => expect(select().selectedOptions[0]!.textContent).toBe('Neha New'));
+    expect(select().disabled).toBe(false);
+    // the stalled read for the old scope settles last, with a list that lacks the member: nothing here changes
+    await act(async () => { answers[0]!(TEAM); });
+    await act(async () => { await Promise.resolve(); });
+    expect(select().selectedOptions[0]!.textContent).toBe('Neha New');
+    expect(select().disabled).toBe(false);
+    expect(select().getAttribute('aria-busy')).toBe('false');
+    expect(useStore.getState().members.some((m) => m.userId === 'u-new')).toBe(true);
+    expect(listMembers).toHaveBeenCalledTimes(2);
+  });
+
+  it('an opening reads the project only after its team read settles, so the name shown is never older than the list (Codex #1403 4500095681)', async () => {
+    const answers: Array<(m: ProjectMember[]) => void> = [];
+    const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answers.push(r); }));
+    const snapshotRead = vi.fn(() => new Promise(() => {}));
+    const { select } = await openReview({ listMembers, snapshot: snapshotRead });
+    const before = snapshotRead.mock.calls.length;
+    act(() => { fireEvent.focus(select()); });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    await act(async () => { await Promise.resolve(); });
+    expect(snapshotRead.mock.calls.length).toBe(before);
+    await act(async () => { answers[0]!(TEAM); });
+    await waitFor(() => expect(snapshotRead.mock.calls.length).toBe(before + 1));
+  });
+
+  it('with no API (the local demo) it is disabled, says why, and reads nothing (Codex #1403 4500095675)', async () => {
+    vi.stubEnv('VITE_API_URL', '');
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    useStore.setState(getInitialState());
+    const reviews = useStore.getState().reviews;
+    useStore.setState({
+      activeProjectId: 'qa', projectScopeGeneration: 1, projectLoadState: 'ready', role: 'pmc', sessionUserId: 'u-pmc', short: 'QA',
+      lang: 'en', screen: 'inspect-review', online: true, outbox: [], syncQueue: [], reviews, activeReviewId: REVIEW_ID,
+      openChecklists: [], responsibleMembers: [{ inspectionId: REVIEW_ID, memberId: 'u-zed' }], members: [],
+    } as never);
+    const listMembers = vi.fn(async () => TEAM);
+    useStore.getState()._setGateway({ snapshot: vi.fn(() => new Promise(() => {})), listMembers } as never);
+    const { InspectionReviewScreen } = await import('@/screens/InspectionReviewScreen');
+    const view = render(<InspectionReviewScreen />);
+    const select = view.getByTestId(`review-responsible-${REVIEW_ID}-select`) as HTMLSelectElement;
+    expect(select.disabled).toBe(true);
+    expect(view.getByTestId(`review-responsible-${REVIEW_ID}-hint`).textContent).toBe('Choosing who fixes this needs a connection.');
+    act(() => { fireEvent.focus(select); });
+    await act(async () => { await Promise.resolve(); });
+    expect(listMembers).not.toHaveBeenCalled();
+  });
+
   it('a focused select opened from the keyboard reads the team again; tab then Space is one opening (Codex #1365 r3)', async () => {
     const answers: Array<(m: ProjectMember[]) => void> = [];
     const listMembers = vi.fn(() => new Promise<ProjectMember[]>((r) => { answers.push(r); }));
