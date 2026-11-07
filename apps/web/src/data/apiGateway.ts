@@ -123,6 +123,9 @@ export interface ApiSnapshot {
   /** #482 site photos — the viewer's own site photos still in their delete hour that `photos` (the newest window) leaves
    *  out. Absent from a server older than the #1011 replacement. */
   myDeletablePhotos?: Photo[];
+  /** #482 "Who fixes this?" — for the PMC and the engineer, who is named to fix each inspection that names a member who
+   *  still stands (others get []). Absent from a server older than #1297. */
+  responsibleMembers?: Array<{ inspectionId: string; memberId: string }>;
   /** all material deliveries across the project, with their place — the Site Map's "materials here" */
   materials: Material[];
 }
@@ -571,6 +574,11 @@ export const POSTER_SEND_WAIT_MS = 30_000;
  *  connection never leaves Remove busy for as long as it stays open. */
 export const REMOVE_VISIT_FILE_WAIT_MS = 20_000;
 
+/** #482 RM-w1 (Codex #1403 4500171686) — how long the project's team read may take before it is given up. A read that
+ *  gets no answer by then fails, so a "Who fixes this?" picker held busy on it is released: opening the picker or the
+ *  phone coming back online asks again. Only this read is bounded; the member commands and the naming save are not. */
+export const TEAM_READ_TIMEOUT_MS = 15_000;
+
 /** A signal that aborts with a TimeoutError after `ms`. Browsers without AbortSignal.timeout (Mobile Safari
  *  before 16.4) get the same behaviour from a controller and a timer, so the read still fails instead of throwing. */
 export function timeoutSignal(ms: number): AbortSignal {
@@ -796,7 +804,7 @@ export class ApiGateway {
 
   /** List the active project's team. */
   listMembers(): Promise<ProjectMember[]> {
-    return this.req(`/projects/${this.projectId}/members`);
+    return this.req(`/projects/${this.projectId}/members`, { signal: timeoutSignal(TEAM_READ_TIMEOUT_MS) });
   }
   // ── Phase 6 task 4d-ii-b / B6 — the three member commands carry a client `Idempotency-Key` (4d-ii-a / A3b
   //    made them ledger commands and let the server SYNTHESIZE a key for a tab that sends none, so a keyless
@@ -901,6 +909,15 @@ export class ApiGateway {
     return this.req(`/projects/${this.projectId}/phases/${phaseId}`, {
       method: 'DELETE',
       ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+    });
+  }
+  /** #482 "Who fixes this?" (RM-w1) — name the contractor or consultant member who fixes an inspection's failed work, or
+   *  nobody (`null`). PMC and engineer. ONLINE ONLY: not an outbox kind; keyed so a retried send replays, never repeats. */
+  setResponsibleMember(inspectionId: string, memberId: string | null, idempotencyKey: string): Promise<ApiSnapshot> {
+    return this.req<ApiSnapshot>(`/projects/${this.projectId}/inspections/${encodeURIComponent(inspectionId)}/responsible`, {
+      method: 'PUT',
+      body: JSON.stringify({ memberId }),
+      ...keyHeader(idempotencyKey),
     });
   }
   /** Issue a stage checklist (PMC) — becomes the engineer's current field checklist. */

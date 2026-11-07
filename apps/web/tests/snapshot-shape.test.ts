@@ -47,6 +47,8 @@ const SNAPSHOT_KEYS = [
   // #482 site photos: the viewer's own photos in their delete hour past the photos window
   'myDeletablePhotos',
   'materials',
+  // #482 site photos: who fixes each inspection (RM-a server key; the web reads it from RM-w1)
+  'responsibleMembers',
 ].sort();
 
 // The sub-keys of the inline `project` object (ProjectMetaDto / ApiSnapshot.project); #1118 U7a's optional `hubLink`
