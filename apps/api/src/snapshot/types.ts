@@ -409,6 +409,11 @@ export interface ProofPhotoDto {
   /** the failed item it shows fixed, and that item's inspection */
   inspectionId: string;
   inspectionItemId: string;
+  /** U-4a — that item's name, as the inspection holds it (absent only if the item is not found, impossible on stored data) */
+  itemName?: string;
+  /** U-4a — the root of that inspection's lineage (`lineageRootId` on the checklist and review rows); the proof's own
+   *  `inspectionId` when the walk finds nothing more */
+  lineageRootId: string;
   /** the name of the member who added it (absent when that account is gone) */
   by?: string;
   /** their role on this project */
