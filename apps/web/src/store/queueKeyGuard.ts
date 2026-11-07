@@ -737,17 +737,27 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
           return true;
         });
         // a done fact for each discarded act with an identity of its own, first: another tab that still holds one in
-        // memory settles it unsent at its flush (`settleDone`), never sends it (Stage 1 G5). If one cannot be written,
-        // those written go again and nothing else is. Once the marks are written the act is settled here whatever the
-        // write does (a load never takes a marked occurrence), so the facts stay with them
-        const facts: string[] = [];
+        // memory settles it unsent at its flush (`settleDone`), never sends it (Stage 1 G5). A discard's fact is
+        // numbered 0, below every fact of an accepted act, so the budget (`pruneDone`, in `release` after the write) drops
+        // discard facts first and never an accepted act's for one (Stage 1 re-check 2). A fact already there stands.
+        const facts = new Map<string, string>();
         for (const o of gone) {
-          if (!unique(o.act) || readDone(storage.getItem(doneName(key, o.act)))?.i === queueActIdent(o.act)) continue;
-          if (!putDone(storage, key, o.act)) { for (const f of facts) remove(storage, f); return 'failed'; }
-          facts.push(doneName(key, o.act));
+          const name = doneName(key, o.act);
+          const ident = queueActIdent(o.act);
+          if (!unique(o.act) || facts.has(ident) || readDone(storage.getItem(name))?.i === ident) continue;
+          facts.set(ident, name);
+          if (!put(storage, name, JSON.stringify({ i: ident, n: 0 }))) { for (const f of facts.values()) remove(storage, f); return 'failed'; }
         }
-        for (const o of gone) {
-          if (!put(storage, markName(key, o.act, o.oid), queueActIdent(o.act))) return 'failed';
+        // then the marks. An act whose mark landed is settled here whatever follows (a load never takes it), so its fact
+        // stays with it; one with an occurrence whose mark did not land is still kept, listed and sent, so its fact goes
+        // (Stage 1 re-check 1)
+        for (let n = 0; n < gone.length; n += 1) {
+          const o = gone[n];
+          if (!put(storage, markName(key, o.act, o.oid), queueActIdent(o.act))) {
+            // every act with an occurrence not yet marked (this one and those after it)
+            for (const left of gone.slice(n)) { const name = facts.get(queueActIdent(left.act)); if (name) remove(storage, name); }
+            return 'failed';
+          }
           setOf(sent, key).add(o.oid);
         }
         const plan = planWrite(s, { mine: keep, known: new Set(all.frame.occs.map((o) => o.oid)), sent: goneIds });

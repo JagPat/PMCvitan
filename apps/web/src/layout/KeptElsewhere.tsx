@@ -28,14 +28,15 @@ const LOCALE: Record<Lang, string> = { en: 'en-GB', hi: 'hi-IN', gu: 'gu-IN' };
 const countLine = (n: number, lang: Lang): string => (n === 1 ? QW.keptCountOne[lang] : qwFill(QW.keptCount, lang, { n }));
 type Ask = { projectId: string; item: string | null; n: number; name: string; unread: boolean };
 /** what a discard says: nothing when all of it went, else each thing the person should know */
-function saidOf(r: KeptDiscard, name: string, lang: Lang): string | null {
+function saidOf(r: KeptDiscard, name: string, lang: Lang): string {
   if (r.outcome === 'held') return qwFill(QW.keptBack, lang, { project: name });
   if (r.outcome === 'unknown') return QW.keptNoCheck[lang];
   // "Discarded." only when something was (Stage 1 U2 G2)
   const said = r.outcome === 'failed' ? [QW.keptNotDiscarded[lang]] : r.removed ? [QW.keptDiscarded[lang]] : [];
   if (r.busy) said.push(QW.keptBusy[lang]);
   if (r.unchecked) said.push(QW.keptVisitUnchecked[lang]);
-  return said.length > 0 ? said.join(' ') : null;
+  // nothing removed and nothing else to say: another tab discarded it already
+  return said.length > 0 ? said.join(' ') : QW.keptNothingLeft[lang];
 }
 const canDiscardAll = (p: KeptProject): boolean => p.total > 0 || p.unreadable === 'damaged';
 

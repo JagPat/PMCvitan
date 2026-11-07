@@ -395,7 +395,7 @@ async function discardHeld(storage: DiscardStore, guard: Pick<QueueKeyGuard, 'di
     // its act (a late commit leaves an act with no row: sent as nothing, still listed; Stage 1 U2 G4)
     const gone = await (r.store === 'evidence' ? evidenceWithinWait(deleteEvidence(sub, projectId, r.clientKey)).then(() => true)
       : r.store === 'visit' ? evidenceWithinWait(deleteVisitPhoto(sub, projectId, r.clientKey)).then(() => true)
-        : ifSitePhotoUnlocked(sub, projectId, r.clientKey, () => deleteSitePhotoRow(sub, projectId, r.clientKey).then(() => true)).then((d) => {
+        : ifSitePhotoUnlocked(sub, projectId, r.clientKey, () => evidenceWithinWait(deleteSitePhotoRow(sub, projectId, r.clientKey)).then(() => true)).then((d) => {
           if (d === null) busy = true;
           return d === true;
         })).catch(() => { ok = false; return false; });

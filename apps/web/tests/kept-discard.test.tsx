@@ -9,7 +9,8 @@ import { listVisitPhotos, putVisitPhoto } from '@/data/visitPhotoStore';
 import { discardKept, projectNameKey, readKeptElsewhere, rememberProjectName } from '@/store/keptElsewhere';
 import { normalizeGeneric, takenAs } from '@/store/loadTakes';
 import { createQueueKeyGuard } from '@/store/queueKeyGuard';
-import { recordBytes, recordName } from '@/store/queueLedger';
+import { DONE_CAP, doneName, recordBytes, recordName } from '@/store/queueLedger';
+import { queueActIdent } from '@/store/queueActIdent';
 import { QW } from '@/lib/queueWords';
 import { closeKeptSignals } from '@/data/keptSignal';
 import { EVIDENCE_READ_WAIT_MS } from '@/data/evidenceStore';
@@ -26,7 +27,7 @@ import { holdQueueLock, releaseQueueLocks, storedQueue } from './queueWrites';
 // the visit store's removal records, made unreadable by a test; a row delete made to fail, or never to answer; and a
 // store's read made to fail (`…Fails`: how many reads from now fail)
 const ctl = vi.hoisted(() => ({
-  removalsUnreadable: false, evidenceDeleteFails: false, evidenceDeleteHangs: null as null | (() => void), visitDeleteHangs: null as null | (() => void),
+  removalsUnreadable: false, evidenceDeleteFails: false, evidenceDeleteHangs: null as null | (() => void), visitDeleteHangs: null as null | (() => void), siteDeleteHangs: null as null | (() => void),
   evidenceListFails: 0, visitReadFails: 0, siteListFails: 0,
 }));
 // each clamped wait armed, so a test can end one by hand (a signal, never a clock)
@@ -61,7 +62,14 @@ vi.mock('@/data/evidenceStore', async (importOriginal) => {
 });
 vi.mock('@/data/sitePhotoStore', async (importOriginal) => {
   const real = await importOriginal<typeof import('@/data/sitePhotoStore')>();
-  return { ...real, listSitePhotoRows: (...a: Parameters<typeof real.listSitePhotoRows>) => (fails('siteListFails') ? Promise.reject(new Error('idb')) : real.listSitePhotoRows(...a)) };
+  return {
+    ...real,
+    listSitePhotoRows: (...a: Parameters<typeof real.listSitePhotoRows>) => (fails('siteListFails') ? Promise.reject(new Error('idb')) : real.listSitePhotoRows(...a)),
+    deleteSitePhotoRow: (...a: Parameters<typeof real.deleteSitePhotoRow>) => {
+      if (ctl.siteDeleteHangs) { ctl.siteDeleteHangs(); return new Promise<void>(() => {}); }
+      return real.deleteSitePhotoRow(...a);
+    },
+  };
 });
 
 const b64url = (o: unknown) => btoa(JSON.stringify(o)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -98,7 +106,7 @@ afterEach(() => {
   cleanup();
   releaseQueueLocks();
   useStore.setState(getInitialState());
-  ctl.removalsUnreadable = false; ctl.evidenceDeleteFails = false; ctl.evidenceDeleteHangs = null; ctl.visitDeleteHangs = null;
+  ctl.removalsUnreadable = false; ctl.evidenceDeleteFails = false; ctl.evidenceDeleteHangs = null; ctl.visitDeleteHangs = null; ctl.siteDeleteHangs = null;
   ctl.evidenceListFails = 0; ctl.visitReadFails = 0; ctl.siteListFails = 0;
   timers.armed.length = 0;
   closeKeptSignals();
@@ -271,6 +279,46 @@ describe('rows first, then acts', () => {
     expect(await listVisitPhotos(SUB, P)).toHaveLength(1);
     // the visit stays whole: its start stays with the file left
     expect(storedQueue(localStorage.getItem(lane()))).toEqual([startOf(V1)]);
+  });
+
+  it('a site photo delete that does not answer in time leaves its row, which keeps its act (Stage 1 re-check 3)', async () => {
+    await putSitePhotoRow(SUB, P, { clientKey: 's-1', kind: 'progress' } as never);
+    const op = { t: 'uploadSitePhoto', scope: SUB, clientKey: 's-1' } as unknown as OutboxOp;
+    localStorage.setItem(outbox(), JSON.stringify([op]));
+    let asked: () => void = () => {};
+    const deleting = new Promise<void>((r) => { asked = r; });
+    ctl.siteDeleteHangs = () => asked();
+    const discarding = discardKept(localStorage, guard(), SUB, P, null);
+    await deleting;
+    timers.armed.filter((t) => t.ms === EVIDENCE_READ_WAIT_MS).at(-1)!.fn();
+    expect((await discarding).ok).toBe(false);
+    expect(await listSitePhotoRows(SUB, P)).toHaveLength(1);
+    expect(storedQueue(localStorage.getItem(outbox()))).toEqual([op]);
+  });
+
+  it('a mark that cannot be written: not discarded, still listed, and no done fact left (Stage 1 re-check 1)', async () => {
+    localStorage.setItem(outbox(), JSON.stringify([approve('k-1')]));
+    const raw = localStorage.getItem(outbox());
+    const setItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith('vitan.settled.')) throw new DOMException('full', 'QuotaExceededError');
+      setItem.call(this, k, v);
+    });
+    expect((await discardKept(localStorage, guard(), SUB, P, null)).ok).toBe(false);
+    vi.restoreAllMocks();
+    expect(localStorage.getItem(outbox())).toBe(raw);
+    expect(keys().filter((k) => k.startsWith('vitan.done.'))).toEqual([]);
+    expect((await listed())!.total).toBe(1);
+  });
+
+  it('a discard’s done facts never push out a fact of an accepted act (Stage 1 re-check 2)', async () => {
+    // the budget full of accepted acts' facts, newest numbered highest
+    const accepted = Array.from({ length: DONE_CAP }, (_, i) => doneName(outbox(), approve(`acc-${i}`, `d-${i}`)));
+    accepted.forEach((name, i) => localStorage.setItem(name, JSON.stringify({ i: queueActIdent(approve(`acc-${i}`, `d-${i}`)), n: i + 1 })));
+    localStorage.setItem(outbox(), JSON.stringify([approve('k-1'), approve('k-2', 'd-2')]));
+    expect((await discardKept(localStorage, guard(), SUB, P, null)).ok).toBe(true);
+    expect(accepted.every((name) => localStorage.getItem(name) !== null)).toBe(true);
+    expect(keys().filter((k) => k.startsWith('vitan.done.'))).toHaveLength(DONE_CAP);
   });
 
   it('asked again under the locks: the project no longer lost while the discard waited means nothing is written (Stage 1 U2 G6)', async () => {
@@ -680,6 +728,20 @@ describe('the list', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('a line another tab has already discarded: the list says nothing was left (Stage 1 re-check 4)', async () => {
+    localStorage.setItem(outbox(), JSON.stringify([approve('k-1'), approve('k-2', 'd-2')]));
+    signIn(vi.fn(async () => [ALPHA] as never));
+    render(<KeptElsewhereModal onClose={() => {}} />);
+    const list = await screen.findByTestId('kept-elsewhere');
+    await within(list).findByText('2 changes');
+    const target = await idOf((id) => id.includes('k-1'));
+    // the other tab discards it, unheard here
+    expect((await discardKept(localStorage, guard(), SUB, P, target)).ok).toBe(true);
+    fireEvent.click(within(list).getAllByTestId('kept-discard')[0]);
+    fireEvent.click(within(await screen.findByTestId('kept-confirm')).getByTestId('kept-confirm-confirm'));
+    expect((await screen.findByTestId('kept-said')).textContent).toBe(QW.keptNothingLeft.en);
   });
 
   it('held again: the list says so, and nothing goes', async () => {

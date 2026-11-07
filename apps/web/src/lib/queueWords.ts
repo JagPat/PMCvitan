@@ -149,6 +149,8 @@ export const QW = {
     gu: 'સાઇટ મુલાકાતની કેટલીક ફાઇલો તપાસી શકાઈ નથી. પછીથી ફરી પ્રયાસ કરો.',
   },
   keptDiscarded: { en: 'Discarded.', hi: 'हटा दिया गया।', gu: 'કાઢી નાખ્યું.' },
+  // a discard that found nothing to remove (another tab discarded it already)
+  keptNothingLeft: { en: 'Nothing left to discard.', hi: 'हटाने के लिए कुछ नहीं बचा।', gu: 'કાઢી નાખવા માટે કંઈ બાકી નથી.' },
   keptKindDecision: { en: 'Decision', hi: 'निर्णय', gu: 'નિર્ણય' },
   keptKindDrawing: { en: 'Drawing', hi: 'ड्रॉइंग', gu: 'ડ્રોઇંગ' },
   keptKindInspection: { en: 'Inspection', hi: 'निरीक्षण', gu: 'નિરીક્ષણ' },
