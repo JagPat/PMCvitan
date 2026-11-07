@@ -3,6 +3,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore, type CreateProjectOutcome } from '@/store/store';
 import { isCreateHoldStorageKey } from '@/store/projectCreateHold';
 import { useProjectSwitch } from './useProjectSwitch';
+import { KeptElsewhereModal } from './KeptElsewhere';
+import { QW } from '@/lib/queueWords';
 import { Modal } from '@/components';
 import { ChevronRight, Plus, Check } from '@/lib/icons';
 import type { ModuleSelection, NewProjectInput } from '@/data/apiGateway';
@@ -13,11 +15,12 @@ import { forYouRole, shellChromeLabels as SL, shellChromeText as ST } from '@vit
 export function ProjectSwitcher() {
   // the SHARED switch data — the same hook the mobile top bar reads, so neither surface
   // owns project state and a switch from either takes the identical store path
-  const { memberships, activeProjectId, label, adminOrg, canSwitch, switchProject } = useProjectSwitch();
+  const { memberships, activeProjectId, label, adminOrg, canSwitch, switchProject, keptElsewhere } = useProjectSwitch();
   const setScreen = useStore((s) => s.setScreen);
   const lang = useStore((s) => s.lang);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [keptOpen, setKeptOpen] = useState(false);
   // Wave 0 / F-1a: the switcher is a NON-MODAL disclosure popup, not a dialog
   // and not a menu — no focus trap, no aria-modal, no aria-haspopup claim
   // (its rows are plain Tab-driven buttons; aria-expanded on the trigger is
@@ -30,6 +33,16 @@ export function ProjectSwitcher() {
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  // #1388 (Stage 1 G9): the list can empty while it is open, which takes the switcher's button away (one project, nothing
+  // to create, nothing kept); its close then returns focus to the switcher's plain name rather than past it
+  const plainRef = useRef<HTMLDivElement>(null);
+  const keptWasOpen = useRef(false);
+  useEffect(() => {
+    if (keptOpen) { keptWasOpen.current = true; return; }
+    if (!keptWasOpen.current) return;
+    keptWasOpen.current = false;
+    if (!triggerRef.current) plainRef.current?.focus();
+  }, [keptOpen]);
   const closeToTrigger = () => {
     triggerRef.current?.focus();
     setOpen(false);
@@ -77,7 +90,7 @@ export function ProjectSwitcher() {
       ) : (
         // B9 (F-16): with one project and nothing to create, there is nothing to switch to — the
         // name is plain text, not a button that does nothing (the phone's switcher already is)
-        <div data-testid="project-switcher" style={{ ...pill, cursor: 'default' }}>
+        <div ref={plainRef} tabIndex={-1} data-testid="project-switcher" style={{ ...pill, cursor: 'default' }}>
           <span style={{ fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
         </div>
       )}
@@ -107,10 +120,16 @@ export function ProjectSwitcher() {
           <button onClick={() => { closeToTrigger(); setScreen('team'); }} style={row(false)}>
             {SL.manageTeam[lang]}
           </button>
+          {keptElsewhere && (
+            <button data-testid="kept-elsewhere-line" onClick={() => { closeToTrigger(); setKeptOpen(true); }} style={{ ...row(false), whiteSpace: 'normal' }}>
+              {QW.keptElsewhere[lang]}
+            </button>
+          )}
         </div>
       )}
 
       {creating && adminOrg && <CreateProjectModal orgId={adminOrg.id} onClose={() => setCreating(false)} />}
+      {keptOpen && <KeptElsewhereModal onClose={() => setKeptOpen(false)} />}
     </div>
   );
 }

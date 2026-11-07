@@ -3,6 +3,8 @@ import { useStore } from '@/store/store';
 import { useFocusTrap } from '@/lib/useFocusTrap';
 import { useProjectSwitch } from './useProjectSwitch';
 import { CreateProjectModal } from './ProjectSwitcher';
+import { KeptElsewhereModal } from './KeptElsewhere';
+import { QW } from '@/lib/queueWords';
 import { Check, Plus, X, LayoutGrid } from '@/lib/icons';
 import { ROLE_LABEL } from '@/lib/screens';
 import { navLabelFor } from '@/lib/mobileNav';
@@ -109,7 +111,7 @@ export function MoreSheet({ items, onClose }: { items: NavItem[]; onClose: () =>
  * scope, the snapshot transition and the project-scoped URL all update through one path.
  */
 export function ProjectSheet({ onClose }: { onClose: () => void }) {
-  const { memberships, activeProjectId, adminOrg, switchProject } = useProjectSwitch();
+  const { memberships, activeProjectId, adminOrg, switchProject, keptElsewhere } = useProjectSwitch();
   const setScreen = useStore((s) => s.setScreen);
   const lang = useStore((s) => s.lang);
   const [creating, setCreating] = useState(false);
@@ -118,7 +120,10 @@ export function ProjectSheet({ onClose }: { onClose: () => void }) {
   // starting its load before redirecting the user home. Same permission source as the nav.
   const canOpenPortfolio = useNavItems().some((n) => n.key === 'portfolio');
 
+  const [keptOpen, setKeptOpen] = useState(false);
   if (creating && adminOrg) return <CreateProjectModal orgId={adminOrg.id} onClose={onClose} />;
+  // #1388: the changes this device keeps for projects the person no longer holds, in place of the sheet
+  if (keptOpen) return <KeptElsewhereModal onClose={onClose} />;
 
   return (
     <MobileSheet title={SL.switchProject[lang]} onClose={onClose} testId="project-sheet">
@@ -159,6 +164,11 @@ export function ProjectSheet({ onClose }: { onClose: () => void }) {
         <button className={styles.row} data-testid="project-sheet-new" onClick={() => setCreating(true)} style={{ color: 'var(--accent)' }}>
           <Plus size={18} />
           <span className={styles.rowLabel}>{SL.newProject[lang]}</span>
+        </button>
+      )}
+      {keptElsewhere && (
+        <button className={styles.row} data-testid="kept-elsewhere-line" onClick={() => setKeptOpen(true)}>
+          <span className={styles.rowLabel}>{QW.keptElsewhere[lang]}</span>
         </button>
       )}
     </MobileSheet>

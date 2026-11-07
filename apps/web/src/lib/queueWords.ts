@@ -59,6 +59,55 @@ export const QW = {
     hi: '{project} के लिए 1 बदलाव इस डिवाइस पर रखा गया है और आपकी पहुँच वापस मिलने पर भेजा जाएगा।',
     gu: '{project} માટેનો 1 ફેરફાર આ ઉપકરણ પર રાખેલો છે અને તમારો પ્રવેશ પાછો મળશે ત્યારે મોકલાશે.',
   },
+  /** #1388 (unit 1): the list of changes this device keeps for projects the person no longer holds */
+  // the switcher's line: no count, as it is read from the keys alone (Stage 1 G10); the list counts
+  keptElsewhere: {
+    en: 'Changes kept for projects you no longer have',
+    hi: 'उन प्रोजेक्ट के बदलाव रखे गए हैं जिनकी पहुँच अब आपके पास नहीं है',
+    gu: 'જે પ્રોજેક્ટનો પ્રવેશ હવે તમારી પાસે નથી તેના ફેરફારો રાખેલા છે',
+  },
+  keptTitle: { en: 'Changes kept on this device', hi: 'इस डिवाइस पर रखे गए बदलाव', gu: 'આ ઉપકરણ પર રાખેલા ફેરફારો' },
+  keptIntro: {
+    en: 'These were never sent. They will be sent if your access returns and you open the project on this device.',
+    hi: 'ये कभी भेजे नहीं गए। आपकी पहुँच वापस मिलने पर, इस डिवाइस पर प्रोजेक्ट खोलते ही ये भेज दिए जाएँगे।',
+    gu: 'આ ક્યારેય મોકલાયા નથી. તમારો પ્રવેશ પાછો મળે અને તમે આ ઉપકરણ પર પ્રોજેક્ટ ખોલો ત્યારે તે મોકલાશે.',
+  },
+  keptUnknownProject: {
+    en: 'A project you no longer have access to',
+    hi: 'एक प्रोजेक्ट जिसकी पहुँच अब आपके पास नहीं है',
+    gu: 'એક પ્રોજેક્ટ જેનો પ્રવેશ હવે તમારી પાસે નથી',
+  },
+  keptCount: { en: '{n} changes', hi: '{n} बदलाव', gu: '{n} ફેરફારો' },
+  keptCountOne: { en: '1 change', hi: '1 बदलाव', gu: '1 ફેરફાર' },
+  keptSaved: { en: 'Saved {date}', hi: '{date} को सहेजा गया', gu: '{date}ના રોજ સાચવ્યું' },
+  keptUnreadable: {
+    en: 'Some changes saved for this project can’t be read by this version.',
+    hi: 'इस प्रोजेक्ट के लिए सहेजे गए कुछ बदलाव यह संस्करण नहीं पढ़ सकता।',
+    gu: 'આ પ્રોજેક્ટ માટે સાચવેલા કેટલાક ફેરફારો આ સંસ્કરણ વાંચી શકતું નથી.',
+  },
+  keptNone: {
+    en: 'Nothing is kept for other projects.',
+    hi: 'दूसरे प्रोजेक्ट के लिए कुछ भी नहीं रखा गया है।',
+    gu: 'બીજા પ્રોજેક્ટ માટે કંઈ રાખેલું નથી.',
+  },
+  // a refused row, or one waiting for the person's retry: not sent of itself when access returns (Stage 1 G6)
+  keptFailed: {
+    en: 'Not sent: refused, or waiting for a retry',
+    hi: 'नहीं भेजा गया: अस्वीकार हुआ, या दोबारा कोशिश की प्रतीक्षा में',
+    gu: 'મોકલાયું નથી: નકાર્યું, અથવા ફરી પ્રયાસની રાહમાં',
+  },
+  keptClose: { en: 'Close', hi: 'बंद करें', gu: 'બંધ કરો' },
+  keptKindDecision: { en: 'Decision', hi: 'निर्णय', gu: 'નિર્ણય' },
+  keptKindDrawing: { en: 'Drawing', hi: 'ड्रॉइंग', gu: 'ડ્રોઇંગ' },
+  keptKindInspection: { en: 'Inspection', hi: 'निरीक्षण', gu: 'નિરીક્ષણ' },
+  keptKindActivity: { en: 'Activity', hi: 'गतिविधि', gu: 'પ્રવૃત્તિ' },
+  keptKindDailyLog: { en: 'Daily log', hi: 'दैनिक लॉग', gu: 'દૈનિક લૉગ' },
+  keptKindSiteVisit: { en: 'Site visit', hi: 'साइट विज़िट', gu: 'સાઇટ મુલાકાત' },
+  keptKindPhoto: { en: 'Photo or file', hi: 'फ़ोटो या फ़ाइल', gu: 'ફોટો અથવા ફાઇલ' },
+  keptKindMaterials: { en: 'Materials', hi: 'सामग्री', gu: 'સામગ્રી' },
+  keptKindLabour: { en: 'Labour', hi: 'श्रमिक', gu: 'મજૂરી' },
+  keptKindCommercial: { en: 'Measurements, bills and payments', hi: 'माप, बिल और भुगतान', gu: 'માપ, બિલ અને ચુકવણી' },
+  keptKindBudget: { en: 'Budget', hi: 'बजट', gu: 'બજેટ' },
 } satisfies Record<string, Words>;
 
 /** a QW line in `lang`, each `{name}` filled from `vars` */
