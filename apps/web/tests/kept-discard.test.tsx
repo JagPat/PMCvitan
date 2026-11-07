@@ -311,6 +311,28 @@ describe('rows first, then acts', () => {
     expect((await listed())!.total).toBe(1);
   });
 
+  it('the second mark cannot be written: the discard is undone whole, so a later load takes both acts (Stage 1 re-check 1)', async () => {
+    localStorage.setItem(outbox(), JSON.stringify([approve('k-1'), approve('k-2', 'd-2')]));
+    const raw = localStorage.getItem(outbox());
+    const g = guard();
+    let marks = 0;
+    const setItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith('vitan.settled.') && ++marks === 2) throw new DOMException('full', 'QuotaExceededError');
+      setItem.call(this, k, v);
+    });
+    expect((await discardKept(localStorage, g, SUB, P, null)).ok).toBe(false);
+    vi.restoreAllMocks();
+    expect(marks).toBe(2);
+    expect(localStorage.getItem(outbox())).toBe(raw);
+    expect(keys().filter((k) => k.startsWith('vitan.settled.') || k.startsWith('vitan.done.'))).toEqual([]);
+    expect((await listed())!.total).toBe(2);
+    // this tab does not count the first act as sent: its own write of the key, before any load, keeps both
+    expect(g.write(localStorage, outbox(), [approve('k-1'), approve('k-2', 'd-2'), approve('k-3', 'd-3')])).toBe(true);
+    expect(storedQueue(localStorage.getItem(outbox()))).toEqual([approve('k-1'), approve('k-2', 'd-2'), approve('k-3', 'd-3')]);
+    expect(g.load(localStorage, outbox())).toEqual([approve('k-1'), approve('k-2', 'd-2'), approve('k-3', 'd-3')]);
+  });
+
   it('a discard’s done facts never push out a fact of an accepted act (Stage 1 re-check 2)', async () => {
     // the budget full of accepted acts' facts, newest numbered highest
     const accepted = Array.from({ length: DONE_CAP }, (_, i) => doneName(outbox(), approve(`acc-${i}`, `d-${i}`)));

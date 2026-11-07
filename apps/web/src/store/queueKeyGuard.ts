@@ -748,16 +748,19 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
           facts.set(ident, name);
           if (!put(storage, name, JSON.stringify({ i: ident, n: 0 }))) { for (const f of facts.values()) remove(storage, f); return 'failed'; }
         }
-        // then the marks. An act whose mark landed is settled here whatever follows (a load never takes it), so its fact
-        // stays with it; one with an occurrence whose mark did not land is still kept, listed and sent, so its fact goes
-        // (Stage 1 re-check 1)
-        for (let n = 0; n < gone.length; n += 1) {
-          const o = gone[n];
-          if (!put(storage, markName(key, o.act, o.oid), queueActIdent(o.act))) {
-            // every act with an occurrence not yet marked (this one and those after it)
-            for (const left of gone.slice(n)) { const name = facts.get(queueActIdent(left.act)); if (name) remove(storage, name); }
+        // then the marks. If one cannot be written, this call is undone whole: the marks it wrote, their place in
+        // `sent`, and its facts, so 'failed' means nothing changed and every act stays kept, listed and sendable (Stage 1
+        // re-check 1). Once every mark is written, the acts are settled here whatever the write does (a load never takes
+        // a marked occurrence), and the facts stay with them
+        const marks: { name: string; oid: string }[] = [];
+        for (const o of gone) {
+          const name = markName(key, o.act, o.oid);
+          if (!put(storage, name, queueActIdent(o.act))) {
+            for (const m of marks) { remove(storage, m.name); sent.get(key)?.delete(m.oid); }
+            for (const f of facts.values()) remove(storage, f);
             return 'failed';
           }
+          marks.push({ name, oid: o.oid });
           setOf(sent, key).add(o.oid);
         }
         const plan = planWrite(s, { mine: keep, known: new Set(all.frame.occs.map((o) => o.oid)), sent: goneIds });
