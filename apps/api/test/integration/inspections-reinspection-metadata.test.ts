@@ -237,4 +237,33 @@ describe('#771 — re-inspection due date and assignee on the existing inspectio
       else process.env.TZ = original;
     }
   });
+
+  it('#482 "Who fixes this?": every row of a lineage A→B→C says root A, open and in review, on live and projection reads', async () => {
+    const { p, pmc, engA, engB, con, client } = await freshProject();
+    const { originalId: a, childId: b } = await rejectedReinspection(p, pmc, engA, engA, 3);
+    const bRow = await t.prisma.inspection.findUniqueOrThrow({ where: { id: b }, include: { items: true } });
+    await svc.submit(p, b, { items: bRow.items.map((it) => ({ id: it.id, name: it.name, state: 'pass' as const, photos: 0, note: '' })) }, as(engA, 'engineer', p));
+    await svc.decide(p, b, { approve: false, rejectedItemIds: [bRow.items[0]!.id], assigneeId: engA, dueInDays: 2 }, as(pmc, 'pmc', p));
+    const c = (await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, reinspectionOfId: b } })).id;
+
+    // C open: the outstanding row and the engineer's field view name A, not C's parent B
+    const open = await snapshot(p, pmc, 'pmc').expect(200);
+    expect(byId(open.body.openChecklists as Array<{ id: string }>)[c]).toMatchObject({ reinspectionOfId: b, lineageRootId: a });
+    const field = await snapshot(p, engA, 'engineer').expect(200);
+    expect(byId(field.body.openChecklists as Array<{ id: string }>)[c]).toMatchObject({ lineageRootId: a });
+
+    // C submitted: its review names A too
+    const cRow = await t.prisma.inspection.findUniqueOrThrow({ where: { id: c }, include: { items: true } });
+    await svc.submit(p, c, { items: cRow.items.map((it) => ({ id: it.id, name: it.name, state: 'pass' as const, photos: 0, note: '' })) }, as(engA, 'engineer', p));
+    const queue = await snapshot(p, pmc, 'pmc').expect(200);
+    expect(byId(queue.body.reviews as Array<{ id: string }>)[c]).toMatchObject({ reinspectionOfId: b, lineageRootId: a });
+
+    // derived at read from what the base already holds: the projection serves exactly what the live read does
+    await applyProjection(p);
+    for (const [viewer, role] of [[pmc, 'pmc'], [engA, 'engineer'], [engB, 'engineer'], [con, 'contractor'], [client, 'client']] as const) {
+      const proj = await query.projectionSlice(p, role, viewer);
+      expect(proj.generation).toBe(1);
+      expect(proj.slices).toEqual(await query.snapshotSlice(p, role, viewer));
+    }
+  });
 });

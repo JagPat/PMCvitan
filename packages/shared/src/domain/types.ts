@@ -399,6 +399,10 @@ export interface Checklist {
    *  `null` on an ordinary issued checklist. ABSENT only from an API older than the field, which cannot say
    *  either way — the count that depends on it is then unknown, never 0 (#482 6114668018). */
   reinspectionOfId?: string | null;
+  /** #482 "Who fixes this?" — the first inspection of this one's lineage (`reinspectionOfId` followed to one that
+   *  re-checks nothing; its own id when it is not a re-inspection). A naming is held on it. ABSENT only from an API
+   *  older than the field. */
+  lineageRootId?: string;
   /** #771 read contract — the STORED assignee of this work (a re-inspection's, by default the submitter of
    *  what it re-checks). A historical fact, NOT an authority: whether the assignment still binds is the
    *  server's question, and it already decided this row reaches the viewer. `null` = none stored; ABSENT =
@@ -439,6 +443,8 @@ export interface Review {
   decided: boolean;
   /** set when this review IS a reinspection — the predecessor it re-checks (Task 4) */
   reinspectionOfId?: string;
+  /** #482 "Who fixes this?" — as {@link Checklist.lineageRootId}; ABSENT only from an older API. */
+  lineageRootId?: string;
   /** #847 — API-less demo only: the PMC sent this review's re-inspection (the demo creates no linked
    *  re-inspection row, so this is how it tells a rejected review from an approved one). */
   reinspectionSent?: boolean;
