@@ -1,3 +1,4 @@
+import { setClampedTimeout, type ClampedTimer } from '@/lib/clampedTimer';
 /**
  * evidenceStore — durable OFFLINE storage for inspection evidence BYTES (Phase 1
  * Task 4). IndexedDB, because evidence photos must survive reloads and localStorage
@@ -130,4 +131,23 @@ export function listEvidence(userScope: string, projectId: string): Promise<Evid
         req.onerror = () => { db.close(); reject(req.error ?? new Error('evidence read failed')); };
       }),
   );
+}
+
+/** Guided step 4a (unit 3b): how long a durable evidence read may take before it counts as not read (bounded, as every
+ *  IndexedDB call here); #1388's reads take the same bound. */
+export const EVIDENCE_READ_WAIT_MS = 5000;
+
+/** `read` within `EVIDENCE_READ_WAIT_MS`: a database that fails, or never answers, rejects instead of holding its caller. */
+export function evidenceWithinWait<T>(read: Promise<T>): Promise<T> {
+  let timer: ClampedTimer | undefined;
+  const tooSlow = new Promise<never>((_, reject) => { timer = setClampedTimeout(() => reject(new Error('evidence read too slow')), EVIDENCE_READ_WAIT_MS); });
+  return Promise.race([read, tooSlow]).finally(() => timer?.clear());
+}
+
+/** #1388: the projects whose rows this phone keeps for `userScope`, from the rows' keys alone (no row is read, so no
+ *  bytes are loaded). Read only, and bounded (`evidenceWithinWait`). */
+export function evidenceProjectsOf(userScope: string): Promise<Set<string>> {
+  const prefix = `${userScope}::`;
+  return evidenceWithinWait(tx<IDBValidKey[]>('readonly', (s) => s.getAllKeys(IDBKeyRange.bound(prefix, `${prefix}\uffff`))))
+    .then((keys) => new Set((keys ?? []).map((k) => String(k).slice(prefix.length)).map((r) => r.slice(0, r.indexOf('::'))).filter((p) => p.length > 0)));
 }

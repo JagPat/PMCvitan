@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/store';
 import { unreadCount } from '@/lib/notificationSeen';
 import { Bell, Power, ChevronDown } from '@/lib/icons';
@@ -30,13 +30,23 @@ export function TopBar() {
   const notifCount = useStore((s) => unreadCount(s.notifications, s.notifSeen));
   const { label, canSwitch } = useProjectSwitch();
   const [switching, setSwitching] = useState(false);
+  // #1388 (Stage 1 G9): the kept-changes list can empty while it is open, which disables the project button (one project,
+  // nothing to create, nothing kept); focus cannot return to a disabled button, so the sheet's close sends it here
+  const brandRef = useRef<HTMLDivElement>(null);
+  const wasSwitching = useRef(false);
+  useEffect(() => {
+    if (switching) { wasSwitching.current = true; return; }
+    if (!wasSwitching.current) return;
+    wasSwitching.current = false;
+    if (!canSwitch) brandRef.current?.focus();
+  }, [switching, canSwitch]);
   const lang = useStore((s) => s.lang);
   const [choosingLang, setChoosingLang] = useState(false);
   const current = LANG_SWITCH.find((l) => l.key === lang) ?? LANG_SWITCH[0];
 
   return (
     <header className={styles.bar}>
-      <div className={styles.brandWrap}>
+      <div className={styles.brandWrap} ref={brandRef} tabIndex={-1}>
         <div className={styles.logoTile}>
           <img src={logo} alt="Vitan" />
         </div>

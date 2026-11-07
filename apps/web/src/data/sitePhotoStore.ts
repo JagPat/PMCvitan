@@ -255,3 +255,27 @@ export async function sitePhotosLocked(userScope: string, projectId: string): Pr
     return new Set();
   }
 }
+
+/** #1388: the projects whose rows this phone keeps for `userScope`, from the rows' keys alone (no row is read, so no
+ *  bytes are loaded). Read only. */
+export function sitePhotoProjectsOf(userScope: string): Promise<Set<string>> {
+  const prefix = `${userScope}::`;
+  return bounded((run) => tx<IDBValidKey[]>(run, 'readonly', (s) => s.getAllKeys(IDBKeyRange.bound(prefix, `${prefix}\uffff`))))
+    .then((keys) => new Set((keys ?? []).map((k) => String(k).slice(prefix.length)).map((r) => r.slice(0, r.indexOf('::'))).filter((p) => p.length > 0)));
+}
+
+/** #1388 (Codex 4498679801): the projects (user) keeps an unsent photo for, from keys alone: a project's row keys, less
+ *  those of its sent and refused markers (the `sentAt` index names exactly those, as `isSitePhotoSent` does). No row is
+ *  read. Read only, and bounded (`bounded`). */
+export function sitePhotoKeptProjectsOf(userScope: string): Promise<Set<string>> {
+  const prefix = `${userScope}::`;
+  let keys: IDBValidKey[] = [];
+  return bounded((run) => tx<IDBValidKey[]>(run, 'readonly', (s) => {
+    const all = s.getAllKeys(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
+    all.onsuccess = () => { keys = all.result ?? []; };
+    return s.index(SENT_AT).getAllKeys();
+  })).then((sent) => {
+    const marked = new Set((sent ?? []).map(String));
+    return new Set(keys.map(String).filter((k) => !marked.has(k)).map((k) => k.slice(prefix.length)).map((r) => r.slice(0, r.indexOf('::'))).filter((p) => p.length > 0));
+  });
+}

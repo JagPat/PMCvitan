@@ -500,3 +500,50 @@ export function failVisitPhotosOn(userScope: string, projectId: string, visitId:
     }, () => done(undefined));
   }).then(() => { letGoOf(userScope, projectId, failed); return failed; });
 }
+
+/** #1388: the projects whose rows this phone keeps for `userScope`, from the rows' keys alone (no row is read, so no
+ *  bytes are loaded). Read only, and bounded (`withinWait`). */
+export function visitPhotoProjectsOf(userScope: string): Promise<Set<string>> {
+  const prefix = `${userScope}::`;
+  return withinWait(() => tx<IDBValidKey[]>('readonly', (s, done) => {
+    const req = s.getAllKeys(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
+    req.onsuccess = () => done(req.result ?? []);
+  })).then((keys) => new Set((keys ?? []).map((k) => String(k).slice(prefix.length)).map((r) => r.slice(0, r.indexOf('::'))).filter((p) => p.length > 0)));
+}
+
+/** #1388: every row of (user, project), oldest first, read only: unlike `listVisitPhotos` it lets go of no key this tab
+ *  holds, as it reads for a project no tab of this person loads. Bounded (`withinWait`). */
+export function readVisitPhotoRows(userScope: string, projectId: string): Promise<VisitPhotoRow[]> {
+  return withinWait(() => tx<VisitPhotoRow[]>('readonly', (s, done) => {
+    const rows: VisitPhotoRow[] = [];
+    eachRow(s, userScope, projectId, (row) => rows.push(row), () => done(rows.sort((a, b) => a.createdAt - b.createdAt)));
+  }));
+}
+
+/** #1388 (Codex 4498679801): the rows of (user, project) that `skip` does not name, read one at a time and read only,
+ *  stopping after the first that `stop` takes: a row `skip` names is never read, bytes and all. Bounded (`withinWait`). */
+export function readVisitPhotoRowsUntil(
+  userScope: string,
+  projectId: string,
+  skip: (clientKey: string) => boolean,
+  stop: (row: VisitPhotoRow) => boolean,
+): Promise<VisitPhotoRow[]> {
+  const prefix = `${userScope}::${projectId}::`;
+  return withinWait(() => tx<VisitPhotoRow[]>('readonly', (s, done) => {
+    const rows: VisitPhotoRow[] = [];
+    const req = s.getAllKeys(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
+    req.onsuccess = () => {
+      const keys = (req.result ?? []).map(String).filter((k) => !skip(k.slice(prefix.length)));
+      const next = (i: number): void => {
+        if (i >= keys.length) { done(rows); return; }
+        const get = s.get(keys[i]);
+        get.onsuccess = () => {
+          const row = get.result as VisitPhotoRow | undefined;
+          if (row) { rows.push(row); if (stop(row)) { done(rows); return; } }
+          next(i + 1);
+        };
+      };
+      next(0);
+    };
+  }));
+}
