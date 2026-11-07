@@ -172,6 +172,13 @@ describe('rows first, then acts', () => {
     expect(storedQueue(localStorage.getItem(outbox()))).toEqual([op]);
   });
 
+  it('a guard that cannot read a key the list read (its scopes not registered) writes nothing, and says so', async () => {
+    const op = { t: 'uploadEvidence', scope: SUB, clientKey: 'e-9' } as OutboxOp;
+    localStorage.setItem(outbox(), JSON.stringify([op]));
+    expect((await discardKept(localStorage, createQueueKeyGuard(), SUB, P, null)).ok).toBe(false);
+    expect(storedQueue(localStorage.getItem(outbox()))).toEqual([op]);
+  });
+
   it('with no lock nothing is written: no row, no act', async () => {
     await putEvidence(ev('e-1'));
     localStorage.setItem(outbox(), JSON.stringify([evOp('e-1')]));
@@ -205,7 +212,7 @@ describe('a site visit is one line', () => {
     expect(await listed()).toBeNull();
   });
 
-  it('removal records that cannot be read: a visit line is not discarded; "Discard all" leaves the files and says so', async () => {
+  it('removal records that cannot be read: a visit line is not discarded; "Discard all" leaves each visit whole and says so; once they can be read, the visit goes', async () => {
     localStorage.setItem(lane(), JSON.stringify([startOf(V1)]));
     localStorage.setItem(outbox(), JSON.stringify([approve('k-1')]));
     await putVisitPhoto(SUB, P, visitFile('f-1', V1), 'AA==');
@@ -214,7 +221,14 @@ describe('a site visit is one line', () => {
     expect(storedQueue(localStorage.getItem(lane()))).toEqual([startOf(V1)]);
     expect(await discardKept(localStorage, guard(), SUB, P, null)).toEqual({ ok: true, busy: false, unchecked: true });
     expect(storedQueue(localStorage.getItem(outbox()))).toEqual([]);
+    expect(storedQueue(localStorage.getItem(lane()))).toEqual([startOf(V1)]);
     expect(await listVisitPhotos(SUB, P)).toHaveLength(1);
+    // the person tries again once the records can be read: the visit goes whole
+    ctl.removalsUnreadable = false;
+    expect(await discardKept(localStorage, guard(), SUB, P, null)).toEqual({ ok: true, busy: false, unchecked: false });
+    expect(storedQueue(localStorage.getItem(lane()))).toEqual([]);
+    expect(await listVisitPhotos(SUB, P)).toEqual([]);
+    expect(await listed()).toBeNull();
   });
 });
 
@@ -241,6 +255,26 @@ describe('"Discard all"', () => {
     expect((await discardKept(localStorage, guard(), SUB, P, null)).ok).toBe(true);
     expect(localStorage.getItem(outbox())).toBeNull();
     expect(localStorage.getItem(lane())).toBe(lanes);
+  });
+
+  it('a made record this version cannot read goes with "Discard all"; a newer release’s record stays', async () => {
+    localStorage.setItem(outbox(), JSON.stringify([approve('k-1')]));
+    const bad = '{not a record';
+    localStorage.setItem(recordName(outbox(), [], bad, 'nonce1'), bad);
+    const newer = recordBytes([{ t: 'somethingNewer', idempotencyKey: 'x' } as never], 'nonce2');
+    const newerName = recordName(outbox(), [], newer, 'nonce2');
+    localStorage.setItem(newerName, newer);
+    expect((await listed())!.unreadIncluded).toBe(true);
+    expect((await discardKept(localStorage, guard(), SUB, P, null)).ok).toBe(true);
+    expect(keys().filter((k) => k.startsWith('vitan.made.'))).toEqual([newerName]);
+    expect(storedQueue(localStorage.getItem(outbox()))).toEqual([]);
+  });
+
+  it('a project whose changes this version can all read says nothing more is included', async () => {
+    localStorage.setItem(outbox(), JSON.stringify([approve('k-1')]));
+    expect((await listed())!.unreadIncluded).toBeUndefined();
+    localStorage.setItem(`vitan.unreadable.${outbox()}.12-abc`, '[1]');
+    expect((await listed())!.unreadIncluded).toBe(true);
   });
 });
 
@@ -300,6 +334,24 @@ describe('through the store: access is checked afresh, fail closed', () => {
     expect(localStorage.getItem(projectNameKey(SUB, P))).toBeNull();
   });
 
+  it('an act naming the person’s scope is discarded (the store registers the lost project’s scopes first)', async () => {
+    localStorage.setItem(outbox(), JSON.stringify([{ t: 'uploadEvidence', scope: SUB, clientKey: 'e-9' }, approve('k-1')]));
+    signIn(vi.fn(async () => [ALPHA] as never));
+    expect((await useStore.getState().discardKeptChanges(P, null)).outcome).toBe('done');
+    expect(storedQueue(localStorage.getItem(outbox()))).toEqual([]);
+  });
+
+  it('the person changes while access is checked: nothing is discarded', async () => {
+    localStorage.setItem(outbox(), JSON.stringify([approve('k-1')]));
+    let answer: (v: unknown) => void = () => {};
+    signIn(vi.fn(() => new Promise((resolve) => { answer = resolve; })) as never);
+    const asked = useStore.getState().discardKeptChanges(P, null);
+    useStore.setState({ sessionToken: jwt({ sub: `${SUB}-other`, role: 'pmc', projectId: 'p-a' }) });
+    answer([ALPHA]);
+    expect((await asked).outcome).toBe('failed');
+    expect(storedQueue(localStorage.getItem(outbox()))).toEqual([approve('k-1')]);
+  });
+
   it('held again: nothing is discarded, and the person is told', async () => {
     localStorage.setItem(outbox(), JSON.stringify([approve('k-1')]));
     signIn(vi.fn(async () => [ALPHA, GONE] as never));
@@ -341,6 +393,7 @@ describe('the list', () => {
     fireEvent.click(within(list).getAllByTestId('kept-discard')[0]);
     const ask = await screen.findByTestId('kept-confirm');
     expect(ask.textContent).toContain('Discard 1 change for Gone Tower? It was never sent and cannot be recovered.');
+    expect(ask.textContent).not.toContain(QW.keptConfirmUnreadIncluded.en);
     fireEvent.click(within(ask).getByTestId('kept-confirm-confirm'));
     expect((await screen.findByTestId('kept-said')).textContent).toBe(QW.keptDiscarded.en);
     await waitFor(() => expect(within(list).getByText('1 change')).toBeTruthy());
@@ -356,6 +409,36 @@ describe('the list', () => {
     await within(list).findByTestId('kept-unreadable');
     expect(within(list).queryAllByTestId('kept-discard')).toEqual([]);
     expect(within(list).getByTestId('kept-discard-all')).toBeTruthy();
+    // its confirm says that changes this version cannot read go too
+    fireEvent.click(within(list).getByTestId('kept-discard-all'));
+    expect((await screen.findByTestId('kept-confirm')).textContent).toContain(QW.keptConfirmUnreadIncluded.en);
+  });
+
+  it('a site photo another tab is sending: the list says what is left', async () => {
+    await putSitePhotoRow(SUB, P, { clientKey: 's-1', kind: 'progress' } as never);
+    localStorage.setItem(outbox(), JSON.stringify([{ t: 'uploadSitePhoto', scope: SUB, clientKey: 's-1' }, approve('k-1')]));
+    const release = await holdSitePhotoLock(SUB, P, 's-1');
+    signIn(vi.fn(async () => [ALPHA] as never));
+    render(<KeptElsewhereModal onClose={() => {}} />);
+    const list = await screen.findByTestId('kept-elsewhere');
+    fireEvent.click(await within(list).findByTestId('kept-discard-all'));
+    fireEvent.click(within(await screen.findByTestId('kept-confirm')).getByTestId('kept-confirm-confirm'));
+    expect((await screen.findByTestId('kept-said')).textContent).toBe(`${QW.keptDiscarded.en} ${QW.keptBusy.en}`);
+    release();
+  });
+
+  it('visit files that cannot be checked: the list says so, and asks to try again later', async () => {
+    localStorage.setItem(lane(), JSON.stringify([startOf(V1)]));
+    await putVisitPhoto(SUB, P, visitFile('f-1', V1), 'AA==');
+    ctl.removalsUnreadable = true;
+    signIn(vi.fn(async () => [ALPHA] as never));
+    render(<KeptElsewhereModal onClose={() => {}} />);
+    const list = await screen.findByTestId('kept-elsewhere');
+    fireEvent.click(await within(list).findByTestId('kept-discard-all'));
+    fireEvent.click(within(await screen.findByTestId('kept-confirm')).getByTestId('kept-confirm-confirm'));
+    expect((await screen.findByTestId('kept-said')).textContent).toBe(`${QW.keptDiscarded.en} ${QW.keptVisitUnchecked.en}`);
+    // the visit's line is still there to discard again
+    expect(within(list).getAllByTestId('kept-item').length).toBeGreaterThan(0);
   });
 
   it('held again: the list says so, and nothing goes', async () => {

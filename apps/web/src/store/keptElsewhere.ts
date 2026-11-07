@@ -62,7 +62,12 @@ export type KeptItem = { id: string; kind: KeptKind; count: number; at: number |
 /** One project's kept changes. `name`: the name this device last saw for it, or null. `unreadable`: one of its keys, or
  *  a made record, holds changes this version cannot read (those are this line alone, never counted; what readable made
  *  records beside such a key hold is listed and counted, as a load restores it) */
-export type KeptProject = { projectId: string; name: string | null; items: KeptItem[]; total: number; unreadable: Exclude<KeyRead, 'ok'> | null };
+export type KeptProject = {
+  projectId: string; name: string | null; items: KeptItem[]; total: number; unreadable: Exclude<KeyRead, 'ok'> | null;
+  /** #1388 U2: "Discard all" also removes changes this version cannot read (a damaged key or made record, or a copy of
+   *  a key set aside), so its confirm says so. Absent: none */
+  unreadIncluded?: boolean;
+};
 /** a row kept on this device, as the list needs it. `failed`: the server refused it, or it waits for the person's retry;
  *  it is listed apart, as it is not sent of itself when access returns */
 export type KeptRow = { clientKey: string; at: number; visitId: string | null; failed: boolean; store?: RowStore };
@@ -108,7 +113,7 @@ const earliest = (a: number | null, b: number | null): number | null => (a === n
 const unique = (o: OutboxOp): boolean => !queueActIdent(o).startsWith('json:');
 type OwedRead = { read: KeyRead; acts: OutboxOp[]; unread?: Exclude<KeyRead, 'ok'> | null } | null;
 /** a key as a load takes it: `held`, every act it takes into memory (a done one included), and `acts`, those still owed */
-type TakenRead = { read: KeyRead; acts: OutboxOp[]; held: OutboxOp[]; unread: Exclude<KeyRead, 'ok'> | null } | null;
+type TakenRead = { read: KeyRead; acts: OutboxOp[]; held: OutboxOp[]; unread: Exclude<KeyRead, 'ok'> | null; damagedRecords: boolean } | null;
 const worse = (a: KeptProject['unreadable'], b: Exclude<KeyRead, 'ok'>): Exclude<KeyRead, 'ok'> => (a === 'damaged' || b === 'damaged' ? 'damaged' : 'newer');
 
 /** The line an act is listed on (`KeptItem.id`), given the rows by file: a refused row's own line; a site visit's acts
@@ -288,9 +293,24 @@ export async function readKeptElsewhere(storage: Keys & Names, sub: string, held
     const r = await rowsOf(sub, p, queued);
     const starts = r.starts.filter((o) => !isDone(storage, keysOf(sub, p)[1], o));
     const kept = keptOf(p, readProjectName(storage, sub, p), [...reads, { read: 'ok', acts: starts, unread: r.unread }], r.rows);
+    // what "Discard all" removes that this version cannot read: a damaged key or made record, or a copy set aside (a
+    // newer release's key, and visit files whose removal records cannot be read, stay)
+    if (reads.some((x) => x?.read === 'damaged' || x?.damagedRecords === true) || keysOf(sub, p).some((k) => hasAside(storage, k))) kept.unreadIncluded = true;
     if (kept.total > 0 || kept.unreadable !== null) out.push(kept);
   }
   return out;
+}
+
+/** whether a copy of `key` is set aside (`vitan.unreadable.<key>.*`); a read that throws says yes (fail closed: the
+ *  confirm then says more is included, never less) */
+function hasAside(storage: Keys, key: string): boolean {
+  const prefix = `vitan.unreadable.${key}.`;
+  try {
+    for (let i = 0; i < storage.length; i += 1) if (storage.key(i)?.startsWith(prefix)) return true;
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 /** remove every copy of `key` set aside (`vitan.unreadable.<key>.*`); true when none is left */
@@ -322,14 +342,14 @@ type DiscardStore = Keys & Names & { removeItem: (name: string) => void };
  *  other entry stays byte for byte. "Discard all" also takes the acts a load leaves where they are, every copy of a key
  *  set aside, and a damaged key whole (`discardWhole`); a newer release's key is never touched. Without the locks
  *  nothing is written. */
-export async function discardKept(storage: DiscardStore, guard: Pick<QueueKeyGuard, 'discard' | 'discardWhole'>, sub: string, projectId: string, item: string | null): Promise<DiscardResult> {
+export async function discardKept(storage: DiscardStore, guard: Pick<QueueKeyGuard, 'discard' | 'discardWhole' | 'discardDamagedRecords'>, sub: string, projectId: string, item: string | null): Promise<DiscardResult> {
   const keys = keysOf(sub, projectId);
   const out = await underQueueLocks(keys, () => discardHeld(storage, guard, sub, projectId, item));
   return out ?? { ok: false, busy: false, unchecked: false };
 }
 
 /** `discardKept`, holding both keys' locks: what is read here is what is removed */
-async function discardHeld(storage: DiscardStore, guard: Pick<QueueKeyGuard, 'discard' | 'discardWhole'>, sub: string, projectId: string, item: string | null): Promise<DiscardResult> {
+async function discardHeld(storage: DiscardStore, guard: Pick<QueueKeyGuard, 'discard' | 'discardWhole' | 'discardDamagedRecords'>, sub: string, projectId: string, item: string | null): Promise<DiscardResult> {
   const keys = keysOf(sub, projectId);
   const reads = takenOf(storage, sub, projectId);
   const queued = new Set((reads[1]?.held ?? []).filter(isSiteVisitOp).map((o) => o.idempotencyKey));
@@ -372,11 +392,19 @@ async function discardHeld(storage: DiscardStore, guard: Pick<QueueKeyGuard, 'di
       if (file !== null && left.has(file)) return false;
       // an act a load leaves where it is goes only with "Discard all"
       if (t === null) return item === null;
-      return wanted(actItemId(t, rowOf));
+      const id = actItemId(t, rowOf);
+      // while the visit files cannot be checked, a visit's acts stay with them: the line stays whole, listed, and is
+      // discarded whole once the files can be checked
+      if (unchecked && id.startsWith('visit:')) return false;
+      return wanted(id);
     }));
-    if (wrote === 'failed') return false;
-    // "Discard all": the copies of this key set aside hold its acts too
-    return item === null && wrote === 'ok' ? removeAside(storage, key) : true;
+    // a key read as readable just now that the guard cannot read (its scopes not registered) wrote nothing: not done
+    if (wrote === 'failed' || (wrote === 'unreadable' && r?.read === 'ok')) return false;
+    // "Discard all": the copies of this key set aside hold its acts too, and so may a made record this version cannot
+    // read (a newer release's record stays)
+    if (item !== null || wrote !== 'ok') return true;
+    const records = guard.discardDamagedRecords(storage, key);
+    return removeAside(storage, key) && records;
   });
   if (done.some((d) => !d)) ok = false;
   return { ok, busy, unchecked };

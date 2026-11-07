@@ -26,7 +26,7 @@ const KIND: Record<KeptKind, keyof typeof QW> = {
 const LOCALE: Record<Lang, string> = { en: 'en-GB', hi: 'hi-IN', gu: 'gu-IN' };
 
 const countLine = (n: number, lang: Lang): string => (n === 1 ? QW.keptCountOne[lang] : qwFill(QW.keptCount, lang, { n }));
-type Ask = { projectId: string; item: string | null; n: number; name: string };
+type Ask = { projectId: string; item: string | null; n: number; name: string; unread: boolean };
 /** what a discard says: nothing when all of it went, else each thing the person should know */
 function saidOf(r: KeptDiscard, name: string, lang: Lang): string {
   if (r.outcome === 'held') return qwFill(QW.keptBack, lang, { project: name });
@@ -57,8 +57,12 @@ export function KeptElsewhereModal({ onClose }: { onClose: () => void }) {
       .then((r) => { setSaid(saidOf(r, a.name, lang)); }, () => { setSaid(QW.keptNotDiscarded[lang]); })
       .finally(() => { setWorking(false); });
   };
-  const confirmText = (a: Ask): string => (a.n === 0 ? qwFill(QW.keptConfirmUnread, lang, { project: a.name })
-    : a.n === 1 ? qwFill(QW.keptConfirmOne, lang, { project: a.name }) : qwFill(QW.keptConfirm, lang, { project: a.name, n: a.n }));
+  const confirmText = (a: Ask): string => {
+    const first = a.n === 0 ? qwFill(QW.keptConfirmUnread, lang, { project: a.name })
+      : a.n === 1 ? qwFill(QW.keptConfirmOne, lang, { project: a.name }) : qwFill(QW.keptConfirm, lang, { project: a.name, n: a.n });
+    // "Discard all" says when it also removes changes this version cannot read
+    return a.unread ? `${first} ${QW.keptConfirmUnreadIncluded[lang]}` : first;
+  };
   // the list is read on open (the switcher's line comes from a keys-only check: Stage 1 G10), and again on each open, as
   // another tab may have sent, or kept, changes since
   // a read a memberships, project or session change made stale is dropped (its seq and scope); while the list is open
@@ -79,7 +83,7 @@ export function KeptElsewhereModal({ onClose }: { onClose: () => void }) {
               {p.total > 0 && <span style={muted}>{countLine(p.total, lang)}</span>}
               {canDiscardAll(p) && (
                 <button type="button" style={small} disabled={working} data-testid="kept-discard-all"
-                  onClick={() => setAsk({ projectId: p.projectId, item: null, n: p.total, name: p.name ?? QW.keptUnknownProject[lang] })}>
+                  onClick={() => setAsk({ projectId: p.projectId, item: null, n: p.total, name: p.name ?? QW.keptUnknownProject[lang], unread: p.unreadIncluded === true })}>
                   {QW.keptDiscardAll[lang]}
                 </button>
               )}
@@ -95,7 +99,7 @@ export function KeptElsewhereModal({ onClose }: { onClose: () => void }) {
                   {i.at !== null && <span style={muted}>{saved(i.at)}</span>}
                   {p.unreadable === null && (
                     <button type="button" style={small} disabled={working} data-testid="kept-discard"
-                      onClick={() => setAsk({ projectId: p.projectId, item: i.id, n: i.count, name: p.name ?? QW.keptUnknownProject[lang] })}>
+                      onClick={() => setAsk({ projectId: p.projectId, item: i.id, n: i.count, name: p.name ?? QW.keptUnknownProject[lang], unread: false })}>
                       {QW.keptDiscard[lang]}
                     </button>
                   )}

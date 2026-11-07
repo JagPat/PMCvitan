@@ -216,20 +216,23 @@ function recoveredSnapshot<S extends Snapshot>(s: S): S {
  *  (`read`), and owes what its readable made records hold, less what its bytes may hold, as a load restores them
  *  (`recoveredSnapshot`); a made record this release cannot read says why too (`unread`: 'newer' when one is a newer
  *  release's, else 'damaged'), beside the acts the rest owe. A read that throws is reported as `null`. */
-export function readOwedActs(storage: Store, key: string, scopes: QueueScopes): { read: KeyRead; acts: OutboxOp[]; unread: Exclude<KeyRead, 'ok'> | null } | null {
+export function readOwedActs(storage: Store, key: string, scopes: QueueScopes): { read: KeyRead; acts: OutboxOp[]; unread: Exclude<KeyRead, 'ok'> | null; damagedRecords: boolean } | null {
   try {
     const s = snapshotOf(storage, key, scopes);
     const read = readOf(s.raw, scopes);
     let unread: Exclude<KeyRead, 'ok'> | null = null;
+    // #1388 U2: whether any made record is damaged (not a newer release's): "Discard all" removes those
+    let damagedRecords = false;
     if (s.recordsUnread) {
       unread = 'damaged';
       for (const name of namesUnder(storage, `vitan.made.${key}.`)) {
         const r = readLedgerQueue(storage.getItem(name), scopes);
         if ('unreadable' in r && r.unreadable === 'newer') unread = 'newer';
+        if ('unreadable' in r && r.unreadable === 'damaged') damagedRecords = true;
       }
     }
     // a key this release cannot read still gives its readable records' acts, as a load restores them
-    return { read, acts: owedOf(recoveredSnapshot(s)).owed.map((o) => o.act), unread };
+    return { read, acts: owedOf(recoveredSnapshot(s)).owed.map((o) => o.act), unread, damagedRecords };
   } catch {
     return null;
   }
@@ -762,6 +765,22 @@ export function createQueueKeyGuard(onRead: (key: string, read: KeyRead, raw: st
       madeAside.delete(key);
       setAsideRaw.delete(key);
       return all;
+    },
+    /** #1388 U2, "Discard all" of a readable key: its made records this release cannot read and does not take as a
+     *  newer release's go (what they hold cannot be named, and no load ever restores it). Run under the key's lock,
+     *  after `discard`. True when none is left */
+    discardDamagedRecords(storage: Store, key: string): boolean {
+      try {
+        const scopes = scopesOf(key);
+        let all = true;
+        for (const name of namesUnder(storage, `vitan.made.${key}.`)) {
+          const r = readLedgerQueue(storage.getItem(name), scopes);
+          if ('unreadable' in r && r.unreadable === 'damaged' && !remove(storage, name)) all = false;
+        }
+        return all;
+      } catch {
+        return false;
+      }
     },
     /** how many occurrences are held stranded, over every key */
     strandedCount(): number {

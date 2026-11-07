@@ -117,6 +117,12 @@ export const QW = {
     hi: '{project} के लिए सहेजे गए बदलाव हटाएँ? ये कभी भेजे नहीं गए और वापस नहीं लाए जा सकते।',
     gu: '{project} માટે સાચવેલા ફેરફારો કાઢી નાખવા છે? તે ક્યારેય મોકલાયા નથી અને પાછા મેળવી શકાશે નહીં.',
   },
+  // added to "Discard all"'s confirm when it also removes changes this version cannot read (Stage 1's U2 ruling)
+  keptConfirmUnreadIncluded: {
+    en: 'This includes changes this version of the app cannot read.',
+    hi: 'इसमें वे बदलाव भी शामिल हैं जिन्हें ऐप का यह संस्करण पढ़ नहीं सकता।',
+    gu: 'આમાં એવા ફેરફારો પણ સામેલ છે જે ઍપનું આ સંસ્કરણ વાંચી શકતું નથી.',
+  },
   keptBack: {
     en: 'You have access to {project} again. These changes will be sent when you open it.',
     hi: '{project} की पहुँच आपको फिर से मिल गई है। इसे खोलते ही ये बदलाव भेज दिए जाएँगे।',
